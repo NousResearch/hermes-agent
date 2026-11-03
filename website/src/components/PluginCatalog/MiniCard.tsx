@@ -2,6 +2,7 @@ import React from "react";
 import Link from "@docusaurus/Link";
 import {
   type CatalogPlugin,
+  cardSummary,
   categoryOf,
   formatStars,
   pluginPagePath,
@@ -34,7 +35,7 @@ export default function MiniCard({ plugin }: { plugin: CatalogPlugin }) {
           </span>
         )}
       </div>
-      <p className={styles.miniDesc}>{plugin.description || "No description available."}</p>
+      <p className={styles.miniDesc}>{cardSummary(plugin.description || "") || "No description available."}</p>
       <span className={styles.miniCategory}>{category.label}</span>
     </Link>
   );

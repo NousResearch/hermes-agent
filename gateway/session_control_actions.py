@@ -5,6 +5,7 @@ answered -32601. Each action is the typed slash command the button stands for, r
 ``execute_command`` (the gateway's own /goal /loop /heartbeat /subgoal handlers, with their
 capability, local-source, admission and busy rules), answered with the owner's control snapshot.
 """
+import asyncio
 import logging
 
 from hermes_state_runtime import RuntimeStoreError
@@ -72,26 +73,69 @@ async def _subgoal(connection, ref, params, action, args):
     return {'type': 'exec', 'output': output}
 
 
-def publish(authority, session_id, *, only_if_present=False):
+def publish(authority, session_id, *, only_if_present=False, only_if_changed=False):
     """Push one live session's control snapshot to every viewer as ``session.control.update``.
 
-    Desktop and Ink paint the goal/loop/heartbeat cards from this event and run the loop countdown off
-    its ``next_due_at``, so every place that moves that state on the owner publishes: the slash
-    commands, a fired or settled loop wakeup, a judged turn. ``only_if_present`` skips a session with
-    no automation state (a plain turn's event stream stays unchanged).
+    Desktop, Ink and the classic CLI paint the goal/loop/heartbeat cards from this event and run the loop
+    countdown off its ``next_due_at``, so every place that moves that state on the owner publishes: the
+    slash commands, a fired or settled loop wakeup, a judged turn, a tool that changed it mid-turn.
+    ``only_if_present`` skips a session with no automation state (a plain turn's event stream stays
+    unchanged); ``only_if_changed`` also skips one whose snapshot matches the last one published.
     """
     live = authority.sessions.get(session_id) if authority is not None else None
     if live is None:
         return
-    from gateway.session_ancillary import control_snapshot
-    from gateway.session_contract import SessionRef
+    live.control_seq += 1
+    ticket = live.control_seq
     try:
-        snapshot = control_snapshot(authority, SessionRef(authority.profile_id, session_id))
+        snapshot = _read_control_snapshot(authority, session_id)
     except RuntimeStoreError:  # unreadable row: the change itself already landed; the next publish repaints
         logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
         return
-    if not only_if_present or snapshot['revision']:
-        live.event_stream.publish(session_id, {'control': snapshot}, event_type='session.control.update')
+    _publish_snapshot(authority, live, session_id, snapshot, ticket,
+                      only_if_present=only_if_present, only_if_changed=only_if_changed)
+
+
+async def publish_async(authority, session_id, *, only_if_present=False, only_if_changed=False):
+    """``publish`` with the snapshot read in a worker thread: three state.db meta reads per publish
+    (after every tool and every turn) were a measured loop stall under load. Publishes keep the order
+    they were scheduled in: each takes a ticket on the loop, and a snapshot whose read finished after a
+    later-scheduled one already published is dropped (that one read state at least as new)."""
+    live = authority.sessions.get(session_id) if authority is not None else None
+    if live is None:
+        return
+    live.control_seq += 1
+    ticket = live.control_seq
+    try:
+        snapshot = await asyncio.to_thread(_read_control_snapshot, authority, session_id, scoped=True)
+    except RuntimeStoreError:
+        logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
+        return
+    if authority.sessions.get(session_id) is not live:  # closed or re-mounted while the read ran
+        return
+    _publish_snapshot(authority, live, session_id, snapshot, ticket,
+                      only_if_present=only_if_present, only_if_changed=only_if_changed)
+
+
+def _read_control_snapshot(authority, session_id, *, scoped=False):
+    from gateway.session_ancillary import control_snapshot
+    from gateway.session_contract import SessionRef
+    ref = SessionRef(authority.profile_id, session_id)
+    if not scoped:
+        return control_snapshot(authority, ref)
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):  # a worker thread inherits no profile scope it was not given
+        return control_snapshot(authority, ref)
+
+
+def _publish_snapshot(authority, live, session_id, snapshot, ticket, *, only_if_present, only_if_changed):
+    if live.control_published_seq > ticket:  # a later-scheduled publish already painted newer state
+        return
+    if (only_if_present and not snapshot['revision']) or (only_if_changed and snapshot['revision'] == live.control_revision):
+        return
+    live.control_published_seq = ticket
+    live.control_revision = snapshot['revision']
+    live.event_stream.publish(session_id, {'control': snapshot}, event_type='session.control.update')
 
 
 async def control(connection, ref, params):

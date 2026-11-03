@@ -1,17 +1,19 @@
 name: jp-kokkai
 repo: https://github.com/TakeshiTGAL/hermes-plugin-kokkai
-sha: b6ae5e95430bea4a02a652fa1b29fb392e9228ad
-description: "Posts new Diet meeting hits as metadata and the official meeting URL, with kokkai_search and kokkai_watch. Disclosure — Talks only to kokkai.ndl.go.jp over HTTPS GET with no API key, and never requests or stores speech text. The tools are on for every surface, including gateways, and the plugin has no user list of its own: anyone you allow on your Hermes gateway, and a guest in a room with an empty allowlist, can search, add a watch and approve it. Turn a surface off with hermes tools. kokkai_watch add creates one cron job that runs a model turn once a day, at the hour you pick in Hermes's own timezone, with no daily cap. It stays after uninstall until you run hermes cron remove, with -p and the profile name when the profile is not default. Adding or removing a watch asks for Hermes approval every time and is refused under cron, yolo, approvals off, unattended sessions and plugins.isolation: host. Answering \"always\" adds an unused line to config.yaml. Under plugins.isolation: host the watch cannot save seen speech IDs and says so on every run. The watch relies on private parts of Hermes, so an update can stop it. Each request waits up to 30 seconds for data, and a whole run has no time limit. State (your watch words, seen speech IDs and the job id) stays in plugin-data/jp-kokkai after uninstall. Tested with a stand-in server on Hermes 0.21.4 and current main, not in a live chat."
+sha: 7047db976671e39c69285d4b21dee00c026b19cb
+description: 'Lists Diet meetings and returns a short speech excerpt, with kokkai_search, kokkai_speech, and kokkai_watch. Disclosure — Talks only to kokkai.ndl.go.jp over HTTPS GET with no API key. kokkai_search returns meeting metadata and the official meeting URL, and does not return speech text. kokkai_speech reads /api/speech and returns at most 10 excerpts, each at most 240 characters, with the speaker, the meeting name, the date, and the speech URL. Those excerpts are not written to plugin-data. The tools are on for every surface, including gateways: anyone you allow on your Hermes gateway, and a guest in a room with an empty allowlist, can search, read a speech excerpt, add a watch, and approve it. Turn a surface off with hermes tools. kokkai_watch add creates one cron job that runs a model turn once a day, at the hour you pick in Hermes''s own timezone, with no daily cap. It stays after uninstall until you run hermes cron remove, with -p and the profile name when the profile is not default. Adding or removing a watch asks for Hermes approval every time and is refused under cron, yolo, approvals off, unattended sessions, and plugins.isolation: host. Answering "always" adds an unused line to config.yaml. Under plugins.isolation: host the watch cannot save seen speech IDs and says so on every run. The watch relies on private parts of Hermes, so an update can stop it. State (your watch words, seen speech IDs, and the job id) stays in plugin-data/jp-kokkai after uninstall.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 requires_hermes: '>=0.21.4'
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-kokkai#readme
-version: "0.1.1"
+version: 0.1.2
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-kokkai/7047db976671e39c69285d4b21dee00c026b19cb/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:
   - kokkai_search
+  - kokkai_speech
   - kokkai_watch
   provides_hooks: []
   provides_middleware: []

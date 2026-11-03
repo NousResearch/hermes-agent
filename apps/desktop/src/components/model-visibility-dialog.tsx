@@ -38,6 +38,24 @@ import {
   toggleModelVisibility
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { sessionOwnerIsKnown } from '@/store/session-owner-resolution'
+import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
+
+/** A session-scoped `model.options` goes to the session's OWNER: the ambient
+ *  socket refuses a secondary profile's session_id and the dialog fell back to
+ *  the launch profile's REST catalog. An owner nothing names yet keeps the
+ *  ambient path (and its REST recovery) — this is a settings view, not a write. */
+function ownerModelOptionsRequest(gw: HermesGateway | undefined, sessionId: null | string | undefined) {
+  if (!gw || !sessionId || !sessionOwnerIsKnown(knownOwnerForSession(sessionId))) {
+    return undefined
+  }
+
+  const ambient = ambientRequestFor(gw)
+
+  return <T,>(method: string, params?: Record<string, unknown>) =>
+    requestForOwnedSession<T>(sessionId, ambient, method, params)
+}
 
 interface ModelVisibilityDialogProps {
   gw?: HermesGateway
@@ -67,7 +85,8 @@ export function ModelVisibilityDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway: gw, profile, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> =>
+      requestModelOptions({ gateway: gw, profile, request: ownerModelOptionsRequest(gw, sessionId), sessionId }),
     enabled: open
   })
 

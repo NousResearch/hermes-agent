@@ -51,7 +51,8 @@ def test_an_acp_session_turn_publishes_todo_updated():
     published = []
     turn = object.__new__(TurnRunner)
     turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='chat'),
-                                _voice_ack_guild=[None], _native_slack_task_cards=False, progress_mode='all')
+                                _voice_ack_guild=[None], _native_slack_task_cards=False, progress_mode='all',
+                                _loop_for_step=None)  # TurnContext's default: no loop, nothing scheduled
     turn._approval_owner = (SimpleNamespace(sessions={'s': SimpleNamespace(tool_progress_mode=None)}), 's', 1)
     turn._publish_execution = lambda kind, payload: published.append((kind, payload)) or True
     turn._publish_api_tool = lambda *a, **k: None

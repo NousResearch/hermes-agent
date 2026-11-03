@@ -28,7 +28,8 @@ logger = logging.getLogger("tools.skills_hub")
 GITHUB_TAP_PROVIDERS = {
     "openai/skills": "OpenAI", "anthropics/skills": "Anthropic", "huggingface/skills": "HuggingFace",
     "nvidia/skills": "NVIDIA", "voltagent/awesome-agent-skills": "VoltAgent", "garrytan/gstack": "gstack",
-    "minimax-ai/cli": "MiniMax",
+    "minimax-ai/cli": "MiniMax", "wandb/skills": "Weights & Biases", "qdrant/skills": "Qdrant",
+    "pinecone-io/skills": "Pinecone",
 }
 
 # Accepted ``--source`` provider filters (lowercased). Not real source ids —
@@ -214,6 +215,11 @@ class GitHubSource(SkillSource):
         # NVIDIA-verified skills (CUDA-X, NeMo, cuOpt, ...), each with a signed skill.oms.sig
         # + governance card; `trusted` via tools/skills_guard.py::TRUSTED_REPOS.
         {"repo": "NVIDIA/skills", "path": "skills/"},
+        # Vendor-maintained skills for their own products; they replaced our copied
+        # weights-and-biases / qdrant / pinecone optional skills.
+        {"repo": "wandb/skills", "path": "skills/"},
+        {"repo": "qdrant/skills", "path": "skills/"},
+        {"repo": "pinecone-io/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
         # --- Science bucket ---
         # Two scientific-skill repos share one hub category via the tap-level "bucket" key so

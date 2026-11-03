@@ -35,6 +35,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setSessionProfilesFailed,
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
@@ -410,6 +411,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           setSessionsLoadError(
             Boolean(showLoading && (scopedRetry || retryableErrors?.length) && (recents.sessions?.length ?? 0) === 0)
           )
+          setSessionProfilesFailed(recentsErrors)
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.

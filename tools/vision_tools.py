@@ -945,8 +945,8 @@ def check_video_requirements() -> bool:
 
 
 def check_vision_requirements() -> bool:
-    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
-    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    """Image gate (``vision_analyze``): an aux vision client OR the native fast
+    path. The handler attaches pixels straight to a vision-capable main model, so a main model on a
     provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
     ``video_analyze`` keeps the aux-only gate — its handler has no native path.
     """

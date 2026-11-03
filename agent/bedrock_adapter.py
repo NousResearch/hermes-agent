@@ -25,11 +25,16 @@ from agent.errors import EmptyStreamError
 
 logger = logging.getLogger(__name__)
 
-_bedrock_runtime_client_cache: dict[str, Any] = {}
-_bedrock_control_client_cache: dict[str, Any] = {}
-# Routed multiplex profiles: one client per (profile home, region). boto3 freezes the credential
-# chain into the client at construction, so a region-only slot would sign profile B's calls with A's keys.
-_bedrock_clients_by_home: dict[tuple[str, str, str], Any] = {}
+# Keyed by (region, read_timeout): boto3 freezes its Config into the client, so two models with
+# different ``timeout_seconds`` overrides in one region need two clients (None = botocore default).
+_bedrock_runtime_client_cache: dict[tuple[str, Optional[float]], Any] = {}
+_bedrock_control_client_cache: dict[tuple[str, Optional[float]], Any] = {}
+# Routed multiplex profiles: one client per (profile home, service, region, read_timeout). boto3 freezes
+# the credential chain into the client too, so a region-only slot would sign profile B's calls with A's keys.
+_bedrock_clients_by_home: dict[tuple[str, str, str, Optional[float]], Any] = {}
+# botocore's own connect default, set explicitly so a long read budget never stretches the TCP/TLS
+# connect wait: a 600s ``request_timeout_seconds`` is for slow generations, not unreachable endpoints.
+_BOTO_CONNECT_TIMEOUT_SECONDS = 60
 
 # botocore session kwarg <- profile .env variable (the explicit sources of the default chain).
 _AWS_SCOPED_CREDENTIAL_VARS: tuple[tuple[str, str], ...] = (
@@ -123,28 +128,49 @@ def _require_boto3():
     return boto3
 
 
-def _cached_client(cache: dict[str, Any], service: str, region: str):
-    """Get or create a per-region boto3 client. Unscoped: the default credential chain, one client per
-    region. Routed profile: one client per (home, service, region), built from that profile's scoped
-    ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
+def _new_client(factory: Any, service: str, region: str, read_timeout: Optional[float]):
+    """``factory.client(...)`` with botocore's own timeouts (60s read / 60s connect) unless a
+    request timeout is configured. The model-call client makes one attempt per call: Hermes's
+    retry loop owns retries and backoff (throttles classify as rate_limit there), and botocore's
+    default of 5 attempts re-sends a read timeout, so a hung call took ~5x the timeout to fail.
+    ``total_max_attempts`` counts the first request; ``max_attempts`` would count retries only."""
+    from botocore.config import Config
+    config = Config(retries={"total_max_attempts": 1}) if service == "bedrock-runtime" else Config()
+    if read_timeout is not None:
+        config = config.merge(Config(read_timeout=read_timeout, connect_timeout=_BOTO_CONNECT_TIMEOUT_SECONDS))
+    return factory.client(service, region_name=region, config=config)
+
+
+def _cached_client(cache: dict[tuple[str, Optional[float]], Any], service: str, region: str, *,
+                   read_timeout: Optional[float] = None):
+    """Get or create a boto3 client per (region, read timeout). Unscoped: the default credential
+    chain. Routed profile: one client per (home, service, region, read timeout), built from that
+    profile's scoped ``AWS_*`` (falling back to the default chain only for what the profile does not set)."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        if region not in cache:
-            cache[region] = _require_boto3().client(service, region_name=region)
-        return cache[region]
-    key = (hermes_home_key(), service, region)
-    client = _bedrock_clients_by_home.get(key)
+        key = (region, read_timeout)
+        if key not in cache:
+            cache[key] = _new_client(_require_boto3(), service, region, read_timeout)
+        return cache[key]
+    home_key = (hermes_home_key(), service, region, read_timeout)
+    client = _bedrock_clients_by_home.get(home_key)
     if client is None:
         # Scope check first: a cred-less multiplex profile must hit the ambient-chain
         # refusal, not a boto3 ImportError on hosts that lack the package.
         kwargs = scoped_aws_session_kwargs()
-        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
-        _bedrock_clients_by_home[key] = client
+        client = _new_client(_require_boto3().Session(**kwargs), service, region, read_timeout)
+        _bedrock_clients_by_home[home_key] = client
     return client
 
 
-def _get_bedrock_runtime_client(region: str):
-    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region)
+def _get_bedrock_runtime_client(region: str, model: Optional[str] = None):
+    """The ``bedrock-runtime`` client for *region* whose read timeout is *model*'s configured
+    request timeout (``providers.bedrock.models.<model>.timeout_seconds`` over
+    ``providers.bedrock.request_timeout_seconds``). Resolved per call, so a model switch or a
+    fallback to another Bedrock model gets that model's budget, not the one the session started with."""
+    from hermes_cli.timeouts import get_provider_request_timeout
+    return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region,
+                          read_timeout=get_provider_request_timeout("bedrock", model))
 
 
 def _get_bedrock_control_client(region: str):
@@ -161,11 +187,18 @@ def reset_client_cache():
 
 
 def invalidate_runtime_client(region: str) -> bool:
-    """Evict one region's cached ``bedrock-runtime`` client (stale HTTP pool); True if evicted."""
+    """Evict one region's cached ``bedrock-runtime`` clients, every read timeout (stale HTTP pool);
+    True if any was evicted."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is not None:
-        return _bedrock_clients_by_home.pop((hermes_home_key(), "bedrock-runtime", region), None) is not None
-    return _bedrock_runtime_client_cache.pop(region, None) is not None
+        cache: dict = _bedrock_clients_by_home
+        prefix = (hermes_home_key(), "bedrock-runtime", region)
+    else:
+        cache, prefix = _bedrock_runtime_client_cache, (region,)
+    stale = [key for key in list(cache) if key[:len(prefix)] == prefix]
+    for key in stale:
+        cache.pop(key, None)
+    return bool(stale)
 
 
 
@@ -470,7 +503,9 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     agent._is_anthropic_oauth = False
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_bedrock_client
-        agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)
+        from hermes_cli.timeouts import get_provider_request_timeout
+        agent._anthropic_client = build_anthropic_bedrock_client(
+            agent._bedrock_region, timeout=get_provider_request_timeout("bedrock", getattr(agent, "model", None)))
     else:
         agent._anthropic_client = None
 
@@ -865,22 +900,30 @@ def _assistant_blocks(msg: dict, content, claude: bool = True, own: bool = False
 #   strip    — DeepSeek-R1 (AWS's multi-turn sample removes reasoningContent) and Kimi K3 (Converse raises
 #              InternalServerException "when reasoning content from earlier turns is included"): prior turns
 #              lose reasoning, the in-flight loop replays the model's own blocks as captured.
+#   issuer   — OpenAI's reasoning GPTs (gpt-6 family) reject readable reasoningText in assistant history ("This
+#              model doesn't support the reasoningContent.reasoningText.text field") and stall on another GPT's
+#              sealed blobs: only turns the answering model stamped keep reasoning, verbatim so the replayed
+#              prefix stays stable; every other turn replays none, in the in-flight loop too.
 #   unsigned — every other model: prior turns carry readable reasoningText only, since their signatures and
 #              redacted blobs may be another model's (a /model switch from Claude) and non-Claude models
 #              reject them ("This model doesn't support the reasoningContent.reasoningText.signature field");
 #              the in-flight loop was produced by the model now answering and replays as captured.
+# A turn stamped by another model (CONVERSE_ISSUER_TYPE) never gets the in-flight verbatim replay: a fallback or
+# switch mid-loop hands the loop to a model that cannot open the previous one's sealed blobs (_reasoning_filter).
 _CONVERSE_REPLAY_STRIP_PATTERNS = ("deepseek.r1", "deepseek-r1", "moonshotai.kimi-k3")
+_CONVERSE_REPLAY_ISSUER_PATTERNS = ("openai.gpt-6",)  # not gpt-oss: it takes readable reasoningText
 
 
 # reasoning_details record naming the model that minted a turn's Converse reasoning: its signatures are that
 # model's own, so it gets them back unmodified on every later turn and after a reload (AWS: "include the text and
-# its signature unmodified"); any other model still gets the per-policy prior-turn treatment.
+# its signature unmodified"); any other model gets the per-policy prior-turn treatment, and Claude gets no
+# reasoning at all from a turn another family minted.
 CONVERSE_ISSUER_TYPE = "bedrock.native_assistant"
 
 
-def _issued_by(msg: dict, model: Optional[str]) -> bool:
-    return model is not None and any(isinstance(d, dict) and d.get("type") == CONVERSE_ISSUER_TYPE
-                                     and d.get("model") == model for d in msg.get("reasoning_details") or [])
+def _issuer(msg: dict) -> Optional[str]:
+    return next((d["model"] for d in msg.get("reasoning_details") or []
+                 if isinstance(d, dict) and d.get("type") == CONVERSE_ISSUER_TYPE and isinstance(d.get("model"), str)), None)
 
 
 def _converse_replay_policy(model: Optional[str]) -> str:
@@ -891,7 +934,26 @@ def _converse_replay_policy(model: Optional[str]) -> str:
     lowered = model.lower()
     if "claude" in lowered:
         return "signed"
+    if any(p in lowered for p in _CONVERSE_REPLAY_ISSUER_PATTERNS):
+        return "issuer"
     return "strip" if any(p in lowered for p in _CONVERSE_REPLAY_STRIP_PATTERNS) else "unsigned"
+
+
+def _minted_outside_claude(issuer: Optional[str]) -> bool:
+    if issuer is None:
+        return False
+    if _APPLICATION_PROFILE_ARN_RE.search(issuer) and _resolve_inference_profile_model_id(issuer) == issuer:
+        # An application profile names no model, and without bedrock:GetInferenceProfile it stays
+        # unresolved: the issuer is unknown, not foreign, so its reasoning keeps the answering policy.
+        return False
+    return _converse_replay_policy(issuer) != "signed"
+
+
+def reasoning_minted_outside_claude(msg: dict) -> bool:
+    """True when a non-Claude Converse model stamped this turn's reasoning. Claude gets none of it on either
+    Bedrock wire (Converse here, AnthropicBedrock in anthropic_message_convert): it cannot open another
+    family's sealed blobs. Unstamped turns (Claude's own AnthropicBedrock turns, older sessions) are False."""
+    return _minted_outside_claude(_issuer(msg))
 
 
 def _unsigned_reasoning(block: dict) -> Optional[dict]:
@@ -914,11 +976,27 @@ _REASONING_FILTERS = {  # policy -> (before the in-flight tool loop, inside it)
     "signed": (_verbatim, _verbatim),
     "strip": (_without_reasoning, _verbatim),
     "unsigned": (_unsigned_reasoning, _verbatim),
+    "issuer": (_without_reasoning, _without_reasoning),
 }
 
 
 def _filter_reasoning(blocks: list[dict], keep) -> list[dict]:
     return [kept for kept in map(keep, blocks) if kept is not None]
+
+
+def _reasoning_filter(policy: str, issuer: Optional[str], own: bool, *, in_loop: bool):
+    """Which reasoning one assistant turn may replay to the model now answering. A turn stamped by ANOTHER
+    model (fallback or ``/model`` switch, including mid tool loop) loses the in-flight loop's verbatim replay:
+    sealed ``redactedContent`` opens only for its issuer, and Claude rejects another family's blobs outright
+    (``Invalid `data` in `redacted_thinking` block``), so a non-Claude turn replays no reasoning to Claude.
+    Unstamped turns (older sessions) keep the policy, and the rejection-driven resend covers them; under
+    ``issuer`` only the answering model's own stamped turns keep any reasoning."""
+    prior, loop = _REASONING_FILTERS[policy]
+    if own:
+        return _verbatim if in_loop or policy in ("unsigned", "issuer") else prior
+    if issuer is not None:
+        return _without_reasoning if policy == "signed" and _minted_outside_claude(issuer) else prior
+    return loop if in_loop else prior
 
 
 def convert_messages_to_converse(
@@ -929,7 +1007,6 @@ def convert_messages_to_converse(
     same-role neighbours merge, placeholder user turns pad the ends. ``model`` selects the reasoning
     replay policy for turns before the in-flight tool loop (None replays every carrier verbatim)."""
     policy = _converse_replay_policy(model)
-    prior_filter, loop_filter = _REASONING_FILTERS[policy]
     # Tool results are role "tool" here, so the last role "user" message opens the in-flight tool loop.
     loop_start = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), -1)
     system_blocks: list[dict] = []
@@ -951,8 +1028,9 @@ def convert_messages_to_converse(
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            own = _issued_by(msg, model)
-            keep = loop_filter if idx >= loop_start or (own and policy == "unsigned") else prior_filter
+            issuer = _issuer(msg) if model is not None else None
+            own = issuer is not None and issuer == model
+            keep = _reasoning_filter(policy, issuer, own, in_loop=idx >= loop_start)
             blocks = _filter_reasoning(_assistant_blocks(msg, content, claude=policy == "signed", own=own), keep)
             append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
@@ -1283,7 +1361,7 @@ def call_converse(
     """Non-streaming Converse call → OpenAI-compatible response. Retries once without a rejected cachePoint
     placement; evicts the cached client on stale-connection errors."""
     from agent.prompt_caching import is_one_shot_request
-    client = _get_bedrock_runtime_client(region)
+    client = _get_bedrock_runtime_client(region, model)
     # Auxiliary-only entry point: a one-shot's cachePoint is a write no later call reads.
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config,
                                    prompt_cache=not is_one_shot_request(messages, tools))
@@ -1451,7 +1529,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
     from agent.model_metadata import parse_context_limit_from_error
     try:
-        client = _get_bedrock_runtime_client(region)
+        client = _get_bedrock_runtime_client(region, model_id)
     except Exception as exc:  # boto3 missing / credential resolution failure
         logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
         return None

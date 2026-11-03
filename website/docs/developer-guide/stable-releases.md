@@ -279,11 +279,19 @@ at `releases/tag/<attempt ref>/index.html` is not an update feed, and an
 attempt installed from it is not upgrade-safe: every attempt of a version has
 the same package version, so the published build never replaces it. The Docker
 image is pushed early under the attempt ref; the `stable` and `latest` aliases
-move with the feed in the publication pass. The Store submission is held: the
-green run submits with auto-publish off. The submission API cannot release a
-held submission, so the publication pass only checks it and prints a GitHub
-warning; once certification passes, click Publish now for that submission in
-Partner Center. A failed submission leaves the publication run red. Stable channel
+move with the feed in the publication pass. The Store build follows the same
+rule: the green run commits it held (auto-publish off), so certification runs
+before the gate, and the publication pass switches that submission to
+auto-publish. If the submission API refuses the switch, the pass warns: select
+Publish now in Partner Center once the build is certified. A submission that
+does not carry the release's Store bundle is left alone while the pass checks
+older published releases for its owner. Store reconciliation runs even when
+the feeds and aliases are already current, so interrupted publication can be
+retried without rewinding them. A held submission records its claim in the
+certification notes: a successor can replace it only after that claim has a
+matching remote abandon marker. Legacy submissions without an owner record
+need manual cleanup in Partner Center. A failed submission becomes a warning;
+the release still publishes. Stable channel
 records carry an optional `archiveRef` naming the attempt ref; `releaseTag`
 stays `vX.Y.Z` and the protected prefix falls back to it when `archiveRef` is
 absent.

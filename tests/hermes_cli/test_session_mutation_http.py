@@ -118,11 +118,14 @@ async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_path, monkeypatch):
-    """M3: the authority also answers ``not_found`` for an EXISTING cold row it cannot restore
-    (an API-server row with no binding). That is not an idempotent success — Desktop would drop
-    the row and it reappears on reload. Only a genuinely absent id is ``already_absent``."""
+    """M3: the authority also answers ``not_found`` for an EXISTING cold row it will not restore
+    for this caller (an unbound API-server row is mounted for its owner only). That is not an
+    idempotent success — Desktop would drop the row and it reappears on reload. Only a genuinely
+    absent id is ``already_absent``."""
+    from gateway.session_contract import Principal
     from hermes_cli.web_routers.sessions import manage_router
     from hermes_cli import web_server as web
+    import hermes_cli.web_server_sessions as web_sessions
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
     monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     app = FastAPI()
@@ -131,8 +134,10 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('cold-api', source='api_server', chat_id='cold-api', session_key='agent:main:api:cold')
         epoch = begin_runtime_epoch(db, instance_id='owner')
-        app.state.session_authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
-                                                       instance_id='owner', db=db, epoch=epoch)
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
+                                     instance_id='owner', db=db, epoch=epoch)
+        login = Principal('basic:alice', str(tmp_path), frozenset({'session:read', 'session:control'}), 'http')
+        monkeypatch.setattr(web_sessions, '_session_mutation_context', lambda request, profile: (authority, login))
         query = {'request_id': 'delete', 'expected_revision': 0, 'expected_generation': 0}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',
                                      headers={'Authorization': 'Bearer fixture-token'}) as client:

@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 _CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
 GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
+STOPPED = object()  # call_unbounded(): Ctrl+C stopped the wait (the stopped line is printed)
 _GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."
+_CHOICE_POLL_S = 0.1  # how often a running command's clarify requests are looked for
 _STOPPED_LINE = "  /{}: stopped waiting. The command keeps running in the gateway and its reply will not be shown."
 
 
@@ -212,6 +214,62 @@ def lookup(cli, name):
         raise CatalogUnavailable(name) from exc
 
 
+def call_unbounded(cli, connection, name, command):
+    """``slash.exec`` of *command* with no answer deadline, on a socket of its own so the session's prompts
+    and interrupts never queue behind it (GatewayConnection.call_until). Ctrl+C stops waiting: the stopped
+    line is printed and :data:`STOPPED` returned (a KeyboardInterrupt still propagates after it)."""
+    from cli import _cprint
+    from hermes_cli.gateway_connection import CallStopped
+    wake = cli._gateway_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
+    from agent.memory_provider import spawn_context_thread
+    answering: list = []  # the clarify request id the panel is answering, while it is open
+    spawn_context_thread(_answer_choices, args=(cli, connection, wake, answering), name="hermes-command-choices").start()
+    try:
+        return connection.call_until("slash.exec", wake, session_id=cli.session_id, command=command)
+    except (CallStopped, KeyboardInterrupt) as exc:
+        _cprint(_STOPPED_LINE.format(name))
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        return STOPPED
+    finally:
+        cli._gateway_command_wait = None
+        if answering:  # the command is over: its picker must not keep the input
+            cli._withdraw_gateway_modal("clarify")
+
+
+def _answer_choices(cli, connection, wake, answering):
+    """While the command runs, answer the ``clarify`` server requests its handler sends to this session
+    (``ctx.ask_choice``, ``gateway/plugin_command_choice.py``) with the CLI's clarify panel. No turn
+    pump reads the session's frames between turns, so they are taken here; every other frame stays
+    queued, in order, for the turn that owns it."""
+    from hermes_cli.gateway_agent import clarify_reply
+    events, state = connection.events, connection.state(cli.session_id)
+
+    def withdrawn(payload):
+        # ``request.cancel`` for the request the panel is answering (another viewer picked, or the gateway's
+        # wait ended): close the panel, as GatewayAgent does for a turn's modal.
+        if answering and payload.get("id") == answering[0]:
+            cli._withdraw_gateway_modal("clarify")
+
+    state.request_listeners.append(withdrawn)
+    try:
+        while not wake.wait(_CHOICE_POLL_S):
+            with events.mutex:
+                asks = [frame for frame in events.queue if isinstance(frame, dict) and frame.get("method") == "clarify"
+                        and "id" in frame and (frame.get("params") or {}).get("session_id") == cli.session_id]
+                for frame in asks:
+                    events.queue.remove(frame)
+            for frame in asks:
+                answering[:] = [frame["id"]]
+                try:
+                    reply = clarify_reply(cli._clarify_callback, frame["params"])
+                finally:
+                    answering.clear()
+                connection.reply(frame["id"], reply)
+    finally:
+        state.request_listeners.remove(withdrawn)
+
+
 def run(cli, name, arg):
     """True when the gateway answered ``/name arg`` (the local handler must not run); :data:`GONE`
     when it no longer has that plugin command and a fresh catalog read agrees (a plugin reload, e.g.
@@ -223,18 +281,9 @@ def run(cli, name, arg):
         return False
     from cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.gateway_connection import CallStopped
-    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp). On
-    # a socket of its own, so the session's prompts and interrupts never queue behind it.
-    wake = cli._plugin_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
+    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp).
     try:
-        reply = connection.call_until("slash.exec", wake, session_id=cli.session_id,
-                                      command=name + (" " + arg if arg else ""))
-    except (CallStopped, KeyboardInterrupt) as exc:
-        _cprint(_STOPPED_LINE.format(name))
-        if isinstance(exc, KeyboardInterrupt):
-            raise
-        return True
+        reply = call_unbounded(cli, connection, name, name + (" " + arg if arg else ""))
     except GatewayRPCError as exc:
         if str(exc) != "unsupported_command":
             _cprint(f"  /{name}: {exc}")
@@ -243,8 +292,8 @@ def run(cli, name, arg):
     except GatewayClientError as exc:
         _cprint(f"  /{name}: {exc}")
         return True
-    finally:
-        cli._plugin_command_wait = None
+    if reply is STOPPED:
+        return True
     reply = reply or {}
     if reply.get("type", "exec") != "exec":  # it lost the plugin since lookup: a refusal or skill reply
         if _dropped(cli, connection, name):

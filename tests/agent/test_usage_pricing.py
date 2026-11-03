@@ -125,6 +125,36 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     assert normalized.output_tokens == 200
 
 
+def test_normalize_usage_prefers_nested_reasoning_over_top_level():
+    """When both a nested reasoning_tokens bucket and a top-level one are present,
+    the nested (OpenAI-standard) bucket wins."""
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=300,
+        output_tokens_details=SimpleNamespace(reasoning_tokens=500),
+        reasoning_tokens=999,  # intentionally different — must be ignored
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 500
+
+
+def test_normalize_usage_falls_back_to_top_level_reasoning_tokens():
+    """Some OpenAI-compatible relays (MiMo/xiaomi) expose reasoning_tokens at the
+    top level of the usage object instead of nesting it in output_tokens_details;
+    normalize_usage() should fall back to the top-level field (#41583)."""
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=300,
+        reasoning_tokens=450,
+    )
+
+    normalized = normalize_usage(usage, provider="xiaomi", api_mode="chat_completions")
+
+    assert normalized.reasoning_tokens == 450
+
+
 
 
 

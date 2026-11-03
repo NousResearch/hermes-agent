@@ -144,17 +144,19 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
     assert "error" not in str(payload)
 
 
-def test_status_flags_a_server_parked_on_rejected_oauth(hermes_root):
+def test_status_reports_parked_servers_and_flags_rejected_oauth(hermes_root):
     """Desktop's background health toast reads this flag instead of probing (#89576, #142406)."""
     from tools import mcp_tool
 
-    for name in ("expired", "offline"):
+    for name in ("expired", "offline", "dropped"):
         _result(_call("mcp.servers.add", {"name": name, "config": {"url": f"https://{name}.example/mcp"}}))
-    expired, offline = mcp_tool.MCPServerTask("expired"), mcp_tool.MCPServerTask("offline")
+    expired, offline, dropped = (mcp_tool.MCPServerTask(n) for n in ("expired", "offline", "dropped"))
     expired._auth_park = (object(), "stamp")
+    # Connected once, then parked after reconnects ran out: no connect error is recorded.
+    dropped._park_reason = "from parked state"
     with mcp_tool._lock:
         saved_servers, saved_errors = dict(mcp_tool._servers), dict(mcp_tool._server_connect_errors)
-        mcp_tool._servers.update(expired=expired, offline=offline)
+        mcp_tool._servers.update(expired=expired, offline=offline, dropped=dropped)
         mcp_tool._server_connect_errors.update(expired="401 Unauthorized", offline="All connection attempts failed")
 
     try:
@@ -169,6 +171,7 @@ def test_status_flags_a_server_parked_on_rejected_oauth(hermes_root):
     rows = {row["name"]: row for row in payload["servers"]}
     assert (rows["expired"]["status"], rows["expired"]["needs_auth"]) == ("failed", True)
     assert (rows["offline"]["status"], rows["offline"]["needs_auth"]) == ("failed", False)
+    assert (rows["dropped"]["status"], rows["dropped"]["needs_auth"]) == ("failed", False)
     assert "Unauthorized" not in str(payload) and "attempts" not in str(payload)
 
 

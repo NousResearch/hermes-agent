@@ -268,4 +268,3 @@ class TelegramSiblingMediaMixin:
             self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")),
             hold=self._wait_for_sibling_media)
-

@@ -1,0 +1,27 @@
+name: hermes-ide
+repo: https://github.com/CoeusInstitute/hermes-ide
+sha: 87855854d3a2c536a433fb3ad1f8e03622918062
+title: Hermes IDE
+description: "Cursor-style IDE for Hermes Desktop: any chat opens in its own IDE window with an Explorer, a tabbed CodeMirror editor, search, git status and Quick Open beside the real session chat; it finds the project's web UI, runs its dev server once you trust the project, and its element picker hands page elements (selector, styles, component and source line) to the chat. Disclosure — backend routes on the agent's machine read and write the files the agent's file tools reach (Hermes credential files refused), run git status/show and rg, and for trusted projects only run the project's package manager (install, then its dev script; install fetches from the package registry) as background dev servers stopped two minutes after the last IDE window closes; a pre_llm_call note marks turns sent from an IDE window; no telemetry, no third-party network calls of its own."
+maintainer: CoeusInstitute
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.6.5"
+docs_url: https://github.com/CoeusInstitute/hermes-ide#readme
+image: https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/87855854d3a2c536a433fb3ad1f8e03622918062/docs/images/hermes-ide-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/87855854d3a2c536a433fb3ad1f8e03622918062/docs/images/ide-window.png
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/87855854d3a2c536a433fb3ad1f8e03622918062/docs/images/element-pick-chat.png
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/87855854d3a2c536a433fb3ad1f8e03622918062/docs/images/agent-edit-review.png
+readme: true
+platforms: []
+known_issues:
+  - "Verified on Windows; macOS and Linux have not been tested yet."
+  - "After updating over a running gateway, run hermes gateway restart to load the new backend routes."
+  - "Against a remote Hermes backend, a dev server's localhost page is on the remote machine."
+capabilities:
+  provides_tools: [ide_open]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

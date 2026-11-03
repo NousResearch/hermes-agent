@@ -15,6 +15,7 @@ const configSchema = z.object({
   approvals: section.optional(),
   display: section.optional(),
   onboarding: section.optional(),
+  stt: section.optional(),
 }).passthrough()
 
 //: Entry name this writer owns in ``custom_providers``; reconfiguring replaces
@@ -76,6 +77,12 @@ export function writeMockProviderConfig(
     // first message the smoke sends; these journeys test install and update, so
     // the root config records onboarding as done.
     onboarding: { ...config.onboarding, run: false },
+    // Releases before v2026.8.13 answer the app's boot-time wake.status inline on
+    // the WebSocket reader, and with STT enabled that probe first lazy-installs
+    // faster-whisper. A slow install holds every later request on the socket, so
+    // session.create outlives the app's 30 s timeout and the send is rolled back.
+    // These journeys test install and update, not voice input.
+    stt: { ...config.stt, enabled: false },
     ...extra,
   }
 

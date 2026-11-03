@@ -24,9 +24,20 @@ def _rewrite(path: Path, pattern: str, replacement: str, *, count: int = 0, flag
     return True
 
 
-def stamp(tree: Path, version: str) -> list[Path]:
+def stamp(tree: Path, version: str, release_date: str | None = None) -> list[Path]:
     """Rewrite external builder version inputs under ``tree``."""
     written: list[Path] = []
+
+    if release_date is not None:
+        cli_init = tree / "hermes_cli" / "__init__.py"
+        if _rewrite(
+            cli_init,
+            r'^__release_date__\s*=\s*"[^"]+"',
+            f'__release_date__ = "{release_date}"',
+            count=1,
+            flags=re.MULTILINE,
+        ):
+            written.append(cli_init)
 
     nix_package = tree / "nix" / "hermes-agent.nix"
     if _rewrite(

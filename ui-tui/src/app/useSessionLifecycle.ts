@@ -26,6 +26,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
+import { announceUpdateDrain } from './gatewayStartTimeout.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -646,6 +647,21 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     ]
   )
 
+  // The reset above wiped the update notice the ready announced: ask the owner again, now.
+  const reannounceUpdateDrain = useCallback(
+    (running: boolean, current: () => boolean) => {
+      void gw
+        .refreshUpdateDrain?.()
+        .then(drain => {
+          if (current()) {
+            announceUpdateDrain(drain ?? null, status => (running ? undefined : patchUiState({ status })))
+          }
+        })
+        .catch(() => undefined)
+    },
+    [gw]
+  )
+
   const resumeById = useCallback(
     (id: string) => {
       const flight = ++attachmentFlight.current
@@ -742,6 +758,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               }
 
               adoptAttachment(r, previousSid, previousSubscription, true)
+              reannounceUpdateDrain(running, () => flight === attachmentFlight.current)
             })
             .catch((e: Error) => {
               if (flight !== attachmentFlight.current) {
@@ -763,6 +780,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       finishAttachment,
       gw,
       panel,
+      reannounceUpdateDrain,
       resetSession,
       rpc,
       scrollRef,

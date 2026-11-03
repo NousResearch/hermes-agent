@@ -1,6 +1,6 @@
 import { beforeEach, expect, it } from 'vitest'
 
-import { reportGatewayStartTimeout } from '../app/gatewayStartTimeout.js'
+import { announceUpdateDrain, reportGatewayStartTimeout } from '../app/gatewayStartTimeout.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 
 beforeEach(() => resetTurnState())
@@ -20,4 +20,17 @@ it('shows a terminal bootstrap verdict and its remedy, never "still waiting"', (
   expect(messages).toContain('gateway unavailable: run `hermes pm repair`, then restart the TUI')
   expect(messages.some(m => m.includes('Still waiting'))).toBe(false)
   expect(statuses.some(s => s.includes('still starting'))).toBe(false)
+})
+
+// Attaching to an owner that finishes its turns before an update replaces it reads as that update.
+it('names the update an attached owner drains for, and stays quiet otherwise', () => {
+  const statuses: string[] = []
+
+  announceUpdateDrain(null, s => statuses.push(s))
+  expect(statuses).toEqual([])
+
+  announceUpdateDrain({ reason: 'update', target: 'v0.99.0', waiting_for: { chat: 1 } }, s => statuses.push(s))
+  expect(statuses).toEqual(['Updating to v0.99.0 · finishing 1 turn'])
+  expect(getTurnState().activity.map(a => a.text)).toContain(
+    'Updating to v0.99.0 · finishing 1 turn · new messages wait for the updated Hermes')
 })

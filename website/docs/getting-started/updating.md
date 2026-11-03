@@ -440,6 +440,33 @@ pending-restart marker is kept, so the next CLI start warns and the next normal 
 example a timer 10–15 minutes after the update job. The receipt records the deferral; a stale
 fleet caused only by the deferral does not make the update `partial`.
 
+### Scheduled updates: `--when-idle`
+
+`hermes update --when-idle[=MAX_WAIT]` is the form for timers and other unattended runs. It
+resolves the update target first and exits 0 without a backup or restart when there is nothing to
+install. Otherwise it polls the gateway's live work list (chat turns, cron runs, managed and API
+runs, subagents) and starts the normal update only after two idle checks in a row, so nobody's
+turn is held behind a restart drain. `MAX_WAIT` takes `90s`, `30m` or `2h` (default 1h); a gateway
+still busy at the bound leaves everything untouched and exits 75, for the scheduler to try later.
+
+A target that fails under `--when-idle` is recorded (`logs/update_receipts/declined_target.json`
+in the root Hermes home) and later `--when-idle` runs skip it, saying so, until a newer version
+ships. A plain `hermes update` always tries it, and once it succeeds the record no longer applies.
+
+On Linux and macOS the idle proof also holds at the moment the update pauses the gateway: the
+pause asks the gateway's control socket for `pause-if-idle`, which checks for work and begins the
+drain in one step on the gateway's loop, so a turn that arrived after the last poll is never put
+behind the update. A busy answer calls the pause off and the update keeps waiting within the same
+bound; past it, the update stops before the checkout moves and exits 75.
+
+While a gateway drains for an update, clients see why: its control-socket `identify` carries
+`state: "draining"` and `drain: {"reason": "update", "target": "v0.23.1", "waiting_for": {"chat": 1}}`.
+The `runtime.describe` RPC carries the same `drain` block (`null` outside an update drain) but no
+`state` field. Python clients report "updating to v0.23.1, finishing 1 turn" instead of a bare `not_ready`. The REST API's
+`503 gateway_not_ready` answer names the cause and target (`drain: {"reason": "update", "target":
+"v0.23.1"}`) but not the counts: it answers without reading the gateway's work list, so read
+`runtime.describe` for `waiting_for`.
+
 ### Interrupted gateway restarts
 
 If an earlier update pulled code but did not finish restarting the fleet, the next `hermes update` retries even when the checkout is already current. An empty process scan does not prove recovery: failed systemd units and installed launchd jobs may have no live PID. If discovery or restart fails, or a requested service cannot be verified active, the marker stays pending: the update still exits 0 (the new code is in place), prints a `⚠` line and a `gateway_restart` follow-up in its receipt, every CLI start warns about the owed restart, and the next `hermes update` retries it. Recover the affected services with the printed commands, or rerun `hermes update`.

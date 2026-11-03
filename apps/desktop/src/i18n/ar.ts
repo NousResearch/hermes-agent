@@ -13,7 +13,6 @@ import { arSettings } from './ar_settings'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 
 export const arOverrides = {
-
   catalog: {
     add: 'إضافة',
     added: 'تمت الإضافة',
@@ -94,6 +93,10 @@ export const arOverrides = {
   fileMenu: arChrome.fileMenu,
   boot: arBoot.boot,
   notifications: arDiagnostics.notifications,
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `جارٍ التحديث إلى ${target}` : 'جارٍ تحديث Hermes'}${turns > 0 ? ` · إنهاء ${turns} من الأدوار` : '…'}`
+  },
   remoteDisplayBanner: arBoot.remoteDisplayBanner,
   butterbar: arBoot.butterbar,
   promptNotices: arBoot.promptNotices,

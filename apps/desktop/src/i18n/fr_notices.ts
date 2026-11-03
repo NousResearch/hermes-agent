@@ -4,6 +4,10 @@ import { frSessionCommands } from './fr_session_commands'
 
 // Shell notices (remote-display toast, butterbar, keep-awake offer), spread into fr.ts.
 export const frNotices = {
+  gatewayUpdate: {
+    updating: (target, turns) =>
+      `${target ? `Mise à jour vers ${target}` : 'Mise à jour de Hermes'}${turns > 0 ? ` · finalisation de ${turns} ${turns === 1 ? 'tour' : 'tours'}` : '…'}`
+  },
   remoteDisplayBanner: {
     message: reason =>
       `Rendu logiciel actif — affichage distant détecté (${reason}). L'accélération GPU est désactivée pour éviter les scintillements.`
@@ -48,5 +52,5 @@ export const frNotices = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
+  'gatewayUpdate' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'billingBlock'
 >

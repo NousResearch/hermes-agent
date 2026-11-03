@@ -357,6 +357,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/build_info.py",
     "hermes_cli/image_provenance.py",
     "hermes_cli/backup.py",  # pre-update backup
+    "hermes_cli/web_server_idle_proof.py",  # `hermes update --when-idle`'s idle verdict
     "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
     "hermes_cli/backup_restore.py",
     "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam

@@ -40,7 +40,7 @@ import {
   openCanonicalClarify,
   settleSharedPrompt
 } from './gatewayCanonicalEvents.js'
-import { reportGatewayStartTimeout } from './gatewayStartTimeout.js'
+import { announceUpdateDrain, reportGatewayStartTimeout } from './gatewayStartTimeout.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -1064,6 +1064,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     reportStartupLatency(gw)
+    announceUpdateDrain(gw.updateDrain, setStatus)
 
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can

@@ -7,6 +7,7 @@ import ipaddress
 import math
 import os
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
@@ -48,6 +49,8 @@ class GatewayDiscovery:
     # (``runtime_exited``), or the unsafe local control node a discovery refused (path, owner uid or
     # mode, and the fix); never raw peer data.
     detail: str | None = None
+    # A draining owner's validated update cause (``drain_cause``) for clients to render.
+    drain: dict | None = None
 
 
 def attachable(result: GatewayDiscovery) -> bool:
@@ -95,6 +98,40 @@ def _overlay_owner_home(home: Path) -> Path:
     return target.parent
 
 
+_DRAIN_WORK_NOUNS = {"chat": "turn", "cron": "cron run", "delegation": "subagent", "api": "API run"}
+
+
+_WORK_KIND = re.compile(r"[a-z_]{1,32}")
+
+
+def drain_cause(drain) -> dict | None:
+    """A draining owner's update cause, ``{"reason": "update", "target", "waiting_for"}``, else None.
+
+    Only validated fields survive (the target label shape the gateway enforces, short work-kind
+    names, positive integer counts), never raw peer text, so clients may render it as is: Desktop
+    and the TUI show "Updating to v0.23.1, finishing 1 turn" from it instead of a dead owner."""
+    if not isinstance(drain, dict) or drain.get("reason") != "update":
+        return None
+    from gateway.drain_control import TARGET_LABEL
+    target = drain.get("target")
+    work = drain.get("waiting_for")
+    work = work if isinstance(work, dict) else {}
+    return {"reason": "update",
+            "target": target if isinstance(target, str) and TARGET_LABEL.fullmatch(target) else None,
+            "waiting_for": {k: n for k, n in sorted(work.items())
+                            if isinstance(k, str) and _WORK_KIND.fullmatch(k) and type(n) is int and n > 0}}
+
+
+def drain_detail(drain) -> str | None:
+    """"updating to v0.23.1, finishing 1 turn" from a draining owner's ``drain`` block, else None."""
+    cause = drain_cause(drain)
+    if cause is None:
+        return None
+    text = f"updating to {cause['target']}" if cause["target"] else "updating"
+    parts = [f"{n} {_DRAIN_WORK_NOUNS.get(k, 'task')}{'' if n == 1 else 's'}" for k, n in cause["waiting_for"].items()]
+    return f"{text}, finishing {', '.join(parts)}" if parts else text
+
+
 def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> GatewayDiscovery:
     if type(payload.get("runtime_protocol")) is not int or payload["runtime_protocol"] != 1:
         return GatewayDiscovery("incompatible", reason_code="runtime_protocol")
@@ -118,7 +155,9 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
         # An auto-started gateway ending through its idle exit names that, so its clients wait
         # for it to go and start a fresh one instead of reporting a refusal.
         idle = state == "draining" and payload.get("drain_reason") == "idle_exit"
-        return GatewayDiscovery(state, reason_code="idle_exit" if idle else None)
+        drain = drain_cause(payload.get("drain")) if state == "draining" else None
+        return GatewayDiscovery(state, reason_code="idle_exit" if idle else None,
+                                detail=drain_detail(drain), drain=drain)
     if state != "ready" and not restart_wait:
         return GatewayDiscovery("inaccessible", reason_code="invalid_runtime_state")
     capabilities = payload.get("capabilities")
@@ -143,13 +182,15 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     supervisor = payload.get("supervisor")
     if supervisor not in {"none", "systemd", "launchd", "windows", "external"}:
         return GatewayDiscovery("inaccessible", reason_code="invalid_supervisor")
+    drain = drain_cause(payload.get("drain")) if restart_wait else None
     return GatewayDiscovery("draining" if restart_wait else "ready", GatewayEndpoint(
         profile_id=matches[0]["profile_id"], instance_id=instance,
         authority_epoch=epoch, runtime_protocol=1, api_origin=origin,
         supervisor=supervisor, capabilities=frozenset(capabilities),
         control_home=str(control_home) if control_home is not None else None,
         code_sha=code_sha if isinstance(code_sha := payload.get("code_sha"), str) and code_sha else None,
-    ), reason_code=RESTART_WAIT_REASON if restart_wait else None)
+    ), reason_code=RESTART_WAIT_REASON if restart_wait else None,
+        detail=drain_detail(drain), drain=drain)
 
 
 def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:

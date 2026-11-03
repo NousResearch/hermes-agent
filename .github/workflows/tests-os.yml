@@ -116,6 +116,61 @@ jobs:
         if: runner.os == 'Windows' && runner.arch == 'ARM64'
         uses: ./.github/actions/setup-windows-build-deps
 
+      - name: PROBE restore the PM tools cache with MSYS=winsymlinks:sys (diagnostic, do not merge)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          MSYS: winsymlinks:sys
+        with:
+          path: ${{ runner.temp }}\setup-pm\tools
+          key: setup-pm-tools-v1-win32-arm64-python-git-ripgrep-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py', '!**/__pycache__/**') }}-
+
+      - name: PROBE inspect the restored Git entry (diagnostic, do not merge)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: bash
+        env:
+          HERMES_HOME: ${{ runner.temp }}\setup-pm
+          HERMES_RUNTIME_DIR: ${{ runner.temp }}\setup-pm\tools
+          PYTHONUTF8: '1'
+        run: |
+          python -S - <<'PY' || true
+          import os, stat, sys
+          sys.path.insert(0, os.getcwd())
+          from pm.paths import facts_path, store_root
+          from pm.store import Store, current_target, tree_digest
+          from pm.registry import get_package
+          from pm.lock import Facts
+          root = store_root()
+          print("PROBE facts", facts_path().is_file(), flush=True)
+          facts = Facts(facts_path())
+          store = Store(root)
+          for name in ("python", "git", "ripgrep", "uv"):
+              fact = facts.get(name)
+              if not fact:
+                  print("PROBE", name, "no fact", flush=True)
+                  continue
+              entry = store.entry(fact["entry"])
+              mt = entry / "etc" / "mtab"
+              if name == "git" and os.path.lexists(mt):
+                  st = os.lstat(mt)
+                  print(f"PROBE git mtab attrs=0x{st.st_file_attributes:x} tag=0x{getattr(st, 'st_reparse_tag', 0):x} size={st.st_size}", flush=True)
+              try:
+                  reason = get_package(name).verify(entry, target := current_target())
+                  ok = tree_digest(entry) == fact.get("digest")
+              except Exception as e:
+                  reason, ok = repr(e), None
+              print(f"PROBE {name} verify={reason!r} digest_ok={ok}", flush=True)
+              if name == "git" and ok is False:
+                  bad = []
+                  for dp, dn, fn in os.walk(entry):
+                      for f in fn:
+                          p = os.path.join(dp, f)
+                          st = os.lstat(p)
+                          if getattr(st, "st_reparse_tag", 0) or st.st_file_attributes & 0x4:
+                              bad.append((os.path.relpath(p, entry), hex(st.st_file_attributes), hex(getattr(st, "st_reparse_tag", 0)), st.st_size))
+                  print("PROBE git special files", bad[:20], len(bad), flush=True)
+          PY
+
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:

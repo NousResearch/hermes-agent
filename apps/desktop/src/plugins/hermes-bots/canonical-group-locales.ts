@@ -341,6 +341,7 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnavailable: 'Membro non disponibile',
     members: 'Membri',
     refreshGroups: 'Aggiorna i gruppi del gateway',
+    openGroup: 'Apri la chat di gruppo',
     loadingGroup: 'Caricamento del gruppo…',
     loadingGroups: 'Caricamento dei gruppi del gateway…',
     emptyGroups: 'Nessun gruppo del gateway trovato.',

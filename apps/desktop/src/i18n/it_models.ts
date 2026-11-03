@@ -675,8 +675,8 @@ export const itSettingsModels = {
       defaultDirTitle: 'Directory di progetto predefinita',
       defaultDirDesc:
         'Le nuove sessioni iniziano in questa cartella a meno che tu ne scelga un’altra. Lasciala non definita per usare la tua directory home.',
-      defaultDirUpdated:
-        'Directory di progetto predefinita aggiornata; avvia una nuova chat (Ctrl/⌘+N) perché la modifica abbia effetto.',
+      defaultDirUpdated: (shortcut: null | string) =>
+        `Directory di progetto predefinita aggiornata; avvia una nuova chat${shortcut ? ` (${shortcut})` : ''} perché la modifica abbia effetto.`,
       defaultsTo: label => `Predefinito: ${label}.`,
       change: 'Cambia',
       choose: 'Scegli',

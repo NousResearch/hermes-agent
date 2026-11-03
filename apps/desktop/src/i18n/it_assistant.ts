@@ -302,122 +302,136 @@ export const itAssistant = {
         streaming: 'La connessione si è interrotta prima che la risposta fosse completata. Riprova per inviarla di nuovo.'
       },
       errorCodes: {
-        SESSION_OWNER_BUSY: {
-          title: 'Hermes è occupato in questa chat',
-          body: 'Un altro turno è in esecuzione qui e il tuo messaggio non è potuto entrare nella sua coda. Non è stato inviato nulla. Riprova quando quel turno termina.'
-        },
-        SESSION_OWNER_UNCONFIRMED: {
-          title: 'Il tuo messaggio potrebbe essere già in coda',
-          body: 'Il gateway non ha confermato il tuo messaggio in tempo. Se era in coda, viene eseguito quando il turno precedente termina o viene risolto. Controlla la chat prima di inviarlo di nuovo.'
-        },
-        cron_session_read_only: {
-          title: 'Questa chat appartiene a un’attività pianificata',
-          body: 'Esegue solo quell’attività, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.'
-        },
-        workspace_unavailable: {
-          title: 'La cartella di questa chat non c’è più',
-          body: 'La cartella in cui lavora questa chat è stata spostata o eliminata, quindi il tuo messaggio non è stato eseguito. Ricrea la cartella, oppure usa «Sposta nel progetto» per assegnarne un’altra alla chat, poi riprova.'
-        },
         auth: {
-          title: (provider: string) => `${provider} ha rifiutato il tuo accesso`,
-          body: (provider: string) =>
-            `Le credenziali salvate per ${provider} non sono state accettate. Correggile in Impostazioni o cambia provider e reinvia il messaggio.`
+          title: (provider: string) => `${provider} ha rifiutato la tua chiave API`,
+          body: () => 'Le credenziali salvate non sono valide o sono state revocate. Aggiornale, poi reinvia il messaggio.'
         },
         auth_permanent: {
-          title: (provider: string) => `${provider} ha rifiutato il tuo accesso`,
-          body: (provider: string) =>
-            `Le credenziali salvate per ${provider} non sono valide o sono state revocate. Aggiornale o cambia provider e reinvia il messaggio.`
+          title: (provider: string) => `${provider} ha rifiutato la tua chiave API`,
+          body: () => 'Le credenziali salvate non sono valide o sono state revocate. Aggiornale, poi reinvia il messaggio.'
         },
         billing: {
-          title: 'Crediti esauriti',
-          body: (provider: string) =>
-            `Il tuo account ${provider} non ha crediti. Ricarica o cambia provider e reinvialo.`
+          title: (provider: string) => `${provider} è senza crediti`,
+          body: (provider: string) => `Aggiungi crediti per continuare a usare i modelli a pagamento su ${provider}.`
         },
         rate_limit: {
-          title: 'Il servizio di IA è occupato',
-          body: (provider: string) =>
-            `${provider} sta limitando le richieste in questo momento. Attendi un minuto e riprova.`
+          title: (provider: string) => `${provider} è occupato in questo momento`,
+          body: (provider: string) => `Hai raggiunto il limite di richieste di ${provider}. Attendi un momento e riprova.`
         },
         upstream_rate_limit: {
-          title: 'Il servizio di IA è occupato',
-          body: (provider: string) =>
-            `${provider} sta limitando le richieste in questo momento. Attendi un minuto e riprova.`
+          title: (_provider: string, model?: string) => `${model ?? 'Questo modello'} è occupato in questo momento`,
+          body: (provider: string, model?: string) =>
+            `${model ?? 'Questo modello'} è limitato a monte di ${provider}, non dal tuo account. Riprova tra un momento.`
         },
         overloaded: {
-          title: 'Il servizio di IA è sovraccarico',
-          body: (provider: string) =>
-            `${provider} ha problemi in questo momento. Riprova tra poco o cambia provider.`
+          title: (provider: string) => `${provider} è occupato in questo momento`,
+          body: (provider: string) => `${provider} è sovraccarico e non ha potuto gestire questa richiesta. Riprova tra un momento.`
         },
         server_error: {
-          title: 'Il servizio di IA ha riscontrato un problema',
-          body: (provider: string) =>
-            `${provider} ha restituito un errore del server. Riprova tra poco o cambia provider.`
+          title: (provider: string) => `${provider} ha dei problemi`,
+          body: (provider: string) => `${provider} ha restituito un errore del server. Riprova tra un momento.`
         },
         timeout: {
-          title: 'Impossibile connettersi al servizio di IA',
-          body: (provider: string) =>
-            `Impossibile connettersi a ${provider} oppure non ha risposto in tempo. Controlla la tua connessione a internet e riprova.`
-        },
-        no_reply: {
-          title: 'La risposta non è stata completata',
-          body: 'Hermes ha completato questo turno senza risposta. Riprova per inviarla di nuovo.'
+          title: (provider: string) => `Impossibile raggiungere ${provider}`,
+          body: (provider: string) => `Hermes non è riuscito a raggiungere ${provider}. Controlla la tua connessione e riprova.`
         },
         stream_drop: {
           title: 'La risposta è stata interrotta',
           body: 'La connessione si è interrotta prima che la risposta fosse completata. Riprova per inviarla di nuovo.'
         },
+        no_reply: {
+          title: 'La risposta non è arrivata',
+          body: 'Hermes ha completato questo turno, ma nessuna risposta è arrivata in questa finestra. Riprova per inviarla di nuovo.'
+        },
         upstream_blocked: {
-          title: 'Un firewall ha bloccato la richiesta',
+          title: (provider: string) => `${provider} ha bloccato questa richiesta`,
           body: (provider: string) =>
-            `Un firewall o una CDN davanti a ${provider} ha bloccato la richiesta prima che arrivasse al modello; probabilmente la tua chiave va bene. Definisci un header User-Agent tramite gli extra_headers del provider in Impostazioni oppure cambia provider e reinvia il messaggio.`
+            `Un firewall davanti a ${provider} l’ha rifiutata prima che raggiungesse il modello. Cambia provider, oppure impostagli un User-Agent personalizzato.`
         },
         ssl_cert_verification: {
-          title: 'Connessione sicura non riuscita',
+          title: (provider: string) => `Impossibile verificare la connessione a ${provider}`,
           body: (provider: string) =>
-            `Hermes non è riuscito a verificare la connessione sicura con ${provider}. Controlla la configurazione di rete o del proxy, oppure cambia provider, e reinvia il messaggio.`
+            `Un proxy o un archivio certificati non aggiornato ha bloccato la connessione sicura a ${provider}. La guida di configurazione mostra come risolverlo.`
         },
         context_overflow: {
-          title: 'Questa conversazione è troppo lunga',
-          body: 'La conversazione non entra più nel modello. Comprimila o inizia una nuova chat e reinvia il messaggio.'
+          title: 'Questa chat è troppo lunga',
+          body: (_provider: string, model?: string) =>
+            `La conversazione non entra più nella finestra di contesto ${model ? `di ${model}` : 'del modello'}. Comprimila per continuare.`
         },
         payload_too_large: {
           title: 'Questo messaggio è troppo grande',
-          body: 'La richiesta era troppo grande per il modello. Comprimi la conversazione o inizia una nuova chat e reinvia il messaggio.'
+          body: (provider: string) =>
+            `La richiesta, allegati inclusi, supera il limite di dimensione di ${provider}. Comprimi la conversazione o rimuovi gli allegati.`
         },
         model_not_found: {
-          title: 'Questo modello non è disponibile',
-          body: (provider: string) =>
-            `${provider} non offre questo modello sul tuo account. Scegli un altro modello e reinvia il messaggio.`
+          title: (_provider: string, model?: string) => `${model ?? 'Questo modello'} non è disponibile`,
+          body: (provider: string, model?: string) =>
+            `${provider} non offre ${model ?? 'questo modello'} sul tuo account. Scegli un altro modello.`
         },
         provider_policy_blocked: {
-          title: 'La configurazione del tuo account blocca questo modello',
+          title: (provider: string, model?: string) => `${provider}: le impostazioni bloccano ${model ?? 'questo modello'}`,
           body: (provider: string) =>
-            `${provider} non instraderebbe questa richiesta con la configurazione di dati o privacy del tuo account. Scegli un altro modello o cambia provider.`
+            `Le impostazioni privacy di ${provider} escludono ogni endpoint per questo modello. Cambiale su ${provider}, oppure scegli un altro modello.`
         },
         content_policy_blocked: {
-          title: 'Il servizio di IA ha rifiutato questa richiesta',
-          body: (provider: string) => `${provider} non risponderebbe a questo messaggio. Modificalo e reinvialo.`
+          title: (provider: string) => `${provider} ha rifiutato questo messaggio`,
+          body: (provider: string) => `Il filtro di sicurezza di ${provider} l’ha respinto. Modifica il messaggio e reinvialo.`
         },
         format_error: {
-          title: 'Il servizio di IA ha rifiutato la richiesta',
+          title: (provider: string) => `${provider} ha rifiutato questa richiesta`,
           body: (provider: string) =>
-            `${provider} non ha accettato il modo in cui questa richiesta è stata costruita. Cambia provider o invia una diagnostica per farla esaminare.`
+            `${provider} non ha accettato la struttura di questa conversazione. Cambia provider, oppure apri una nuova chat se continua a succedere.`
         },
         truncated: {
-          title: 'La risposta è rimasta incompleta',
-          body: 'Il modello si è fermato prima di terminare. Riprova per ottenere una risposta completa.'
+          title: 'La risposta è stata troncata',
+          body: (_provider: string, model?: string) =>
+            `${model ?? 'Il modello'} si è fermato prima di concludere la risposta. Prosegui per riprendere da dove si era fermato.`
         },
         invalid_response: {
-          title: 'Il servizio di IA ha inviato una risposta illeggibile',
-          body: (provider: string) => `${provider} ha restituito qualcosa che Hermes non è riuscito a leggere. Riprova tra poco.`
+          title: 'Impossibile leggere la risposta',
+          body: (provider: string) => `${provider} ha restituito una risposta vuota o corrotta. Riprova tra un momento.`
         },
         empty_response: {
-          title: 'Il servizio di IA ha inviato una risposta vuota',
-          body: (provider: string) => `${provider} non ha restituito nulla per questo messaggio. Riprova tra poco.`
+          title: 'Impossibile ottenere una risposta',
+          body: (provider: string) => `${provider} non ha restituito nulla per questo messaggio. Riprova tra un momento.`
         },
         loop_error: {
-          title: 'Hermes è rimasto bloccato in un ciclo',
-          body: 'La risposta ripeteva gli stessi passaggi, quindi Hermes l’ha interrotta. Riprova o inizia una nuova chat se si ripete.'
+          title: 'Hermes non è riuscito a completare questo passaggio',
+          body: 'Qualcosa è andato storto nell’elaborazione della risposta. Riprova; se si ripete, invia una diagnostica dai dettagli.'
+        },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes è occupato in questa chat',
+          body: 'Un altro turno è in esecuzione qui e il tuo messaggio non è potuto entrare nella sua coda. Non è stato inviato nulla. Riprova quando quel turno termina.'
+        },
+        cron_session_read_only: {
+          title: 'Questa chat appartiene a un’attività pianificata',
+          body: 'Esegue solo quell’attività, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.'
+        },
+        session_read_only: {
+          title: 'Questa chat è in sola lettura',
+          body: 'È una cronologia che Hermes può mostrare ma non continuare, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.'
+        },
+        workspace_unavailable: {
+          title: 'La cartella di questa chat non c’è più',
+          body: 'La cartella in cui lavora questa chat è stata spostata o eliminata, quindi il tuo messaggio non è stato eseguito. Ricrea la cartella, oppure usa «Sposta nel progetto» per assegnarne un’altra alla chat, poi riprova.'
+        },
+        launch_credentials_unavailable: {
+          title: 'La chiave API di questa chat è cambiata',
+          body: 'Questa chat è stata avviata con una chiave API che nel frattempo è cambiata o stata rimossa, quindi il tuo messaggio non è stato inviato. Una chat aperta non passa mai da sola a una chiave diversa. Avvia una nuova sessione per usare la chiave attuale.'
+        },
+        local_runtime_unavailable: {
+          title: 'Impossibile raggiungere il server del modello locale',
+          body: 'Il server del modello locale non risponde ancora: potrebbe essere in avvio. Riprova tra un momento, oppure passa a un altro modello.',
+          bodyNoRetry: 'Il server del modello locale è spento. Avvialo dall’app desktop di Hermes o con `hermes model` in un terminale, oppure passa a un altro modello.'
+        },
+        SESSION_OWNER_UNCONFIRMED: {
+          title: 'Il tuo messaggio potrebbe essere già in coda',
+          body: 'Il gateway non ha confermato il tuo messaggio in tempo. Se era in coda, viene eseguito quando il turno precedente termina o viene risolto. Controlla la chat prima di inviarlo di nuovo.'
+        },
+        agent_init_failed: {
+          title: 'Impossibile avviare questa chat',
+          body: (provider: string) =>
+            `Hermes non è riuscito a connettersi a ${provider} per questa chat. Riprova; se continua a succedere, controlla il provider in Impostazioni.`
         },
         SESSION_NOT_OWNED: {
           title: 'Questa chat è aperta altrove',
@@ -425,67 +439,45 @@ export const itAssistant = {
         },
         disk_full: {
           title: 'Disco pieno',
-          body: 'Il tuo disco è pieno, quindi Hermes non è riuscito a salvare questa conversazione. Libera spazio e riprova.'
+          body: 'Hermes non è riuscito a salvare questa conversazione. Libera spazio e riprova.'
         },
         free_tier_disabled: {
-          title: 'L’uso di Hermes senza accesso è attualmente disattivato',
+          title: 'Accedi per continuare a chattare',
           body: 'Accedi con un account Nous per continuare a chattare; è gratis.'
         },
         free_tier_rate_limited: {
-          title: 'Hai esaurito la quota per chattare senza accesso',
-          body: 'Si rinnova a breve. Accedi con un account Nous per avere una quota maggiore; è gratis.'
+          title: 'Hai esaurito la franchigia gratuita',
+          body: 'Si rinnova a breve. Accedi con un account Nous per una franchigia maggiore; è gratis.'
         },
         free_tier_at_capacity: {
-          title: 'Chattare senza accesso è molto richiesto in questo momento',
+          title: 'Il piano gratuito è occupato',
           body: 'Accedi per saltare la coda (è gratis) o riprova tra un po’.'
         },
         free_tier_model_not_free: {
-          title: 'Quel modello non è disponibile senza accesso',
+          title: 'Questo modello richiede l’accesso',
           body: 'Per ora Hermes usa il modello gratuito. Accedi con un account Nous per avere più modelli; è gratis.'
         },
         free_tier_route: {
-          title: 'Hermes non è riuscito a raggiungere il modello gratuito tramite questa route',
+          title: 'Impossibile raggiungere il modello gratuito',
           body: 'Accedi con un account Nous (è gratis) o controlla l’impostazione NOUS_INFERENCE_BASE_URL.'
         },
         free_tier_outage: {
-          title: 'Il modello gratuito ha problemi a rispondere in questo momento',
+          title: 'Il modello gratuito ha problemi',
           body: 'Reinvia il messaggio tra un minuto.'
         },
         free_tier_refused: {
-          title: 'Hermes non è riuscito a inviarlo senza accesso',
+          title: 'Accedi per continuare a chattare',
           body: 'Accedere con un account Nous è gratis.'
         },
         usage_window: {
           title: 'Utilizzo incluso esaurito',
           body: 'L’utilizzo incluso del tuo piano è esaurito fino al ripristino. Aggiungi crediti in /topup per continuare.'
-        },
-    agent_init_failed: {
-      body: (provider) => `Hermes non è riuscito a connettersi a ${provider} per questa chat. Riprova; se il problema persiste, controlla il provider in Impostazioni.`,
-      title: 'Impossibile avviare questa chat',
-    },
-    launch_credentials_unavailable: {
-      body: 'Questa chat è stata avviata con una chiave API che nel frattempo è cambiata o stata rimossa, quindi il tuo messaggio non è stato inviato. Una chat aperta non passa mai da sola a una chiave diversa. Avvia una nuova sessione per usare la chiave attuale.',
-      title: 'La chiave API di questa chat è cambiata',
-    },
-    local_runtime_unavailable: {
-      body: 'Il server del modello locale non risponde ancora: potrebbe essere in avvio. Riprova tra un momento, oppure passa a un altro modello.',
-      bodyNoRetry: 'Il server del modello locale è spento. Avvialo dall\'app desktop di Hermes o con `hermes model` in un terminale, oppure passa a un altro modello.',
-      title: 'Impossibile raggiungere il server del modello locale',
-    },
-    session_read_only: {
-      body: 'È una cronologia che Hermes può mostrare ma non continuare, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.',
-      title: 'Questa chat è in sola lettura',
-    },
-
-
-
-
+        }
       },
       errorAuthKinds: {
         api_key: {
           title: (provider: string) => `${provider} ha rifiutato la tua chiave API`,
-          body: (provider: string) =>
-            `La chiave salvata per ${provider} non è valida o è stata revocata. Aggiornala e riprova.`
+          body: () => 'La chiave salvata non è valida o è stata revocata. Aggiornala, poi reinvia il messaggio.'
         },
         oauth: {
           title: (provider: string) => `La tua sessione di ${provider} è scaduta`

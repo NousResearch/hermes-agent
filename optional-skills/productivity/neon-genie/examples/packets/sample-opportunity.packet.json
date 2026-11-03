@@ -1,0 +1,29 @@
+{
+  "blocked_transition": {
+    "from": "idea without buyer",
+    "to": "testable service wedge"
+  },
+  "outcome_model": {
+    "success": "first paid diagnostic booked",
+    "proof": "invoice or signed SOW"
+  },
+  "system_topology": {
+    "actors": ["operator", "buyer"],
+    "systems": ["outreach", "delivery"]
+  },
+  "opportunity_thesis": "Warm-network micro-audit converts faster than cold content",
+  "validation_path": ["offer to 10 warm contacts", "track yes/no"],
+  "completion_proof": "first paid diagnostic invoice or signed SOW within 14 days",
+  "proof_path": [
+    "list 10 warm contacts",
+    "send bounded offer",
+    "record yes/no and payment",
+    "ledger: proof_obtained or proof_failed"
+  ],
+  "scorecard": {
+    "evidence_density": 0.4,
+    "outcome_clarity": 0.7
+  },
+  "promotion_state": "TESTABLE",
+  "authority": "advisory_only"
+}

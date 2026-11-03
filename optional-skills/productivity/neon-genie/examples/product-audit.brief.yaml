@@ -1,0 +1,30 @@
+request_id: "example-product-audit-001"
+requested_outcome: "Audit product coherence and produce a Wayfinder-ready handoff packet"
+target_user: "operator building a governed multi-skill product"
+current_state: "partial product intent; unclear boundaries"
+desired_state: "evidence-bound product packet + execution handoff without intent rewrite"
+constraints:
+  - "advisory_only"
+  - "do not modify repositories"
+canonical_sources: []
+preferred_profiles:
+  - product_architecture
+  - commercial
+  - wayfinder_handoff
+requested_outputs:
+  - NeonGenieProductPacket
+  - WayfinderExecutionPacket
+  - NeonGenieRunReceipt
+research:
+  enabled: true
+  offline: false
+  max_fetches: null
+  focus:
+    - "comparable product boundaries"
+authority:
+  research: true
+  drafting: true
+  execution: false
+  spending: false
+  publishing: false
+human_review_required: true

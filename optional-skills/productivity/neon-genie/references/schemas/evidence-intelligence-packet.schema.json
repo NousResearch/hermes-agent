@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evidence Intelligence Packet",
+  "type": "object",
+  "required": [
+    "decision_questions",
+    "query_plan",
+    "evidence_items",
+    "claim_ledger",
+    "tooling_gaps",
+    "attribution_boundaries",
+    "research_log",
+    "not_computable_fields"
+  ],
+  "properties": {
+    "decision_questions": {},
+    "query_plan": {},
+    "evidence_items": {},
+    "claim_ledger": {},
+    "tooling_gaps": {},
+    "attribution_boundaries": {},
+    "research_log": {},
+    "not_computable_fields": {},
+    "competitive_scan": {},
+    "grant_or_funder_map": {},
+    "board_or_stakeholder_map": {},
+    "freshness_notes": {}
+  },
+  "additionalProperties": true
+}

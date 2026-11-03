@@ -1,0 +1,28 @@
+request_id: "example-fragmentation-001"
+requested_outcome: "Map workflow and status friction across portals; propose defrag only if burden < value"
+target_user: "operator coordinating multi-system status"
+current_state: "many portals, repeated handoffs, incompatible status views"
+desired_state: "measured friction sites + optional defrag layer or honest reject"
+constraints:
+  - "advisory_only"
+  - "do not invent private API access"
+canonical_sources: []
+preferred_profiles:
+  - fragmentation
+  - product_architecture
+requested_outputs:
+  - FragmentationOpportunityPacket
+  - NeonGenieRunReceipt
+research:
+  enabled: true
+  offline: false
+  max_fetches: null
+  focus:
+    - "public integration patterns"
+authority:
+  research: true
+  drafting: true
+  execution: false
+  spending: false
+  publishing: false
+human_review_required: true

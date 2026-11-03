@@ -397,14 +397,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
         fname = filename or os.path.basename(file_path)
         try:
-            # httpx's async multipart iterator reads file objects through a sync chunk generator —
-            # read the bytes off the event-loop thread first.
-            payload = await asyncio.to_thread(Path(file_path).read_bytes)
-            data: dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
+            native_voice = False
+            content_type = "application/octet-stream"
             if is_audio_message:
+                from .voice import prepare_voice_upload
+                prepared, payload = await prepare_voice_upload(file_path, filename)
+                fname, content_type, native_voice = prepared.filename, prepared.content_type, prepared.native_voice
+            else:
+                # httpx's multipart iterator reads file objects synchronously; stage bytes off-loop.
+                payload = await asyncio.to_thread(Path(file_path).read_bytes)
+            data: dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
+            if native_voice:
                 data["isAudioMessage"] = "true"
+                if self._private_api_enabled and self._helper_connected:
+                    data["method"] = "private-api"
             res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
-                                         files={"attachment": (fname, payload, "application/octet-stream")})
+                                         files={"attachment": (fname, payload, content_type)})
             res.raise_for_status()
             result = res.json()
             if caption:
@@ -415,7 +423,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                   raw_response=result)
             return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=str(e) or type(e).__name__)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:

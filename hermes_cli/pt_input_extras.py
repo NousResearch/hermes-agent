@@ -316,6 +316,29 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
     return aliases
 
 
+def install_macos_editing_aliases() -> int:
+    """Keep macOS Command/Option editing semantics for CSI-u arrow and delete keys.
+
+    prompt_toolkit maps Alt (modifier 3/4) and Super (9/10) arrows both to Escape+Arrow, losing the
+    distinction macOS users expect: Option moves by word, Command to a line boundary. Option-modified
+    deletes also need aliases to reach the existing Emacs word-kill bindings.
+    """
+    def build(_seqs, keys):
+        aliases = {}
+        for mod in (m for base in (9, 10) for m in _lock_variants(base)):  # Command / Command+Shift
+            aliases[f"\x1b[1;{mod}D"] = keys.ControlA
+            aliases[f"\x1b[1;{mod}C"] = keys.ControlE
+        for mod in (m for base in (3, 4) for m in _lock_variants(base)):  # Option / Option+Shift
+            aliases[f"\x1b[1;{mod}D"] = keys.ControlLeft
+            aliases[f"\x1b[1;{mod}C"] = keys.ControlRight
+            aliases[f"\x1b[127;{mod}u"] = (keys.Escape, keys.ControlH)
+            aliases[f"\x1b[3;{mod}~"] = keys.ControlDelete
+        aliases["\x1b[27;3;127~"] = (keys.Escape, keys.ControlH)
+        return aliases
+
+    return _install(build, overwrite=True)
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map focus reports ``ESC[I`` / ``ESC[O`` (Ghostty, iTerm2, some xterms) to ``Keys.Ignore``.
 

@@ -1,0 +1,23 @@
+{
+  "name": "@nousresearch/hermes-agent",
+  "version": "0.20.3",
+  "description": "ACP launcher for Hermes Agent, for Zed and other ACP-compatible editors",
+  "type": "module",
+  "bin": {
+    "hermes-agent": "bin/hermes-agent.js"
+  },
+  "files": ["bin", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NousResearch/hermes-agent.git",
+    "directory": "packaging/acp-launcher"
+  },
+  "homepage": "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

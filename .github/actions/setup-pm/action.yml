@@ -19,21 +19,24 @@ inputs:
   cache:
     description: Cache the verified PM tool store.
     default: 'true'
+  # Pull requests restore main's caches and never save their own: a PR-scoped
+  # entry is restorable only by that PR, and the tools key hashes pm/** and
+  # this action, so every push to a PR touching them wrote a fresh store.
   save-tools-cache:
     description: Save the verified PM tools on success. Set false for restore-only jobs.
-    default: 'true'
+    default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   cache-python:
     description: Cache uv downloads and built wheels; never cache the dependency environment.
     default: 'true'
   save-python-cache:
-    description: Save automatically on success. Set false to save a rolling snapshot with save-pm-cache after the consumer, including on failure.
-    default: 'true'
+    description: Save the uv cache on success. Set false for restore-only jobs.
+    default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   cache-node:
     description: Cache npm downloads; never cache node_modules.
     default: 'true'
   save-node-cache:
-    description: Save automatically on success. Set false to save a consumer-scoped rolling snapshot with actions/cache/save after npm preparation.
-    default: 'true'
+    description: Save the npm cache on success. Set false for restore-only jobs.
+    default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   python-cache-dependency-glob:
     description: Dependency files that invalidate the uv cache.
     default: |
@@ -76,21 +79,9 @@ outputs:
   python-cache-hit:
     description: Exact uv dependency cache hit.
     value: ${{ steps.python-cache.outputs.cache-hit || steps.python-cache-restore.outputs.cache-hit }}
-  python-cache-key:
-    description: Rolling snapshot key for save-pm-cache when save-python-cache is false.
-    value: ${{ steps.python-cache-restore.outputs.cache-primary-key }}
-  uv-cache-path:
-    description: Shared uv cache directory for save-pm-cache.
-    value: ${{ steps.install.outputs.uv-cache-path }}
   node-cache-hit:
     description: Exact npm dependency cache hit.
     value: ${{ steps.node-cache.outputs.cache-hit || steps.node-cache-restore.outputs.cache-hit }}
-  node-cache-key:
-    description: Rolling snapshot key when save-node-cache is false.
-    value: ${{ steps.node-cache-restore.outputs.cache-primary-key }}
-  npm-cache-path:
-    description: npm download cache directory for an explicit consumer save.
-    value: ${{ steps.install.outputs.npm-cache-path }}
 runs:
   using: composite
   steps:
@@ -170,18 +161,14 @@ runs:
         # fallback must not restore a smoke run's partial dependency set.
         restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
 
-    - name: Restore uv dependencies for an explicit save
+    - name: Restore uv dependency downloads and builds
       id: python-cache-restore
-      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'false'
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'false' && (inputs.extras != '' || inputs.test-environment == 'true')
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.uv-cache-path }}
-        # Caches are immutable. Each producer needs its own snapshot, even
-        # when a caller run contains both PM Bundle and Desktop Release.
-        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-        restore-keys: |
-          setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-
-          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
+        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}
+        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
 
     # Post steps run in reverse registration order: prune before cache save.
     - name: Register uv cache pruning
@@ -211,15 +198,15 @@ runs:
         restore-keys: |
           node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
 
-    - name: Restore npm dependencies for an explicit save
+    - name: Restore npm dependency downloads
       id: node-cache-restore
       if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'false'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.npm-cache-path }}
-        # Scope producers so tool-only jobs cannot replace a full desktop cache.
-        key: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-
+        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+        restore-keys: |
+          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
 
     - name: Install the requested Python dependencies through PM
       id: dependencies
@@ -235,3 +222,14 @@ runs:
         if [ "$_PM_TEST_ENVIRONMENT" = true ]; then args+=(--test-environment); fi
         "$HERMES_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
           --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$HERMES_HOME" "${args[@]}"
+
+    - name: Log PM cache restore results and save policy
+      if: always()
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_CACHE_INPUTS: ${{ toJSON(inputs) }}
+        _PM_CACHE_STEPS: ${{ toJSON(steps) }}
+      run: |
+        if [ "$RUNNER_OS" = Windows ]; then bootstrap=python; else bootstrap=python3; fi
+        "$bootstrap" -S "$_PM_ACTION/../../../scripts/ci/pm_cache_log.py"

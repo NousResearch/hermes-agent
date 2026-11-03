@@ -80,7 +80,7 @@ def _calling_session_project_id(conn, task_id: Optional[str]) -> tuple[bool, Opt
     overrides = resolve_task_overrides(task_id) if task_id else {}
     if "cwd_source" not in overrides:
         return False, None
-    cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else None
+    cwd = overrides.get("cwd") if overrides["cwd_source"] == "session" else overrides.get("host_workspace")
     project = pdb.project_for_path(conn, cwd) if cwd else None
     return True, project.id if project else None
 

@@ -434,6 +434,100 @@ async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tm
 
 
 @pytest.mark.asyncio
+async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_start(tmp_path, monkeypatch):
+    """MP-17: the picked ``custom_providers`` entry's key is recovered on a cold start by the entry's
+    canonical identity, not its list index. A reorder (or a respelled name) still runs with the picked
+    entry's own key; a deleted entry refuses by name and never borrows the entry now at that index."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_cli import model_switch
+
+    other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
+    picked = '  - name: {name}\n    base_url: https://inkstone.example.invalid/v1\n    api_key: sk-inkstone\n'
+    config = tmp_path / 'config.yaml'
+    config.write_text('custom_providers:\n' + other + picked.format(name='inkstone'), encoding='utf-8')
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='glm-5.3', target_provider='inkstone',
+        base_url='https://inkstone.example.invalid/v1', api_mode='chat_completions'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        def owner():  # a fresh owner: no in-memory secrets, everything re-read from config.yaml
+            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+            authority.runner = SimpleNamespace(session_authority=authority,
+                                               _resolve_session_agent_runtime=lambda **k: (None, {}))
+            return authority
+        authority = owner()
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
+            'model': 'glm-5.3', 'provider': 'inkstone'}, prepared))['policy'])
+        assert switched.config_secret_ref.startswith('profile-config-v1:')
+
+        for spelling in ('inkstone', 'Inkstone'):
+            config.write_text('custom_providers:\n' + picked.format(name=spelling) + other, encoding='utf-8')
+            cold = owner()
+            _, runtime = _resolve_policy_agent_runtime(cold.runner, switched)
+            assert runtime['base_url'].rstrip('/') == 'https://inkstone.example.invalid/v1', spelling
+            assert runtime['api_key'] == 'sk-inkstone', spelling
+
+        # The entry now at the frozen index carries the SAME key under another name: an index
+        # lookup's fingerprint check would accept it, so only identity can refuse the deletion.
+        third = other.replace('other', 'third').replace('sk-third', 'sk-inkstone')
+        config.write_text('custom_providers:\n' + other + third, encoding='utf-8')
+        with pytest.raises(RuntimeStoreError) as refused:
+            switched.config(owner())
+        assert refused.value.reason == 'launch_credentials_unavailable'
+
+
+@pytest.mark.asyncio
+async def test_probe_rename_keep_url_key(tmp_path, monkeypatch):
+    """Review (#141484, MP-17): the picked legacy entry renamed in place (same index, same URL, same
+    key) still runs on a cold start, as on main. Renamed AND moved to another index still refuses."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import RuntimeStoreError
+    from hermes_cli import model_switch
+
+    other = '  - name: other\n    base_url: https://other.example.invalid/v1\n    api_key: sk-other\n'
+    picked = '  - name: {name}\n    base_url: https://inkstone.example.invalid/v1\n    api_key: sk-inkstone\n'
+    config = tmp_path / 'config.yaml'
+    config.write_text('custom_providers:\n' + other + picked.format(name='inkstone'), encoding='utf-8')
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='glm-5.3', target_provider='inkstone',
+        base_url='https://inkstone.example.invalid/v1', api_mode='chat_completions'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        def owner():  # a fresh owner: no in-memory secrets, everything re-read from config.yaml
+            authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+            authority.runner = SimpleNamespace(session_authority=authority,
+                                               _resolve_session_agent_runtime=lambda **k: (None, {}))
+            return authority
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(owner(), SimpleNamespace(source=None, route='r'), {
+            'model': 'glm-5.3', 'provider': 'inkstone'}, prepared))['policy'])
+
+        config.write_text('custom_providers:\n' + other + picked.format(name='Inkstone EU'), encoding='utf-8')
+        _, runtime = _resolve_policy_agent_runtime(owner().runner, switched)
+        assert runtime['base_url'].rstrip('/') == 'https://inkstone.example.invalid/v1'
+        assert runtime['api_key'] == 'sk-inkstone'
+
+        config.write_text('custom_providers:\n' + picked.format(name='Inkstone EU') + other, encoding='utf-8')
+        with pytest.raises(RuntimeStoreError) as refused:
+            switched.config(owner())
+        assert refused.value.reason == 'launch_credentials_unavailable'
+
+
+@pytest.mark.asyncio
 async def test_model_pick_resolves_the_profiles_current_entry_over_a_frozen_one(tmp_path, monkeypatch):
     """A pick is an explicit user action: a slug the session froze earlier resolves to the profile's
     CURRENT entry (as CLI/TUI ``/model`` do), and only that entry is re-frozen. Another frozen entry

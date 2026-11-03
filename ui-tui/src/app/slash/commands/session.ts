@@ -1,3 +1,4 @@
+import { stripAnsi } from '@hermes/shared/ansi'
 import { compactNumber } from '@hermes/shared/format'
 
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
@@ -828,6 +829,7 @@ export const sessionCommands: SlashCommand[] = [
         return canonicalUsage(ctx)
       }
 
+      // health: allow CC -- /usage: appends the plan allowance bars from billing.state for usage-window plans only; this handler was over target on main
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return
@@ -883,7 +885,18 @@ export const sessionCommands: SlashCommand[] = [
         } else {
           const creditsLines = r?.credits_lines ?? []
 
-          if (creditsLines.length) {
+          if (creditsLines.length && r?.credits_usage_window) {
+            // Usage-window plan: plain stacked bar lines (a panel would re-wrap them).
+            const windowLines = creditsLines
+              .map(line => stripAnsi(String(line)).trimEnd())
+              .filter(line => line.length > 0)
+
+            for (const line of windowLines) {
+              sys(line)
+            }
+
+            showedBalance = windowLines.length > 0
+          } else if (creditsLines.length) {
             ctx.transcript.panel(t('slashCmd.session.usage.nousBalanceTitle'), [{ text: creditsLines.join('\n') }])
             showedBalance = true
           }

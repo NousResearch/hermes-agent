@@ -146,7 +146,12 @@ def compress_now(
     if tail and not all(row.get(_DB_PERSISTED_MARKER) is True for row in tail_rows):
         compressed = rejoin_compressed_head_and_tail(compressed, tail)
     after_tokens = estimate_request_tokens(agent, compressed)
-    summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens, compression_state=compressor)
+    # A gateway-backed agent compresses on its owner, whose compressor holds the abort/refusal/reason
+    # flags: the owner's report is the result. Type-pinned (dict) for the MagicMock reason above.
+    summary = getattr(agent, "compression_summary", None)
+    if not isinstance(summary, dict):
+        summary = summarize_manual_compression(before, compressed, before_tokens, after_tokens,
+                                               compression_state=compressor)
     return CompressResult("compressed", before, list(compressed), before_tokens, after_tokens, request, summary=summary)
 
 

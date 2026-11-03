@@ -192,7 +192,7 @@ def test_a_text_only_completion_streams_without_tool_call_deltas():
 def test_copilot_prompt_still_carries_the_contract_and_the_tools():
     """copilot-acp lost its private copy of the bridge; its prompt must not
     change shape."""
-    from agent.copilot_acp_client import _format_messages_as_prompt
+    from agent.acp_client import _format_messages_as_prompt
 
     prompt = _format_messages_as_prompt(
         [{"role": "user", "content": "hi"}], model="gpt-5", tools=_TOOLS,

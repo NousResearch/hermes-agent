@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -255,6 +256,31 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _stop_auto_started_gateway(home: Path, timeout: float = 60.0) -> None:
+    """Stop the gateway the one-shot chat auto-started for ``home`` and wait for it to exit.
+
+    Left alone it lingers for ``gateway.unmanaged_idle_exit_seconds`` after every smoke run. Only the
+    live process the gateway's own identity check proves is ``home``'s gateway (start time, gateway
+    command line, home) is signalled: a stale ``gateway.pid`` whose PID was recycled is left alone.
+    """
+    import psutil
+    from gateway.status import live_gateway_pid_for_home
+
+    pid = live_gateway_pid_for_home(home)
+    if pid is None:
+        return
+    try:
+        gateway = psutil.Process(pid)  # binds the create time: terminate() refuses a reused PID
+        gateway.terminate()
+        gateway.wait(timeout=timeout)
+    except psutil.NoSuchProcess:
+        return
+    except psutil.TimeoutExpired as exc:
+        raise AssertionError(
+            f"Auto-started gateway {pid} did not exit within {timeout:.0f}s"
+        ) from exc
+
+
 def _write_config(home: Path, port: int) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
@@ -276,8 +302,21 @@ telemetry:
 
 
 # ---- iuf c1 ----
+# The final receipt of an update whose fetch failed before the checkout moved: the plan and snapshot
+# stages carry end marks, the apply stage it died in carries none.
+UPDATE_RECEIPT: dict[str, Any] = {
+    "schema": 1, "update_id": "0123456789abcdef",
+    "started_at": "2026-10-06T10:00:00+00:00", "finished_at": "2026-10-06T10:00:01+00:00",
+    "outcome": "failed", "exit_code": 1, "stop_reason": "sys.exit(1)", "pre_update": {},
+    "stop_class": "fetch_failed",
+    "stages": [
+        {"name": "plan", "outcome": "success", "at": "2026-10-06T10:00:00+00:00"},
+        {"name": "snapshot", "outcome": "skipped", "at": "2026-10-06T10:00:00+00:00"},
+    ],
+    "steps": [], "fleet": [],
+}
 # The offline probes in the skill-lifecycle subprocess: one failed URL plugin install and one failed
-# update run (its fetch failed before the checkout moved), identical in SQLite and in the export.
+# update run (UPDATE_RECEIPT), identical in SQLite and in the export.
 FAILURE_EXPECTED_DIMENSIONS = {
     "hermes.extension.install.count": {
         "failure_class": "clone_failed", "kind": "plugin", "name": "custom", "outcome": "failed",
@@ -291,12 +330,24 @@ FAILURE_EXPECTED_DIMENSIONS = {
 }
 
 
-def _validate_failure_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
-    for name, dimensions in FAILURE_EXPECTED_DIMENSIONS.items():
+def expected_update_stages() -> list[tuple[str, str]]:
+    """One row per marked stage of UPDATE_RECEIPT, plus a failed row for the stage the run died in:
+    stage marks are end marks, so the apply stage the fetch failure stopped has none of its own."""
+    marked = [(stage["name"], stage["outcome"]) for stage in UPDATE_RECEIPT["stages"]]
+    died_in = FAILURE_EXPECTED_DIMENSIONS["hermes.update.run"]["failed_stage"]
+    return sorted([*marked, (died_in, "failed")])
+
+
+def _validate_exact_rows(rows: dict[str, list[dict[str, Any]]], expected: dict[str, dict[str, str]]) -> None:
+    for name, dimensions in expected.items():
         if [row["dimensions"] for row in rows[name]] != [dimensions] or rows[name][0]["value"] != 1:
             raise AssertionError(f"Unexpected {name}: {rows[name]}")
+
+
+def _validate_failure_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
+    _validate_exact_rows(rows, FAILURE_EXPECTED_DIMENSIONS)
     stages = sorted((row["dimensions"]["stage"], row["dimensions"]["outcome"]) for row in rows["hermes.update.stage"])
-    if stages != [("plan", "success"), ("snapshot", "skipped")]:
+    if stages != expected_update_stages():
         raise AssertionError(f"Unexpected update stages: {rows['hermes.update.stage']}")
 # ---- end iuf c1 ----
 
@@ -315,9 +366,7 @@ V5_EXPECTED_DIMENSIONS = {
 
 
 def _validate_v5_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
-    for name, dimensions in V5_EXPECTED_DIMENSIONS.items():
-        if [row["dimensions"] for row in rows[name]] != [dimensions] or rows[name][0]["value"] != 1:
-            raise AssertionError(f"Unexpected {name}: {rows[name]}")
+    _validate_exact_rows(rows, V5_EXPECTED_DIMENSIONS)
     [overhead] = rows["hermes.tool_overhead.count"]  # the file toolset's 4 tools, schema tokens estimated
     if (
         overhead["value"] != 1
@@ -328,10 +377,65 @@ def _validate_v5_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
         raise AssertionError(f"Unexpected tool overhead: {overhead}")
 
 
-def _validate_store(database_path: Path) -> list[dict[str, Any]]:
-    if not database_path.is_file():
-        raise AssertionError(f"Metrics database was not created: {database_path}")
-    with sqlite3.connect(database_path) as connection:
+# A one-shot chat is served by the gateway it auto-starts for the home (unified gateway runtime): that
+# gateway reports its own boot latency and the local platform's delivery and first-reply latency for
+# the turn. The turn's single read_file call is one tool batch.
+GATEWAY_TURN_EXPECTED_DIMENSIONS = {
+    "hermes.platform.delivery": {"failure_class": "none", "outcome": "sent", "platform": "local"},
+    "hermes.tool_batch.count": {"connector_share": "none", "model": "custom", "provider": "custom", "size_bucket": "1"},
+}
+# Each process that launched once reports one startup row: the chat client and the gateway it started.
+EXPECTED_STARTUP_SURFACES = ("cli", "gateway_boot")
+
+
+def _validate_gateway_turn_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
+    _validate_exact_rows(rows, GATEWAY_TURN_EXPECTED_DIMENSIONS)
+    replies = rows["hermes.gateway.reply_latency"]  # the bucket is whatever the host's load made it
+    if any(row["dimensions"]["platform"] != "local" for row in replies) or sum(row["value"] for row in replies) != 1:
+        raise AssertionError(f"Unexpected gateway reply latency: {replies}")
+    startup = rows["hermes.startup.latency"]
+    if sorted(row["dimensions"]["surface"] for row in startup) != sorted(EXPECTED_STARTUP_SURFACES) or any(
+        row["value"] != 1 for row in startup
+    ):
+        raise AssertionError(f"Unexpected startup latency: {startup}")
+
+
+# The metric names the scenario must produce, exactly, in SQLite and in the export.
+EXPECTED_METRIC_NAMES = frozenset({
+    "hermes.client.active",
+    "hermes.context_peak.count",
+    "hermes.extension.install.count",  # iuf c1
+    "hermes.gateway.reply_latency",
+    "hermes.install.milestone",
+    "hermes.install.snapshot",
+    "hermes.model_reply_issue.count",
+    "hermes.model_route.count",
+    "hermes.model_tokens.sum",
+    "hermes.model_tool_quality.count",
+    "hermes.platform.delivery",
+    "hermes.session.count",
+    "hermes.skill.lifecycle.count",
+    "hermes.skill.load.count",
+    "hermes.startup.latency",
+    "hermes.task_cost.count",
+    "hermes.task_run.duration",
+    "hermes.task_run.finished",
+    "hermes.task_run.started",
+    "hermes.tool.usage.count",
+    "hermes.tool_batch.count",
+    "hermes.tool_call.count",
+    "hermes.tool_call.latency",
+    "hermes.tool_enabled_unused.count",
+    "hermes.tool_output_truncation.count",
+    "hermes.tool_overhead.count",
+    "hermes.update.run",  # iuf c1
+    "hermes.update.stage",  # iuf c1
+})
+
+
+def _read_counters(database_path: Path) -> list[dict[str, Any]]:
+    # Read-only: polling must never create the store before the gateway does.
+    with closing(sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)) as connection:
         rows = connection.execute(
             """
             SELECT metric_name, dimensions_json, value, packaged_value
@@ -339,7 +443,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
             ORDER BY metric_name, dimensions_json
             """
         ).fetchall()
-    counters = [
+    return [
         {
             "name": name,
             "dimensions": json.loads(dimensions),
@@ -348,36 +452,39 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         }
         for name, dimensions, value, packaged_value in rows
     ]
+
+
+def _by_name(counters: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     by_name: dict[str, list[dict[str, Any]]] = {}
     for counter in counters:
         by_name.setdefault(counter["name"], []).append(counter)
-    if set(by_name) != {
-        "hermes.client.active",
-        "hermes.context_peak.count",
-        "hermes.extension.install.count",  # iuf c1
-        "hermes.install.milestone",
-        "hermes.install.snapshot",
-        "hermes.model_reply_issue.count",
-        "hermes.model_route.count",
-        "hermes.model_tokens.sum",
-        "hermes.model_tool_quality.count",
-        "hermes.session.count",
-        "hermes.skill.lifecycle.count",
-        "hermes.skill.load.count",
-        "hermes.startup.latency",
-        "hermes.task_cost.count",
-        "hermes.task_run.duration",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
-        "hermes.tool.usage.count",
-        "hermes.tool_call.count",
-        "hermes.tool_call.latency",
-        "hermes.tool_enabled_unused.count",
-        "hermes.tool_output_truncation.count",
-        "hermes.tool_overhead.count",
-        "hermes.update.run",  # iuf c1
-        "hermes.update.stage",  # iuf c1
-    }:
+    return by_name
+
+
+def _wait_for_gateway_turn_rows(database_path: Path, timeout: float = 30.0) -> bool:
+    """Poll the probe home's store until the auto-started gateway's turn rows have landed.
+
+    The gateway records them after the reply reached the chat client, and stopping it does not
+    settle them: its graceful exit ends in ``os._exit``, which skips the shared-metrics flush. So the
+    smoke waits for the rows before it stops the gateway. False when ``timeout`` passed first.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _validate_gateway_turn_rows(_by_name(_read_counters(database_path)))
+            return True
+        except (sqlite3.Error, KeyError, AssertionError):
+            if time.monotonic() >= deadline:
+                return False
+        time.sleep(0.25)
+
+
+def _validate_store(database_path: Path) -> list[dict[str, Any]]:
+    if not database_path.is_file():
+        raise AssertionError(f"Metrics database was not created: {database_path}")
+    counters = _read_counters(database_path)
+    by_name = _by_name(counters)
+    if set(by_name) != EXPECTED_METRIC_NAMES:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
@@ -450,7 +557,11 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ]:
         raise AssertionError(f"Unexpected tool usage: {by_name['hermes.tool.usage.count']}")
     [snapshot] = by_name["hermes.install.snapshot"]
-    if snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin":
+    if (
+        snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin"
+        # The smoke config leaves compression.prepare_ahead at its default.
+        or snapshot["dimensions"]["compression_prepare_ahead"] != "off"
+    ):
         raise AssertionError(f"Unexpected install snapshot: {snapshot}")
     [session] = by_name["hermes.session.count"]
     if (session["dimensions"]["turn_count_bucket"], session["dimensions"]["last_outcome"]) != (
@@ -471,9 +582,6 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "custom", "custom", "no",
     ):
         raise AssertionError(f"Unexpected context peak: {peak}")
-    [startup] = by_name["hermes.startup.latency"]
-    if startup["dimensions"]["surface"] != "cli":
-        raise AssertionError(f"Unexpected startup latency: {startup}")
     milestones = {c["dimensions"]["milestone"] for c in by_name["hermes.install.milestone"]}
     if not {"first_task_started", "first_task_success", "first_tool_success"} <= milestones:
         raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
@@ -527,6 +635,7 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ):
         raise AssertionError(f"Unexpected skill load counters: {loads}")
     _validate_v5_rows(by_name)
+    _validate_gateway_turn_rows(by_name)
     _validate_failure_rows(by_name)  # iuf c1
     return counters
 
@@ -579,33 +688,7 @@ def _validate_packages(
     for package in packages:
         for metric in package.get("metrics", []):
             metrics.setdefault(metric["name"], []).append(metric)
-    if set(metrics) != {
-        "hermes.client.active",
-        "hermes.context_peak.count",
-        "hermes.extension.install.count",  # iuf c1
-        "hermes.install.milestone",
-        "hermes.install.snapshot",
-        "hermes.model_reply_issue.count",
-        "hermes.model_route.count",
-        "hermes.model_tokens.sum",
-        "hermes.model_tool_quality.count",
-        "hermes.session.count",
-        "hermes.skill.lifecycle.count",
-        "hermes.skill.load.count",
-        "hermes.startup.latency",
-        "hermes.task_cost.count",
-        "hermes.task_run.duration",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
-        "hermes.tool.usage.count",
-        "hermes.tool_call.count",
-        "hermes.tool_call.latency",
-        "hermes.tool_enabled_unused.count",
-        "hermes.tool_output_truncation.count",
-        "hermes.tool_overhead.count",
-        "hermes.update.run",  # iuf c1
-        "hermes.update.stage",  # iuf c1
-    }:
+    if set(metrics) != EXPECTED_METRIC_NAMES:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
         )
@@ -675,6 +758,7 @@ def _validate_packages(
     }:
         raise AssertionError(f"Unexpected skill load metrics: {loads}")
     _validate_v5_rows(metrics)
+    _validate_gateway_turn_rows(metrics)
     _validate_failure_rows(metrics)  # iuf c1
     return package_paths, packages
 
@@ -682,6 +766,9 @@ def _validate_packages(
 def main() -> int:
     args = _arguments()
     hermes_repo = args.hermes_repo.resolve()
+    # The gateway identity check must come from the tree under test, not whatever tree the venv's
+    # editable install points at.
+    sys.path.insert(0, str(hermes_repo))
     relay_python = args.relay_python.resolve() if args.relay_python else None
     hermes = _resolve_hermes_executable(hermes_repo)
     if relay_python is not None and not any(
@@ -770,6 +857,10 @@ def main() -> int:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        metrics_db = home / "telemetry" / "shared_metrics" / "metrics.sqlite3"
+        if not _wait_for_gateway_turn_rows(metrics_db):
+            print(f"Gateway turn rows did not reach {metrics_db} in time", file=sys.stderr)
+        _stop_auto_started_gateway(home)
 
     (root / "hermes.stdout.txt").write_text(result.stdout, encoding="utf-8")
     (root / "hermes.stderr.txt").write_text(result.stderr, encoding="utf-8")
@@ -829,13 +920,7 @@ def main() -> int:
                 "except PluginOperationError:",
                 "    pass",
                 "from hermes_cli.observability.shared_metrics_update import record_update_receipt",
-                "record_update_receipt({'schema': 1, 'update_id': '0123456789abcdef',",
-                "    'started_at': '2026-10-06T10:00:00+00:00', 'finished_at': '2026-10-06T10:00:01+00:00',",
-                "    'outcome': 'failed', 'exit_code': 1, 'stop_reason': 'sys.exit(1)', 'pre_update': {},",
-                "    'stop_class': 'fetch_failed',",
-                "    'stages': [{'name': 'plan', 'outcome': 'success', 'at': '2026-10-06T10:00:00+00:00'},",
-                "               {'name': 'snapshot', 'outcome': 'skipped', 'at': '2026-10-06T10:00:00+00:00'}],",
-                "    'steps': [], 'fleet': []})",
+                f"record_update_receipt({UPDATE_RECEIPT!r})",
                 "runtime = relay_shared_metrics._get_runtime()",
                 "assert runtime is not None",
                 "runtime.shutdown()",

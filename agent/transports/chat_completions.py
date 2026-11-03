@@ -15,7 +15,7 @@ from agent.reasoning_effort import (
     GEMINI4_THINKING_LEVELS, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
-from agent.message_metadata import MESSAGE_UID
+from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
 from agent.message_sanitization import coalesce_tool_call_id, normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -41,7 +41,7 @@ _STRIP_MSG_KEYS = (
     # ``platform_message_id`` is persisted as-is and comes back from replay as ``message_id``
     # (JSONL transcript compat); both are delivery bookkeeping, never model input.
     "platform_message_id", "message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
-    MESSAGE_UID,
+    MESSAGE_UID, DATA_USE,
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
@@ -96,8 +96,8 @@ def _add_prompt_cache_key(
     # Responses calls stay cache-cold while the main Responses transport is warm (issue #53735). The key is
     # content-addressed from the static prefix (instructions + tool schemas) so it stays warm across
     # turns/fires. Guard the top-level field the same way the main transport does: xAI Responses takes the
-    # key in extra_body (not top-level) and GitHub/Copilot Responses opts out of cache-key routing entirely
-    # — for those hosts, skip it here.
+    # key in extra_body (not top-level) and endpoints declaring ``responses_prompt_cache_key=False`` opt out
+    # of cache-key routing entirely — for those hosts, skip it here.
     from agent.transports.codex import (
         _bound_prompt_cache_key_field, _cache_scope_from_session_id, _content_cache_key
     )
@@ -265,7 +265,18 @@ def _is_openai_api_base_url(base_url: Any) -> bool:
 
 
 _GEMINI_SIGNATURE_HOSTS = ("generativelanguage.googleapis.com", "aiplatform.googleapis.com")
-_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex", "copilot"})
+_GEMINI_SIGNATURE_PROVIDERS = frozenset({"gemini", "vertex"})
+
+
+def _profile_replays_tool_call_signatures(provider: Any) -> bool:
+    """``ProviderProfile.replays_tool_call_signatures`` for the provider named exactly (canonical name only)."""
+    name = (provider or "").strip().lower()
+    if not name:
+        return False
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(name)
+    return profile is not None and profile.name == name and profile.replays_tool_call_signatures
 
 
 def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider: Any = None) -> bool:
@@ -280,6 +291,7 @@ def _model_consumes_thought_signature(model: Any, base_url: Any = None, provider
     return (
         "gemini" in m or "gemma" in m
         or (provider or "").strip().lower() in _GEMINI_SIGNATURE_PROVIDERS
+        or _profile_replays_tool_call_signatures(provider)
         or any(base_url_host_matches(base_url, host) for host in _GEMINI_SIGNATURE_HOSTS)
     )
 
@@ -559,6 +571,8 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
+        # Read before convert_messages strips the key; only a profile that asks for it consumes it.
+        params["data_use"] = data_use_requirement(messages)
         sanitized = self.convert_messages(
             messages, model=model, base_url=params.get("base_url"), provider_profile=_profile,
             provider=params.get("provider_name"),
@@ -602,9 +616,10 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
         if supports_reasoning:
-            if params.get("is_github_models", False):
-                if params.get("github_reasoning_extra") is not None:
-                    extra_body["reasoning"] = params["github_reasoning_extra"]
+            # An endpoint claimed by a profile (providers.profile_for_host) takes its verbatim payload.
+            if params.get("profile_endpoint", False):
+                if params.get("endpoint_reasoning") is not None:
+                    extra_body["reasoning"] = params["endpoint_reasoning"]
             else:
                 _effort = (reasoning_config.get("effort", "medium") or "medium") if reasoning_config and isinstance(reasoning_config, dict) else "medium"
                 # Honor explicit "thinking off" like the profile path — never re-enable it.
@@ -658,7 +673,7 @@ class ChatCompletionsTransport(ProviderTransport):
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
             base_url=params.get("base_url"), reasoning_config=reasoning_config,
-            openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
+            openrouter_min_coding_score=params.get("openrouter_min_coding_score"), data_use=params.get("data_use"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
@@ -712,8 +727,12 @@ class ChatCompletionsTransport(ProviderTransport):
             provider_data["reasoning_content"] = reasoning_content
         if getattr(msg, "reasoning_details", None):
             provider_data["reasoning_details"] = msg.reasoning_details
-        # Message-level carriers (Gemini text-turn signature, Copilot reasoning): agent/reasoning_carriers.py.
-        for key in ("extra_content", "reasoning_opaque", "reasoning_text"):
+        # Message-level carriers (Gemini text-turn signature, profile-declared reasoning keys):
+        # agent/reasoning_carriers.py.
+        from agent.reasoning_carriers import declared_carrier_keys
+
+        opaque_keys, text_keys = declared_carrier_keys()
+        for key in dict.fromkeys(("extra_content", *opaque_keys, *text_keys)):
             if (value := _attr_or_model_extra(msg, key)) is not None:
                 provider_data[key] = _dump_extra_content(value)
 
@@ -731,8 +750,9 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
-            # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
-            reasoning=getattr(msg, "reasoning", None) or provider_data.get("reasoning_text"), usage=usage,
+            # A profile-declared text carrier doubles as the readable reasoning (first declared wins).
+            reasoning=getattr(msg, "reasoning", None) or next(
+                (provider_data[k] for k in text_keys if provider_data.get(k)), None), usage=usage,
             provider_data=provider_data or None,
         )
 
@@ -750,7 +770,7 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # Copilot's Gemini 3 variant
+        fn_sig = _attr_or_model_extra(tc_function, "thought_signature")  # gateway-signed Gemini 3 calls
         provider_data = {k: v for k, v in (("extra_content", None if extra is None else _dump_extra_content(extra)),
                                             ("thought_signature", fn_sig)) if v is not None}
         call = ToolCall(

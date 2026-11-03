@@ -24,6 +24,22 @@ test('a Python backend is the helper interpreter as-is', async () => {
   await expect(ticketRuntimeFor(backend)).resolves.toBe(backend)
 })
 
+test('a bundled launcher keeps its CLI command but names the payload Python for ticket minting', async () => {
+  const backend = {
+    command: '/resources/agent-payload/bin/hermes.exe',
+    kind: 'python',
+    shell: false,
+    env: { HERMES_RUNTIME_DIR: '/resources/agent-payload/tools' },
+    ticketCommand: '/resources/agent-payload/tools/python/python.exe',
+    ticketEnv: { PYTHONPATH: '/resources/agent-payload/repo;/resources/agent-payload/venv/Lib/site-packages' }
+  }
+
+  await expect(ticketRuntimeFor(backend)).resolves.toEqual({
+    command: backend.ticketCommand,
+    env: { ...backend.env, ...backend.ticketEnv }
+  })
+})
+
 test.skipIf(process.platform === 'win32')('an installed launcher backend mints with the interpreter it reports', async () => {
   // The normal Windows install resolves to kind 'command' (the installation launcher).
   const python = process.execPath

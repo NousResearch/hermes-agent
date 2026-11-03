@@ -66,11 +66,25 @@ it('saves the lead picked in Room settings, and Everyone clears it', async () =>
   request.mockResolvedValue({})
   render(<CanonicalGroupRoomSettings binding={binding} context={{ purpose: 'Kernel', notes: '', routing: 'everyone', lead_member_id: '' }} members={members} />)
   fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
-  fireEvent.change(screen.getByLabelText('routing'), { target: { value: 'm-ada' } })
+  fireEvent.change(screen.getByLabelText('routing'), { target: { value: 'member:m-ada' } })
   fireEvent.click(screen.getByText('Save'))
 
   await waitFor(() => expect(request).toHaveBeenCalledWith(binding, 'groups.context', {
     room_id: 'room-1', event_id: 'uuid-1', purpose: 'Kernel', notes: '', routing: 'lead', lead_member_id: 'm-ada' }))
+})
+
+it('a member whose id is "everyone" can still be made lead', async () => {
+  request.mockResolvedValue({})
+  const roster = [...members, { member_id: 'everyone', handle: 'evy', display_name: 'Evy', profile: 'evy' }]
+  render(<CanonicalGroupRoomSettings binding={binding} context={{ purpose: '', notes: '', routing: 'everyone', lead_member_id: '' }} members={roster} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Room settings' }))
+  const values = [...(screen.getByLabelText('routing') as HTMLSelectElement).options].map(option => option.value)
+  expect(new Set(values).size).toBe(values.length)
+  fireEvent.change(screen.getByLabelText('routing'), { target: { value: 'member:everyone' } })
+  fireEvent.click(screen.getByText('Save'))
+
+  await waitFor(() => expect(request).toHaveBeenCalledWith(binding, 'groups.context', {
+    room_id: 'room-1', event_id: 'uuid-1', purpose: '', notes: '', routing: 'lead', lead_member_id: 'everyone' }))
 })
 
 it('offers no routing choice to a runtime that does not report one', () => {

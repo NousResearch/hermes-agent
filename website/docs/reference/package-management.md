@@ -151,7 +151,9 @@ its `dependency-groups`, legacy uv development dependencies and unselected extra
 (`dev`, `test`) are left out, together with the `tool.uv.sources` entries scoped to
 them, because PM never installs them yet uv would still
 resolve them against core's pins. The original plugin metadata and core development
-pins are unchanged; genuine runtime conflicts still refuse admission. The generated workspace and extended lock remain
+pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
+build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
+its own extras (`myplugin[runtime]`) are renamed with it. The generated workspace and extended lock remain
 outside shipped source. The workspace is solved only for the platform and
 architecture of the interpreter it installs into, so a plugin dependency with no
 wheels for another platform (onnxruntime or torch on Android) does not block it;

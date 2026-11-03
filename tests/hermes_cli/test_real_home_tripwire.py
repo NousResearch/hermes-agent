@@ -241,6 +241,29 @@ def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, 
     assert _pm_generation_dirs([tmp_path / "checkout" / ".venv", tmp_path / "other" / "venv"]) == set()
 
 
+def test_linked_worktree_git_dir_is_the_checkout_not_hermes_state(tmp_path):
+    """A worktree of a default install keeps its git dir in ``<main>/.git/worktrees/<name>``:
+    under the home, outside the worktree root, and update custody reads
+    ``<git dir>/hermes-update-pull`` there at import. Only that worktree's own git dir is
+    exempt (not the shared repo, not a sibling worktree's); an ordinary clone's ``.git`` is
+    inside its root and adds nothing."""
+    from tests.home_io_guard import _checkout_git_dir
+
+    common = tmp_path / ".hermes" / "hermes-agent" / ".git"
+    git_dir = common / "worktrees" / "feature"
+    git_dir.mkdir(parents=True)
+    (common / "worktrees" / "other").mkdir()
+    worktree = tmp_path / "worktrees" / "feature"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+    assert _checkout_git_dir(worktree) == {git_dir.resolve()}
+
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    assert _checkout_git_dir(clone) == set()
+    assert _checkout_git_dir(tmp_path / "not-a-checkout") == set()
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

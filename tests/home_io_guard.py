@@ -23,6 +23,23 @@ def _pm_generation_dirs(prefixes) -> set[Path]:
     return found
 
 
+def _checkout_git_dir(root: Path) -> set[Path]:
+    """A linked worktree's private git dir, which lives OUTSIDE *root*.
+
+    Its ``.git`` is a file naming ``<main checkout>/.git/worktrees/<name>``; with the main checkout
+    inside the home that sits under the guarded root, yet it is this checkout's metadata (update
+    custody reads ``<git dir>/hermes-update-pull`` at import). An ordinary clone's ``.git``
+    directory is inside *root* and already exempt with it.
+    """
+    try:
+        text = (root / ".git").read_text(encoding="utf-8-sig").strip()
+    except OSError:  # absent, or a directory (an ordinary clone)
+        return set()
+    if not text.startswith("gitdir:"):
+        return set()
+    return {(root / text[len("gitdir:"):].strip()).resolve()}
+
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -42,6 +59,8 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+    # ...and, for a linked worktree of such a checkout, its private git dir outside the root.
+    *_checkout_git_dir(Path(__file__).resolve().parent.parent),
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes

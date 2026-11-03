@@ -7,10 +7,9 @@ long-lived bridge process therefore survived gateway restarts AND
 ``hermes update``, serving pre-update bridge.js behavior forever (e.g.
 no inbound media download → images/voice notes arrive as placeholders).
 
-The fix: bridge.js reports a hash of its own source in ``/health``
-(``scriptHash``); the adapter compares it against the bridge.js on disk
-and restarts the bridge on mismatch.  Bridges that predate the handshake
-report no hash and are treated as stale by definition.
+The fix: bridge.js reports source and process-start configuration hashes in
+``/health`` (``scriptHash`` and ``runtimeConfigHash``). The adapter restarts on
+either mismatch. Bridges that predate either handshake are treated as stale.
 
 Also covers the npm dependency-refresh stamp: deps are reinstalled when
 package.json changes, not only when node_modules is missing.
@@ -55,6 +54,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
     adapter.config = MagicMock()
+    adapter.config.extra = {}
     adapter._bridge_port = 19876
     adapter._bridge_script = bridge_script
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
@@ -119,8 +119,56 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
 
 
 
-class TestStaleBridgeHandshake:
+class TestBridgeRuntimeConfigHash:
+    def test_covers_every_process_start_setting(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_RUNTIME_ENV_KEYS, _bridge_runtime_config_hash,
+        )
 
+        args: dict = dict(mode="bot", port=3001, session_path=tmp_path / "session", env={})
+        baseline = _bridge_runtime_config_hash(**args)
+        assert baseline == _bridge_runtime_config_hash(**args)
+        for key in _BRIDGE_RUNTIME_ENV_KEYS:
+            assert _bridge_runtime_config_hash(**{**args, "env": {key: "changed"}}) != baseline
+        for key, value in (("mode", "self-chat"), ("port", 3002), ("session_path", tmp_path / "other")):
+            assert _bridge_runtime_config_hash(**{**args, key: value}) != baseline
+
+
+class TestStaleBridgeHandshake:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("runtime_hash", [None, "stale-runtime"])
+    async def test_restarts_bridge_on_runtime_config_mismatch(self, tmp_path, runtime_hash):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session",
+        )
+        health = {
+            "status": "connected",
+            "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
+            "runtimeConfigHash": runtime_hash,
+            "session": str(adapter._session_path),
+        }
+        proc = MagicMock()
+        proc.poll.return_value = proc.returncode = 1
+        with (
+            patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
+            patch("aiohttp.ClientSession", _mock_health(health)),
+            patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
+            patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"),
+            patch("plugins.platforms.whatsapp.adapter._kill_port_process") as kill_port,
+            patch("subprocess.Popen", return_value=proc) as popen,
+            patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True),
+        ):
+            assert not await adapter.connect()
+
+        popen.assert_called_once()
+        kill_port.assert_called_once_with(adapter._bridge_port)
+        assert popen.call_args.kwargs["env"]["HERMES_BRIDGE_RUNTIME_HASH"] == (
+            adapter._bridge_env()["HERMES_BRIDGE_RUNTIME_HASH"]
+        )
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
@@ -138,6 +186,7 @@ class TestStaleBridgeHandshake:
             {
                 "status": "connected",
                 "scriptHash": disk_hash,
+                "runtimeConfigHash": adapter._bridge_env()["HERMES_BRIDGE_RUNTIME_HASH"],
                 "sendReadReceipts": False,
                 "session": str(tmp_path / "session"),
             }
@@ -184,6 +233,7 @@ class TestStaleBridgeHandshake:
             {
                 "status": status,
                 "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
+                "runtimeConfigHash": adapter._bridge_env()["HERMES_BRIDGE_RUNTIME_HASH"],
                 "sendReadReceipts": False,
                 "session": str(reported),
             },

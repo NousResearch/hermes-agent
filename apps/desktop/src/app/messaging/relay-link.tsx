@@ -155,7 +155,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
         if (failures >= MAX_POLL_ERRORS || !redeemedBeforeExpiry(link)) {
           setLink(null)
           setQrDataUrl('')
-          setError(pollError instanceof Error ? pollError.message : String(pollError))
+          setError(relayErrorText(pollError))
 
           return
         }

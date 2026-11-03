@@ -53,10 +53,14 @@ it('lists the rooms once the socket opens, without pinning the pre-open refusal'
   })
 
   render(<CanonicalGroupList onOpen={() => undefined} />)
-  await act(async () => { await Promise.resolve() })
+  await act(async () => {
+    await Promise.resolve()
+  })
   expect(screen.queryByRole('alert')).toBeNull()
 
-  await act(async () => { gatewayState().set('open') })
+  await act(async () => {
+    gatewayState().set('open')
+  })
 
   expect(await screen.findByRole('button', { name: 'Launch crew' })).toBeTruthy()
   expect(screen.queryByRole('alert')).toBeNull()

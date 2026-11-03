@@ -796,9 +796,11 @@ test('platform detection preserves typed Windows probe failures', async () => {
 
 test('helper command enters through the launcher module dispatch and quotes path data', () => {
   // The shape update drain and bootstrap rollback rebuild from stored state: no runtime command.
-  const command = helperCommand({ hermesPath: "C:\\Program Files\\Hermes's\\bin\\hermes.exe", hermesHome: 'C:\\h', python: '' }, 'inspect', [
-    'C:\\x y\\hermes.exe'
-  ])
+  const command = helperCommand(
+    { hermesPath: "C:\\Program Files\\Hermes's\\bin\\hermes.exe", hermesHome: 'C:\\h', python: '' },
+    'inspect',
+    ['C:\\x y\\hermes.exe']
+  )
 
   const encoded = command.split(' ').pop()!
   const script = Buffer.from(encoded, 'base64').toString('utf16le')

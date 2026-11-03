@@ -70,7 +70,10 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     }
   }
 
-  const desktop = (connection: Record<string, unknown>, minted: unknown = 'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n') => {
+  const desktop = (
+    connection: Record<string, unknown>,
+    minted: unknown = 'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n'
+  ) => {
     const getPluginWsUrl = vi.fn(async (): Promise<unknown> => minted)
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -107,8 +110,15 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     const dispose = pluginSocket('kanban', '/events?board=b', () => undefined)
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(mint).toHaveBeenCalledWith({ connectionId: null, path: '/events?board=b', pluginId: 'kanban', profile: 'coder' })
-    expect(FakeSocket.all.map(socket => socket.url)).toEqual(['ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n'])
+    expect(mint).toHaveBeenCalledWith({
+      connectionId: null,
+      path: '/events?board=b',
+      pluginId: 'kanban',
+      profile: 'coder'
+    })
+    expect(FakeSocket.all.map(socket => socket.url)).toEqual([
+      'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n'
+    ])
     dispose()
   })
 
@@ -265,7 +275,9 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     setApiRequestConnection('homelab')
     await vi.advanceTimersByTimeAsync(0)
     expect(mint).toHaveBeenCalledTimes(11)
-    expect(FakeSocket.all.map(socket => socket.url)).toEqual(['ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=m'])
+    expect(FakeSocket.all.map(socket => socket.url)).toEqual([
+      'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=m'
+    ])
     dispose()
 
     // A disposed socket no longer follows the scope.
@@ -422,7 +434,9 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
       socket.onclose?.()
       await vi.advanceTimersByTimeAsync(31_000)
 
-      if (FakeSocket.all.at(-1) !== socket) {delays.push(FakeSocket.all.at(-1)!.at - closedAt)}
+      if (FakeSocket.all.at(-1) !== socket) {
+        delays.push(FakeSocket.all.at(-1)!.at - closedAt)
+      }
     }
 
     expect(FakeSocket.all).toHaveLength(5)

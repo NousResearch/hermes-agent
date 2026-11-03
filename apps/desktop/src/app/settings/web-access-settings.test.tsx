@@ -349,3 +349,95 @@ describe('WebAccessSettings', () => {
     expect(await screen.findByText(/The connection is not encrypted/)).toBeTruthy()
   })
 })
+
+describe('WebAccessSettings while Start runs', () => {
+  // A backend that reports a Start in flight answers `start_progress` (null when none runs).
+  const IDLE: WebAccessStatus = { ...OFF, start_progress: null }
+
+  const building = (secondsAgo = 0): WebAccessStatus => ({
+    ...IDLE,
+    start_progress: { started_at: Date.now() / 1000 - secondsAgo, step: 'building' }
+  })
+
+  // The progress poll and the elapsed clock run only while the window is viewed.
+  beforeEach(() => {
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.mocked(globalThis.document.hasFocus).mockRestore()
+  })
+
+  it('says which step Start is on and how long it has run while it builds', async () => {
+    // The build can take minutes: Start's request answers only when it is done.
+    mocked.startWebAccess.mockReturnValue(new Promise(() => {}))
+    renderPane(IDLE)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    mocked.getWebAccessStatus.mockResolvedValue(building())
+
+    fireEvent.click(start)
+
+    expect(await screen.findByText('Building the web app. This can take a few minutes.')).toBeTruthy()
+    expect(screen.getByText('Starting')).toBeTruthy()
+    expect(screen.getByText(/\d+s elapsed/)).toBeTruthy()
+
+    mocked.getWebAccessStatus.mockResolvedValue({
+      ...IDLE,
+      start_progress: { started_at: Date.now() / 1000, step: 'registering' }
+    })
+    vi.advanceTimersByTime(1000)
+
+    expect(await screen.findByText('Setting up Nous sign-in for this address.')).toBeTruthy()
+  })
+
+  it('shows a Start already running when the pane opens during it, and its result when it ends', async () => {
+    // Another window started web access, or this pane was closed and reopened while it built.
+    renderPane(building(125))
+
+    expect(await screen.findByText('Building the web app. This can take a few minutes.')).toBeTruthy()
+    expect(screen.getByText('2:05 elapsed')).toBeTruthy()
+    expect(screen.getByText('Starting')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start' }).hasAttribute('disabled')).toBe(true)
+
+    mocked.getWebAccessStatus.mockResolvedValue({ ...SERVING, start_progress: null })
+    vi.advanceTimersByTime(1000)
+
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+    expect(screen.queryByText(/elapsed/)).toBeNull()
+    expect(mocked.startWebAccess).not.toHaveBeenCalled()
+  })
+
+  it('says the gateway is restarting once Start has saved the change', async () => {
+    mocked.startWebAccess.mockResolvedValue({
+      ...OFF,
+      enabled: true,
+      mode: 'lan',
+      restart_pid: 9,
+      restart_started: true
+    })
+    renderPane(IDLE)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    // The restarting gateway has not answered yet.
+    mocked.getWebAccessStatus.mockReturnValue(new Promise<WebAccessStatus>(() => {}))
+
+    fireEvent.click(start)
+
+    expect(await screen.findByText('Restarting the gateway to serve the web app.')).toBeTruthy()
+  })
+
+  it('describes the Start of a backend that reports no step without polling it for one', async () => {
+    // A backend older than `start_progress`: its status never carries the field.
+    mocked.startWebAccess.mockReturnValue(new Promise(() => {}))
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+
+    expect(await screen.findByText('Getting the web app ready. Building it can take a few minutes.')).toBeTruthy()
+    const calls = mocked.getWebAccessStatus.mock.calls.length
+    vi.advanceTimersByTime(3000)
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(mocked.getWebAccessStatus.mock.calls.length).toBe(calls)
+  })
+})

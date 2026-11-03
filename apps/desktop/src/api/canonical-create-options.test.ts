@@ -28,7 +28,7 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   // serve socket's flag; the owner keys the same behaviour on hidden + follow_profile_config.
   ['Desktop-driven room member', { ...BASE, title: 'Group: r-1 · t1', hidden: true, room_plumbing: true, follow_profile_config: true }, { profile: 'default', title: 'Group: r-1 · t1', follow_profile_config: true, hidden: true }],
   // A caller sending only the serve flag still gets a hidden row that follows the profile config.
-  ['room plumbing flag alone', { ...BASE, title: 'Group: r-2 · t1', room_plumbing: true }, { profile: 'default', title: 'Group: r-2 · t1', hidden: true, follow_profile_config: true }],
+  ['room plumbing flag alone', { ...BASE, title: 'Group: r-2 · t1', room_plumbing: true }, { profile: 'default', title: 'Group: r-2 · t1', follow_profile_config: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.

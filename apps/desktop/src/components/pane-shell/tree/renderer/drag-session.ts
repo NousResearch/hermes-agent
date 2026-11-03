@@ -243,6 +243,9 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     if (cursor !== value) {
       cursor = value
       document.body.style.cursor = value
+      // Body cursor alone loses to any element with its own cursor (tabs,
+      // buttons); the attribute drives a global override in styles.css.
+      document.documentElement.dataset.dragCursor = value
     }
   }
 
@@ -333,6 +336,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     }
 
     document.body.style.cursor = restoreCursor
+    delete document.documentElement.dataset.dragCursor
     document.body.style.userSelect = restoreSelect
     ghost?.destroy()
     ghost = null

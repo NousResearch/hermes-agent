@@ -737,7 +737,7 @@ export function TreeGroup({
                   }
                 }}
                 ref={stripRef}
-                style={{ cursor: 'grab', WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
+                style={{ WebkitAppRegion: dragging ? 'no-drag' : undefined } as CSSProperties}
                 titlebar={tabsInTitlebar}
                 trailing={
                   <>
@@ -852,7 +852,6 @@ export function TreeGroup({
                       }}
                       role="tab"
                       selected={isSelected}
-                      style={{ cursor: 'grab' }}
                     >
                       {chrome.tabLead ? (
                         <span className="ml-2 -mr-1 flex shrink-0 items-center">

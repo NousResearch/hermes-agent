@@ -139,7 +139,7 @@ describe('PaneTab hover close button', () => {
 
 describe('PaneTab under a context-menu trigger', () => {
   // The trigger's injected data-slot used to replace ours, so the close-width and
-  // label-mask rules keyed on [data-slot='pane-tab'] stopped matching session tabs.
+  // close-lane rules keyed on [data-slot='pane-tab'] stopped matching session tabs.
   it('keeps its own data-slot and the menu marker', () => {
     render(
       <ContextMenu>

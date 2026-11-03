@@ -34,7 +34,7 @@ def tool_unavailable_fields(agent: Any, name: Any, issue: str, route: dict[str, 
 
     Background reviews, delegated children and cron jobs run with toolsets Hermes (or the parent
     model) narrowed on purpose, so their misses say nothing about what users should get by default.
-    A built-in deferred behind ``tool_search`` is enabled (reachable through ``tool_call``), not missing.
+    A built-in deferred behind ``tool_search`` is enabled (reachable through ``invoke_tool``), not missing.
     """
     if issue != "unknown_tool" or not isinstance(name, str) or name not in contract.BUILTIN_TOOL_NAMES:
         return None

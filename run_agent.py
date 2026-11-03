@@ -1076,7 +1076,7 @@ class AIAgent(
     @classmethod
     def _tool_response_matches_todo_call(cls, history: list[dict[str, Any]], tool_index: int) -> bool:
         """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
-        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
+        ``invoke_tool`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
         missing id means unpaired → must not hydrate."""
         tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
         if not tool_call_id:

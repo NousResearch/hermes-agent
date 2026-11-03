@@ -368,7 +368,7 @@ def _translate_tool_result_to_gemini(
 ) -> dict[str, Any]:
     tool_call_id = str(message.get("tool_call_id") or "")
     # functionResponse.name must echo the matching functionCall.name, so the call-id
-    # mapping beats the result's own name (may be an unwrapped MCP name via `tool_call`).
+    # mapping beats the result's own name (may be an unwrapped MCP name via `invoke_tool`).
     name = str((tool_name_by_call_id or {}).get(tool_call_id) or message.get("name") or tool_call_id or "tool")
     raw_content = message.get("content")
     content = _coerce_content_to_text(raw_content)

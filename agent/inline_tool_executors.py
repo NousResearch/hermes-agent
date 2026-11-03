@@ -197,7 +197,7 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
     """Add the MCP servers this call connected to the agent's toolset selection.
 
-    ``tool_describe``/``tool_call`` resolve names inside that selection, and it was fixed when the
+    ``tool_describe``/``invoke_tool`` resolve names inside that selection, and it was fixed when the
     agent was built, so a server registered a moment ago is otherwise "not found" for the rest of
     the turn the result calls it available in. Only the selection changes; ``agent.tools`` does
     not, so the sent tool schema bytes stay the same."""

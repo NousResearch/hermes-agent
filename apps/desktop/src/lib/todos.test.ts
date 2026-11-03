@@ -103,6 +103,26 @@ describe('parseTodoRevision', () => {
 })
 
 describe('latestSessionTodoSnapshot', () => {
+  it.each(['invoke_tool', 'tool_call'])('reads a todo result bridged through %s', bridge => {
+    const valid = { todos: [{ content: 'Ship', id: 'b', status: 'in_progress' }], revision: 1 }
+
+    const raw = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        tool_calls: [
+          {
+            id: 'bridged-1',
+            function: { name: bridge, arguments: JSON.stringify({ calls: [{ name: 'todo_list', arguments: {} }] }) }
+          }
+        ]
+      },
+      { role: 'tool' as const, tool_call_id: 'bridged-1', tool_name: 'todo_list', content: JSON.stringify(valid) }
+    ]
+
+    expect(latestSessionTodoSnapshot(toChatMessages(raw))).toEqual(valid)
+  })
+
   it('reads a persisted tool_call wrapper result and ignores a later unpaired tool row', () => {
     const valid = { todos: [{ content: 'Draft', id: 'a', status: 'pending' }], revision: 3 }
 

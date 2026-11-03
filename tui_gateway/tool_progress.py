@@ -182,7 +182,7 @@ def _todo_state_from_db(db, session_id: str) -> dict | None:
 def _todo_state_from_history(history) -> dict | None:
     """Latest todo snapshot from a loaded transcript, for resume paths that answer before an AIAgent (and
     its live TodoStore) exists: the newest tool result paired with an assistant Todo-tool call (aliases and
-    the ``tool_call`` bridge included) IS it."""
+    the ``invoke_tool`` bridge included) IS it."""
     if not isinstance(history, list) or not history:
         return None
     try:

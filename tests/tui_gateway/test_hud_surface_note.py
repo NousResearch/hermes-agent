@@ -84,7 +84,7 @@ class TestTurnRouting:
 
         note = server._hud_surface_note(_session(client_surface="hud") | {"agent": agent})
 
-        assert "read_window_below" in note and "through the tool_call bridge" in note
+        assert "read_window_below" in note and "through the invoke_tool bridge" in note
 
     def test_app_window_turn_gets_nothing(self):
         assert server._hud_surface_note(_session(client_surface="")) == ""

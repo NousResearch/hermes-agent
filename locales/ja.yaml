@@ -3392,7 +3392,7 @@ display:
     search: " — "
     default: " "
   bridge_generating:
-    tool_call: "ツール呼び出し"
+    invoke_tool: "ツール呼び出し"
     tool_search: "ツール検索"
     tool_describe: "ツールの詳細"
   status_phrase:

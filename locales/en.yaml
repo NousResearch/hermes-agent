@@ -3496,7 +3496,7 @@ display:
     search: " for "
     default: " "
   bridge_generating:
-    tool_call: "a tool call"
+    invoke_tool: "a tool call"
     tool_search: "a tool search"
     tool_describe: "tool details"
   status_phrase:

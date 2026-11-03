@@ -3056,11 +3056,11 @@ def _dedupe_tool_call_ids(messages: list[dict[str, Any]]) -> list[dict[str, Any]
 
 def _realign_tool_result_names(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Align each tool result's wire ``name`` with its call's function name (per-call copy only):
-    Google 400s on a mismatch, routine when tool_search bridges via ``tool_call``."""
+    Google 400s on a mismatch, routine when tool_search bridges via ``invoke_tool``."""
     # 4. Google matches functionResponse.name against functionCall.name and rejects a mismatch with HTTP 400
     #   "Request contains an invalid argument" (INVALID_ARGUMENT); behind an OpenAI-compatible gateway that
     #   surfaces only as a generic "Provider returned error". When tool_search defers MCP/plugin tools the
-    #   model calls the bridge tool ``tool_call``, while ``make_tool_result_message()`` labels the result
+    #   model calls the bridge tool ``invoke_tool``, while ``make_tool_result_message()`` labels the result
     #   with the unwrapped internal tool name (``mcp__github__create_issue``) that dispatch, hooks, logging,
     #   and guardrails need. #72089 fixed exactly this for the native Gemini adapter, which now prefers
     #   ``tool_name_by_call_id`` over the result name; requests that reach Gemini through the

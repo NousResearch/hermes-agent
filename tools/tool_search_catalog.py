@@ -19,6 +19,11 @@ TOOL_SEARCH_NAME = "tool_search"
 TOOL_DESCRIBE_NAME = "tool_describe"
 TOOL_CALL_NAME = "invoke_tool"
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
+# The bridge's name before #110442. Transcripts recorded earlier still carry it, so code that reads
+# history (todo hydration, tool labels, metrics) recognises both; dispatch accepts only TOOL_CALL_NAME,
+# the name the model is shown.
+LEGACY_TOOL_CALL_NAMES = frozenset({"tool_call"})
+TOOL_CALL_NAMES = frozenset({TOOL_CALL_NAME}) | LEGACY_TOOL_CALL_NAMES
 # Chars-per-token rule of thumb; 4.0 slightly underestimates (fewer false activations).
 CHARS_PER_TOKEN = 4.0
 

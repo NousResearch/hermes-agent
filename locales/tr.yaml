@@ -3392,7 +3392,7 @@ display:
     search: " — "
     default: " "
   bridge_generating:
-    tool_call: "bir araç çağrısı"
+    invoke_tool: "bir araç çağrısı"
     tool_search: "bir araç araması"
     tool_describe: "araç ayrıntıları"
   status_phrase:

@@ -358,7 +358,7 @@ def _append_skipped_tool_results(
 
 
 def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
+    """Deferrable tool names the session may invoke via ``invoke_tool``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
     validate against this set. Read through the ``get_tool_definitions`` memo on every call
     and never copied onto the agent: the memo expires with the check_fn verdicts it was
@@ -389,7 +389,7 @@ def _canonical_tool_name(function_name: str) -> str:
 def _unwrap_tool_search_call(
     agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
 ) -> tuple[str, dict, Optional[str]]:
-    """Peel the ``tool_call`` bridge so downstream hooks (checkpointing, guardrails, plugin
+    """Peel the ``invoke_tool`` bridge so downstream hooks (checkpointing, guardrails, plugin
     hooks, activity feed) see the underlying tool; ``tool_call.function`` stays untouched for
     the transcript and tool_call_id pairing.
 

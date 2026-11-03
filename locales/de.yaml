@@ -3392,7 +3392,7 @@ display:
     search: " nach "
     default: " "
   bridge_generating:
-    tool_call: "einen Tool-Aufruf"
+    invoke_tool: "einen Tool-Aufruf"
     tool_search: "eine Tool-Suche"
     tool_describe: "Tool-Details"
   status_phrase:

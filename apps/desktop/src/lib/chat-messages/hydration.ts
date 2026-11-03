@@ -25,6 +25,8 @@ import {
   toolPartFromStoredCall,
   withUniqueToolCallIds
 } from './tool-parts'
+import { isBridgeCallName } from '@/lib/bridge-tool'
+
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
@@ -372,7 +374,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const args = part.args as { calls?: unknown }
 
       return (
-        part.toolName === 'tool_call' &&
+        isBridgeCallName(part.toolName) &&
         Array.isArray(args?.calls) &&
         args.calls.some(inner => inner && typeof inner === 'object' && isTodoToolName(inner.name))
       )

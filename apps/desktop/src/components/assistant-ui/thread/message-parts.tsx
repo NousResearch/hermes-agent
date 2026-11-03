@@ -175,7 +175,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ToolCard {...props} />
   }
 
-  // A reloaded transcript holds the model's own call: set_theme reached through the tool_call bridge.
+  // A reloaded transcript holds the model's own call: set_theme reached through the invoke_tool bridge.
   if (setThemeCall(props.toolName, props.args)) {
     return <ThemeToolPart {...props} />
   }

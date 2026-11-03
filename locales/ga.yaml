@@ -3392,7 +3392,7 @@ display:
     search: " le haghaidh "
     default: " "
   bridge_generating:
-    tool_call: "glao uirlise"
+    invoke_tool: "glao uirlise"
     tool_search: "cuardach uirlisí"
     tool_describe: "sonraí uirlise"
   status_phrase:

@@ -3146,7 +3146,7 @@ export interface ToolLabel {
   name: string
   preview?: string
 }
-/** Which surface one inner call of a bridged ``tool_call`` runs on. */
+/** Which surface one inner call of a bridged ``invoke_tool`` runs on. */
 export type ToolLabelKind = 'connector' | 'mcp' | 'tool'
 export interface SessionBranchStoredParams {
   profile?: string | null

@@ -1,3 +1,5 @@
+import { isBridgeCallName } from '@/lib/bridge-tool'
+
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export interface TodoItem {
@@ -268,7 +270,7 @@ function isConfirmedTodoResultPart(part: Record<string, unknown>): boolean {
     return part.storedResultToolName === undefined || isTodoToolName(part.storedResultToolName)
   }
 
-  if (part.toolName !== 'tool_call' || !isRecord(part.args)) {
+  if (!isBridgeCallName(part.toolName) || !isRecord(part.args)) {
     return false
   }
 

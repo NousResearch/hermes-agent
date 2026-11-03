@@ -619,9 +619,9 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
     A per-turn fact, not a platform (one session alternates between app window and HUD), so it rides the
     model-bound message, never the byte-stable system prompt. Each sentence is gated on the tool it names (an
     unknown tool name invites a hallucinated call); without read_window_below the whole note is withheld.
-    ``deferred_tool_names`` are tools this session reaches only through the tool_call bridge (the default
+    ``deferred_tool_names`` are tools this session reaches only through the invoke_tool bridge (the default
     tool_search defer list holds the desktop tools): they count as available, and the note says to invoke
-    them via tool_call, since a direct call to a deferred name is rejected as an unknown tool.
+    them via invoke_tool, since a direct call to a deferred name is rejected as an unknown tool.
     """
     direct = valid_tool_names or set()
     deferred = set(deferred_tool_names) - direct
@@ -650,7 +650,7 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
     named = ("read_window_below", "computer_use") if "computer_use" in names else ("read_window_below",)
     bridged = [name for name in named if name in deferred]
     if bridged:
-        note += f" Call {' and '.join(bridged)} through the tool_call bridge (deferred behind tool search)."
+        note += f" Call {' and '.join(bridged)} through the invoke_tool bridge (deferred behind tool search)."
     return note + "]"
 
 

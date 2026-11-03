@@ -3409,7 +3409,7 @@ display:
     search: " erre: "
     default: " "
   bridge_generating:
-    tool_call: "eszközhívás"
+    invoke_tool: "eszközhívás"
     tool_search: "eszközkeresés"
     tool_describe: "eszközleírás"
   status_phrase:

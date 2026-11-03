@@ -144,7 +144,7 @@ class StoredSessionRow(OpenModel):
 
 
 class ToolLabelKind(WireEnum):
-    """Which surface one inner call of a bridged ``tool_call`` runs on."""
+    """Which surface one inner call of a bridged ``invoke_tool`` runs on."""
 
     connector = "connector"
     mcp = "mcp"

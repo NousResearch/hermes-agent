@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools.registry import tool_error
-from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, TOOL_CALL_NAME, _registry_entry
 
 logger = logging.getLogger("tools.tool_search")
 
@@ -234,7 +234,7 @@ def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[s
 
 
 def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
-    """Rejection for a ``tool_call`` naming something that is not a deferred tool.
+    """Rejection for an ``invoke_tool`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
@@ -252,7 +252,7 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
         if session_tool_names is not None and name not in set(session_tool_names):
             return unavailable_in_session_reason(name)
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
-                "Call it directly instead of via tool_call.")
+                f"Call it directly instead of via {TOOL_CALL_NAME}.")
     suffix = f"__{name}"
     try:
         from tools.registry import registry
@@ -261,5 +261,5 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
         candidates = []
     hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
             else " Use tool_search to find the exact name.")
-    return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "
+    return (f"'{name}' is not a known tool name. Deferred tools must be invoked through {TOOL_CALL_NAME} "
             f"by the exact name tool_search returns (e.g. mcp__<server>__{{tool}}).{hint}")

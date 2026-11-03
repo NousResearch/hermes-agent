@@ -3392,7 +3392,7 @@ display:
     search: " na "
     default: " "
   bridge_generating:
-    tool_call: "'n gereedskapsoproep"
+    invoke_tool: "'n gereedskapsoproep"
     tool_search: "'n gereedskapsoektog"
     tool_describe: "gereedskapbesonderhede"
   status_phrase:

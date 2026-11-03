@@ -3392,7 +3392,7 @@ display:
     search: " — "
     default: " "
   bridge_generating:
-    tool_call: "도구 호출"
+    invoke_tool: "도구 호출"
     tool_search: "도구 검색"
     tool_describe: "도구 세부 정보"
   status_phrase:

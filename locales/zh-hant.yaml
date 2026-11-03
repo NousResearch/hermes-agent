@@ -3392,7 +3392,7 @@ display:
     search: "："
     default: " "
   bridge_generating:
-    tool_call: "工具呼叫"
+    invoke_tool: "工具呼叫"
     tool_search: "工具搜尋"
     tool_describe: "工具詳細資訊"
   status_phrase:

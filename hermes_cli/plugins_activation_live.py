@@ -6,7 +6,7 @@ point (``skill_view`` resolves ``<plugin>:<skill>``). MCP servers are not: nothi
 flow's ``register_mcp_servers({name: config})``), and :func:`live_notice` renders what became usable
 as the note an open chat receives on its next tool result or turn (``agent/plugin_live_notes.py``).
 
-MCP tools are deferred behind ``tool_search`` / ``tool_describe`` / ``tool_call``, so adding them to a
+MCP tools are deferred behind ``tool_search`` / ``tool_describe`` / ``invoke_tool``, so adding them to a
 live session leaves the model-facing tool array (and the cached prompt prefix) byte-identical.
 """
 
@@ -122,7 +122,7 @@ def live_notice(activation: dict[str, Any]) -> str:
             lines.append(f"- MCP server {server['name']}: not connected ({server.get('error') or 'unknown error'}).")
     if any(server.get("connected") for server in servers):
         lines.append("Its MCP tools are deferred: find them with tool_search, read one with tool_describe, "
-                     "run it with tool_call.")
+                     "run it with invoke_tool.")
     deferred = activation.get("deferred") or {}
     later = [f"{len(deferred['tools'])} Python tools" if deferred.get("tools") else "",
              f"{len(deferred['prompt'])} prompt sections" if deferred.get("prompt") else ""]

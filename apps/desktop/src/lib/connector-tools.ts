@@ -2,6 +2,8 @@ import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type { ToolLabel } from '@hermes/shared'
 
+import { isBridgeCallName } from '@/lib/bridge-tool'
+
 export interface McpTarget {
   name: string
   action: 'authorize' | 'enable' | 'install'
@@ -115,7 +117,7 @@ const TOOL_LABEL_KINDS: readonly ToolLabel['kind'][] = ['connector', 'mcp', 'too
  *  (GitHub, Linear and Jira issue tools all do), so the key is one that cannot be one. */
 export const TOOL_LABELS_ARG = 'hermes_tool_labels'
 
-/** The gateway's own words for each inner call of a bridged `tool_call`, in call order.
+/** The gateway's own words for each inner call of a bridged `invoke_tool`, in call order.
  *  Rides beside `context` and `preview` on the tool row's args; empty for an ordinary tool. */
 export function toolLabels(args: ToolCallMessagePart['result']): ToolLabel[] {
   const rows = recordOf(args)[TOOL_LABELS_ARG]
@@ -161,7 +163,7 @@ export function connectorCalls(name: string, args: ToolCallMessagePart['result']
     return [{ name, arguments: args }]
   }
 
-  if (name !== 'invoke_tool' && name !== 'tool_call') {
+  if (!isBridgeCallName(name)) {
     return []
   }
 

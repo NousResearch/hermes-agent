@@ -3392,7 +3392,7 @@ display:
     search: " عن "
     default: " "
   bridge_generating:
-    tool_call: "استدعاء أداة"
+    invoke_tool: "استدعاء أداة"
     tool_search: "بحث عن أداة"
     tool_describe: "تفاصيل أداة"
   status_phrase:

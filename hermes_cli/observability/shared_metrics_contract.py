@@ -161,7 +161,7 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
 # ``relay``: a connector inbound whose platform neither the inbound nor a single-platform connector names.
 _CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin", "relay"}
 # The Tool Search bridge tools are not in a toolset; every hosted connector tool reads ``connector``.
-BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_describe", "tool_search"})
+BRIDGE_TOOL_NAMES = frozenset({"invoke_tool", "tool_call", "tool_describe", "tool_search"})
 # Core tools a stable release shipped that core no longer has: setup_choose/start_chat with the old setup
 # flow; the built-in browser_* tools with agent-browser (the camofox plugin's same-named tools record as
 # ``plugin``); the five browser_vault_* tools folded into one browser_vault; spotify_* when Spotify left core

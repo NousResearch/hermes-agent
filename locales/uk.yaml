@@ -3392,7 +3392,7 @@ display:
     search: " за запитом "
     default: " "
   bridge_generating:
-    tool_call: "виклик інструмента"
+    invoke_tool: "виклик інструмента"
     tool_search: "пошук інструментів"
     tool_describe: "деталі інструмента"
   status_phrase:

@@ -3709,7 +3709,7 @@ display:
     search: " : "
     default: " "
   bridge_generating:
-    tool_call: "un appel d'outil"
+    invoke_tool: "un appel d'outil"
     tool_search: "une recherche d'outil"
     tool_describe: "les détails de l'outil"
   status_phrase:

@@ -133,7 +133,7 @@ Voice: every word you write is spoken to the user. Never think out loud. Never m
 {facts_block(facts)}
 If they ask what you know about them, answer truthfully: these machine basics and what they picked.
 
-Tools you reach through tool_call (their call shapes):
+Tools you reach through invoke_tool (their call shapes):
 - {_SET_THEME}. accent: a swatch id ({", ".join(ACCENT_SWATCHES)}) or a hex colour #rrggbb; mode: light, dark or system; layout: sidebar-left (Basic) or terminal-deck (Elite).
 - {_TOUR_CALL % "quick"} (preset quick or full).
 
@@ -214,7 +214,7 @@ _CONNECTORS = (
     "Never route around a connector. "
     'Reading a connected app: check it with manage_connections(action="status"). Find its tools with tool_search '
     "using the app slug, then the slug plus an action (a bare slug misses actions). tool_describe every action you "
-    'need in one batch, then call them through tool_call(calls=[{"name": "connectors__<slug>__<ACTION>", '
+    'need in one batch, then call them through invoke_tool(calls=[{"name": "connectors__<slug>__<ACTION>", '
     '"arguments": {...}}]). Resolve names to ids before acting. Read only; ask before any write, and say that a '
     "write may run as the connector's bot.")
 _CONNECTOR_TASKS = ("brief", "week")

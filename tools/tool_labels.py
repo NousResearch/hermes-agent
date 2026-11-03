@@ -32,7 +32,9 @@ _APP_TITLES = {
     "todoist": "Todoist",
 }
 
-BRIDGE_TOOL_NAMES = frozenset({"tool_call", "tool_search", "tool_describe"})
+# "tool_call" is the bridge's pre-#110442 name, kept so older transcripts still label (see
+# tools.tool_search_catalog.LEGACY_TOOL_CALL_NAMES; not imported here to keep this module light).
+BRIDGE_TOOL_NAMES = frozenset({"invoke_tool", "tool_call", "tool_search", "tool_describe"})
 
 __all__ = [
     "BRIDGE_TOOL_NAMES", "CONNECTOR_EMOJI", "DEFAULT_TOOL_EMOJI", "MCP_EMOJI", "ToolLabel",
@@ -149,7 +151,7 @@ def labels_for_call(function_name: str, function_args: Any) -> list[ToolLabel]:
     args = function_args if isinstance(function_args, dict) else {}
     if function_name in ("tool_search", "tool_describe"):
         return _bridge_labels(function_name, args)
-    if function_name != "tool_call":
+    if function_name not in ("invoke_tool", "tool_call"):
         label = label_for_tool_name(function_name, args)
         return [label] if label is not None and label.kind != "tool" else []
     entries = args.get("calls")

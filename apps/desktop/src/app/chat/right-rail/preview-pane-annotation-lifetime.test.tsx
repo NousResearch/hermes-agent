@@ -60,6 +60,47 @@ async function setup() {
   return { captured, capture, leases, pick, rendered, webview }
 }
 
+function setupGuestDocument() {
+  const rendered = render(
+    <PreviewPane
+      target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+    />
+  )
+
+  const frame = window.document.createElement('iframe')
+  rendered.container.appendChild(frame)
+  const guestWindow = frame.contentWindow!
+  const guestDocument = frame.contentDocument!
+  const webview = rendered.container.querySelector('webview')!
+  let nextScript: Promise<void> | undefined
+  Object.assign(webview, {
+    getWebContentsId: () => 42,
+    executeJavaScript: async (code: string) => {
+      const delayed = nextScript
+      nextScript = undefined
+
+      if (delayed) {
+        await delayed
+      }
+
+      return new Function('window', 'document', 'return (' + code + ')')(guestWindow, guestDocument)
+    }
+  })
+
+  return {
+    guestDocument,
+    guestWindow,
+    holdNextScript: () => {
+      const pending = deferred<void>()
+      nextScript = pending.promise
+
+      return () => act(async () => pending.resolve())
+    },
+    rendered,
+    webview
+  }
+}
+
 const area = { rect: { height: 20, width: 40, x: 10, y: 20 }, type: 'pick-area' }
 
 describe('annotation document lifetime', () => {
@@ -98,4 +139,48 @@ describe('annotation document lifetime', () => {
       expect(fixture.rendered.getByRole('button', { name: 'Annotate' })).toBeTruthy()
     }
   )
+
+  it.each(['document-commit', 'stop', 'conversation-change', 'unmount'])(
+    'leaves the page and Escape usable when a delayed install finishes after %s',
+    async kind => {
+      const fixture = setupGuestDocument()
+      const finishInstall = fixture.holdNextScript()
+      fireEvent.click(fixture.rendered.getByRole('button', { name: 'Annotate' }))
+      await act(async () => {
+        if (kind === 'document-commit') {
+          fixture.webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: 'https://example.com/next' }))
+        } else if (kind === 'stop') {
+          fireEvent.click(fixture.rendered.getByRole('button', { name: 'Stop annotating' }))
+        } else if (kind === 'conversation-change') {
+          $selectedStoredSessionId.set('another-conversation')
+        } else {
+          fixture.rendered.unmount()
+        }
+      })
+      await finishInstall()
+
+      expect(fixture.guestDocument.querySelector('hermes-annotate')).toBeNull()
+      const escape = new KeyboardEvent('keydown', { cancelable: true, key: 'Escape' })
+      fixture.guestWindow.dispatchEvent(escape)
+      expect(escape.defaultPrevented).toBe(false)
+    }
+  )
+
+  it.each(['install', 'cleanup'])('keeps a replacement annotation usable after delayed old %s', async delayed => {
+    const fixture = setupGuestDocument()
+    const finishInstall = delayed === 'install' ? fixture.holdNextScript() : undefined
+    fireEvent.click(fixture.rendered.getByRole('button', { name: 'Annotate' }))
+    const finishCleanup = delayed === 'cleanup' ? fixture.holdNextScript() : undefined
+    fireEvent.click(fixture.rendered.getByRole('button', { name: 'Stop annotating' }))
+    fireEvent.click(fixture.rendered.getByRole('button', { name: 'Annotate' }))
+    await finishInstall?.()
+    await finishCleanup?.()
+
+    expect(fixture.guestDocument.querySelectorAll('hermes-annotate')).toHaveLength(1)
+    await act(async () => {
+      fixture.guestWindow.dispatchEvent(new KeyboardEvent('keydown', { cancelable: true, key: 'Escape' }))
+    })
+    await waitFor(() => expect(fixture.rendered.getByRole('button', { name: 'Annotate' })).toBeTruthy())
+    expect(fixture.guestDocument.querySelector('hermes-annotate')).toBeNull()
+  })
 })

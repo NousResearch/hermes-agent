@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_cli import env_loader  # noqa: E402
-import agent.credential_pool as credential_pool  # noqa: E402
+from hermes_cli import env_loader
+from agent import credential_pool
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +101,7 @@ def _seed_openrouter_token(monkeypatch, dotenv_value, environ_value):
     )
 
     entries: list = []
-    changed, sources = credential_pool._seed_from_env("openrouter", entries)
+    changed, _sources = credential_pool._seed_from_env("openrouter", entries)
     assert changed and entries, "expected a seeded openrouter credential"
     return entries[0].access_token
 

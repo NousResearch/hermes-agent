@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-29T19:47:11Z",
+  "updated_at": "2026-10-26T19:00:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -49,6 +49,10 @@
           "description": ""
         },
         {
+          "id": "anthropic/claude-haiku-5.5",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-haiku-4.5",
           "description": ""
         },
@@ -85,6 +89,10 @@
           "description": ""
         },
         {
+          "id": "openai/gpt-6.1-terra",
+          "description": ""
+        },
+        {
           "id": "openai/gpt-6-sol",
           "description": ""
         },
@@ -110,6 +118,10 @@
         },
         {
           "id": "openai/gpt-5.4-mini",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-4-argon",
           "description": ""
         },
         {
@@ -145,6 +157,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017",
+          "description": "dated snapshot of v4.1-flash"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731",
           "description": "dated snapshot of v4-flash"
         },
@@ -166,7 +182,8 @@
         },
         {
           "id": "z-ai/glm-5.3",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash",
@@ -178,8 +195,7 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": "default",
-          "default": true
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.6-pro",
@@ -234,6 +250,14 @@
           "description": ""
         },
         {
+          "id": "upstage/solar-pro4",
+          "description": ""
+        },
+        {
+          "id": "upstage/solar-mini4",
+          "description": ""
+        },
+        {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
@@ -267,6 +291,10 @@
         },
         {
           "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+          "description": "free"
+        },
+        {
+          "id": "inclusionai/ling-3.0-flash:free",
           "description": "free"
         },
         {
@@ -311,6 +339,9 @@
           "id": "anthropic/claude-sonnet-5"
         },
         {
+          "id": "anthropic/claude-haiku-5.5"
+        },
+        {
           "id": "anthropic/claude-haiku-4.5"
         },
         {
@@ -338,6 +369,9 @@
           "id": "openai/gpt-6.1-sol-pro"
         },
         {
+          "id": "openai/gpt-6.1-terra"
+        },
+        {
           "id": "openai/gpt-6-sol"
         },
         {
@@ -357,6 +391,9 @@
         },
         {
           "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "google/gemini-4-argon"
         },
         {
           "id": "google/gemini-3.1-pro-preview"
@@ -383,6 +420,9 @@
           "id": "deepseek/deepseek-v4.1-flash"
         },
         {
+          "id": "deepseek/deepseek-v4.1-flash-1017"
+        },
+        {
           "id": "deepseek/deepseek-v4-flash-0731"
         },
         {
@@ -398,7 +438,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.3"
+          "id": "z-ai/glm-5.3",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.3-flash"
@@ -407,8 +448,7 @@
           "id": "z-ai/glm-5.3-flashx"
         },
         {
-          "id": "z-ai/glm-5.2",
-          "default": true
+          "id": "z-ai/glm-5.2"
         },
         {
           "id": "xiaomi/mimo-v2.6-pro"
@@ -435,7 +475,19 @@
           "id": "nvidia/nemotron-3-super-120b-a12b"
         },
         {
+          "id": "meta/muse-spark-1.2"
+        },
+        {
+          "id": "meta/muse-spark-1.3"
+        },
+        {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "upstage/solar-pro4"
+        },
+        {
+          "id": "upstage/solar-mini4"
         },
         {
           "id": "stealth/space-bunny-alpha"

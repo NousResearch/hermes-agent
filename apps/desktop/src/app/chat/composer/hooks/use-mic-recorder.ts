@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { hostHas } from '@/lib/host-capabilities'
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
 
 type BrowserAudioContext = typeof AudioContext
@@ -14,6 +15,10 @@ export interface MicRecorderOptions {
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
+  /** Live PCM tap (streaming dictation): mono s16le chunks at the meter context's rate, which
+   *  `onPcmRate` reports once before the first chunk. The MediaRecorder blob is unaffected. */
+  onPcm?: (chunk: ArrayBuffer) => void
+  onPcmRate?: (sampleRate: number) => void
 }
 
 export interface MicRecording {
@@ -29,6 +34,7 @@ export interface MicRecorderErrorCopy {
   microphoneAccessDenied: string
   microphoneConstraintsUnsupported: string
   microphoneInUse: string
+  microphoneNeedsHttps: string
   microphonePermissionDenied: string
   microphoneStartFailed: string
   microphoneUnsupported: string
@@ -39,6 +45,15 @@ interface MicRecorderHandle {
   start: (options?: MicRecorderOptions) => Promise<void>
   stop: () => Promise<MicRecording | null>
   cancel: () => void
+}
+
+/** "Microphone unsupported" copy. The Webapp opened over plain HTTP from another machine is an
+ *  insecure context with no mediaDevices: it says HTTPS or a tunnel fixes that. Native Desktop
+ *  keeps the plain copy. */
+function unsupportedMicrophone(copy: MicRecorderErrorCopy): string {
+  return hostHas('webappCopy') && window.isSecureContext === false
+    ? copy.microphoneNeedsHttps
+    : copy.microphoneUnsupported
 }
 
 /** Recorder + live-start mic failures → the same friendly copy: a DOMException
@@ -64,6 +79,10 @@ export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
     return new Error(copy.microphoneConstraintsUnsupported)
   }
 
+  if (name === 'NotSupportedError') {
+    return new Error(unsupportedMicrophone(copy))
+  }
+
   if (error instanceof DOMException) {
     return new Error(copy.microphoneStartFailed)
   }
@@ -87,6 +106,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const pcmTapRef = useRef<ScriptProcessorNode | null>(null)
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
@@ -101,6 +121,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       animationRef.current = null
     }
 
+    pcmTapRef.current?.disconnect()
+    pcmTapRef.current = null
     // Null the ref before closing so the context's own 'closed' statechange
     // isn't mistaken for a meter failure.
     const audioContext = audioContextRef.current
@@ -156,6 +178,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
       source.connect(analyser)
       audioContextRef.current = audioContext
+
+      if (options.onPcm) {
+        startPcmTap(audioContext, source, options)
+      }
 
       // A device or renderer error kills the context without throwing
       // anywhere we'd see it; the analyser just goes flat. Watch for it.
@@ -227,13 +253,37 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     }
   }
 
+  // ScriptProcessor: deprecated but universal, and it needs no worklet module URL in the Electron
+  // renderer. The host resamples, so chunks go out at the context's own rate.
+  const startPcmTap = (audioContext: AudioContext, source: MediaStreamAudioSourceNode, options: MicRecorderOptions) => {
+    const tap = audioContext.createScriptProcessor(4096, 1, 1)
+    pcmTapRef.current = tap
+    options.onPcmRate?.(audioContext.sampleRate)
+
+    tap.onaudioprocess = event => {
+      const input = event.inputBuffer.getChannelData(0)
+      const pcm = new Int16Array(input.length)
+
+      for (let i = 0; i < input.length; i += 1) {
+        const sample = Math.max(-1, Math.min(1, input[i]))
+        pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+      }
+
+      options.onPcm?.(pcm.buffer)
+    }
+
+    // A tap only fires while connected through to the destination; its output buffer stays silent.
+    source.connect(tap)
+    tap.connect(audioContext.destination)
+  }
+
   const start: MicRecorderHandle['start'] = async (options = {}) => {
     if (recorderRef.current) {
       return
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error(copy.microphoneUnsupported)
+      throw new Error(unsupportedMicrophone(copy))
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()

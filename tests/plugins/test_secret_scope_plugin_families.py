@@ -33,14 +33,14 @@ from agent.secret_scope import (
 def multiplex_scope():
     """Install a secret scope with multiplexing ON; restore state after."""
 
-    def _install(scope: Dict[str, str]):
+    def _install(scope: dict[str, str]):
         set_multiplex_active(True)
         token = set_secret_scope(scope)
         return token
 
     tokens = []
 
-    def install(scope: Dict[str, str]):
+    def install(scope: dict[str, str]):
         tokens.append(_install(scope))
 
     yield install
@@ -142,7 +142,7 @@ class TestGoogleMeetSpawn:
 
         monkeypatch.setattr(pm, "_root", lambda: tmp_path)
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
 
         class _FakeProc:
             pid = 4242
@@ -174,7 +174,7 @@ class TestGoogleMeetSpawn:
 
         monkeypatch.setattr(pm, "_root", lambda: tmp_path)
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
 
         class _FakeProc:
             pid = 4243

@@ -36,7 +36,7 @@ _PROFILE_KEY_CACHE: dict[str, str] = {}
 
 # Bound for native scope ops gating turn/session completion: a wedged pipeline costs one
 # lost span, never a blocked agent.
-_SCOPE_OP_TIMEOUT = 10.0
+SCOPE_OP_TIMEOUT = 10.0
 
 
 
@@ -88,7 +88,7 @@ def _run_on_daemon_thread(
     def _target() -> None:
         try:
             outcome["result"] = fn()
-        except BaseException as exc:  # noqa: BLE001 - propagated below
+        except BaseException as exc:
             outcome["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True, name=name)
@@ -257,7 +257,7 @@ def _load_segments_config() -> dict[str, Any]:
             max_turns = max(0, int(segments.get("max_turns", 0) or 0))
         except (TypeError, ValueError):
             max_turns = 0
-    except Exception:  # noqa: BLE001 - config absence (or a malformed section) must not crash
+    except Exception:
         pass
     return {"on_compaction": on_compaction, "max_turns": max_turns}
 
@@ -270,7 +270,7 @@ _reset_segments_config_for_tests = _SEGMENTS_CONFIG.reset
 class RelayOperationLease:
     """Keep process-wide Relay plugins alive across a deferred operation."""
 
-    def __init__(self, runtime: "RelayRuntime") -> None:
+    def __init__(self, runtime: RelayRuntime) -> None:
         self._lock, self._runtime = threading.Lock(), runtime
 
     def run_in_session(self, session: RelaySession, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -408,6 +408,10 @@ class RelayRuntime:
         self._subagent_parents: dict[str, str] = {}
         self._subagent_parent_handles: dict[str, Any] = {}
         self._execution_consumers: set[str] = set()
+        # Outputs of scopes that finished under a concurrent scope (pop_relay_scope_if_top said no),
+        # keyed by handle uuid: the drain that later reclaims the scope closes it with this output.
+        self._deferred_scope_outputs: dict[str, dict[str, Any]] = {}
+        self._deferred_scope_outputs_lock = threading.Lock()
         self._closing = self._shutdown_started = False
         self._shutdown_complete, self._operations_idle = threading.Event(), threading.Event()
         self._operations_idle.set()
@@ -421,6 +425,21 @@ class RelayRuntime:
 
     def _plugins_active(self) -> bool:
         return self._plugin_configuration_state is _RelayPluginConfigurationState.ACTIVE
+
+    def defer_scope_output(self, handle: Any, output: dict[str, Any]) -> None:
+        """Keep the real output of a finished scope that could not be popped yet because a
+        concurrent scope sits above it; the orphan drain closes it with this instead."""
+        key = getattr(handle, "uuid", None)
+        if key is not None:
+            with self._deferred_scope_outputs_lock:
+                self._deferred_scope_outputs[str(key)] = output
+
+    def _take_deferred_scope_output(self, handle: Any) -> dict[str, Any] | None:
+        key = getattr(handle, "uuid", None)
+        if key is None:
+            return None
+        with self._deferred_scope_outputs_lock:
+            return self._deferred_scope_outputs.pop(str(key), None)
 
     def retain_managed_execution(self, consumer: str) -> None:
         """Keep managed LLM and tool execution active for one consumer."""
@@ -443,7 +462,7 @@ class RelayRuntime:
         self, session: RelaySession, scope_metadata: dict[str, Any], *, resolve_parent: bool,
         exit_fallback: bool = False, **push_kwargs: Any,
     ) -> None:
-        """Push a fresh SESSION_SCOPE for ``session`` (bounded by ``_SCOPE_OP_TIMEOUT``); record handle + context.
+        """Push a fresh SESSION_SCOPE for ``session`` (bounded by ``SCOPE_OP_TIMEOUT``); record handle + context.
         Subagents parent under their spawning turn/session handle (``resolve_parent`` creates the parent when
         unknown). ``exit_fallback``: at interpreter shutdown the executor refuses futures; push synchronously."""
         parent_handle = None
@@ -467,7 +486,7 @@ class RelayRuntime:
         else:
             # future.result() re-raises push's own RuntimeError; keeping it outside the
             # except prevents a real push failure from retrying via the exit fallback.
-            session.handle = future.result(timeout=_SCOPE_OP_TIMEOUT)
+            session.handle = future.result(timeout=SCOPE_OP_TIMEOUT)
         session.context = context
 
     def ensure_session(
@@ -516,7 +535,7 @@ class RelayRuntime:
             try:
                 self.run_in_session(
                     session, self.relay.scope.pop, old_handle, output={"hermes.session.segment_reason": reason},
-                    metadata=runtime_metadata(self.runtime_id), timeout=_SCOPE_OP_TIMEOUT,
+                    metadata=runtime_metadata(self.runtime_id), timeout=SCOPE_OP_TIMEOUT,
                 )
             except Exception:
                 logger.warning(
@@ -601,7 +620,7 @@ class RelayRuntime:
     ) -> Any:
         """Run a Relay operation against a session's isolated scope stack.
         ``timeout`` bounds the native call on the daemon executor (``TimeoutError`` on breach); ``None``
-        runs synchronously. Lifecycle ops pass ``_SCOPE_OP_TIMEOUT``: a wedged pipeline costs one span."""
+        runs synchronously. Lifecycle ops pass ``SCOPE_OP_TIMEOUT``: a wedged pipeline costs one span."""
         with self._operation():
             return self._run_in_session_untracked(
                 session, callback, *args, allow_closing=allow_closing, timeout=timeout, **kwargs
@@ -709,7 +728,9 @@ class RelayRuntime:
             if session_root is not None and _same_handle(top, session_root) and handle is not session_root:
                 break
             try:
-                orphan_output = {"outcome": "cancelled", "hermes.orphan_drain": True}
+                orphan_output = self._take_deferred_scope_output(top) or {
+                    "outcome": "cancelled", "hermes.orphan_drain": True,
+                }
                 pop_relay_scope(self.relay, top, output=orphan_output, metadata=metadata)
                 drained += 1
             except Exception:
@@ -737,7 +758,7 @@ class RelayRuntime:
             failure = run_in_session(
                 session, self._pop_with_drain, handle, output=output or {},
                 metadata=runtime_metadata(self.runtime_id), session_root=session.handle,
-                drain_limit=drain_limit, allow_closing=allow_closing, timeout=_SCOPE_OP_TIMEOUT,
+                drain_limit=drain_limit, allow_closing=allow_closing, timeout=SCOPE_OP_TIMEOUT,
             )
         except Exception as exc:
             failure = exc
@@ -1061,7 +1082,7 @@ class RelaySessionCoordinator:
                 TURN_SCOPE, host.relay.ScopeType.Function, handle=lease.session.handle,
                 input=_scope_input(lease.turn_cwd),
                 metadata=turn_metadata,
-                timeout=_SCOPE_OP_TIMEOUT,
+                timeout=SCOPE_OP_TIMEOUT,
             )
         turn._previous_turn = _CURRENT_TURN.get()
         _CURRENT_TURN.set(turn)

@@ -58,9 +58,27 @@ export function compareSessionTitles(a: SessionInfo, b: SessionInfo): number {
 }
 
 /**
- * resolve the pinned section's rows: collects locally stored pin ids and any row the server flags
- * pinned that the local set does not know about yet, filtered by in-flight pin writes, and sorts
- * them automatically by displayed conversation title.
+ * Resolve the pinned section's rows, sorted by displayed conversation title.
+ *
+ * The local set (`$pinnedSessionIds` in localStorage) is a UI-ordering hint,
+ * not the source of truth — `sessions.pinned` in the backend's state.db is.
+ * When the two disagree (cold localStorage after a reload, a pin made from
+ * another client, a persist that never landed), every other sidebar list
+ * filters the session out as "pinned" while the Pinned section — resolving
+ * only local ids — renders empty, so the conversation vanishes from the
+ * sidebar entirely (#85969). Falling back to the row flag keeps the invariant:
+ * a session the backend says is pinned is always reachable from the Pinned
+ * section, whatever the local cache holds. For a row the pin set's own gateway
+ * owns, session-pin-sync then adopts the pin into the local set on its next
+ * reconcile, restoring ordering control; another gateway's row (kept or still
+ * painted after a pick) is never adopted and stays a server-only pin.
+ *
+ * `unconfirmedPinWrites` is that same module's fence, and the fallback has to
+ * respect it. Unpinning drops the id from the local set immediately, but the
+ * loaded row keeps saying `pinned: true` until a page issued after the PATCH
+ * lands — so an unfenced fallback reads the user's own unpin as a foreign pin
+ * and parks the session at the bottom of Pinned for a refresh cycle before it
+ * finally moves to Sessions.
  */
 export function resolvePinnedSessions(
   pinnedSessionIds: readonly string[],

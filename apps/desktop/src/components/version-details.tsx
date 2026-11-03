@@ -1,8 +1,12 @@
+import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
+
 import type { DesktopVersionInfo, RuntimeSource } from '@/global'
 import { useI18n } from '@/i18n'
 import { distributionLabelKey } from '@/lib/distribution-label'
 import { ExternalLink } from '@/lib/external-link'
 import { shortVersion } from '@/lib/version-label'
+import { $updateStatus, sourceUpdateTrack } from '@/store/updates'
 
 /**
  * Human label for an external build's runtime source: the resolution rung
@@ -14,6 +18,43 @@ function runtimeSourceLabel(source: RuntimeSource): string {
   return where ? `${source.type} (${where})` : source.type
 }
 
+/** What this source install follows (stable, main or a branch); packages render nothing. */
+function ChannelRow({ action }: { action?: ReactNode }) {
+  const { t } = useI18n()
+  const c = t.settings.about.channel
+  const track = sourceUpdateTrack(useStore($updateStatus))
+
+  if (!track) {
+    return null
+  }
+
+  const label = track.kind === 'stable' ? c.stable : track.kind === 'main' ? `${c.main} (main)` : c.branch(track.name)
+
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-muted-foreground">{c.detailsLabel}</dt>
+      <dd className="text-right">
+        {label}
+        {action && <> · {action}</>}
+      </dd>
+    </div>
+  )
+}
+
+/** One side of a client/backend pair; a side that did not answer renders nothing. */
+function SideVersionRow({ label, value }: { label: string; value?: string }) {
+  if (!value) {
+    return null
+  }
+
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd>v{shortVersion(value)}</dd>
+    </div>
+  )
+}
+
 /**
  * Shared build-provenance display. Reads from `$desktopVersion`
  * (populated from the build stamp / `hermes:version` IPC), so every
@@ -21,7 +62,7 @@ function runtimeSourceLabel(source: RuntimeSource): string {
  * same version, branch, commit, distribution, runtime, and install id
  * from one source of truth.
  */
-export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
+export function VersionDetails({ version, channelAction }: { version: DesktopVersionInfo; channelAction?: ReactNode }) {
   const { t } = useI18n()
   const u = t.updates
 
@@ -60,6 +101,8 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
           {version.dirty && <span className="text-warning"> (!)</span>}
         </dd>
       </div>
+      <SideVersionRow label={u.versionDetailsClient} value={version.clientVersion} />
+      <SideVersionRow label={u.versionDetailsBackend} value={version.backendVersion} />
       {version.commit && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsCommit}</dt>
@@ -75,6 +118,7 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
           </dd>
         </div>
       )}
+      <ChannelRow action={channelAction} />
       {source && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsBuildOrigin}</dt>

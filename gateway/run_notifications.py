@@ -1766,15 +1766,19 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _send_stuck_delegation_notice(self, evt: dict, refusals: int, deferred_s: float) -> bool:
         """Post the concise stuck notice through the process watcher's transport. True once the decision is
         final (sent, or suppressed by ``suppress_warning_notifications``); False to try again next pass."""
-        platform_name = str(evt.get("platform") or "")
-        chat_id, thread_id = evt.get("chat_id", ""), evt.get("thread_id", "")
-        if not platform_name or not chat_id:
-            return False  # not routable (yet): the retry keeps trying; the notice follows once it is
         from gateway.run import _redact_gateway_user_facing_secrets
         from gateway.warning_notifications import present_notification
         from hermes_constants import get_hermes_home
         async with self._completion_event_scope(evt):
+            # An async-delegation event carries only ``session_key``: resolve the route like the process watcher.
             source = await asyncio.to_thread(self._build_process_event_source, evt)
+            if source is None:
+                return False  # not routable (yet): the retry keeps trying; the notice follows once it is
+            platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            chat_id = str(getattr(source, "chat_id", "") or "")
+            thread_id = str(getattr(source, "thread_id", "") or "")
+            if not platform_name or not chat_id:
+                return False
             if not self._resolve_injection_adapter(platform_name, source):
                 return False  # no transport right now: a notice sent into the void must not spend the dedupe
             goal = evt.get("goal") or next(iter(evt.get("goals") or []), "")

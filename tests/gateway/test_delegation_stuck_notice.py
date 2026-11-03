@@ -247,3 +247,42 @@ def test_long_goal_is_one_truncated_line(monkeypatch, isolated_registry):
     goal = notice.split("Goal: ", 1)[1].split(". To read", 1)[0]
     assert "\n" not in goal and goal.startswith("line one xxx") and goal.endswith("…")
     assert len(goal) <= run_notifications._STUCK_DELEGATION_GOAL_CHARS
+
+
+def test_realistic_event_without_routing_keys_still_gets_one_notice(monkeypatch, isolated_registry):
+    """An async-delegation event carries only ``session_key`` (no platform/chat_id/thread_id); the notice must
+    resolve its route from it, not from keys the event never has."""
+    event = _event()
+    assert not {"platform", "chat_id", "thread_id"} & set(event)
+    adapter = _adapter()
+    runner = _runner(adapter)
+
+    sent = asyncio.run(runner._send_stuck_delegation_notice(event, 8, 300.0))
+
+    assert sent is True
+    (notice,) = _notices(adapter)
+    assert "deleg_stuck" in notice and "Investigate flaky test" in notice
+    assert adapter.send.await_args.args[0] == "12345"
+
+
+def test_unroutable_event_returns_false_so_the_retry_tries_again(monkeypatch, isolated_registry):
+    event = _event()
+    event["session_key"] = ""
+    adapter = _adapter()
+
+    assert asyncio.run(_runner(adapter)._send_stuck_delegation_notice(event, 8, 300.0)) is False
+    assert adapter.send.await_count == 0
+
+
+def test_notice_uses_the_session_store_origin_thread(monkeypatch, isolated_registry):
+    from gateway.config import Platform as P
+    from gateway.session import SessionSource
+
+    event = _event()
+    adapter = _adapter()
+    runner = _runner(adapter)
+    origin = SessionSource(platform=P.TELEGRAM, chat_id="12345", chat_type="dm", thread_id="999")
+    runner.session_store._entries[event["session_key"]] = SimpleNamespace(origin=origin, transport_profile=None)
+
+    assert asyncio.run(runner._send_stuck_delegation_notice(event, 8, 300.0)) is True
+    assert adapter.send.await_args.kwargs["metadata"]["thread_id"] == "999"

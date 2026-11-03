@@ -144,17 +144,63 @@ def activity_count(record: dict[str, Any]) -> int:
 
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
+# Read on every slash keystroke, and the hub read resolves + parses one SKILL.md per installed
+# package: memoized on a stat signature of the files that define the sets.
+_PROVENANCE_MEMO: dict[tuple, frozenset[str]] = {}
+_PROVENANCE_MEMO_MAX = 8
+
+
+def _stat_key(*paths: Path) -> tuple:
+    """``(path, size, mtime_ns)`` per path; a missing file is recorded so its creation invalidates."""
+    key = []
+    for path in paths:
+        try:
+            st = path.stat()
+            key.append((str(path), st.st_size, st.st_mtime_ns))
+        except OSError:
+            key.append((str(path), -1, -1))
+    return tuple(key)
+
+
+def _memoized_provenance(kind: str, sources: tuple, build: Callable[[], set[str]]) -> set[str]:
+    """*build()*'s set, cached under *kind* + the stat signature of *sources* (always returns a copy)."""
+    key = (kind, _stat_key(*sources))
+    hit = _PROVENANCE_MEMO.get(key)
+    if hit is not None:
+        return set(hit)
+    value = build()
+    if len(_PROVENANCE_MEMO) >= _PROVENANCE_MEMO_MAX:
+        _PROVENANCE_MEMO.pop(next(iter(_PROVENANCE_MEMO)), None)
+    _PROVENANCE_MEMO[key] = frozenset(value)
+    return value
+
+
 def _read_bundled_names() -> set[str]:
     """Built-in names: ``.bundled_manifest`` ("name:hash" per line) plus the curator suppression list, which
     only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
     catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
-    lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
+    skills_dir = _skills_dir()
+    return _memoized_provenance(
+        "bundled",
+        (skills_dir / ".bundled_manifest", skills_dir / ".curator_suppressed"),
+        lambda: _build_bundled_names(skills_dir),
+    )
+
+
+def _build_bundled_names(skills_dir: Path) -> set[str]:
+    lines = _read_lines(skills_dir / ".bundled_manifest", "Failed to read bundled manifest: %s")
     return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
 
 
 def _read_hub_installed_names() -> set[str]:
     """Hub-installed names (``.hub/lock.json``) plus the frontmatter name of each in-tree ``install_path``."""
     skills_dir = _skills_dir()
+    return _memoized_provenance(
+        "hub", (skills_dir / ".hub" / "lock.json",), lambda: _build_hub_installed_names(skills_dir)
+    )
+
+
+def _build_hub_installed_names(skills_dir: Path) -> set[str]:
     lock_path = skills_dir / ".hub" / "lock.json"
     if not lock_path.exists():
         return set()
@@ -709,11 +755,16 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 
 
 def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
-    """Skill dir under configured external dirs by frontmatter name."""
-    from agent.skill_utils import get_all_skills_dirs
+    """Skill dir under configured external dirs by frontmatter name.
+
+    Walks the shared index, not ``rglob``: the same prune the catalog uses (no artifact dirs, no descent
+    below a directory that owns a ``SKILL.md``), so it agrees with the catalog and skips support trees
+    that ``rglob`` used to read on every skill load."""
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
     return next((found for base in get_all_skills_dirs()[1:] if base.exists()
-                 if (found := _match_skill_dir((p for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)),
-                                               skill_name)) is not None), None)
+                 if (found := _match_skill_dir(
+                     (p for p in iter_skill_index_files(base, "SKILL.md") if not is_excluded_skill_path(p)),
+                     skill_name)) is not None), None)
 
 
 # --- Reporting — for the curator CLI / slash command ---

@@ -5,6 +5,7 @@ scripts/. `skills_list` returns name/description only; `skill_view` returns full
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
 import contextvars
+import functools
 import json
 import logging
 import os
@@ -38,6 +39,9 @@ logger = logging.getLogger(__name__)
 # edits, which no directory signature can see.
 _SKILLS_CACHE: dict = {}
 _SKILLS_CACHE_TTL_SECONDS = 30.0
+# One cached scan per tree signature (the flags are applied on the way out), bounded so a host
+# serving several profiles and repos keeps the recent trees and rebuilds the rest.
+_SKILLS_CACHE_MAX = 4
 # Deepest directory the signature descends to below a root (a skill sits at <cat>/<sub>/<skill>/).
 _SIGNATURE_MAX_DEPTH = 6
 
@@ -55,46 +59,57 @@ def clear_skills_cache() -> None:
 
 
 def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
-    """Append ``(dir, mtime_ns, child dir names)`` for *root* and the dirs below it the catalog walks
-    (``iter_skill_index_files``: no excluded dirs, no support dirs of a skill), depth-bounded. The child
-    names, not only mtimes: an install and an uninstall inside one coarse mtime tick (1-2 s on some
-    filesystems) leave every mtime equal, and the change must still show. ~1 ms for 170 dirs."""
-    from agent.skill_utils import EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS
+    """Append ``(dir, skill_md_mtime_ns, child names, owns_skill_md)`` for *root* and the dirs below.
+
+    Child names catch an install+uninstall inside one coarse mtime tick, so no directory needs its own
+    mtime; only a ``SKILL.md``'s does (an edit to an existing skill). A root's own mtime is ignored:
+    it moves when Hermes writes its metadata there (``.usage.json`` on every load), which must not
+    invalidate a fresh scan."""
+    from agent.skill_utils import EXCLUDED_SKILL_DIRS
+    names: list[str] = []
+    skill_mtime = 0
     try:
-        mtime = os.stat(root).st_mtime_ns
-        with os.scandir(root) as it:
-            entries = list(it)
+        with os.scandir(root) as it:  # iterated, not materialized: one less list per directory
+            for entry in it:
+                try:
+                    if entry.is_dir():
+                        names.append(entry.name)
+                    elif entry.name == "SKILL.md":
+                        skill_mtime = entry.stat().st_mtime_ns
+                except OSError:
+                    continue
     except OSError:
         return
-    names, is_skill = [], False
-    for entry in entries:
-        with suppress(OSError):
-            if entry.is_dir():
-                names.append(entry.name)
-            elif entry.name == "SKILL.md":
-                is_skill = True
     names.sort()
-    sig.append((str(root), mtime, tuple(names)))
+    sig.append((str(root), skill_mtime, tuple(names), skill_mtime != 0))
     if depth <= 0:
         return
-    # A skill dir is a leaf (iter_skill_index_files semantics): the catalog only reads its
-    # top-level SKILL.md, so its subdirectories are bulk the signature must not pay for.
-    if is_skill:
+    # A skill dir is a leaf: the catalog only reads its top-level SKILL.md, so its subdirectories are
+    # bulk the signature must not pay for.
+    if skill_mtime:
         return
     for name in names:
         if name not in EXCLUDED_SKILL_DIRS:
             _dir_tree_signature(os.path.join(root, name), sig, depth - 1)
 
 
-def _compute_scan_signature(dirs_to_scan, disabled) -> tuple:
-    """Stat-based change signature over every directory the catalog walks; platform is read via
-    ``agent.skill_utils.sys`` so test patches are honored."""
+def _platform_tag() -> str:
+    """Platform half of the scan signature; read via ``agent.skill_utils.sys`` so test patches are honored."""
     from agent import skill_utils as _skill_utils
-    platform = getattr(getattr(_skill_utils, "sys", None), "platform", "")
+    return getattr(getattr(_skill_utils, "sys", None), "platform", "")
+
+
+def _compute_dirs_signature(dirs_to_scan) -> tuple:
+    """The expensive half of the scan signature: the stat walk over every directory the catalog reads."""
     sig: list = []
     for d in dirs_to_scan:
         _dir_tree_signature(str(d), sig)
-    return (tuple(sig), frozenset(disabled), platform)
+    return tuple(sig)
+
+
+def _compute_scan_signature(dirs_to_scan, disabled) -> tuple:
+    """Full stat-based change signature (directory walk + disabled set + platform)."""
+    return (_compute_dirs_signature(dirs_to_scan), frozenset(disabled), _platform_tag())
 
 
 # Call-scoped signature memo: validators that run inside one RPC (the published-map gate in
@@ -107,7 +122,7 @@ _signature_scope: contextvars.ContextVar = contextvars.ContextVar("skills_scan_s
 
 @contextmanager
 def shared_scan_signature():
-    """Share one directory-signature walk among every validator in the calling scope."""
+    """Share one directory walk among every validator in the calling scope."""
     token = _signature_scope.set({})
     try:
         yield
@@ -115,15 +130,34 @@ def shared_scan_signature():
         _signature_scope.reset(token)
 
 
-def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+def _shares_scan_signature(fn):
+    """Run *fn* inside one ``shared_scan_signature()`` scope: a lookup asks the freshness question
+    more than once, and without a scope each ask walks the whole tree again."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with shared_scan_signature():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def _tree_signature(dirs_to_scan) -> tuple:
+    """Directory half of the scan signature, shared inside one ``shared_scan_signature()`` scope.
+
+    Every caller reads the same roots, so the first walk in a scope serves all of them; outside a
+    scope the walk is paid, which is what keeps cross-call freshness."""
+    dirs_key = tuple(str(d) for d in dirs_to_scan)
     scope = _signature_scope.get()
-    if scope is None:
-        return _compute_scan_signature(dirs_to_scan, disabled)
-    key = (tuple(str(d) for d in dirs_to_scan), frozenset(disabled))
-    hit = scope.get(key)
-    if hit is None:
-        hit = scope[key] = _compute_scan_signature(dirs_to_scan, disabled)
-    return hit
+    tree = scope.get(dirs_key) if scope is not None else None
+    if tree is None:
+        tree = _compute_dirs_signature(dirs_to_scan)
+        if scope is not None:
+            scope[dirs_key] = tree
+    return tree
+
+
+def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
+    """Scan signature: one shared walk plus the two cheap components (disabled set, platform)."""
+    return (_tree_signature(dirs_to_scan), frozenset(disabled), _platform_tag())
 
 
 HERMES_HOME = get_hermes_home()  # all skills live in ~/.hermes/skills/ (seeded from bundled)
@@ -268,31 +302,39 @@ def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
 
 
 def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
-    """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
-    load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
-    Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
-    collecting candidates, so it asks for hidden rows too."""
+    """Resolved skills (status, load_name, tier, path); visible unless *include_hidden*.
+
+    The scan ignores the two flags, so one parse per tree signature serves every caller; the flags
+    select a fresh copy of the cached view."""
     from agent.skill_utils import (
         TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
-    cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
-    signature = _skills_scan_signature([d for _t, d in roots], disabled)
+    dirs = [d for _t, d in roots]
+    signature = (_tree_signature(dirs), _platform_tag())
 
-    def _cached_result() -> list[dict[str, Any]] | None:
-        cached = _SKILLS_CACHE.get(cache_key)
-        if cached is not None and cached[0] == signature and (time.monotonic() - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
-            # Shallow copies: callers mutate the returned dicts (web_server annotates
-            # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-            return [dict(s) for s in cached[2]]
+    def _rows_for(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not (row["visible"] or include_hidden) or is_disabled_entry(row, disabled):
+                continue
+            copy = dict(row)
+            copy.pop("visible", None)
+            out.append(copy)
+        return out
+
+    def _cached_rows() -> list[dict[str, Any]] | None:
+        cached = _SKILLS_CACHE.get(signature)
+        if cached is not None and (time.monotonic() - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
+            return cached[2]
         return None
 
-    if (hit := _cached_result()) is not None:
-        return hit
+    if (hit := _cached_rows()) is not None:
+        return _rows_for(hit)
     with _SCAN_LOCK:
         # Single-flight: a caller that waited while another thread scanned must not rescan.
-        if (hit := _cached_result()) is not None:
-            return hit
+        if (hit := _cached_rows()) is not None:
+            return _rows_for(hit)
         scanned = []
         for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
             _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
@@ -324,12 +366,13 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     logger.debug("Failed to read skill file %s: %s", skill_md, e)
                 except Exception as e:
                     logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
-        skills = [s for s in resolve_skill_catalog(scanned)
-                  if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
+        rows = resolve_skill_catalog(scanned)
         # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
         # signature, so the next call re-scans instead of serving a torn result.
-        _SKILLS_CACHE[cache_key] = (signature, time.monotonic(), skills)
-    return [dict(s) for s in skills]
+        _SKILLS_CACHE[signature] = (signature, time.monotonic(), rows)
+        while len(_SKILLS_CACHE) > _SKILLS_CACHE_MAX:
+            _SKILLS_CACHE.pop(next(iter(_SKILLS_CACHE)), None)
+    return _rows_for(rows)
 
 
 def find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
@@ -460,12 +503,66 @@ def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
     )
 
 
-def _collect_skill_candidates(name, local_category_name, all_dirs):
+# Legacy flat ``<name>.md`` skills: ``{stem: [path]}`` per (root, scan signature). Bounded like the
+# catalog cache, so a host serving several profiles/repos keeps a handful of trees, not one per lookup.
+_FLAT_MD_INDEX: dict = {}
+_FLAT_MD_INDEX_MAX = 8
+
+
+def _flat_markdown_index(search_root: Path, signature: tuple) -> dict[str, list[Path]]:
+    """``{stem: [path]}`` for the legacy flat ``<name>.md`` skills under *search_root*.
+
+    Prunes where the catalog does: nothing below a directory that owns a ``SKILL.md`` is a candidate
+    (``_is_package_owned_markdown`` / ``_is_skill_support_path``), so the set matches ``rglob`` while
+    the walk skips each skill's support tree.
+    """
+    key = (str(search_root), signature)
+    if (hit := _FLAT_MD_INDEX.get(key)) is not None:
+        return hit
+    index: dict[str, list[Path]] = {}
+    stack = [search_root]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        owns_skill = False
+        for entry in entries:
+            if entry.name == "SKILL.md":
+                owns_skill = True
+            elif entry.name.endswith(".md"):
+                try:
+                    if entry.is_file():
+                        index.setdefault(entry.name[:-3], []).append(Path(entry.path))
+                except OSError:
+                    pass
+        if owns_skill:  # a skill dir is a leaf: nothing below it can be a candidate
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+            except OSError:
+                pass
+    if len(_FLAT_MD_INDEX) >= _FLAT_MD_INDEX_MAX:
+        _FLAT_MD_INDEX.pop(next(iter(_FLAT_MD_INDEX)), None)
+    _FLAT_MD_INDEX[key] = index
+    return index
+
+
+def _flat_markdown_matches(search_root: Path, name: str, signature: tuple) -> list[Path]:
+    """Paths of the legacy flat ``<name>.md`` files under *search_root* (glob-shaped names keep rglob)."""
+    if any(ch in name for ch in "*?["):  # a name with glob syntax keeps the literal pattern semantics
+        return list(search_root.rglob(f"{name}.md"))
+    return _flat_markdown_index(search_root, signature).get(name, [])
+
+
+def _collect_skill_candidates(name, local_category_name, all_dirs, signature=None):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
     Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
     (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
-    from agent.skill_utils import iter_skill_index_files
     candidates: list[tuple[Optional[Path], Path]] = []
     seen_md: set = set()
 
@@ -485,23 +582,22 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
               and not _is_package_owned_markdown(flat, search_root)):
             _record(None, flat)
 
+    # One snapshot for every root: locating must see the universe the old per-root scan saw.
+    catalog_rows = _skill_catalog(skip_disabled=True, include_hidden=True)
+    if signature is None:
+        signature = _skills_scan_signature(all_dirs, _get_disabled_skill_names())
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
             _record_direct(search_dir / direct, search_dir)
-        # Recursive by directory name plus frontmatter `name:` — skills_list() exposes the
-        # frontmatter name, so skill_view(name) must accept it too. The cached catalog rows
-        # carry every copy's path and name: matching them replaces a full-tree walk plus a
-        # frontmatter parse of every SKILL.md on each lookup (~250ms warm at 850 skills).
-        # skip_disabled/include_hidden: locating must see the same universe the old scan saw.
-        for row in _skill_catalog(skip_disabled=True, include_hidden=True):
-            row_path = row["path"]
+        for row in catalog_rows:
             if str(row["root"]) != str(search_dir):
                 continue
+            row_path = row["path"]
             if row_path.parent.name == name or row.get("_cmd_name") == name or row["name"] == name:
                 _record(row_path.parent, row_path)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
-        for found_md in search_dir.rglob(f"{name}.md"):
+        for found_md in _flat_markdown_matches(search_dir, name, signature):
             if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
                     and not _is_package_owned_markdown(found_md, search_dir)):
                 _record(None, found_md)
@@ -594,6 +690,7 @@ def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
     return max(owners, key=lambda d: len(d.parts), default=None)
 
 
+@_shares_scan_signature
 def locate_skill(name: str, local_category_name: Optional[str], roots):
     """Unique on-disk skill for *name* over ``(tier, dir)`` *roots*: cross-tier precedence
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
@@ -673,6 +770,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+@_shares_scan_signature
 def skill_view(
     name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name

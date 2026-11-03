@@ -61,7 +61,7 @@ import hermes_state_lockguard as _lockguard
 from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
-    _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
+    _read_sqlite_application_id, _stable_sidecar_identity, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
@@ -1254,9 +1254,15 @@ class SessionDB(
         recorded = self._db_sidecar_identity or {}
         base = os.fspath(self.db_path)
         if recorded:
-            return any(
-                _stat_db_file_identity(Path(base + suffix)) != ident for suffix, ident in recorded.items()
-            )
+            for suffix, ident in recorded.items():
+                sidecar = Path(base + suffix)
+                if not sidecar.exists():
+                    return True
+                current = _stable_sidecar_identity(sidecar)
+                # 0-byte or provisional inode (FSKit exFAT): not yet comparable, so not "lost".
+                if current is not None and current != ident:
+                    return True
+            return False
         if not self._wal_active:  # no sidecar generation to lose; keep /proc off the hot path
             return False
         if sys.platform.startswith("linux"):

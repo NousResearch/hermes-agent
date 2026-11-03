@@ -24,6 +24,7 @@ SCANNER_VERSION = "skills-guard-v10"
 TRUSTED_REPOS = {
     "openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills",
     "wandb/skills", "qdrant/skills", "pinecone-io/skills",
+    "makenotion/skills", "Airtable/skills", "Shopify/Shopify-AI-Toolkit",
 }
 
 INSTALL_POLICY = {

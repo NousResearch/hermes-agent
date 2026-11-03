@@ -121,6 +121,7 @@ test('registered /react route sends through the injected serialized send path', 
       sendCalls.push(args);
     },
     trackSentMessageId: () => {},
+    newMessageId: () => 'reaction-id-1',
   });
 
   assert.equal(routePath, '/react');
@@ -158,6 +159,7 @@ test('registered /react route accepts empty emoji to remove a reaction', async (
       sendCalls.push(args);
     },
     trackSentMessageId: () => {},
+    newMessageId: () => 'reaction-id-1',
   });
 
   const res = responseRecorder();
@@ -184,6 +186,41 @@ test('registerReactionRoute refuses to register without the sent-id tracker', ()
   }), TypeError);
 });
 
+test('registerReactionRoute refuses to register without a message id factory', () => {
+  assert.throws(() => registerReactionRoute({ post() {} }, {
+    getSocket: () => ({}),
+    getConnectionState: () => 'connected',
+    sendWithTimeout: async () => ({}),
+    trackSentMessageId: () => {},
+  }), TypeError);
+});
+
+test('a reaction that misses its deadline still has its echo recognized', async () => {
+  let routeHandler;
+  const app = { post(_path, handler) { routeHandler = handler; } };
+  const recentlySent = createOutboundIdTracker(16);
+  const sendCalls = [];
+  registerReactionRoute(app, {
+    getSocket: () => ({}),
+    getConnectionState: () => 'connected',
+    // The caller gives up at the short deadline while Baileys may still deliver.
+    sendWithTimeout: async (...args) => {
+      sendCalls.push(args);
+      throw new Error('sendMessage timed out after 4s');
+    },
+    trackSentMessageId: (sent) => recentlySent.remember(sent?.key?.id),
+    newMessageId: () => 'late-reaction-1',
+  });
+
+  const res = responseRecorder();
+  await routeHandler({ body: { chatId: '123@s.whatsapp.net', messageId: 'msg-10', emoji: '👀', fromMe: true } }, res);
+
+  assert.equal(res.statusCode, 500);
+  // Baileys sends under the id we chose, and that id was remembered before the send.
+  assert.deepEqual(sendCalls[0][2], { messageId: 'late-reaction-1' });
+  assert.equal(recentlySent.has('late-reaction-1'), true);
+});
+
 test('a sent reaction is recorded so its fromMe echo is dropped at intake', async () => {
   let routeHandler;
   const app = {
@@ -202,6 +239,7 @@ test('a sent reaction is recorded so its fromMe echo is dropped at intake', asyn
       message: { reactionMessage: payload.react },
     }),
     trackSentMessageId: (sent) => recentlySent.remember(sent?.key?.id),
+    newMessageId: () => 'reaction-echo-1',
   });
 
   const res = responseRecorder();
@@ -259,6 +297,7 @@ test('the /react route sends with a short deadline that is dropped once expired'
       sendCalls.push(args);
     },
     trackSentMessageId: () => {},
+    newMessageId: () => 'reaction-id-1',
   });
 
   await routeHandler({

@@ -20,7 +20,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser, generateMessageIDV2 } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -35,6 +35,7 @@ import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, 
 import { createOutboundIdTracker, isOwnSendEcho } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import { registerReactionRoute } from './reaction.js';
+import { createSendQueue } from './send_queue.js';
 import {
   addMentions,
   buildPollPayload,
@@ -141,48 +142,12 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
-// --- Send queue: serialise all sock.sendMessage() calls across concurrent
-//     HTTP handlers so a single Baileys socket never has overlapping sends.
-//     Overlapping sends are the root cause of cross-chat contamination
-//     (#33360) — the WhatsApp protocol-level routing can misdeliver when
-//     two sendMessage() Promises race on the same socket. ---
-let _sendQueue = Promise.resolve();
-
-function enqueueSend(fn) {
-  const task = _sendQueue.then(() => fn(), () => fn());
-  _sendQueue = task.catch(() => {});
-  return task;
-}
+// Every sock.sendMessage() goes through one serialized, timeout-bounded queue
+// (see send_queue.js for why sends must never overlap on the socket).
+const { sendWithTimeout } = createSendQueue({ getSocket: () => sock, defaultTimeoutMs: SEND_TIMEOUT_MS });
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// `skipIfExpired` is for best-effort sends (reactions): a send whose deadline
-// passed while it waited in the queue is dropped instead of started late, where
-// the already-rejected race would free the queue while it is still in flight and
-// overlap the next send.
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS, { skipIfExpired = false } = {}) {
-  let timer;
-  let expired = false;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => {
-        expired = true;
-        reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`));
-      },
-      timeoutMs,
-    );
-  });
-  // A send can expire while it still waits in the queue, before the race below is
-  // attached; mark the rejection handled so it cannot crash the process. The
-  // caller still sees it through the race or the expiry check.
-  timeoutPromise.catch(() => {});
-  return enqueueSend(() => {
-    if (skipIfExpired && expired) return timeoutPromise;
-    return Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer));
-  });
 }
 
 function formatOutgoingMessage(message) {
@@ -1106,6 +1071,7 @@ registerReactionRoute(app, {
   getConnectionState: () => connectionState,
   sendWithTimeout,
   trackSentMessageId,
+  newMessageId: () => generateMessageIDV2(sock?.user?.id),
 });
 
 // Typing indicator

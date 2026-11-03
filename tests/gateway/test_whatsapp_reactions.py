@@ -182,6 +182,26 @@ class TestWhatsAppLifecycleReactions:
         adapter._http_session.post.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_group_reaction_keys_on_the_original_lid_participant(self):
+        # The bridge reports a LID group sender by its phone twin (senderId), but the message
+        # is stored under the LID participant, so the reaction key must use that one.
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"success": True})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+        event = _event(chat_id="group@g.us", sender_id="4915550000@s.whatsapp.net", chat_type="group")
+        event.raw_message["readReceiptKey"] = {
+            "remoteJid": "group@g.us", "id": "msg-123", "participant": "1234@lid", "fromMe": False,
+        }
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        await _drain(adapter)
+
+        sent = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [(p["emoji"], p["senderId"]) for p in sent] == [("👀", "1234@lid"), ("✅", "1234@lid")]
+
+    @pytest.mark.asyncio
     async def test_bare_phone_chat_id_is_normalized_for_bridge(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)

@@ -1093,6 +1093,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._background_tasks.add(task)  # cancelled with the adapter's other work on shutdown
         task.add_done_callback(self._background_tasks.discard)
 
+    @staticmethod
+    def _reaction_participant(raw: dict) -> Optional[str]:
+        """The group participant exactly as the message key has it. ``senderId`` may be the
+        phone twin of a LID sender, which is not the key WhatsApp stored the message under."""
+        key = raw.get("readReceiptKey")
+        participant = key.get("participant") if isinstance(key, dict) else None
+        return participant or raw.get("senderId")
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """React with 👀 while the message is being processed."""
         if not self._reactions_enabled() or self._is_reaction_event(event) or not self._reaction_sender_authorized(event):
@@ -1102,7 +1110,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not chat_id or not message_id:
             return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        self._queue_reaction(chat_id, message_id, "👀", sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
+        self._queue_reaction(chat_id, message_id, "👀", sender_id=self._reaction_participant(raw), from_me=bool(raw.get("fromMe", False)))
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for the final outcome reaction."""
@@ -1123,7 +1131,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not chat_id or not message_id:
             return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        self._queue_reaction(chat_id, message_id, emoji, sender_id=raw.get("senderId"), from_me=bool(raw.get("fromMe", False)))
+        self._queue_reaction(chat_id, message_id, emoji, sender_id=self._reaction_participant(raw), from_me=bool(raw.get("fromMe", False)))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:

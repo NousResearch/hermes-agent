@@ -157,16 +157,16 @@ def test_child_failure_stops_sequence_even_with_stale_product(build_fixture, sta
     assert not out.exists()
 
 
-@pytest.mark.parametrize("identity", [("--tag", "v1.2.3"), ("--commit", "a" * 40)])
-def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
+@pytest.mark.parametrize("tag", ["v1.2.3", "commit.20260818T101010Z-v1.2.3"])
+def test_release_workflow_runs_the_shared_sequence(build_fixture, tag):
+    # Every Termux leg is a claim's candidate: it builds its payload tag at the claim's commit.
     repo, payload, _, log, env = build_fixture
     (repo / "scripts/termux/build.py").symlink_to(DRIVER)
     (repo / "termux-build").mkdir()
     (repo / "termux-build/payload").symlink_to(payload, target_is_directory=True)
     tools = log.parent / "tools"
     (tools / "python3").symlink_to(sys.executable)
-    env.update(HERMES_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
-               HERMES_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
+    env.update(HERMES_PAYLOAD_TAG=tag, HERMES_RELEASE_COMMIT="a" * 40)
     workflow = YAML(typ="safe").load((ROOT / ".github/workflows/desktop-bundled-release.yml").read_text())
     step = next(step for step in workflow["jobs"]["termux-deb"]["steps"]
                 if step.get("name") == "Assemble the .deb")
@@ -179,7 +179,7 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
     assert [Path(call["args"][0]).name for call in calls] == [
         "node-deps.mjs", "tui.mjs", "build_deb.sh",
     ]
-    assert calls[-1]["args"][-2:] == list(identity)
+    assert calls[-1]["args"][-4:] == ["--tag", tag, "--release-commit", "a" * 40]
     assert (repo / "termux-build/deb/assembly-received-product").read_text() == str(
         repo / ".build/termux/tui")
 

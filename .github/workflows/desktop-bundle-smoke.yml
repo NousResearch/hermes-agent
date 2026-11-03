@@ -4,7 +4,7 @@ on:
   # Re-smoke an artifact that is already built, with the test scripts of any
   # pushed ref (the ref this is dispatched on): `gh workflow run
   # desktop-bundle-smoke.yml --ref <test-branch> -f platform=win32 -f arch=x64
-  # -f format=msix -f sha=<built commit> -f commit-build=true
+  # -f format=msix -f sha=<built commit> -f tag=<claim tag>
   # -f public-base=https://hermes-assets.nousresearch.com/`. No rebuild per test.
   workflow_dispatch:
     inputs:
@@ -12,8 +12,7 @@ on:
       arch: {required: true, type: string}
       format: {required: true, type: string}
       sha: {description: Commit whose staged artifact is smoked, required: true, type: string}
-      tag: {default: '', type: string}
-      commit-build: {default: false, type: boolean}
+      tag: {description: Claim tag whose archive holds the artifact, required: true, type: string}
       public-base: {required: true, type: string}
   workflow_call:
     inputs:
@@ -36,9 +35,6 @@ on:
         description: Archive ref the handoffs are staged under (attempt ref for stable phases).
         default: ''
         type: string
-      commit-build:
-        default: false
-        type: boolean
       channel-build:
         default: ''
         type: string
@@ -86,7 +82,6 @@ jobs:
       RELEASE_COMMIT: ${{ inputs.sha }}
       RELEASE_TAG: ${{ inputs.tag }}
       ARCHIVE_TAG: ${{ inputs.archive-tag }}
-      COMMIT_BUILD: ${{ inputs.commit-build }}
       CHANNEL_BUILD: ${{ inputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
@@ -130,7 +125,6 @@ jobs:
           if [ -n "${CHANNEL_BUILD:-}" ]; then
             # A channel claim's candidate: fetched from the claim's tag archive like any candidate;
             # the request supplies only its identity.
-            test "$COMMIT_BUILD" = false
             python -m scripts.releases.channel_publish request --build-id "$CHANNEL_BUILD" \
               --request-sha256 "$CHANNEL_REQUEST_SHA256" --public-base "$PUBLIC_BASE" \
               --out "$SMOKE_ROOT/request.json"
@@ -146,10 +140,6 @@ jobs:
             *) echo '::error::unsupported native smoke target'; exit 1 ;;
           esac
           args=(--tag "${ARCHIVE_TAG:-$RELEASE_TAG}" --commit "$RELEASE_COMMIT")
-          if [ "$COMMIT_BUILD" = true ]; then
-            test -z "$RELEASE_TAG"
-            args=(--commit-build "$RELEASE_COMMIT")
-          fi
           python -m scripts.releases.handoff fetch --public-base "$PUBLIC_BASE" "${args[@]}" \
             --name "$name" --root "$SMOKE_ROOT/download" --include "$pattern" 2>&1 | tee "$SMOKE_ROOT/out/fetch.log"
           python - "$name" "$pattern" <<'PY'

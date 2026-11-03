@@ -182,7 +182,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
             raise ChannelError("Protected heads require the accepted release workflow")
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
         # A canary publishes only from the Stable Release controller, after its accepted candidate:
-        # the one pipeline. The direct desktop-bundled-release dispatch refuses canary tags.
+        # the one pipeline. desktop-bundled-release has no dispatch of its own.
         expected = f"{repository}/.github/workflows/{stable.CONTROLLER_WORKFLOW}@refs/heads/{default}"
         required = CANARY_CONTROLLER_NEEDS
         # A claim that requires green publishes only once every suite passed (admission's

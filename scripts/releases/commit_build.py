@@ -10,7 +10,6 @@ import tomllib
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
-WORKFLOW = "desktop-bundled-release.yml"
 
 
 def require_commit(value: str) -> str:
@@ -41,41 +40,6 @@ def version_at(repo: Path | None, commit: str, *, run=output) -> str:
     if not isinstance(version, str) or not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
         raise ValueError("Commit packaging requires project.version=X.Y.Z")
     return version
-
-
-def _controller(env: dict[str, str], commit: str, *, run=output,
-                repo: Path | None = None) -> dict:
-    default = env.get("DEFAULT_BRANCH", "")
-    ref = f"refs/heads/{default}"
-    repository = env.get("GITHUB_REPOSITORY", "")
-    expected_workflow = f"{repository}/.github/workflows/{WORKFLOW}@{ref}"
-    if (not default or not repository or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
-            or env.get("GITHUB_REF") != ref or env.get("GITHUB_WORKFLOW_REF") != expected_workflow):
-        raise ValueError("Commit builds require workflow_dispatch from the repository default-branch workflow")
-    actors = {env.get("GITHUB_ACTOR", ""), env.get("GITHUB_TRIGGERING_ACTOR") or env.get("GITHUB_ACTOR", "")}
-    for actor in actors:
-        if not actor:
-            raise ValueError("Commit builds require a repository maintainer")
-        permission = run(["gh", "api", f"repos/{repository}/collaborators/{actor}/permission",
-                          "--jq", ".permission"], repo)
-        if permission not in {"write", "maintain", "admin"}:
-            raise ValueError("Commit builds require repository write, maintain or admin permission")
-    require_pushed(commit, "origin", repo, run=run)
-    return {"repository": repository, "default": default}
-
-
-def admit(env: dict[str, str], *, run=output, repo: Path | None = None) -> dict[str, str]:
-    from scripts.releases.bundle_env import decode
-
-    commit = require_commit(env.get("BUILD_COMMIT", ""))
-    if env.get("TAG") or env.get("RELEASE_PHASE") or env.get("UPLOAD_RELEASE", "false") != "false":
-        raise ValueError("Commit builds cannot use tag, release-phase or upload_release")
-    if env.get("TERMUX_UPGRADE_FROM_TAG"):
-        raise ValueError("Commit builds do not run release-channel upgrade acceptance")
-    _controller(env, commit, run=run, repo=repo)
-    decode(env.get("BUNDLE_ENV_JSON", ""))
-    return {"sha": commit, "channel": "commit",
-            "payload-version": version_at(repo, commit, run=run)}
 
 
 def resolve_revision(rev: str, remote: str, repo: Path) -> str:
@@ -216,21 +180,3 @@ def cmd_build_commit(args) -> None:
             # original error with a TypeError while reporting it.
             stderr = "\n" + (exc.stderr or "")
         raise SystemExit(f"release: {kind} build refused: {exc}{stderr}") from exc
-
-
-def main() -> None:
-    import sys
-
-    # Commit builds no longer mint a post-build receipt: their claim tag, made before the build,
-    # is their identity (release.py --build-commit).
-    if sys.argv[1:] != ["admit"]:
-        raise SystemExit("usage: python -m scripts.releases.commit_build admit")
-    env = dict(os.environ)
-    values = admit(env)
-    with Path(env["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-        stream.write("".join(f"{key}={value}\n" for key, value in values.items()))
-    print(json.dumps(values, sort_keys=True))
-
-
-if __name__ == "__main__":
-    main()

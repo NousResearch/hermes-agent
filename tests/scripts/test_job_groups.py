@@ -1,7 +1,7 @@
 """Behavior contract for the `jobs` input parser (no workflow YAML is read)."""
 import pytest
 
-from scripts.releases.job_groups import ALL_JOBS, JOB_GROUPS, parse_jobs, phase_jobs, selects_all
+from scripts.releases.job_groups import ALL_JOBS, JOB_GROUPS, parse_jobs, phase_jobs
 
 
 def test_the_default_selects_every_group():
@@ -31,15 +31,6 @@ def test_duplicates_unknown_names_and_empty_are_refused():
         parse_jobs("termux,")
     with pytest.raises(ValueError, match="unknown job group"):
         parse_jobs("termux,smoke-win32")
-
-
-def test_selects_all_refuses_partial_selections():
-    assert selects_all(None) is True
-    assert selects_all(ALL_JOBS) is True
-    assert selects_all("termux") is False
-    assert selects_all("darwin-arm64,darwin-x64,win32-arm64,win32-x64") is False
-    with pytest.raises(ValueError):
-        selects_all("bogus")
 
 
 def test_phase_jobs_judge_only_the_selected_groups():

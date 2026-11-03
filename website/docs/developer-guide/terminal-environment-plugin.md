@@ -1,8 +1,10 @@
 # Terminal Environment Provider Plugins
 
 Hermes runs shell commands through a pluggable set of **terminal backends**.
-The built-in backends (local, Docker, Singularity, Modal, Daytona, Vercel
-Sandbox, SSH) live in the core repo under `tools/environments/`. Third-party
+The built-in backends (local, Docker, Modal, Daytona, Vercel Sandbox, SSH)
+live in the core repo under `tools/environments/`. The official
+[Singularity/Apptainer plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity)
+is a complete worked example of this page. Third-party
 sandbox vendors integrate as **plugins** instead — a standalone plugin repo
 installed under `~/.hermes/plugins/`, registering a backend the user selects
 exactly like a built-in one via `terminal.backend` in `config.yaml`.
@@ -104,8 +106,8 @@ hermes config set terminal.backend acmebox
 ## Rules
 
 - **Reserved names.** Registrations that collide with a built-in backend name
-  (`local`, `docker`, `singularity`, `modal`, `managed_modal`, `daytona`,
-  `vercel_sandbox`, `ssh`) are rejected. Plugins extend the backend set; they
+  (`local`, `docker`, `modal`, `managed_modal`, `daytona`, `vercel_sandbox`,
+  `ssh`) are rejected. Plugins extend the backend set; they
   never shadow in-tree backends.
 - **`create_environment` must accept `**kwargs`** and ignore unknown keys —
   the forward-compat contract that lets the factory signature evolve without
@@ -131,6 +133,43 @@ interface as `tools.environments.base.BaseEnvironment`:
 
 Subclassing `BaseEnvironment` is recommended (you inherit the shared file-sync
 and background-process plumbing) but not required.
+
+## File tools and the host filesystem
+
+`read_file`, `write_file`, `patch` and `search_files` go through your
+environment's `execute()`, so they see exactly the files your commands see.
+The one exception is an environment that declares
+`uses_host_filesystem = True` (only the built-in `LocalEnvironment` does): there
+the file tools read, write and search the host directly, run the bundled
+ripgrep, stat paths on the host, write oversized tool output straight to
+`~/.hermes/cache/spillover` and enable LSP diagnostics.
+
+A backend that subclasses `LocalEnvironment` to confine its commands (a
+bubblewrap or other host sandbox that hides paths, mounts them read-only or
+gives commands their own `$TMPDIR`) inherits `True` and must turn it off, or
+the file tools bypass the sandbox:
+
+```python
+from tools.environments.local import LocalEnvironment
+
+
+class AcmeJailEnvironment(LocalEnvironment):
+    uses_host_filesystem = False  # file tools run inside the jail, via execute()
+```
+
+Leave it unset on backends that don't subclass `LocalEnvironment`; the default
+is `False`. Hermes v0.22.5 and earlier ignore the attribute and use the host
+fast path for every `LocalEnvironment` subclass, so pin `requires_hermes` past
+that.
+
+## Images
+
+Your backend reads its own image setting (a `config_schema` key, or a
+`terminal.<name>_image` key you document). Hermes passes `image=` only for a
+per-task override: a batch run (`batch_runner.py`) giving each prompt its own
+container registers it as `<name>_image` for the active backend, and that value
+reaches `create_environment(image=...)`. Otherwise `image` is `""`; fall back to
+your setting.
 
 ## Starting directory
 
@@ -170,8 +209,8 @@ Relative paths are ignored, because Hermes would anchor them on the host.
 
 ## Bot Desktop and `computer_use`
 
-The screen, `computer_use` and the browser follow the terminal into Docker, SSH
-and Singularity sandboxes by spawning long-lived processes there with stdin and
+The screen, `computer_use` and the browser follow the terminal into Docker and
+SSH sandboxes (and the Singularity plugin's) by spawning long-lived processes there with stdin and
 stdout left open. A plugin backend can opt in the same way:
 
 1. Set `supports_streams = True` on the provider. `bot_desktop.placement: auto`
@@ -196,11 +235,12 @@ the browser keep their scratch files under the environment's
 `get_temp_dir()`. An environment that doesn't subclass `BaseEnvironment` and
 has no such method gets the same default `BaseEnvironment` uses.
 
-Both `exec_prefix()` and the `~` home resolution read the environment object
-itself, so they work only for plugins loaded in-process. Under
-`plugins.isolation: host` the environment reaches Hermes as an opaque
-placeholder: Bot Desktop refuses a `supports_streams` backend with a message
-naming the setting, and `default_cwd = "~"` stays a literal `~`.
+A terminal backend runs only in-process: its environment object is what the
+terminal tool, file tools, `exec_prefix()` and the `~` home resolution all
+drive. Under `plugins.isolation: host` the object cannot cross the host
+boundary, so creating the environment refuses with a message naming
+`plugins.isolation: in_process` (before the host starts a sandbox), and Bot
+Desktop refuses a `supports_streams` backend the same way.
 
 ## Session isolation semantics
 

@@ -437,6 +437,9 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
         def __init__(self, authority, transport, identity, operator=False):
             self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
 
+        def awaits_profile_start(self, req, held):
+            return None  # no profile is starting
+
         async def dispatch(self, req):
             return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}
 

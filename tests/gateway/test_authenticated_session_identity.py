@@ -67,7 +67,7 @@ def connection(authority, session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, monkeypatch, oidc):
+async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipts(tmp_path, monkeypatch, oidc):
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -100,23 +100,21 @@ async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, m
     oauth = oidc('user-a')
     basic = BasicAuthProvider(username='user-a', password_hash=hash_password('fixture-password'), secret=b'fixture-secret-32-characters-long')
     password = basic.complete_password_login(username='user-a', password='fixture-password')
-    owner, other, same_sub = await actor(oauth), await actor(oidc('user-b')), await actor(password)
+    owner, by_password = await actor(oauth), await actor(password)
+    # The Webapp is single-user: whichever bundled sign-in opened it, the tab acts as the machine
+    # owner, the same subject native Desktop's ticket carries (gateway.owner_identity).
+    from gateway.owner_identity import host_owner_subject
+    assert owner.subject == by_password.subject == host_owner_subject()
     params = {'request_id': 'same-request', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'fixture', 'toolsets': []}
     ref = create_local_session(authority, owner, params)
     from gateway.session_mutations import mutate_session
     edit = dict(session_id=ref.session_id, request_id='oauth-rename', expected_revision=0,
                 operation='rename', payload={'title': 'OAuth owned'})
     receipt = await mutate_session(authority, owner, ref, edit)
-    for foreign in (other, same_sub):
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
-            await authority.resolve(foreign, ref)
-        assert create_local_session(authority, foreign, params) != ref
-    # Same provider name under a different verified issuer is a different authority.
-    foreign_issuer = await actor(oidc('user-a', '/other'))
-    with pytest.raises(RuntimeStoreError, match='permission_denied'):
-        await authority.resolve(foreign_issuer, ref)
-    from tui_gateway.methods_browser_control import _principal_digest
-    assert _principal_digest({'provider': oauth.provider, 'issuer': oauth.issuer, 'user_id': oauth.user_id}) != _principal_digest(
+    assert create_local_session(authority, by_password, params) == ref
+    assert await mutate_session(authority, by_password, ref, edit) == receipt
+    from gateway.session_identity import authenticated_principal_digest
+    assert authenticated_principal_digest({'provider': oauth.provider, 'issuer': oauth.issuer, 'user_id': oauth.user_id}) != authenticated_principal_digest(
         {'provider': oauth.provider, 'issuer': oauth.issuer + '/other', 'user_id': oauth.user_id})
     runner.adapters = {}
     cold = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='second')
@@ -124,12 +122,11 @@ async def test_bundled_provider_issuer_subject_owns_durable_receipts(tmp_path, m
     assert create_local_session(cold, reconnect, params) == ref
     assert await mutate_session(cold, reconnect, ref, edit) == receipt
     assert (await cold.resolve(reconnect, ref)).ref == ref
-    # Pre-cutover remote records have no issuer provenance: never adopt on first request.
+    # A bare pre-cutover subject is not a sign-in the owner stored: never adopted on first request.
     old = create_local_session(cold, Principal('user-a', owner.profile_id, owner.capabilities, 'old'),
                                {**params, 'request_id': 'old-ambiguous'})
-    for current in (reconnect, same_sub):
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
-            await cold.resolve(current, old)
+    with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        await cold.resolve(reconnect, old)
 
 
 @pytest.mark.asyncio

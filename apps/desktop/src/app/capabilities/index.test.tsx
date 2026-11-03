@@ -286,10 +286,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
 
     await screen.findByRole('switch', { name: 'web-research' })
-    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added web-research' }).disabled).toBe(true)
-    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installed web-research' }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add web-research' })).toBeNull()
     const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
-    fireEvent.click(within(available).getByRole('switch', { name: 'Add gif-search' }))
+    fireEvent.click(within(available).getByRole('button', { name: 'Add gif-search' }))
     await waitFor(() =>
       expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
         connectionId: 'homelab',
@@ -437,7 +437,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     }
   })
 
-  it('lists the built-in optional-skills catalog with Add switches that route through the hub pipeline', async () => {
+  it('lists the built-in optional-skills catalog with Add buttons that route through the hub pipeline', async () => {
     // Official optional skills merge into the same catalog as installed ones;
     // an uninstalled row carries an Add switch that routes through the hub
     // action pipeline scoped to the Capabilities profile. A name collision with
@@ -495,10 +495,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // The row settles once installed skills load (the discovery hero can change
     // as they merge in), so act on the live, enabled switch.
-    await screen.findByRole('switch', { name: 'Add gif-search' })
+    await screen.findByRole('button', { name: 'Add gif-search' })
 
     const install = await waitFor(() => {
-      const row = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add gif-search' })
+      const row = screen.getByRole<HTMLButtonElement>('button', { name: 'Add gif-search' })
 
       expect(row.disabled).toBe(false)
 
@@ -506,8 +506,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     })
 
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
-    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
-    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Add web-research' })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Added ascii-art' }).disabled).toBe(true)
 
     await act(async () => {
       fireEvent.click(install)
@@ -552,7 +552,62 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // The feed settles first; then only the installed row keeps the name,
     // while the distinct community skill stays installable.
-    await screen.findByRole('switch', { name: 'Add gif-search' })
+    await screen.findByRole('button', { name: 'Add gif-search' })
     expect(screen.getAllByRole('button', { name: 'docx' })).toHaveLength(1)
+  })
+
+  it('shows a ClawHub card as installed when its lock row is owner-qualified', async () => {
+    // The lock records @owner/slug; the hub map also lists the row under the
+    // card's clawhub/<slug> id, so the card takes the installed skill's switch.
+    // my-pdf declares `name: pdf`, so its card cannot merge but still reads installed.
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const record = (name: string) => ({ name, trust_level: 'community', scan_verdict: 'safe' })
+
+    const installed = Object.fromEntries(
+      [
+        ['@tmstudio667-commits/agent-git-oracle', 'agent-git-oracle'],
+        ['@liujiang817/my-pdf', 'my-pdf']
+      ].flatMap(([id, name]) => [id, `clawhub/${name}`].map(key => [key, record(name)]))
+    )
+
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/skills/hub/sources') {
+        return { sources: [], index_available: false, featured: [], installed }
+      }
+
+      throw new Error(`unexpected ${path}`)
+    })
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
+    getSkills.mockResolvedValue(
+      ['agent-git-oracle', 'pdf'].map(name => ({ name, description: name, enabled: true, usage: 0, provenance: 'hub' }))
+    )
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'Agent Git Oracle', source: 'ClawHub', identifier: 'agent-git-oracle' },
+        { name: 'My Pdf', source: 'ClawHub', identifier: 'my-pdf' }
+      ])
+    )
+
+    try {
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+              <CapabilitiesView />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      expect((await screen.findByRole<HTMLButtonElement>('button', { name: 'Added My Pdf' })).disabled).toBe(true)
+      const toggle = screen.getByRole('switch', { name: 'agent-git-oracle' })
+      expect(within(toggle.closest('article')!).getByRole('button', { name: 'Agent Git Oracle' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /^Add (Agent Git Oracle|My Pdf)$/ })).toBeNull()
+      expect(installHubSkill).not.toHaveBeenCalled()
+    } finally {
+      delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

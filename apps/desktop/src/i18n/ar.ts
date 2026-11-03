@@ -39,6 +39,7 @@ export const arOverrides = {
     installing: 'جارٍ التثبيت…',
     installComplete: (name: string) => `تم تثبيت «${name}»`,
     destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
+    install: 'تثبيت',
     installed: 'المثبتة',
     searchSkills: 'البحث في المهارات',
     searchPlugins: 'البحث في الإضافات',
@@ -79,7 +80,7 @@ export const arOverrides = {
       allApps: 'كل التطبيقات',
       receiptConnected: apps => `متصلة: ${apps}`,
       receiptNone: 'لم يتم ربط تطبيقات جديدة',
-      receiptTimedOut: 'أُغلقت بعد 5 دقائق',
+      receiptTimedOut: 'أُغلقت بعد 10 دقائق',
       finishInBrowser: 'أكمل في المتصفح',
       signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'
     }

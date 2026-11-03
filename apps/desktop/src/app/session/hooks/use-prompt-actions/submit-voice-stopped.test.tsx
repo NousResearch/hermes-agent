@@ -7,6 +7,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $sessions } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
+import { storedJournal } from './prepared-submissions-test-utils'
 import { useSubmitPrompt } from './submit'
 import type { GatewayRequest } from './utils'
 
@@ -69,7 +70,7 @@ it('a voice_stopped receipt settles the send with no turn, no error and no retai
   expect(state.messages.some(message => message.error)).toBe(false)
   expect(state.busy).toBe(false)
   expect(state.awaitingResponse).toBe(false)
-  expect(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1') ?? '').not.toContain('stop-1')
+  expect(storedJournal()).toEqual({})
 })
 
 // Greptile on TUI-26: the sidecar refuses `submission_id` (4000, version skew), Desktop retries the

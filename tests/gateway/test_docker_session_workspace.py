@@ -38,14 +38,14 @@ def _policy(home, cwd, persistent, mount=True):
     return restore_policy(asdict(build_policy({'source': 'cli', 'cwd': str(cwd), 'model': 'm'}, {})))
 
 
-def _turn(policy, session_id):
+def _turn(policy, session_id, profile=''):
     """The gateway turn's own scope: frozen policy, session key, and the turn's workspace binding."""
     from contextlib import ExitStack
     from gateway.session_context import clear_session_vars, set_session_vars
     from gateway.session_policy import bind_turn_workspace, policy_scope
     stack = ExitStack()
     stack.enter_context(policy_scope(policy))
-    tokens = set_session_vars(session_key=f'agent:main:local:dm:{session_id}')
+    tokens = set_session_vars(session_key=f'agent:main:local:dm:{session_id}', profile=profile)
     stack.callback(clear_session_vars, tokens)
     bind_turn_workspace(policy, session_id)
     return stack
@@ -79,6 +79,78 @@ def test_persistent_container_is_keyed_per_workspace_not_per_profile(home, tmp_p
     assert (plans['local-a'][1], plans['local-b'][1]) == (str(ws1), str(ws2))
     # Same workspace: still ONE persistent container, shared across sessions as before.
     assert plans['local-c'] == plans['local-a']
+
+
+@pytest.mark.parametrize("mount", [False, True])
+@pytest.mark.parametrize("profile", ["default", "beta"])
+def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
+    home, tmp_path, monkeypatch, mount, profile
+):
+    from tools import terminal_tool
+    from tui_gateway import server
+
+    profile_home = home if profile == "default" else home / "profiles" / profile
+    profile_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    workspaces = [tmp_path / "first", tmp_path / "second"]
+    plans = []
+    for index, workspace in enumerate(workspaces):
+        workspace.mkdir()
+        sid = f"desktop-{index}"
+        policy = _policy(profile_home, workspace, persistent=True, mount=mount)
+        with _turn(policy, sid, profile):
+            # Desktop registers its cwd independently of the gateway's host-mount binding.
+            vars(server)["_register_session_cwd"](
+                {
+                    "session_key": sid,
+                    "cwd": str(workspace),
+                    "explicit_cwd": True,
+                    "source": "desktop",
+                }
+            )
+            overrides = terminal_tool.resolve_task_overrides(sid)
+            assert overrides["cwd_source"] == ("session" if mount else "process")
+            if not mount:
+                assert overrides["cwd"] == ""
+                terminal_tool.record_session_cwd(sid, "/workspace/subdir")
+                vars(server)["_register_session_cwd"](
+                    {
+                        "session_key": sid,
+                        "cwd": str(workspace),
+                        "explicit_cwd": True,
+                        "source": "desktop",
+                    }
+                )
+                assert terminal_tool.get_session_cwd(sid) == "/workspace/subdir"
+            plans.append(_plan(sid))
+            assert (
+                terminal_tool._resolve_container_task_id(plans[-1][0]) == plans[-1][0]
+            )
+
+    with _turn(policy, "cli-without-workspace", profile):
+        terminal_tool.clear_task_env_overrides("cli-without-workspace")
+        cli_key = _plan("cli-without-workspace")[0]
+
+    if mount:
+        assert plans[0][0] != plans[1][0]
+        assert [plan[1] for plan in plans] == [
+            str(workspace) for workspace in workspaces
+        ]
+    else:
+        expected = "default" if profile == "default" else f"profile:{profile}"
+        assert cli_key == expected
+        assert plans == [(expected, None), (expected, None)]
+
+
+def test_a_registered_workspace_does_not_split_an_unmounted_profile_sandbox(home, tmp_path):
+    """Any ``cwd_source: "session"`` workspace (not just the gated writers') keeps the profile key."""
+    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    ws = tmp_path / 'ws'
+    ws.mkdir()
+    with _turn(_policy(home, ws, persistent=True, mount=False), 'local-a'):
+        register_task_env_overrides('local-a', {
+            'cwd': str(ws), 'cwd_source': 'session', 'workspace_key': workspace_key_for(str(ws))})
+        assert _plan('local-a') == ('default', None)
 
 
 def test_binding_keeps_a_cd_and_follows_a_workspace_move(home, tmp_path):

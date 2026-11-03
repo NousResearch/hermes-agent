@@ -159,6 +159,9 @@ class BillingState(OrgRoleCapability):
     payment_method: Optional[PaymentMethodInfo] = None
     monthly_cap: Optional[MonthlyCap] = None
     auto_reload: Optional[AutoReload] = None
+    # Window plans only: "Keep going on credits". None below ADMIN, on any
+    # other plan, and from a portal that predates the setting (no control offered).
+    keep_going_on_credits: Optional[bool] = None
     portal_url: Optional[str] = None
     error: Optional[str] = None  # set when the fetch failed (vs cleanly not-logged-in)
 
@@ -241,8 +244,15 @@ def billing_state_from_payload(payload: dict[str, Any], *, portal_url: Optional[
         payment_method=_parse_payment_method(payload.get("paymentMethod")),
         monthly_cap=_parse_monthly_cap(payload.get("monthlyCap")),
         auto_reload=_parse_auto_reload(payload.get("autoReload")),
+        keep_going_on_credits=_parse_keep_going_on_credits(payload.get("keepGoingOnCredits")),
         portal_url=portal_url,
     )
+
+
+def _parse_keep_going_on_credits(raw: Any) -> Optional[bool]:
+    """``{enabled: bool}`` → the bool; anything else (null, absent, malformed) → None."""
+    enabled = raw.get("enabled") if isinstance(raw, dict) else None
+    return enabled if isinstance(enabled, bool) else None
 
 
 def fetch_portal_state(

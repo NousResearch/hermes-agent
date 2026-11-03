@@ -1,6 +1,7 @@
 """Validation for the ``platform_toolsets`` config section."""
 
 import ast
+from functools import cache
 from typing import Callable, List, Optional
 
 from hermes_cli.platforms import PLATFORMS
@@ -33,6 +34,33 @@ def parse_platform_toolsets_value(value: object) -> Optional[list[str]]:
 def _platform_default_toolset(platform: object) -> str:
     info = PLATFORMS.get(platform)
     return info.default_toolset if info is not None else f"hermes-{platform}"
+
+
+@cache
+def _bundled_platform_names() -> frozenset:
+    from hermes_cli.config import _platform_manifest_paths
+
+    return frozenset(name for name, path, _kind, _st in _platform_manifest_paths(source="bundled") if path)
+
+
+def is_known_platform_bundle(platform: object, name: str) -> bool:
+    """True when ``name`` is the ``hermes-<platform>`` bundle of a platform Hermes knows: builtin, shipped
+    under ``plugins/platforms``, a platform that left core for a catalog plugin, or one a loaded plugin
+    registered. Installs seeded from cli-config.yaml.example carry such rows for platforms nobody set up
+    (teams, google_chat, homeassistant), inert until the plugin loads. A misspelt platform key naming its
+    own bundle (``telegarm: [hermes-telegarm]``) is not known, so it is still reported."""
+    if name != _platform_default_toolset(platform):
+        return False
+    key = str(platform)
+    if key in PLATFORMS or key in _bundled_platform_names():
+        return True
+    from hermes_cli.left_core_migration import LEFT_CORE
+
+    if any(feature.platform == key for feature in LEFT_CORE):
+        return True
+    from gateway.platform_registry import platform_registry
+
+    return platform_registry.is_registered(key)
 
 
 def _platform_default_is_valid(
@@ -123,7 +151,7 @@ def validate_platform_toolsets(
         for name in toolsets:
             if not isinstance(name, str) or not name:
                 continue
-            if not is_valid_toolset(name):
+            if not is_valid_toolset(name) and not is_known_platform_bundle(platform, name):
                 hint = f" — did you mean '{default}'?" if default_valid else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):

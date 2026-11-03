@@ -9,7 +9,8 @@ import { parseArgs } from 'node:util';
 import { parse } from 'parse5';
 import { parse as parseYaml } from 'yaml';
 import { exportedRoutes, htmlPath, redirectEntries, sitemapXml, redirectHtml, redirectScriptAsset } from './postbuild.mjs';
-import { LOCALES, SITE_URL, DOCS_BASE_PATH, localizedHref, publicHref } from '../src/lib/urls.ts';
+import { LOCALES, SITE_URL, DOCS_BASE_PATH, localizedHref, publicHref, splitLocalePath } from '../src/lib/urls.ts';
+import { openSearchXml } from './opensearch.mjs';
 import { groupAuthors } from '../src/lib/plugin-pages.ts';
 import { readDocumentMetadata, documentSlugs } from '../src/lib/content.mjs';
 
@@ -217,6 +218,25 @@ function checkPublicCopied(appDir, fail) {
   checkCopiedTree(path.join(appDir, '.next/static'), path.join(outDir, '_next/static'), 'Next static', fail);
 }
 
+function checkLocalizedArtifacts(appDir, fail) {
+  const publicDir = path.join(appDir, 'public');
+  if (!existsSync(publicDir)) return; // checkPublicCopied reports the missing source.
+  for (const file of walkFiles(publicDir)) {
+    const relative = path.relative(publicDir, file).split(path.sep).join('/');
+    if (!relative.startsWith('api/') && !relative.startsWith('oauth/')
+      && relative !== 'llms.txt' && relative !== 'llms-full.txt') continue;
+    for (const locale of LOCALES.filter((locale) => locale !== 'en')) {
+      const alias = `${locale}/${relative}`;
+      const exported = path.join(appDir, 'out', alias);
+      if (!statSync(exported, { throwIfNoEntry: false })?.isFile()) {
+        fail(`localized artifact ${alias} is missing from the export`);
+      } else if (!readFileSync(file).equals(readFileSync(exported))) {
+        fail(`localized artifact ${alias} differs from its canonical source`);
+      }
+    }
+  }
+}
+
 function srcsetUrls(value) {
   const urls = [];
   let cursor = 0;
@@ -238,7 +258,7 @@ function srcsetUrls(value) {
   return urls;
 }
 
-function collectAssetRefs(node, refs) {
+function collectAssetRefs(node, refs, searchLinks) {
   for (const child of node.childNodes ?? []) {
     if (child.tagName) {
       const attr = (name) => child.attrs?.find((attribute) => attribute.name === name)?.value;
@@ -250,9 +270,14 @@ function collectAssetRefs(node, refs) {
       if (child.tagName === 'link') {
         const rel = attr('rel') ?? '';
         if (rel.toLowerCase().split(/\s+/).includes('stylesheet') && attr('href')) refs.push(attr('href'));
+        if (rel.toLowerCase().split(/\s+/).includes('search')
+          && attr('type') === 'application/opensearchdescription+xml' && attr('href')) {
+          searchLinks.push(attr('href'));
+          refs.push(attr('href'));
+        }
       }
     }
-    collectAssetRefs(child, refs);
+    collectAssetRefs(child, refs, searchLinks);
   }
 }
 
@@ -263,7 +288,10 @@ function checkHtmlAssets(appDir, fail, ctx) {
     const file = htmlPath(outDir, route);
     if (!existsSync(file)) continue; // the page checks already reported it
     const refs = [];
-    collectAssetRefs(parse(readFileSync(file, 'utf8')), refs);
+    const searchLinks = [];
+    collectAssetRefs(parse(readFileSync(file, 'utf8')), refs, searchLinks);
+    const expectedSearch = publicHref(localizedHref('/opensearch.xml', splitLocalePath(route).locale));
+    if (!searchLinks.includes(expectedSearch)) fail(`page ${route} is missing OpenSearch autodiscovery for ${expectedSearch}`);
     const pageBase = publicHref(route === '/' ? '/' : `${route}/`);
     for (const ref of refs) {
       if (ref.startsWith('#')) continue;
@@ -468,6 +496,18 @@ function checkSearchConfig(appDir, fail) {
   }
 }
 
+function checkOpenSearch(appDir, fail, ctx) {
+  for (const locale of LOCALES) {
+    const route = localizedHref('/search', locale);
+    if (ctx.routes && !ctx.routes.includes(route)) fail(`full search page ${route} is missing from the export`);
+    const relative = localizedHref('/opensearch.xml', locale).slice(1);
+    const file = path.join(appDir, 'out', relative);
+    if (!isNonempty(file)) fail(`out/${relative} is missing or empty`);
+    else if (readFileSync(file, 'utf8') !== openSearchXml(locale)) fail(`out/${relative} does not match its OpenSearch recipe`);
+  }
+  if (!isNonempty(path.join(appDir, 'out/img/favicon.ico'))) fail('the OpenSearch icon out/img/favicon.ico is missing or empty');
+}
+
 function checkLlmsFiles(appDir, fail) {
   for (const name of ['llms.txt', 'llms-full.txt']) {
     if (!isNonempty(path.join(appDir, 'out', name))) {
@@ -515,6 +555,7 @@ const CHECKS = [
   checkSitemapRecipe,
   checkLegacyAliases,
   checkPublicCopied,
+  checkLocalizedArtifacts,
   checkHtmlAssets,
   checkSkillsJson,
   checkPluginsJson,
@@ -522,6 +563,7 @@ const CHECKS = [
   checkModelCatalogJson,
   checkOauthMetadata,
   checkSearchConfig,
+  checkOpenSearch,
   checkLlmsFiles,
 ];
 
@@ -543,7 +585,7 @@ export function validateOutput(appDir = appRoot) {
   return { ok: errors.length === 0, errors, pages: ctx.routes?.length ?? 0 };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const { values } = parseArgs({ options: { 'app-dir': { type: 'string' } } });
   const result = validateOutput(values['app-dir'] ? path.resolve(values['app-dir']) : appRoot);
   if (result.ok) {

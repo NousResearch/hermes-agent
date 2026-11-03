@@ -1,8 +1,10 @@
 """Voice-mode system playback must scrub credential env (sibling of #70342)."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 
+@pytest.mark.real_audio_playback
 def test_play_audio_file_scrubbed_env(tmp_path, monkeypatch):
     audio = tmp_path / "t.mp3"
     audio.write_bytes(b"ID3fake")

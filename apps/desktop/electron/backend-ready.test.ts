@@ -350,7 +350,10 @@ test(
     // 90s timeout that hides a multi-minute repair. The grace is wall-clock;
     // a 50ms grace stands in for production's 5 minutes.
     const child = makeFakeChild()
-    const wait = waitForDashboardPort(child, 20, undefined, undefined, 50)
+    const timeoutMs = 20
+    const completionGraceMs = 50
+    // describeOutputTail and bufferedOutput keep their defaults (no output tail).
+    const wait = waitForDashboardPort(child, timeoutMs, undefined, undefined, completionGraceMs)
     wait.catch(() => {}) // mark handled; the assertion below re-awaits
 
     child.stdout.emit('data', 'hermes: finishing an interrupted source update...\n')

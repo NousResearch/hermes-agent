@@ -27,7 +27,8 @@ from gateway.hosted_room_peer import (
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway import hosted_room_router_call as router_call
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
-from tui_gateway.hosted_room_member_activity import forget_task_progress, record_task_progress, task_progress
+from tui_gateway.hosted_room_member_activity import (
+    forget_task_progress, record_task_progress, task_is_active, task_progress)
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -186,6 +187,7 @@ class HostedRoomService:
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action, task_progress=record_task_progress,
+            retire_task_progress=forget_task_progress,
             remote_member=self._member_is_peer,
             maintain=self.retry_owed_revokes,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
@@ -767,7 +769,9 @@ class HostedRoomService:
         stalls.clear(binding.room_id)
 
     def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
-        forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
+        # A deferred peer still owns this generation; Retry resumes its existing run.
+        if task["status"] != "deferred" or not self._member_is_peer(binding.room_id, task_member_id(task)):
+            forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 
@@ -895,9 +899,6 @@ class HostedRoomService:
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
-        # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
-        forget_task_progress(room_id, task_id, int(task["execution_generation"]))
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
 
@@ -990,8 +991,15 @@ class HostedRoomService:
                 if action_room_id == room_id
                 and (member_id, action.get("task_id"), action.get("execution_generation")) in approvable)
         # Who is answering right now, since when, and (when this process runs the turn) in which tool.
-        member_activity = [
-            _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]
+        member_activity = []
+        for task in tasks:
+            # Recovery keeps its durable uncertainty until a receipt arrives, even while the
+            # peer confirms the same attempt is running. Project that observation as live work.
+            recovered_active = (task["status"] == "indeterminate"
+                and self._member_is_peer(room_id, task_member_id(task))
+                and task_is_active(room_id, task["identity"].task_id, int(task["execution_generation"])))
+            if task["status"] in _LIVE_STATUSES or recovered_active:
+                member_activity.append(_member_activity({**task, "status": "running"} if recovered_active else task))
         return {
             "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]

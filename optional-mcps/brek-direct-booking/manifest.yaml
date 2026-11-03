@@ -2,7 +2,7 @@
 manifest_version: 1
 
 name: brek-direct-booking
-description: "Find property-manager direct booking pages for specific Airbnb vacation rentals."
+description: "Search Airbnb vacation rentals and find direct booking options for the same homes."
 source: https://www.brek.ai/help/connectors
 
 transport:
@@ -15,31 +15,37 @@ auth:
 tools:
   default_enabled:
     - lookup_direct_booking
+    - search_vacation_rentals
 
 suggest:
   keywords:
     - "brek direct booking"
     - "direct booking"
+    - "vacation rentals"
+    - "Airbnb cabins"
   hosts:
     - airbnb.com
     - brek.ai
   examples:
     - "Find a direct-booking page for https://www.airbnb.com/rooms/13208131."
     - "Can I book this Airbnb rental directly through its property manager?"
+    - "Find pet-friendly cabins with a hot tub in South Lake Tahoe for November 16–19."
 
 post_install: |
   No account, API key, payment details or PMS access is required.
-  Restart the session after installation to discover lookup_direct_booking.
+  Restart the session after installation to discover lookup_direct_booking
+  and search_vacation_rentals.
 
-  Provide 1–10 full Airbnb room URLs or exact listing IDs as strings.
-  The lookup reads existing property mappings and returns operator booking
-  links, with property names and images when available. Coverage varies;
-  no match is a normal completed lookup, not a service error.
-  Follow next_offset only when more links are requested.
+  Search by destination, dates, guests, property type and amenities to see
+  Airbnb source-platform trip totals and mapped owner links when available.
+  Or provide a specific Airbnb room URL or exact listing ID for a direct
+  booking lookup. Coverage varies; no match is a normal result. Follow
+  next_offset when additional search or lookup results are requested.
 
-  This connector does not search destinations, compare rates, check live
-  availability, guarantee savings, make reservations or process payments.
-  Travelers check prices and terms on the returned booking website.
+  Source-platform trip totals are not direct-booking quotes. Travelers must
+  confirm direct prices, availability, fees, terms and any savings on the
+  booking website. The tools do not contact hosts, make reservations or
+  process payments.
 
   Documentation: https://www.brek.ai/help/connectors
   Privacy: https://www.brek.ai/privacy#direct-booking-mcp

@@ -165,8 +165,15 @@ HEDGE_PATTERNS = [
 ]
 
 
+def _normalize_apostrophes(text):
+    """Normalize curly quotes to ASCII so refusal/hedge regexes match model output.
+    Many models emit U+2019 (') for apostrophes, which missed patterns using ASCII '."""
+    return text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+
+
 def is_refusal(content):
     """Check if response is a refusal."""
+    content = _normalize_apostrophes(content)
     for pattern in REFUSAL_PATTERNS:
         if pattern.search(content):
             return True
@@ -175,6 +182,7 @@ def is_refusal(content):
 
 def count_hedges(content):
     """Count hedge/disclaimer patterns in content."""
+    content = _normalize_apostrophes(content)
     count = 0
     for pattern in HEDGE_PATTERNS:
         if pattern.search(content):

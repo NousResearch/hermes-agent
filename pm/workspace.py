@@ -547,7 +547,8 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None) -> 
     specifier. So the specifier is judged here, PEP 440 like any requirement, under *extras*
     (the core extras the build selects; ``None`` reads the recorded selection) and this host's
     markers. The identity is the one ``requires_hermes`` reads (the committed pyproject
-    version is a placeholder); with none (``unknown``) nothing is judged.
+    version is a placeholder); with none (``unknown``) nothing is judged. It is read only for
+    a plugin that names core: the read walks git, and every plugin passes here at startup.
     """
     import tomllib
 
@@ -557,11 +558,6 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None) -> 
     from hermes_cli.plugins_manifest import running_hermes_version
     from pm.install import _extra_key
 
-    current = running_hermes_version()
-    try:
-        Version(current)
-    except InvalidVersion:
-        return None
     if declaration.external:
         return None
     target = default_environment()
@@ -573,6 +569,13 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None) -> 
                   if _extra_key(name) in installed for spec in values]
     pins = [requirement for requirement in _self_references(specs, "hermes-agent")
             if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), target)]
+    if not pins:
+        return None
+    current = running_hermes_version()
+    try:
+        Version(current)
+    except InvalidVersion:
+        return None
     rejected = [str(requirement) for requirement in pins
                 if not requirement.specifier.contains(current, prereleases=True)]
     return f"requires {rejected[0]}, running {current}" if rejected else None

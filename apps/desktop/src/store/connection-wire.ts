@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { map } from 'nanostores'
 
 import type { GatewaySessionWire } from '@/api/client'
+import type { HermesConnection } from '@/global'
 import type { PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
 /** The session wire each connection's gateway negotiated on its last `gateway.ready`. A connection
@@ -28,4 +29,14 @@ export function connectionWire(connectionId: null | string | undefined): Gateway
  *  null, between a gateway swap and its descriptor) falls back to the window's connection. */
 export function primaryWireConnectionId(route: PrimaryGatewayRoute, windowConnectionId: null | string | undefined): null | string | undefined {
   return route.mode || route.connectionId ? route.connectionId : windowConnectionId
+}
+
+/** Published from a secondary socket's `gateway.ready` under the connection it serves: its registry
+ *  id, else the one its profile's descriptor resolved to (a profile's remote override resolves to
+ *  that remote, not the local source). A resolved remote without a registry id has no key of its
+ *  own, so it publishes nothing rather than overwrite the local source's wire. */
+export function recordSecondaryWire(connectionId: null | string, resolved: null | Pick<HermesConnection, 'connectionId' | 'mode'>, wire: GatewaySessionWire | null): void {
+  const key = connectionId || resolved?.connectionId || (resolved?.mode === 'local' ? LOCAL_CONNECTION_ID : null)
+
+  if (key) { recordConnectionWire(key, wire) }
 }

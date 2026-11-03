@@ -68,7 +68,8 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
     beside sdist metadata.msgpack shards) ship: without them an offline
     rebuild falls back to wanting the sdist download and fails closed.
 
-    uv's wheel entries (``wheels-v*/<index>/<name>/<version>``) are relative
+    On macOS and Linux, uv's wheel entries (``wheels-v*/pypi/<name>/<version>``,
+    a hash directory deeper for URL, git and named-index sources) are relative
     symlinks into ``archive-v0/``, and they ship as links. Following them
     stored every unpacked wheel a second time and gave the seeded machine
     cache directories where uv renames its own links (#141891).

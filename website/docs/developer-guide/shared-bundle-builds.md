@@ -318,8 +318,9 @@ consumers. They are not interchangeable cleanup targets.
 - Native staging retains `uv-cache/` for offline mutable-environment rebuilds.
   It copies extracted wheels, built wheel ZIPs and index/revision metadata, but
   excludes cached sdist `src/` trees (including Rust `target/` outputs) before
-  copying. uv's wheel entries stay relative symlinks into `archive-v0/`, so
-  each unpacked wheel ships once. The provider cache is unchanged; native
+  copying. On macOS and Linux, uv's wheel entries stay relative symlinks into
+  `archive-v0/`, so each unpacked wheel ships once; on Windows uv writes
+  pointer files instead. The provider cache is unchanged; native
   signing reaches the extracted binaries without scanning build-only artifacts.
 - PM-runtime and application builds share the provider's persistent uv cache.
   CI restores/saves that cache, not the temporary build HOME. Failed builds

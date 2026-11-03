@@ -132,7 +132,7 @@ function trimmed(value: unknown): string {
 function isOwnerInputBlock(ev: CompletionEvent): boolean {
   const blockKind = ev.payload?.kind
 
-  return blockKind === undefined || blockKind === 'needs_input'
+  return blockKind == null || blockKind === 'needs_input'
 }
 
 function isSilentRecovery(kind: string, ev: CompletionEvent): boolean {

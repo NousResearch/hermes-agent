@@ -479,6 +479,23 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
+  it('backend null block kind keeps the legacy input notification', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    const fired = await m.onKanbanEventsFrame('smoke', [
+      ev(101, 'blocked', { kind: null, reason: 'Legacy backend block' })
+    ])
+
+    expect(fired).toBe(true)
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task blocked — needs your input',
+      message: 'Legacy backend block',
+      detail: 't101'
+    })
+  })
+
   it.each<[string, string]>([
     ['capability', 'The card declares completion_contract = local-only'],
     ['dependency', 'Waiting for another task'],

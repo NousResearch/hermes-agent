@@ -11,6 +11,7 @@ import { parse as parseYaml } from 'yaml';
 import { exportedRoutes, htmlPath, redirectEntries, sitemapXml, redirectHtml, redirectScriptAsset } from './postbuild.mjs';
 import { LOCALES, SITE_URL, DOCS_BASE_PATH, localizedHref, publicHref, splitLocalePath } from '../src/lib/urls.ts';
 import { openSearchXml } from './opensearch.mjs';
+import { checkExportLinks } from './check-export-links.mjs';
 import { groupAuthors } from '../src/lib/plugin-pages.ts';
 import { readDocumentMetadata, documentSlugs } from '../src/lib/content.mjs';
 
@@ -557,6 +558,7 @@ const CHECKS = [
   checkPublicCopied,
   checkLocalizedArtifacts,
   checkHtmlAssets,
+  checkExportLinks,
   checkSkillsJson,
   checkPluginsJson,
   checkBlueprintsJson,

@@ -40,7 +40,14 @@ npm start -- --hostname 127.0.0.1 --port 3031
 
 - Link between documents using relative `.md` or `.mdx` filenames, including
   fragments: `[Profiles](../user-guide/profiles.md)`. This keeps file links
-  navigable on GitHub; the compiler resolves them to site routes.
+  navigable on GitHub; the compiler resolves them to site routes. Legacy
+  extensionless links also resolve relative to the source document, including
+  directory index pages. Missing document targets fail before export.
+- Set `description` for an authored summary; otherwise the first prose paragraph
+  supplies the page description. Use `seo_title` for an exact browser/social title
+  without renaming the visible heading or sidebar. Do not add raw `<head>` blocks.
+- Code-fence `title="filename"` captions and localized default callout labels
+  are preserved by the compiler; explicit callout titles remain authored.
 - Keep stable heading IDs with `## Heading [#stable-id]`, including in translated
   pages. Titled callouts use `:::tip[Title]` followed by their body and `:::`.
 - Use ordinary Markdown unless a document needs JSX. Native HTML disclosures
@@ -51,6 +58,10 @@ npm start -- --hostname 127.0.0.1 --port 3031
 - Maintain curated navigation in `src/lib/navigation-data.ts`. Its generated
   skills block is owned by `scripts/generate-skill-docs.py`.
 - Untranslated documents fall back to English within the Chinese namespace.
+  Section links use verified equivalents in `src/lib/fragment-translations.json`;
+  `null` retains the exact English section when the translation omits it. Do not
+  invent translated anchors or remove fragments. The export validator checks both
+  IDs in every mapping as well as the links emitted on each page.
 - Use logical paths with Next links. The app's `/docs` base path is applied once;
   public assets and canonical URLs use the helpers in `src/lib/urls.ts`.
 
@@ -114,11 +125,12 @@ also work in a local static preview. Their hashed script is covered by the exist
 byte-identical copies of their canonical, unlocalized artifacts.
 
 The read-only validator checks source-derived routes and locale fallbacks, catalog
-pages, HTML/RSC files, redirect/sitemap recipes, published JSON and copied public
-and Next assets, including the localized compatibility copies. Missing or
-malformed artifacts fail both CI and deployment before staging, rather than
-passing as empty development fallbacks. The production skills-index health check remains
-owned by the deployment workflow; the output validator does not crawl registries.
+pages, HTML/RSC files, redirect/sitemap recipes, internal link destinations and
+fragments, published JSON and copied public and Next assets, including the localized
+compatibility copies. Missing or malformed artifacts fail both CI and deployment
+before staging, rather than passing as empty development fallbacks. The production
+skills-index health check remains owned by the deployment workflow; the output
+validator does not crawl registries.
 
 Passing these checks is not a production-cutover approval. Legacy URL/anchor and
 metadata parity, catalog-consumer compatibility, and the root staging/CDN

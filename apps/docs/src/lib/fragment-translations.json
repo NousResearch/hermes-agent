@@ -1,0 +1,257 @@
+{
+  "/developer-guide/contributing": {
+    "before-submitting": "提交前检查"
+  },
+  "/developer-guide/creating-skills": {
+    "config-settings-configyaml": "config-配置项configyaml"
+  },
+  "/developer-guide/gateway-internals": {
+    "multiplexed-profiles": null
+  },
+  "/developer-guide/plugins": {
+    "add-automation-blueprints": null,
+    "bundle-skills": "捆绑技能",
+    "distribute-via-pip": "通过-pip-分发"
+  },
+  "/getting-started/installation": {
+    "linux--macos--wsl2": "一行安装命令linux--macos--wsl2"
+  },
+  "/getting-started/learning-path": {
+    "by-experience-level": "按经验水平",
+    "by-use-case": "按使用场景",
+    "key-features-at-a-glance": "主要功能一览"
+  },
+  "/getting-started/updating": {
+    "what-happens-during-an-update": "更新过程"
+  },
+  "/guides/azure-foundry": {
+    "credential-resolution-order": "凭据解析顺序"
+  },
+  "/guides/local-ollama-setup": {
+    "step-6-optimize-for-speed": "第六步优化速度"
+  },
+  "/guides/migrate-from-openclaw": {
+    "api-key-resolution": "api-密钥解析",
+    "secretref-handling": "secretref-处理"
+  },
+  "/guides/operate-teams-meeting-pipeline": {
+    "automating-subscription-renewal-required-for-production": "自动化订阅续期生产环境必须配置"
+  },
+  "/guides/run-hermes-with-nous-portal": {
+    "troubleshooting": "故障排查"
+  },
+  "/guides/tips": {
+    "choose-the-right-model": "选择合适的模型",
+    "memory--skills": "记忆与-skill"
+  },
+  "/guides/webhook-github-pr-review": {
+    "local-testing-with-ngrok": "使用-ngrok-进行本地测试",
+    "security-notes": "安全说明"
+  },
+  "/integrations/nous-portal": {
+    "a-note-on-hermes-4": "关于-hermes-4-的说明",
+    "mixing-the-gateway-with-your-own-backends": "将-gateway-与自有后端混用",
+    "token-handling": "令牌处理"
+  },
+  "/integrations/providers": {
+    "context-length-detection": "上下文长度检测",
+    "fallback-providers": "故障转移提供商",
+    "openrouter-pareto-code-router": "openrouter-pareto-code-路由器",
+    "other-compatible-providers": "其他兼容提供商",
+    "xai-grok--responses-api--prompt-caching": "xaigrok-responses-api--prompt-缓存"
+  },
+  "/reference/cli-commands": {
+    "hermes-connectors": null
+  },
+  "/reference/environment-variables": {
+    "microsoft-graph-teams-meetings": "microsoft-graphteams-会议",
+    "web-dashboard--hermes-desktop": null
+  },
+  "/reference/faq": {
+    "is-my-data-sent-anywhere": "我的数据会被发送到哪里",
+    "profiles": "profiles配置文件"
+  },
+  "/reference/profile-commands": {
+    "distribution-commands": "发行版命令"
+  },
+  "/reference/slash-commands": {
+    "custom-model-aliases": "自定义模型别名",
+    "info": "信息",
+    "notes": "注意事项",
+    "permissions-and-adminuser-split": "权限与管理员用户分级",
+    "tools--skills": "工具与-skill"
+  },
+  "/user-guide/cli": {
+    "background-sessions": "后台会话",
+    "keybindings": "快捷键"
+  },
+  "/user-guide/configuration": {
+    "auxiliary-models": "辅助模型",
+    "context-compression": "上下文压缩",
+    "credential-pool-strategies": "凭据池策略",
+    "display-settings": "显示设置",
+    "docker-backend": "docker-后端",
+    "full-auxiliary-config-reference": "完整辅助配置参考",
+    "openrouter-routing--pareto-code-for-auxiliary-tasks": "openrouter-路由和辅助任务的-pareto-code",
+    "quick-commands": "快速命令",
+    "skill-settings": "技能设置",
+    "webapp": null
+  },
+  "/user-guide/features/context-files": {
+    "security-prompt-injection-protection": "安全性prompt-注入防护"
+  },
+  "/user-guide/features/cron": {
+    "lifecycle-actions": "生命周期操作",
+    "no-agent-mode-script-only-jobs": "无-agent-模式纯脚本任务"
+  },
+  "/user-guide/features/delegation": {
+    "monitoring-running-subagents-agents": "监控运行中的子智能体agents"
+  },
+  "/user-guide/features/extending-the-dashboard": {
+    "api-reference": "api-参考",
+    "augmenting-built-in-pages-page-scoped-slots": "增强内置页面页面级插槽",
+    "backend-api-routes": "后端-api-路由",
+    "built-in-themes": "内置主题",
+    "color-overrides": "颜色覆盖",
+    "combined-theme--plugin-demo": "主题--插件组合演示",
+    "component-chrome-overrides": "组件外观覆盖",
+    "custom-css-per-plugin": "插件自定义-css",
+    "directory-layout": "目录结构",
+    "full-theme-yaml-reference": "完整主题-yaml-参考",
+    "layout-variants": "布局变体",
+    "manifest-reference": "manifest-参考",
+    "palette-typography-layout": "调色板字体排版布局",
+    "plugin-discovery--reload": "插件发现与重载",
+    "plugins": "插件",
+    "quick-start--your-first-plugin": "快速上手你的第一个插件",
+    "quick-start--your-first-theme": "快速上手你的第一个主题",
+    "raw-customcss": "原始-customcss",
+    "replacing-built-in-pages-taboverride": "替换内置页面taboverride",
+    "shell-slots": "shell-插槽",
+    "slot-catalogue": "插槽目录",
+    "slot-only-plugins-tabhidden": "仅插槽插件tabhidden",
+    "the-plugin-sdk": "plugin-sdk",
+    "theme-assets-images-as-css-vars": "主题资源图片作为-css-变量",
+    "themes": "主题",
+    "troubleshooting": "故障排查"
+  },
+  "/user-guide/features/hooks": {
+    "on_room_member_activity": null,
+    "on_session_delete": null
+  },
+  "/user-guide/features/image-generation": {
+    "supported-models": "支持的模型"
+  },
+  "/user-guide/features/kanban-worker-lanes": {
+    "adding-an-external-cli-worker-lane": "添加外部-cli-worker-通道"
+  },
+  "/user-guide/features/mcp": {
+    "dynamic-tool-discovery": "动态工具发现",
+    "oauth-authenticated-http-servers": null
+  },
+  "/user-guide/features/memory": {
+    "capacity-management": "容量管理",
+    "how-memory-appears-in-the-system-prompt": "记忆在系统-prompt-中的呈现方式",
+    "learning-journey-journey": null,
+    "two-targets-explained": "两个目标说明"
+  },
+  "/user-guide/features/personality": {
+    "what-should-go-in-soulmd": "soulmd-应该写什么"
+  },
+  "/user-guide/features/plugins": {
+    "one-click-install-links-desktop": null,
+    "running-plugins-out-of-process-pluginsisolation": null
+  },
+  "/user-guide/features/skills": {
+    "agent-managed-skills-skill_manage-tool": "agent-管理的-skillsskill_manage-工具",
+    "external-skill-directories": "外部-skill-目录",
+    "install-from-the-website": null,
+    "skill-output-and-media-delivery": "skill-输出与媒体传递",
+    "skillmd-format": "skillmd-格式"
+  },
+  "/user-guide/features/spotify": {
+    "running-over-ssh--in-a-headless-environment": "通过-ssh--在无头环境中运行"
+  },
+  "/user-guide/features/tools": {
+    "terminal-backends": "终端后端"
+  },
+  "/user-guide/features/tts": {
+    "custom-command-providers": "自定义命令提供商",
+    "example-doubao--volcengine-asr": "示例doubao--volcengine-asr",
+    "example-doubao-chinese-seed-tts-20": "示例doubao中文-seed-tts-20",
+    "text-to-speech": "文字转语音tts"
+  },
+  "/user-guide/features/vision": {
+    "ssh--remote-sessions": "ssh-与远程会话"
+  },
+  "/user-guide/features/web-dashboard": {
+    "authentication-gated-mode": null,
+    "chat": "chat聊天",
+    "connecting-hermes-desktop-to-a-remote-backend": null,
+    "default-provider-nous-research": null,
+    "usernamepassword-provider-no-oauth-idp": null
+  },
+  "/user-guide/features/web-search": {
+    "option-a--self-host-with-docker-recommended": "方案-a--使用-docker-自托管推荐"
+  },
+  "/user-guide/messaging": {
+    "background-sessions": "后台会话",
+    "dm-pairing-alternative-to-allowlists": "私信配对白名单的替代方案",
+    "intentional-silence-tokens": "有意静默令牌",
+    "macos-launchd": "macoslaunchd"
+  },
+  "/user-guide/messaging/discord": {
+    "mention-control": "提及控制",
+    "session-model-in-discord": "discord-中的会话模型",
+    "slash-command-access-control": "斜杠命令访问控制"
+  },
+  "/user-guide/messaging/feishu": {
+    "per-group-access-control": "按群访问控制",
+    "required-feishu-app-configuration": "飞书应用所需配置",
+    "websocket-tuning": "websocket-调优"
+  },
+  "/user-guide/messaging/matrix": {
+    "proxy-mode-e2ee-on-macos": "代理模式macos-上的-e2ee"
+  },
+  "/user-guide/messaging/open-webui": {
+    "multi-user-setup-with-profiles": "多用户设置与-profiles"
+  },
+  "/user-guide/messaging/teams": {
+    "production-deployment": "生产部署"
+  },
+  "/user-guide/messaging/telegram": {
+    "large-files-20mb-via-local-bot-api-server": "通过本地-bot-api-服务器处理大文件20mb",
+    "multi-session-dm-mode-topic": "多会话私聊模式topic",
+    "private-chat-topics-bot-api-94": "私聊话题bot-api-94",
+    "slash-command-access-control": "斜杠命令访问控制",
+    "step-3-privacy-mode-critical-for-groups": "第三步隐私模式群组关键设置"
+  },
+  "/user-guide/messaging/whatsapp": {
+    "multiple-profiles": null
+  },
+  "/user-guide/profile-distributions": {
+    "export-and-import-a-profile-file": null
+  },
+  "/user-guide/profiles": {
+    "keep-a-clones-imported-agent-setups-synced---sync-imports": null,
+    "messaging-channels-are-never-cloned---clone-channels-to-opt-in": null
+  },
+  "/user-guide/security": {
+    "dangerous-command-approval": "危险命令审批",
+    "dm-pairing-system": "dm-配对系统",
+    "network-isolation": "网络隔离",
+    "user-authorization-gateway": "用户授权gateway",
+    "user-defined-deny-rules-approvalsdeny": null,
+    "yolo-mode": "yolo-模式"
+  },
+  "/user-guide/sessions": {
+    "auto-lineage-on-compression": "压缩时的自动谱系",
+    "conversation-recap-on-resume": "恢复时的对话摘要",
+    "cross-platform-handoff": "跨平台切换",
+    "refresh-prompts-after-a-profile-update": null,
+    "session-search-tool": "session-搜索工具"
+  },
+  "/user-guide/tui": {
+    "slash-commands": "斜杠命令"
+  }
+}

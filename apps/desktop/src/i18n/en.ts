@@ -73,8 +73,6 @@ export const en: Translations = {
       kindCustom: 'MCP · Custom',
       kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
       inCatalog: 'In the Hermes catalog',
-      hostedTwin: 'Managed version available',
-      alsoLocal: 'Also runs on this device',
       open: (name: string) => `Open ${name}`,
       turnServerOn: (name: string) => `Turn ${name} on`,
       turnServerOff: (name: string) => `Turn ${name} off`,
@@ -183,11 +181,6 @@ export const en: Translations = {
       removeServerTitle: (name: string) => `Remove ${name}?`,
       removeServerBody: 'The entry leaves mcp.json on this computer. Nothing else is deleted.',
       appSwitch: (name: string) => `Hermes can use ${name}`,
-      waysTitle: (name: string) => `Where ${name} runs`,
-      wayNotConnected: (name: string) => `Not connected yet. Sign in to ${name} in your browser.`,
-      wayHosted: 'Managed',
-      bothOn: (name: string) => `Both are on, so Hermes sees every ${name} tool twice.`,
-      turnOffLocal: 'Turn off the local server',
       providedByPlugin: (plugin: string) => `Provided by plugin ${plugin}`,
       openPlugins: 'Open the Plugins tab',
       // Verbatim, by decision of the design of record.
@@ -209,7 +202,6 @@ export const en: Translations = {
 
     tools: {
       title: 'Tools',
-      notInstalledBody: 'Install it on this device to see the tools it brings.',
       summaryTitle: (name: string) => `What Hermes may do with ${name}`,
       summaryPreviewTitle: (name: string) => `What Hermes could do with ${name} once you connect`,
       summaryCount: (count: number) => `${count} tool${count === 1 ? '' : 's'}`,

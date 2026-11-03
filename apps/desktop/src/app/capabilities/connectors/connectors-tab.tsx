@@ -168,8 +168,6 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           card={openCard}
           controller={mcp}
           onClose={() => setOpenKey(null)}
-          onConnect={() => void startConnect(openCard, false)}
-          onReconnect={() => void startConnect(openCard, true)}
           onRemoveServer={() => setRemoveServer(openCard)}
           profile={profile}
         />
@@ -192,17 +190,14 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
             renameOpened
           }}
           card={openCard}
-          controller={mcp}
           hosted={hosted}
           onClose={() => {
             setOpenKey(null)
             setPendingRename(null)
           }}
-          onConnect={() => void startConnect(openCard, false)}
           onDisconnect={() => setDisconnecting({ card: openCard })}
           onGiveUp={opId => void write(connector.giveUp(opId))}
           onReconnect={() => void startConnect(openCard, true)}
-          onRemoveServer={() => setRemoveServer(openCard)}
           onToggleForMe={next => void write(switcher.setEnabled(openCard.slug, next))}
           onVerb={() => runVerb(openCard)}
           profile={profile}

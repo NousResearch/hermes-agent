@@ -14,7 +14,6 @@ import { cn } from '@/lib/utils'
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
 import type { ConnectorCardModel, ConnectorState, ConnectorVerb, ConnectorWayHosted, ConnectorWayLocal } from './types'
-import { type WayChoice, WaysSection } from './ways-section'
 
 type BadgeVariant = 'default' | 'destructive' | 'muted' | 'success' | 'warn'
 
@@ -49,23 +48,19 @@ export interface ConnectorDialogProps {
   cost?: { tokensPerCall?: string; usesPerMonth?: string }
   menu?: ReactNode
   onAuthenticate?: () => void
-  onConnect?: () => void
   onDisconnect?: () => void
   /** Escape inside the dialog; return true when it cancelled something, so the dialog stays open. */
   onEscape?: () => boolean
   onOpenAdmin?: () => void
   onOpenChange: (open: boolean) => void
-  onReconnect?: () => void
   onServerToggle?: (next: boolean) => void
   onToggleForMe?: (next: boolean) => void
   onVerb?: () => void
-  onWayChange?: (way: WayChoice) => void
   open: boolean
   orgDisabledCount?: number
   rulesReadOnly?: boolean
   togglePending?: boolean
   tools: ReactNode
-  way?: WayChoice
 }
 
 const localTarget = (card: ConnectorCardModel): string | undefined => card.ways.local?.target
@@ -170,15 +165,12 @@ function HeaderActions({
 }: PartProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage.card
-  const local = card.residency === 'local'
   const hosted = card.ways.hosted
   const localWay = card.ways.local
   const appSwitch = ruleable(hosted) && onToggleForMe !== undefined
 
   const action = hosted
-    ? localWay
-      ? undefined
-      : leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
+    ? leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
     : localAction({ onAuthenticate, way: localWay })
 
   return (
@@ -189,7 +181,7 @@ function HeaderActions({
         </Button>
       ) : null}
 
-      {local && !hosted && localWay?.installed === true && card.plugin === undefined && onServerToggle ? (
+      {localWay && card.plugin === undefined && onServerToggle ? (
         <Switch
           aria-label={localWay.serverEnabled === true ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
           checked={localWay.serverEnabled ?? false}
@@ -264,27 +256,13 @@ function leadVerb({
   return { run: onVerb, verb }
 }
 
-function HostedLead({
-  card,
-  connectElement,
-  onAuthenticate,
-  onConnect,
-  onOpenAdmin,
-  onReconnect,
-  onServerToggle,
-  onToggleForMe,
-  onVerb,
-  onWayChange,
-  orgDisabledCount = 0,
-  way = 'hosted'
-}: PartProps) {
+function HostedLead({ card, connectElement, onOpenAdmin, onVerb, orgDisabledCount = 0 }: PartProps) {
   const { t } = useI18n()
   const waiting = card.verb === 'stopWaiting' && connectElement === undefined ? onVerb : undefined
   const reason = card.reason ? (card.reason.text ?? t.connectorsPage.card.reason[card.reason.key]) : undefined
-  const paired = card.ways.local !== null
-  const showsReason = reason !== undefined && connectElement === undefined && (!paired || waiting !== undefined)
+  const showsReason = reason !== undefined && connectElement === undefined
 
-  if (!paired && connectElement === undefined && !showsReason && orgDisabledCount <= 0) {
+  if (connectElement === undefined && !showsReason && orgDisabledCount <= 0) {
     return null
   }
 
@@ -304,19 +282,6 @@ function HostedLead({
       ) : null}
 
       <OrgNote count={orgDisabledCount} onOpenAdmin={onOpenAdmin} />
-
-      {onWayChange ? (
-        <WaysSection
-          card={card}
-          onAuthenticate={onAuthenticate}
-          onChange={onWayChange}
-          onConnect={onConnect}
-          onReconnect={onReconnect}
-          onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
-          onToggleForMe={onToggleForMe}
-          value={way}
-        />
-      ) : null}
     </div>
   )
 }

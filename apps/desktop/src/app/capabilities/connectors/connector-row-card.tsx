@@ -1,4 +1,3 @@
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { Switch } from '@/components/ui/switch'
@@ -9,7 +8,6 @@ import { cn } from '@/lib/utils'
 
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
-import { twinPillOf } from './derive'
 import type { ConnectorCardModel, ConnectorFact, ConnectorState } from './types'
 
 const STATE_DOT = {
@@ -75,7 +73,6 @@ export function ConnectorRowCard({
   const stateLabel = local && card.fact ? factText(copy, card.fact) : copy.state[card.stateWord]
 
   const reason = card.reason ? (card.reason.text ?? copy.reason[card.reason.key]) : undefined
-  const twin = twinPillOf(card)
 
   return (
     <div
@@ -111,12 +108,6 @@ export function ConnectorRowCard({
           {showsCatalogMark(card) ? <CatalogMark /> : null}
 
           <AccountSummary card={card} />
-
-          {twin ? (
-            <Badge className="shrink-0" size="xs" variant="muted">
-              {twin === 'hostedTwin' ? copy.hostedTwin : copy.alsoLocal}
-            </Badge>
-          ) : null}
         </div>
 
         <SecondLine card={card} reason={reason} />
@@ -163,7 +154,7 @@ function CardLane({
         <span className="truncate">{stateLabel}</span>
       </span>
 
-      {server?.installed === true && onServerToggle ? (
+      {server && onServerToggle ? (
         <Switch
           aria-label={server.serverEnabled ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
           checked={server.serverEnabled ?? false}

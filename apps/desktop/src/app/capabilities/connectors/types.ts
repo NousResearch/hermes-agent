@@ -101,7 +101,6 @@ export interface ConnectorWayHosted {
 
 export interface ConnectorWayLocal {
   fact?: ConnectorFact
-  installed?: boolean
   plugin?: string
   reason?: ConnectorReason
   serverEnabled?: boolean
@@ -112,8 +111,7 @@ export interface ConnectorWayLocal {
   verb?: ConnectorVerb
 }
 
-export type ConnectorWays =
-  { hosted: ConnectorWayHosted; local: ConnectorWayLocal | null } | { hosted: null; local: ConnectorWayLocal }
+export type ConnectorWays = { hosted: ConnectorWayHosted; local: null } | { hosted: null; local: ConnectorWayLocal }
 
 export interface ConnectorCardModel {
   description?: string

@@ -177,7 +177,7 @@ def _bold_label_html(line: str) -> str:
 _MEDIA_KIND_KEYS = {
     "attachment": "platform.telegram.media.kind_attachment", "photo": "platform.telegram.media.kind_photo",
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
-    "video file": "platform.telegram.media.kind_video"}
+    "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
@@ -2904,7 +2904,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         app.add_handler(TelegramMessageHandler(
             filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         # Topic-creation service messages carry the new topic id and no text, so no other handler sees
         # them. They are a routing signal only (never an agent turn): see _handle_forum_topic_created.
@@ -6238,8 +6238,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""
         for attr, mtype in (
             ("sticker", MessageType.STICKER), ("photo", MessageType.PHOTO), ("video", MessageType.VIDEO),
-            ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
-            if getattr(msg, attr):
+            ("video_note", MessageType.VIDEO), ("audio", MessageType.AUDIO), ("voice", MessageType.VOICE)):
+            if getattr(msg, attr, None):
                 return mtype
         return MessageType.DOCUMENT
 
@@ -6310,8 +6310,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""
         if msg.photo:
             return msg.photo[-1], "", "", "image"
-        if msg.video:
-            return msg.video, "", "video/mp4", "video"
+        if video := msg.video or getattr(msg, "video_note", None):
+            return video, "", "video/mp4", "video"
         if msg.voice:
             return msg.voice, "voice.ogg", "audio/ogg", "audio"
         if msg.audio:
@@ -6860,8 +6860,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         elif msg.audio:
             if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
                 return
-        elif msg.video:
-            if await self._cache_inbound_av(msg, event, msg.video, "video file", "video", ".mp4", "video/mp4"):
+        elif video := msg.video or getattr(msg, "video_note", None):
+            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
                 return
         elif msg.document and await self._cache_inbound_document(msg, event):
             return

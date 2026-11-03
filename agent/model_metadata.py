@@ -20,12 +20,16 @@ import hermes_yaml as yaml
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 from agent.model_metadata_llamacpp import llamacpp_context
+from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 from agent.model_metadata_payload import _coerce_reasonable_int, _extract_first_int, _iter_nested_dicts
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
+from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
+    _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -987,12 +991,6 @@ def _endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
     return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
 
 
-def _remember_endpoint_models(memo_key: tuple[str, str], cache: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    _endpoint_model_metadata_cache[memo_key] = cache
-    _endpoint_model_metadata_cache_time[memo_key] = time.time()
-    return cache
-
-
 def _parse_models_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     cache: dict[str, dict[str, Any]] = {}
     for model in payload.get("data", []):
@@ -1804,11 +1802,13 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
     stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
     ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
     max cache is left alone so an observed cap survives."""
-    now = time.time()
-    current = _codex_oauth_context_cache.get(cache_key)
-    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return
-    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
+    with MEMO_LOCK:
+        now = time.time()
+        current = _codex_oauth_context_cache.get(cache_key)
+        if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+            return
+        bound_codex_caches(cache_key)
+        _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
@@ -1852,8 +1852,10 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         _remember_no_codex_catalog(cache_key)
         return {}, False
     # Max first: a reader that sees the fresh context entry must also see its cap.
-    _codex_oauth_max_context_cache[cache_key] = max_result
-    _codex_oauth_context_cache[cache_key] = (result, now)
+    with MEMO_LOCK:
+        bound_codex_caches(cache_key)
+        _codex_oauth_max_context_cache[cache_key] = max_result
+        _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
 
 
@@ -2409,9 +2411,7 @@ def _strip_stale_thinking_for_estimate(messages: list[dict[str, Any]]) -> list[d
 # deep-equal messages built from identical immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
-# objects every turn.
-_MSG_TOKENS_CACHE: dict[Any, tuple[list, int, int]] = {}  # pins, text tokens, image count
-_MSG_TOKENS_CACHE_MAX = 4096
+# objects every turn. Storage, LRU + retained-bytes bounds and release live in ``model_metadata_token_memo``.
 
 
 def _msg_fingerprint(value: Any, pins: list) -> Any:
@@ -2436,27 +2436,20 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
     def _compute() -> tuple[int, int]:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
-        pins: list = []
+        pins = MemoPins()
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
-        hash(key)
+        cached = lookup_message_tokens(key)
     except Exception:
         text, images = _compute()
         return text + images * image_cost
-    cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
         return cached[1] + cached[2] * image_cost
     text, images = _compute()
-    tokens = text + images * image_cost
-    _MSG_TOKENS_CACHE[key] = (pins, text, images)
-    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
-        try:
-            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
-        except (StopIteration, KeyError, RuntimeError):
-            break
-    return tokens
+    remember_message_tokens(key, (pins, text, images))
+    return text + images * image_cost
 
 
 def _count_parts(parts: Any, types: set) -> int:

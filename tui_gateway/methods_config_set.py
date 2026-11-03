@@ -509,6 +509,16 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+def _set_daybreak(rid, params, key, value, session):
+    """``agent.daybreak``: profile-wide like the native owner's (gateway/session_tui_config.py). Every turn
+    reads it (prompt_turn._sync_agent_daybreak); requests check eligibility (agent/codex_service_tiers.py)."""
+    on = _BOOL_WORDS.get(str(value).strip().lower())
+    if on is None:
+        return _err(rid, 4002, f"{key} takes true or false")
+    _write_config_key("agent.daybreak", on)
+    return _kv(rid, key, on)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -518,7 +528,7 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "timestamps": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin, "daybreak": _set_daybreak}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this

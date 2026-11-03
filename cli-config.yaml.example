@@ -39,8 +39,14 @@ database:
 # this value when the operating system permits it. The value is clamped to the
 # hard limit and never lowers an already higher soft limit. Set to 0, false, or
 # null to disable the adjustment. Default: 4096.
+#
+# malloc_arena_max caps glibc malloc arenas in the gateway / `hermes serve`
+# process (Linux/glibc only; child commands keep glibc's default). An explicit
+# MALLOC_ARENA_MAX (exported or in .env) wins. 0, false, or null = glibc default
+# (8 per CPU core). Default: 4.
 runtime:
   nofile_soft_limit: 4096
+  malloc_arena_max: 4
 
 # =============================================================================
 # Attachments
@@ -1383,6 +1389,11 @@ agent:
   # Also: /fast normal|fast|auto|cold [--global]
   service_tier: ""
   fast_auto_seconds: 60
+
+  # OpenAI Daybreak (Trusted Access for Cyber) on the ChatGPT/Codex
+  # subscription. Sent only on models your account's Codex catalog lists for
+  # it; Desktop shows the switch on those models. Grants no access itself.
+  daybreak: false
 
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,

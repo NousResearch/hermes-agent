@@ -12,8 +12,8 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure,
+    is_redacted_credential_preview, redacted_credential_preview, scoped_to_thread,
 )
 from hermes_cli.config_backend import refusing_locked_omissions
 from hermes_cli.web_deps import LateState, late
@@ -101,9 +101,12 @@ async def get_defaults():
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
-    # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # start still show up, scoped to the requested profile's config. That merge
+    # walks the schema and scans plugin dirs on disk, so it runs on a worker
+    # thread: on the event loop it froze every other request — including
+    # /api/ws — for as long as the scan took. asyncio.to_thread copies the
+    # contextvar context, so the profile override stays scoped to the worker.
+    fields = await config_scoped_to_thread(profile, _schema_with_dynamic_provider_options)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -111,8 +114,9 @@ async def get_schema(profile: Optional[str] = None):
 async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
-        return {"text": format_status_text()}
+    # Reads the profile's ``proxy:`` config block from disk; on the event loop
+    # that read stalled every other dashboard request for its duration.
+    return {"text": await config_scoped_to_thread(profile, format_status_text)}
 
 
 @router.put("/api/config")

@@ -48,11 +48,21 @@ def interval_due(
 
 
 def _machine() -> str:
-    """This container's or VM's instantiation (boot id + PID 1 start; ``""`` without ``/proc``): a
-    pid names the same process only on the machine that recorded it."""
+    """This machine's current boot, which a pid is only meaningful within: the container's or VM's
+    instantiation (boot id + PID 1 start) where ``/proc`` exists, otherwise (macOS, Windows) the host
+    name and boot time from psutil. ``""`` when neither is available."""
     from gateway.drain_control import current_instantiation_epoch
 
-    return current_instantiation_epoch()
+    epoch = current_instantiation_epoch()
+    if epoch:
+        return epoch
+    with contextlib.suppress(Exception):
+        import socket
+
+        import psutil  # type: ignore
+
+        return f"host:{socket.gethostname()}:boot:{int(psutil.boot_time())}"
+    return ""
 
 
 def _owner_record() -> dict[str, Any]:

@@ -44,13 +44,62 @@ def _snapshot(paths):
 def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     bash, uv = shutil.which("bash"), shutil.which("uv")
     assert bash and uv, "this integration contract requires Bash and real uv"
+    core, hermes_home, runtime, env, protected, dep_lock, srv = _setup_activation_lifecycle(tmp_path, served, bash, uv)
+    assert not (hermes_home / "installs").exists()
+    untouched = _snapshot(protected)
+    activate = lambda succeeds=True: _run_activation(bash, core, tmp_path, env, protected, untouched, succeeds=succeeds)
+    selection = lambda: json.loads(list(hermes_home.glob("installs/*/facts.json"))[0].read_text())["packages"]["venv"]
+    operations = lambda name: [l for l in srv["calls"].read_text().splitlines() if l.split()[0] == name]
+    app_syncs = lambda: [l for l in operations("sync") if "--frozen --all-packages" in l and "--group dev" not in l]
+
+    cold, first = activate(), selection()
+    probe = json.loads(cold.stdout)
+    assert probe["version"] == "1.0" and Path(probe["module"]).is_relative_to(Path(first["environment"]))
+    assert probe["pythonpath"].split(os.pathsep)[0] == str(core)
+    assert "Preparing the isolated Hermes runtime" in cold.stderr and len(app_syncs()) == 1
+    facts = json.loads((runtime / "facts.json").read_text())["packages"]
+    assert facts["python"]["artifacts"] == [srv["first_digest"]] and facts["uv"]["artifacts"] == [srv["uv_digest"]]
+
+    (core / ".env").write_text("FIXTURE_ONLY=existing\n", encoding="utf-8")
+    (core / ".env").chmod(0o644)
+    untouched = _snapshot(protected)
+    activate()
+    assert selection() == first and len(app_syncs()) == 1
+    prepared = operations("sync")
+    activate()
+    assert selection() == first and operations("sync") == prepared
+    assert len([line for line in operations("python") if line.startswith("python install ")]) == 3
+
+    second_digest = srv["pin_python"]("second")
+    activate()
+    second = selection()
+    assert second["stamp"] != first["stamp"] and second["environment"] != first["environment"]
+    assert Path(first["environment"]).is_dir() and len(app_syncs()) == 2
+    facts = json.loads((runtime / "facts.json").read_text())["packages"]
+    assert facts["python"]["artifacts"] == [second_digest]
+    assert (core / "uv.lock").read_bytes() == dep_lock
+
+    (core / "uv.lock").write_text("not valid TOML [\n", encoding="utf-8")
+    failed = activate(succeeds=False)
+    assert "pm install failed" in failed.stderr and "setup failed" in failed.stderr
+    assert "CALLER_SURVIVED:" in failed.stdout and selection() == second
+    assert len(app_syncs()) == 3
+    assert len([line for line in operations("python") if line.startswith("python install ")]) == 5
+
+
+def _setup_activation_lifecycle(tmp_path, srv, bash, uv):
     interpreter = str(Path(sys._base_executable).resolve())
-    core = tmp_path / "checkout with spaces"
+    core, home, hermes_home, runtime, env, protected = _prepare_checkout_and_env(tmp_path, bash, uv, interpreter)
+    dep_lock = _prepare_wheels_and_lock(tmp_path, core, uv, interpreter, env)
+    server = _prepare_mock_server_pins(core, tmp_path, srv, bash, uv, interpreter)
+    return core, hermes_home, runtime, env, protected, dep_lock, server
+
+
+def _prepare_checkout_and_env(tmp_path, bash, uv, interpreter):
+    core, home = tmp_path / "checkout with spaces", tmp_path / "home"
     core.mkdir()
-    home = tmp_path / "home"
     home.mkdir()
-    hermes_home = home / ".hermes"
-    runtime = tmp_path / "runtime"
+    hermes_home, runtime = home / ".hermes", tmp_path / "runtime"
     scratch = tmp_path / "tmp"
     scratch.mkdir()
     env = {
@@ -66,12 +115,9 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         shutil.copy2(REPO / name, core / name)
     for name in ("pm", "hermes_cli"):
         shutil.copytree(REPO / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
-    # Plugin selection imports the real CLI config reader even with no plugins.
-    # Supply its installed YAML dependency, not a stub parser or config module.
     import ruamel.yaml
     shutil.copytree(Path(ruamel.yaml.__file__).parent, core / "ruamel" / "yaml", ignore=shutil.ignore_patterns("__pycache__"))
 
-    # Never copy real user files: these are deliberately public fixture sentinels.
     protected = [core / ".env", home / ".local" / "bin", hermes_home / "skills",
                  home / ".bashrc", home / ".bash_profile", home / ".zshrc"]
     for path in (home / ".local" / "bin" / "hermes", hermes_home / "skills" / "keep.md",
@@ -82,8 +128,10 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     (core / ".env.example").write_text("FIXTURE_ONLY=example\n", encoding="utf-8")
     (core / "skills").mkdir()
     (core / "skills" / "bundled.md").write_text("must not be seeded\n", encoding="utf-8")
-    untouched = _snapshot(protected)
+    return core, home, hermes_home, runtime, env, protected
 
+
+def _prepare_wheels_and_lock(tmp_path, core, uv, interpreter, env):
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     _wheel(wheels, "activation_dep", "1.0")
@@ -101,12 +149,10 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         capture_output=True, text=True, timeout=60,
         check=False,
     )
-    assert locked.returncode == 0, locked.stdout + locked.stderr
+    if locked.returncode != 0:
+        raise RuntimeError(locked.stdout + locked.stderr)
     dependency_lock = (core / "uv.lock").read_bytes()
 
-    # Seed PM's own cache with its real locked wheels, not the application's
-    # fixture wheel or a copied host cache. Discard this environment so source
-    # still bootstraps and publishes the isolated PM runtime itself, offline.
     seed = tmp_path / "pm-seed"
     seed_env = {key: value for key, value in env.items() if key != "UV_OFFLINE"}
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"):
@@ -122,12 +168,25 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
         cwd=tmp_path, env=seed_env, capture_output=True, text=True, timeout=180,
         check=False,
     )
-    assert seeded.returncode == 0, seeded.stdout + seeded.stderr
+    if seeded.returncode != 0:
+        raise RuntimeError(seeded.stdout + seeded.stderr)
     shutil.rmtree(seed)
-    assert not (hermes_home / "installs").exists()
+    return dependency_lock
 
-    docroot, base_url = served
-    # Both the shell bootstrap and PM's fallback downloader stay on loopback.
+
+def _pin_mock_python(docroot, base_url, target, version, python_script, lock, revision):
+    filename = f"python-{revision}.tar.gz"
+    _, digest = make_tar(docroot, filename, {
+        "python/bin/python3": python_script,
+        "python/revision": revision,
+    })
+    lock.set_pin("python", version, {target: {"url": f"{base_url}/{filename}", "sha256": digest}})
+    lock.save()
+    return digest
+
+
+def _prepare_mock_server_pins(core, tmp_path, srv, bash, uv, interpreter):
+    docroot, base_url = srv
     (core / "pm" / "artifact-mirror.json").write_text(
         json.dumps({"origin": base_url, "prefix": "mirror/"}, indent=2) + "\n",
         encoding="utf-8",
@@ -143,28 +202,18 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     _, uv_digest = make_tar(docroot, "uv.tar.gz", {"uv-fixture/uv": uv_script})
     python_script = f'#!{bash}\nexec {shlex.quote(interpreter)} "$@"\n'
     lock = Lockfile(core / "pm" / "lock.json")
-    # Replace shipped pins, not PM implementations or its package registry.
     lock.path.unlink()
     lock = Lockfile(lock.path)
     target = current_target()
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}+fixture"
-
-    def pin_python(revision):
-        filename = f"python-{revision}.tar.gz"
-        _, digest = make_tar(docroot, filename, {
-            "python/bin/python3": python_script,
-            "python/revision": revision,
-        })
-        lock.set_pin("python", version, {target: {"url": f"{base_url}/{filename}", "sha256": digest}})
-        lock.save()
-        return digest
-
     lock.set_pin("uv", "fixture", {target: {"url": f"{base_url}/uv.tar.gz", "sha256": uv_digest}})
-    first_digest = pin_python("first")
+    first_digest = _pin_mock_python(docroot, base_url, target, version, python_script, lock, "first")
+    pin = lambda rev: _pin_mock_python(docroot, base_url, target, version, python_script, lock, rev)
+    return {"calls": calls, "uv_digest": uv_digest, "first_digest": first_digest, "pin_python": pin}
 
-    def activate(*, succeeds=True):
-        # No `set -e`: inspect source's status and prove the caller survives.
-        script = '''
+
+def _run_activation(bash, core, tmp_path, env, protected, untouched, *, succeeds=True):
+    script = '''
 prior_path=$PATH
 prior_pythonpath=${PYTHONPATH-}
 source "$1/activate" --test-extras=all
@@ -183,73 +232,12 @@ deactivate
 test "$PATH" = "$prior_path" || exit 95
 test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
 '''
-        result = subprocess.run(
-            [bash, "--noprofile", "--norc", "-c", script, "activation-test", str(core)],
-            cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90,
-            check=False,
-        )
-        assert _snapshot(protected) == untouched, result.stdout + result.stderr
-        assert (result.returncode == 0) is succeeds, result.stdout + result.stderr
-        return result
-
-    def selection():
-        records = list(hermes_home.glob("installs/*/facts.json"))
-        assert len(records) == 1
-        return json.loads(records[0].read_text())["packages"]["venv"]
-
-    def operations(name):
-        return [line for line in calls.read_text().splitlines() if line.split()[0] == name]
-
-    def app_syncs():
-        return [line for line in operations("sync")
-                if "--frozen --all-packages" in line and "--group dev" not in line]
-
-    cold = activate()
-    first = selection()
-    probe = json.loads(cold.stdout)
-    assert probe["version"] == "1.0"
-    assert Path(probe["module"]).is_relative_to(Path(first["environment"]))
-    assert probe["pythonpath"].split(os.pathsep)[0] == str(core)
-    # Cold activation builds both PM's isolated runtime and the app environment.
-    assert "Preparing the isolated Hermes runtime" in cold.stderr
-    assert len(app_syncs()) == 1
-    facts = json.loads((runtime / "facts.json").read_text())["packages"]
-    assert facts["python"]["artifacts"] == [first_digest]
-    assert facts["uv"]["artifacts"] == [uv_digest]
-
-    # Also catch chmod of an existing .env, not just unwanted first creation.
-    (core / ".env").write_text("FIXTURE_ONLY=existing\n", encoding="utf-8")
-    (core / ".env").chmod(0o644)
-    untouched = _snapshot(protected)
-    activate()
-    assert selection() == first
-    # The first warm launch rebinds PM from bootstrap Python to its managed
-    # interpreter. The application selection is unchanged; later launches reuse both.
-    assert len(app_syncs()) == 1
-    prepared = operations("sync")
-    activate()
-    assert selection() == first
-    assert operations("sync") == prepared
-    assert len([line for line in operations("python") if line.startswith("python install ")]) == 3
-
-    second_digest = pin_python("second")
-    activate()
-    second = selection()
-    assert second["stamp"] != first["stamp"]
-    assert second["environment"] != first["environment"]
-    assert Path(first["environment"]).is_dir()
-    assert len(app_syncs()) == 2
-    facts = json.loads((runtime / "facts.json").read_text())["packages"]
-    assert facts["python"]["artifacts"] == [second_digest]
-    assert (core / "uv.lock").read_bytes() == dependency_lock
-
-    # A real uv failure must cross PM -> setup -> source without selection or
-    # caller mutation. An invalid local lock fails deterministically offline.
-    (core / "uv.lock").write_text("not valid TOML [\n", encoding="utf-8")
-    failed = activate(succeeds=False)
-    assert "pm install failed" in failed.stderr
-    assert "setup failed" in failed.stderr
-    assert "CALLER_SURVIVED:" in failed.stdout
-    assert selection() == second
-    assert len(app_syncs()) == 3
-    assert len([line for line in operations("python") if line.startswith("python install ")]) == 5
+    result = subprocess.run(
+        [bash, "--noprofile", "--norc", "-c", script, "activation-test", str(core)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90, check=False,
+    )
+    if _snapshot(protected) != untouched:
+        raise AssertionError(f"Protected paths mutated: {result.stdout}\n{result.stderr}")
+    if (result.returncode == 0) != succeeds:
+        raise AssertionError(f"Unexpected returncode {result.returncode} (expected succeeds={succeeds}):\n{result.stdout}\n{result.stderr}")
+    return result

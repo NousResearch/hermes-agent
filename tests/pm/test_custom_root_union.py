@@ -32,17 +32,21 @@ def _make_dep_plugin(plugins_dir: Path, name: str) -> Path:
     return plug
 
 
+def _configure_layout_env(monkeypatch, layout, active):
+    if layout == "default":
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_HOME", str(active))
+
+
 @pytest.mark.parametrize("layout", ["default", "custom", "profile"])
 def test_home_layout_joins_sibling_union(tmp_path, monkeypatch, layout):
     import hermes_constants
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / (".hermes" if layout == "default" else "data-root")
-    active = root / "profiles/active" if layout == "profile" else root
-    if layout == "default":
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-    else:
-        monkeypatch.setenv("HERMES_HOME", str(active))
+    root = {"default": tmp_path / ".hermes"}.get(layout, tmp_path / "data-root")
+    active = {"profile": root / "profiles/active"}.get(layout, root)
+    _configure_layout_env(monkeypatch, layout, active)
     active.mkdir(parents=True, exist_ok=True)
     sibling = root / "profiles/sibling"
     _write_enabled(sibling, ["dep-plug"])

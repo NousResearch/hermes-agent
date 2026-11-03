@@ -172,7 +172,7 @@ def _assert_worker_holds_lock(repo):
 @pytest.mark.parametrize("explicit", [True, False])
 def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_path, monkeypatch, isolated_python, explicit):
     from concurrent.futures import ThreadPoolExecutor
-    import time
+    import socket
     from hermes_cli.runtime_state import runtime_lock
     from tests.pm._fixtures import worker_toolchain
 
@@ -180,24 +180,29 @@ def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_p
     sibling.mkdir(parents=True)
     (sibling / "plugin.yaml").write_text("name: dependency\npython_dependencies: [fixture-dep==1]\n")
     repo = _current_environment(tmp_path, monkeypatch, [sibling])
-    ready = tmp_path / "waiting-for-lock"
+    handshake = socket.socket()
+    handshake.bind(("127.0.0.1", 0))
+    handshake.listen(1)
+    handshake.settimeout(15)
+    host, port = handshake.getsockname()
     worker_toolchain(client, monkeypatch, isolated_python,
-        "from contextlib import contextmanager\nimport hermes_cli.runtime_state as state\n"
+        "from contextlib import contextmanager\nimport socket\nimport hermes_cli.runtime_state as state\n"
         "original = state.runtime_lock\n@contextmanager\ndef lock(project, **kwargs):\n"
-        f"    Path({str(ready)!r}).touch()\n"
+        f"    with socket.create_connection(({host!r}, {port})):\n        pass\n"
         "    with original(project, **kwargs) as held:\n        yield held\nstate.runtime_lock = lock\n")
-    with ThreadPoolExecutor() as executor:
-        with runtime_lock(repo):
-            future = executor.submit(client.sync_venv, explicit=explicit, plugins=Selection({
-                "home": str(tmp_path / "home"), "enabled": ["plain"], "disabled": [],
-            }))
-            deadline = time.monotonic() + 15
-            while not ready.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert ready.exists(), "worker never reached the install lock"
-            assert not future.done(), "worker ignored the install lock"
-            (sibling.parent.parent / "config.yaml").write_text("plugins:\n  enabled: [dependency]\n")
-        future.result(timeout=30)
+    try:
+        with ThreadPoolExecutor() as executor:
+            with runtime_lock(repo):
+                future = executor.submit(client.sync_venv, explicit=explicit, plugins=Selection({
+                    "home": str(tmp_path / "home"), "enabled": ["plain"], "disabled": [],
+                }))
+                connection, _ = handshake.accept()
+                connection.close()
+                assert not future.done(), "worker ignored the install lock"
+                (sibling.parent.parent / "config.yaml").write_text("plugins:\n  enabled: [dependency]\n")
+            future.result(timeout=30)
+    finally:
+        handshake.close()
     assert client.venv_is_current()
 
 

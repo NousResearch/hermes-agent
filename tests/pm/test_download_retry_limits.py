@@ -11,10 +11,7 @@ from pm.downloader import Download, DownloadPaused, DownloadTransportError, Hash
 from tests.pm._range_server import RangeHandler, dl_server, url
 
 
-@pytest.mark.parametrize("failure,phase", [
-    (failure, phase) for failure in ("503", "404", "403") for phase in ("probe", "ranged", "single")
-] + [("hash", "ranged"), ("hash", "single"), ("disk", "probe")])
-def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, monkeypatch, failure, phase):
+def _failure_download(tmp_path, dl_server, monkeypatch, failure, phase):
     payload = b"verified bytes"
     RangeHandler.payloads["/tool"] = payload
     RangeHandler.no_range = phase == "single"
@@ -40,26 +37,55 @@ def test_download_failure_never_publishes_partial_bytes(tmp_path, dl_server, mon
     if failure == "disk":
         dest.mkdir()
         (dest / "occupied").write_bytes(b"keep")
-    expected_error = {"hash": HashError, "disk": OSError}.get(failure, DownloadTransportError)
+    return dl, dest, requests, waits
 
-    with pytest.raises(expected_error) as error:
+
+def _failed_requests(requests, phase):
+    return requests if phase == "probe" else [value for value in requests if value != "bytes=0-0"]
+
+
+@pytest.mark.parametrize("failure,phase,request_count,wait_count", [
+    ("503", "probe", network._ATTEMPTS, network._ATTEMPTS - 1),
+    ("503", "ranged", network._ATTEMPTS, network._ATTEMPTS - 1),
+    ("503", "single", network._ATTEMPTS, network._ATTEMPTS - 1),
+    ("404", "probe", 1, 0),
+    ("404", "ranged", 1, 0),
+    ("404", "single", 1, 0),
+    ("403", "probe", 1, 0),
+    ("403", "ranged", 1, 0),
+    ("403", "single", 1, 0),
+])
+def test_download_failure_never_publishes_partial_bytes(
+    tmp_path, dl_server, monkeypatch, failure, phase, request_count, wait_count
+):
+    dl, dest, requests, waits = _failure_download(
+        tmp_path, dl_server, monkeypatch, failure, phase
+    )
+
+    with pytest.raises(DownloadTransportError) as error:
         dl.run()
-    if failure.isdigit():
-        assert error.value.status == int(failure)
-        assert url(dl_server, "/tool") in str(error.value)
-    if failure == "disk":
-        assert (dest / "occupied").read_bytes() == b"keep"
-        assert not requests and not waits
-    else:
-        assert not dest.exists()
-        error_requests = requests if phase == "probe" else [value for value in requests if value != "bytes=0-0"]
-        if failure == "503":
-            assert len(error_requests) == network._ATTEMPTS
-            assert len(waits) == network._ATTEMPTS - 1
-        else:
-            assert not waits
-            if failure != "hash":
-                assert len(error_requests) == 1
+    assert error.value.status == int(failure)
+    assert url(dl_server, "/tool") in str(error.value)
+    assert not dest.exists()
+    assert len(_failed_requests(requests, phase)) == request_count
+    assert len(waits) == wait_count
+
+
+@pytest.mark.parametrize("phase", ["ranged", "single"])
+def test_hash_failure_never_publishes_partial_bytes(tmp_path, dl_server, monkeypatch, phase):
+    dl, dest, _, waits = _failure_download(tmp_path, dl_server, monkeypatch, "hash", phase)
+    with pytest.raises(HashError):
+        dl.run()
+    assert not dest.exists()
+    assert not waits
+
+
+def test_disk_failure_never_publishes_partial_bytes(tmp_path, dl_server, monkeypatch):
+    dl, dest, requests, waits = _failure_download(tmp_path, dl_server, monkeypatch, "disk", "probe")
+    with pytest.raises(OSError):
+        dl.run()
+    assert (dest / "occupied").read_bytes() == b"keep"
+    assert not requests and not waits
 
 
 @pytest.mark.parametrize("phase", ["probe", "ranged", "single"])

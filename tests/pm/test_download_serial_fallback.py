@@ -8,8 +8,7 @@ from pm.downloader import Download, Source
 from tests.pm._range_server import RangeHandler, dl_server, url
 
 
-@pytest.mark.parametrize("refused_status", [403, 404])
-def test_serial_fallback_survives_a_transient_retry(tmp_path, dl_server, monkeypatch, refused_status):
+def _assert_serial_fallback_survives_a_transient_retry(tmp_path, dl_server, monkeypatch, refused_status):
     payload = b"verified bytes"
     RangeHandler.payloads["/tool"] = payload
     original_get = RangeHandler.do_GET
@@ -35,3 +34,11 @@ def test_serial_fallback_survives_a_transient_retry(tmp_path, dl_server, monkeyp
     assert modes[1:] == [1, 1], "a network retry must not undo the CDN downgrade"
     assert len(waits) == 1
     assert dl.connections == modes[0], "the downgrade belongs to this source, not later downloads"
+    return dest
+
+
+@pytest.mark.parametrize("refused_status", [403, 404])
+def test_serial_fallback_survives_a_transient_retry(tmp_path, dl_server, monkeypatch, refused_status):
+    assert _assert_serial_fallback_survives_a_transient_retry(
+        tmp_path, dl_server, monkeypatch, refused_status
+    ).read_bytes() == b"verified bytes"

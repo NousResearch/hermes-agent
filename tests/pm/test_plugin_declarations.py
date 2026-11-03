@@ -17,8 +17,7 @@ from pm.workspace import enabled_member_dirs, lock_and_sync
 from tests.pm import _fixtures
 
 
-@pytest.mark.parametrize("modern", [False, True])
-def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypatch, modern):
+def _setup_cross_profile_declaration(tmp_path, monkeypatch, modern, specs):
     home = tmp_path / "custom-home"
     sibling = home / "profiles" / "work"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -48,9 +47,6 @@ def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypa
         '[project]\nname="sidecar"\nversion="1"\ndependencies=["impossible==99"]\n',
         encoding="utf-8",
     )
-    specs = ['fixturedep>=1,<2', 'hermes-agent>=0.1,<1',
-             'remote @ https://example.invalid/unreviewed.whl',
-             'missing-other-python; python_version < "3.0"']
     (plugin / "plugin.yaml").write_text(
         'name: member\npython_dependencies: ' + json.dumps(["ignored==99"] if modern else specs) + '\n',
         encoding="utf-8",
@@ -61,6 +57,15 @@ def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypa
             f'dependencies={json.dumps(specs)}\n[tool.uv]\npackage=false\n', encoding="utf-8",
         )
     before = {p: p.read_bytes() for directory in (plugin, external) for p in directory.iterdir()}
+    return core, plugin, external, before
+
+
+@pytest.mark.parametrize("modern", [False, True])
+def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypatch, modern):
+    specs = ['fixturedep>=1,<2', 'hermes-agent>=0.1,<1',
+             'remote @ https://example.invalid/unreviewed.whl',
+             'missing-other-python; python_version < "3.0"']
+    core, plugin, external, before = _setup_cross_profile_declaration(tmp_path, monkeypatch, modern, specs)
     assert enabled_member_dirs() == [plugin]
     assert read_python_declaration(external).external
     declaration = read_python_declaration(plugin)

@@ -142,7 +142,14 @@ def test_file_written_through_earlier_link_entry_cannot_escape(
     assert written.is_file() and not (dest / "outdir").is_symlink()
 
 
+def _read_win32_link_target(link: Path) -> tuple[bool, Path]:
+    if link.is_symlink():
+        return True, link.readlink()
+    return link.is_file(), Path(link.read_text(encoding="utf-8"))
+
+
 @pytest.mark.platforms("windows")
+@pytest.mark.skipif(sys.platform != "win32", reason="win32 only")
 def test_win32_safe_link_degrades_without_escaping(tmp_path: Path) -> None:
     """On win32 pm attempts a real symlink (works with Developer Mode /
     admin) and otherwise degrades to a text placeholder holding the
@@ -157,11 +164,9 @@ def test_win32_safe_link_degrades_without_escaping(tmp_path: Path) -> None:
     extract(_write_zip(tmp_path / "a.zip", build), dest)
 
     link = dest / "lib" / "data"
-    if link.is_symlink():
-        assert link.readlink() == Path("../share/data.txt")
-    else:
-        assert link.is_file()
-        assert link.read_text(encoding="utf-8") == "../share/data.txt"
+    valid, target = _read_win32_link_target(link)
+    assert valid
+    assert target == Path("../share/data.txt")
     # Nothing anywhere else.
     assert set(p.name for p in (dest / "lib").iterdir()) == {"data"}
 
@@ -175,7 +180,6 @@ def test_plain_zip_unchanged(tmp_path: Path) -> None:
 
     dest = tmp_path / "out"
     extract(_write_zip(tmp_path / "a.zip", build), dest)
-    if sys.platform != "win32":
-        assert (dest / "bin/tool").stat().st_mode & 0o111
+    assert sys.platform == "win32" or bool((dest / "bin/tool").stat().st_mode & 0o111)
     assert (dest / "bin/tool").read_bytes() == b"#!"
     assert (dest / "README").read_bytes() == b"r"

@@ -53,6 +53,8 @@ def _assert_pinned_bionic_row(lock, pkg, url_suffix_re):
 
 def test_python_bionic_row_matches_supplier(lock):
     """The Python package definition and lock must agree on the termux-main artifact."""
+    row = lock["packages"]["python"]["artifacts"]["linux-arm64-bionic"]
+    assert "termux-main" in row["url"]
     _assert_pinned_bionic_row(lock, "python", r"/p/python/python_(?P<ver>[0-9.]+(?:-[0-9]+)?)_aarch64\.deb$")
 def test_node_bionic_row_matches_supplier(lock):
     """The node bionic row is an explicit pin of the termux-main nodejs .deb;

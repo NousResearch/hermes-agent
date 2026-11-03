@@ -73,8 +73,9 @@ def test_chained_aliases_survive_without_symlink_support(tmp_path, monkeypatch):
     staged = tmp_path / "staged"
     staged.mkdir()
     _P().unpack(deb, staged, "linux-arm64-bionic")
-    for name in ("libexample.so", "libexample.so.1", "libexample.so.1.2"):
-        assert (staged / lib / name).read_bytes() == b"library payload"
+    assert (staged / lib / "libexample.so").read_bytes() == b"library payload"
+    assert (staged / lib / "libexample.so.1").read_bytes() == b"library payload"
+    assert (staged / lib / "libexample.so.1.2").read_bytes() == b"library payload"
 
 
 def test_relative_member_escape_preserves_outside(tmp_path):

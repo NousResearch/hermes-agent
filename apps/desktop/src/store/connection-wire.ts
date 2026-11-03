@@ -2,6 +2,7 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { map } from 'nanostores'
 
 import type { GatewaySessionWire } from '@/api/client'
+import type { PrimaryGatewayRoute } from '@/store/gateway-primary-route'
 
 /** The session wire each connection's gateway negotiated on its last `gateway.ready`. A connection
  *  is one backend, so every socket to it (the primary and its profile secondaries) agrees. */
@@ -19,4 +20,12 @@ export function recordConnectionWire(connectionId: null | string | undefined, wi
 /** Null until a socket to that connection has become ready. */
 export function connectionWire(connectionId: null | string | undefined): GatewaySessionWire | null {
   return $connectionWires.get()[wireKey(connectionId)] ?? null
+}
+
+/** The connection the primary socket serves. An established route without a registry id is the
+ *  local source, never the foreground connection: a foregrounded secondary keeps `$connection`
+ *  while the primary reconnects in the background. Only a route not yet recorded (both fields
+ *  null, between a gateway swap and its descriptor) falls back to the window's connection. */
+export function primaryWireConnectionId(route: PrimaryGatewayRoute, windowConnectionId: null | string | undefined): null | string | undefined {
+  return route.mode || route.connectionId ? route.connectionId : windowConnectionId
 }

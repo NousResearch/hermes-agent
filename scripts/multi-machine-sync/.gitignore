@@ -1,0 +1,56 @@
+# === Hermes Multi-Machine Memory Sync .gitignore ===
+# Exclude everything except what we explicitly want to sync
+
+# DO NOT sync: environment binaries and source code
+*.pyc
+__pycache__/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+*.whl
+*.tar.gz
+
+# DO NOT sync: logs, cache, temporary files
+*.log
+logs/
+cache/
+tmp/
+temp/
+*.tmp
+
+# DO NOT sync: large environment data that should stay local
+node_modules/
+.npm/
+.yarn/
+
+# DO NOT sync: Hermes source code (already on each machine)
+# We keep hermes/ *inside the repo* for synchronized memory, so don't ignore it
+# Only ignore config.yaml and .env (machine-specific sensitive config)
+!/hermes/
+!/hermes/memory/
+# But skills that are custom modified need to be synced if they're in data
+!/hermes-skills/
+# Ignore machine-specific sensitive configuration
+hermes/config.yaml
+hermes/.env
+
+# DO NOT sync: sessions and history (large and machine-specific)
+sessions/
+*.db-wal
+*.db-shm
+
+# DO NOT sync: machine-specific process state
+processes.json
+gateway_state.json
+*.pid
+
+# DO NOT sync: OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# We only sync: data, memory, configuration, knowledge base
+# All actual sync content is in the directory structure below

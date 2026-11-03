@@ -16,7 +16,10 @@ vi.mock('@hermes/plugin-sdk', () => ({
   randomUuid: () => 'uuid-1',
   Textarea: (props: ComponentProps<'textarea'>) => <textarea {...props} />
 }))
-vi.mock('./canonical-groups', async importOriginal => ({ ...(await importOriginal<object>()), canonicalGroupRequest: request }))
+vi.mock('./canonical-groups', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  canonicalGroupRequest: request
+}))
 const CONTROLS = vi.hoisted(() => ({ cancel: 'Cancel', save: 'Save' }))
 
 vi.mock('./canonical-group-labels', async () => {
@@ -56,14 +59,26 @@ it('keeps notes the backend rejected so they can be shortened and saved again', 
   fireEvent.change(notes, { target: { value: 'My long draft' } })
   fireEvent.click(screen.getByText(labels.save))
 
-  await waitFor(() => expect(request).toHaveBeenCalledWith(binding, 'groups.context', { room_id: 'room-1', event_id: 'uuid-1', purpose: 'Old purpose', notes: 'My long draft' }))
+  await waitFor(() =>
+    expect(request).toHaveBeenCalledWith(binding, 'groups.context', {
+      room_id: 'room-1',
+      event_id: 'uuid-1',
+      purpose: 'Old purpose',
+      notes: 'My long draft'
+    })
+  )
   expect(await screen.findByRole('alert')).toBeTruthy()
   expect((screen.getByPlaceholderText(labels.notesPlaceholder) as HTMLTextAreaElement).value).toBe('My long draft')
 })
 
 it('an in-flight save cannot be overtaken by edits it would then discard', async () => {
   let fail: (error: Error) => void = () => {}
-  request.mockImplementation(() => new Promise((_, reject) => { fail = reject }))
+  request.mockImplementation(
+    () =>
+      new Promise((_, reject) => {
+        fail = reject
+      })
+  )
   const notes = openSettings()
 
   fireEvent.change(notes, { target: { value: 'First draft' } })

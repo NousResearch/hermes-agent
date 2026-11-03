@@ -1,0 +1,26 @@
+name: lark-card-for-hermes
+repo: https://github.com/Keithin/lark-card-for-hermes
+sha: aa4b39c0a69fcc143da23718339de3f410b71233
+description: Render each Hermes reply as one live Feishu/Lark card — tool timeline, reasoning panel, native tables, token footer, streaming body.
+maintainer: Keithin
+tier: community
+category: platform
+requires_hermes: ">=0.22.0"
+version: "1.5.6"
+title: Lark Card for Hermes
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_gateway_admission
+    - pre_tool_call
+    - post_tool_call
+    - subagent_start
+    - subagent_stop
+    - on_session_end
+    - on_stream_delta
+    - agent_loop_stopped
+    - post_api_request
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -496,6 +496,9 @@ export function toolCallOwnerMessageId(
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
+// Keys `toolArgs` folds into a row's args from the event itself, not the call.
+const EVENT_ARG_KEYS = new Set(['context', 'preview', TOOL_LABELS_ARG])
+
 /**
  * True when a tool event is another copy of a call this turn already finished.
  *
@@ -505,11 +508,18 @@ const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSO
  * `delegate_task` returns in about a second, so any re-delivery of its
  * frames showed the whole fan-out twice.
  *
- * Ids alone can't prove it's the same call: llama.cpp reuses one id for
- * every call. A copy also matches the finished part's content. A start
- * repeats its arguments; a completion repeats its result. The search stops
- * at the newest user message, so a later turn that reuses an id with the
- * same arguments still gets its own row.
+ * Ids alone can't prove it's the same call: older backends pass through a
+ * provider's constant id (llama.cpp names every call alike). A copy also
+ * matches the finished part's content: a start carries exactly the same
+ * arguments (the same keys, ignoring the ones the event itself adds), a
+ * completion the same result. The search stops at the newest user message,
+ * except a projected queued prompt, which belongs to the next turn; a later
+ * turn that reuses an id with the same arguments still gets its own row.
+ *
+ * Content can't tell one case apart: an older constant-id backend running the
+ * same command twice in one turn. Its second call is hidden while it runs,
+ * and entirely when the output repeats. Current backends rename a reused id
+ * before `tool.start` goes out, so that only reaches an older backend.
  */
 export function isRedeliveredToolEvent(
   messages: ChatMessage[],
@@ -518,10 +528,13 @@ export function isRedeliveredToolEvent(
 ): boolean {
   const stableId = toolId(payload)
 
-  if (!stableId || toolCallOwnerMessageId(messages, payload, phase)) {
+  if (!stableId) {
     return false
   }
 
+  // A call still waiting on this event wins only when it is newer than the
+  // finished match: an older turn's sealed row must not take the copy.
+  const ownerId = toolCallOwnerMessageId(messages, payload, phase)
   const args = liveToolArgs(payload)
   const argKeys = Object.keys(args)
 
@@ -531,14 +544,15 @@ export function isRedeliveredToolEvent(
     }
 
     const partArgs = parseMaybeJsonObject(part.args)
+    const partKeys = Object.keys(partArgs).filter(key => Object.hasOwn(args, key) || !EVENT_ARG_KEYS.has(key))
 
-    return argKeys.length > 0 && argKeys.every(key => sameJson(args[key], partArgs[key]))
+    return partKeys.length === argKeys.length && argKeys.every(key => sameJson(args[key], partArgs[key]))
   }
 
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
 
-    if (message.role === 'user') {
+    if (message.id === ownerId || (message.role === 'user' && !message.id.startsWith('user-queued-'))) {
       return false
     }
 

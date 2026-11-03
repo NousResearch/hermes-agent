@@ -21,7 +21,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
-    _source_match_clause, emit_session_deleted, launch_stub_filter_sql,
+    _source_match_clause, emit_session_deleted, launch_stub_filter_sql, tui_history_filter_sql,
 )
 from hermes_state_compression import _CHAIN_CAP, _UNSET_CREATED_SQL
 
@@ -112,7 +112,7 @@ def _where_sql(clauses: list[str], lead: str = "") -> str:
 
 
 def _session_filter_where(
-    *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
+    db, *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
@@ -121,7 +121,7 @@ def _session_filter_where(
     hides sub-agent runs and compression continuations but keeps branch/reset children
     (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
     (``sessions.show_subagents``). Clause order is part of the SQL text contract."""
-    where: list[str] = []
+    where: list[str] = [tui_history_filter_sql(db)]
     params: list[Any] = []
     if exclude_children and include_subagents:
         where.append(f"({_LISTABLE_CHILD_SQL} OR {_delegate_from_json('s.model_config')} IS NOT NULL)")
@@ -1317,7 +1317,7 @@ class SessionSessionsMixin:
         rows to those surfaces before LIMIT/OFFSET."""
         self.flush_for_read()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
-            exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
+            self, exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
             local_created_sources=local_created_sources,
@@ -1425,7 +1425,7 @@ class SessionSessionsMixin:
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
             pinned_clauses, pinned_params = _session_filter_where(
-                exclude_children=not include_children, source=source, sources=sources,
+                self, exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
                 include_subagents=include_subagents, local_created_sources=local_created_sources,
@@ -1548,7 +1548,7 @@ class SessionSessionsMixin:
         so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
         ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET, and
         ``skip_launch_stubs`` drops empty launch stubs (launch_stub_filter_sql) before it too."""
-        where_clauses = [launch_stub_filter_sql(self)] if skip_launch_stubs else []
+        where_clauses = [launch_stub_filter_sql(self) if skip_launch_stubs else tui_history_filter_sql(self)]
         params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
@@ -1576,7 +1576,7 @@ class SessionSessionsMixin:
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
-            exclude_children=exclude_children, source=source, sources=sources,
+            self, exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
             local_created_sources=local_created_sources,
@@ -1596,7 +1596,7 @@ class SessionSessionsMixin:
     ) -> dict[str, int]:
         """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
         where_clauses, params = _session_filter_where(
-            exclude_children=exclude_children, archived_only=archived_only,
+            self, exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
         )
         if exclude_children:

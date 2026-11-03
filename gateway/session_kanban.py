@@ -275,7 +275,8 @@ def _run_worker_turns(agent, frame, history):
                                           **({'task_id': task_id} if task_id else {}),
                                           **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
-    code, last_output = 1, ''
+    from hermes_cli.kanban_skills import KanbanSkillsUnavailable
+    code, last_output, error = 1, '', None
     try:
         result = _run_task_turns(agent, frame, history, context)
         code = turn_exit_code(result, kanban_worker=True)
@@ -283,9 +284,12 @@ def _run_worker_turns(agent, frame, history):
         return result
     except Exception as exc:
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
+        # Composed here (missing skills + profile), never a raw runtime exception: this text
+        # reaches the board, and only a message this engine built is safe to persist.
+        error = str(exc) if isinstance(exc, KanbanSkillsUnavailable) else None
         raise
     finally:
-        _record_worker_result(context, code, last_output)
+        _record_worker_result(context, code, last_output, error=error)
 
 
 def record_start_failure(frame, exc):
@@ -298,18 +302,22 @@ def record_start_failure(frame, exc):
     _record_worker_result(context, turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc)), '')
 
 
-def _record_worker_result(context, code, last_output):
+def _record_worker_result(context, code, last_output, error=None):
     _TURNS_DONE.set()
     import os
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
+    payload = {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
+               'last_output': last_output}
+    if error:
+        # Only board-safe text (KanbanSkillsUnavailable's composed message): a raw runtime
+        # exception can carry credentials, which the owner never forwards.
+        payload['error'] = str(error)[:2000]
     with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
         if _bound_worker_matches(conn, context):
             # Closing a run clears its claim/PID and replaces metadata; keep the
             # result in the immutable attempt event stream instead.
-            kb._append_event(conn, context['task_id'], 'worker_result',
-                {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
-                 'last_output': last_output}, run_id=context['run_id'])
+            kb._append_event(conn, context['task_id'], 'worker_result', payload, run_id=context['run_id'])
 
 
 def record_worker_loss(policy, reason, *, pid=None, bound=False):
@@ -385,7 +393,10 @@ def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+        # Name the skills and the profile they were resolved against: this text is what reaches
+        # task_runs.error and the submitter's console line, instead of a bare token.
+        from hermes_cli.kanban_skills import unavailable_error
+        raise unavailable_error(context.get('profile'), missing)
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

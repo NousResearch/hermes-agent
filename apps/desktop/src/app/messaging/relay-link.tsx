@@ -101,20 +101,23 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
           return
         }
 
-        setLink(null)
-        setQrDataUrl('')
-
         if (state.state === 'refused') {
+          setLink(null)
+          setQrDataUrl('')
           setError(r.refused(platform.name))
 
           return
         }
 
+        // Reload before closing the code: closing re-runs this effect and cancels the rest of it.
         const after = await loadAccounts()
 
         if (cancelled) {
           return
         }
+
+        setLink(null)
+        setQrDataUrl('')
 
         if (after && (after.length > linkedBefore.current || redeemedBeforeExpiry(link))) {
           notify({ kind: 'success', message: r.linked(platform.name) })

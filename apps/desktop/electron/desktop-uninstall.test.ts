@@ -69,8 +69,19 @@ test('only standard installs allow desktop uninstall; managed kinds have no safe
 test('nativeRemovalInstructions names the steward per kind and OS', () => {
   assert.match(nativeRemovalInstructions('nix', 'linux'), /installed by Nix/)
   assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)
+
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const steps = nativeRemovalInstructions('external', platform, '/usr/lib/hermes/hermes')
+    assert.match(steps, /with that package manager/)
+    assert.doesNotMatch(steps, /Delete|Trash/)
+  }
+
   assert.match(nativeRemovalInstructions('bundled', 'win32'), /Installed apps/)
-  assert.match(nativeRemovalInstructions('bundled', 'darwin'), /Trash/)
+  assert.equal(
+    nativeRemovalInstructions('bundled', 'darwin', '/Applications/Hermes Agent Canary.app'),
+    'Quit the app and drag Hermes Agent Canary.app from /Applications to the Trash.'
+  )
+  assert.match(nativeRemovalInstructions('bundled', 'darwin'), /drag the Hermes app from Applications to the Trash/)
   assert.match(
     nativeRemovalInstructions('bundled', 'linux', '/home/x/Apps/Hermes.AppImage'),
     /\/home\/x\/Apps\/Hermes\.AppImage/
@@ -141,6 +152,15 @@ test('resolveRemovableAppPath uses APPIMAGE on Linux when set', () => {
   assert.equal(
     resolveRemovableAppPath('/tmp/.mount_HermesXXXX/hermes', 'linux', { APPIMAGE: '/home/x/Apps/Hermes.AppImage' }),
     '/home/x/Apps/Hermes.AppImage'
+  )
+})
+
+// AppImage apps (terminals, IDEs) export APPIMAGE to everything they start;
+// uninstalling an unpacked Hermes launched from one must never rm -rf that app.
+test('resolveRemovableAppPath ignores an APPIMAGE inherited from another AppImage', () => {
+  assert.equal(
+    resolveRemovableAppPath('/opt/hermes/linux-unpacked/hermes', 'linux', { APPIMAGE: '/home/x/Apps/Other.AppImage' }),
+    '/opt/hermes/linux-unpacked'
   )
 })
 

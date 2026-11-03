@@ -8,6 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { isPastedContentPath } from '@/app/chat/composer/large-paste'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { type I18nContextValue, useI18n } from '@/i18n'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -432,7 +433,11 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
 
     void Promise.resolve(load)
       .then(async url => {
-        if (!alive || !url) {
+        if (!alive) {
+          return
+        }
+
+        if (isReadFileErrorResult(url) || !url) {
           return
         }
 

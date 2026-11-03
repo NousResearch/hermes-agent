@@ -26,11 +26,11 @@ class _StubCapture(_CaptureMixin):
         self._last_app = ""
 
     def _resolve_capture_windows(self, mode: str, app: Optional[str], pid: Optional[int],
-                                 window_id: Optional[int]) -> List[Dict[str, Any]]:
+                                 window_id: Optional[int]) -> list[dict[str, Any]]:
         return [{"app_name": "Finder", "pid": 607, "window_id": 382, "title": "", "z_index": 1,
                  "off_screen": False}]
 
-    def _set_active_target(self, target: Dict[str, Any]) -> None:
+    def _set_active_target(self, target: dict[str, Any]) -> None:
         self._active_pid, self._active_window_id = target["pid"], target["window_id"]
 
 

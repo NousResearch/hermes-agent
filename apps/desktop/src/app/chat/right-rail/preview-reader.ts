@@ -10,15 +10,16 @@
  * a registered reader answers with the live page's text;
  * a tab with no reader (a file peek, an artifact) still answers with its
  * identity and a note pointing the agent at the tool that reads that content
- * directly (read_file / the conversation's artifact).
+ * directly (read_file / the conversation's artifact). A browser-hosted
+ * Desktop renders URLs in a sandboxed iframe it can never read, so its URL
+ * tabs answer `surface: 'iframe'` with a note naming web_extract instead.
  */
 
-import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $hoveredTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
-import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs, type PreviewTab } from '@/store/preview'
-import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { hostHas } from '@/lib/host-capabilities'
+import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
+import { resolveActivePreviewTab } from './preview-active-tab'
 import { nudgeOverlay } from './preview-nudge'
 
 export interface PreviewReadOptions {
@@ -43,6 +44,9 @@ export interface PreviewReadResult {
   note?: string
   path?: string
   start: number
+  /** Set to 'iframe' when the page renders in the browser-hosted Desktop's
+   *  sandboxed iframe, whose text this renderer cannot read. */
+  surface?: 'iframe'
   /** Open preview tabs, set when more than one is mounted. */
   tabs?: PreviewReadTabSummary[]
   text: string
@@ -59,6 +63,11 @@ interface PreviewPage {
 }
 
 type PageReader = () => Promise<PreviewPage>
+
+/** A browser host mounts URL previews in a sandboxed (opaque-origin) iframe:
+ *  no page reader can ever register, so waiting would never help. */
+const IFRAME_UNREADABLE_NOTE =
+  "Page text isn't readable in browser-hosted Desktop: the page renders in a sandboxed cross-origin iframe. Read this URL with web_extract or browser_exec instead."
 
 /** Default + hard cap on one read — a page's innerText can be megabytes, and
  *  this crosses the gateway into model context. Page with start/count. */
@@ -90,59 +99,6 @@ function windowText(
   return { ...base, end: to, start: from, text: text.slice(from, to), total_chars: total }
 }
 
-function tabIdFromPreviewPane(paneId: string | undefined): null | string {
-  if (!paneId?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {
-    return null
-  }
-
-  return paneId.slice(PREVIEW_TILE_PREFIX.length + 1)
-}
-
-/** Active preview tab in a layout zone, if that tab is still open. */
-function openTabInGroup(groupId: null | string, tabs: PreviewTab[]): null | PreviewTab {
-  const tree = $layoutTree.get()
-
-  if (!tree || !groupId) {
-    return null
-  }
-
-  const tabId = tabIdFromPreviewPane(findGroup(tree, groupId)?.active)
-
-  if (!tabId) {
-    return null
-  }
-
-  return tabs.find(tab => tab.id === tabId) ?? null
-}
-
-/**
- * The preview the user is looking at: hovered zone, else focused zone, else
- * the store. A focused zone that is still the pre-open zone does not override
- * an explicit open living in a different group — that is follow()'s clobber,
- * not a look.
- */
-export function resolveActivePreviewTab(tabs: PreviewTab[] = $previewTabs.get()): null | PreviewTab {
-  if (tabs.length === 0) {
-    return null
-  }
-
-  const hovered = openTabInGroup($hoveredTreeGroup.get(), tabs)
-
-  if (hovered) {
-    return hovered
-  }
-
-  const focusedId = $activeTreeGroup.get()
-  const focused = openTabInGroup(focusedId, tabs)
-  const openIds = tabs.map(tab => tab.id)
-
-  if (focused && !explicitOpenBlocksZone(focusedId, openIds)) {
-    return focused
-  }
-
-  return tabs.find(tab => tab.id === $rightRailActiveTabId.get()) ?? tabs[0] ?? null
-}
-
 function tabSummary(tab: PreviewTab): PreviewReadTabSummary {
   return { id: tab.id, kind: tab.target.kind, label: tab.target.label, url: tab.target.url }
 }
@@ -165,9 +121,14 @@ function withMultiNote(note: string | undefined, multi: boolean): string | undef
   return note ? `${note} ${extra}` : extra
 }
 
-/** Read the preview the user is looking at. Null only when no tab is open at all. */
-export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<null | PreviewReadResult> {
-  const tabs = $previewTabs.get()
+/** Read the preview the user is looking at, among the tabs `sessionId` (the
+ *  requesting session; default the focused one) can see. Null only when that
+ *  session has no tab open at all. */
+export async function readActivePreview(
+  opts: PreviewReadOptions = {},
+  sessionId?: PreviewOwner
+): Promise<null | PreviewReadResult> {
+  const tabs = previewTabsFor(sessionId)
   const tab = resolveActivePreviewTab(tabs)
 
   if (!tab) {
@@ -188,7 +149,7 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
       // side of it — so a run of reads used to leave the pane dark for the
       // twenty seconds it took to page through a document, immediately after
       // the one moment that showed anything.
-      nudgeOverlay('read')
+      nudgeOverlay('read', sessionId)
 
       return windowText(
         {
@@ -208,15 +169,19 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
     }
   }
 
-  // No live webview behind the tab (a file peek, an artifact, or a page still
-  // booting): answer with the tab's identity so the agent knows what's on
-  // screen and which of its own tools reads the content directly.
+  // No live webview behind the tab (a file peek, an artifact, a page still
+  // booting, or a browser host's iframe): answer with the tab's identity so the
+  // agent knows what's on screen and which of its own tools reads the content.
+  const iframe = target.kind === 'url' && !hostHas('webviewPreview')
+
   const identity =
     target.kind === 'file'
       ? 'File preview — read the file itself with read_file.'
       : target.kind === 'artifact'
         ? 'Generated artifact — its content is in the conversation that produced it.'
-        : 'The page has not finished loading — retry in a moment.'
+        : iframe
+          ? IFRAME_UNREADABLE_NOTE
+          : 'The page has not finished loading — retry in a moment.'
 
   return windowText(
     {
@@ -224,6 +189,7 @@ export async function readActivePreview(opts: PreviewReadOptions = {}): Promise<
       kind: target.kind,
       note: withMultiNote(identity, multi),
       path: target.path,
+      ...(iframe ? { surface: 'iframe' as const } : {}),
       title: target.label,
       url: target.url
     },

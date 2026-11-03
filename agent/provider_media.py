@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
+# Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the transient
+# inbound caches the gateway housekeeping sweeps (#126445): for base64-returning
+# providers the cached file is the ONLY copy of the output.
+GENERATED_SUBDIR = "generated"
+# Age (hours) past which the gateway sweeps transient media caches; remote sync of the
+# unswept ``cache/generated`` tree uses the same window so it stays bounded.
+MEDIA_CACHE_MAX_AGE_HOURS = 24
+
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SAVE_URL_REDIRECTS = 5
 
@@ -48,8 +56,8 @@ def save_b64(kind: str, b64_data: str, *, prefix: str, extension: str) -> Path:
 
 def save_url(
     kind: str, url: str, *, prefix: str, timeout: float, max_bytes: int, chunk_size: int,
-    content_types: Dict[str, str], url_extensions: Tuple[str, ...], default_extension: str,
-    label: str, empty_error: str, headers: Optional[Dict[str, str]] = None,
+    content_types: dict[str, str], url_extensions: tuple[str, ...], default_extension: str,
+    label: str, empty_error: str, headers: Optional[dict[str, str]] = None,
     require_known_content_type: bool = False, trusted_origin: bool = False,
 ) -> Path:
     """Stream-download *url* into the cache with a size cap.

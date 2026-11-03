@@ -35,6 +35,27 @@ def _session_has_live_transport(session: dict | None, *, excluding=None) -> bool
     return any(peer is not excluding for peer in _session_live_transports(session))
 
 
+def _transport_auth_user_id(transport) -> str | None:
+    """The owner a row created over ``transport`` belongs to: the host owner's OS subject for any WS-upgrade
+    login (a signed-in Webapp or dashboard tab is the machine owner, gateway.owner_identity), so native Desktop
+    and the TUI resume it; None for the legacy token, stdio and the PTY child's server-internal credential."""
+    from gateway.session_identity import is_authenticated_identity
+    if is_authenticated_identity(getattr(transport, "auth_identity", None)):
+        from gateway.owner_identity import host_owner_subject
+        return host_owner_subject()
+    return None
+
+
+def _session_auth_user_id(session: dict | None) -> str | None:
+    """The login ``session`` was created under, stamped on the record as ``auth_user_id``. A second window turns
+    the transport slot into a FanoutTransport, which names no login, so only a record without the slot reads
+    its transport."""
+    session = session or {}
+    if "auth_user_id" in session:
+        return session["auth_user_id"]
+    return _transport_auth_user_id(session.get("transport"))
+
+
 def _session_client_answers_requests(sid: str) -> bool:
     """Whether a server→client request for *sid* can be answered: False only when every live WebSocket
     client attached to the session is a build that never sent ``client.capabilities`` (Desktop / dashboard

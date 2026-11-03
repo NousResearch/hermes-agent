@@ -111,7 +111,7 @@ class _Console:
         tree = process_tree(self.proc.pid)
         try:
             self.proc.terminate(force=True)
-        except Exception:  # noqa: BLE001 - teardown of an already-dead console
+        except Exception:
             pass
         kill_tree(tree)
 
@@ -144,12 +144,12 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
             try:
                 wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
             except AssertionError as exc:
-                raise AssertionError(f"{exc}; console tail: {ascii(_plain(console.screen)[-600:])}") from exc
+                raise AssertionError(f"{exc}; console tail: {_plain(console.screen)[-600:]!a}") from exc
             user = last_user(srv.main_requests()[0])
         finally:
             screen = console.screen
             console.close()
     assert tag in user, f"typed text never reached the provider: {user!r}\n{_plain(screen)[-2000:]}"
     assert f"{BMP} {tag}" in user, (
-        f"non-ASCII lost between the console and the wire: {ascii(user)}\n"
-        f"composer echoed it before Enter: {BMP in echoed}\nconsole tail:\n{ascii(_plain(screen)[-600:])}")
+        f"non-ASCII lost between the console and the wire: {user!a}\n"
+        f"composer echoed it before Enter: {BMP in echoed}\nconsole tail:\n{_plain(screen)[-600:]!a}")

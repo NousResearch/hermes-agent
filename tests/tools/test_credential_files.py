@@ -1,6 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -519,7 +520,7 @@ class TestMapCachePathToContainer:
 class TestToAgentVisiblePathPerBackend:
     """#76577 follow-up: translation covers every backend that relocates the
     Hermes cache — not just docker — and skips the ones where the host path
-    stays correct (local; singularity auto-binds the host home)."""
+    stays correct (local, unknown)."""
 
     def _staged(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -539,7 +540,7 @@ class TestToAgentVisiblePathPerBackend:
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path(staged) == "~/.hermes/attachments/drop.zip"
 
-    @pytest.mark.parametrize("backend", ["local", "singularity", ""])
+    @pytest.mark.parametrize("backend", ["local", ""])
     def test_untranslated_backends_keep_host_path(self, tmp_path, monkeypatch, backend):
         staged = self._staged(tmp_path, monkeypatch)
         monkeypatch.setenv("TERMINAL_ENV", backend)
@@ -581,12 +582,20 @@ class TestIterCacheFiles:
         doc_dir.mkdir(parents=True)
         (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
         (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
+        old = time.time() - 25 * 3600
+        os.utime(doc_dir / "report.pdf", (old, old))
+        # cache/generated is never swept: sync only its last-24h files (#126445).
+        gen_dir = hermes_home / "cache" / "generated" / "images"
+        gen_dir.mkdir(parents=True)
+        (gen_dir / "fresh.png").write_bytes(b"\x89PNG")
+        (gen_dir / "stale.png").write_bytes(b"\x89PNG")
+        os.utime(gen_dir / "stale.png", (old, old))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         entries = iter_cache_files()
         names = {Path(e["container_path"]).name for e in entries}
-        assert "upload.zip" in names
-        assert "report.pdf" in names
+        assert {"upload.zip", "report.pdf", "fresh.png"} <= names
+        assert "stale.png" not in names
 
     @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):

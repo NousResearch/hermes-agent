@@ -50,7 +50,7 @@ GENERATOR_VERSION = 1
 # Every entry: (id, category, input). Categories: grid | scar | adversarial.
 # Ids are STABLE API — the runner and divergence notes key on them.
 
-GRID: List[tuple] = [
+GRID: list[tuple] = [
     ("plain-text", "Just a plain sentence."),
     ("bold", "This is **bold** text."),
     ("italic", "This is *italic* text."),
@@ -84,7 +84,7 @@ GRID: List[tuple] = [
     ),
 ]
 
-SCAR: List[tuple] = [
+SCAR: list[tuple] = [
     # MarkdownV2 reserved characters in prose — the classic Telegram 400.
     ("mdv2-reserved-chars", "Price is 3.50 (was 4.00) — save ~12%! #deal +tax = win."),
     ("mdv2-underscores", "snake_case_name and file_name.py in prose."),
@@ -110,7 +110,7 @@ SCAR: List[tuple] = [
     ("link-display-escapes", "[v2.0 (beta)](https://example.com/v2)"),
 ]
 
-ADVERSARIAL: List[tuple] = [
+ADVERSARIAL: list[tuple] = [
     ("media-tag", "Here you go\nMEDIA:/tmp/output.png\ndone"),  # no-tmp: ok — fixture string parsed by MEDIA-tag conformance vectors
     ("unclosed-fence", "```python\nprint('never closed')"),
     ("pathological-nesting", "**bold *italic ~~struck `code` struck~~ italic* bold**"),
@@ -123,8 +123,8 @@ ADVERSARIAL: List[tuple] = [
 ]
 
 
-def corpus() -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+def corpus() -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
     for cid, text in GRID:
         rows.append({"id": cid, "category": "grid", "input": text})
     for cid, text in SCAR:
@@ -137,7 +137,7 @@ def corpus() -> List[Dict[str, str]]:
 # ── oracles ──────────────────────────────────────────────────────────────
 
 
-def _oracles() -> Dict[str, Callable[[str], str]]:
+def _oracles() -> dict[str, Callable[[str], str]]:
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from plugins.platforms.slack.adapter import SlackAdapter
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -157,7 +157,7 @@ def _oracles() -> Dict[str, Callable[[str], str]]:
 
 # Per-platform expect overrides (default: parity, except telegram=semantic).
 # Keyed by vector id; value = (expect, note).
-_EXPECT_OVERRIDES: Dict[str, Dict[str, tuple]] = {
+_EXPECT_OVERRIDES: dict[str, dict[str, tuple]] = {
     "telegram": {
         # Native wraps pipe tables into row groups; the connector's HTML lane
         # renders tables as <pre>. Same content, structurally different enough
@@ -203,18 +203,18 @@ def _oracle_commit() -> str:
         return "unknown"
 
 
-def generate(out_dir: Path) -> Dict[str, Any]:
+def generate(out_dir: Path) -> dict[str, Any]:
     """Render the corpus through every oracle; write one JSON per platform."""
     oracles = _oracles()
     commit = _oracle_commit()
     rows = corpus()
-    summary: Dict[str, Any] = {}
+    summary: dict[str, Any] = {}
     out_dir.mkdir(parents=True, exist_ok=True)
     for platform, render in sorted(oracles.items()):
         vectors = []
         for row in rows:
             expect, note = _expect_for(platform, row["id"])
-            entry: Dict[str, Any] = {
+            entry: dict[str, Any] = {
                 "id": row["id"],
                 "category": row["category"],
                 "expect": expect,

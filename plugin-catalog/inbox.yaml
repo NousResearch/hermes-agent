@@ -1,0 +1,15 @@
+name: inbox
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: 62dbc160fab57f893a9eaace79c16c00518c4eca
+subdir: inbox
+description: "hermes inbox: one read-only view of everything in flight for the active profile: failed or paused cron jobs, stalled or dropped delegations, orphaned background processes, blocked kanban tasks, running work, undelivered delegation results, upcoming cron runs and open chat sessions, with --json for scripts. A Hermes Labs plugin: built by Nous Research, not supported. Disclosure — reads processes.json, cron/jobs.json, runtime/active_sessions.json and state.db (SQLite read-only) in the profile's home, plus the shared kanban board's kanban.db (read-only); it never writes, repairs or prunes them, adds no model tools or hooks, and sends nothing anywhere."
+maintainer: NousResearch
+tier: community
+category: general
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/inbox
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

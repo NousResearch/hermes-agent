@@ -60,6 +60,7 @@ def _run_under_c_locale(snippet: str) -> subprocess.CompletedProcess:
         text=True,
         env=env,
         timeout=60,
+        check=False,
     )
 
 

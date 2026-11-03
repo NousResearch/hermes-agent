@@ -1406,8 +1406,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
-    def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+    def _prefix_inbound_sender_context(
+        self, event: MessageEvent, source: SessionSource, message_text: str, history: Any = (),
+    ) -> str:
+        """Attribute the sender in shared multi-user sessions and prepend the context blocks: the
+        post a thread was opened on (a session's first turn only), then history-backfill context."""
         _is_shared_multi_user = is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
@@ -1423,8 +1426,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
-        if getattr(event, "channel_context", None):
-            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+        starter = None if history else getattr(event, "thread_starter_context", None)
+        context = "\n\n".join(c for c in (starter, getattr(event, "channel_context", None)) if c)
+        if context:
+            message_text = f"{context}\n\n[New message]\n{message_text}"
         return message_text
 
     @staticmethod
@@ -1708,13 +1713,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
         self._consume_pending_native_image_paths(session_key)
 
-        message_text = self._prefix_inbound_sender_context(event, source, message_text)
-        # A thread opened on the bot's own post (Discord ``own_post_threads``): the adapter puts
-        # the post, fenced as quoted data, on every event; it opens a session's first turn only.
-        _starter = event.metadata.get("thread_starter_context") if event.metadata else None
-        if _starter and not history:
-            _sep = "\n\n" if getattr(event, "channel_context", None) else "\n\n[New message]\n"
-            message_text = f"{_starter}{_sep}{message_text}"
+        message_text = self._prefix_inbound_sender_context(event, source, message_text, history)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)

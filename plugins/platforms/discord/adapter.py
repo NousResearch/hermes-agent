@@ -303,7 +303,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    MessageDeduplicator, ThreadParticipationTracker, bounded_put, convert_table_to_bullets,
+    is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -1309,11 +1310,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
         # Threads someone opened on the bot's own post (own_post_threads): their ids, persisted
-        # so the post still reaches the agent after a restart; each post, fenced, cached per
-        # thread; and threads already found to start elsewhere (one lookup per thread).
+        # so the post still reaches the agent after a restart, and one lookup per thread: the
+        # post fenced, or None for a thread that starts elsewhere.
         self._own_post_threads = ThreadParticipationTracker("discord_own_post", max_tracked=200)
-        self._own_posts: dict[str, str] = {}
-        self._not_own_post_threads: dict[str, None] = {}
+        self._own_posts: dict[str, Optional[str]] = {}
         self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: dict[str, asyncio.Task] = {}
@@ -2598,23 +2598,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         allowed/ignored gates let through. Discord gives such a thread its starter's id; one
         lookup per thread."""
         channel = getattr(message, "channel", None)
-        me = getattr(self._client, "user", None) if self._client else None
-        author = getattr(message, "author", None)
-        if (not isinstance(channel, discord.Thread) or me is None or author == me
-                or getattr(author, "bot", False) or not self._discord_own_post_threads()):
+        if not isinstance(channel, discord.Thread) or getattr(getattr(message, "author", None), "bot", False):
             return
         thread_id = str(channel.id)
-        if (thread_id in self._threads or thread_id in self._not_own_post_threads
-                or self._discord_thread_require_mention()
+        if (thread_id in self._threads or self._own_posts.get(thread_id, "") is None
+                or not self._discord_own_post_threads() or self._discord_thread_require_mention()
                 or self._channel_gated_out(self._discord_channel_keys(message, self._get_parent_channel_id(channel)))):
             return
-        post = await self._fetch_own_post(channel)
-        if post is None:  # not ours, gone, or not visible: never look again
-            self._not_own_post_threads[thread_id] = None
-            if len(self._not_own_post_threads) > 1000:
-                self._not_own_post_threads.pop(next(iter(self._not_own_post_threads)))
-            return
-        if post:  # "" is a transient failure: look again on the next message
+        if await self._fetch_own_post(channel):  # "" is a transient failure: look again next message
             await self._own_post_threads.mark_async(thread_id)
             await self._threads.mark_async(thread_id)
 
@@ -2627,27 +2618,23 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         starter = getattr(thread, "starter_message", None)
         if starter is None:
             fetch = getattr(getattr(thread, "parent", None), "fetch_message", None)
-            if fetch is None:
-                return None
             try:
-                starter = await fetch(thread.id)
+                starter = await fetch(thread.id) if fetch else None
             except Exception as exc:  # deleted post, no access, or a thread not opened on a message
                 logger.debug("[%s] thread %s: starter lookup failed: %s", self.name, thread_id, exc)
-                return None if getattr(exc, "status", None) in (403, 404) else ""
+                if getattr(exc, "status", None) not in (403, 404):
+                    return ""
         me = getattr(self._client, "user", None)
-        if starter is None or me is None or str(getattr(getattr(starter, "author", None), "id", "")) != str(me.id):
-            return None
-        self._own_posts[thread_id] = post = _fence_own_post(starter)
-        if len(self._own_posts) > 100:
-            self._own_posts.pop(next(iter(self._own_posts)))
+        mine = starter is not None and me is not None and str(getattr(starter.author, "id", "")) == str(me.id)
+        post = _fence_own_post(starter) if mine else None
+        bounded_put(self._own_posts, thread_id, post, 200)
         return post
 
-    async def _own_post_context(self, channel: Any) -> str:
+    async def _own_post_context(self, thread: Any) -> str:
         """For a thread opened on this bot's post, that post fenced as quoted data; else ""."""
-        if (not isinstance(channel, discord.Thread) or str(channel.id) not in self._own_post_threads
-                or not self._discord_own_post_threads()):
+        if str(thread.id) not in self._own_post_threads or not self._discord_own_post_threads():
             return ""
-        return await self._fetch_own_post(channel) or ""
+        return await self._fetch_own_post(thread) or ""
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
@@ -6426,10 +6413,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             media_text_inlined=media_text_inlined,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
-            channel_context=_channel_context,
+            channel_context=_channel_context, thread_starter_context=_own_post or None,
         )
-        if _own_post:
-            event.metadata["thread_starter_context"] = _own_post
         if (
             getattr(getattr(message, "author", None), "bot", False)
             and self._is_bot_tag_debounce_continuation(message)

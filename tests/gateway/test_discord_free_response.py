@@ -1063,7 +1063,7 @@ class TestNonConversationalTrackerOffload:
 # thread the post's id, and the post itself lives in the parent channel, not in the
 # thread's history. With ``own_post_threads`` on, such a thread counts as joined (no
 # @mention needed) and the post rides on the event, fenced as quoted data, for the gateway
-# to fold into a session's first turn. Off by default.
+# to fold into a session's first turn (test_discord_thread_starter_context.py). Off by default.
 
 OWN_POST = "Jobs · 2 worth a look of 20\n- 1. Agentic Python Engineer"
 
@@ -1118,7 +1118,7 @@ def _ready(adapter, monkeypatch, *, enabled=True):
 
 def _starter_context(adapter):
     event = adapter.handle_message.await_args.args[0]
-    return event.metadata.get("thread_starter_context") or ""
+    return event.thread_starter_context or ""
 
 
 def _ask(thread, content="why are most of these sources unreachable?", msg_id=777, author=None):
@@ -1307,9 +1307,10 @@ async def test_own_post_survives_a_restart(adapter, monkeypatch, tmp_path):
     restarted._client = adapter._client
     restarted._text_batch_delay_seconds = 0
     restarted.handle_message = AsyncMock()
-    restarted._ready_event.set()
-    restarted._allowed_user_ids = {"42"}
-    restarted._is_pairing_approved_user = lambda *_: False
+    _ready(restarted, monkeypatch)
+    restarted._threads = discord_platform.ThreadParticipationTracker("discord")
+    restarted._own_post_threads = discord_platform.ThreadParticipationTracker("discord_own_post")
+    assert "555" in restarted._own_post_threads
     thread, parent = _thread_on_post(post_author=adapter._client.user)
 
     await restarted._dispatch_discord_message(_ask(thread, content="still there?", msg_id=778))

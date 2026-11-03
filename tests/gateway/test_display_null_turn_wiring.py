@@ -52,10 +52,13 @@ def _wire(user_config):
         _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
         _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
         _clarify_callback_sync=lambda *a, **k: None,
+        _vault_ask_sync=lambda *a, **k: "",
         _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
     )
     TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+    from gateway.vault_prompts import clear_vault_prompt_callbacks
+    clear_vault_prompt_callbacks()  # thread-local: the turn's finally drops them at runtime
     return agent
 
 

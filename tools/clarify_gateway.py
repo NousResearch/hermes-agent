@@ -25,10 +25,13 @@ class _ClarifyEntry:
     choices: Optional[list[str]]
     multi_select: bool = False
     # A prompt whose answer is a secret (vault master password, saved login,
-    # one-time code). The reply is still read normally, but the adapter deletes
-    # the user's own message once it has been consumed, so the secret does not
-    # sit in the chat scrollback after the agent has it.
+    # one-time code). The gateway deletes the user's message on receipt, before
+    # the value is handed over, and says so in the chat when it cannot.
     secret: bool = False
+    # The only participant allowed to answer. A topic or a group can share one session, and a
+    # secret prompt answered by the next message from ANYONE would take that message as the
+    # secret and let the real one through to the agent as an ordinary turn. None = unbound.
+    owner_user_id: Optional[str] = None
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -39,6 +42,12 @@ _entries: dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks
 _session_index: dict[str, list[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
 # Per-session notify callbacks (gateway -> adapter bridge); mirrors tools.approval. Tests clear it.
 _notify_cbs: dict[str, Callable[[_ClarifyEntry], None]] = {}
+# A secret prompt that ended unanswered (timeout, /stop, an interrupt, /new) may have an owner who is
+# already typing the secret: it would then arrive as an ordinary turn and reach the agent. For a short
+# window their next text message in that session is taken as a late secret (deleted, not routed).
+# session_key -> (owner_user_id, monotonic deadline)
+SECRET_GRACE_S = 120.0
+_secret_graces: dict[str, tuple[Optional[str], float]] = {}
 
 # Outcomes for typed clarify replies. Gateway cancels the pending prompt on
 # free prose (deadlock break) but keeps it armed for a retryable bad selection.
@@ -52,17 +61,44 @@ CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[list[str]],
-             multi_select: bool = False, secret: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, secret: bool = False,
+             owner_user_id: Optional[str] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response.
-    ``secret`` marks an answer the adapter should delete from the chat once read."""
+    ``secret`` marks an answer the gateway deletes from the chat on receipt; ``owner_user_id``
+    restricts who may answer (see ``_ClarifyEntry.owner_user_id``)."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
                           bool(multi_select) and bool(choices), secret=bool(secret),
+                          owner_user_id=str(owner_user_id) if owner_user_id else None,
                           awaiting_text=not bool(choices))
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
+        _secret_graces.pop(session_key, None)  # a live prompt supersedes the window
     return entry
+
+
+def _note_unanswered_secret(entry: _ClarifyEntry) -> None:
+    """Open the late-secret window for ``entry``'s owner (caller holds ``_lock``)."""
+    if entry.secret and (entry.response is None or entry.response == CANCELLED):
+        _secret_graces[entry.session_key] = (entry.owner_user_id, time.monotonic() + SECRET_GRACE_S)
+
+
+def take_secret_grace(session_key: str, user_id: Optional[str]) -> bool:
+    """True, once, when ``user_id``'s message in ``session_key`` falls in the window opened by
+    their secret prompt ending unanswered; the caller treats that message as a late secret."""
+    with _lock:
+        grace = _secret_graces.get(session_key)
+        if grace is None:
+            return False
+        owner, deadline = grace
+        if time.monotonic() > deadline:
+            _secret_graces.pop(session_key, None)
+            return False
+        if owner is not None and str(user_id or "") != owner:
+            return False
+        _secret_graces.pop(session_key, None)
+        return True
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
@@ -98,6 +134,7 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
         _entries.pop(clarify_id, None)  # regardless of outcome
+        _note_unanswered_secret(entry)
         entry.event.set()  # Timeout also retires shared projections of this waiter.
         ids = _session_index.get(entry.session_key) or []
         if clarify_id in ids:
@@ -138,6 +175,15 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
             if entry is not None and (include_choice_prompts or entry.awaiting_text):
                 return entry
         return None
+
+
+def pending_takes_message(session_key: str, *, is_command: bool) -> bool:
+    """Whether a message arriving while the session is busy belongs to its pending clarify (the
+    gateway text-intercept) rather than to the follow-up queue. A secret prompt also takes text
+    starting with "/" that is not a bypass command: a password can, and queued as a follow-up
+    turn it would reach the agent verbatim."""
+    entry = get_pending_for_session(session_key, include_choice_prompts=True)
+    return entry is not None and (not is_command or entry.secret)
 
 
 def _match_label(text: str, choices: list[str]) -> Optional[str]:
@@ -282,6 +328,7 @@ def clear_session(session_key: str) -> int:
             if entry is None or entry.event.is_set():
                 continue
             entry.response = CANCELLED
+            _note_unanswered_secret(entry)
             entry.event.set()
             cancelled += 1
     return cancelled

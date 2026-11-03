@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ 回答済み: {response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ 確認をキャンセルしました — あなたのメッセージは続きの指示として処理されます。"
     expired: "⏳ このプロンプトは期限切れです — 新しいリクエストを送信してください。"
     native_stream_placeholder: "💬 選択をお待ちしています..."
     skip_hint: 'この質問をスキップするには「skip」と返信してください。'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ AI モデルサービスがリクエストをレート制限しています。少し待ってから /retry を使ってください。"
     auth_failed: "⚠️ AI モデルサービスへのサインインに失敗しました。/login で再度サインインするか、このボットの運用者にホストで `hermes doctor` を実行するよう依頼してください。"

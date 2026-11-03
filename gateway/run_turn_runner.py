@@ -629,10 +629,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         Rides the same clarify primitive as ``_clarify_callback_sync``, and that is the
         point: the reply is intercepted on the inbound path and handed straight to the
         caller, so a password typed to the agent never becomes a conversation message,
-        a memory, or part of the next request. ``secret`` additionally asks the adapter
-        to delete the user's own message once the value has been read. ``last`` holds the
-        stream/typing re-arm for the final question of a sequence, exactly as the clarify
+        a memory, or part of the next request. ``secret`` makes the gateway delete the
+        user's message on receipt (``GatewayRunner._hm_secret_clarify_reply``). ``last`` holds
+        the stream/typing re-arm for the final question of a sequence, exactly as the clarify
         callback does — a mid-sequence re-arm opens a bubble the next boundary closes.
+
+        Every vault card, the non-secret identifier included, is checked first
+        (``gateway.vault_prompts.bound_owner``): asking for an email and then refusing the password would
+        strand the user halfway. The card is bound to the turn's sender, so in a shared topic
+        another member's message is never taken as the answer.
 
         Both ends are logged: this prompt is the ONLY way a vault tool can get a secret on
         a messaging surface, and a card that never posted is otherwise indistinguishable
@@ -640,20 +645,25 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         until the clarify timeout, which reads to the user as a hung agent.
 
         Returns "" when no answer arrived, which every vault callback reads as a decline.
+        Raises ``VaultPromptRefused`` when this chat cannot take a secret safely.
         """
+        from gateway.vault_prompts import bound_owner
+        from tools.clarify_gateway import CANCELLED, SKIPPED
+        owner = bound_owner(self._ctx, self._schedule)
         logger.info("Vault prompt dispatched (secret=%s, last=%s)", secret, last)
         response, answered = self._ask_clarify_question(
-            question, None, False, rearm=last, secret=secret)
+            question, None, False, rearm=last, secret=secret, owner_user_id=owner)
         logger.info("Vault prompt %s (secret=%s)", "answered" if answered else "unanswered", secret)
-        return response if answered else ""
+        # "skip" resolves an open-ended clarify to the SKIPPED sentinel: a decline, never a password.
+        return response if answered and response not in (SKIPPED, CANCELLED) else ""
 
     def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True,
-                              secret: bool = False) -> tuple[str, bool]:
+                              secret: bool = False, owner_user_id: Optional[str] = None) -> tuple[str, bool]:
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means.
 
-        ``secret`` marks an answer the adapter deletes from the chat once it has been consumed,
-        so a password typed to the agent does not stay in the scrollback."""
+        ``secret`` marks an answer the gateway deletes from the chat on receipt; ``owner_user_id``
+        is the only sender whose message may answer it."""
         from gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
@@ -677,7 +687,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
         entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
-            multi_select=bool(multi_select), secret=bool(secret),
+            multi_select=bool(multi_select), secret=bool(secret), owner_user_id=owner_user_id,
         )
         # Unlike approval, clarify passes reopen=True so the continuation re-opens a native stream
         # below the question; if the re-seed fails the consumer degrades to send() automatically.

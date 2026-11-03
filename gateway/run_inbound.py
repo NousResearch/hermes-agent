@@ -26,6 +26,7 @@ from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_secret import GatewayInboundSecretMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
@@ -74,7 +75,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayInboundSecretMixin,
+                          GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -373,7 +375,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         except Exception:
             return None
         if _pending_clarify is None:
+            return await self._hm_late_secret_reply(event, source, _quick_key)
+        _owner = _pending_clarify.owner_user_id
+        if _owner is not None and str(source.user_id or "") != _owner:
+            # Bound prompt (vault): only the person asked may answer; anyone else's message routes normally.
             return None
+        if _pending_clarify.secret:
+            return await self._hm_secret_clarify_reply(event, source, _pending_clarify)
         _clarify_has_audio = bool(self._pending_event_audio_paths(event))
         _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
 
@@ -407,22 +415,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 # A typed answer to a native card (numeric pick, or text after "Other") never
                 # reaches the click handler, so the card would keep its buttons forever.
                 if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
-                    # A secret answer is never echoed back into the chat, not even inside the
-                    # retired card's summary line — that would print the password we just went
-                    # to the trouble of keeping out of history.
-                    _summary = (
-                        t("gateway.clarify.answered_secret") if _pending_clarify.secret else
-                        t("gateway.clarify.answered",
-                          response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
-                          else _pending_clarify.response or _raw_clarify_reply))
                     try:
                         await _clarify_adapter.retire_clarify_card(
-                            _pending_clarify.clarify_id, _summary)
+                            _pending_clarify.clarify_id,
+                            t("gateway.clarify.answered",
+                              response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
+                              else _pending_clarify.response or _raw_clarify_reply))
                     except Exception:
                         logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
-                if _pending_clarify.secret:
-                    # Best-effort scrub of the user's own message now that its value is read.
-                    await self._scrub_secret_reply(_clarify_adapter, source, event)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
@@ -447,22 +447,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                     except Exception:
                         logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
-
-    async def _scrub_secret_reply(self, adapter, source, event) -> None:
-        """Delete the user's message that carried a secret, now that it has been read.
-
-        Best-effort by design: platforms without a deletion API, and platforms that refuse it
-        (Telegram's 48h window, a bot without the right), simply keep the message. The secret
-        has still been consumed without ever entering conversation history, which is the part
-        that matters — this only cleans the chat scrollback.
-        """
-        message_id = getattr(event, "message_id", None)
-        if not message_id:
-            return
-        try:
-            await adapter.delete_message(chat_id=source.chat_id, message_id=str(message_id))
-        except Exception:
-            logger.debug("Failed to scrub secret clarify reply", exc_info=True)
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
     # bang/slash-stripped free-text spelling.

@@ -671,11 +671,20 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ answered: {response}"
-    answered_secret: "✅ answered"
+    answered_secret: "✅ received"
     cancelled: "↩️ Clarification cancelled — your message will be handled as a follow-up."
     expired: "⏳ This prompt expired — please send a new request."
     native_stream_placeholder: "💬 Waiting for your choice..."
     skip_hint: 'Reply "skip" to skip this question.'
+
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
 
   errors:
     rate_limited: "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."

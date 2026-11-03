@@ -212,10 +212,13 @@ def _wire_turn_agent(authority, generation, agent):
         _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),
         _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
         _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
-        _clarify_callback_sync=lambda *a, **k: None, _notice_callback_sync=lambda *a, **k: None,
+        _clarify_callback_sync=lambda *a, **k: None, _vault_ask_sync=lambda *a, **k: "",
+        _notice_callback_sync=lambda *a, **k: None,
         _attach_session_title_callback=lambda agent, ctx: None,
         combined_tool_start_callback=None, combined_tool_complete_callback=None)
     TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+    from gateway.vault_prompts import clear_vault_prompt_callbacks
+    clear_vault_prompt_callbacks()  # thread-local: the turn's finally drops them at runtime
 
 
 @pytest.mark.asyncio

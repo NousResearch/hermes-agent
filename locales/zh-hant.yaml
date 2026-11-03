@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ 已回答：{response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ 已取消釐清 — 你的訊息將作為後續訊息處理。"
     expired: "⏳ 此提問已逾期 — 請重新送出請求。"
     native_stream_placeholder: "💬 等待你的選擇..."
     skip_hint: '回覆「skip」即可略過此問題。'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ AI 模型服務正在限制請求速率。請稍候，再使用 /retry。"
     auth_failed: "⚠️ 登入 AI 模型服務失敗。請使用 /login 重新登入，或請這個 bot 的管理者在主機上執行 `hermes doctor`。"

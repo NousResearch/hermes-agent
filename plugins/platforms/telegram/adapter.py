@@ -182,6 +182,7 @@ _MEDIA_KIND_KEYS = {
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from plugins.platforms.telegram.telegram_message_deletion import TelegramMessageDeletionMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
 from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -516,7 +517,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, TelegramMessageDeletionMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -4065,23 +4066,6 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", self.name, 1 + len(continuation_ids), last_id)
         return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
 
-    async def delete_message(self, chat_id: str, message_id: str) -> bool:
-        """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal.
-
-        Used by the stream consumer's fresh-final cleanup path (ported from openclaw/openclaw#72038) to
-        remove long-lived preview messages after sending the completed reply as a fresh message. Telegram's
-        Bot API ``deleteMessage`` works for bot-posted messages in the last 48 hours. Failures are non-fatal
-        — the caller leaves the preview in place and logs at debug level.
-        """
-        if not self._bot:
-            return False
-        try:
-            await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
-            return True
-        except Exception as e:
-            logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
-            return False
-
     def supports_draft_streaming(self, chat_type: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> bool:
         """sendMessageDraft works for private chats only (Bot API 9.5) and needs PTB >= 22.6; groups and
         older installs use the edit-based path. ``rich_drafts`` controls draft *format*, not availability."""
@@ -6653,7 +6637,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         if (existing := pending.get(key)) is None:
             pending[key] = event
             return
-        existing.absorb_reply_expected(event)
+        existing.absorb_merged(event)
         existing.media_urls.extend(event.media_urls)
         existing.media_types.extend(event.media_types)
         if event.text:

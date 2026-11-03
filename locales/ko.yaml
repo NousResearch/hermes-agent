@@ -664,10 +664,19 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ 답변: {response}"
+    answered_secret: "✅ received"
     cancelled: "↩️ 확인 질문이 취소되었어요 — 메시지는 후속 메시지로 처리돼요."
     expired: "⏳ 이 질문은 만료되었어요 — 새 요청을 보내 주세요."
     native_stream_placeholder: "💬 선택을 기다리고 있어요..."
     skip_hint: '이 질문을 건너뛰려면 "skip"이라고 답장하세요.'
+  vault_prompt:
+    unlock: "🔐 Unlock {name}.\n\nSend your master password in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is passed to `{backend}` once to open the vault and is not stored."
+    login_identifier: "🔑 Login for {host} (1/2)\n\nWhat email or username should I save for this site?"
+    login_password: "🔑 Login for {host} (2/2)\n\nNow the password, in your next message, typed (not dictated). Your message is deleted from this chat as soon as it arrives; the password is stored encrypted in the vault and typed straight into the page."
+    code: "🔢 {site} sent you a one-time code.\n\nSend it here and I'll enter it into the page. Your message is deleted as soon as it arrives.{detail}"
+    not_deleted: "⚠️ I could not delete your message containing the secret. Delete it yourself now (long-press → Delete)."
+    voice_refused: "🎙️ A secret is never taken from a voice message: I deleted yours without transcribing it. Type it instead."
+    expired: "⏳ That request had already ended: your message was deleted and not used. Ask again."
   errors:
     rate_limited: "⏱️ AI 모델 서비스가 요청을 제한하고 있어요. 잠시 기다린 뒤 /retry를 사용하세요."
     auth_failed: "⚠️ AI 모델 서비스 로그인에 실패했어요. /login으로 다시 로그인하거나, 이 봇 운영자에게 호스트에서 `hermes doctor`를 실행해 달라고 요청하세요."

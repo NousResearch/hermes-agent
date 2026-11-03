@@ -138,21 +138,26 @@ def test_single_question_prompts_are_always_the_last_question():
         assert ask.secret_flags == [True], f"{name} answer is a secret"
 
 
-def test_vault_ask_holds_the_rearm_for_non_final_questions():
+def test_vault_ask_holds_the_rearm_for_non_final_questions(monkeypatch):
     """The runner seam must translate `last` into `rearm`, the way the batch does."""
     from gateway.run_turn_runner import TurnRunner
+    monkeypatch.setattr("gateway.vault_prompts.bound_owner", lambda ctx, schedule: "U1")
     calls = []
     runner = object.__new__(TurnRunner)
-    runner._ask_clarify_question = lambda q, c, m, rearm=True, secret=False: (
-        calls.append({"rearm": rearm, "secret": secret}) or ("answer", True))
+    runner._ctx = runner._schedule = None
+    runner._ask_clarify_question = lambda q, c, m, rearm=True, secret=False, owner_user_id=None: (
+        calls.append({"rearm": rearm, "secret": secret, "owner": owner_user_id}) or ("answer", True))
     assert runner._vault_ask_sync("q1", secret=False, last=False) == "answer"
     assert runner._vault_ask_sync("q2", secret=True, last=True) == "answer"
-    assert calls == [{"rearm": False, "secret": False}, {"rearm": True, "secret": True}]
+    assert calls == [{"rearm": False, "secret": False, "owner": "U1"},
+                     {"rearm": True, "secret": True, "owner": "U1"}]
 
 
-def test_vault_ask_returns_blank_when_unanswered():
+def test_vault_ask_returns_blank_when_unanswered(monkeypatch):
     """A blank return is what every vault callback reads as a decline."""
     from gateway.run_turn_runner import TurnRunner
+    monkeypatch.setattr("gateway.vault_prompts.bound_owner", lambda ctx, schedule: "U1")
     runner = object.__new__(TurnRunner)
-    runner._ask_clarify_question = lambda q, c, m, rearm=True, secret=False: ("notice", False)
+    runner._ctx = runner._schedule = None
+    runner._ask_clarify_question = lambda q, c, m, rearm=True, secret=False, owner_user_id=None: ("notice", False)
     assert runner._vault_ask_sync("q") == ""

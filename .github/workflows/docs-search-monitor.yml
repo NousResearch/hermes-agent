@@ -59,7 +59,7 @@ jobs:
           # One retry after a pause so a transient blip never pages anyone.
           # Only the retry writes annotations, so a run that recovers on the
           # retry carries no stale error and a failed run lists each reason once.
-          if GITHUB_ACTIONS= node apps/docs/scripts/check-live-search.mjs; then exit 0; fi
+          if GITHUB_ACTIONS='' node apps/docs/scripts/check-live-search.mjs; then exit 0; fi
           echo "::warning::first probe failed; retrying in 90s"
           sleep 90
           node apps/docs/scripts/check-live-search.mjs

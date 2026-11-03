@@ -81,7 +81,7 @@ export function SimplifiedAgentList({
   const isOpen = (id: string) => searching || (expanded[id] ?? true)
 
   return (
-    <section aria-label={t.simplifiedAgents.agents} className="flex min-h-24 shrink flex-col gap-1">
+    <section aria-label={t.simplifiedAgents.agents} className="flex min-h-24 flex-[2_1_0%] flex-col gap-1">
       <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1">
         {t.simplifiedAgents.agents}
       </SidebarPanelLabel>

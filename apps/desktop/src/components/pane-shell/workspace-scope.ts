@@ -58,19 +58,44 @@ export function setWorkspaceOwnerLabel(ownerKey: string, label: string): void {
   }
 }
 
+/** The workspace fields a tab's caption reads — a tile, or a main tab's
+ *  remembered bot-chat scope. */
+export interface WorkspaceTabScope {
+  workspaceMode?: WorkspaceMode
+  workspaceOwnerKey?: string
+  workspaceTabTitle?: string
+}
+
 /** The caption a workspace-owned tab shows: its owner's label while the stored
  *  row still carries only the placeholder its opener registered — every bot's
  *  canonical chat is stored under the same name, so the tab reads the bot's
  *  (#99152). Any other title (a `+` side thread, a Sessions tab) is untouched. */
-export function workspaceOwnerTitle(
-  title: string,
-  scope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined
-): string {
+export function workspaceOwnerTitle(title: string, scope: WorkspaceTabScope | undefined): string {
   if (scope?.workspaceMode !== 'bots' || !scope.workspaceOwnerKey || title !== scope.workspaceTabTitle) {
     return title
   }
 
   return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
+}
+
+/** The title a tab takes from its stored row: the row's own, else — for a bot
+ *  workspace's canonical tab only — the canonical title its opener registered.
+ *  Compression carries "Bot Chat" root -> tip only after the rotation publishes
+ *  and leaves every earlier segment untitled (hermes_state_session_list.py), so
+ *  a canonical tab can hold an untitled row for a while; the generic
+ *  preview/"Untitled session" fallback there also missed the owner caption,
+ *  which keys on the canonical title. `undefined` = use the caller's fallback. */
+export function workspaceStoredTitle(
+  rowTitle: null | string | undefined,
+  scope: WorkspaceTabScope | undefined
+): string | undefined {
+  const own = rowTitle?.trim()
+
+  if (own) {
+    return own
+  }
+
+  return scope?.workspaceMode === 'bots' && scope.workspaceTabTitle ? scope.workspaceTabTitle : undefined
 }
 
 /** May the user rename this session? A canonical Bot Chat's exact title is its

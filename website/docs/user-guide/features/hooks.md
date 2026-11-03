@@ -689,7 +689,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the current session |
-| `user_message` | `str \| list` | The user's original message for this turn (before any skill injection). A multimodal turn (image or other attachment) is the list of content parts, exactly as sent |
+| `user_message` | `str \| list` | The user's original message for this turn (before any skill injection). A multimodal turn (image or other attachment) is the list of content parts, exactly as sent. An image that took the description path arrives as its text description |
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
@@ -704,6 +704,8 @@ A `{"action": "block", "message": "..."}` return vetoes the turn **before any in
 The blocked prompt is stored as `[Message withheld: a pre_llm_call policy hook blocked it.]`. That placeholder is what later turns replay and what compaction summaries, `session_search`, external memory providers and the background memory review read, so the prompt never reaches a model in this turn or a later one. What the user typed is kept only as display metadata, so the CLI `--resume` recap, the TUI, the desktop app and the dashboard still show it. The hook runs before turn-start compaction, and a blocked turn skips compaction, titling and external-memory prefetch/sync.
 
 A block applies only when a callback returns it. A callback that raises, or runs past `plugins.hook_callback_timeout` (30 s by default), is logged and skipped, and the turn goes ahead. A policy hook should therefore catch its own errors and return a block when it can't decide. Model metadata lookups (such as a `/models` context-length probe on a fresh session) can still run before the hook; they carry no message content.
+
+Two kinds of input reach a model without passing through the hook. An attached image that takes the [description path](vision.md#image-routing-vision-capable-vs-text-only-models) (`agent.image_input_mode: text`, or `auto` when the main model has no vision support or `auxiliary.vision` names a backend) is sent to the auxiliary vision model before the turn starts, so the hook sees the generated description and a block comes after that request. A message typed while a turn is running and delivered into it (`display.busy_input_mode` [`interrupt` or `steer`](../cli.md#busy-input-mode), and `/steer`) goes out with the turn's next request without a second hook call. A policy hook that must see every image needs `agent.image_input_mode: native`, which keeps images as content parts of `user_message`. With `display.busy_input_mode: queue` a follow-up runs as its own turn and the hook sees it, but `/steer` still delivers into the running turn.
 
 ```python
 # Inject context

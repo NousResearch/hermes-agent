@@ -13,6 +13,7 @@ import logging
 import re
 import ssl
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from gateway.platforms._shared import (
@@ -120,6 +121,8 @@ def _ssl_ctx(use_tls: bool) -> Optional[ssl.SSLContext]:
 
 class IRCAdapter(BasePlatformAdapter):
     """Async IRC adapter implementing the BasePlatformAdapter interface."""
+
+    serial_receive_loop = True  # the read loop awaits each PRIVMSG before reading the next line
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("irc"))
@@ -320,8 +323,9 @@ class IRCAdapter(BasePlatformAdapter):
             return
         source = self.build_source(
             chat_id=chat_id, chat_name=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name)
+        # Native admission deduplicates by message ID; distinct lines can arrive in one millisecond.
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
-                                               message_id=_ms_id(), timestamp=datetime.datetime.now()))
+                                               message_id=uuid.uuid4().hex, timestamp=datetime.datetime.now()))
 
 
 # ── Plugin registration ──────────────────────────────────────────────────────
@@ -586,6 +590,8 @@ def register(ctx):
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(
         name="irc",
+        dashboard_description="Relay messages between an IRC channel (or DMs) and Hermes.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
         label="IRC",
         adapter_factory=IRCAdapter,
         check_fn=check_requirements,

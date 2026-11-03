@@ -1,4 +1,4 @@
-"""Shared sign-in states, copy, and connector-preserving account promotion flow."""
+"""The one Nous sign-in: the plain device-code login every surface renders, plus its states and copy."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import contextlib
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, ContextManager, Dict, Iterator, Optional
+from typing import Any, Callable, ClassVar, ContextManager, Iterator, Optional
 
 from hermes_cli.auth_constants import httpx
 
@@ -16,21 +16,8 @@ UPGRADE_ALREADY_SIGNED_IN = "Already signed in."
 UPGRADE_DO_NOT_SHARE = "Do not share this code."
 UPGRADE_TIMED_OUT = "That sign-in link has expired. Start again whenever you're ready."
 UPGRADE_NOT_COMPLETED = "Sign-in didn't finish. Try again whenever you're ready."
-UPGRADE_UNAVAILABLE = "The free tier is not available right now; run `hermes auth add nous` to sign in."
-UPGRADE_REASON_COPY = {
-    "user_declined": "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
-    "superseded": "A newer sign-in code replaced this one. Use the newest one, or start again.",
-    "account_retired": "Your session ended before the sign-in finished. A new one starts on its own; "
-                       "sign in again whenever you're ready.",
-    "account_not_anonymous": "Your session ended before the sign-in finished. A new one starts on its own; "
-                             "sign in again whenever you're ready.",
-    "account_busy": "Something's still finishing up on your account. Give it a few seconds, then try signing in again.",
-}
-_RETIRED_REASONS = frozenset({"account_retired", "account_not_anonymous"})
-# Reasons a later attempt can succeed at: the desktop offers "try again" after the named wait.
-RETRYABLE_SIGN_IN_REASONS = frozenset({"account_busy"})
 # The account service was busy or unreachable mid sign-in (an ``anon_*`` code from
-# ``anon_auth``): the identity is untouched, so the copy reassures before the way forward.
+# ``anon_auth.classify_mint_exception``): nothing was saved, so the copy reassures before the way forward.
 UPGRADE_SERVICE_BUSY = ("Signing in couldn't finish because the Nous service is busy. "
                         "Try again in {wait}. Your session is still here in the meantime.")
 UPGRADE_SERVICE_UNREACHABLE = ("The Nous service couldn't be reached to finish signing you in. "
@@ -41,7 +28,6 @@ UPGRADE_NO_DEFAULT_CHAT = "No default model is set yet; run /model to pick one."
 UPGRADE_WAITING = "Waiting for sign-in..."
 UPGRADE_WAITING_UP_TO = "Waiting for sign-in, up to {minutes}."
 UPGRADE_CANCELLED = "\nSign-in cancelled."
-UPGRADE_UNAVAILABLE_CHAT = "The free tier is not available right now. Try /login again in a moment."
 LOGIN_COMMAND = "/login"
 LOGIN_STARTING = "Starting sign-in..."
 LOGIN_DM_ONLY = "Sign in from a direct message with Hermes."
@@ -75,7 +61,7 @@ class SignInState:
     kind: ClassVar[str] = ""
     terminal: ClassVar[bool] = True     # False only for Code and Waiting
     ok: ClassVar[bool] = False          # exit-code 0 / "this ended well"
-    precondition: ClassVar[bool] = False  # True only for AlreadySignedIn and Unavailable
+    precondition: ClassVar[bool] = False  # True only for AlreadySignedIn
 
     @property
     def copy(self) -> str:
@@ -84,13 +70,13 @@ class SignInState:
 
     @property
     def copy_terminal(self) -> str:
-        """The terminal form; differs for Completed, Failed and Unavailable."""
+        """The terminal form; differs for Completed and Failed."""
         return self.copy
 
 
 @dataclass(frozen=True)
 class Code(SignInState):
-    """The consent link and the sign-in code, plus the clock the caller may show."""
+    """The device page link and the sign-in code, plus the clock the caller may show."""
 
     link: str
     code: str
@@ -121,14 +107,20 @@ class Waiting(SignInState):
 
 @dataclass(frozen=True)
 class Completed(SignInState):
+    """``handoff`` holds the guest handoff's result lines (what moved, what to reconnect), empty
+    when the sign-in replaced no free tier. ``handoff_status`` is the latest handoff record it ran,
+    in ``guest_handoff.wire_status`` form, for a surface that renders the result itself."""
+
     email: str = ""
     model: str = ""
     model_changed: bool = False
+    handoff: tuple[str, ...] = ()
+    handoff_status: Optional[dict[str, Any]] = None
     kind: ClassVar[str] = "completed"
     ok: ClassVar[bool] = True
 
     def _lines(self, no_default: str) -> str:
-        lines = [f"Signed in as {self.email}." if self.email else "Signed in."]
+        lines = [f"Signed in as {self.email}." if self.email else "Signed in.", *self.handoff]
         if self.model_changed:
             lines.append(f"Default model is now {self.model}." if self.model else no_default)
         return "\n".join(lines)
@@ -143,23 +135,14 @@ class Completed(SignInState):
 
 
 @dataclass(frozen=True)
-class Declined(SignInState):
-    kind: ClassVar[str] = "declined"
+class Cancelled(SignInState):
+    """Stopped from outside before anything was saved: the user's cancel, a newer /login, a shutdown."""
+
+    kind: ClassVar[str] = "cancelled"
 
     @property
     def copy(self) -> str:
-        return UPGRADE_REASON_COPY["user_declined"]
-
-
-@dataclass(frozen=True)
-class Superseded(SignInState):
-    """Stopped from outside before it could persist: a newer code, a cancel, or a shutdown."""
-
-    kind: ClassVar[str] = "superseded"
-
-    @property
-    def copy(self) -> str:
-        return UPGRADE_REASON_COPY["superseded"]
+        return UPGRADE_CANCELLED.strip()
 
 
 @dataclass(frozen=True)
@@ -174,22 +157,11 @@ class TimedOut(SignInState):
 
 
 @dataclass(frozen=True)
-class Retired(SignInState):
-    """The identity this sign-in started from is gone; run_sign_in already cleared it."""
-
-    kind: ClassVar[str] = "retired"
-
-    @property
-    def copy(self) -> str:
-        return UPGRADE_REASON_COPY["account_retired"]
-
-
-@dataclass(frozen=True)
 class Failed(SignInState):
-    """``reason``: a promotion outcome reason (``account_busy``...), an ``anon_*`` code from the
-    account service (busy, paused, unreachable...), or "" for anything unnamed. ``retry_after``:
-    the wait the service asked for, in seconds (0 when it named none). ``retryable``: whether a
-    later attempt can succeed, so a renderer knows to offer "try again" and when."""
+    """``reason``: an ``anon_*`` code naming the service's verdict (busy, unreachable...), or "" for
+    anything unnamed. ``retry_after``: the wait the service asked for, in seconds (0 when it named
+    none). ``retryable``: whether a later attempt can succeed, so a renderer knows to offer "try
+    again" and when."""
 
     reason: str = ""
     detail: str = ""
@@ -199,16 +171,11 @@ class Failed(SignInState):
     @property
     def retryable(self) -> bool:
         from hermes_cli import anon_auth as _core
-        if self.reason in RETRYABLE_SIGN_IN_REASONS:
-            return True
         return bool(self.reason.startswith("anon_") and self.reason not in _core.ANON_TERMINAL_CODES)
 
     @property
     def copy(self) -> str:
         from hermes_cli import anon_auth as _core
-        ruled = UPGRADE_REASON_COPY.get(self.reason)
-        if ruled:
-            return ruled
         if self.reason in _core.ANON_UNREACHABLE_CODES:
             return UPGRADE_SERVICE_UNREACHABLE
         if self.reason in (_core.ANON_RATE_LIMITED, _core.ANON_GATE_PAUSED):
@@ -235,55 +202,18 @@ class AlreadySignedIn(SignInState):
         return UPGRADE_ALREADY_SIGNED_IN
 
 
-@dataclass(frozen=True)
-class Unavailable(SignInState):
-    detail: str = ""
-    kind: ClassVar[str] = "unavailable"
-    precondition: ClassVar[bool] = True
-
-    @property
-    def copy(self) -> str:
-        return UPGRADE_UNAVAILABLE_CHAT
-
-    @property
-    def copy_terminal(self) -> str:
-        return f"{UPGRADE_UNAVAILABLE} ({self.detail})" if self.detail else UPGRADE_UNAVAILABLE
-
-
 def _failed_from_exception(exc: BaseException) -> Failed:
-    """A ``Failed`` that keeps the account service's own verdict: the ``anon_*`` code and wait hint
-    an ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never
-    reaches a chat; ``copy_terminal`` may show it when nothing better is known."""
+    """A ``Failed`` that keeps the service's own verdict: the ``anon_*`` code and wait hint an
+    ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never reaches a
+    chat; ``copy_terminal`` may show it when nothing better is known."""
     from hermes_cli import anon_auth as _core
     err = _core.classify_mint_exception(exc)
     reason = str(err.code or "")
     if reason == _core.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
-        # An unnamed local failure (a bad CA bundle, a lock timeout): keep today's generic copy
-        # and its terminal detail rather than blaming the service.
+        # An unnamed local failure (a bad CA bundle, a lock timeout): keep the generic copy and its
+        # terminal detail rather than blaming the service.
         return Failed(reason="", detail=str(exc))
     return Failed(reason=reason, detail=str(exc), retry_after=float(err.retry_after or 0.0))
-
-
-def _outcome_state(outcome: dict[str, Any], anon_token: str) -> SignInState:
-    """The one reason -> state mapping in the tree, for a promotion that did not complete.
-
-    A retiring outcome clears the dead identity here, pinned to the token this attempt started
-    from, so a losing attempt can never remove a newer one.
-    """
-    from hermes_cli import anon_auth as _core
-
-    status = str(outcome.get("status") or "unknown")
-    reason = str(outcome.get("reason") or "")
-    if status == "timeout":
-        return TimedOut()
-    if reason in _RETIRED_REASONS:
-        _core.clear_dead_guest("retired", dead_token=anon_token or None)
-        return Retired()
-    if reason == "user_declined":
-        return Declined()
-    if reason == "superseded":
-        return Superseded()
-    return Failed(reason=reason)
 
 
 def _default_persist_guard(is_cancelled: Callable[[], bool]) -> Callable[[], ContextManager[bool]]:
@@ -294,74 +224,85 @@ def _default_persist_guard(is_cancelled: Callable[[], bool]) -> Callable[[], Con
     return _guard
 
 
+def _account_email(account_state: dict[str, Any], fallback: Optional[str]) -> str:
+    """The signed-in account's email, read from its own access token."""
+    from hermes_cli.auth_constants import _decode_jwt_claims
+    email = _decode_jwt_claims(account_state.get("access_token")).get("email")
+    return str(email or fallback or "").strip()
+
+
+def _handoff_lines(results: list[dict[str, Any]]) -> tuple[str, ...]:
+    from hermes_cli.guest_handoff import result_lines
+    return tuple(line for view in results for line in result_lines(view))
+
+
+def _handoff_status(results: list[dict[str, Any]], replaced: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The handoff a completed sign-in reports (``guest_handoff.wire_status`` form): the latest record its
+    own run attempted, else the replaced free tier's saved record (another process held it), else
+    None when it replaced no free tier. Read under the scope."""
+    from hermes_cli import anon_auth as _core
+    from hermes_cli.guest_handoff import record_status, wire_status
+    if results:
+        return wire_status(results[-1])
+    anon_token = replaced.get("anon_token") if _core.is_guest_state(replaced) else None
+    status = record_status(anon_token) if isinstance(anon_token, str) and anon_token else None
+    return wire_status(status) if status else None
+
+
 def run_sign_in(
     *,
     timeout_seconds: float = 15.0,
     cancelled: Optional[Callable[[], bool]] = None,
-    cancel_wins_after_promotion: bool = True,
+    replace_account: bool = False,
     persist_guard: Optional[Callable[[], ContextManager[bool]]] = None,
     scope: Optional[Callable[[], ContextManager[Any]]] = None,
     client_factory: Optional[Callable[[float, Any], ContextManager[httpx.Client]]] = None,
 ) -> Iterator[SignInState]:
-    """Sign the free tier into a Nous account, keeping its connectors. Yields :class:`SignInState`s.
+    """Sign in with a Nous account: the plain device-code login. Yields :class:`SignInState`s.
 
-    One composition behind every surface: it reads the current identity itself, mints one when there
-    is none, registers the connector transfer, holds ONE absolute deadline across both waits,
-    persists only after a completed transfer AND a token grant, and runs
-    :func:`settle_after_upgrade` exactly once per completion. It always ends by yielding exactly one
-    state whose ``terminal`` is True -- a persist or settle failure becomes ``Failed``, never an
-    exception out of ``next()``.
+    One composition behind every surface: device code, then a cancel-aware token poll on one
+    deadline, then the save. The save is where the guest handoff hooks in (``guest_handoff``): a free
+    tier the account replaces has its apps moved once the surface's lock is released, and the result
+    rides :class:`Completed`. :func:`settle_after_upgrade` runs exactly once per completion. Works
+    with or without a free tier on disk. It always ends by yielding exactly one state whose
+    ``terminal`` is True: a persist or settle failure becomes ``Failed``, never an exception out of
+    ``next()``.
 
-    *cancelled* is polled between round trips and inside :func:`wait_for_promotion`.
-    *cancel_wins_after_promotion* rules what a cancel means once the account service has already
-    transferred the connectors: True (the desktop) aborts and persists nothing -- the install
-    re-mints a free tier on next use; False (a chat that was superseded) finishes, because a
-    transfer the user approved in the browser is irreversible and discarding it would leave the
-    connectors moved with no account to reach them.
+    *cancelled* is polled before the wait, on a <= 1 s tick inside the token poll, and once more
+    under *persist_guard* before the save; a cancel always wins and nothing is saved.
+    *replace_account* lets a signed-in install sign in again (the desktop's "connect another
+    account"); without it a signed-in install yields ``AlreadySignedIn`` before any network.
     *persist_guard* lets a surface make its own cancel check and the save atomic under its own lock.
-    *scope* is entered only around the two non-network blocks (preconditions/mint, persist/settle),
-    never across a ``yield``: ``run_in_executor`` does not carry contextvars, so the scope has to be
+    *scope* is entered only around the two non-network blocks (precondition, persist/settle), never
+    across a ``yield``: ``run_in_executor`` does not carry contextvars, so the scope has to be
     entered inside the generator, on whichever thread is advancing it.
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
     from hermes_cli import anon_auth as _core
     from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
-    from hermes_cli.auth_device_flow import _request_device_code
-    from hermes_cli.auth_nous import _nous_http_client
+    from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
+    from hermes_cli.auth_error_copy import is_device_code_expired
+    from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
+    from hermes_cli.guest_handoff import drain
 
     is_cancelled = cancelled or (lambda: False)
-    # Once the server says "completed" the transfer has happened; a cancel only undoes it where the
-    # surface says it does.
-    post_promotion_cancelled = is_cancelled if cancel_wins_after_promotion else (lambda: False)
     open_scope = scope or contextlib.nullcontext
 
-    # Preconditions run inside the scope; the state they produce is yielded outside it, because a
-    # scope must never be held across a ``yield``. A sign-in never creates the identity it signs in
-    # from: with none on disk there is nothing to promote and the answer is ``Unavailable`` (the boot
-    # bootstrap is the only creator, NS-845 Q1.2).
-    precondition_state: Optional[SignInState] = None
+    # Yielded outside the scope, because a scope must never be held across a ``yield``.
     state: Optional[dict[str, Any]] = None
     try:
         with open_scope():
             state = _core.current_nous_state()
-            if state and not _core.is_guest_state(state):
-                precondition_state = AlreadySignedIn()
-            elif not state or not _core.guest_enabled():
-                precondition_state = Unavailable()
-    except Exception as exc:
-        # An unreadable auth store means the same thing here: there is no free tier to sign in from.
-        # It becomes the one precondition state, so nothing escapes ``next()``. KeyboardInterrupt
-        # and GeneratorExit are not Exceptions: they still propagate.
-        precondition_state = Unavailable(detail=str(exc))
-    if precondition_state is not None:
-        yield precondition_state
+            # Inside the scope: the operator's Portal override is a profile setting, and it wins over
+            # a saved URL the same way it does for every other Nous call.
+            portal = _nous_portal_base_url(state or {})
+    except Exception as exc:  # health: allow BLE001 -- the generator's contract is one terminal state, never a raise
+        yield Failed(reason="", detail=str(exc))
+        return
+    if state and not _core.is_guest_state(state) and not replace_account:
+        yield AlreadySignedIn()
         return
 
-    anon_token = str(state.get("anon_token") or "")
-    portal = (state.get("portal_base_url") or _core._portal_base_url()).rstrip("/")
-
-    outcome: dict[str, Any] = {}
-    account_state: Optional[dict[str, Any]] = None
     try:
         pconfig = PROVIDER_REGISTRY["nous"]
         client_id, scope_str = pconfig.client_id, pconfig.scope
@@ -370,60 +311,24 @@ def run_sign_in(
         open_client = client_factory or _nous_http_client
         with open_client(timeout_seconds, verify) as client:
             device = _request_device_code(client, portal, client_id, scope_str)
-            intent = _core.register_promotion_intent(
-                client, portal, anon_token, user_code=str(device["user_code"]),
-                device_code=str(device["device_code"]))
-            # The browser leg is the consent page for THIS sign-in (claim_url), not the generic
-            # device page: it shows both identities and the button. Relative paths are
-            # portal-relative.
-            link = str(intent.get("claim_url") or "")
-            if link.startswith("/"):
-                link = f"{portal}{link}"
-            link = link or str(device["verification_uri_complete"])
-            expires_in = min(int(device["expires_in"]), int(intent.get("expires_in") or device["expires_in"]))
-            interval = int(intent.get("interval") or device.get("interval") or 5)
+            expires_in = int(device["expires_in"])
+            interval = int(device.get("interval") or 5)
             deadline = time.monotonic() + max(1, expires_in)
-            yield Code(link=link, code=str(intent["claim_code"]), expires_in=expires_in, interval=interval)
-            if is_cancelled():   # nothing is approved anywhere yet: a cancel always wins here
-                yield Superseded()
+            yield Code(link=str(device["verification_uri_complete"]), code=str(device["user_code"]),
+                       expires_in=expires_in, interval=interval)
+            if is_cancelled():
+                yield Cancelled()
                 return
             yield Waiting()
-
-            remaining = max(1, int(deadline - time.monotonic()))
-            outcome = _core.wait_for_promotion(
-                client, portal, str(intent["claim_code"]),
-                expires_in=remaining, interval=interval, cancelled=is_cancelled)
-            status = str(outcome.get("status") or "unknown")
-            if status != "completed":
-                # A cancel is authoritative for every non-completed outcome, including the
-                # {"status": "cancelled"} the hook returns.
-                if is_cancelled():
-                    yield Superseded()
-                    return
-                # Scoped: a retiring outcome clears the identity out of this profile's auth store.
-                with open_scope():
-                    ended = _outcome_state(outcome, anon_token)
-                yield ended
-                return
-            if post_promotion_cancelled():
-                yield Superseded()
-                return
-
-            remaining = max(1, int(deadline - time.monotonic()))
             token_data = _core._poll_for_token(
                 client=client, portal_base_url=portal, client_id=client_id,
-                device_code=str(device["device_code"]), expires_in=remaining, poll_interval=interval)
+                device_code=str(device["device_code"]), expires_in=max(1, int(deadline - time.monotonic())),
+                poll_interval=interval, cancelled=is_cancelled)
         account_state = _core._account_state_from_token(
             token_data, portal_base_url=portal, client_id=client_id, scope=scope_str,
             verify=verify, timeout_seconds=timeout_seconds)
-    except _core.AnonCredentialDead:
-        # Best effort: the credential is provably dead at the account service, so the outcome is
-        # Retired whatever the local write does. A clear that fails (locked or read-only store)
-        # self-heals on the next rejection, and must not cost this run its terminal state.
-        with contextlib.suppress(Exception):
-            with open_scope():
-                _core.clear_dead_guest("retired", dead_token=anon_token or None)
-        yield Retired()
+    except DeviceFlowCancelled:
+        yield Cancelled()
         return
     except TimeoutError as exc:
         # The code ran out while the token endpoint kept failing (``_poll_device_token_generic`` sets
@@ -432,20 +337,21 @@ def run_sign_in(
         yield _failed_from_exception(outage) if outage else TimedOut(detail=str(exc))
         return
     except Exception as exc:
-        yield _failed_from_exception(exc)
+        # The token endpoint's own ``expired_token`` answer is the same timeout as running out the clock.
+        yield TimedOut(detail=str(exc)) if is_device_code_expired(exc) else _failed_from_exception(exc)
         return
 
+    guard = persist_guard or _default_persist_guard(is_cancelled)
     try:
-        if post_promotion_cancelled():
-            yield Superseded()
-            return
-        guard = persist_guard or _default_persist_guard(post_promotion_cancelled)
         with open_scope():
             with guard() as may_persist:
                 if may_persist:
                     _core.persist_nous_credentials(account_state)
             if may_persist:
+                # The handoff runs once the surface's lock is released, never inside it.
+                handoff = drain()
                 settled = _core.settle_after_upgrade(account_state)
+                handoff_status = _handoff_status(handoff, state)
     except Exception as exc:
         # persist_nous_credentials takes the auth-store lock, writes auth.json, takes the shared
         # store's file lock and reseeds the credential pool: a lock timeout or a read-only home
@@ -453,10 +359,12 @@ def run_sign_in(
         yield Failed(reason="", detail=str(exc))
         return
     if not may_persist:                  # yielded outside the scope, never across it
-        yield Superseded()
+        yield Cancelled()
         return
 
     yield Completed(
-        email=str(outcome.get("account_email") or "").strip(),
+        email=_account_email(account_state, next((v["account_email"] for v in handoff if v["account_email"]), None)),
         model=str(settled.get("model") or ""),
-        model_changed=bool(settled.get("changed")))
+        model_changed=bool(settled.get("changed")),
+        handoff=_handoff_lines(handoff),
+        handoff_status=handoff_status)

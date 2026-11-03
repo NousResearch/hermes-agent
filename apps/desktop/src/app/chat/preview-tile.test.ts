@@ -275,4 +275,23 @@ describe('preview tiles mirror the visible session tabs', () => {
     session.$selectedStoredSessionId.set('sess-1')
     expect(tree.treePanesWithPrefix('preview-tile:')).toHaveLength(1)
   })
+
+  it('brings a session back with its previews beside the chat, not stacked over it', async () => {
+    const { model, preview, session, tree } = await setup()
+
+    session.$selectedStoredSessionId.set('sess-1')
+    preview.openPreview(browserTarget('https://a.example'))
+    preview.openPreview(htmlTarget('/work/a.html'))
+
+    session.$selectedStoredSessionId.set('sess-2')
+    session.$selectedStoredSessionId.set('sess-1')
+
+    const layout = tree.$layoutTree.get()!
+    const chat = model.findGroupOfPane(layout, 'workspace')
+    const previews = tree.treePanesWithPrefix('preview-tile:')
+
+    expect(previews).toHaveLength(2)
+    expect(chat?.panes).toEqual(['workspace'])
+    expect(new Set(previews.map(id => model.findGroupOfPane(layout, id)?.id)).size).toBe(1)
+  })
 })

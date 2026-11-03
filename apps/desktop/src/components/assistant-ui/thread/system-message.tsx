@@ -14,6 +14,9 @@ import { cn } from '@/lib/utils'
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
 const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 const REVIEW_NOTE_RE = /^review:(?<label>[^:\n]+):?\s*(?<detail>[\s\S]*)$/
+// A usage-window plan gauge exactly as the backend renders it: `[` + 10 cells of
+// `|` then spaces + `]`. Only a window plan's /usage output carries one.
+const USAGE_WINDOW_GAUGE_RE = /\[(?=[| ]{10}\])\|* *\]/
 
 interface BackgroundResultProps {
   text: string
@@ -138,6 +141,9 @@ export const SystemMessage: FC = () => {
     // multiline output (catalogs, usage tables) needs left-aligned, wider room
     // or the column alignment breaks.
     const multiline = output.includes('\n')
+    // A window plan's /usage (token table + `[||||||    ]` plan gauges) only lines
+    // up in a monospace face. Every other output keeps the default face.
+    const tabular = multiline && USAGE_WINDOW_GAUGE_RE.test(output)
 
     return (
       <MessagePrimitive.Root
@@ -150,7 +156,12 @@ export const SystemMessage: FC = () => {
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
         {multiline ? (
-          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+          <LinkifiedText
+            className={cn('mt-0.5 block whitespace-pre-wrap', tabular && 'font-mono text-[0.65rem] leading-[1.15rem]')}
+            explicitOnly
+            pretty={false}
+            text={output}
+          />
         ) : (
           <>
             <span className="mx-1.5 text-muted-foreground/35">·</span>

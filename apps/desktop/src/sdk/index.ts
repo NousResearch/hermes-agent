@@ -18,16 +18,16 @@
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
 
-import { atom, computed, type ReadableAtom } from 'nanostores'
+import { computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped } from '@/api/client'
+import { capabilityScoped, getApiRequestConnection } from '@/api/client'
+import { mutateSessionFenced } from '@/api/sessions'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
-  $narrowViewport,
   $newSessionTabAction,
   $paneVisible,
   adoptContributedPanes,
@@ -55,11 +55,9 @@ import {
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
-  requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
-  retireLocalProfileGateways,
-  type SpawnPriority
+  retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -107,15 +105,29 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
+import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
+import {
+  type PluginProfileRequestOptions,
+  type PluginProfileRoute,
+  pluginRouteStillRegistered,
+  requestPluginProfile
+} from './profile-request'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
+import { spellcheckHost } from './spellcheck'
+import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
-export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
+export * from './areas'
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -209,31 +221,6 @@ const $focusedSessionProfile = computed(
     owner?.profile || rememberedSessionProfile(sessions, focused, activeProfile)
 )
 
-export interface PluginProfileRoute {
-  connectionId: string
-  mode: 'local' | 'remote'
-  /** Electron's authoritative registry primary. Absent on older shells. */
-  primary?: true
-  /** Desktop profile used to select the connection route. */
-  profile: string
-  /** Backend Hermes profile served by that route. */
-  targetProfile: string
-}
-
-/** Window geometry + the app's responsive posture, one readonly rect. */
-export interface ViewportRect {
-  width: number
-  height: number
-  /** Below the app's sidebar-collapse breakpoint (rails become overlays). */
-  narrow: boolean
-}
-
-const readViewport = (): ViewportRect => ({
-  width: typeof window === 'undefined' ? 0 : window.innerWidth,
-  height: typeof window === 'undefined' ? 0 : window.innerHeight,
-  narrow: $narrowViewport.get()
-})
-
 /** Runtime session id → mid-turn. Not gateway socket state. */
 const $busyBySession = computed($sessionStates, states => {
   const map: Record<string, boolean> = {}
@@ -244,105 +231,6 @@ const $busyBySession = computed($sessionStates, states => {
 
   return map
 })
-
-const $viewport = atom<ViewportRect>(readViewport())
-
-/** Options a plugin may attach to one `host.requestProfile` call. */
-export interface PluginProfileRequestOptions {
-  /** Tag the dial that may cold-spawn this route's backend. Default
-   *  'background'; an explicit user action passes 'foreground' so its spawn
-   *  takes the pool's reserved interactive slot (#102281 primitive). */
-  spawnPriority?: SpawnPriority
-}
-
-async function requestPluginProfile<T>(
-  route: PluginProfileRoute | string,
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs?: number,
-  options?: PluginProfileRequestOptions
-): Promise<T> {
-  const spawnPriority = options?.spawnPriority
-
-  // Preserve the exact call arity the pool tests pin: pass the deadline and the
-  // dial options only when the caller set them, so a plain routed RPC keeps its
-  // four-argument shape and a timeout-only caller its five-argument shape.
-  const dialProfile = (profile: string): Promise<T> =>
-    spawnPriority
-      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, { spawnPriority })
-      : timeoutMs === undefined
-        ? requestGatewayForProfile<T>(profile, method, params)
-        : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
-
-  if (typeof route !== 'string') {
-    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
-      throw new Error('Profile route must include connectionId, profile, and targetProfile')
-    }
-
-    if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
-        spawnPriority
-      })
-    }
-
-    return timeoutMs === undefined
-      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
-      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
-  }
-
-  const getAgentRoster = window.hermesDesktop?.getAgentRoster
-
-  if (!getAgentRoster) {
-    return dialProfile(route)
-  }
-
-  const roster = await getAgentRoster()
-  const profile = route.trim() || 'default'
-  const soleLocalSource = roster.sources.length === 1 && roster.sources[0]?.kind === 'local'
-
-  // The string overload is compatibility-only. A sole local registry is the
-  // one topology where a profile name is intrinsically unambiguous, even when
-  // its live enumeration transiently failed. Any additional source requires a
-  // descriptor because an undialed/unreachable source may expose the same name.
-  if (soleLocalSource) {
-    return dialProfile(profile)
-  }
-
-  throw new Error(
-    `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
-  )
-}
-
-/** Re-read Electron's current registry before retrying an exact-owner wake.
- *  A route that was removed or replaced while the first hydration wait ran is
- *  no longer authority to touch that backend, even when its labels still look
- *  identical. */
-async function pluginRouteStillRegistered(route: PluginProfileRoute): Promise<boolean> {
-  const getProfileRoutes = window.hermesDesktop?.getProfileRoutes
-
-  if (!getProfileRoutes) {
-    return false
-  }
-
-  try {
-    const routes = await getProfileRoutes($profiles.get().map(profile => profile.name))
-
-    return routes.some(
-      candidate =>
-        candidate.connectionId === route.connectionId &&
-        candidate.profile === route.profile &&
-        candidate.targetProfile === route.targetProfile
-    )
-  } catch {
-    return false
-  }
-}
-
-if (typeof window !== 'undefined') {
-  const refresh = () => $viewport.set(readViewport())
-  window.addEventListener('resize', refresh)
-  $narrowViewport.listen(refresh)
-}
 
 /** Live usage of the FOCUSED session, projected out of the streamed session
  *  state — the same readout the core statusbar's context chip paints. */
@@ -765,27 +653,8 @@ export const host = {
     syncWorkspaceRoute(to)
   },
 
-  /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change. Delegates to
-   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
-   *  guard, hover dwell, and per-profile throttle as the built-in rail
-   *  (#91545): a pointer sweep across a plugin roster (bot-row's
-   *  onPointerEnter fires with no dwell of its own) previously spawned at
-   *  pointer speed, filled the local backend pool past maxBackends, and left
-   *  the next profile's spawn queued until the 30s slot timeout — observed
-   *  as a profile surface that hangs forever while every other profile
-   *  renders. It already no-ops for shared-remote routes and the primary.
-   *  Fire-and-forget: failures are swallowed — the click path re-runs its
-   *  own ensure and surfaces errors properly. */
-  warmProfile: (profile: string): void => {
-    const name = (profile ?? '').trim()
-
-    if (!name) {
-      return
-    }
-
-    prewarmProfileBackend(name)
-  },
+  warmProfile,
+  dropLeftoverProfilePrefs,
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
    *  same door core surfaces use (DeleteProfileDialog). Electron intercepts
@@ -1519,11 +1388,11 @@ export const host = {
     options?: PluginProfileRequestOptions
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, options),
 
-  /** Pin a route's pooled gateway socket open across repeated `requestProfile`
+  /** Pin a route's gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
    *  fresh WebSocket per registered connection per tick). Returns a once-only
-   *  release. Local routes are exempt (no-op release) so the idle reaper can
-   *  still reclaim spawned local backends. Feature-detect on older desktops
+   *  release. Local routes are exempt (no-op release): the host gateway's
+   *  lifetime does not depend on renderer pins. Feature-detect on older desktops
    *  (`typeof host.retainProfileSocket === 'function'`). */
   retainProfileSocket: (route: PluginProfileRoute | string): (() => void) => {
     if (typeof route === 'string' || !route) {
@@ -1608,12 +1477,26 @@ export const host = {
       throw new Error('Persisted session updates require a profile and session id')
     }
 
-    return hermesApi<{ ok: boolean; hidden: boolean }>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
-      method: 'PATCH',
-      body: { hidden: options.hidden, profile }
-    })
+    // Null keeps the window's v1 route (a remote primary stays remote).
+    const scope = { connectionId: route?.connectionId || getApiRequestConnection() }
+    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+    const payload = { hidden: options.hidden, profile }
+
+    return mutateSessionFenced(
+      JSON.stringify([scope, options.sessionId, payload]),
+      () =>
+        hermesApi<SessionMutationSnapshot>({
+          ...scope,
+          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
+        }),
+      identity =>
+        hermesApi<{ ok: boolean; hidden: boolean }>({
+          ...scope,
+          path,
+          method: 'PATCH',
+          body: { ...payload, ...identity }
+        })
+    )
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1643,6 +1526,9 @@ export const host = {
 
   composer: composerHost,
 
+  /** Chromium's custom spell-check dictionary, one validated word per call. */
+  spellcheck: spellcheckHost,
+
   /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
    *  translations })` adds a whole UI language at runtime (see `sdk/i18n.ts`);
    *  `host.i18n.languageOptions()` lists what the switcher shows. */
@@ -1651,12 +1537,11 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
-export type * from './plugin-contract'
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- ui: the design language --------------------------------------------------
 
-export type { DesktopSettingKey, DesktopSettingValues } from './settings'
+export type { ViewportRect } from './viewport'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1681,6 +1566,10 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
+  type ComposerContextMenuAction,
+  type ComposerContextMenuContext,
+  type ComposerContextMenuItem,
+  type ComposerContextMenuProvider,
   type ComposerMiddleware,
   type ComposerModelPillContext,
   type ComposerModelPillProvider
@@ -1715,14 +1604,7 @@ export { WorkspacePageHeaderControl } from '@/app/contrib/workspace-page-header'
  *  that prints a next run switches its label on this (`t.cron.next` →
  *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
 export { nextRunOverdueMs } from '@/app/cron/job-state'
-/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
- *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
- *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
- *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
- *  description only, and silently drops an `icon`). A row takes a custom `lead`
- *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
- *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
- *  is deliberately NOT exported — these compose inside a pane just as well. */
+/** Master-detail components for pane content; the overlay-bound Panel root is deliberately private. */
 export {
   PanelAction,
   PanelAddButton,
@@ -1932,6 +1814,10 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** THE copy-to-clipboard path (CopyButton's): Electron's IPC first, the Clipboard API, and a
+ *  selection copy where an insecure origin has no Clipboard API. Never call
+ *  `navigator.clipboard.writeText` directly. */
+export { writeClipboardText } from '@/lib/clipboard'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
@@ -2004,6 +1890,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch, useGatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping
@@ -2068,6 +1955,9 @@ export { compactNumber } from '@hermes/shared'
  *  `approvals.timeout` (300s) so a plugin answering an approval never rejects
  *  its own RPC while the backend still applies the decision (#60654). */
 export { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
+/** THE id minter: a v4 UUID on every origin. `crypto.randomUUID` exists only in secure contexts,
+ *  so a Webapp opened over plain HTTP from another machine has none. */
+export { randomUuid } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

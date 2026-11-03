@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { readableInk } from './color'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme, midnightTheme } from './presets'
 import type { DesktopTheme } from './types'
@@ -413,3 +414,59 @@ function ThemeProbe({ onReady }: { onReady: (ctx: ReturnType<typeof useTheme>) =
 
   return null
 }
+
+describe('ThemeProvider boot-failure palette', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  afterEach(cleanup)
+
+  it.each([true, false])('persists the resolved colours with explicit midground tokens: %s', explicit => {
+    const colors = {
+      ...midnightTheme.colors,
+      foreground: '#123456',
+      ring: '#eeeeee',
+      midground: explicit ? '#234567' : undefined,
+      midgroundForeground: explicit ? '#fedcba' : undefined
+    }
+
+    installUserTheme({ ...midnightTheme, name: 'boot-palette', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('boot-palette'))
+
+    const midground = colors.midground ?? colors.ring
+    const snapshot = JSON.parse(window.localStorage.getItem('hermes-boot-palette')!)
+    expect(snapshot).toEqual({
+      background: window.localStorage.getItem('hermes-boot-background'),
+      foreground: colors.foreground,
+      accent: midground,
+      accentForeground: colors.midgroundForeground ?? readableInk(midground)
+    })
+    expect(snapshot.accentForeground).toBe(cssVar('--dt-midground-foreground'))
+  })
+
+  it('stores no snapshot for a theme whose accent is a var() the notice could not resolve', () => {
+    window.localStorage.setItem('hermes-boot-palette', '{"stale":true}')
+    const colors = { ...midnightTheme.colors, midground: 'var(--theme-primary)', midgroundForeground: '#161616' }
+    installUserTheme({ ...midnightTheme, name: 'boot-palette-var', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('boot-palette-var'))
+
+    expect(window.localStorage.getItem('hermes-boot-palette')).toBeNull()
+    expect(window.localStorage.getItem('hermes-boot-background')).not.toBeNull()
+  })
+})

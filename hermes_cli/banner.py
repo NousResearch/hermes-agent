@@ -128,8 +128,8 @@ def get_available_skills() -> dict[str, list[str]]:
     ``prefetch_banner_data()`` pays it off-thread. A failed scan yields ``{}`` and is not cached.
     """
     def _scan():
-        from tools.skills_tool import _find_all_skills
-        return _find_all_skills()  # already filtered
+        from tools.skills_tool import find_all_skills
+        return find_all_skills()  # already filtered
 
     def _compute():
         all_skills = _quiet(_scan)
@@ -596,16 +596,6 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
-def _route_model_for_banner(provider: Any) -> str:
-    """The model the resolved route will actually serve when config names none: today only the Nous
-    free tier (welcome host -> ``nous/welcome``). Read from the boot record and local auth state;
-    no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
-    if (provider or "auto").strip().lower() not in ("auto", "nous"):
-        return ""
-    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
-    return GUEST_MODEL if free_tier_route() else ""
-
-
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,
                        context_pinned: bool = False) -> list:
     """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
@@ -616,10 +606,6 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
     pin = " (pinned)" if context_pinned else ""
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context{pin}") if context_length else ""
     nous_str = _dim_sep("Nous Research")
-    if not (model or "").strip():
-        # Credentials resolve lazily on the first message; the banner prints first. Ask the route
-        # the same question so a fresh free-tier install shows its model, not a red "unconfigured".
-        model = _quiet(lambda: _route_model_for_banner(provider), "") or model
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")

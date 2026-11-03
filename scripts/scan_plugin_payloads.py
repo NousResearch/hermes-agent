@@ -22,7 +22,12 @@ Exit 0 = clean, 1 = a payload was found (lines on stdout), 2 = bad usage.
 """
 from __future__ import annotations
 
+import bz2
+import gzip
 import io
+import lzma
+import os
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -103,11 +108,45 @@ def _archive_problem(path: Path, data: bytes) -> str | None:
                 if fobj is not None and _magic_kind(fobj.read(8)):
                     return f"archive member is a compiled binary: {member.name}"
             return None
+    except tarfile.ReadError:
+        return _single_stream_problem(path, data)
     except (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError):
         # Not a parseable archive we recognise. A file carrying an archive
         # suffix we cannot open is itself unreviewable.
         return "archive could not be opened for review"
     return "archive could not be opened for review"
+
+
+_SINGLE_STREAM = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}
+# Only plain data may ship compressed. Code compressed out of sight would skip every
+# text gate (self-updater, credential reads, reviewer greps), so it must be committed as-is.
+_COMPRESSED_DATA_SUFFIXES = frozenset({".txt", ".tsv", ".csv", ".json", ".jsonl", ".ndjson"})
+_COMPRESSED_TEXT_CAP = 64 * 1024 * 1024
+
+
+def _single_stream_problem(path: Path, data: bytes) -> str | None:
+    """A compressed single data file (``words.tsv.gz``) is reviewable when it
+    decompresses to plain UTF-8 text under a data suffix."""
+    opener = _SINGLE_STREAM.get(path.suffix.lower())
+    if opener is None:
+        return "archive could not be opened for review"
+    inner = path.name[: -len(path.suffix)]
+    if Path(inner).suffix.lower() not in _COMPRESSED_DATA_SUFFIXES:
+        return f"compressed file is not plain data (commit code uncompressed): {inner}"
+    try:
+        with opener(io.BytesIO(data)) as stream:
+            text = stream.read(_COMPRESSED_TEXT_CAP + 1)
+    except (OSError, EOFError, lzma.LZMAError):
+        return "archive could not be opened for review"
+    if len(text) > _COMPRESSED_TEXT_CAP:
+        return f"compressed file expands past {_COMPRESSED_TEXT_CAP >> 20} MiB: {inner}"
+    if b"\0" in text:
+        return f"compressed file is not text: {inner}"
+    try:
+        text.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"compressed file is not UTF-8 text: {inner}"
+    return None
 
 
 def _file_problem(path: Path, rel: str) -> str | None:
@@ -131,9 +170,23 @@ def _file_problem(path: Path, rel: str) -> str | None:
     return None
 
 
+def _shipped_files(plugin_dir: Path) -> list[Path]:
+    """Files the pinned commit ships. In a git checkout that is the tracked set: the
+    catalog gate runs `hermes plugins validate` (which imports the plugin) before this
+    scan, so untracked `__pycache__/*.pyc` it wrote must not read as committed bytecode."""
+    try:
+        out = subprocess.run(["git", "-C", str(plugin_dir), "ls-files", "-z"],
+                             capture_output=True, check=True, timeout=120).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = b""
+    tracked = [plugin_dir / os.fsdecode(p) for p in out.split(b"\0") if p]
+    # Not a checkout, or a tree nothing tracks (an untracked dir inside some other repo).
+    return sorted(tracked) if tracked else sorted(plugin_dir.rglob("*"))
+
+
 def scan(plugin_dir: Path) -> list[str]:
     findings: list[str] = []
-    for path in sorted(plugin_dir.rglob("*")):
+    for path in _shipped_files(plugin_dir):
         if path.is_symlink() or not path.is_file():
             continue
         if "/.git/" in "/" + path.as_posix():

@@ -13,11 +13,12 @@ import os
 import shutil
 import threading
 import time
+from typing import Any, NamedTuple
 
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -92,23 +93,67 @@ def _skill_line(item: dict) -> str:
     return f"    - {nm}: {desc}" if desc else f"    - {nm}"
 
 
+class BannerPlan(NamedTuple):
+    """What the welcome banner draws, shared by startup (``show_banner``) and ``/clear`` so the two
+    cannot drift apart."""
+    store: Any  # the gateway session store, or None off the gateway
+    inventory: dict | None  # a gateway session's tools: its snapshot, never this process's registry
+    ctx_len: int | None
+    banner_kw: dict | None  # build_welcome_banner's common kwargs; None → the compact banner
+
+
+def banner_plan(cli, console) -> BannerPlan:
+    """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
+    ``display.compact``, or a gateway session with no snapshot yet."""
+    from agent.context_pin import is_context_pinned
+    from hermes_cli.gateway_tools_notify import gateway_store
+    store = gateway_store(cli)
+    inventory = store.banner_inventory() if store is not None else None
+    agent = getattr(cli, "agent", None)
+    compressor = getattr(agent, "context_compressor", None)
+    ctx_len = compressor.context_length if compressor is not None else None
+    if cli.compact or shutil.get_terminal_size().columns < 80 or (store is not None and inventory is None):
+        return BannerPlan(store, inventory, ctx_len, None)
+    return BannerPlan(store, inventory, ctx_len, dict(
+        console=console, model=cli.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+        enabled_toolsets=cli.enabled_toolsets, session_id=cli.session_id, context_length=ctx_len,
+        provider=cli.provider,
+        context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None))))
+
+
 class CLIInfoMixin:
     """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
     insights, MCP/skills reload, bang shell."""
+
+    def _show_gateway_banner(self, build_welcome_banner, inventory, banner_kw):
+        """Main's banner from the gateway session's snapshot (the TUI banner's data): the CLI
+        enumerates nothing. The canonical id shows as main's 8-character label (display only)."""
+        from hermes_cli.gateway_session_store import session_label
+        build_welcome_banner(
+            tools=inventory["tools"], get_toolset_for_tool=inventory["get_toolset_for_tool"],
+            availability=inventory["availability"], skills_by_category=inventory["skills_by_category"],
+            **{**banner_kw, "cwd": inventory["cwd"] or banner_kw["cwd"],
+               "context_length": inventory["context_length"] or banner_kw["context_length"],
+               "session_id": session_label(self.session_id)})
+
+    def _print_gateway_tool_warnings(self, lines):
+        """Main's ``_show_tool_availability_warnings`` lines, computed by the gateway that resolved
+        this session's tools."""
+        if lines:
+            self._console_print()
+            for line in lines:
+                self._console_print(line)
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         from cli import _build_compact_banner, get_tool_definitions, logger
         from hermes_cli.banner import build_welcome_banner
         self.console.clear()
-        ctx_len = None
-        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-            ctx_len = self.agent.context_compressor.context_length
-        from agent.context_pin import is_context_pinned
-        ctx_pinned = is_context_pinned(ctx_len, getattr(getattr(self, "agent", None), "_config_context_length", None))
+        store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
+        on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 
         # Auto-compact for narrow terminals — the full banner needs ~80 columns to avoid wrapping.
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        if banner_kw is None:
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
@@ -122,13 +167,10 @@ class CLIInfoMixin:
                 snapshot = load_banner_snapshot(self.enabled_toolsets)
             except Exception:
                 snapshot = None
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())  # where commands will execute
-            banner_kw = dict(
-                console=self.console, model=self.model, cwd=cwd,
-                enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
-            if snapshot is not None:
+            if gateway_inventory is not None:
+                self._show_gateway_banner(build_welcome_banner, gateway_inventory, banner_kw)
+            elif snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]
                 build_welcome_banner(
@@ -169,7 +211,9 @@ class CLIInfoMixin:
         # Tool discovery is deferred on the Termux bare prompt path (warnings show once tools
         # init). On the snapshot fast path the check walks every check_fn (~180ms) — run it in
         # the background and let its output land above the prompt (patch_stdout-safe).
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
+        if isinstance((gateway_inventory or {}).get("tool_availability_warnings"), list):
+            self._print_gateway_tool_warnings(gateway_inventory["tool_availability_warnings"])
+        elif not on_gateway and os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             if getattr(self, "_defer_tool_warnings", False):
                 threading.Thread(
                     target=self._show_tool_availability_warnings,
@@ -246,12 +290,12 @@ class CLIInfoMixin:
         """Display help. Bare /help shows categorized core commands with the skill list collapsed
         to one line; /help skills lists all skill commands; /help <query> filters by substring."""
         from cli import (
-            ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _ensure_skill_commands,
+            ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _session_skill_commands,
             _termux_example_image_path, get_skill_bundles)
         from hermes_cli.commands import COMMAND_REGISTRY, HELP_SESSION_SUBGROUPS
 
         arg = (arg or "").strip()
-        skill_commands = _ensure_skill_commands()
+        skill_commands = _session_skill_commands(self)
 
         def _row(cmd: str, desc: str, width: int = 15) -> None:
             ChatConsole().print(
@@ -260,8 +304,7 @@ class CLIInfoMixin:
         # /help skills — the full list, kept out of the default view so core commands don't
         # scroll off screen.
         if arg.lower() in ("skills", "skill"):
-            from agent.skill_commands import skill_command_collision_note
-            from tools.skills_tool import _find_all_skills
+            from hermes_cli import gateway_plugin_commands
             if skill_commands:
                 _cprint(f"\n  ⚡ {_BOLD}{t('cli.help.skill_commands')}{_RST} "
                         f"({t('cli.help.n_installed', count=str(len(skill_commands)))}):")
@@ -270,7 +313,7 @@ class CLIInfoMixin:
             else:
                 _cprint(f"\n  {t('cli.help.no_skill_commands')}")
             # Skills whose name is a built-in command never get a /<name> (agent.skill_commands guard).
-            for note in filter(None, (skill_command_collision_note(s["name"]) for s in _find_all_skills())):
+            for note in gateway_plugin_commands.skill_notes(self):
                 _cprint(f"    {_DIM}⚠ {note}{_RST}")
             _cprint("")
             return
@@ -378,13 +421,18 @@ class CLIInfoMixin:
 
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        from cli import get_tool_definitions
-        from model_tools import get_toolset_for_tool
-        # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
-        # including tools deferred behind the tool_search bridge (users verify MCP installs here).
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+        from hermes_cli.gateway_tools import session_tools
+        remote = session_tools()  # the gateway session's catalog (its MCP + plugin tools included)
+        if remote is not None:
+            tools, get_toolset_for_tool = remote
+        else:
+            from cli import get_tool_definitions
+            from model_tools import get_toolset_for_tool
+            # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
+            # including tools deferred behind the tool_search bridge (users verify MCP installs here).
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                         disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
+                                         skip_tool_search_assembly=True)
         if not tools:
             print(t("cli.tools.none_available"))
             return
@@ -414,25 +462,8 @@ class CLIInfoMixin:
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
-        from toolsets import get_all_toolsets, get_toolset_info
-        all_toolsets = get_all_toolsets()
-
-        print()
-        _ascii_box(t("cli.toolsets.header"), 58)
-        print()
-
-        for name in sorted(all_toolsets.keys()):
-            info = get_toolset_info(name)
-            if info:
-                marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{info['tool_count']:>2} tools] - {info['description']}")
-
-        print()
-        print(f"  {t('cli.toolsets.currently_enabled_legend')}")
-        print()
-        print(f"  {t('cli.toolsets.tip_enable_all')}")
-        print(f"  {t('cli.toolsets.example')}")
-        print()
+        from hermes_cli.cli_info_lines import toolsets_lines
+        print("\n".join(toolsets_lines(self.enabled_toolsets)))
 
     def _handle_whoami_command(self):
         """Display slash-command access for the local CLI surface."""
@@ -481,6 +512,11 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares
+        ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
+        return self._busy_inline_command(text, has_images, ("stop",))
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 
@@ -525,48 +561,8 @@ class CLIInfoMixin:
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
-        from hermes_constants import display_hermes_home
-        from gateway.config import load_gateway_config, Platform
-
-        print()
-        _ascii_box(t("cli.gateway_status.header"), 60)
-        print()
-
-        try:
-            config = load_gateway_config()
-            print(f"  {t('cli.gateway_status.platform_config_header')}")
-            print("  " + "-" * 55)
-            platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
-                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
-                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
-                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED")}
-            for platform, (name, env_var) in platform_status.items():
-                pconfig = config.platforms.get(platform)
-                if pconfig and pconfig.enabled:
-                    home = config.get_home_channel(platform)
-                    home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} {t('cli.gateway_status.enabled')}{home_str}")
-                else:
-                    print(f"    ○ {name:<12} {t('cli.gateway_status.not_configured', env_var=env_var)}")
-
-            print()
-            print(f"  {t('cli.gateway_status.conversations_persist')}")
-            print()
-            print(f"  {t('cli.gateway_status.to_start')}")
-            print("    python cli.py --gateway")
-            print()
-            print(f"  {t('cli.gateway_status.config_file', path=f'{display_hermes_home()}/config.yaml')}")
-            print()
-        except Exception as e:
-            print(f"  {t('cli.gateway_status.load_error', error=str(e))}")
-            print()
-            print(f"  {t('cli.gateway_status.to_configure')}")
-            print(f"    {t('cli.gateway_status.step_env_vars')}")
-            print("       TELEGRAM_BOT_TOKEN=your_token")
-            print("       DISCORD_BOT_TOKEN=your_token")
-            print(f"    {t('cli.gateway_status.step_config', path=f'{display_hermes_home()}/config.yaml')}")
-            print()
+        from hermes_cli.cli_info_lines import platforms_lines
+        print("\n".join(platforms_lines()))
 
     def _print_random_tip(self) -> None:
         """Best-effort discovery tip (startup + /clear); never raises."""
@@ -658,6 +654,9 @@ class CLIInfoMixin:
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
         per-category table; `all` appends per-skill / per-toolset costs. Read-only: same chars/4
         engine as the desktop popover (agent.context_breakdown) — no provider calls, no cache impact."""
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            return self._show_gateway_context_breakdown(connection)
         if not self.agent:
             print(f"  {t('cli.shared.no_active_agent')}")
             return
@@ -691,6 +690,28 @@ class CLIInfoMixin:
         print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
         print()
         for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+            print(f"  {line}")
+        print()
+
+    def _show_gateway_context_breakdown(self, connection):
+        """Main's ``/context`` grid and table over the gateway agent's own breakdown
+        (``session.context_breakdown``): the session's prompt, tools and transcript live there."""
+        from agent.context_breakdown import render_context_breakdown_lines
+        from agent.context_file_sources import render_context_file_lines
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            payload = connection.call("session.context_breakdown", session_id=self.session_id)
+        except GatewayClientError as e:
+            print(f"  {t('cli.context.compute_failed', error=str(e))}")
+            return
+        if not payload.get("categories"):
+            print(f"  {t('cli.shared.no_active_agent')}")
+            return
+        file_lines = render_context_file_lines(payload.get("context_files") or [])
+        print()
+        print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
+        print()
+        for line in render_context_breakdown_lines(payload, grid=True) + (["", *file_lines] if file_lines else []):
             print(f"  {line}")
         print()
 
@@ -824,20 +845,10 @@ class CLIInfoMixin:
                     days = int(parts[i])
                 i += 1
 
-        try:
-            from hermes_state import SessionDB, _default_db_path
-            from agent.insights import InsightsEngine
-            if not _default_db_path().exists():
-                print(f"  {t('cli.insights.no_session_data')}")
-                return
-            db = SessionDB(read_only=True)
-            try:
-                engine = InsightsEngine(db)
-                print(engine.format_terminal(engine.generate(days=days, source=source)))
-            finally:
-                db.close()
-        except Exception as e:
-            print(f"  {t('gateway.insights.error', error=str(e))}")
+        from types import SimpleNamespace
+        from hermes_cli.main_agent_cmds import cmd_insights
+
+        cmd_insights(SimpleNamespace(days=days, source=source))
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml (polled from process_loop every
@@ -853,7 +864,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -862,19 +873,15 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
-            return
-        try:
-            sig = file_signature(cfg_path.stat())
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 
@@ -923,9 +930,33 @@ class CLIInfoMixin:
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()
 
+    def _reload_gateway_mcp(self, connection):
+        """``/reload-mcp`` on the shared gateway: the gateway owns the MCP servers and the session's
+        agent, so it reconciles them with config and refreshes its agents (``reload.mcp``); main's
+        "Agent updated" line then counts the tools the gateway session now loads."""
+        from hermes_cli.gateway_client import GatewayClientError
+        if not self._command_running:
+            print(t("cli.reload_mcp.reloading"))
+        try:
+            result = connection.call("reload.mcp", session_id=self.session_id, confirm=True)
+            snapshot = connection.call("session.resume", session_id=self.session_id) or {}
+        except GatewayClientError as e:
+            print(f"  {t('gateway.reload_mcp.failed', error=str(e))}")
+            return
+        print(f"  {result.get('message') or ''}".rstrip())
+        connection.state(self.session_id).adopt_snapshot(snapshot)
+        info = snapshot.get("info") or {}
+        count = info.get("tool_count")
+        if not isinstance(count, int):
+            count = sum(len(names or []) for names in (info.get("tools") or {}).values())
+        print(f"  {t('cli.reload_mcp.agent_updated', count=str(count))}")
+
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect, then refresh the
         agent's tool list so the model sees the updated tools on the next turn."""
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            return self._reload_gateway_mcp(connection)
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
@@ -1009,10 +1040,17 @@ class CLIInfoMixin:
         conversation_history, so message alternation stays intact.
         """
         try:
-            from agent.skill_commands import reload_skills
+            from hermes_cli.gateway_tools import process_view
             if not self._command_running:
                 print(t("cli.reload_skills.reloading"))
-            result = reload_skills()
+            view = process_view()
+            if view is not None:  # the gateway session's rescan (its plugin skills too): nothing is scanned here
+                result = (view.connection.call("skills.reload", session_id=view.session_id) or {}).get("result") or {}
+                from hermes_cli.gateway_plugin_commands import invalidate
+                invalidate(self)  # /help, completion and dispatch read the rescanned list
+            else:
+                from agent.skill_commands import reload_skills
+                result = reload_skills()
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])
             total = result.get("total", 0)

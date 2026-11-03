@@ -61,6 +61,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".build",
     ".cache",
     ".git",
     ".venv",
@@ -97,6 +98,10 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ("pm/workspace.py", "npm"): (
         "Plugin workspace installs resolve npm inside the PM runner env that "
         "pm.ensure('npm') just composed."
+    ),
+    ("tools/mcp_tool_config.py", "node"): (
+        "Looks up node only inside the sealed payload's own node dirs (an explicit "
+        "`path=`, never the ambient PATH), to run a package bin on the packaged node."
     ),
     ("apps/desktop/electron/fixtures/source-backend.py", "uv"): (
         "Test fixture drives the real uv deliberately placed on the test "

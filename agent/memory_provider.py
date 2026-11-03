@@ -82,7 +82,25 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
 
 
 class MemoryProvider(ABC):
-    """Abstract base class for memory providers."""
+    """Abstract base class for memory providers.
+
+    Multiplexing contract (#140058). One gateway process can serve several profiles, and each agent's
+    ``MemoryManager`` owns its own provider instance, initialized for one profile. A provider must:
+
+    - hand every load a NEW instance (``register(ctx)`` / the loader constructs one per agent). The
+      manager refuses an instance another profile's manager already bound, rather than rebinding it;
+    - bind every store, path, client, bank or tenant from ``initialize()``'s ``hermes_home`` (and
+      scoped secrets read during ``initialize``) and keep that binding on the instance;
+    - keep no profile-specific mutable state at module or class level, and never "rebind" a shared
+      binding per call: two profiles' calls interleave on different threads.
+
+    The manager runs tool calls and lifecycle hooks only from the profile the instance was initialized
+    for (refusing callers that name another profile, or none on a multiplexed process), runs its
+    background hooks under that profile's ``HERMES_HOME``, and passes ``hermes_home`` /
+    ``agent_identity`` / ``caller_gsk`` to ``handle_tool_call`` when it accepts ``**kwargs``. Those
+    keywords name the same profile the instance is bound to; they are not a reason to rebind. Core
+    cannot see inside a provider: one that keeps a process-wide binding still breaks this contract.
+    """
 
     # Providers that durably checkpoint every successful on_pre_compress() set this to
     # PRE_COMPRESS_CHECKPOINT_API_VERSION; 1 = best-effort legacy.
@@ -195,7 +213,8 @@ class MemoryProvider(ABC):
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
         memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).
         For replace/remove, ``metadata["previous_content"]`` is the full entry selected
-        under the native-store lock. Notifications follow a successful complete write
+        under the native-store lock. A memory-tool patch arrives as a replace whose
+        ``content`` is the whole entry after the edit. Notifications follow a successful complete write
         or batch; each batch operation sees the preceding operation's result. Older
         callers may omit this field: ``old_text`` alone is not authoritative identity.
         """

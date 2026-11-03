@@ -1,0 +1,22 @@
+name: index-search
+repo: https://github.com/TakeshiTGAL/hermes-plugin-index-search
+sha: a8d522160c78ad13f3c887905c67f40f3cb984a1
+description: "Search one index you run and watch one saved query, with index_search, index_health and index_watch. It searches a Meilisearch server you run, so notes or local files can be found only after you index them there; it does not search files on disk itself. Disclosure — Sends MEILI_API_KEY as a Bearer token to your MEILI_HOST. Over plain http that key travels unencrypted, and a master or admin key is sent as given, so use a search-only key. The tools are on for every surface, including gateways: anyone you allow on your Hermes gateway can search with your key. Turn a surface off with hermes tools. On Hermes 0.21.6 and later, while the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off. index_watch save stores one query and prints a hermes cron create line for every 15 minutes. You run that line. A run is a model turn, and a tool call is another model request, with no daily cap. The watch covers only the first 20 hits. The job stays after uninstall until you run hermes cron remove, with -p and the profile name when the profile is not default. This plugin does not create or remove the cron job and it does not ask. Writes use the guard in agent.file_safety. An update can stop the watch."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-index-search#readme
+version: "0.1.4"
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-index-search/a8d522160c78ad13f3c887905c67f40f3cb984a1/assets/catalog-banner.png
+platforms: []
+capabilities:
+  provides_tools:
+  - index_search
+  - index_health
+  - index_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - MEILI_HOST
+  - MEILI_API_KEY

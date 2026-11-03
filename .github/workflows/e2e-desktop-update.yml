@@ -15,18 +15,24 @@ name: E2E Desktop update
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: e2e-desktop-update-${{ github.ref }}
-  cancel-in-progress: true
+  group: e2e-desktop-update-${{ inputs.commit != '' && github.run_id || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   update:
     name: Desktop install/update E2E (Linux, ${{ matrix.cell }})
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 30
     # Required whenever the e2e_desktop_update lane fires (see ci.yaml): it was
     # advisory until it proved stable, and every main push shard since has passed.
@@ -45,8 +51,9 @@ jobs:
           - cell: update-concurrency
             specs: e2e/update/update-concurrency.spec.ts
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
+          ref: ${{ inputs.commit }}
           # The seeded install clones this checkout through a local bare origin.
           fetch-depth: 0
 

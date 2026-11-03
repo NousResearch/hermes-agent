@@ -15,6 +15,9 @@ CONNECTOR_SCHEMAS_PATH = f"{CONNECTORS_PATH}/schemas"
 CONNECTOR_EXECUTE_PATH = f"{CONNECTORS_PATH}/execute"
 CONNECTOR_CONNECTIONS_PATH = f"{CONNECTORS_PATH}/connections"
 CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
+CONNECTOR_FILE_UPLOAD_PATH = f"{CONNECTORS_PATH}/files/upload"
+# The gateway's cap on a staged file's declared size.
+CONNECTOR_FILE_MAX_BYTES = 20 * 1024 * 1024
 
 # The gateway's six-state account status (contract `CONNECTOR_CONNECTION_STATUSES`; the vendor's
 # INITIALIZING and INITIATED both arrive as `pending`). Present only once the session binds an
@@ -22,17 +25,51 @@ CONNECTOR_ACCOUNTS_PATH = f"{CONNECTORS_PATH}/accounts"
 ConnectionStatus = Literal["pending", "active", "failed", "expired", "revoked", "inactive"]
 # Where the vendor's done page sends the browser after consent; the dev desktop registers hermes-dev://.
 ConnectorReturnTarget = Literal["hermes-desktop", "hermes-desktop-dev", "portal"]
+# Who asked for a connect, so the gateway can attribute each minted link. The gateway sets
+# ``execute_link`` and ``portal`` itself; an older gateway ignores the field.
+ConnectorInitiator = Literal["agent_tool", "desktop_page", "card_retry"]
 
 # Hermes dispatch caps batches lower, so client-side chunking is deliberately absent.
 WIRE_BATCH_MAX = 25
 
-# A 200 execute envelope carries per-tool failures as results, not HTTP errors.
-ConnectorErrorCode = Literal[
-    "TOOL_NOT_ALLOWED",
-    "CONNECTION_REQUIRED",
-    "TOOL_NOT_FOUND",
-    "PROVIDER_ERROR",
-]
+# Any string: a gateway newer than this client may add codes, and an unknown code still renders.
+ConnectorErrorCode = str
+# `product`: the request or the user's setup is the cause. `backend`: the gateway or the vendor failed.
+ErrorFamily = Literal["product", "backend"]
+
+# Single-call execute failures: code -> (family, HTTP status). The legacy array envelope carries only
+# TOOL_NOT_ALLOWED, CONNECTION_REQUIRED, TOOL_NOT_FOUND and PROVIDER_ERROR, always under a 200.
+EXECUTE_ERROR_CODES: dict[str, tuple[ErrorFamily, int]] = {
+    "TOOL_NOT_ALLOWED": ("product", 403),
+    "CONNECTION_REQUIRED": ("product", 409),
+    "CONNECTION_EXPIRED": ("product", 409),
+    "ALIAS_REQUIRED": ("product", 422),
+    "ALIAS_UNKNOWN": ("product", 422),
+    "INVALID_ARGUMENTS": ("product", 422),
+    "TOOL_NOT_FOUND": ("product", 404),
+    "PROVIDER_ERROR": ("backend", 502),
+    "PROVIDER_RATE_LIMITED": ("backend", 429),
+    "PROVIDER_TIMEOUT": ("backend", 504),
+    "POLICY_UNAVAILABLE": ("backend", 503),
+    "GATEWAY_ERROR": ("backend", 500),
+}
+
+
+# Failures the agent reports itself while staging a file input, before the call reaches execute.
+FILE_ERROR_FAMILIES: dict[str, ErrorFamily] = {
+    "FILE_NOT_ALLOWED": "product",
+    "FILE_NOT_FOUND": "product",
+    "FILE_TOO_LARGE": "product",
+    "FILE_UPLOAD_FAILED": "backend",
+}
+
+
+def execute_error_family(code: str, family: Optional[str] = None) -> Optional[str]:
+    """The gateway's family when it sent one, else the table's; ``None`` for an unknown code."""
+    if family in ("product", "backend"):
+        return family
+    known = EXECUTE_ERROR_CODES.get(code)
+    return known[0] if known else FILE_ERROR_FAMILIES.get(code)
 
 
 class _Wire(BaseModel):
@@ -92,6 +129,29 @@ class ConnectorSchemasResponse(_Wire):
     suggestions: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class ConnectorFileUploadRequest(_Wire):
+    toolkit: str
+    tool: str
+    filename: str
+    mimetype: str
+    size: int
+
+
+class ConnectorFileDescriptor(_Wire):
+    """The value a ``file_uploadable`` tool input takes on the wire."""
+
+    name: str
+    mimetype: str
+    s3key: str
+
+
+class ConnectorFileUploadResponse(_Wire):
+    upload_url: str = Field(alias="uploadUrl")
+    headers: dict[str, str] = Field(default_factory=dict)
+    descriptor: ConnectorFileDescriptor
+    expires_at: str = Field(alias="expiresAt")
+
+
 class ConnectorToolError(_Wire):
     code: ConnectorErrorCode
     message: str
@@ -100,6 +160,13 @@ class ConnectorToolError(_Wire):
     # The account the link was minted for; absent when the link mint failed. Absent means nothing to watch.
     connection_id: Optional[str] = Field(default=None, alias="connectionId")
     hint: Optional[str] = None
+    family: Optional[str] = None
+
+
+class ConnectorExecuteFailure(ConnectorToolError):
+    """The body of a non-2xx single-call execute answer."""
+
+    request_id: Optional[str] = Field(default=None, alias="requestId")
 
 
 class ConnectorExecuteCall(_Wire):
@@ -118,6 +185,32 @@ class ConnectorExecuteRequest(_Wire):
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
+class ConnectorExecuteSingleRequest(_Wire):
+    call: ConnectorExecuteCall
+    return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
+    op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+
+# What a model receiving this result must guarantee; absent when the connector asks nothing.
+DataUseRequirement = Literal["no_training", "zero_retention"]
+
+
+class ConnectorDataUse(_Wire):
+    requires: list[DataUseRequirement]
+
+
+class ConnectorExecuteSingleResult(_Wire):
+    connector: str = ""
+    tool: str = ""
+    data: Any = None
+    account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
+
+
+class ConnectorExecuteSingleResponse(_Wire):
+    result: ConnectorExecuteSingleResult
+
+
 class ConnectorExecuteResult(_Wire):
     # Never correlate results by wire index.
     index: int = 0
@@ -127,6 +220,7 @@ class ConnectorExecuteResult(_Wire):
     error: Optional[ConnectorToolError] = None
     # The alias of the account the call ran under; null when that account has no alias.
     account: Optional[str] = None
+    data_use: Optional[ConnectorDataUse] = Field(default=None, alias="dataUse")
 
 
 class ConnectorExecuteResponse(_Wire):
@@ -145,6 +239,7 @@ class ConnectorConnectionsRequest(_Wire):
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     # The caller's operation id, echoed on the hermes://connections/done link.
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    initiator: Optional[ConnectorInitiator] = None
 
 
 class ConnectorConnectionResult(_Wire):

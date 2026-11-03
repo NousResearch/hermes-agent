@@ -904,8 +904,13 @@ class SessionAuthority:
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
         # A resolution racing recovery leaves publication, delivery and collection to the drain. A
-        # conversation idle retirement let go has no drain; ``_publish_pending`` below restores it.
+        # conversation idle retirement let go between the commit and this follow-up has no drain:
+        # bring it back first, so the captured answer reaches its viewers.
         live = self.sessions.get(ref.session_id)
+        if live is None:
+            from gateway.session_retirement import restore_retired
+            restore_retired(self, ref.session_id)
+            live = self.sessions.get(ref.session_id)
         drain_owns = live is not None and live.event_stream.execution.get('admission_id') == admission_id
         if not drain_owns:
             from gateway.session_ingress import deliver_resolved

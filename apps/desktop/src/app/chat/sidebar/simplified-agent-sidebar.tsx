@@ -80,7 +80,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
 
   const rows = searchRows.filter(
     row =>
-      !pinnedIds.has(sessionRowKey(row)) &&
       !row.hidden &&
       !row.archived &&
       !removed.has(row.id) &&
@@ -89,6 +88,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
 
   const shared = {
     activeSessionId,
+    pinnedIds,
     onResumeSession: props.onResumeSession,
     onDeleteSession: props.onDeleteSession,
     onArchiveSession: props.onArchiveSession,
@@ -168,11 +168,11 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           >
             {t.sidebar.pinned}
           </Button>
-          {pinsOpen && <SimplifiedSessionList {...shared} pinned sessions={pinned.filter(matches)} />}
+          {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} />}
         </section>
         <SimplifiedAgentList
           renderSessions={agentSessions => (
-            <div className="pl-3">
+            <div className="pl-14">
               <SimplifiedSessionList {...shared} sessions={agentSessions} />
             </div>
           )}

@@ -95,15 +95,19 @@ def set_room_context(
 
     def settings(conn: Any) -> dict[str, str]:
         first = hosted_rooms._load_event(conn, state["room_id"], hosted_rooms._event_id(event_id))
-        current = (json.loads(first["payload_json"]) if first is not None and first["kind"] == CONTEXT_EVENT_KIND
-                   else _latest_context(conn, state["room_id"], None))
+        original = json.loads(first["payload_json"]) if first is not None and first["kind"] == CONTEXT_EVENT_KIND else None
+        current = {**_EMPTY_CONTEXT, **original} if original is not None else _latest_context(conn, state["room_id"], None)
         context = validate_context(
             purpose, notes, current["routing"] if routing is None else routing,
             current["lead_member_id"] if lead_member_id is None else lead_member_id)
         if first is None and context["routing"] == "lead" and context["lead_member_id"] not in seated:
             raise hosted_rooms.HostedRoomError("the lead must be a member of this Group Chat")
         saved.update(context)
-        return context
+        if original is None:
+            return context
+        # A retry is compared in its first event's own schema: one saved before routing existed has only
+        # purpose and notes, so a field still at its default is left out rather than read as a different save.
+        return {key: value for key, value in context.items() if key in original or value != _EMPTY_CONTEXT[key]}
 
     event = hosted_rooms.append_event(
         db_path, room_id=room_id, event_id=event_id, kind=CONTEXT_EVENT_KIND, actor=dict(_CONTEXT_ACTOR),

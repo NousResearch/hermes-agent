@@ -241,11 +241,14 @@ test('a dropped connection while stapling an accepted ticket is retried, not fat
       if (command === 'ditto') writeFileSync(args.at(-1), 'archive fixture')
       if (args[0] === 'notarytool') return { stdout: JSON.stringify({ id: submissionId, status: 'Accepted' }) }
       if (args[0] === 'stapler' && ++staples <= 8) {
-        // stapler's real exit status and output, through a child process: six dropped connections,
-        // then a ticket that has not propagated yet, which keeps its own retries.
-        const [code, output] = staples <= 6 ? [68, connectionLost] : [65, missingTicket().message]
-        return runCommand(process.execPath, ['-e',
-          `process.stdout.write(process.argv[1]); process.exitCode = ${code}`, output])
+        // The first drop is stapler's real exit status and output, through a child process. Five
+        // more drops follow, then a ticket that has not propagated yet, which keeps its own retries.
+        if (staples === 1) {
+          return runCommand(process.execPath, ['-e',
+            'process.stdout.write(process.argv[1]); process.exitCode = 68', connectionLost])
+        }
+        if (staples <= 6) throw Object.assign(new Error(connectionLost), { code: 68 })
+        throw missingTicket()
       }
       return { stdout: '', stderr: '' }
     }

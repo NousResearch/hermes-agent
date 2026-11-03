@@ -214,3 +214,37 @@ def test_without_after_a_failed_first_migration_keeps_the_other_legacy_extras(mo
 
     assert calls == [["all", "fal"]]
     assert extras.declined_extras(root) == frozenset({"matrix"})
+
+
+def test_automatic_repair_never_undoes_a_without_that_landed_after_its_read(monkeypatch):
+    """Configured-platform repair reads the declines, then asks PM for the configured extra. A
+    `--without matrix` completing between that read and PM's lock wins: repair's request was
+    Hermes's choice, not the user's, so it neither re-adds matrix nor clears the new decline."""
+    import pm.client
+    from hermes_cli import main_install_repair
+
+    monkeypatch.setattr(install, "_feature_policy", lambda extras, *, repair: (None, None))
+    package = _BlockingVenv()
+    monkeypatch.setattr(install, "get_package", lambda name: package)
+    monkeypatch.setattr(pm.client, "is_runtime", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_configured_features_missing_deps",
+                        lambda: [("Matrix", "Run `hermes setup`.", "matrix")])
+    install.sync_venv(["all"], explicit=True)
+
+    real_lock, opted_out = install._venv_install_lock, []
+
+    def lock(**kwargs):
+        if not opted_out:
+            # Repair has read the declines and is about to take the lock: the opt-out lands first.
+            opted_out.append(True)
+            install.decline_extras(["matrix"])
+            install.sync_venv(["all"], explicit=True)
+        return real_lock(**kwargs)
+
+    monkeypatch.setattr(install, "_venv_install_lock", lock)
+    main_install_repair._install_configured_features_missing_deps(repo_root())
+
+    assert opted_out
+    assert extras.declined_extras() == frozenset({"matrix"})
+    assert _recorded() == ["all"]
+    assert all("matrix" not in built for built in package.built)

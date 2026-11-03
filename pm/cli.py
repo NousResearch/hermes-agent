@@ -308,21 +308,24 @@ def _install_defaults(names: list[str], *, verify: bool) -> None:
                   f"`hermes pm install {name}` succeeds", flush=True)
 
 
-def _first_selection(extras: list[str]) -> list[str]:
-    """The extras this install's sync requests: the caller's, else ``[all]``.
+def _first_selection(extras: list[str]) -> tuple[list[str], list[str]]:
+    """``(extras this install's sync requests, the ones it carries)``: the caller's, else ``[all]``.
 
     Before PM has recorded a selection (a first migration that failed before writing facts),
     the main-era venv's extras are carried too, minus any dropped with ``--without``, exactly as
     the launch migration would; otherwise this sync's facts would end the re-scan without them.
+    The carried ones are not a request, so they never opt a declined extra back in.
     """
     from pm.environments import runtime_facts_path
     from pm.extras import legacy_selection
 
     requested = extras or ["all"]
     if runtime_facts_path(repo_root()).is_file():
-        return requested
+        return requested, []
     carried = legacy_selection(repo_root())
-    return requested if carried == ["all"] else sorted(set(carried) | set(extras))
+    if carried == ["all"]:
+        return requested, []
+    return sorted(set(carried) | set(extras)), sorted(set(carried) - set(requested))
 
 
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
@@ -337,7 +340,8 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
             # a fresh bootstrap match what the first update would do.
-            sync_venv(_first_selection(extras), explicit=True)
+            selection, carried = _first_selection(extras)
+            sync_venv(selection, explicit=True, **({"automatic": carried} if carried else {}))
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")

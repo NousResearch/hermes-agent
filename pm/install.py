@@ -859,6 +859,22 @@ def _refuse_declined(package, extras: Optional[list[str]], *, explicit: bool) ->
                            "run `" + "`, `".join(install_hint(extra) for extra in dropped) + "` to enable them again")
 
 
+def _without_new_declines(package, extras: Optional[list[str]], automatic) -> Optional[list[str]]:
+    """*extras* minus the *automatic* entries the user has declined, read under the dependency lock.
+
+    An automatic entry (configured-platform repair, the main-era venv carry, a container's shipped
+    baseline) was chosen before this sync took the lock, from a decline record a concurrent
+    `hermes pm install --without NAME` may since have changed; only the lock-held read counts.
+    """
+    if not extras or not automatic:
+        return extras
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    derived = {_extra_key(extra) for extra in automatic}
+    return [extra for extra in extras if _extra_key(extra) not in derived or _extra_key(extra) not in refused]
+
+
 def decline_extras(names: list[str]) -> None:
     """Record ``hermes pm install --without NAME`` for extras, under the dependency lock: an
     in-flight `--extra NAME` sync clears its decline before releasing it, so an unlocked write
@@ -873,7 +889,7 @@ def decline_extras(names: list[str]) -> None:
 
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
               plugins: PluginInput | None = None, repair: bool = False,
-              evict_incompatible_plugins: bool = False) -> None:
+              evict_incompatible_plugins: bool = False, automatic: Optional[list[str]] = None) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -884,7 +900,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     source of plugin members (see pm.plugin_inputs); None discovers them from config.
     ``evict_incompatible_plugins`` is the update's contract: a discovered plugin that
     keeps the environment from building is disabled instead of failing the sync
-    (see pm.plugin_eviction).
+    (see pm.plugin_eviction). ``automatic`` names the entries of ``extras`` Hermes chose
+    on the user's behalf: one the user declined is left out, and none of them opts a
+    declined extra back in; every other requested extra does (``--extra NAME``).
 
     Lazy installs OFF = the frozen feature set: when
     security.allow_lazy_installs is false AND the bundle's
@@ -912,6 +930,7 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         from hermes_cli.runtime_state import recover_publication
         from pm.publication import StagedPlugin
         with _venv_install_lock(patient=explicit or repair):
+            extras = _without_new_declines(package, extras, automatic)
             _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())
             change = _publication(plugins)
@@ -935,12 +954,14 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
                 receipt.record_feature_list(enabled)
                 _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
                                   current=current, repair=repair, explicit=explicit)
-            if extras and explicit and not repair:
+            derived = {_extra_key(extra) for extra in automatic or ()}
+            opted_in = [extra for extra in extras or () if _extra_key(extra) not in derived]
+            if opted_in and explicit and not repair:
                 from pm.extras import record_declined_extras
 
                 # An explicit request is the opt-back-in. Cleared before the lock is released, or a
                 # sync queued behind this one still reads the decline and publishes without the extra.
-                record_declined_extras(remove=extras, project_root=package.project_root())
+                record_declined_extras(remove=opted_in, project_root=package.project_root())
         outcome = "ok"
     except BaseException as exc:
         receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")

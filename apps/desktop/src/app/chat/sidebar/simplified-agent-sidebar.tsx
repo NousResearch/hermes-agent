@@ -169,7 +169,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             </SidebarPanelLabel>
             <Codicon className="mr-2 text-(--ui-text-tertiary)" name={pinsOpen ? 'chevron-down' : 'chevron-right'} />
           </RowButton>
-          {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} />}
+          {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} showAgent />}
         </section>
         <SimplifiedAgentList
           renderSessions={agentSessions => (

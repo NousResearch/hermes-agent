@@ -1,16 +1,18 @@
 import { useStore } from '@nanostores/react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
 import { openSession } from '@/app/open-session'
+import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $sessionListDensity } from '@/store/session-list-density'
@@ -23,6 +25,7 @@ import { sessionRowEstimate } from './session-row-details'
 import { sessionRowKey } from './simplified-session-identity'
 
 interface SimplifiedSessionListProps {
+  showAgent?: boolean
   sessions: SessionInfo[]
   activeSessionId: string | null
   pinnedIds: ReadonlySet<string>
@@ -43,6 +46,16 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const density = useStore($sessionListDensity)
   const virtual = props.sessions.length >= 60
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (props.showAgent) {
+      return
+    }
+
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000)
+
+    return () => window.clearInterval(timer)
+  }, [props.showAgent])
 
   const list = useVirtualizer({
     count: virtual ? props.sessions.length : 0,
@@ -55,6 +68,11 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
   const renderRow = (row: SessionInfo) => {
     const title = sessionTitle(row)
     const pinned = props.pinnedIds.has(sessionRowKey(row))
+    const timestamp = new Date((row.last_active || row.started_at) * 1000)
+    const { unit, value } = coarseElapsed(now - timestamp.getTime())
+    const units = { day: t.sidebar.row.ageDay, hour: t.sidebar.row.ageHour, minute: t.sidebar.row.ageMin }
+    const age = unit === 'second' ? t.sidebar.row.ageNow : `${value}${units[unit]}`
+    const absoluteAge = formatMessageTimestamp(timestamp, t.assistant.thread)
 
     const selected =
       row.id === props.activeSessionId &&
@@ -87,13 +105,19 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             {title}
           </span>
           <span
-            aria-label={`${t.simplifiedAgents.agents}: ${row.profile || 'default'}`}
+            aria-label={props.showAgent ? `${t.simplifiedAgents.agents}: ${row.profile || 'default'}` : undefined}
             className={cn(
               'min-w-6 max-w-[30%] truncate text-right text-[0.6875rem] text-(--ui-text-tertiary)',
               !props.ambiguousIds.has(row.id) && 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
             )}
           >
-            {row.profile || 'default'}
+            {props.showAgent ? (
+              row.profile || 'default'
+            ) : (
+              <time aria-label={`${age}, ${absoluteAge}`} dateTime={timestamp.toISOString()} title={absoluteAge}>
+                {age}
+              </time>
+            )}
           </span>
         </RowButton>
         {/* shortcut: legacy actions accept bare IDs; restore menus for twins when those actions accept owners. */}

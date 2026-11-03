@@ -4,7 +4,6 @@ import { type ComponentProps, useMemo, useState } from 'react'
 import { ambientOwnerConnectionId } from '@/api/client'
 import { mutateSessionHttp } from '@/api/sessions'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { type SessionInfo } from '@/hermes'
@@ -30,6 +29,7 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
+import { SimplifiedNewSession } from './simplified-new-session'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
@@ -134,9 +134,8 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
       data-tour="sessions-sidebar"
     >
       <SidebarContent className="gap-2 overflow-hidden px-2.5 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
-        <Button
-          className="w-full justify-start"
-          onClick={() => {
+        <SimplifiedNewSession
+          onFallback={() => {
             $newChatProfile.set(null)
             props.onNavigate({
               id: 'new-session',
@@ -146,11 +145,8 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
               keybindActionId: 'session.new'
             })
           }}
-          variant="ghost"
-        >
-          <Codicon name="add" />
-          {t.sidebar.nav['new-session']}
-        </Button>
+          sessions={all}
+        />
         <SearchField
           aria-label={t.sidebar.searchAria}
           onChange={setQuery}

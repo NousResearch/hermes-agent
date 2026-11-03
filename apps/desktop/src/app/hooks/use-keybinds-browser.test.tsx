@@ -218,3 +218,26 @@ it('marks only chords an action ran, so the terminal keeps a declined one', asyn
   expect(declined.defaultPrevented).toBe(true)
   expect(keybindHandled(declined)).toBe(false)
 })
+
+it('lets v2 claim New session only while enabled; off retains the original shortcut', async () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const { deps, press } = await mountKeybinds()
+  const { $agentSidebarChoice } = await import('@/store/simplified-agent-mode')
+  const { SIMPLIFIED_NEW_SESSION_EVENT } = await import('@/store/simplified-new-session')
+  const claim = vi.fn((event: Event) => event.preventDefault())
+  window.addEventListener(SIMPLIFIED_NEW_SESSION_EVENT, claim)
+
+  try {
+    $agentSidebarChoice.set(true)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(claim).toHaveBeenCalledOnce()
+    expect(deps.startFreshSession).not.toHaveBeenCalled()
+    $agentSidebarChoice.set(false)
+    press({ key: 'n', code: 'KeyN', altKey: true, ctrlKey: false })
+    expect(claim).toHaveBeenCalledOnce()
+    expect(deps.startFreshSession).toHaveBeenCalledOnce()
+  } finally {
+    $agentSidebarChoice.set(false)
+    window.removeEventListener(SIMPLIFIED_NEW_SESSION_EVENT, claim)
+  }
+})

@@ -2,9 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
-import { $apiRequestScope } from '@/api/client'
 import { SETTINGS_ROUTE } from '@/app/routes'
-import { settingsScopeLabel } from '@/app/settings/profile-scope'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -14,14 +12,16 @@ import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
+import { recordAction } from '@/store/desktop-metrics'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, $profileColors, $profiles, ensureGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $profileColors, ensureGatewayProfile } from '@/store/profile'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { setSettingsScope } from '@/store/settings-scope'
 
-import { gatewayLabel } from './gateway-group-model'
+import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import { useFleetRoster } from './use-fleet-roster'
+import { useSimplifiedAgents } from './use-simplified-agents'
 
 export function SimplifiedAgentList({
   sessions,
@@ -34,80 +34,17 @@ export function SimplifiedAgentList({
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const profiles = useStore($profiles)
   const colors = useStore($profileColors)
   const roster = useStore($fleetRoster)
   const registry = useStore($connectionsRegistry)
   const activeConnection = useStore($activeConnectionId)
-  const apiScope = useStore($apiRequestScope)
   const focusedId = useStore($focusedStoredSessionId)
   const activeProfile = useStore($activeGatewayProfile)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   useEffect(() => setExpanded({}), [focusedId, activeProfile, activeConnection])
   const [pending, setPending] = useState<string | null>(null)
   useFleetRoster(true)
-  const owner = apiScope.connectionId ?? roster?.primaryConnectionId ?? activeConnection ?? registry?.primary ?? null
-
-  const agents = new Map<
-    string,
-    { id: string; profile: string; label: string; connectionId: string | null; gateway: string }
-  >()
-
-  for (const agent of roster?.agents ?? []) {
-    const id = JSON.stringify([agent.connectionId, agent.profile])
-    agents.set(id, {
-      id,
-      profile: agent.profile,
-      label: agent.profile,
-      connectionId: agent.connectionId,
-      gateway: agent.connectionLabel
-    })
-  }
-
-  for (const profile of profiles) {
-    const id = JSON.stringify([owner, profile.name])
-    agents.set(id, {
-      id,
-      profile: profile.name,
-      label: settingsScopeLabel(profile),
-      connectionId: owner,
-      gateway:
-        roster?.sources.find(source => source.connectionId === owner)?.label ??
-        gatewayLabel(owner ?? 'local', registry, t.settings.gateway.webappHostTitle)
-    })
-  }
-
-  const sessionsByAgent = new Map<string, SessionInfo[]>()
-
-  for (const session of sessions) {
-    const connectionId = session.connection_id || owner
-    const profile = session.profile || 'default'
-    const id = JSON.stringify([connectionId, profile])
-    const rows = sessionsByAgent.get(id) ?? []
-    rows.push(session)
-    sessionsByAgent.set(id, rows)
-
-    // Keep chats reachable while the profile roster is loading or incomplete.
-    if (!agents.has(id)) {
-      agents.set(id, {
-        id,
-        profile,
-        label: profile,
-        connectionId,
-        gateway:
-          roster?.sources.find(source => source.connectionId === connectionId)?.label ??
-          gatewayLabel(connectionId ?? 'local', registry, t.settings.gateway.webappHostTitle)
-      })
-    }
-  }
-
-  const sorted = [...agents.values()].sort(
-    (a, b) =>
-      a.gateway.localeCompare(b.gateway) ||
-      (a.connectionId ?? '').localeCompare(b.connectionId ?? '') ||
-      a.label.localeCompare(b.label) ||
-      a.id.localeCompare(b.id)
-  )
+  const { agents: sorted, owner, sessionsByAgent } = useSimplifiedAgents(sessions)
 
   async function openAgent(agent: (typeof sorted)[number]) {
     setPending(agent.id)
@@ -176,7 +113,7 @@ export function SimplifiedAgentList({
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                    <div className="flex items-center">
+                    <div className="group/agent flex items-center">
                       {group.length > 1 && (
                         <Button
                           aria-expanded={agentOpen}
@@ -201,6 +138,19 @@ export function SimplifiedAgentList({
                           name={agent.label}
                         />
                         <span className="truncate">{agent.label}</span>
+                      </Button>
+                      <Button
+                        aria-label={t.sidebar.newSessionIn(agent.label)}
+                        className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                        onClick={() => {
+                          recordAction('session.new', 'click')
+                          startSimplifiedAgentSession(agent)
+                        }}
+                        size="icon"
+                        title={t.sidebar.newSessionIn(agent.label)}
+                        variant="ghost"
+                      >
+                        <Codicon name="edit" />
                       </Button>
                     </div>
                     {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}

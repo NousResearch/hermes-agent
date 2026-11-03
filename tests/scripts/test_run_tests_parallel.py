@@ -913,13 +913,26 @@ def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monke
     probe_dir.mkdir()
     (probe_dir / "test_probe_red.py").write_text(
         _FORK_PROBE.format(out=str(tmp_path / "f.json"), fail="yes"), encoding="utf-8")
+    grandchild = tmp_path / "grandchild.pid"
+    # The grandchild's env lacks the file's temp root, so only the process-group
+    # kill can find it, not the runner's leftover sweep.
     (probe_dir / "test_probe_hang.py").write_text(
-        "import time\n\ndef test_hangs():\n    time.sleep(600)\n", encoding="utf-8")
+        "import os, subprocess, time\n\n"
+        "def test_hangs():\n"
+        "    child = subprocess.Popen(['sleep', '600'], env={'PATH': os.environ['PATH']})\n"
+        f"    open({str(grandchild)!r}, 'w').write(str(child.pid))\n"
+        "    time.sleep(600)\n",
+        encoding="utf-8")
     monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
     proc = _run_runner(probe_dir, "-j", "2", "--file-timeout", "5", "--file-retries", "0")
     assert proc.returncode != 0, proc.stdout
     assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
     assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout
+    pid = int(grandchild.read_text())
+    deadline = time.monotonic() + 5
+    while _pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _pid_alive(pid), "the timed-out file's grandchild outlived it"
 
 
 @pytest.mark.platforms("linux")

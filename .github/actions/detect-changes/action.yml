@@ -43,7 +43,7 @@ outputs:
     description: Run the Desktop install/update Electron suite (apps/desktop/e2e/update).
     value: ${{ steps.classify.outputs.e2e_desktop_update }}
   site:
-    description: Build the Docusaurus docs site.
+    description: Build and validate the docs site (apps/docs).
     value: ${{ steps.classify.outputs.site }}
   scan:
     description: Run the supply-chain critical-pattern scanner.

@@ -3,6 +3,11 @@
 Fonte da verdade: `brand.json` (nomes e caminhos) + `palette.json` (cores). Nada de hex ou nome de
 marca hardcoded fora desta pasta — `scripts/brand_check.py` reprova.
 
+> **Arte original:** `logomarca-b3po.png` (1536×1024, SHA-256
+> `a89606e96db51502eb1a8587007cc3e9255620f83d6dd098a8658c9de73f1b0d`) fica no brand kit
+> (`projects/b3po-codync/brand/`), **fora do repositório**: 2,1 MB acima do limite de blob de 500 KiB.
+> O repositório versiona só os exports (webp + ícones até 512), todos abaixo do limite.
+
 ## Marca
 
 | Elemento | Valor |

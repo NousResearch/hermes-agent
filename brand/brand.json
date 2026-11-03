@@ -22,10 +22,10 @@
     "renameLevel": 2
   },
   "assets": {
-    "logo": "logo/logomarca-b3po.png",
-    "wordmark": "logo/b3po-wordmark-1536.png",
-    "wordmarkSmall": "logo/b3po-wordmark-768.png",
-    "icon": "icons/b3po-icon-1024.png",
+    "logo": "logo/b3po-wordmark-1536.webp",
+    "wordmark": "logo/b3po-wordmark-1536.webp",
+    "wordmarkSmall": "logo/b3po-wordmark-768.webp",
+    "icon": "icons/b3po-icon-512.png",
     "favicon": "icons/b3po-icon-32.png",
     "avatarsDir": "avatars",
     "avatarManifest": "avatars/manifest.json"

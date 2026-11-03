@@ -66,8 +66,8 @@ def main() -> int:
     if FAILS:
         return 1
 
-    brand = json.loads(brand_path.read_text(encoding="utf-8"))
-    palette = json.loads(palette_path.read_text(encoding="utf-8"))
+    brand = json.loads(brand_path.read_text(encoding="utf-8-sig"))
+    palette = json.loads(palette_path.read_text(encoding="utf-8-sig"))
 
     required = ["name", "productName", "slug", "packageName", "cliCommand", "owner", "assets", "palette"]
     missing = [k for k in required if k not in brand]
@@ -81,7 +81,7 @@ def main() -> int:
     # 3. mascotes
     avatars_dir = BRAND / assets.get("avatarsDir", "avatars")
     manifest_path = BRAND / assets.get("avatarManifest", "avatars/manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else []
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig")) if manifest_path.exists() else []
     pngs = sorted(avatars_dir.glob("*.png"))
     check("manifest tem 20 mascotes", len(manifest) == 20, f"encontrados {len(manifest)}")
     check("20 PNGs em avatars/", len(pngs) == 20, f"encontrados {len(pngs)}")
@@ -116,7 +116,7 @@ def main() -> int:
     # 6. rename map
     rm_path = BRAND / "rename-map.json"
     if rm_path.exists():
-        rm = json.loads(rm_path.read_text(encoding="utf-8"))
+        rm = json.loads(rm_path.read_text(encoding="utf-8-sig"))
         check("rename-map não habilita nível 3", rm.get("level") != 3 and rm.get("forbidden", {}).get("level3_renames") is True,
               f"level={rm.get('level')}")
     else:
@@ -128,5 +128,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 

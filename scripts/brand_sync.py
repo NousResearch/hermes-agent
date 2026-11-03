@@ -22,8 +22,8 @@ HEADER = "GERADO por scripts/brand_sync.py a partir de brand/brand.json — não
 
 
 def load() -> tuple[dict, dict]:
-    brand = json.loads((BRAND_DIR / "brand.json").read_text(encoding="utf-8"))
-    palette = json.loads((BRAND_DIR / "palette.json").read_text(encoding="utf-8"))
+    brand = json.loads((BRAND_DIR / "brand.json").read_text(encoding="utf-8-sig"))
+    palette = json.loads((BRAND_DIR / "palette.json").read_text(encoding="utf-8-sig"))
     return brand, palette
 
 
@@ -97,7 +97,7 @@ def main() -> int:
     stale: list[str] = []
     for name, content in outputs.items():
         target = OUT_DIR / name
-        if target.exists() and target.read_text(encoding="utf-8") == content:
+        if target.exists() and target.read_text(encoding="utf-8-sig") == content:
             continue
         stale.append(name)
         if not args.check:
@@ -114,3 +114,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

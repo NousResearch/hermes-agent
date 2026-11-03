@@ -119,6 +119,19 @@ def test_a_routing_answer_wrapped_in_prose_with_braces_still_assigns(room_db: Pa
     assert assignment["payload"]["member_ids"] == ["member-linus"] and assignment["payload"]["fallback"] is False
 
 
+def test_a_discarded_routing_turn_records_no_assignment_and_the_lead_still_answers(room_db: Path):
+    _lead_room(room_db)
+    seq = _say(room_db, "Anyone?")
+
+    published = _finish(room_db, _plan(room_db, seq), "discarded by the user", status="cancelled")
+    assert [event["kind"] for event in published] == ["turn.cancelled"]
+    # Discard gives up the attempt, not the user's message: the lead takes it alone, exactly once.
+    turn = _plan(room_db, seq)
+    assert (turn.reason, turn.task.member.handle) == ("member_turn", "ada") and turn.task.seen_through_seq >= seq
+    _finish(room_db, turn, "Looking now.")
+    assert _plan(room_db, seq).status == "settled"
+
+
 @pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
 def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
     _lead_room(room_db)

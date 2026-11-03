@@ -311,7 +311,10 @@ class GatewayUpdateNotificationsMixin:
 
         def _defer(reason: str, *args) -> bool:
             nonlocal cleanup, active_pending_path
-            logger.info(reason, *args)
+            # Deferral is normal retry behaviour: the watcher re-polls every
+            # ~15s while an update runs or an adapter is offline; keep the
+            # per-poll chatter at debug (17k+ info lines/week in the wild).
+            logger.debug(reason, *args)
             cleanup = False
             active_pending_path = paths.pending
             paths.claimed.replace(paths.pending)

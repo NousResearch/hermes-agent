@@ -112,3 +112,40 @@ failed. A fill lock does not serialize unrelated browser navigation.
 Raise exceptions with fixed diagnostics. Hermes discards your exception text, but your own logs may
 still record it, so never put credential values or secret-manager response bodies in it. Never expose
 a model-facing tool that returns a password: it would bypass every rule above.
+
+## Browser page backends
+
+A plugin browser that has no CDP endpoint (Camofox talks to its own REST server) cannot be reached by
+the vault's supervisor, so `browser_vault` would refuse every fill with "Could not determine the
+current page origin". Such a plugin registers an `agent.browser_page_backend.BrowserPageBackend`:
+
+```python
+from agent.browser_page_backend import BrowserPageBackend
+
+
+class MyBrowserPages(BrowserPageBackend):
+    name = "mybrowser"
+
+    def has_page(self, task_id: str) -> bool:
+        ...  # True when this task already has a live tab here; never open one to answer
+
+    def evaluate(self, task_id: str, expression: str, *, secret: bool):
+        ...  # run the script on that tab and return its value; raise on failure
+
+
+def register(ctx):
+    if hasattr(ctx, "register_browser_page_backend"):  # older cores lack the seam
+        ctx.register_browser_page_backend(MyBrowserPages())
+```
+
+When `has_page(task_id)` is true, the vault reads the page origin, inspects the form and writes the
+password through `evaluate` instead of CDP. Everything else stays core's: the exact-origin pre-check
+and in-page re-check, payment confirmation, the Bot Desktop takeover check, redaction of the filled
+value. A secret-bearing script (`secret=True`) arrives wrapped so a page exception is answered in-page,
+and any failure on that path is reported with fixed text, so your exception never reaches the model.
+Send a secret script only over a transport that keeps it out of argv and off the network in clear text
+(loopback or HTTPS), never follow a redirect with it, and never log it.
+
+The provenance rule above applies here too (bundled, or catalog `verified`/`official` at its pin),
+and the registration is refused under `plugins.isolation: host`, because the fill script carries the
+credential and must stay in the Hermes process.

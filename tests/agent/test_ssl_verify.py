@@ -32,11 +32,11 @@ def test_missing_explicit_bundle_falls_back_to_the_platform_store(tmp_path, capl
 
 
 def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_path, monkeypatch):
-    """With SSL_CERT_FILE exported the platform store is handed over as one
+    """With SSL_CERT_FILE exported the platform context is handed over as one
     shared context (httpx would otherwise read the env var itself); a missing
-    bundle must land on that same object, not a second pool. The long-lived
-    clients' platform_ssl_context() honours the bundle ON TOP of the platform
-    store (as httpx verify=True did), cached once."""
+    bundle must land on that same object, not a second pool. That context is
+    the long-lived clients' platform_ssl_context(), which trusts the bundle ON
+    TOP of the platform store (as httpx verify=True did), cached once."""
     import ssl
 
     import certifi
@@ -49,11 +49,9 @@ def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_pat
     assert platform is not True
     assert resolve_httpx_verify(ca_bundle=str(tmp_path / "nope.pem")) is platform
 
-    bundle_ctx = ssl_verify.platform_ssl_context()
-    assert bundle_ctx is ssl_verify.platform_ssl_context()
-    assert bundle_ctx is not platform
-    assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
-    assert bundle_ctx is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
+    assert platform is ssl_verify.platform_ssl_context()
+    assert type(platform) is ssl.SSLContext  # truststore-injected: bundle + OS store
+    assert platform is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", "FALSE"])
@@ -193,6 +191,52 @@ assert response.content == b'private provider', response
             [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/", str(ca)],
             env=_child_env(tmp_path), capture_output=True, text=True, timeout=30, check=False,
         )
+        assert child.returncode == 0, child.stdout + child.stderr
+
+
+def test_exported_bundle_reaches_provider_clients_on_a_store_backed_platform(tmp_path):
+    """An exported ``SSL_CERT_FILE`` bundle still reaches provider clients.
+
+    On a store-backed platform (macOS Security.framework, Windows CryptoAPI)
+    truststore verifies against the context's loaded anchors plus the OS store —
+    it never consults OpenSSL's ``SSL_CERT_FILE`` path. Dropping the bundle when
+    ``SSL_CERT_FILE`` is exported therefore breaks every model call behind a
+    TLS-inspecting proxy on those platforms, which is what this models: the
+    platform step is stubbed down to the store-backed shape, so the only way the
+    private CA can be trusted is a context that carries it.
+    """
+    import subprocess
+    import sys
+
+    with _private_https_server(tmp_path) as (server, ca):
+        env = _child_env(tmp_path)
+        env["SSL_CERT_FILE"] = str(ca)
+        script = """
+import contextlib, sys
+try:
+    import truststore._api as truststore_api
+except ImportError:
+    sys.exit(77)  # no platform verifier: OpenSSL reads SSL_CERT_FILE itself
+import httpx
+from agent.ssl_verify import install_truststore, resolve_httpx_verify
+
+
+@contextlib.contextmanager
+def _store_backed(ctx):
+    yield
+
+
+truststore_api._configure_context = _store_backed
+assert install_truststore() is True
+response = httpx.get(sys.argv[1], verify=resolve_httpx_verify(), timeout=5)
+assert response.content == b'private provider', response
+"""
+        child = subprocess.run(
+            [sys.executable, "-c", script, f"https://127.0.0.1:{server.server_port}/"],
+            env=env, capture_output=True, text=True, timeout=30, check=False,
+        )
+        if child.returncode == 77:
+            pytest.skip("truststore unavailable: the OpenSSL fallback reads SSL_CERT_FILE itself")
         assert child.returncode == 0, child.stdout + child.stderr
 
 

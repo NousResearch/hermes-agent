@@ -1619,8 +1619,8 @@ def _word_may_run_curl_or_wget(word: str) -> bool:
     unquoted = word.lstrip("'\"")
     if unquoted.startswith(("$", "`")):
         return True
-    # An option (``-d``) or assignment (``x="$A"``) cannot name the command being run.
-    return not unquoted.startswith("-") and "=" not in word and ("$" in word or "`" in word)
+    # An option (``-d``) or assignment (``x="$A"``) cannot name the command being run; ``c${s:=url}`` can.
+    return not unquoted.startswith("-") and not _ENV_ASSIGNMENT_RE.fullmatch(word) and ("$" in word or "`" in word)
 
 
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):

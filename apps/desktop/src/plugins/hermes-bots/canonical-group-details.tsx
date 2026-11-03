@@ -23,27 +23,55 @@ export function publishCanonicalRoomLive(binding: CanonicalGroupRoute & { roomId
   }
 }
 
-/** Keep a log scrolled to its newest entry unless the reader scrolled up. */
-export function useStickToBottom(size: number) {
+const liveHolders = new Map<string, number>()
+
+/** Claim a room's Bots-list state for one open workspace; the returned release drops it once the room's
+ *  last workspace closes, since nothing polls a closed room and its glyph would never update again. */
+export function holdCanonicalRoomLive(binding: CanonicalGroupRoute & { roomId: string }): () => void {
+  const key = canonicalRoomLiveKey(binding, binding.roomId)
+  liveHolders.set(key, (liveHolders.get(key) ?? 0) + 1)
+
+  return () => {
+    const left = (liveHolders.get(key) ?? 1) - 1
+
+    if (left > 0) {
+      liveHolders.set(key, left)
+
+      return
+    }
+
+    liveHolders.delete(key)
+
+    if (key in $canonicalRoomLive.get()) {
+      const open = { ...$canonicalRoomLive.get() }
+      delete open[key]
+      $canonicalRoomLive.set(open)
+    }
+  }
+}
+
+/** Keep a log scrolled to its newest entry unless the reader scrolled up. Follows the content's size, so
+ *  rows that add no log event (approval cards, late image previews) stay in view too. */
+export function useStickToBottom() {
   const ref = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
   useLayoutEffect(() => {
     const el = ref.current
+    const content = el?.firstElementChild
 
-    if (!el) {return}
+    if (!el || !content) {return}
 
     const onScroll = () => { pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48 }
+
+    const follow = () => { if (pinned.current) {el.scrollTop = el.scrollHeight} }
+    const observer = new ResizeObserver(follow)
     el.addEventListener('scroll', onScroll)
+    observer.observe(content)
+    follow()
 
-    return () => el.removeEventListener('scroll', onScroll)
+    return () => { el.removeEventListener('scroll', onScroll); observer.disconnect() }
   }, [])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-
-    if (el && pinned.current) {el.scrollTop = el.scrollHeight}
-  }, [size])
 
   return ref
 }

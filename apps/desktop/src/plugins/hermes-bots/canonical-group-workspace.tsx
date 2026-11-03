@@ -3,7 +3,7 @@ import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from
 
 import { type CanonicalDriverActivity, CanonicalGroupCycle, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
-import { CanonicalGroupDetails, CanonicalPendingCard, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
+import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -18,10 +18,18 @@ import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
+interface RoomReply { member?: CanonicalRoomMember; name: string; quote: string; thread?: string }
 interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
 
-const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
-  payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[], thread?: string) =>
+  payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments) &&
+  // Preparing mints a thread for a new conversation, so only a reply's thread must match.
+  (thread === undefined || payload.thread_id === thread)
+
+/** The durable log only grows: an unchanged length and last seq is the same log, so keep its identity
+ *  and the derived history (handoffs, outcomes) is not recomputed on every poll. */
+const sameLog = (current: readonly { seq: number }[], next: readonly { seq: number }[]) =>
+  current.length === next.length && current.at(-1)?.seq === next.at(-1)?.seq
 
 const canSendNow = (gate: { restored: boolean; busy: boolean; uploading: boolean; pending: boolean; draft: string; attachments: number; driver: boolean }) =>
   gate.restored && !gate.busy && !gate.uploading && gate.driver && (gate.pending || !!gate.draft.trim() || gate.attachments > 0)
@@ -56,10 +64,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
-  const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
-  const [reply, setReply] = useState<{ member?: CanonicalRoomMember; name: string; quote: string; thread?: string } | null>(null)
+  const heldDraft = useRef<{ text: string; attachments: Attachment[]; reply: RoomReply | null } | null>(null)
+  const [reply, setReply] = useState<RoomReply | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const scroller = useStickToBottom(events.length)
+  const scroller = useStickToBottom()
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -100,7 +108,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
     if (alive.current && version === revision.current) {
       setState(snapshot)
-      setEvents(log)
+      setEvents(current => sameLog(current, log) ? current : log)
       setReadError('')
     }
   }
@@ -148,8 +156,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       if (!alive.current) {return}
 
       // Another window won the room's slot: send its intent first, keep this window's words.
-      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
-        heldDraft.current = { text: draft, attachments }
+      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments, reply?.thread)) {
+        heldDraft.current = { text: draft, attachments, reply }
       }
 
       setPending(exact)
@@ -162,7 +170,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         const held = heldDraft.current
         heldDraft.current = null
         setPending(null)
-        setReply(null)
+        setReply(held?.reply ?? null)
         setRestoredPending(false)
         setDraft(held?.text ?? '')
         setAttachments(held?.attachments ?? [])
@@ -188,13 +196,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const composerLocked = !restored || busy || !!pending
   const driver = state?.driver_status
   const members = state?.room.members ?? []
-  const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members)
+  const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
   const memberById = new Map(members.map(member => [member.member_id, member]))
   const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
 
-  // The Bots list row reads this room's live state while it is open.
-   
+  // The Bots list row reads this room's live state while it is open, and forgets it once it closes.
+  useEffect(() => holdCanonicalRoomLive(binding), [binding])
+
   useEffect(() => {
     publishCanonicalRoomLive(binding, {
       working,

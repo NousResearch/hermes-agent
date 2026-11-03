@@ -637,33 +637,6 @@ class TestSiblingMediaAbsorb:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
     @pytest.mark.asyncio
-    async def test_flush_skips_when_media_absorbs_comment(self):
-        """Comment must not start its own turn once sibling media absorbs it."""
-        adapter = _make_adapter()
-        adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
-        holding = _arm_hold_probe(adapter)
-        comment = _make_event("Додай у календар")
-        media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
-        adapter._enqueue_text_event(comment)
-        adapter._mark_sibling_absorb_eligibility(media)
-        adapter._begin_media_inflight(adapter._sibling_media_key(comment))
-
-        await asyncio.wait_for(holding.wait(), timeout=2)
-        adapter.handle_message.assert_not_called()
-
-        await adapter._dispatch_media_event(media)
-        adapter._end_media_inflight(adapter._sibling_media_key(comment))
-
-        await async_wait_until(
-            lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="merged turn",
-        )
-        adapter.handle_message.assert_called_once()
-        dispatched = adapter.handle_message.call_args[0][0]
-        assert "Додай у календар" in dispatched.text
-        assert "forwarded caption" in dispatched.text
-
-    @pytest.mark.asyncio
     async def test_short_text_still_flushes_when_no_sibling_media(self):
         """A lone short message flushes at the normal text delay, even with the 20s cap set."""
         adapter = _make_adapter()

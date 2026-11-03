@@ -6810,47 +6810,51 @@ class TelegramAdapter(TelegramSiblingMediaMixin, TelegramHeldInboundMixin, Teleg
             inflight_key = self._sibling_media_key(attributed)
             generation = self._begin_media_inflight(inflight_key)
         try:
-            if msg.sticker:
-                await self._handle_sticker(msg, event)
-                event = self._copy_sibling_pending(
-                    attributed, self._apply_telegram_group_observe_attribution(event))
-                await self._dispatch_media_event(event)
-                return
-            event = attributed
-            # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
-            if msg.photo:
-                try:
-                    file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
-                    image_bytes = await file_obj.download_as_bytearray()
-                    ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
-                    self._set_cached_media(
-                        event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
-                        "[Telegram] Cached user photo at %s")
-                    await self._route_photo_event(msg, event)
-                    return
-                except Exception as e:
-                    logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
-                    await self._surface_media_cache_failure(msg, event, "photo", e)
-            # Voice/audio cached for STT transcription; video for vision.
-            if msg.voice:
-                if await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg"):
-                    return
-            elif msg.audio:
-                if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
-                    return
-            elif video := msg.video or getattr(msg, "video_note", None):
-                if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
-                    return
-            elif msg.document and await self._cache_inbound_document(msg, event):
-                return
-            media_group_id = getattr(msg, "media_group_id", None)
-            if media_group_id:
-                await self._queue_media_group_event(str(media_group_id), event)
-                return
-            await self._dispatch_media_event(event)
+            await self._deliver_inbound_media(msg, event, attributed)
         finally:
             if inflight_key is not None:
                 self._end_media_inflight(inflight_key, generation)
+
+    async def _deliver_inbound_media(self, msg, event, attributed):
+        """Cache and dispatch one media message. The caller owns the inflight mark."""
+        if msg.sticker:
+            await self._handle_sticker(msg, event)
+            event = self._copy_sibling_pending(
+                attributed, self._apply_telegram_group_observe_attribution(event))
+            await self._dispatch_media_event(event)
+            return
+        event = attributed
+        # Cache photo locally: Telegram's file URLs expire (~1 hour) before vision may run.
+        if msg.photo:
+            try:
+                file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
+                image_bytes = await file_obj.download_as_bytearray()
+                ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
+                self._set_cached_media(
+                    event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
+                    "[Telegram] Cached user photo at %s")
+                await self._route_photo_event(msg, event)
+                return
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
+                await self._surface_media_cache_failure(msg, event, "photo", e)
+        # Voice/audio cached for STT transcription; video for vision.
+        if msg.voice:
+            if await self._cache_inbound_av(msg, event, msg.voice, "voice message", "voice", ".ogg", "audio/ogg"):
+                return
+        elif msg.audio:
+            if await self._cache_inbound_av(msg, event, msg.audio, "audio file", "audio", ".mp3", "audio/mp3"):
+                return
+        elif video := msg.video or getattr(msg, "video_note", None):
+            if await self._cache_inbound_av(msg, event, video, "video file" if msg.video else "video note", "video", ".mp4", "video/mp4"):
+                return
+        elif msg.document and await self._cache_inbound_document(msg, event):
+            return
+        media_group_id = getattr(msg, "media_group_id", None)
+        if media_group_id:
+            await self._queue_media_group_event(str(media_group_id), event)
+            return
+        await self._dispatch_media_event(event)
 
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Debounce album items (shared media_group_id) into one MessageEvent so the second image isn't

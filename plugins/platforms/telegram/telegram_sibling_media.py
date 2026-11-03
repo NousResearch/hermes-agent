@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from typing import Optional
 
 from gateway.platforms.event import MessageEvent
@@ -80,7 +79,6 @@ class TelegramSiblingMediaMixin:
         task = self._pending_text_batch_tasks.pop(key, None)
         if task is not None and not task.done():
             task.cancel()
-        self._signal_sibling_wait(self._sibling_media_key(pending))
         comment = (pending.text or "").strip()
         caption = (event.text or "").strip()
         if comment and not caption:
@@ -120,15 +118,10 @@ class TelegramSiblingMediaMixin:
             event._sibling_pending = pending  # type: ignore[attr-defined]
             event._sibling_pending_key = pending_key  # type: ignore[attr-defined]
             pending._sibling_media_claimed = True  # type: ignore[attr-defined]
-        else:
-            event._sibling_pending = None  # type: ignore[attr-defined]
-            event._sibling_pending_key = None  # type: ignore[attr-defined]
 
     @staticmethod
     def _copy_sibling_pending(src: MessageEvent, dest: MessageEvent) -> MessageEvent:
         """Keep the admission snapshot if attribution replaced the event object."""
-        if dest is src:
-            return dest
         dest._sibling_pending = getattr(src, "_sibling_pending", None)  # type: ignore[attr-defined]
         dest._sibling_pending_key = getattr(src, "_sibling_pending_key", None)  # type: ignore[attr-defined]
         return dest
@@ -168,9 +161,6 @@ class TelegramSiblingMediaMixin:
             if remaining <= 0:
                 return
             event = self._sibling_wait_event(sibling_key)
-            if self._sibling_wait_done(key, sibling_key):
-                self._drop_sibling_wait(sibling_key, event)
-                return
             try:
                 await asyncio.wait_for(event.wait(), timeout=remaining)
             except TimeoutError:
@@ -200,13 +190,9 @@ class TelegramSiblingMediaMixin:
 
     def _signal_sibling_wait(self, sibling_key: str) -> None:
         events = getattr(self, "_sibling_media_done", None)
-        if not events:
-            return
-        event = events.get(sibling_key)
-        if event is None:
-            return
-        event.set()
-        self._drop_sibling_wait(sibling_key, event)
+        event = (events or {}).pop(sibling_key, None)
+        if event is not None:
+            event.set()
 
     def _release_sibling_media_waits(self) -> None:
         events = getattr(self, "_sibling_media_done", None)
@@ -244,13 +230,9 @@ class TelegramSiblingMediaMixin:
 
     async def _flush_buffered(
         self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None,
-        hold: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
-        """Shared delayed-flush body: sleep, optional hold, pop, re-hold if teardown started, else dispatch.
+        """Shared delayed-flush body: sleep, optional text hold, pop, re-hold if teardown started, else dispatch.
         A cancel after the pop but before durable dispatch re-holds the event (never lose it).
-
-        ``hold`` is text-batch only (claimed sibling download). Photo/album callers omit it so their
-        timing stays byte-identical.
         """
         current_task = asyncio.current_task()
         committed = self.__dict__.setdefault("_committed_flush_tasks", {})
@@ -262,8 +244,8 @@ class TelegramSiblingMediaMixin:
             owner = tasks.get(key)
             if owner is not None and owner is not current_task:
                 return
-            if hold is not None:
-                await hold(key)
+            if where == "text":
+                await self._wait_for_sibling_media(key)
                 owner = tasks.get(key)
                 if owner is not None and owner is not current_task:
                     return
@@ -316,4 +298,4 @@ class TelegramSiblingMediaMixin:
             self._pending_text_batches, self._pending_text_batch_tasks, key,
             self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")),
-            hold=self._wait_for_sibling_media)
+        )

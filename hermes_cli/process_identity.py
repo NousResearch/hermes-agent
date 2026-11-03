@@ -316,6 +316,24 @@ def _same_incarnation(proc, create_time: Optional[float], boot: Optional[float] 
     return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
 
 
+def _is_linux_thread_id(pid: int) -> bool:
+    """Linux: is ``pid`` a non-leader thread id (``Tgid`` != ``pid`` in ``/proc/<pid>/status``)?
+
+    ``psutil.Process(tid)`` succeeds for any thread id because ``/proc/<tid>`` resolves even
+    though it is not listed, so a recorded PID recycled as some other process's thread would read
+    as a live process. ``False`` when ``/proc`` is absent or unreadable (no proof either way)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with open(f"/proc/{int(pid)}/status", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("Tgid:"):
+                    return int(line.split()[1]) != int(pid)
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
 def _pid_alive_matches(
     pid: int, create_time: Optional[float], *, strict: bool = False, boot: Optional[float] = None,
 ) -> Optional[bool]:
@@ -324,6 +342,8 @@ def _pid_alive_matches(
         import psutil
     except Exception:
         return None
+    if _is_linux_thread_id(pid):
+        return False  # a thread of another process is never the recorded process
     try:
         proc = psutil.Process(int(pid))
         # ``strict`` is positive proof (an exact epoch birth); a clock step only withholds it.

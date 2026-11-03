@@ -331,6 +331,25 @@ mcp-<server>
 
 这使得在工具集层面更容易理解 MCP 服务器的情况。
 
+## OAuth 2.1 认证
+
+对于需要 OAuth 的 HTTP MCP 服务器，设置 `auth: oauth`：
+
+```yaml
+mcp_servers:
+  protected_api:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+```
+
+首次连接时，Hermes 输出授权 URL，在可用时打开浏览器，并等待本地回环端口上的 OAuth 回调。
+
+OAuth 的 JSON 状态存储在当前 profile 的 `$HERMES_HOME/mcp-tokens/` 目录中（默认 profile 为 `~/.hermes/mcp-tokens/`）：`<server>.json` 保存 token，`<server>.client.json` 保存客户端注册信息，`<server>.meta.json` 保存已发现的授权服务器元数据，包括 token 端点。这里的 `<server>` 指用于文件名的规范化服务器名称。文件按需创建，目录中还可能包含内部锁文件、标记文件或备份文件。 在 Unix 上，JSON 状态文件以 `0600` 权限写入。
+
+Hermes 在启动时恢复缓存的元数据。如果已有 token 但缺少元数据，Hermes 会在刷新前尝试重新发现元数据；保留元数据文件可避免这一步，并保留已发现的 token 端点。仅缺少元数据并不意味着必须重新登录，但发现或刷新失败时仍可能需要重新授权。
+
+更多认证选项见 [MCP 配置参考](../../reference/mcp-config-reference.md#oauth-21-认证)。
+
 ## 安全模型
 
 ### Stdio 环境变量过滤

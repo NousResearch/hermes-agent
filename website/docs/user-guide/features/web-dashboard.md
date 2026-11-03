@@ -273,6 +273,20 @@ Each key shows:
 
 Advanced/rarely-used keys are hidden by default behind a toggle.
 
+### Vault
+
+The dashboard view of the same encrypted credential vault the agent uses for password-blind
+sign-in (see [Passwords & Logins](credential-vault.md)) — no terminal needed:
+
+- **Saved logins** — label, kind, origin and the login identifier. Passwords are never shown,
+  not even after unlocking.
+- **Add** — a `login` (site origin + identifier + password, optional authenticator key),
+  a `payment` method, or an `address`.
+- **Login sources** — 1Password and Bitwarden rows show installed / enabled / locked, with an
+  enable toggle, an *Unlock* field for the master password, and *Lock all*.
+- Profile-scoped like every other page: on a multi-profile host the request always names a
+  profile, and a delete with no profile named is refused rather than guessed.
+
 ### Sessions
 
 Browse and inspect all agent sessions. Each row shows the session title, source platform icon (CLI, Telegram, Discord, Slack, cron), model name, message count, tool call count, and how long ago it was active. Live sessions are marked with a pulsing badge.

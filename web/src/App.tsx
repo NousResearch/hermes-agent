@@ -35,6 +35,7 @@ import {
   Globe,
   Heart,
   KeyRound,
+  Lock as LockIcon,
   Menu,
   MessageSquare,
   Package,
@@ -81,6 +82,7 @@ import type { SystemAction } from "@/contexts/system-actions-context";
 const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
 const DocsPage = lazy(() => import("@/pages/DocsPage"));
 const EnvPage = lazy(() => import("@/pages/EnvPage"));
+const VaultPage = lazy(() => import("@/pages/VaultPage"));
 const FilesPage = lazy(() => import("@/pages/FilesPage"));
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
@@ -174,6 +176,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/profiles/new": ProfileBuilderPage,
   "/config": ConfigPage,
   "/env": EnvPage,
+  "/vault": VaultPage,
   "/docs": DocsPage,
 };
 
@@ -216,6 +219,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  { path: "/vault", label: "Vault", icon: LockIcon },
   { path: "/system", label: "System", icon: Wrench },
   {
     path: "/docs",

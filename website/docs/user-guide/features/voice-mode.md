@@ -229,7 +229,7 @@ The chained loop above is one of two voice chat modes in the desktop app. The ot
 
 ```yaml
 voice:
-  voice_chat_mode: gpt-live     # chained (default) | gpt-live
+  voice_chat_mode: gpt-live     # chained (default) | gpt-live | <plugin>:<engine>
   gpt_live:
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
     instructions: ""            # optional extra persona sentences (tone, pace, language)
@@ -240,6 +240,23 @@ Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or 
 How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
 Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+
+### Desktop: voice engines from plugins
+
+A Desktop plugin can add its own live voice engine (for example a Grok voice), shown next to
+speech-to-text and GPT-Live in the voice button's menu and under **Settings ▸ Voice ▸
+Conversation**. Selecting it saves `voice.voice_chat_mode: <plugin>:<engine>` (for example
+`hermes-xai:grok`). It works like GPT-Live: the voice model owns the microphone and speaker and
+hands every real request to Hermes as a normal turn on the open chat, with your model, tools and
+approvals.
+
+- If the engine needs a provider sign-in, Settings ▸ Voice shows whether you are signed in, with
+  **Sign in** (a code to enter on the provider's page) and **Sign out**. Signing out removes that
+  provider's sign-in from the profile, for every feature that uses it. The plugin never receives
+  your token.
+- The engine's own options (voice, persona, …) appear under it in the same page.
+- If the plugin is turned off or uninstalled, the voice button falls back to speech-to-text with a
+  notice.
 
 ### Voice chat model
 

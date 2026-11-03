@@ -55,6 +55,7 @@ import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterK
 import {
   $botSections,
   $draggingBot,
+  $groupChatSections,
   adoptBotSectionsFromMeta,
   backfillBotSectionNames,
   type SectionDialogState
@@ -247,6 +248,7 @@ export function BotsPane() {
   const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
   const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
   const userSections = useValue($botSections)
+  const groupChatSections = useValue($groupChatSections)
   const dragging = useValue($draggingBot)
   useEscapeCancelsBotDrag()
 
@@ -431,7 +433,7 @@ export function BotsPane() {
       onDelete={setDeleting}
       onEdit={setEditing}
       onGroup={setGrouping}
-      onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}
+      onNewSection={target => setSectionDialog({ bot: target, mode: 'create', scope: 'bot' })}
       showHandle={botNeedsHandleLabel(bot, roster, allMeta)}
     />
   )
@@ -447,7 +449,7 @@ export function BotsPane() {
       key={`group:${row.name}`}
       members={row.members}
       onDisband={setDeletingGroup}
-      onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
+      onNewSection={target => setSectionDialog({ group: target, mode: 'create', scope: 'group' })}
       onOpen={group => openGroupChat(group, 'name')}
       sortedGroupRows={sortedGroupRows}
     />
@@ -457,6 +459,7 @@ export function BotsPane() {
     rosterSectionRenderers({
       b,
       userSections,
+      groupChatSections,
       roster,
       allMeta,
       groupRooms,

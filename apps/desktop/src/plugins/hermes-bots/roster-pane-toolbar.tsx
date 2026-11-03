@@ -48,7 +48,7 @@ interface renderRosterToolbarProps {
   setCreateOpen: (value: boolean) => void
   setGroupCreateOpen: (value: boolean) => void
   setSectionDialog: (
-    value: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+    value: null | { bot?: RosterRow; mode: 'create'; scope: 'bot' } | { id: string; mode: 'rename'; name: string; scope: 'bot' }
   ) => void
   showRosterTools: boolean
   showRosterSearch: boolean
@@ -126,7 +126,7 @@ export function renderRosterToolbar({
               </DropdownMenuItem>
               <NewGroupChatItem label={b.group.newTitle} onSelect={() => setGroupCreateOpen(true)} roster={roster} />
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>
+              <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create', scope: 'bot' })}>
                 <Codicon className="mr-1.5" name="new-folder" />
                 {b.sections.newSection}
               </DropdownMenuItem>

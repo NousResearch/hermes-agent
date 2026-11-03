@@ -1555,11 +1555,12 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return []
         tags = event.get("tags") if isinstance(event.get("tags"), list) else []
         pks = [str(t[1]).lower() for t in tags if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
-        (found,) = await asyncio.gather(self._channel_member_pubkeys(channel_id), return_exceptions=True)  # a failed roster read is an unknown roster
-        roster = dict.fromkeys([] if isinstance(found, BaseException) else found)
+        try:
+            roster = dict.fromkeys(await self._channel_member_pubkeys(channel_id))
+        except Exception:  # health: allow BLE001 -- a failed roster read is an unknown roster (CancelledError still propagates)
+            roster = {}
         pks = [pk for pk in pks if pk in roster or not roster]  # p-tags are sender-controlled and read before authorization
-        budget = _MENTION_LOOKUP_CAP
-        lookups = []
+        budget, lookups = _MENTION_LOOKUP_CAP, []
         for pk in dict.fromkeys(pks + list(roster)):
             if pk == self._self_pubkey or not _HEX64_RE.fullmatch(pk):
                 continue
@@ -1568,9 +1569,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                     continue  # later pubkeys may still be cached
                 budget -= 1
             lookups.append(pk)
-        # One CLI subprocess per uncached name: run them concurrently so a cold roster doesn't stall intake serially.
-        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups), return_exceptions=True)  # enrichment must not drop the event
-        return list({n.lower() for n in resolved if isinstance(n, str) and n.lower().startswith(own) and re.search(r"\w", n[len(own):])})
+        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups), return_exceptions=True)  # concurrent (one CLI call per uncached name) so a cold roster doesn't stall intake; failures must not drop the event
+        return list({low for n in resolved if isinstance(n, str) and (low := n.lower()).startswith(own) and re.search(r"\w", low[len(own):])})
 
     def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""

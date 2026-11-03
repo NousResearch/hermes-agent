@@ -2,8 +2,9 @@
 // from main.ts; the HUD window handle and session-id latch stay injected
 // because main.ts owns the window lifecycle and the close broadcast reads the
 // latch when handing the session back to the app window.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain, screen } from 'electron'
 
+import { createHudDragSession } from './hud-drag'
 import { normalizeHudResizeBounds } from './hud-geometry'
 import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
 import { hudFrostFor, type TranslucencyState } from './translucency'
@@ -32,6 +33,8 @@ export function registerHudIpc({
   resetHudLayout,
   setHudSessionId
 }: HudIpcDeps) {
+  const hudDrag = createHudDragSession()
+
   // The renderer needs this before first paint so X11 never installs the
   // Chromium drag region that steals modifier-drag gestures from the WM.
   // Main answers because it owns the actual Ozone backend selection.
@@ -170,6 +173,32 @@ export function registerHudIpc({
     hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
   })
 
+  ipcMain.on('hermes:hud:begin-move', event => {
+    const hudWindow = getHudWindow()
+
+    if (
+      !hudWindow ||
+      hudWindow.isDestroyed() ||
+      event.sender !== hudWindow.webContents ||
+      !hudWindowing().clientPlacement
+    ) {
+      return
+    }
+
+    const [x, y] = hudWindow.getPosition()
+    hudDrag.begin(screen.getCursorScreenPoint(), { x, y })
+  })
+
+  ipcMain.on('hermes:hud:end-move', event => {
+    const hudWindow = getHudWindow()
+
+    if (hudWindow && !hudWindow.isDestroyed() && event.sender !== hudWindow.webContents) {
+      return
+    }
+
+    hudDrag.end()
+  })
+
   ipcMain.on('hermes:hud:move-by', (event, delta) => {
     const hudWindow = getHudWindow()
 
@@ -177,28 +206,27 @@ export function registerHudIpc({
       return
     }
 
-    const dx = Number(delta?.x)
-    const dy = Number(delta?.y)
     const width = Number(delta?.width)
     const height = Number(delta?.height)
 
-    if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(width) || !Number.isFinite(height)) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || !hudWindowing().clientPlacement) {
       return
     }
 
-    const [x, y] = hudWindow.getPosition()
+    const origin = hudDrag.origin(screen.getCursorScreenPoint())
 
-    if (!hudWindowing().clientPlacement) {
+    if (!origin) {
       return
     }
 
-    // setBounds — NOT setPosition: on Windows, a transparent frameless window
-    // silently grows ~1px per setPosition call (worse at >100% DPI). The renderer
-    // snapshots outerWidth/outerHeight when the composer drag arms and re-pins
-    // to that size on every moveBy (same pattern as the pet overlay drag).
+    // Cursor − grab offset in Electron DIP (see hud-drag.ts). setBounds —
+    // NOT setPosition: on Windows, a transparent frameless window silently
+    // grows ~1px per setPosition call (worse at >100% DPI). The renderer
+    // snapshots outerWidth/outerHeight when the composer drag arms and
+    // re-pins to that size on every move (same pattern as the pet overlay).
     hudWindow.setBounds({
-      x: Math.round(x + dx),
-      y: Math.round(y + dy),
+      x: origin.x,
+      y: origin.y,
       width: Math.round(width),
       height: Math.round(height)
     })

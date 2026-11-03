@@ -72,3 +72,60 @@ class TestTelegramModelPicker:
         assert "`model_1`" in edit_kwargs["text"]
 
 
+def _gateway_wired_adapter():
+    """Real adapter with the real gateway auth callback, as ``GatewayRunner`` wires it."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.pairing import PairingStore
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, extra={})}
+    runner.pairing_store = PairingStore(profile="default")
+    runner.pairing_stores = {"default": runner.pairing_store}
+    runner._primary_profile_name = "default"
+    adapter = _make_adapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.TELEGRAM))
+    return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tapper_id, switches", [("222", False), ("111", True)])
+async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch, tapper_id, switches):
+    """Only an allowlisted tapper can switch the model from a group /model picker."""
+    for key in ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "TELEGRAM_ALLOW_ALL_USERS",
+                "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+    import hermes_cli.model_selection_guards as guards
+    monkeypatch.setattr(guards, "combined_selection_warning", lambda *a, **k: None)
+
+    adapter = _gateway_wired_adapter()
+    on_model_selected = AsyncMock(return_value="Switched to `other-model`")
+    adapter._model_picker_state["-100777"] = {
+        "providers": [{"slug": "openai", "name": "OpenAI", "total_models": 1}],
+        "current_model": "owner-model",
+        "current_provider": "openai",
+        "session_key": "s",
+        "on_model_selected": on_model_selected,
+        "selected_provider": "openai",
+        "model_list": ["other-model"],
+        "msg_id": 42,
+    }
+    query = SimpleNamespace(
+        data="mm:0",
+        message=SimpleNamespace(
+            chat_id=-100777, chat=SimpleNamespace(type="supergroup"), message_thread_id=None
+        ),
+        from_user=SimpleNamespace(id=int(tapper_id), first_name="Tapper"),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+
+    await adapter._handle_callback_query(SimpleNamespace(callback_query=query), MagicMock())
+
+    assert on_model_selected.await_count == (1 if switches else 0)
+    assert ("-100777" in adapter._model_picker_state) is not switches
+
+

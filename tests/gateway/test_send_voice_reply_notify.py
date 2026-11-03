@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -61,7 +61,7 @@ def _fake_tts_call(monkeypatch, audio_bytes=b"\x00" * 32):
         _fake_text_to_speech_tool,
     )
     monkeypatch.setattr(
-        "tools.tts_tool._strip_markdown_for_tts",
+        "tools.tts_text_normalize._strip_markdown_for_tts",
         lambda text: text,
     )
 

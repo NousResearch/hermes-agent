@@ -1,0 +1,25 @@
+name: web-deepseek
+repo: https://github.com/Leegenux/hermes-web-deepseek
+sha: 49151d34b7030a08de1c3f16033a62a951b9c1d7
+description: "DeepSeek Search + Fetch — routes web_search and web_extract through
+  DeepSeek's in-house AI search engine and server-side fetcher on api.deepseek.com
+  (opened up in the vendor's 2026-10-17 changelog: AI-native engine indexing hundreds
+  of billions of pages, multilingual, filters SEO spam / GEO manipulation / low-quality
+  AIGC). Registers the provider id `deepseek-web`. Disclosure — each search/fetch is a
+  separate billed DeepSeek call at $0.75 per 1,000 successful requests per endpoint, and
+  only HTTP 200 responses that produce a result are billable (5 QPS per account per
+  endpoint, plus a per-domain QPS limit on fetch); the provider reuses DEEPSEEK_API_KEY
+  and sends it only to api.deepseek.com; extract returns Markdown only (no HTML variant,
+  so web_extract(format=\"html\") gets Markdown), and anti-bot or JS-rendered sites fail
+  (zhihu.com, x.com, nytimes.com returned HTTP 404 in testing) while static pages work."
+maintainer: Leegenux
+tier: community
+category: web
+docs_url: https://github.com/Leegenux/hermes-web-deepseek#readme
+version: "1.1.2"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - DEEPSEEK_API_KEY

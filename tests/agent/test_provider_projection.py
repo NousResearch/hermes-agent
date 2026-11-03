@@ -24,7 +24,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from agent.provider_projection import splice_provider_projection  # noqa: E402
+from agent.provider_projection import splice_provider_projection
 
 _PROJECTED = [
     {
@@ -157,10 +157,10 @@ def _run_turn(monkeypatch, *, projected, iterations):
     from run_agent import AIAgent
 
     monkeypatch.setattr(
-        "run_agent.OpenAI",
+        "agent.process_bootstrap.OpenAI",
         lambda **_kw: _FakeAgentProviderClient(projected, iterations),
     )
-    monkeypatch.setattr("run_agent.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
 
     agent = AIAgent(
         model="test-model",
@@ -177,7 +177,7 @@ def _run_turn(monkeypatch, *, projected, iterations):
 
 
 def test_provider_work_lands_in_the_transcript_through_the_real_loop(monkeypatch):
-    _agent_, result = _run_turn(monkeypatch, projected=_projected_rows(), iterations=1)
+    _agent, result = _run_turn(monkeypatch, projected=_projected_rows(), iterations=1)
 
     messages = result["messages"]
     tool_rows = [
@@ -206,7 +206,7 @@ def test_provider_iterations_tick_the_skill_nudge_through_the_real_loop(monkeypa
 
 def test_ordinary_provider_turn_is_unchanged(monkeypatch):
     """A completion without the attributes must not gain rows or counter ticks."""
-    _agent_, result = _run_turn(monkeypatch, projected=[], iterations=0)
+    _agent, result = _run_turn(monkeypatch, projected=[], iterations=0)
     assert not [
         m for m in result["messages"]
         if isinstance(m, dict) and str(m.get("name") or "").startswith("acpagent_")

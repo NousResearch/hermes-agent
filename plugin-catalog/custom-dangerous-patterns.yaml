@@ -1,6 +1,6 @@
 name: custom-dangerous-patterns
 repo: https://github.com/scross01/hermes-custom-dangerous-patterns-plugin
-sha: 788dc41c50201877d353e847626c8a096ab6968f
+sha: 256ff08d0be04baf1916f5e7d841b1c2718aa1e4
 description: >-
   Add custom dangerous command patterns to Hermes's built-in approval
   system. Users define regex patterns in YAML; a pre_tool_call hook sends
@@ -10,7 +10,8 @@ maintainer: scross01
 tier: community
 category: tools
 requires_hermes: ">=0.21.4"
-version: "0.5.0"
+version: "0.5.1"
+image: https://raw.githubusercontent.com/scross01/hermes-custom-dangerous-patterns-plugin/256ff08d0be04baf1916f5e7d841b1c2718aa1e4/assets/card.png
 platforms: []
 capabilities:
   provides_tools: []

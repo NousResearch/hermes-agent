@@ -142,7 +142,7 @@ def test_baseline_unhardened_git_fires_sinks(malicious_repo):
     """Sanity: without hardening the payload actually fires — proves the repo
     is armed and the test can detect a regression."""
     repo, marker = malicious_repo
-    subprocess.run(["git", "-C", str(repo), "diff", "HEAD"], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "diff", "HEAD"], capture_output=True, check=False)
     fired = _fired(marker)
     assert "fsmonitor" in fired and "extdiff" in fired, fired
 
@@ -221,7 +221,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     worktree_ops._cleanup_failed_worktree_add(str(repo), tmp_path / "wt3", "safe3")
     assert _fired(marker) == []
     branches = subprocess.run(["git", "-C", str(repo), "branch", "--format=%(refname:short)"],
-                              capture_output=True, text=True, env=_CLEAN_GIT_ENV).stdout.split()
+                              capture_output=True, text=True, env=_CLEAN_GIT_ENV, check=False).stdout.split()
     assert not {"safe2", "pr-1", "safe3"} & set(branches)  # the deletions ran
 
     for key, value in {"remote.origin.url": "ssh://git@example.invalid/x.git",

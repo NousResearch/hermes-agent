@@ -11,6 +11,8 @@ reaches ``_run_agent`` is byte-identical on all three turns.
 
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -363,6 +365,164 @@ async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins
 
 
 @pytest.mark.asyncio
+async def test_first_internal_event_after_agent_eviction_keeps_effective_prompt(monkeypatch):
+    """/stop, /undo and /model evict the cached agent mid-conversation and clear the context pin
+    while the channel pin survives; a wake arriving next must still send the human turn's bytes."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config, durable_prompt_pin={})
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+    runner._evict_cached_agent(KEY)
+    await _drive(
+        runner,
+        ((True, _wake_thread_source()), (False, _human_thread_source())),
+        channel_prompt="Channel hint.",
+    )
+
+    assert len(calls) == 3
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    assert "Guild / #dev / build thread" in eph[0]
+    assert eph[0] == eph[1] == eph[2], "wake after eviction re-rendered the session context (A->B->A)"
+
+
+def _synthetic_turn(runner, source, kind: str) -> MessageEvent:
+    """The event each real producer builds: goal continuation / heartbeat via
+    ``_synthetic_prompt_event``, ``/goal resume`` via ``_enqueue_goal_turn``."""
+    if kind == "goal-resume":
+        enqueued: list[MessageEvent] = []
+        runner._adapter_and_key_for = lambda _event: (object(), KEY)
+        runner._enqueue_fifo = lambda _key, turn, _adapter: enqueued.append(turn)
+        command = MessageEvent(text="/goal resume", source=source, channel_prompt="Channel hint.")
+        runner._enqueue_goal_turn(command, "[goal] resume", label="resume", kickoff=False)
+        return enqueued[0]
+    if kind == "heartbeat-rebuilt-route":
+        # A watch route rebuilt from a stored origin can lack the chat/user names the human turn
+        # rendered; the context pin must still be reused, not re-rendered from it.
+        source = _wake_thread_source()
+    return runner._synthetic_prompt_event(source, "[goal] continue")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["goal-continuation", "goal-resume", "heartbeat-rebuilt-route"])
+async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, kind):
+    """Goal continuation, heartbeat due-prompts and ``/goal resume`` are non-internal (they keep
+    authorization and the emergency stop) but carry no channel prompt of their own; they must
+    reuse the human turn's pins instead of overwriting the channel pin with None (A->B->A)."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    human = _human_thread_source()
+
+    await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
+    synthetic = _synthetic_turn(runner, human, kind)
+    assert not synthetic.internal and synthetic.channel_prompt is None
+    if kind == "goal-continuation":
+        # A continuation queued behind the running turn drains through the in-band follow-up.
+        runner._run_agent_deliver_first_response = AsyncMock()
+        runner._refresh_agent_cache_message_count = AsyncMock()
+        runner._session_key_for_source = lambda _source: KEY
+        adapter = MagicMock(_active_sessions={}, _pending_messages={KEY: synthetic})
+        adapter.get_pending_message = lambda key: adapter._pending_messages.pop(key, None)
+        result = {"final_response": "done", "messages": []}
+        pending_event, pending = await runner._run_agent_drain_pending(result, adapter, human, KEY)
+        assert pending_event is synthetic
+        first = calls[0]
+        turn_ctx = TurnContext(source=first["source"], context_prompt=first["context_prompt"],
+                               channel_prompt=first["channel_prompt"], session_key=KEY,
+                               session_id=first["session_id"], run_generation=1, history=[])
+        await runner._run_agent_queued_followup(turn_ctx, adapter, pending, pending_event, "done", result, None)
+    else:
+        await runner._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
+    assert runner._peek_session_state(KEY).conversation.channel_pin[0] == "Channel hint."
+    await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint."] * 3
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
+    assert eph[0] == eph[1] == eph[2], "synthetic turn toggled the effective ephemeral prompt"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin_message_id", [None, "m-origin"], ids=("no-msgid", "msgid"))
+async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp_path, monkeypatch, origin_message_id):
+    """The default runtime admits adapter turns through the native session envelope; a goal
+    continuation must arrive at the handler still asking to reuse the pins (#126109). The
+    continuation is enqueued mid-turn like the post-turn hook does and drains from the adapter
+    FIFO; a source carrying ``message_id`` (Discord) must keep its adapter ref through the
+    producer's copy or native admission refuses it as ``not_found``."""
+    import gateway.run as gr
+    from gateway.platforms.base import SendResult
+    from gateway.session_authority import initialize_session_authority
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from tests.waiting import async_wait_until
+
+    chat = "15551234567@s.whatsapp.net"
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={
+        "text_batch_delay_seconds": 0, "session_path": str(tmp_path / "wa")}))
+    adapter.gateway_runner, runner.adapters = runner, {Platform.WHATSAPP: adapter}
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="pins")
+    runner._wire_adapter_handlers(adapter)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    monkeypatch.setattr(adapter, "send", AsyncMock(return_value=SendResult(success=True, message_id="s")))
+    source = adapter.build_source(chat_id=chat, user_id=chat, chat_type="dm", message_id=origin_message_id)
+    run_agent = runner._run_agent
+
+    async def run_and_continue(**kw):
+        if not calls:  # the goal judge said continue: enqueue while this turn still runs
+            runner._enqueue_fifo(runner._session_key_for_source(source), runner._synthetic_prompt_event(
+                source, "[Continuing toward your standing goal]\nGoal: x"), adapter)
+        return await run_agent(**kw)
+
+    runner._run_agent = run_and_continue
+    turns = (
+        (2, MessageEvent(text="hi", source=source, message_id="h1", channel_prompt="Channel hint.")),
+        (3, MessageEvent(text="hi again", source=source, message_id="h2", channel_prompt="Channel hint.")),
+    )
+    try:
+        for want, event in turns:
+            await adapter.handle_message(event)
+            await async_wait_until(
+                lambda: len(calls) >= want and not adapter._background_tasks and not adapter._session_tasks,
+                timeout=60, what=f"turn {want}")
+    finally:
+        authority.db.close()
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint."] * 3
+    pin = runner._peek_session_state(runner._session_key_for_source(source)).conversation.channel_pin
+    assert pin[0] == "Channel hint."
+
+
+@pytest.mark.asyncio
+async def test_human_turn_without_channel_prompt_still_replaces_the_pin(monkeypatch):
+    """Negative control: only synthetic turns inherit. A human turn whose channel prompt was
+    removed must still clear it, or a deleted channel prompt would stick forever."""
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt=None)
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint.", None]
+    assert runner._peek_session_state(KEY).conversation.channel_pin[0] is None
+
+
+@pytest.mark.asyncio
 async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkeypatch):
     durable = {
         "value": {
@@ -419,3 +579,83 @@ async def test_internal_event_never_reuses_prompt_pin_from_another_privacy_polic
 
     assert calls[0]["context_prompt"] != "UNREDACTED CONTEXT"
     assert calls[0]["channel_prompt"] == "Channel hint."
+
+
+# ---------------------------------------------------------------------------
+# #131294 — a channel_overrides model is the session's CONFIGURED model, not a
+# fallback.  The post-turn ``_run_agent_evict_on_fallback`` check baselined
+# against the global model only, so every successful turn in an overridden chat
+# evicted the cached agent (and cleared its ephemeral pin).  These drive the
+# REAL ``_run_agent`` / ``TurnRunner.run_sync`` path (only the AIAgent class and
+# config reads are substituted), not the ``_capture`` stub above.
+# ---------------------------------------------------------------------------
+
+_WELCOME = "https://welcome-api.nousresearch.com/v1"
+
+
+class _TurnAgent:
+    """AIAgent stand-in: keeps the resolved route, answers without an API call."""
+
+    instances = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances += 1
+        self.model = kwargs.get("model")
+        self.provider = kwargs.get("provider")
+        self.base_url = kwargs.get("base_url")
+        self.session_id = kwargs.get("session_id")
+        self.tools = []
+        self.request_overrides = dict(kwargs.get("request_overrides") or {})
+        # Mirror AIAgent.__init__: the welcome host pins its one model, and the primary
+        # route is snapshotted for the post-turn fallback classifier.
+        from hermes_cli.anon_auth import pin_model_for_route
+        self.model = pin_model_for_route(self.provider, self.base_url, self.model)
+        self._primary_runtime = {"model": self.model, "provider": self.provider, "base_url": self.base_url}
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None, **kwargs):
+        return {
+            "final_response": "ok",
+            "messages": (conversation_history or []) + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "api_calls": 1,
+        }
+
+
+@pytest.mark.parametrize(
+    "runtime, global_model, expected_model",
+    [
+        ({"api_key": "fake", "provider": "openrouter"}, "default/model", "chan/model"),
+        ({"api_key": "fake", "provider": "nous", "base_url": _WELCOME}, "nous/welcome", "nous/welcome"),
+    ],
+    ids=["named-channel-model", "welcome-host-pins-over-channel-model"],
+)
+@pytest.mark.asyncio
+async def test_channel_override_turns_keep_one_cached_agent_and_the_pin(
+    monkeypatch, runtime, global_model, expected_model,
+):
+    import gateway.run as gr
+
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True, channel_overrides={_ORIGIN["chat_id"]: ChannelOverride(model="chan/model")},
+    )
+    monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"model": {"default": global_model}})
+    monkeypatch.setattr(gr, "_resolve_gateway_model", lambda config=None: global_model)
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _TurnAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    _TurnAgent.instances = 0
+
+    runner = _make_runner(monkeypatch, config)
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: dict(runtime))
+    runner.session_store._entries = {}
+
+    await _drive(runner, ((False, _human_source()), (True, _wake_source()), (False, _human_source())))
+
+    entry = runner._agent_cache.get(KEY)
+    assert entry is not None, "channel-override turn evicted the session's cached agent"
+    assert entry[0].model == expected_model
+    assert _TurnAgent.instances == 1, f"agent rebuilt {_TurnAgent.instances - 1}x across 3 turns"
+    assert runner._peek_session_state(KEY).conversation.ephemeral_pin is not None, "context pin cleared"

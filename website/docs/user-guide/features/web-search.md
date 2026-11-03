@@ -39,7 +39,7 @@ Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of t
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
 :::info Works out of the box — keyless free-tier rotation
-A fresh install with **no web credentials at all** gets working `web_search` and `web_extract` out of the box: requests rotate round-robin across the ring vendors' public free tiers — **Exa, Parallel, Firecrawl, and Keenable** — spreading load evenly, and a rate-limited request automatically retries on the next vendor in the ring (multi-hop, until one serves or all are throttled). No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For guaranteed, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
+A fresh install with **no web credentials at all** gets working `web_search` and `web_extract` out of the box: requests rotate round-robin across the ring vendors' public free tiers — **Exa, Parallel, Firecrawl, and Keenable** — spreading load evenly, and a rate-limited request automatically retries on the next vendor in the ring (multi-hop, until one serves or all fail). A search that a vendor refuses (a 401/402/403 access gate or a 5xx) retries the same way. No signup, no key. This tier is strictly last-resort — any configured backend or present API key always wins — and requests carry no user identifiers (only a random per-process session id, rotated on restart). For guaranteed, unthrottled service, set up a keyed provider. Disable the keyless tier entirely with `web.keyless_fallback: false`.
 :::
 
 **Choosing free vs paid explicitly:** in `hermes tools`, Exa, Parallel, and Keenable each appear as two rows — **Free (keyless)** and **Paid (API key)**. Picking Free pins that vendor's anonymous endpoint (even if you later add a key); picking Paid pins the keyed path (a missing key then errors instead of silently downgrading to the free tier). The selection is stored as `web.provider_tier.<name>: free|paid`; leave it unset for auto (key present → paid, otherwise the keyless ring).
@@ -66,7 +66,7 @@ Each provider dispatch is also bounded by a wall-clock timeout (`web.extract_tim
 
 ### When truncation gets in the way
 
-If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_navigate` + `browser_snapshot` instead. The browser tool returns the live accessibility tree (subject to its own snapshot cap on huge pages).
+If you specifically need the live DOM rather than extracted markdown — for example, a JS-heavy page where extraction returns little content — use `browser_exec` instead: open the page with `new_tab(url)` + `wait_for_load()`, then read it with `page_info()` or a `js()` DOM extraction. It works on the live, rendered page.
 
 ---
 
@@ -427,9 +427,9 @@ When a per-capability key is empty, that capability falls through to `web.backen
 
 **Priority order (per capability):**
 1. `web.extract_backends` (ordered fallback chain, `web_extract` only — see below)
-2. `web.search_backend` / `web.extract_backend` (explicit per-capability)
+2. `web.search_backend` / `web.extract_backend` (explicit per-capability; `nous` = managed Tool Gateway for that capability only, see [Tool Gateway](./tool-gateway.md#mixing-your-own-key-and-the-gateway-web-only))
 3. `web.backend` (shared fallback; `nous` = managed Tool Gateway)
-4. Auto-detect from environment variables (never-configured setups only)
+4. Auto-detect from environment variables (no shared selection written)
 
 ### Extract fallback chain
 
@@ -449,7 +449,8 @@ Each URL batch goes to the first entry. If that backend raises, times out, retur
 Notes:
 - The chain wins over `web.extract_backend` / `web.backend` whenever it is non-empty; `web_search` is unaffected.
 - Entries are honored as written: a name that isn't a registered extract provider (typo, uninstalled or disabled plugin, search-only backend) is skipped with a typed warning — never silently replaced by another backend. Blank entries and duplicates are dropped.
-- A website-policy block (`blocked_by_policy`) is a decision, not a failure: a blocked URL is never re-fetched through the next entry.
+- A `nous` entry means managed Firecrawl through the Tool Gateway, exactly as `web.extract_backend: nous` does.
+- A website-policy block (`blocked_by_policy`) is a decision, not a failure: a blocked URL is never re-fetched through the next entry. The same holds for a page whose post-redirect URL is refused by policy or the SSRF gate.
 - The one-shot keyless rescue (below) applies only to the **last** entry, so a failing entry falls through to *your* chain, not to the free ring.
 - Third-party extract plugins work as entries by their provider name (the `name` the plugin registers, which can differ from their plugin/package name).
 
@@ -471,7 +472,7 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 | Nous identity present (any account, including the free tier and anonymous guests) | managed web search (`web_search` only); extract and the keyless ring below are unchanged |
 | *(nothing set at all)* | keyless ring: exa / parallel / firecrawl / keenable (round-robin) |
 
-**Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured. A Nous identity (guest included) is unaffected by that switch: managed `web_search` still applies, though `web_extract` needs a configured provider.
+**Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request, or a search the vendor refuses, fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured. A Nous identity (guest included) is unaffected by that switch: managed `web_search` still applies, though `web_extract` needs a configured provider.
 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend — including the Nous Tool Gateway route (`web.backend: nous`) — fails a call (bad key, outage, unreachable gateway, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 

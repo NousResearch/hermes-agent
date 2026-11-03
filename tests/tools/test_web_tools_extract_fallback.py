@@ -829,3 +829,114 @@ class TestChainNormalization:
         monkeypatch.setenv("TAVILY_API_KEY", "test-key")
 
         assert web_tools._get_extract_backends() == ["tavily"]
+
+    def test_a_nous_entry_is_the_managed_firecrawl_route(self, monkeypatch):
+        """``nous`` means the managed Tool Gateway route on the scalar key; a chain entry
+        must mean the same thing instead of being an unregistered-provider error, and it
+        must collapse into a neighbouring explicit ``firecrawl`` entry."""
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"extract_backends": ["nous", "firecrawl", "tavily"]},
+        )
+
+        assert web_tools._get_extract_backends() == ["firecrawl", "tavily"]
+
+
+# ─── Chain x upstream dispatch semantics (redirect gate, origin HTTP errors) ─
+
+
+class TestChainWithRedirectGateAndOriginErrors:
+    """The chain walks the shared dispatch, so it inherits the redirect re-gate and the
+    origin-HTTP-error rule. Both must keep their meaning inside a chain."""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_redirect_target_is_terminal_for_the_chain(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        """A provider that follows a redirect into a policy-blocked host is refused by the
+        shared final-URL gate. That refusal is a decision, not a backend failure: the same
+        URL must not be shopped to the next configured backend."""
+        def _redirected(urls):
+            return [{"url": "https://blocked.test/secret", "title": "T",
+                     "content": "TARGET PAGE", "raw_content": "TARGET PAGE",
+                     "metadata": {"sourceURL": u}} for u in urls]
+
+        def _policy(url, *_a, **_k):
+            if "blocked.test" in url:
+                return {"host": "blocked.test", "rule": "blocked.test", "source": "config",
+                        "message": "Blocked: blocked.test is blocked by website policy"}
+            return None
+
+        monkeypatch.setattr("tools.website_policy.check_website_access", _policy)
+        redirecting = _FakeExtractProvider("chain-a", respond=_redirected)
+        must_not_run = _FakeExtractProvider("chain-b")
+        _register(redirecting, must_not_run)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://redirector.test/go"]))
+
+        assert redirecting.calls == 1
+        assert must_not_run.calls == 0, (
+            "a refused redirect target is a policy decision — the next backend must not "
+            "be asked for the same URL"
+        )
+        entry = result["results"][0]
+        assert entry["blocked_by_policy"]["rule"] == "blocked.test"
+        assert entry["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_an_origin_http_error_still_falls_through_to_the_next_entry(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        """An origin 4xx/5xx is the page's own answer, so it never triggers the free keyless
+        ring. The user's OWN configured chain is a different contract: a backend that only
+        returns origin errors has produced no usable content, so the next entry still runs,
+        and the ring stays out of it."""
+        from plugins.web import keyless_mcp
+        from plugins.web._common import origin_http_error
+
+        monkeypatch.setattr(wte, "_rescue_eligible", lambda _provider: True)
+        origin_error = origin_http_error(403, "Forbidden")
+        assert wte._backend_failed_whole_batch([{"error": origin_error}]) is False
+
+        def _origin_403(urls):
+            return [{"url": u, "title": "", "content": "", "raw_content": "",
+                     "error": origin_error} for u in urls]
+
+        chain_a = _FakeExtractProvider("chain-a", respond=_origin_403)
+        chain_b = _FakeExtractProvider("chain-b")
+        _register(chain_a, chain_b)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            result = json.loads(await web_tools.web_extract_tool(["https://example.com"]))
+
+        ring.assert_not_called()
+        assert chain_b.calls == 1
+        assert result["results"][0]["content"] == "ok-from-chain-b"
+
+    @pytest.mark.asyncio
+    async def test_a_final_entrys_origin_http_error_is_returned_without_the_ring(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        """The last entry's origin error is the answer a single backend would have given:
+        surfaced as-is, with no keyless rescue behind it."""
+        from plugins.web import keyless_mcp
+        from plugins.web._common import origin_http_error
+
+        monkeypatch.setattr(wte, "_rescue_eligible", lambda _provider: True)
+        origin_error = origin_http_error(404)
+
+        def _origin_404(urls):
+            return [{"url": u, "title": "", "content": "", "raw_content": "",
+                     "error": origin_error} for u in urls]
+
+        only = _FakeExtractProvider("chain-a", respond=_origin_404)
+        _register(only)
+        _chain(monkeypatch, "chain-a")
+
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            result = json.loads(await web_tools.web_extract_tool(["https://example.com"]))
+
+        ring.assert_not_called()
+        assert result["results"][0]["error"] == origin_error

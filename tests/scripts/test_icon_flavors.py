@@ -48,14 +48,14 @@ def generate(tmp_path_factory):
                    "PYTHONHOME": str(root / "foreign-python"), "HERMES_DISABLE_LAZY_INSTALLS": "1"}
             command = [node, str(ROOT / "scripts/generate-icons.mjs"),
                        "--source", str(source), "--out", str(out)]
-            result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+            result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
             if rejected:
                 assert result.returncode != 0, "invalid build identity generated icons"
                 assert not out.exists()
                 return
             assert result.returncode == 0, result.stdout + result.stderr
             if not outputs:
-                checked = subprocess.run([*command, "--check"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+                checked = subprocess.run([*command, "--check"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
                 assert checked.returncode == 0, checked.stdout + checked.stderr
             outputs[key] = out
         return outputs[key]

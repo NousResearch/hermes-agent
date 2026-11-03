@@ -10,9 +10,11 @@ The live profile on disk must stay untouched.
 """
 
 import tarfile
+from pathlib import Path
 
 import pytest
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.profiles import export_profile
 from plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
@@ -36,11 +38,14 @@ _EXTRA_STORES = {
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
     "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
     "webhook_subscriptions.json", ".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
+    "webapp/session-token",  # the Webapp browser's credential (gateway.webapp_listener.TOKEN_PATH)
+    "webapp/native-sign-in-tokens.json",  # its listener's grants to native apps (webapp_sign_in.RECORD_PATH)
+    "webapp/sign-in-registration.json",  # the Portal callback its Web Access registered (webapp_access)
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
-_DOTLESS_FILES = {"npmrc"}
-# Dot-named stores that are directories.
-_DOT_DIRS = {".ssh", ".aws", ".gnupg", ".kube"}
+_DOTLESS_FILES = {"npmrc", "webapp/session-token"}
+# Dot-named stores that are directories: the OS credential dirs shared with file_safety.
+_DOT_DIRS = set(HOME_CREDENTIAL_DIRS)
 
 
 def _seed_stores(root):
@@ -108,8 +113,10 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
-        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc")]
-        for rel in nested:
+        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
+                                            ".docker/config.json", ".azure/accessTokens.json",
+                                            ".config/gh/hosts.yml", ".config/gcloud/application_default_credentials.json")]
+        for rel in [*nested, "skills/s/.config/other/settings.json"]:
             (profile_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             (profile_dir / rel).write_text("fake-credential")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
@@ -133,6 +140,8 @@ class TestCredentialExclusion:
 
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
         assert "default/config.yaml" in default_members
+        assert "default/skills/s/.config/other/settings.json" in default_members
+        assert "testprofile/skills/s/.config/other/settings.json" in members
         assert _LEAKED_KEY not in note
         rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}
@@ -279,3 +288,53 @@ class TestExportSecretScrub:
         assert _LEAKED_KEY not in archived
         assert _LEAKED_KEY in outside.read_text()
         assert link.is_symlink()
+
+
+@pytest.fixture()
+def profile_env(tmp_path, monkeypatch):
+    """Point the home folder and HERMES_HOME into tmp_path, as test_profiles.py does."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    default_home = tmp_path / ".hermes"
+    default_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    return tmp_path
+
+
+def test_clone_all_does_not_share_the_source_webapp_browser_credential(profile_env):
+    """The Webapp's browser credential belongs to one gateway: a clone mints its own on first
+    use, so signing one profile's browsers out never leaves them signed in to the other."""
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_cli.profiles import create_profile
+
+    default_home = profile_env / ".hermes"
+    (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+    source_token = browser_session_token(default_home)
+
+    profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+    assert not (profile_dir / TOKEN_PATH).exists()
+    assert browser_session_token(profile_dir) != source_token
+    assert browser_session_token(default_home) == source_token
+
+
+def test_clone_all_leaves_the_source_gateways_webapp_sign_in_state_behind(profile_env):
+    """Everything in ``webapp/`` belongs to the source's gateway: besides its browser credential, the
+    record of the provider tokens its listener gave native apps (which its gated Webapp accepts on their
+    own) and the Portal callback its Web Access registered for its own address. A ``--clone-all`` clone
+    gets none of it, so the clone's gated Webapp honours no native sign-in made on the source, and the
+    clone's Web Access registers its own callback."""
+    from hermes_cli.profiles import create_profile
+    from hermes_cli.webapp_sign_in import RECORD_PATH
+
+    default_home = profile_env / ".hermes"
+    (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
+    (default_home / RECORD_PATH).parent.mkdir(parents=True)
+    (default_home / RECORD_PATH).write_text('{"' + "d" * 64 + '": 4102444800}\n', encoding="utf-8")
+    (default_home / "webapp" / "sign-in-registration.json").write_text(
+        '{"portal": "https://portal.example.test", "client_id": "c1", '
+        '"callback": "http://192.168.1.50:9120/auth/callback"}\n', encoding="utf-8")
+
+    profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+    assert not (profile_dir / "webapp").exists(), sorted(p.name for p in (profile_dir / "webapp").iterdir())
+    assert (default_home / RECORD_PATH).exists()

@@ -4,7 +4,7 @@
 git wrapper that reports the official remote URL) whose ``~/.gitconfig`` rewrites the official
 GitHub URL to a loopback ``git http-backend`` origin (``_smart_http``). The install itself comes
 from a real ``scripts/install.sh``: N-1's own copy for an N-1 install (it makes the depth-1
-single-branch clone N-1 users have), HEAD's for a HEAD install (a ``--filter=tree:0`` clone).
+single-branch clone N-1 users have), HEAD's for a HEAD install (a ``--filter=blob:none`` clone).
 ``preclone`` seeds a checkout the installer then adopts, for the clone shapes users got another
 way (a manual full clone, a ``blob:none`` fallback clone).
 
@@ -198,7 +198,7 @@ class World:
 def _preclone(sb: I.Sandbox, args: list[str], env: dict[str, str]) -> None:
     sb.hermes_home.mkdir(parents=True, exist_ok=True)
     cp = subprocess.run(["git", "clone", "-q", *args, "--branch", "main", I.OFFICIAL_HTTPS, str(sb.checkout)],
-                        capture_output=True, text=True, env=env, timeout=900)
+                        capture_output=True, text=True, env=env, timeout=900, check=False)
     assert cp.returncode == 0, f"pre-clone {args} failed: {cp.stderr[-2000:]}"
 
 
@@ -222,7 +222,10 @@ def world(root: Path, *, base: str, installer_ref: str | None = None,
             _preclone(sb, preclone, w.git_env())
         script = sb.root / "install.sh"
         script.write_text(installer_script(installer_ref), encoding="utf-8")
-        cp = sb.run(["bash", str(script), "--non-interactive"], timeout=1800, input="")
+        # The served repo publishes commits on main and no release tags: install main (N-1's
+        # installer ignores the variable and installs main anyway).
+        cp = sb.run(["bash", str(script), "--non-interactive"], timeout=1800, input="",
+                    env={**sb.env, "HERMES_INSTALL_CHANNEL": "main"})
         assert cp.returncode == 0, f"install ({installer_ref or 'HEAD'} installer, base {base[:12]}) failed:\n{w.diag(cp)}"
         head = w.head()
         assert head == base, f"installer left HEAD at {head}, expected {base}\n{w.diag(cp)}"
@@ -246,6 +249,6 @@ def in_parallel(jobs: dict[str, Callable[[], object]]) -> dict[str, object]:
         for name, fut in futures.items():
             try:
                 out[name] = fut.result()
-            except BaseException as exc:  # noqa: BLE001 - handed to the cell
+            except BaseException as exc:
                 out[name] = exc
     return out

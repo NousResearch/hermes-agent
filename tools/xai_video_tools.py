@@ -46,7 +46,7 @@ _VIDEO_URL_PARAM = {
 }
 
 
-def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": name,
         "description": (
@@ -70,9 +70,9 @@ def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: 
     }
 
 
-XAI_VIDEO_EDIT_SCHEMA: Dict[str, Any] = _xai_video_schema("xai_video_edit", "Edit", "editing", "modify", {})
+XAI_VIDEO_EDIT_SCHEMA: dict[str, Any] = _xai_video_schema("xai_video_edit", "Edit", "editing", "modify", {})
 
-XAI_VIDEO_EXTEND_SCHEMA: Dict[str, Any] = _xai_video_schema(
+XAI_VIDEO_EXTEND_SCHEMA: dict[str, Any] = _xai_video_schema(
     "xai_video_extend", "Extend", "extension", "continue", {
         "duration": {
             "type": "integer",
@@ -85,7 +85,7 @@ XAI_VIDEO_EXTEND_SCHEMA: Dict[str, Any] = _xai_video_schema(
 )
 
 
-def _run_xai_video_tool(args: Dict[str, Any], op: str, run, **extra: Any) -> str:
+def _run_xai_video_tool(args: dict[str, Any], op: str, run, **extra: Any) -> str:
     prompt, video_url = _clean_string(args.get("prompt")), _clean_string(args.get("video_url"))
     if not prompt:
         return tool_error(f"prompt is required for xAI video {op}")
@@ -107,11 +107,11 @@ def _run_xai_video_tool(args: Dict[str, Any], op: str, run, **extra: Any) -> str
     return json.dumps(run(prompt=prompt, video_url=video_url, **extra))
 
 
-def _handle_xai_video_edit(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_xai_video_edit(args: dict[str, Any], **_kw: Any) -> str:
     return _run_xai_video_tool(args, "edit", run_xai_video_edit)
 
 
-def _handle_xai_video_extend(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_xai_video_extend(args: dict[str, Any], **_kw: Any) -> str:
     return _run_xai_video_tool(args, "extend", run_xai_video_extend, duration=_coerce_int(args.get("duration")))
 
 

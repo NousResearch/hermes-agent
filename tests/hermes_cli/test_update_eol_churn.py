@@ -92,6 +92,7 @@ def _autocrlf(repo: Path) -> str:
         cwd=repo,
         capture_output=True,
         text=True,
+        check=False,
     )
     return out.stdout.strip()
 

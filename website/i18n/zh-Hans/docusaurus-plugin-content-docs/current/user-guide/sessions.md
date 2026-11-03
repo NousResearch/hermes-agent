@@ -65,7 +65,7 @@ Hermes 存储 session 历史以便恢复对话，但不会在每次对话时重�
 | `weixin` | 微信（个人版） |
 | `bluebubbles` | 通过 BlueBubbles macOS 服务器的 Apple iMessage |
 | `qqbot` | QQ Bot（腾讯 QQ）通过官方 API v2 |
-| `homeassistant` | Home Assistant 对话 |
+| `homeassistant` | Home Assistant 事件（插件） |
 | `webhook` | 传入 webhook |
 | `api-server` | API 服务器请求 |
 | `acp` | ACP 编辑器集成 |

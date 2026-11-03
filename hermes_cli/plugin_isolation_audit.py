@@ -40,7 +40,7 @@ _DIRECT_REGISTRY_CALLS: frozenset = frozenset({
     ("tools.registry", "register"), ("tools.registry", "deregister"),
     ("gateway.platform_registry", "register"), ("providers", "register_provider"),
 })
-_MANIFEST_KIND_REASONS: Dict[str, str] = {
+_MANIFEST_KIND_REASONS: dict[str, str] = {
     "platform": "kind 'platform': gateway platform adapters run in the Hermes process",
 }
 _STREAMING_MARKERS = ("StreamingResponse", "EventSourceResponse", ".websocket(", "WebSocket")
@@ -50,9 +50,9 @@ _SKIP_DIRS = frozenset({"tests", "test", ".git", "__pycache__", "node_modules", 
 @dataclass
 class IsolationReport:
     verdict: str
-    reasons: List[str] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
-    ctx_methods: Set[str] = field(default_factory=set)
+    reasons: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    ctx_methods: set[str] = field(default_factory=set)
 
     @property
     def host_ready(self) -> bool:
@@ -65,12 +65,12 @@ class IsolationReport:
             return "runs in the plugin host (plugins.isolation: host)"
         return "in-process only: " + "; ".join(self.reasons)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"verdict": self.verdict, "host_ready": self.host_ready, "reasons": list(self.reasons),
                 "notes": list(self.notes), "ctx_methods": sorted(self.ctx_methods)}
 
 
-def _python_files(plugin_dir: Path) -> List[Path]:
+def _python_files(plugin_dir: Path) -> list[Path]:
     files = []
     for path in sorted(plugin_dir.rglob("*.py")):
         rel = path.relative_to(plugin_dir).parts
@@ -94,10 +94,10 @@ class _SourceVisitor(ast.NodeVisitor):
         self.rel = rel
         # A model-provider plugin's register_provider() call is its contract; the host captures it.
         self.model_provider = model_provider
-        self.aliases: Dict[str, str] = {}  # local name -> hermes module path (or module.attr)
-        self.reasons: List[str] = []
-        self.notes: List[str] = []
-        self.ctx_methods: Set[str] = set()
+        self.aliases: dict[str, str] = {}  # local name -> hermes module path (or module.attr)
+        self.reasons: list[str] = []
+        self.notes: list[str] = []
+        self.ctx_methods: set[str] = set()
 
     def _hermes(self, module: str) -> bool:
         return module.split(".")[0] in HERMES_PACKAGES
@@ -186,9 +186,9 @@ def audit_plugin_dir(plugin_dir: Path, manifest: Optional[Mapping[str, Any]] = N
         manifest = _read_manifest(plugin_dir)
     if not (plugin_dir / "__init__.py").is_file():
         return IsolationReport(VERDICT_PORTABLE)
-    reasons: List[str] = []
-    notes: List[str] = []
-    ctx_methods: Set[str] = set()
+    reasons: list[str] = []
+    notes: list[str] = []
+    ctx_methods: set[str] = set()
     kind = str((manifest or {}).get("kind") or "").strip().lower()
     if kind in _MANIFEST_KIND_REASONS:
         reasons.append(_MANIFEST_KIND_REASONS[kind])
@@ -216,11 +216,11 @@ def audit_plugin_dir(plugin_dir: Path, manifest: Optional[Mapping[str, Any]] = N
     return IsolationReport(verdict, _dedupe(reasons), _dedupe(notes), ctx_methods)
 
 
-def _dedupe(items: List[str]) -> List[str]:
+def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
-def _read_manifest(plugin_dir: Path) -> Dict[str, Any]:
+def _read_manifest(plugin_dir: Path) -> dict[str, Any]:
     for name in ("plugin.yaml", "plugin.yml"):
         path = plugin_dir / name
         if path.is_file():

@@ -764,7 +764,7 @@ def test_exact_receipt_polling_is_constant_with_large_room_history():
     def status_response(path, **_kwargs):
         requests.append(path)
         if len(requests) == 1:
-            return {"run_id": "run-199", "status": "running"}
+            return {"run_id": "run-199", "status": "running", "tool": "terminal", "progress_at": 1234.5}
         return {
             "run_id": "run-199",
             "status": "completed",
@@ -780,12 +780,14 @@ def test_exact_receipt_polling_is_constant_with_large_room_history():
             session_id=session_id,
             grant="signed.room.grant",
         ) == []
-        assert client.status(
+        info = client.status(
             room_id="room-1",
             profile="reviewer",
             session_id=session_id,
             grant="signed.room.grant",
-        )["active"] is True
+        )
+        assert info["active"] is True
+        assert (info["task_id"], info["tool"], info["progress_at"]) == ("task-199", "terminal", 1234.5)
 
     assert requests == ["/v1/runs/run-199"]
     now[0] = 0.1

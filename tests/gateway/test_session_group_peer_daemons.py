@@ -58,8 +58,8 @@ class Model(BaseHTTPRequestHandler):
             pass
 
 
-def _model(reply, *markers):
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
+def _model(reply, *markers, handler=Model):
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
     server.requests, server.reply = [], reply
     server.gates = {marker: (threading.Event(), threading.Event()) for marker in markers}
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -92,9 +92,9 @@ def gateways(tmp_path):
     """Isolated models and gateway environments; tests own every daemon/restart boundary."""
     models, relays = [], []
 
-    def create(*markers, lossy=False):
+    def create(*markers, lossy=False, handler=Model):
         root = Path(__file__).resolve().parents[2]
-        home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY', *markers)
+        home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY', *markers, handler=handler)
         models.extend((home_model, target_model))
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))

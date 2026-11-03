@@ -126,6 +126,36 @@ class TestBindSafety:
         assert security.A2ASecurityContext.capture().resolve_bind_host() == "localhost"
 
 
+    def test_v6_wildcard_serves_both_stacks_and_keeps_ipv4_identity(self, monkeypatch):
+        """``A2A_HOST=::`` is one dual-stack socket: IPv6 and IPv4 peers both reach it, and an IPv4
+        peer keeps its plain ``ip:a.b.c.d`` identity (not ``ip:::ffff:a.b.c.d``), so an allow-list
+        written in IPv4 still admits it."""
+        try:
+            with socket.socket(socket.AF_INET6) as probe:
+                probe.bind(("::", 0))
+        except OSError:
+            pytest.skip("host cannot bind IPv6 '::'")
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "ip:127.0.0.1")
+        monkeypatch.setenv("A2A_HOST", "::")
+        adapter, _base = _make_live_adapter(monkeypatch)
+        auth = {"Authorization": "Bearer topsecret"}
+        tasks_list = {"jsonrpc": "2.0", "id": "1", "method": "tasks/list", "params": {}}
+
+        async def run():
+            assert await adapter.connect() is True
+            try:
+                for host in ("[::1]", "127.0.0.1"):
+                    card = await asyncio.to_thread(_get_json, f"http://{host}:{adapter.port}/.well-known/agent-card.json")
+                    assert "capabilities" in card
+                resp = await asyncio.to_thread(_post_json, f"http://127.0.0.1:{adapter.port}/", tasks_list, auth)
+                assert "error" not in resp, resp
+            finally:
+                await adapter.disconnect()
+
+        asyncio.run(run())
+
+
 class TestPeerIdentity:
     """authenticate() maps presented credentials to identities; the body
     never asserts who the peer is."""
@@ -916,6 +946,66 @@ def _send_body(text, ctx="", extra_params=None):
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
 
 
+@pytest.mark.parametrize("spelling", ["::1", "[::1]"])
+def test_ipv6_loopback_bind_serves_and_advertises_a_bracketed_url(monkeypatch, spelling):
+    """``A2A_HOST=::1`` (or its URL spelling ``[::1]``) is an accepted no-token bind: the listener
+    must come up on it and every advertised URL, including the Host-less fallback, must be one a
+    peer can parse (IPv6 literal in exactly one pair of brackets)."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("host cannot bind IPv6 '::1'")
+    monkeypatch.setenv("A2A_HOST", spelling)
+    adapter, _ = _make_live_adapter(monkeypatch)
+    base = f"http://[::1]:{adapter.port}"
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(_get_json, base + "/.well-known/agent-card.json")
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run())["url"].startswith(base + "/")
+    assert adapter._base_url(None) == base + "/"
+
+
+@pytest.mark.parametrize("headers,dispatched", [
+    ({}, True),                                                      # local agent / SDK
+    ({"Origin": "https://site.example"}, False),                     # any browser Origin
+    ({"Sec-Fetch-Site": "cross-site"}, False),
+    ({"Content-Type": "text/plain"}, False),                         # CORS-simple body type
+])
+def test_no_token_listener_refuses_browser_originated_posts(monkeypatch, headers, dispatched):
+    """Without a token the listener trusts the loopback socket, which a web page in the operator's
+    browser can also reach: requests carrying browser signals are refused and never dispatched."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    seen: list = []
+    adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: seen.append(event) or "ok")
+
+    def post():
+        try:
+            return 200, _post_json(base + "/", _send_body("hi"), headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(post)
+        finally:
+            await adapter.disconnect()
+
+    status, _ = asyncio.run(run())
+    assert (status == 200, bool(seen)) == (dispatched, dispatched), status
+    if not dispatched:
+        assert status == 403
+
+
 @pytest.mark.integration
 class TestInboundRoundTrip:
     def test_live_server_card_and_message_send(self, monkeypatch):
@@ -1236,6 +1326,68 @@ class TestInboundRoundTrip:
             asyncio.run(run())
         finally:
             set_multiplex_active(False)
+
+
+@pytest.mark.parametrize("host,served", [
+    (None, True),                  # urllib's own Host: 127.0.0.1:<port>
+    ("localhost", True),
+    ("[::1]", True),
+    ("localhost.", True),          # absolute form of localhost
+    ("127.0.0.2", True),           # any loopback literal
+    ("rebound.example", False),
+    ("rebound.example.", False),    # a page's hostname re-resolved to 127.0.0.1
+])
+def test_no_token_listener_serves_only_loopback_host_names(monkeypatch, host, served):
+    """Without a token the listener trusts the loopback socket; a page on a hostname re-resolved to
+    127.0.0.1 is same-origin to it, so every route refuses a non-loopback Host before it runs."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    seen: list = []
+    adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: seen.append(event) or "ok")
+    headers = {"Host": f"{host}:{base.rsplit(':', 1)[1]}"} if host else {}
+
+    def status(fn, *args):
+        try:
+            fn(*args)
+            return 200
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return [await asyncio.to_thread(status, _get_json, base + "/health", headers),
+                    await asyncio.to_thread(status, _get_json, base + "/.well-known/agent-card.json", headers),
+                    await asyncio.to_thread(status, _post_json, base + "/", _send_body("hi"), headers)]
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run()) == [200 if served else 403] * 3
+    assert bool(seen) is served
+
+
+def test_no_token_listener_serves_its_public_url_host(monkeypatch):
+    """A local reverse proxy forwarding the ``A2A_PUBLIC_URL`` host is served; other names stay refused."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://agent.example.test/")
+    adapter, base = _make_live_adapter(monkeypatch)
+
+    def status(host):
+        try:
+            _get_json(base + "/health", {"Host": host})
+            return 200
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return [await asyncio.to_thread(status, host) for host in ("agent.example.test", "rebound.example")]
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run()) == [200, 403]
 
 
 # --------------------------------------------------------------------------

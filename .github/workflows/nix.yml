@@ -57,12 +57,12 @@ jobs:
   # flake turns main red after the merge.
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}
@@ -83,11 +83,11 @@ jobs:
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the
     # wider runner with no more configuration.
-    runs-on: ubuntu-latest-32-core
+    runs-on: blacksmith-32vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}

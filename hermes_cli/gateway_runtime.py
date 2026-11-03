@@ -45,12 +45,54 @@ class GatewayDiscovery:
     reason_code: str | None = None
     # Human-readable cause behind a bounded ``reason_code`` when the owner published one (the
     # multiplexer's park reason), or the redacted output tail of a start this call made that died
-    # (``runtime_exited``); never raw peer data.
+    # (``runtime_exited``), or the unsafe local control node a discovery refused (path, owner uid or
+    # mode, and the fix); never raw peer data.
     detail: str | None = None
+
+
+def attachable(result: GatewayDiscovery) -> bool:
+    """Whether a client may attach to this discovery/ensure verdict.
+
+    ``ready`` owners, plus a restart's after-turn wait (``draining``/``restart_wait``): that owner
+    still owns its turns and must stay reachable to answer a parked approval/clarify (#139041).
+    Shared by every client bootstrap (``connect_gateway`` and Ink's ``gateway_bootstrap.py``)."""
+    if result.endpoint is None:
+        return False
+    from gateway.drain_control import RESTART_WAIT_REASON
+    return result.state == "ready" or (result.state == "draining" and result.reason_code == RESTART_WAIT_REASON)
 
 
 def _canonical_home(home: str | Path) -> str:
     return os.path.normcase(str(Path(home).expanduser().resolve()))
+
+
+def gateway_profile_home(home: str | Path) -> Path:
+    """The profile home whose gateway serves *home*: the home itself, or for a private overlay home
+    (a task dir mirroring a profile through symlinks, its ``gateway.lock`` among them) the profile its
+    lock names. A client compares the owner's ``profile_id`` with this, never the overlay path.
+    Not normcased: ``profile_id`` keeps the owner's own spelling (Windows)."""
+    return _overlay_owner_home(Path(home).expanduser().resolve())
+
+
+def _overlay_owner_home(home: Path) -> Path:
+    """Return the owner named by a private overlay's gateway lock, if it has one."""
+    if os.name == "nt":
+        return home
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_lock, _private_node
+    lock = home / "gateway.lock"
+    try:
+        # An overlay home intentionally shares only the owner's lock.  Do not turn an arbitrary
+        # link into a profile alias: both homes and the target lock must meet ordinary discovery's
+        # private-control checks.
+        _private_node(home, kind="directory", home=True)
+        target = lock.resolve(strict=True)
+        if not lock.is_symlink() or target.name != "gateway.lock":
+            return home
+        _private_node(target.parent, kind="directory", home=True)
+        _private_lock(target)
+    except (FileNotFoundError, OSError, DiscoveryError):
+        return home
+    return target.parent
 
 
 def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> GatewayDiscovery:
@@ -67,12 +109,17 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     if len(matches) != 1 or not isinstance(matches[0].get("profile_id"), str) or not matches[0]["profile_id"]:
         return GatewayDiscovery("inaccessible", reason_code="profile_mismatch")
     state = payload.get("state")
-    if state in {"starting", "draining", "conflict"}:
+    # A graceful restart's after-turn wait still owns its in-flight turns (#139041): it stays
+    # ``draining`` (exit 6, never a fresh-start target) but carries its endpoint, so an interactive
+    # client can attach to answer a turn parked on approval/clarify. New input queues for the next owner.
+    from gateway.drain_control import RESTART_WAIT_REASON
+    restart_wait = state == "draining" and payload.get("drain_reason") == RESTART_WAIT_REASON
+    if state in {"starting", "draining", "conflict"} and not restart_wait:
         # An auto-started gateway ending through its idle exit names that, so its clients wait
         # for it to go and start a fresh one instead of reporting a refusal.
         idle = state == "draining" and payload.get("drain_reason") == "idle_exit"
         return GatewayDiscovery(state, reason_code="idle_exit" if idle else None)
-    if state != "ready":
+    if state != "ready" and not restart_wait:
         return GatewayDiscovery("inaccessible", reason_code="invalid_runtime_state")
     capabilities = payload.get("capabilities")
     if (not isinstance(capabilities, list) or not all(isinstance(c, str) for c in capabilities)
@@ -96,13 +143,13 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     supervisor = payload.get("supervisor")
     if supervisor not in {"none", "systemd", "launchd", "windows", "external"}:
         return GatewayDiscovery("inaccessible", reason_code="invalid_supervisor")
-    return GatewayDiscovery("ready", GatewayEndpoint(
+    return GatewayDiscovery("draining" if restart_wait else "ready", GatewayEndpoint(
         profile_id=matches[0]["profile_id"], instance_id=instance,
         authority_epoch=epoch, runtime_protocol=1, api_origin=origin,
         supervisor=supervisor, capabilities=frozenset(capabilities),
         control_home=str(control_home) if control_home is not None else None,
         code_sha=code_sha if isinstance(code_sha := payload.get("code_sha"), str) and code_sha else None,
-    ))
+    ), reason_code=RESTART_WAIT_REASON if restart_wait else None)
 
 
 def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
@@ -112,14 +159,28 @@ def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
     return home
 
 
-def _multiplexer_starting(home: Path) -> bool:
-    """The root's reservation is pending AND that root's boot policy would serve *home*. A
-    ``gateway.standalone: true`` secondary is never served by it, so a reserved (or ready) root
-    must not make its client wait out the deadline instead of starting the profile's own owner."""
+def _starting_multiplexer_root(home: Path) -> Path | None:
+    """The root whose reservation is pending AND whose boot policy would serve *home*, else None.
+    A ``gateway.standalone: true`` secondary is never served by it, so a reserved (or ready) root
+    must not make its client wait out the deadline instead of starting the profile's own owner.
+    One uncached config parse plus a lock probe: call it once per ensure iteration."""
     from hermes_cli.gateway_runtime_discovery import missing_owner_state
     from hermes_cli.gateway_runtime_multiplex import implied_host_root
     root = implied_host_root(home)
-    return root is not None and missing_owner_state(root) == "starting"
+    return root if root is not None and missing_owner_state(root) == "starting" else None
+
+
+def _standalone_multiplexer_reason(root: Path) -> str | None:
+    """A live host's reason for not serving its named profiles, if it published one.
+
+    A held root lock ordinarily means that a named profile should wait for its
+    multiplexer.  A host which published a guard refusal is different: it is a
+    standalone gateway and can never add the named profile during that boot. Read
+    with the same liveness rules as ``hermes gateway status``'s standalone box.
+    """
+    from hermes_cli.gateway_multiplex_mode import recorded_standalone_reason
+    reason = recorded_standalone_reason(root / "gateway_state.json")
+    return reason[:500] if reason else None
 
 
 def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None:
@@ -137,6 +198,14 @@ def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None
     return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=str(reason)[:500] or None)
 
 
+def _refused_owner_verdict(exc: PermissionError) -> GatewayDiscovery | None:
+    """The named refusal when the client proved the boundary from the control pipe, else None."""
+    from gateway.runtime_bootstrap_windows import RefusedOwner
+    if isinstance(exc, RefusedOwner):
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason_code, detail=str(exc))
+    return None
+
+
 def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | None:
     """A served secondary has no socket of its own: the default multiplexer's control socket
     answers for it, and its ``identify`` lists the home under ``served_profiles``. Only the
@@ -148,13 +217,73 @@ def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | 
         return None
     try:
         payload = query_identify(root, timeout=timeout)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError, PermissionError,
+    except PermissionError as exc:
+        # The multiplexer's pipe proved the boundary: name it for the secondary too (#140706), unless
+        # the boot policy never serves this home (a standalone secondary starts its own gateway). Any
+        # other refusal is "not served" before a config is read, as on POSIX, where none is proven.
+        named = _refused_owner_verdict(exc)
+        if named is None:
+            return None
+        from hermes_cli.gateway_multiplex_mode import host_serves_named_profile
+        if host_serves_named_profile(root, home) is False:
+            return None
+        return named
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError,
             OSError, ValueError, TypeError):
         return None
     result = _endpoint(payload, home, control_home=root)
     if result.state == "inaccessible" and result.reason_code == "profile_mismatch":
         return _parked_by_multiplexer(payload, home)  # else: the multiplexer does not serve this profile
     return result
+
+
+_NATIVE_WINDOWS = os.name == "nt"
+
+
+def _owner_pid(home: Path) -> int | None:
+    """The PID a refusal may name: one of *home*'s gateway records whose process is provably that
+    gateway, else None (the caller keeps the generic ``authorization``).
+
+    Proof is the shared identity chain: alive, its recorded start time known and equal to the live
+    one (a recycled PID differs), its recorded home not another profile's, and its live command line
+    (or, when that is unreadable across the elevation boundary, its record) a gateway's. A stale
+    ``gateway.pid`` falls through to ``gateway.lock`` instead of masking it."""
+    from gateway.status import (
+        _get_process_start_time,
+        _live_pid_from_record,
+        _read_json_file,
+        _record_matches_live_gateway_pid,
+        recorded_gateway_home_conflicts,
+    )
+    for name in ("gateway.pid", "gateway.lock"):
+        record = _read_json_file(home / name, bare_pid_ok=True)
+        pid = _live_pid_from_record(record)
+        if pid is None or pid == os.getpid():
+            continue
+        recorded = record.get("start_time")
+        if recorded is None or recorded != _get_process_start_time(pid):
+            continue  # unverifiable or recycled: never name it
+        if recorded_gateway_home_conflicts(record, expected_home=home):
+            continue
+        if not _record_matches_live_gateway_pid(record, pid):
+            continue
+        return pid
+    return None
+
+
+def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery:
+    """The owner's control channel refused this same-user client. On Windows (*windows*, the host
+    fact) name the boundary (an elevated owner, or one in another logon session) with its remedy
+    instead of the generic ``authorization`` that reads as a credential failure (#139845, #140252)."""
+    if windows and (pid := _owner_pid(home)) is not None:
+        from gateway.runtime_bootstrap_windows import probe_refused_owner
+        try:
+            named = probe_refused_owner(pid)
+        except OSError:
+            named = None
+        if named is not None:
+            return GatewayDiscovery("inaccessible", reason_code=named[0], detail=named[1])
+    return GatewayDiscovery("inaccessible", reason_code="authorization")
 
 
 def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0) -> GatewayDiscovery:
@@ -167,7 +296,7 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
 
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     try:
         return _endpoint(query_identify(home, timeout=timeout), home)
     except (FileNotFoundError, ConnectionRefusedError):
@@ -183,9 +312,11 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
     except DiscoveryError as exc:
-        return GatewayDiscovery("inaccessible", reason_code=exc.reason)
-    except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        # The code stays bounded; the detail names the local node, its owner or mode, and the fix.
+        return GatewayDiscovery("inaccessible", reason_code=exc.reason, detail=exc.bounded_detail(500))
+    except PermissionError as exc:
+        named = _refused_owner_verdict(exc)  # the client proved the boundary from the control pipe (#140706)
+        return named if named is not None else _refused(home)
     except (OSError, ValueError, TypeError):
         # Raw peer data, paths and URLs may contain secrets; report bounded codes.
         return GatewayDiscovery("inaccessible", reason_code="invalid_control_peer")
@@ -219,6 +350,17 @@ def _update_fenced(homes) -> bool:
         if update_lock.judge_marker(raw)[0] in {"live", "ours"} or update_lock.checkout_lock_held():
             return True
     return False
+
+
+def _fenced_verdict(home: Path, timeout: float) -> GatewayDiscovery:
+    """What ensure answers while an update owns the install. The update's own drain
+    (``pause-for-update``) is a restart's after-turn wait whose owner may hold a turn parked on
+    approval/clarify, so it is handed out for clients to answer it (#139041). Discovery only:
+    nothing is started or replaced while fenced, and any other owner state stays ``update_paused``."""
+    observed = discover_gateway_endpoint(home, timeout=timeout)
+    if observed.state == "draining" and attachable(observed):
+        return observed
+    return GatewayDiscovery("draining", reason_code="update_paused")
 
 
 _REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
@@ -271,7 +413,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     deadline = time.monotonic() + timeout
-    home = Path(_canonical_home(profile_home))
+    home = _overlay_owner_home(Path(_canonical_home(profile_home)))
     requested = False
     child = None
     child_home, child_offset = home, 0
@@ -285,7 +427,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
         while True:
             # The install-root marker also covers profiles.
             if _update_fenced({home, get_process_hermes_home(), get_default_hermes_root()}):
-                return GatewayDiscovery("draining", reason_code="update_paused")
+                return _fenced_verdict(home, remaining(deadline))
             # Poll BEFORE discovering: an exit observed first, then "absent", cannot be a child that
             # published its owner a moment later. A winning racer shows up as starting/ready instead.
             status = child.poll() if child is not None else None
@@ -309,9 +451,12 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 requested = True
             if observed.state == "absent":
                 retiring = False
+            reserved = _starting_multiplexer_root(home) if observed.state == "absent" and not requested else None
+            if reserved is not None and (reason := _standalone_multiplexer_reason(reserved)):
+                return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=reason)
             # A default multiplexer that is still starting will serve this named profile; never
             # spawn a competing per-profile daemon while its reservation is pending.
-            if observed.state == "absent" and not requested and _multiplexer_starting(home):
+            if reserved is not None:
                 requested = True
             if observed.state == "absent" and not requested:
                 # A named profile the default multiplexer serves has no daemon of its own: start
@@ -345,6 +490,6 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     except RuntimeStartError as exc:
         return GatewayDiscovery(exc.state, reason_code=exc.reason)
     except PermissionError:
-        return GatewayDiscovery("inaccessible", reason_code="authorization")
+        return _refused(home)
     except OSError:
         return GatewayDiscovery("inaccessible", reason_code="runtime_start_failed")

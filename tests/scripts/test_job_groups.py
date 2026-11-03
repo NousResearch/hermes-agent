@@ -69,6 +69,22 @@ def test_phase_jobs_judge_only_the_selected_groups():
         phase_jobs(every, "promote")
 
 
+def test_windows_smokes_with_bundle_move_the_msix_smokes_to_the_bundle_call():
+    """Stable's per-arch calls then only build, and its bundle call fails on either MSIX smoke."""
+    none = {group: False for group in JOB_GROUPS}
+    per_arch = phase_jobs({**none, "win32-x64": True}, "candidate", windows_smokes_with_bundle=True)
+    assert per_arch == ["validate", "build-win32-x64"]
+    bundle = {**none, "win32-bundle": True}
+    assert phase_jobs(bundle, "candidate", windows_smokes_with_bundle=True) == [
+        "validate", "assemble-win32-bundle", "smoke-win32-arm64", "smoke-win32-x64"]
+    # Without the signed lane, or with tests off, the bundle call smokes nothing.
+    for skip in ({"skip_signed": True}, {"skip_tests": True}):
+        assert phase_jobs(bundle, "candidate", windows_smokes_with_bundle=True, **skip) == [
+            "validate", "assemble-win32-bundle"], skip
+    # Callers that build everything in one call keep the smokes on the per-arch groups.
+    assert phase_jobs(bundle, "candidate") == ["validate", "assemble-win32-bundle"]
+
+
 @pytest.mark.parametrize("jobs, expected", [(None, "true"), ("termux", "false"),
                                             ("darwin-arm64,darwin-x64", "false")])
 def test_admission_emits_all_jobs_only_for_a_full_selection(monkeypatch, capsys, jobs, expected):

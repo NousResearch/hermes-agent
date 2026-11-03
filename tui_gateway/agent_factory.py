@@ -21,7 +21,9 @@ def _resolve_model() -> str:
     with contextlib.suppress(Exception):
         from hermes_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
-    return "z-ai/glm-5.2"
+    # Data-only module (no heavy imports), so this holds when the lookup above fails.
+    from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+    return PREFERRED_SILENT_DEFAULT_MODEL
 
 
 def _resolve_session_platform() -> str:
@@ -162,7 +164,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             provider = healed
             base_url = ""  # the healed identity owns a registered endpoint; the snapshot URL must not override it
         else:
-            provider = ""
+            # The route is gone with its endpoint and wire: on the default provider they would send
+            # that provider's credentials to the stored URL.
+            provider = base_url = api_mode = ""
     if model:
         # Same dict-shaped override live /model switches use, so a DB-restored session keeps custom endpoint
         # metadata across resume and rebuilds (/new). Raw api_key is never persisted/restored.
@@ -177,6 +181,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _scoped_session_provider(agent, session: dict) -> str:
+    """The entry an agent on the ``custom`` adapter runs, resolved in the session's own profile: clients
+    reuse this identity for new chats without the endpoint or key, and callers need not be bound to it."""
+    with _profile_build_scope(session.get("profile_home") or _hermes_home):
+        return _runtime_model_config(agent).get("provider") or "custom"
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
@@ -185,15 +196,9 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     from agent.voice_turn_route import session_runtime_view
     agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
-    model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
-    if provider.lower() == "custom":
-        # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
-        # identity (api_key is never persisted): recover ``custom:<name>`` from the endpoint URL.
-        try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
-            provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
-        except Exception:
-            logger.debug("custom provider identity lookup failed", exc_info=True)
+    model, base_url = attr("model"), attr("base_url")
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    provider = session_provider_identity(attr("provider"), attr("requested_provider"), base_url, model)
     reasoning_config = getattr(agent, "reasoning_config", None)
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
@@ -587,7 +592,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
 
 def _rederive_per_model_route(model: str, runtime: dict) -> None:
     """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
-    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    that pick the wire per model (OpenCode Zen/Go, Nous, profiles with api_mode_for_model) must re-derive both from the target model,
     or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
     other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
     from hermes_cli.model_switch import model_derived_api_mode
@@ -631,6 +636,7 @@ def _make_agent(
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
+    from agent.onboarding_session import onboarding_toolsets
     from run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
@@ -659,7 +665,8 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
-        enabled_toolsets=_onboarding_toolsets(_load_enabled_toolsets(platform), session_db, session_id or key),
+        enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
+                                             session_db if session_db is not None else _get_db(), session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

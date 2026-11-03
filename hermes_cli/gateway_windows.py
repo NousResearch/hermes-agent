@@ -7,6 +7,7 @@ hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior i
 
 from __future__ import annotations
 
+import codecs
 import ctypes
 import json
 import locale
@@ -24,6 +25,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
+from agent.deadline import poll_until
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
@@ -96,6 +98,11 @@ def _decode_schtasks_output(data: bytes) -> str:
     Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
     UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
     fallback so a reader thread never raises."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        except UnicodeDecodeError:
+            pass  # malformed UTF-16 falls through to the same fallbacks as any other bytes
     for encoding in ("utf-8", *_windows_console_encodings()):
         try:
             return data.decode(encoding)
@@ -217,12 +224,11 @@ def _is_access_denied(detail: str) -> bool:
 
 
 def _is_running_as_admin() -> bool:
-    """Return True when the current Windows process is elevated."""
+    """Return True when the current Windows process is elevated (the shared ``TokenElevation``
+    probe; ``IsUserAnAdmin`` is deprecated and answered the same question a second way)."""
     _assert_windows()
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    from hermes_dir_acl import process_is_elevated
+    return process_is_elevated()
 
 
 def _current_profile_cli_args() -> list[str]:
@@ -471,19 +477,24 @@ def _write_task_script() -> Path:
     # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
     # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
     vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"),
+                  encoding="utf-16")
     return script_path
 
 
-def _atomic_write(path: Path, content: str, tmp: Path) -> None:
+def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8") -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``.
 
     The staging file is removed even when the rename fails: the Startup-folder caller stages
     inside the Startup folder itself, and Windows opens every file there at login — a leftover
     ``Hermes_Gateway.tmp`` pops up in Notepad after every sign-in (#114093).
+
+    ``.vbs`` launchers pass ``utf-16`` (BOM included): Windows Script Host decodes a BOM-less script
+    with the ANSI code page, so a non-ASCII install path reached python as mojibake, ``PYTHONPATH``
+    no longer imported ``hermes_cli`` and every task or Startup start died before logging a line.
     """
     try:
-        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.write_text(content, encoding=encoding, newline="")
         tmp.replace(path)
     finally:
         try:
@@ -600,7 +611,7 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
+    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path(), encoding="utf-16")
     legacy_entry = _legacy_startup_entry_path()
     try:
         if legacy_entry.exists():
@@ -644,8 +655,11 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
     The Scheduled Task and the Startup-folder entry are alternatives, but a successful task install
     never removed an earlier fallback and pre-#45610 installs left a ``cmd.exe`` launcher behind, so
     logon could fire the launcher twice (#80569). Task registered: remove the Startup entries. No
-    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. File operations
-    only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
+    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. No task and only
+    the ``.vbs`` entry: rewrite it in place so an older UTF-8 chainer becomes UTF-16 (W13); in
+    practice only update reaches this, because doctor reconciles only when an entry is redundant.
+    File operations only (no schtasks mutation, no elevation), so install, update and doctor can
+    all run it.
     """
     if is_task_registered():
         return _remove_startup_entries()
@@ -655,6 +669,9 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
         if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
             return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
         return [f"Migrated legacy Windows login item to: {entry}"], []
+    if get_startup_entry_path().exists():
+        # An entry from before the UTF-16 launchers is read in the ANSI code page at logon: rewrite it.
+        _install_startup_entry(get_task_script_path())
     return [], []
 
 
@@ -1731,12 +1748,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 
-    deadline = time.monotonic() + max(drain_timeout, 1.0)
-    while time.monotonic() < deadline:
-        if not _pid_exists(pid):
-            return True
-        time.sleep(0.5)
-    return False
+    return poll_until(lambda: not _pid_exists(pid), max(drain_timeout, 1.0), 0.5)
 
 
 def _windows_stop_drain_timeout() -> float:
@@ -1849,12 +1861,22 @@ def _wait_for_gateway_absent(timeout_s: float = 30.0, interval_s: float = 0.5) -
     def _absent() -> bool:
         return get_running_pid() is None and not _gateway_pids()
 
-    deadline = time.monotonic() + max(timeout_s, interval_s)
-    while time.monotonic() < deadline:
-        if _absent():
-            return True
-        time.sleep(interval_s)
-    return _absent()
+    return poll_until(_absent, max(timeout_s, interval_s), interval_s)
+
+
+def _mark_planned_restart() -> None:
+    """Stamp the planned-restart marker once the old gateway is gone, before ``start()``.
+
+    Windows has no SIGUSR1, so ``restart()`` is stop + start: the gateway never runs the in-band
+    restart path that stamps this marker itself, and the next boot would read a plain stop and skip
+    the "Gateway online" home-channel notice.
+
+    Not before ``stop()``: the old process stays alive until its planned-stop watcher notices, and
+    for that window a flapping platform can reconnect, replay the notice and unlink the marker the
+    new process then never finds.
+    """
+    from gateway.restart_notice import write_planned_restart_marker
+    write_planned_restart_marker()
 
 
 def restart() -> None:
@@ -1877,6 +1899,7 @@ def restart() -> None:
     from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
 
     _wait_for_api_server_port_free()
+    _mark_planned_restart()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):

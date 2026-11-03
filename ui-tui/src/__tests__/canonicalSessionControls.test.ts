@@ -108,69 +108,6 @@ it('ambiguous mutations retry the frozen identity while unsupported model scopes
   expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(2)
 })
 
-it.each(['high', 'none'])(
-  'applies picker reasoning %s after the model switch through existing controls',
-  async effort => {
-    const { request, slash } = harness()
-    let generation = 4
-    request.mockImplementation(async (method: string, params: any) => {
-      if (method === 'session.resume') {
-        return { revision: generation + 4, execution_generation: generation } as any
-      }
-
-      if (method === 'session.mutate') {
-        generation += 1
-
-        return { model: 'picked', effort: params.payload.effort, execution_generation: generation }
-      }
-
-      return {}
-    })
-
-    slash(`/model ${modelPickerCommand('picked', 'custom', false, effort)}`)
-    await flush()
-
-    expect(request).toHaveBeenCalledWith('session.mutate', {
-      session_id: 'owner',
-      request_id: expect.any(String),
-      expected_revision: 8,
-      expected_generation: 4,
-      operation: 'model',
-      payload: { model: 'picked', provider: 'custom' }
-    })
-    expect(request).toHaveBeenCalledWith('session.mutate', {
-      session_id: 'owner',
-      request_id: expect.any(String),
-      expected_revision: 9,
-      expected_generation: 5,
-      operation: 'reasoning',
-      payload: { effort }
-    })
-    expect(getUiState().info?.model).toBe('picked')
-  }
-)
-
-it('does not apply picker reasoning after the model generation has been superseded', async () => {
-  const { request, slash } = harness()
-  let reads = 0
-  request.mockImplementation(async (method: string) => {
-    if (method === 'session.resume') {
-      reads += 1
-
-      return { revision: 8 + reads, execution_generation: reads === 1 ? 4 : 6 } as any
-    }
-
-    return { model: 'picked', execution_generation: 5 }
-  })
-
-  slash(`/model ${modelPickerCommand('picked', 'custom', false, 'high')}`)
-  await flush()
-
-  const sends = request.mock.calls.filter(([method]) => method === 'session.mutate')
-  expect(sends).toHaveLength(1)
-  expect(sends[0]![1].operation).toBe('model')
-})
-
 it('late model or compression replies cannot replace a newer execution snapshot', async () => {
   for (const command of ['/model picked', '/compress']) {
     resetUiState()
@@ -221,34 +158,21 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
     resetOverlayState()
     patchUiState({ sid: 'owner', info })
     const { request, slash } = harness()
-    let generation = 4
     request.mockImplementation(async (method: string, params: any) => {
       if (method === 'session.resume') {
-        return { revision: generation + 4, execution_generation: generation, info } as any
+        return { revision: 8, execution_generation: 4, info } as any
       }
 
-      if (method !== 'session.mutate') {
-        return {}
-      }
-
-      if (params.operation === 'reasoning') {
-        return { effort: params.payload.effort, execution_generation: 6 }
-      }
-
-      if (params.payload.confirm === 'tok-1') {
-        generation = 5
-
-        return { model: 'pricey', execution_generation: generation }
-      }
-
-      return {
-        status: 'confirmation_required',
-        confirm: 'tok-1',
-        confirm_message: 'pricey IS EXPENSIVE',
-        target_model: 'pricey'
-      }
+      return params.payload.confirm === 'tok-1'
+        ? { model: 'pricey', execution_generation: 5 }
+        : {
+            status: 'confirmation_required',
+            confirm: 'tok-1',
+            confirm_message: 'pricey IS EXPENSIVE',
+            target_model: 'pricey'
+          }
     })
-    slash(`/model ${modelPickerCommand('pricey', 'custom', false, 'high')}`)
+    slash('/model pricey')
     await flush()
     const ask = getOverlayState().confirm
     expect(ask?.detail).toBe('pricey IS EXPENSIVE')
@@ -264,8 +188,7 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
       .filter(([method]) => method === 'session.mutate')
       .map(([, params]) => params.payload)
 
-    const selection = { model: 'pricey', provider: 'custom' }
-    expect(sends).toEqual(accept ? [selection, { ...selection, confirm: 'tok-1' }, { effort: 'high' }] : [selection])
+    expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
 })
@@ -297,6 +220,18 @@ it('/branch prints main\'s "branched →" confirmation after the child resume ha
 })
 
 it('a /compress that removes nothing prints main\'s "No changes" report without re-hydrating', async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
   const { ctx, request, slash } = harness()
   request.mockImplementation(async (method: string) => {
     if (method === 'session.resume') {
@@ -322,4 +257,144 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
   expect(ctx.transcript.sys).toHaveBeenCalledWith('  Approx request size: ~6,547 tokens (unchanged)')
   expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+  expect(getUiState().usage.context_used).toBe(30400)
+  expect(getUiState().usage.compressions).toBe(0)
+})
+
+it("a committed /compress drops the previous reply's context meter and counts the compaction", async () => {
+  patchUiState({
+    usage: {
+      calls: 2,
+      input: 30400,
+      output: 100,
+      total: 30500,
+      context_used: 30400,
+      context_max: 262100,
+      context_percent: 12,
+      compressions: 0
+    }
+  })
+  const { request, slash } = harness()
+  let resumes = 0
+
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      resumes += 1
+      const generation = resumes === 1 ? 4 : 5
+
+      return {
+        session_id: 'owner',
+        revision: 8,
+        execution_generation: generation,
+        info: { ...info, execution_generation: generation },
+        messages: [{ role: 'assistant', text: 'summary' }]
+      } as any
+    }
+
+    return {
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'compressed',
+      execution_generation: 5,
+      summary: {
+        headline: 'Compressed: 12 → 10 messages',
+        token_line: 'Approx request size: ~14,682 → ~15,777 tokens'
+      }
+    } as any
+  })
+
+  slash('/compress')
+  await flush()
+  await flush()
+  const usage = getUiState().usage
+
+  expect(usage.context_used).toBe(0)
+  expect(usage.context_percent).toBe(0)
+  expect(usage.compressions).toBe(1)
+  expect(usage.context_max).toBe(262100)
+  expect(usage.calls).toBe(2)
+})
+
+it('a pick deferred by a running turn says it applies from the next turn', async () => {
+  const { ctx, request, slash } = harness()
+
+  request.mockImplementation(async (method: string) =>
+    method === 'session.mutate'
+      ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info }
+  )
+
+  slash('/model picked --tui-session')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys.mock.calls[0][0]).toContain('applies next turn')
+  expect(getUiState().info?.model).toBe('old')
+})
+
+it('a picker-issued --reasoning rides in the one canonical model selection, deferred or not', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --provider custom --reasoning HIGH --tui-session')
+  await flush()
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => [params.operation, params.payload])
+
+  // One request: a busy session defers it and commits model + level together at the boundary.
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
+  expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
+})
+
+it.each(['high', 'none'])('sends picker reasoning %s with the canonical model selection', async effort => {
+  const { request, slash } = harness()
+  slash(`/model ${modelPickerCommand('picked', 'custom', false, effort)}`)
+  await flush()
+
+  const sends = request.mock.calls
+    .filter(([method]) => method === 'session.mutate')
+    .map(([, params]) => [params.operation, params.payload])
+
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: effort }]])
+})
+
+it('an unknown --reasoning level is refused like any unsupported model option, mutating nothing', async () => {
+  const { request, slash } = harness()
+  slash('/model picked --reasoning warp --tui-session')
+  await flush()
+  await flush()
+  expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(0)
+})
+
+it('a guarded switch re-asks with the effort riding the confirmed re-send', async () => {
+  resetOverlayState()
+  const { request, slash } = harness()
+  request.mockImplementation(async (method: string, params: any) => {
+    if (method === 'session.resume') {
+      return { revision: 8, execution_generation: 4, info } as any
+    }
+
+    if (params.operation === 'reasoning') {
+      return { effort: params.payload.effort, execution_generation: 6 }
+    }
+
+    return params.payload.confirm === 'tok-1'
+      ? { model: 'pricey', execution_generation: 5 }
+      : {
+          status: 'confirmation_required',
+          confirm: 'tok-1',
+          confirm_message: 'pricey IS EXPENSIVE',
+          target_model: 'pricey'
+        }
+  })
+  slash('/model pricey --reasoning max --tui-session')
+  await flush()
+  getOverlayState().confirm!.onConfirm()
+  await flush()
+  await flush()
+  const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
+  expect(sends).toEqual([
+    { model: 'pricey', reasoning: 'max' },
+    { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
+  ])
+  expect(getUiState().info?.model).toBe('pricey')
 })

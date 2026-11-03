@@ -36,7 +36,7 @@ import {
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
-import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
+import { $groupMainTabsRev, groupOpenOrigin, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
@@ -421,7 +421,7 @@ export function BotsPane() {
   const groupChatMembers = groupChatName ? groupChatMemberBots(groupChatName, roster, allMeta) : []
 
   if (shouldRenderGroupChatInPane(groupChatName) && groupChatMembers.length) {
-    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} />
+    return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} origin={groupOpenOrigin(groupChatName)} />
   }
 
   const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
@@ -448,7 +448,7 @@ export function BotsPane() {
       members={row.members}
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
-      onOpen={openGroupChat}
+      onOpen={group => openGroupChat(group, 'name')}
       sortedGroupRows={sortedGroupRows}
     />
   )

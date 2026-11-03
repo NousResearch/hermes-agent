@@ -22,7 +22,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
     root.mkdir()
     for name in ("pm", "hermes_cli"):
         shutil.copytree(source / name, root / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("hermes_constants.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
+    for name in ("hermes_constants.py", "hermes_dir_acl.py", "hermes_yaml.py", "utils.py", "hermes_bootstrap.py"):
         shutil.copy2(source / name, root / name)
     home, store, wheels = (tmp_path / name for name in ("home", "tools", "wheels"))
     for directory in (home, store, wheels):

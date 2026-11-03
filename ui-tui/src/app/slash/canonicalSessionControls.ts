@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto'
 
-import { REASONING_EFFORT_VALUES } from '@hermes/shared/reasoning-effort'
-
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
+import { CANONICAL_REASONING_EFFORTS, TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
-import { asRpcResult } from '../../lib/rpc.js'
+import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
@@ -18,13 +16,11 @@ interface MutationGateway {
 // Keep the original CAS tuple after a lost reply. Reissuing the same command
 // must query that receipt, not silently authorize another write at a new revision.
 const pending = new WeakMap<MutationGateway, Map<string, Record<string, unknown>>>()
-const reasoningEfforts = new Set<string>([...REASONING_EFFORT_VALUES, 'false', 'disabled'])
 
 function modelPayload(arg: string) {
   const parts = arg.trim().split(/\s+/)
   const model = parts.shift()!
   const payload: Record<string, string> = { model }
-  let reasoning: string | undefined
 
   if (model.startsWith('--')) {
     throw new Error(t('canonical.controls.modelUsage'))
@@ -43,8 +39,10 @@ function modelPayload(arg: string) {
       continue
     }
 
-    if (flag === '--reasoning' && parts[0] && reasoningEfforts.has(parts[0].toLowerCase())) {
-      reasoning = parts.shift()!.toLowerCase()
+    // A picker-issued level (#138856) rides in the same selection: a busy session defers the pick
+    // and commits model and level together. An unknown level is refused like any other flag.
+    if (flag === '--reasoning' && CANONICAL_REASONING_EFFORTS.has(parts[0]?.toLowerCase() ?? '')) {
+      payload.reasoning = parts.shift()!.toLowerCase()
 
       continue
     }
@@ -52,7 +50,7 @@ function modelPayload(arg: string) {
     throw new Error(t('canonical.controls.unsupportedModelOption', flag))
   }
 
-  return { payload, reasoning }
+  return payload
 }
 
 export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'delete' | 'rename' | 'rewind' | 'reasoning'
@@ -64,6 +62,21 @@ export interface MutationSnapshot {
   stored_messages?: Array<Record<string, unknown>>
   revision: number
   execution_generation: number
+  /** The viewer attachment the revision read made (`session.resume` attaches). */
+  subscription_id?: string
+  /** The id the owner resolved the read to and subscribed under; may differ from the one sent. */
+  session_id?: string
+}
+
+/** The CAS tuple read (`session.resume`, which attaches this client as a viewer). */
+async function readCasTuple(gw: MutationGateway, sid: string, onRead?: (snapshot: MutationSnapshot) => void) {
+  const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+
+  if (snapshot) {
+    onRead?.(snapshot)
+  }
+
+  return snapshot
 }
 
 /** One revision-fenced `session.mutate` (`gateway/session_mutations.py`). The CAS tuple comes from a
@@ -86,7 +99,8 @@ export async function mutateCanonical(
   sid: string,
   operation: CanonicalOperation,
   payload: Record<string, unknown> | ((snapshot: MutationSnapshot) => null | Record<string, unknown>),
-  stale: () => boolean = () => false
+  stale: () => boolean = () => false,
+  onRead?: (snapshot: MutationSnapshot) => void
 ) {
   let requests = pending.get(gw)
 
@@ -102,7 +116,7 @@ export async function mutateCanonical(
   let params = requests.get(key)
 
   if (!params) {
-    const snapshot = asRpcResult<MutationSnapshot>(await gw.request('session.resume', { session_id: sid }))
+    const snapshot = await readCasTuple(gw, sid, onRead)
 
     if (stale()) {
       return
@@ -161,18 +175,14 @@ export async function mutateCanonicalSession(
 ) {
   // `confirm`: the owner's one-time token for a guarded model target the user accepted. It keys a
   // separate retained request, so an ambiguous reply to the confirmed send retries that exact one.
-  const selection = operation === 'model' ? modelPayload(arg) : undefined
-
   const payload = {
-    ...(selection ? selection.payload : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}),
+    ...(operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}),
     ...(confirm ? { confirm } : {})
   }
 
   const mutation = await mutateCanonical(gw, sid, operation, payload, stale)
 
-  return mutation?.result
-    ? { result: mutation.result, expectedGeneration: mutation.expectedGeneration, reasoning: selection?.reasoning }
-    : undefined
+  return mutation?.result ? { result: mutation.result, expectedGeneration: mutation.expectedGeneration } : undefined
 }
 
 type CanonicalControlResult = NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>['result']
@@ -196,29 +206,39 @@ function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: Slas
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
 
+  openModelConfirmation(
+    refusal.confirm_message,
+    refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '',
+    () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
+  )
+}
+
+/** The guarded-model dialog: an idle pick's refusal and a deferred pick's boundary ask share it. */
+export function openModelConfirmation(detail: string | undefined, target: string, onConfirm: () => void) {
   patchOverlayState({
     confirm: {
       cancelLabel: t('slashCmd.session.model.cancel'),
       confirmLabel: t('slashCmd.session.model.switchAnyway'),
       danger: true,
-      detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
-      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm),
-      title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '')
+      detail: detail || t('slashCmd.session.model.expensiveDetail'),
+      onConfirm,
+      title: t('slashCmd.session.model.confirmTitle', target)
     }
   })
 }
 
+/** `baseline` is the session info the control started from: an epoch change or a newer turn wins. */
 function isSupersededControl(
   operation: 'model' | 'branch' | 'compress',
   result: CanonicalControlResult,
   expectedGeneration: number,
-  ctx: SlashRunCtx
+  baseline: ReturnType<typeof getUiState>['info']
 ) {
   const current = getUiState().info
 
   return (
     operation !== 'branch' &&
-    (current?.execution_epoch !== ctx.ui.info?.execution_epoch ||
+    (current?.execution_epoch !== baseline?.execution_epoch ||
       (current?.execution_generation ?? 0) > (result.execution_generation ?? expectedGeneration))
   )
 }
@@ -246,9 +266,17 @@ async function applyBranchResult(result: CanonicalControlResult, arg: string, ct
   }
 }
 
-function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
+function applyModelResult(result: CanonicalControlResult, sys: (text: string) => void) {
   if (!result.model) {
     throw new Error(t('session.main.invalidModelSwitchResponse'))
+  }
+
+  if (result.status === 'deferred') {
+    // A turn is running: the owner keeps the pick for the next turn, and session.info repaints the
+    // model when it lands (or a refusal / confirmation follows on session.updated).
+    sys(t('slashCmd.session.model.switchedDeferred', result.model))
+
+    return
   }
 
   patchUiState(state => ({
@@ -261,37 +289,77 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
       tools: state.info?.tools ?? {}
     }
   }))
-  ctx.transcript.sys(t('session.main.modelSwitched', result.model))
+  // `/model reset` on a session already on the configured default: the owner's note, nothing changed.
+  sys(typeof result.note === 'string' ? result.note : t('session.main.modelSwitched', result.model))
+
+  if (typeof result.effort === 'string') {
+    // The level committed in the same selection (a deferred result carries none yet).
+    sys(t('slashCmd.session.reasoning.current', result.effort))
+  }
 }
 
-/** The owner exposes model and reasoning as separate controls, as on Desktop. Apply the effort
- * only after an accepted model switch, and only while that exact generation is still current. */
-async function applyModelReasoning(
-  mutation: NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>,
-  ctx: SlashRunCtx
-) {
-  const effort = mutation.reasoning
+/** A model switch made outside `/model` (a window plan's limit card): the same revision-fenced
+ *  `session.mutate` and guarded-target ask. `onApplied` runs only once the switch committed now,
+ *  never for a refusal, a declined ask, or a pick deferred behind a running turn. Like `/model`, a
+ *  reply that lands after the view moved to another chat (or a newer turn ran) applies nothing:
+ *  `onApplied` re-sends via the active chat, so it must still be `sid`. */
+export async function switchCanonicalModel(
+  gw: MutationGateway,
+  sid: string,
+  arg: string,
+  sys: (text: string) => void,
+  onApplied: () => void,
+  confirm?: string
+): Promise<void> {
+  const baseline = getUiState().info
+  const stale = () => getUiState().sid !== sid
+  const mutation = await mutateCanonicalSession(gw, sid, 'model', arg, stale, confirm)
 
-  if (!effort) {
+  if (!mutation || stale() || isSupersededControl('model', mutation.result, mutation.expectedGeneration, baseline)) {
     return
   }
 
-  const generation = mutation.result.execution_generation ?? mutation.expectedGeneration
+  const { result } = mutation
 
-  const reasoning = await mutateCanonical(
-    ctx.gateway.gw,
-    ctx.sid!,
-    'reasoning',
-    snapshot => (snapshot.execution_generation === generation ? { effort } : null),
-    ctx.stale
-  )
+  if (needsModelConfirmation(result)) {
+    if (confirm) {
+      return sys(t('slashCmd.session.model.confirmStale'))
+    }
 
-  if (reasoning?.result && !ctx.stale()) {
-    ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+    return openModelConfirmation(
+      result.confirm_message,
+      result.target_model ?? arg.trim().split(/\s+/)[0] ?? '',
+      () =>
+        void switchCanonicalModel(gw, sid, arg, sys, onApplied, result.confirm).catch((e: unknown) =>
+          sys(`error: ${rpcErrorMessage(e)}`)
+        )
+    )
+  }
+
+  applyModelResult(result, sys)
+
+  if (result.status !== 'deferred') {
+    onApplied()
   }
 }
 
 type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+
+/** The bar's prompt size is the previous reply. Manual /compress does not call the
+ *  chat model, and nothing publishes `session.usage` for it, so that size would
+ *  stay on screen. The classic CLI parks the reading at -1 and paints 0 until
+ *  the next reply, and counts the compaction immediately. */
+function usageAfterManualCompress<U extends { compressions?: null | number }>(usage: U): U {
+  const prior = usage.compressions
+
+  return {
+    ...usage,
+    compressions: (typeof prior === 'number' ? prior : 0) + 1,
+    context_estimated: false,
+    context_percent: 0,
+    context_used: 0
+  }
+}
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
@@ -328,7 +396,7 @@ async function applyCompressResult(gw: MutationGateway, sid: string, result: Can
   }
 
   ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot.messages)])
-  patchUiState({ info })
+  patchUiState(state => ({ ...state, info, usage: usageAfterManualCompress(state.usage) }))
   printCompressSummary(result.summary as CompressSummary, ctx)
 }
 
@@ -357,7 +425,7 @@ export async function runCanonicalSessionControl(
       return
     }
 
-    if (isSupersededControl(operation, result, expectedGeneration, ctx)) {
+    if (isSupersededControl(operation, result, expectedGeneration, ctx.ui.info)) {
       return
     }
 
@@ -366,8 +434,7 @@ export async function runCanonicalSessionControl(
     } else if (operation === 'branch') {
       await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
-      applyModelResult(result, ctx)
-      await applyModelReasoning(mutation, ctx)
+      applyModelResult(result, ctx.transcript.sys)
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))

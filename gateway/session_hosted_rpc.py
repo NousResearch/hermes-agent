@@ -12,6 +12,7 @@ import hashlib
 import json
 
 from gateway.hosted_room_driver import TaskIdentity
+from gateway.owner_identity import same_owner
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
@@ -21,6 +22,8 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
+    accepts_attachments = True  # submit resolves event-bound bytes per member
+
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
                  authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop
@@ -119,7 +122,7 @@ class HostedRoomAuthorityRPC:
         rows = list_session_admissions(self.authority.db, session_id=self.ref.session_id, pending_only=False)
         result = []
         for row in rows:
-            if row['principal_id'] != self.principal.subject or not row['request_id'].startswith('hosted:'):
+            if not same_owner(row['principal_id'], self.principal.subject) or not row['request_id'].startswith('hosted:'):
                 continue
             try:
                 task, generation = json.loads(row['request_id'][7:])
@@ -154,14 +157,14 @@ class HostedRoomAuthorityRPC:
         rows = self._rows()
         if any(row['status'] == 'unknown' for row, _, _ in rows):
             raise RuntimeStoreError('unknown_execution')
-        from gateway.session_hosted_attachments import submission_payload
+        from gateway.session_hosted_attachments import prepare_before_submit, submission_payload
         from gateway.session_ingress_media import capture_lease
         # One lease from capture through the admission commit: documents ride in the prompt text,
         # so submit's own lease does not hold them, and an older row's release could unlink a
         # shared content-addressed capture in between.
         with capture_lease():
-            payload = await asyncio.to_thread(
-                submission_payload, self, params['prompt'], params.get('attachments'))
+            payload = await asyncio.to_thread(prepare_before_submit, partial(
+                submission_payload, self, params['prompt'], params.get('attachments')))
             authorize_write = self.authorize_write
             receipt = await self.authority.submit(self.principal, Submission(
                 request_id, self.ref, payload, 'queue'),
@@ -195,9 +198,14 @@ class HostedRoomAuthorityRPC:
                 self._terminal(row, task, generation)
 
     async def _history(self, params):
-        from gateway.session_local_recovery import local_history
+        from gateway.session_local_recovery import local_history, prepare_history
+        # Authorize (restoring a cold room session) before the read names its live entry, and again after
+        # the await (``_rows``): a delete in between answers not_found, never a KeyError.
+        self.authority.authorize(self.principal, self.ref, 'session:read')
+        prepared = await prepare_history(self.authority, self.ref)
         rows = self._rows()
-        history = list(local_history(self.authority, self.ref))
+        history = self.authority.unless_deleted(
+            self.ref, lambda: list(local_history(self.authority, self.ref, prepared)))
         for row, task, generation in rows:
             if row['status'] == 'terminal':
                 receipt = self._terminal(row, task, generation)
@@ -240,7 +248,7 @@ class HostedRoomAuthorityRPC:
                   'task_id': current[1].task_id if current else None,
                   'execution_generation': current[2] if current else None,
                   'status': current[0]['status'] if current else 'idle'}
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         if snapshot.prompts:
             prompt = next((p for p in snapshot.prompts if p.get('kind') == 'approval'), None)
             if prompt:
@@ -284,7 +292,7 @@ class HostedRoomAuthorityRPC:
     async def _approve(self, params):
         if params['choice'] not in {'once', 'deny'}:
             raise RuntimeStoreError('invalid_params')
-        snapshot = await self.authority.attach(self.principal, self.ref)
+        snapshot = await self.authority.attach(self.principal, self.ref, history=False)  # prompts only
         prompt = next((p for p in snapshot.prompts if p.get('prompt_id') == params['request_id']
                        and p.get('kind') == 'approval'), None)
         if prompt is None:
@@ -301,7 +309,11 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
-    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
+    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal,
+               member_id=None, attachments=None):
+        # One producer per member binding: a task for another member reached the wrong producer.
+        if member_id is not None and member_id != self.member_id:
+            raise RuntimeStoreError('permission_denied')
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
                           attachments=attachments)

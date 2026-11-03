@@ -19,6 +19,7 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import Principal
 from gateway.session_authorities import owner_scope
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _BINDING = 'gateway.hosted.transport.v1:'
@@ -54,7 +55,7 @@ def owner_request(home, verb, params, *, timeout=30):
         raise RuntimeStoreError('runtime_draining')
     request = json.dumps({'protocol': 1, 'id': 1, 'verb': verb, 'params': params}).encode() + b'\n'
     if len(request) > 65536:
-        raise RuntimeStoreError('invalid_params')
+        raise RuntimeStoreError('request_too_large')
     if os.name == 'nt':
         from gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(home, request, timeout)
@@ -73,7 +74,7 @@ def owner_request(home, verb, params, *, timeout=30):
     if response.get('ok') is not True:
         reason = str(response.get('error', '')).split(': ')[-1]
         if reason not in {'permission_denied', 'profile_mismatch', 'invalid_params', 'unknown_execution',
-                          'stale_generation', 'admission_conflict', 'response_too_large'}:
+                          'stale_generation', 'admission_conflict', 'response_too_large', 'request_too_large'}:
             reason = 'runtime_draining'
         raise RuntimeStoreError(reason)
     if response.get('protocol') != 1 or response.get('id') != 1:
@@ -153,7 +154,8 @@ def _attachment_data(binding, attested, params):
         while len(data) < item['size']:
             chunk = _attest(binding, 'attachment', {
                 'task': params['task'], 'execution_generation': params['execution_generation'],
-                'prompt': attested['prompt'], 'attachments': manifest, 'index': index, 'offset': len(data)})
+                'prompt_sha256': hashlib.sha256(attested['prompt'].encode('utf-8')).hexdigest(),
+                'attachments': manifest, 'index': index, 'offset': len(data)})
             raw = base64.b64decode(chunk['data_base64'], validate=True)
             expected = min(_CHUNK_BYTES, item['size'] - len(data))
             if chunk['owner'] != attested['owner'] or len(raw) != expected or chunk['sha256'] != digest:
@@ -249,6 +251,9 @@ def install_hosted_transport(server, authority, loop, *, attest):
         authority.db._execute_write(persist)
         if operation == 'submit':
             rpc.hosted_attachment_data = _attachment_data(binding, attested, params)
+            # Only the source's durable, attested text may become the admitted input.
+            params.pop('prompt_sha256', None)
+            params['prompt'] = attested['prompt']
             params['attachments'] = attested['attachments'] or None
             params['task'] = TaskIdentity(**params['task'])
             params['on_terminal'] = lambda value: None
@@ -279,7 +284,7 @@ def _check_remote_hosted_admission(authority, ref, row):
         binding = json.loads(stored[0])
         identity, generation = json.loads(row['request_id'][7:])
         if (not row['request_id'].startswith('hosted:')
-                or row['principal_id'] != _principal(authority, binding).subject
+                or not same_owner(row['principal_id'], _principal(authority, binding).subject)
                 or ref.profile_id != authority.profile_id
                 or binding.get('target_home') != authority.profile_id):
             raise ValueError('binding mismatch')
@@ -305,6 +310,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
     """Driver-compatible producer; carries data, never a caller principal."""
     def __init__(self, *, home, source_home, room_id, member_id, profile):
         self.home = Path(home)
+        self.member_id = member_id
         self.binding = {'source_home': str(Path(source_home)),
                         'selector': dict(room_id=room_id, member_id=member_id, profile=profile)}
         self.callbacks = {}
@@ -313,6 +319,9 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
 
     def _call(self, operation, **params):
         callback = params.pop('on_terminal', None)
+        if operation == 'submit':
+            # The private control request is 64 KiB, smaller than a legal room prompt.
+            params['prompt_sha256'] = hashlib.sha256(params.pop('prompt').encode('utf-8')).hexdigest()
         if isinstance(params.get('task'), TaskIdentity):
             params['task'] = asdict(params['task'])
         result = owner_request(self.home, 'hosted-producer', {

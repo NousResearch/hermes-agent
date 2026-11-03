@@ -146,11 +146,19 @@ def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
     assert not list(tmp_path.glob(".hermes-clone-*"))
 
 
-def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
+@pytest.mark.parametrize("damage", ["commitless", "lost_head", "dangling_gitdir_file"])
+def test_unusable_checkout_is_moved_aside_and_recloned(tmp_path, damage):
+    """An interrupted clone, or a .git a killed update left unreadable (the state `hermes update`
+    tells the user to repair by rerunning the installer): moved aside, never deleted, then cloned."""
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"
     install.mkdir()
-    _git(install, "init", "-q")
+    if damage == "dangling_gitdir_file":
+        (install / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n")
+    else:
+        _git(install, "init", "-q")
+        if damage == "lost_head":
+            (install / ".git" / "HEAD").unlink()
     (install / "keep").write_text("user file")
     result = _stage(tmp_path, origin)
     assert result.returncode == 0, result.stdout + result.stderr

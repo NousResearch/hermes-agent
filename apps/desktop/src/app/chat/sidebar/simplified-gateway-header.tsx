@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
@@ -36,6 +37,8 @@ export function SimplifiedGatewayHeader({
 
   const label = registered?.label || (address === fallbackLabel ? t.settings.gateway.webappHostTitle : fallbackLabel)
 
+  const toggleLabel = `${open ? t.common.collapse : t.common.expand}: ${label}`
+
   const state = selected ? gatewayState : source ? (source.reachable ? 'open' : 'closed') : 'idle'
   const connected = state === 'open'
 
@@ -58,9 +61,11 @@ export function SimplifiedGatewayHeader({
       role="group"
     >
       {onToggle && (
-        <Button aria-expanded={open} aria-label={label} onClick={onToggle} size="icon-xs" variant="grip">
-          <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-        </Button>
+        <Tip label={toggleLabel}>
+          <Button aria-expanded={open} aria-label={toggleLabel} onClick={onToggle} size="icon-xs" variant="grip">
+            <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
+          </Button>
+        </Tip>
       )}
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium text-(--ui-text-primary)" title={label}>

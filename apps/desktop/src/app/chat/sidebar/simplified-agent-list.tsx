@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { RowButton } from '@/components/ui/row-button'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
@@ -99,20 +100,23 @@ export function SimplifiedAgentList({
             {open &&
               group.map(agent => {
                 const agentOpen = group.length === 1 || isOpen(agent.id)
+                const toggleLabel = `${agentOpen ? t.common.collapse : t.common.expand}: ${agent.label}`
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
                     <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2">
                       {group.length > 1 ? (
-                        <Button
-                          aria-expanded={agentOpen}
-                          aria-label={agent.label}
-                          onClick={() => onToggle(agent.id, agentOpen)}
-                          size="icon-xs"
-                          variant="grip"
-                        >
-                          <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
-                        </Button>
+                        <Tip label={toggleLabel}>
+                          <Button
+                            aria-expanded={agentOpen}
+                            aria-label={toggleLabel}
+                            onClick={() => onToggle(agent.id, agentOpen)}
+                            size="icon-xs"
+                            variant="grip"
+                          >
+                            <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                          </Button>
+                        </Tip>
                       ) : (
                         <span aria-hidden />
                       )}
@@ -129,19 +133,20 @@ export function SimplifiedAgentList({
                         />
                         <span className="truncate">{agent.label}</span>
                       </RowButton>
-                      <Button
-                        aria-label={t.sidebar.newSessionIn(agent.label)}
-                        className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
-                        onClick={() => {
-                          recordAction('session.new', 'click')
-                          startSimplifiedAgentSession(agent)
-                        }}
-                        size="icon-xs"
-                        title={t.sidebar.newSessionIn(agent.label)}
-                        variant="ghost"
-                      >
-                        <Codicon name="add" size={14} />
-                      </Button>
+                      <Tip label={t.sidebar.newSessionIn(agent.label)}>
+                        <Button
+                          aria-label={t.sidebar.newSessionIn(agent.label)}
+                          className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                          onClick={() => {
+                            recordAction('session.new', 'click')
+                            startSimplifiedAgentSession(agent)
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name="add" size={14} />
+                        </Button>
+                      </Tip>
                     </div>
                     {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}
                   </div>

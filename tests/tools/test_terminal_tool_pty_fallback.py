@@ -125,3 +125,32 @@ def test_terminal_handler_inferred_pty_background_keeps_background_modifiers(mon
     assert captured["notify_on_complete"] is True
     assert captured["heartbeat"] == 120
     assert captured["persist_on_release"] is True
+
+
+def test_prepared_approval_keys_on_the_inferred_background(monkeypatch, tmp_path):
+    """Desktop batch preparation must key the guard on the command the handler will check: a pty
+    call without ``background`` runs as a background process, so its trailing ``&`` stays."""
+    import threading
+
+    from agent import terminal_approval_batch as tab
+
+    config = _base_config(tmp_path)
+    monkeypatch.setattr(terminal_tool_module, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool_module, "_docker_has_host_access", lambda _c: False)
+    checked = []
+    monkeypatch.setattr(terminal_tool_module, "_check_all_guards",
+                        lambda *key: checked.append(key) or {"approved": True})
+    batch = SimpleNamespace(cancelled=threading.Event(), task_id="t",
+                            agent=SimpleNamespace(_interrupt_requested=False, session_id="s"))
+
+    def prepared_command(args):
+        slot = tab._TerminalSlot(batch, parsed=None, index=0)
+        slot.release.set()
+        slot.prepare(SimpleNamespace(args=args, call_id="c1"))
+        return slot.guard_key[0]
+
+    assert prepared_command({"command": "sleep 5 &", "pty": True}) == "sleep 5 &"
+    assert prepared_command({"command": "sleep 5 &", "pty": True, "background": True}) == "sleep 5 &"
+    assert prepared_command({"command": "sleep 5 &"}) == "sleep 5"
+    assert prepared_command({"command": "sleep 5 &", "pty": False}) == "sleep 5"
+    assert [key[0] for key in checked] == ["sleep 5 &", "sleep 5 &", "sleep 5", "sleep 5"]

@@ -1667,6 +1667,14 @@ TERMINAL_SCHEMA = {
 }
 
 
+def _effective_background(args: dict):
+    """``background`` as the terminal call will run it. A PTY is only useful as a tracked session, so
+    ``pty=true`` with ``background`` omitted means background; an explicit foreground request stays."""
+    if args.get("pty", False) and "background" not in args:
+        return True
+    return args.get("background", False)
+
+
 def _handle_terminal(args, **kw):
     from agent.terminal_approval_batch import validate_prepared_terminal
     validate_prepared_terminal(args)
@@ -1694,11 +1702,7 @@ def _handle_terminal(args, **kw):
     persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
-    # A PTY is only useful as a tracked session. Recover the common dependent-
-    # argument omission without overriding an explicit foreground request.
-    background = args.get("background", False)
-    if args.get("pty", False) and "background" not in args:
-        background = True
+    background = _effective_background(args)
     if not background:
         if notify or watch_patterns or notify_on_complete:
             return tool_error(

@@ -59,7 +59,7 @@ class _TerminalSlot:
                 try:
                     # Key on what will actually run: a foreground `cmd &` executes as `cmd`.
                     command = ref.args["command"]
-                    if not ref.args.get("background"):
+                    if not tt._effective_background(ref.args):
                         command = tt.trailing_amp_background_command(command) or command
                     self.guard_key = (command, config["env_type"], tt._docker_has_host_access(config))
                     self.decision = tt._check_all_guards(*self.guard_key)

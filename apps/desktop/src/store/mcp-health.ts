@@ -21,12 +21,13 @@
 
 import type { McpServersStatusResult } from '@hermes/shared'
 
+import { $apiRequestScope } from '@/api/client'
 import { getHermesConfigRecord, setMcpServerEnabled } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isLoopbackPreviewUrl } from '@/lib/local-preview'
 import { getServers, type McpServerEntry, serverEnabled } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
@@ -109,15 +110,15 @@ function snooze(key: string): void {
   persistString(SNOOZE_KEY_PREFIX + key, String(Date.now() + SNOOZE_MS))
 }
 
-// Last-known status per (profile, server) — the transition memory. Keyed by
-// profile so one profile's broken server can't mute or trigger another's
-// (AGENTS.md scope-in-key).
+// Last-known status per (source, server) — the transition memory. Keyed by
+// connection + profile so one backend's broken server can't mute or trigger
+// another's (AGENTS.md scope-in-key).
 const lastStatus = new Map<string, McpHealthStatus>()
 
 let started = false
 let timer: ReturnType<typeof setInterval> | null = null
-// Bumped on profile switch; in-flight sweeps compare and bail so a slow
-// profile-A read can't record (or notify) into profile B's state.
+// Bumped on a profile or connection switch; in-flight sweeps compare and bail
+// so a slow read from source A can't record (or notify) into source B's state.
 let sweepEpoch = 0
 // At most one sweep runs and one follow-up is remembered. Reconnect storms
 // still request a fresh pass, but cannot append an unbounded backlog.
@@ -125,6 +126,7 @@ let sweepInFlight: Promise<void> | null = null
 let sweepQueued = false
 let offGatewayState: (() => void) | null = null
 let offProfile: (() => void) | null = null
+let offConnection: (() => void) | null = null
 
 function openMcpServerPage(name: string): void {
   window.location.hash = `#/capabilities?tab=connectors&server=${encodeURIComponent(name)}`
@@ -134,10 +136,10 @@ function openMcpServerPage(name: string): void {
 // listed on the MCP page for a later re-enable). The backend follows the edit
 // on its own — the gateway's config reconcile and the serve backend's next
 // reload both drop a disabled server — so no reload RPC is issued here.
-async function disableServer(profileKey: string, name: string): Promise<void> {
+async function disableServer(sourceKey: string, name: string): Promise<void> {
   try {
     await setMcpServerEnabled(name, false)
-    lastStatus.delete(`${profileKey}::${name}`)
+    lastStatus.delete(`${sourceKey}::${name}`)
     notify({
       kind: 'success',
       message: translateNow('notifications.mcp.disabledMessage', name)
@@ -147,8 +149,8 @@ async function disableServer(profileKey: string, name: string): Promise<void> {
   }
 }
 
-function recordResult(profileKey: string, name: string, status: McpHealthStatus): void {
-  const key = `${profileKey}::${name}`
+function recordResult(sourceKey: string, name: string, status: McpHealthStatus): void {
+  const key = `${sourceKey}::${name}`
   const previous = lastStatus.get(key) ?? null
   lastStatus.set(key, status)
 
@@ -170,7 +172,7 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
     message: translateNow(needsAuth ? 'notifications.mcp.needsAuthMessage' : 'notifications.mcp.errorMessage', name),
     secondaryAction: {
       label: translateNow('notifications.mcp.disable'),
-      onClick: () => void disableServer(profileKey, name)
+      onClick: () => void disableServer(sourceKey, name)
     },
     title: translateNow(needsAuth ? 'notifications.mcp.needsAuthTitle' : 'notifications.mcp.errorTitle')
   })
@@ -178,15 +180,27 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
 
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch
+  // Both reads go to ONE source: the config and the runtime status must come
+  // from the same (connection, profile), or a same-named profile on another
+  // gateway answers for this one.
+  const connectionId = $apiRequestScope.get().connectionId
   const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  // The local pool keeps the bare profile key, so existing snoozes still apply.
+  const sourceKey = connectionId ? `${connectionId}::${profileKey}` : profileKey
 
   let config: Record<string, unknown>
   let status: McpServersStatusResult
 
   try {
     ;[config, status] = await Promise.all([
-      getHermesConfigRecord(),
-      requestGatewayForProfile<McpServersStatusResult>(profileKey, 'mcp.servers.status', {}, STATUS_TIMEOUT_MS)
+      getHermesConfigRecord(connectionId ? { connectionId, profile: profileKey } : undefined),
+      requestGatewayForAgent<McpServersStatusResult>(
+        connectionId,
+        profileKey,
+        'mcp.servers.status',
+        {},
+        STATUS_TIMEOUT_MS
+      )
     ])
   } catch {
     // Backend unreachable / mid-restart, or one too old to report MCP runtime
@@ -206,7 +220,7 @@ async function sweep(): Promise<void> {
     const server = servers[row.name]
 
     if (server && serverEnabled(server)) {
-      recordResult(profileKey, row.name, healthOf(row, server))
+      recordResult(sourceKey, row.name, healthOf(row, server))
     }
   }
 }
@@ -273,12 +287,22 @@ export function startMcpHealthChecker(): void {
   // gateway is connected. lastStatus and the snooze keys are profile-keyed,
   // so no wipe is needed — profile A's transition memory stays intact for
   // when the user switches back.
-  offProfile = $activeGatewayProfile.listen(() => {
+  const rearm = () => {
     sweepEpoch += 1
     disarm()
 
     if ($gatewayState.get() === 'open') {
       arm()
+    }
+  }
+
+  offProfile = $activeGatewayProfile.listen(rearm)
+  let observedConnection = $apiRequestScope.get().connectionId
+
+  offConnection = $apiRequestScope.listen(({ connectionId }) => {
+    if (connectionId !== observedConnection) {
+      observedConnection = connectionId
+      rearm()
     }
   })
 }
@@ -290,5 +314,7 @@ export function stopMcpHealthChecker(): void {
   offGatewayState = null
   offProfile?.()
   offProfile = null
+  offConnection?.()
+  offConnection = null
   started = false
 }

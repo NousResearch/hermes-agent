@@ -5,6 +5,7 @@
 // where retrying reproduces the failure.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { markCompressDeferred, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { $notifications } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 
@@ -51,6 +52,18 @@ afterEach(() => {
 })
 
 describe('gateway `error` event → error card + toast', () => {
+  it('does not announce deferred compression success after late host error then ready', () => {
+    const { ctx } = errorContext('compression failed: host failed')
+    markCompressDeferred('sess-1')
+    markCompressDeferred('other')
+    setSessionCompacting('sess-1', true)
+    handleStatusEvent(ctx)
+    const payload = { kind: 'ready' } as GatewayEventContext['payload']
+    handleStatusEvent({ ...ctx, event: { type: 'status.update', session_id: 'sess-1', payload }, payload })
+    expect($notifications.get().some(entry => entry.kind === 'success')).toBe(false)
+    expect(ctx.deps.updateSessionState).not.toHaveBeenCalled()
+    expect(takeCompressDeferred('other')).toBe(true)
+  })
   it('stamps SESSION_NOT_OWNED on a live-owner refusal so the card drops Retry', () => {
     const { ctx, failAssistantMessage } = errorContext(OWNED_REFUSAL)
 

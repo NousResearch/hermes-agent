@@ -462,6 +462,19 @@ export const arChrome = {
       turnRunning: 'الدور يعمل',
       contextUsage: 'استخدام السياق',
       compressions: count => `مرات الضغط: ${count}`,
+      contextUsagePanel: {
+        compact: {
+          action: 'ضغط المحادثة',
+          busyHint: 'أكمل الرد الحالي أو أوقفه أولًا',
+          confirm: 'ضغط',
+          failed: 'فشل ضغط المحادثة',
+          hint: 'لخّص السياق القديم لإفساح المجال. تابع في هذه المحادثة نفسها.',
+          pending: 'لا يزال الضغط جاريًا في الخلفية',
+          progress: 'جارٍ ضغط السياق...',
+          question: 'ضغط هذه المحادثة في ملخص؟',
+          working: 'جارٍ الضغط…'
+        }
+      },
       focusedSince: 'منذ التركيز',
       focusedSinceTitle: 'الوقت منذ تركيز هذه المحادثة — وليس مدة الدور',
       yoloOn: 'YOLO مفعل',
@@ -523,8 +536,7 @@ export const arChrome = {
       'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
     terminalGatewayNoShellBody:
       'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
-    terminalDisconnectedBody:
-      'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
+    terminalDisconnectedBody: 'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {

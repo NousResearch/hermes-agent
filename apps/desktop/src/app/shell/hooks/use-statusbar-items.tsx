@@ -7,10 +7,12 @@ import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
+import type { CompressSessionOutcome } from '@/app/session/compress-session'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useChangeWorkspaceItem } from '@/app/shell/hooks/use-change-workspace'
+import { useCompactConversation } from '@/app/shell/hooks/use-compact-conversation'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useFocusedSessionRow } from '@/app/shell/hooks/use-focused-session-row'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
@@ -90,6 +92,7 @@ interface StatusbarItemsOptions {
   changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
+  compressConversation?: (sessionId: string) => Promise<CompressSessionOutcome>
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
   gatewayState: string
@@ -136,6 +139,7 @@ export function useStatusbarItems({
   changeSessionCwd,
   chatOpen,
   commandCenterOpen,
+  compressConversation,
   extraLeftItems,
   extraRightItems,
   gatewayState,
@@ -323,6 +327,18 @@ export function useStatusbarItems({
     enabled: !contextItemHidden,
     requestGateway,
     sessionId: activeSessionId
+  })
+
+  // The gauge's one verb. State lives in the hook (not the popover) because a
+  // manual compress is LLM-bound: the dropdown closes long before the summary
+  // lands, and the action must survive that. The claim follows the chat's
+  // DURABLE id so a stale-runtime re-mint mid-flight cannot re-enable the
+  // button over the running call.
+  const compactConversation = useCompactConversation({
+    busy,
+    compress: compressConversation,
+    sessionId: activeSessionId,
+    storedSessionId: primaryFocused ? selectedStoredSessionId : (focusedStateStoredId ?? focusedStoredSessionId)
   })
 
   // The breakdown wins whenever we have one, for two reasons: it reports the
@@ -710,7 +726,12 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel breakdown={contextBreakdown} loading={contextBreakdownLoading} usage={gaugeUsage} />
+          <ContextUsagePanel
+            breakdown={contextBreakdown}
+            compact={compactConversation}
+            loading={contextBreakdownLoading}
+            usage={gaugeUsage}
+          />
         ),
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
@@ -791,6 +812,7 @@ export function useStatusbarItems({
       cacheHit,
       chatOpen,
       clientVersionItem,
+      compactConversation,
       contextBar,
       contextBreakdown,
       contextBreakdownLoading,

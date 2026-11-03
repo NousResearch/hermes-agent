@@ -4651,6 +4651,17 @@ export const frOverrides = {
           system_prompt: 'Invite système',
           tool_definitions: "Définitions d'outils"
         },
+        compact: {
+          action: 'Compacter la conversation',
+          busyHint: "Terminez ou arrêtez d'abord la réponse en cours",
+          confirm: 'Compacter',
+          failed: 'Échec de la compaction',
+          hint: 'Résumez le contexte ancien pour libérer de la place. Continuez dans cette même conversation.',
+          pending: 'la compaction continue en arrière-plan',
+          progress: 'compaction du contexte...',
+          question: 'Compacter cette conversation en un résumé ?',
+          working: 'Compaction…'
+        },
         empty: 'Aucune donnée de contexte pour le moment',
         loading: 'Chargement du détail…',
         percentFull: percent => `${percent}% plein`,

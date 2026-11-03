@@ -19,6 +19,8 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   const sessions = $compactingSessions.get()
 
   if (active) {
+    for (const observe of terminalObservers) {observe(key, null)}
+
     if (hasSession(sessions, key)) {
       return
     }
@@ -51,6 +53,54 @@ export function markCompressDeferred(sessionId: string | null | undefined): void
  *  auto-compaction on the same session cannot replay the notice. */
 export function takeCompressDeferred(sessionId: string | null | undefined): boolean {
   return deferredCompressSessions.delete(keyFor(sessionId))
+}
+
+interface CompactionTerminal {
+  kind: 'compacted' | 'error' | 'ready'
+  text: string
+}
+
+type TerminalObserver = (sessionId: string, terminal: CompactionTerminal | null) => void
+const terminalObservers = new Set<TerminalObserver>()
+
+/** Watch only this request's lifetime. Recovery may reveal a different runtime
+ *  in the reply, so retain edges by runtime and inspect only the resolved id. */
+export function observeCompactionTerminal() {
+  const terminals = new Map<string, CompactionTerminal>()
+  const started = new Set<string>()
+
+  const observe: TerminalObserver = (sessionId, terminal) => {
+    if (!terminal) {
+      started.add(sessionId)
+
+      return
+    }
+
+    // Ready can belong to an earlier control. Require a compaction start or
+    // an explicit compacted/error edge before treating it as this request's end.
+    if (terminal.kind === 'ready' && !started.has(sessionId)) {return}
+    const previous = terminals.get(sessionId)
+
+    // A generic ready edge must not erase an error or a positive completion.
+    if (previous?.kind !== 'error' && (terminal.kind !== 'ready' || !previous)) {
+      terminals.set(sessionId, terminal)
+    }
+  }
+
+  terminalObservers.add(observe)
+
+  return {
+    get: (sessionId: string) => terminals.get(sessionId),
+    dispose: () => {
+      terminalObservers.delete(observe)
+    }
+  }
+}
+
+export function recordCompactionTerminal(sessionId: string, terminal: CompactionTerminal): void {
+  for (const observe of terminalObservers) {
+    observe(sessionId, terminal)
+  }
 }
 
 /** Clear compaction only when the gateway proves the turn resumed or ended. */

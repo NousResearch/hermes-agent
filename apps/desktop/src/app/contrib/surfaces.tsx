@@ -95,6 +95,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
     changeSessionCwd: actions.changeSessionCwd,
     chatOpen,
     commandCenterOpen,
+    compressConversation: actions.compressConversation,
     extraLeftItems,
     extraRightItems,
     freshDraftReady,

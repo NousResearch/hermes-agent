@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_audit, do_check, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -80,6 +80,26 @@ def _capture_check(monkeypatch, results, name=None) -> str:
     return sink.getvalue()
 
 
+def _capture_audit(monkeypatch, tmp_path, installed) -> str:
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    import tools.skills_guard as skills_guard
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "example"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Example")
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile(installed))
+    monkeypatch.setattr(skills_guard, "scan_skill", lambda *args, **kwargs: object())
+    monkeypatch.setattr(skills_guard, "format_scan_report", lambda result: "Local scan: clean")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_audit(console=console)
+    return sink.getvalue()
+
+
 def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
     import tools.skills_hub as hub
     import tools.skills_hub_install as hub_install
@@ -123,6 +143,36 @@ def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
     _capture()
 
     assert seen["platform"] is None
+
+
+def test_do_check_displays_advisory_registry_metadata(monkeypatch):
+    output = _capture_check(monkeypatch, [{
+        "name": "example", "source": "clawhub", "status": "up_to_date",
+        "registry_security": {
+            "decision": "allow", "checked_at": "2026-09-15T00:00:00Z",
+            "audit_url": "https://clawhub.ai/audits/example",
+        },
+        "registry_version": "1.2.3",
+    }])
+
+    assert "ClawHub registry (advisory):" in output
+    assert "v1.2.3" in output
+    assert "decision=allow" in output
+    assert "checked=2026-09-15T00:00:00Z" in output
+    assert "https://clawhub.ai/audits/example" in output
+
+
+def test_do_audit_displays_stored_advisory_registry_metadata(monkeypatch, tmp_path):
+    output = _capture_audit(monkeypatch, tmp_path, [{
+        "name": "example", "source": "clawhub", "identifier": "example", "install_path": "example",
+        "metadata": {
+            "registry_security": {"status": "safe", "checked_at": "2026-09-15T00:00:00Z"},
+            "registry_version": "1.2.3",
+        },
+    }])
+
+    assert "Local scan: clean" in output
+    assert "ClawHub registry (advisory): v1.2.3; status=safe; checked=2026-09-15T00:00:00Z" in output
 
 
 # ---------------------------------------------------------------------------

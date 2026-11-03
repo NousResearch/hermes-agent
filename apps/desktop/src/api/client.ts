@@ -358,7 +358,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     const ready = this.nativeDial ? Promise.resolve() : new Promise<void>((resolve, reject) => {
       rejectReady = reject
-      stopReady = this.on('gateway.ready', () => resolve())
+      // Only this dial's socket can settle it; a replacement's ready belongs to the replacement.
+      stopReady = this.on('gateway.ready', () => { if (generation === this.connectionGeneration) { resolve() } })
       timer = setTimeout(() => reject(new Error('Hermes gateway protocol readiness timed out')), DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS)
     })
 
@@ -367,8 +368,13 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     try {
       const transport = super.connect(wsUrl)
+      // State handlers run over a live set: a closed-handler redial can register the next dial's
+      // listener while the previous socket's `closed` is still being dispatched. That close ends a
+      // superseded dial, but the current dial fails only when its own transport is closed.
       stopState = this.onState(state => {
-        if (state === 'closed') { rejectReady(new Error('Hermes gateway disconnected before protocol readiness')) }
+        if (state === 'closed' && (generation !== this.connectionGeneration || this.connectionState === 'closed')) {
+          rejectReady(new Error('Hermes gateway disconnected before protocol readiness'))
+        }
       })
       await Promise.all([transport, ready])
     } catch (error) {

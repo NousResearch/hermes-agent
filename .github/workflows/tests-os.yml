@@ -106,6 +106,22 @@ jobs:
             timeout: 60
             slice: 2/2
     steps:
+      - name: EXPERIMENT put the workspace, PM home and temp on a Dev Drive (do not merge)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: cmd
+        working-directory: ${{ runner.temp }}
+        run: |
+          (echo create vdisk file=C:\devdrive.vhdx maximum=51200 type=expandable& echo attach vdisk& echo create partition primary& echo assign letter=R) > devdrive.txt
+          diskpart /s devdrive.txt || exit /b 1
+          format R: /DevDrv /Q /Y || exit /b 1
+          fsutil devdrv query R:
+          mkdir R:\ws R:\setup-pm R:\tmp || exit /b 1
+          rmdir "%GITHUB_WORKSPACE%" || exit /b 1
+          mklink /J "%GITHUB_WORKSPACE%" R:\ws || exit /b 1
+          mklink /J "%RUNNER_TEMP%\setup-pm" R:\setup-pm || exit /b 1
+          echo TEMP=R:\tmp>> "%GITHUB_ENV%"
+          echo TMP=R:\tmp>> "%GITHUB_ENV%"
+
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:

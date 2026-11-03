@@ -4246,9 +4246,11 @@ def compress_context(
                 commit_fence.finish_commit()
 
 
-# 4 MB leaves headroom under Anthropic's 5 MB; shrinking loses quality but only
-# runs after a confirmed provider rejection, so the alternative is failure.
-_IMAGE_SHRINK_TARGET_BYTES = 4 * 1024 * 1024
+# The pre-send budget (agent.turn_api_request) and the provider-rejection recovery path share
+# this target: 512 KB is about one screen capture's worth of detail after the 1568px downscale,
+# and it is what a re-sent capture may cost on every later turn. Shrinking loses quality, but
+# the alternative on an over-window request is a wedged history.
+_IMAGE_SHRINK_TARGET_BYTES = 512 * 1024
 _IMAGE_SUFFIX_BY_MIME = {
     "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg",
     "image/bmp": ".bmp",
@@ -4350,11 +4352,12 @@ def _write_data_url_to_source(source: dict, data_url: str) -> dict:
     return {**source, "type": "base64", "media_type": _data_url_mime(header), "data": data}
 
 
-def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int = 8000) -> bool:
+def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int = 1568) -> bool:
     """Re-encode oversized native image parts to recover from image-too-large errors.
     Mutates ``api_messages`` in place. Returns True if any part was replaced, False if nothing to shrink or
-    Pillow could not help. Targets data-URL parts over 4 MB or ``max_dimension`` (Anthropic's per-side pixel
-    cap, parsed from the rejection by the caller); http(s) image URLs are left untouched."""
+    Pillow could not help. Targets data-URL parts over ``_IMAGE_SHRINK_TARGET_BYTES`` or
+    ``max_dimension`` (Anthropic's per-side pixel cap, parsed from the rejection by the
+    caller); http(s) image URLs are left untouched."""
     if not api_messages:
         return False
     try:

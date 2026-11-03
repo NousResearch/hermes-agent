@@ -463,7 +463,7 @@ def _json_or(text: str, default):
     """``json.loads`` of CLI stdout, or *default* when empty/malformed."""
     try:
         return json.loads(text or json.dumps(default))
-    except ValueError:
+    except (ValueError, RecursionError):  # profile content is member-authored
         return default
 
 

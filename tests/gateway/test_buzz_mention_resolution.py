@@ -410,7 +410,11 @@ class TestLongerMemberNameMention:
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("content", ["[]", {"display_name": "Chip Sales"}])
+    @pytest.mark.parametrize(
+        "content",
+        ["[]", {"display_name": "Chip Sales"}, "[" * 200_000],
+        ids=["empty-list", "object-profile", "deeply-nested"],
+    )
     async def test_malformed_profile_content_keeps_mention(self, adapter, content):
         adapter._cli.responses[("users", "get")] = [
             (0, json.dumps([{"pubkey": CHIP_SALES_PUBKEY, "display_name": "", "name": "", "content": content}]), "")

@@ -137,9 +137,9 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: os-test-durations-never-exact
+          key: os-test-durations-v2-never-exact
           restore-keys: |
-            os-test-durations-${{ runner.os }}-${{ runner.arch }}-
+            os-test-durations-v2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
@@ -225,11 +225,11 @@ jobs:
         # Only green first-attempt durations are written by the runner. One
         # entry per slice; each keeps the restored entries for the other
         # slice's files, so the newest entry stays complete.
-        if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'exp/ci-osorder') && hashFiles('test_durations.json') != ''
+        if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'exp/ci-lpt2') && hashFiles('test_durations.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: os-test-durations-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ strategy.job-index }}
+          key: os-test-durations-v2-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ strategy.job-index }}
 
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that

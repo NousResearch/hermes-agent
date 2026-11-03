@@ -1086,6 +1086,18 @@
   }
 }
 
+/* While a pane/tab/session drag is engaged, its cursor wins everywhere —
+   otherwise any element with its own cursor (tabs are arrows) hides it. */
+html[data-drag-cursor='grabbing'],
+html[data-drag-cursor='grabbing'] * {
+  cursor: grabbing !important;
+}
+
+html[data-drag-cursor='no-drop'],
+html[data-drag-cursor='no-drop'] * {
+  cursor: no-drop !important;
+}
+
 @layer utilities {
   /* Keep relational selectors on their owning row, not inside a universal
      group-has descendant match: that invalidates unrelated chat panes. */

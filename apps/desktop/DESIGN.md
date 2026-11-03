@@ -574,6 +574,12 @@ The detailed state contract lives in the scoped
 
 - `cursor-pointer` at the primitive level (Button, dropdown/select) — don't
   hardcode it per call site.
+- Tabs and their ✕ keep the arrow cursor (`PaneTab` opts out of the
+  role-level pointer). A grab or pointer hand moves the hotspot off the arrow
+  tip, so a press aimed at the label lands on the ✕ and closes the tab. The
+  grabbing hand is drag feedback only: `drag-session` sets
+  `html[data-drag-cursor]` once a drag engages, which overrides every element
+  cursor until release. Never put `cursor: grab` on a press-to-activate target.
 - Global focus-ring reset; titlebar actions have no active-background state.
 - `Esc` closes every dismissable overlay/dialog (install/onboarding excluded);
   close is an x-icon, not the word "Close".

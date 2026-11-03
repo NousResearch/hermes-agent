@@ -49,11 +49,14 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
     "post_compaction",
+    # Fired from the review daemon thread: a hung plugin must not delay the next review.
+    "post_background_review",
 }
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.
 _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
+    "post_background_review": ("session_id",),
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

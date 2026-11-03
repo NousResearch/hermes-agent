@@ -1244,6 +1244,30 @@ def _publish_review_summary(agent: Any, actions: list[str]) -> None:
             agent.background_review_callback(t("display.review.summary_callback", summary=summary))
 
 
+def _fire_post_review_hook(
+    agent: Any, *, actions: list[str], review_memory: bool, explicit: bool, success: bool,
+) -> None:
+    """The ``post_background_review`` plugin hook: once per completed review, observer only.
+
+    Fired after the summary is published, so a consumer sees the same ``actions`` the
+    user did. Gated on a listener (``has_hook``) and failure-isolated: a plugin
+    exception can never change what the review reported or wrote.
+    """
+    from hermes_cli.lifecycle import has_hook, invoke_hook
+
+    with suppress(Exception):
+        if not has_hook("post_background_review"):
+            return
+        invoke_hook(
+            "post_background_review",
+            session_id=getattr(agent, "session_id", "") or "",
+            actions=list(actions or []),
+            review_memory=bool(review_memory),
+            explicit=bool(explicit),
+            success=bool(success),
+        )
+
+
 def _run_review_in_thread(
     agent: Any, messages_snapshot: list[dict], prompt: str,
     task_cfg: Optional[dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
@@ -1310,11 +1334,17 @@ def _run_review_in_thread(
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
+        _fire_post_review_hook(
+            agent, actions=actions, review_memory=review_memory, explicit=explicit, success=True,
+        )
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:
             _log_review_completion(st.review_usage, "error")
         agent._emit_auxiliary_failure(t("display.review.aux_failure_label"), e)
+        _fire_post_review_hook(
+            agent, actions=[], review_memory=review_memory, explicit=explicit, success=False,
+        )
     finally:
         # Safety net for the exception path (setup failures before the request-phase finally).
         # Both cleanups are identity-scoped and idempotent; re-enter thread-scoped silence so

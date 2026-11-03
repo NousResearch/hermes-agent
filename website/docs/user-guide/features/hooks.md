@@ -473,6 +473,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_delete` | Observer | After a session delete or deliberate archive commits (CLI, TUI, Desktop/dashboard, gateway API, sweeps, prune); return ignored. | `session_id`, `reason`, `profile`, optional `deleted_ids` (full set when more than one row went), `sessions_dir` | Session identifiers only; no message content. |
 | `post_compaction` | Observer | Once per committed compaction, on every path: automatic and manual compaction in the agent loop (CLI, TUI, Desktop, gateway hygiene, overflow recovery), the gateway's `/compress` (`session.mutate compress`), Codex app-server compactions, micro-compaction and proactive tool-result pruning. Not fired for attempts that changed nothing (aborted, blocked, refused). Timeout-bounded; return ignored. | `session_id`, `old_session_id`, `kind`, `reason`, `before_tokens`, `after_tokens`, `messages_removed` | Identifiers and counts only. |
+| `post_background_review` | Observer | Once per completed background review, after its summary is published; cancelled reviews and reviews skipped by `background_review.enabled` do not fire. Timeout-bounded; return ignored. | `session_id`, `actions`, `review_memory`, `explicit`, `success` | Session id plus the review's own summary strings; no message bodies. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -1146,6 +1147,31 @@ def my_callback(session_id: str, kind: str, reason: str, **kwargs):
 **Return value:** Ignored. A callback that raises is logged and skipped; the compaction is already committed and is unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
 
 **Use cases:** Re-inject session context after compaction, refresh an external index, count compactions.
+
+### `post_background_review`
+
+Fires once per **completed** background review — the post-turn pass that writes memories and skills — after its summary line has been published. It is the point where "the review just changed something" becomes observable to a plugin, without patching the review code.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, actions: list, review_memory: bool,
+                explicit: bool, success: bool, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The session the review ran for. |
+| `actions` | `list[str]` | The same summary strings the user saw (`["skill_manage updated …", …]`); empty when the review changed nothing or failed. |
+| `review_memory` | `bool` | True when the review was allowed to write memories, False for a skills-only pass. |
+| `explicit` | `bool` | True for a user-requested review (`/refine`), False for an automatic one. |
+| `success` | `bool` | False when the review raised before completing; `actions` is empty then. |
+
+**Fires:** from the review's daemon thread, after the summary is published, for every completed automatic or `/refine` review. A review that is cancelled before its first provider call, or skipped by `background_review.enabled: false`, fires nothing.
+
+**Return value:** Ignored. A callback that raises is logged and skipped; the review's writes and its summary are unaffected. Callbacks are bounded by `plugins.hook_callback_timeout`.
+
+**Use cases:** Post-review index or keyword maintenance, analytics on what the review changed, re-indexing a memory store once per review instead of once per turn.
 
 ### `agent_loop_stopped`
 

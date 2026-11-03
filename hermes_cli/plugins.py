@@ -201,6 +201,10 @@ VALID_HOOKS: set[str] = {
     # block/rewrite adopters are discoverable once the middleware variant ships (#64231 taxonomy).
     "pre_command",
     "post_compaction",  # once per committed compaction on every path; observer (hooks.md, #118382)
+    # post_background_review: once per completed background review, after the summary is
+    # published (hooks.md). Kwargs: session_id, actions (the summary list), review_memory,
+    # explicit, success. Observer; return ignored; failure-isolated from the review.
+    "post_background_review",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

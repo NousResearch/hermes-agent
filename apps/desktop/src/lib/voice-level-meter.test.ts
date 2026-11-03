@@ -66,7 +66,7 @@ describe('voice level meter ownership', () => {
     const capture = setup()
     const onLevel = vi.fn()
     const onError = vi.fn()
-    const stop = startVoiceLevelMeter(capture.context, capture.source, onLevel, onError)
+    const { stop } = startVoiceLevelMeter(capture.context, capture.source, onLevel, onError)
     stop()
     capture.resolve()
     await flush()
@@ -80,7 +80,7 @@ describe('voice level meter ownership', () => {
   it('uses captured audio time and ignores queued samples after stopping', async () => {
     const capture = setup()
     const onLevel = vi.fn()
-    const stop = startVoiceLevelMeter(capture.context, capture.source, onLevel, vi.fn())
+    const { stop } = startVoiceLevelMeter(capture.context, capture.source, onLevel, vi.fn())
     capture.resolve()
     await flush()
     const node = FakeWorkletNode.instances[0]
@@ -99,7 +99,7 @@ describe('voice level meter ownership', () => {
   it('delivers the entire backlog but marks only the current reporting interval as safe to end capture', async () => {
     const capture = setup()
     const onLevel = vi.fn()
-    const stop = startVoiceLevelMeter(capture.context, capture.source, onLevel, vi.fn())
+    const { stop } = startVoiceLevelMeter(capture.context, capture.source, onLevel, vi.fn())
     capture.resolve()
     await flush()
     const deliver = FakeWorkletNode.instances[0].port.onmessage!
@@ -128,7 +128,7 @@ describe('voice level meter ownership', () => {
   it('releases capture and reports a crashed processor only once', async () => {
     const capture = setup()
     const onError = vi.fn()
-    const stop = startVoiceLevelMeter(capture.context, capture.source, vi.fn(), onError)
+    const { stop } = startVoiceLevelMeter(capture.context, capture.source, vi.fn(), onError)
     capture.resolve()
     await flush()
     const node = FakeWorkletNode.instances[0]
@@ -146,7 +146,7 @@ describe('voice level meter ownership', () => {
   it.each([false, true])('reports module failure only while its capture is owned (cancelled: %s)', async cancelled => {
     const capture = setup()
     const onError = vi.fn()
-    const stop = startVoiceLevelMeter(capture.context, capture.source, vi.fn(), onError)
+    const { stop } = startVoiceLevelMeter(capture.context, capture.source, vi.fn(), onError)
 
     if (cancelled) {
       stop()

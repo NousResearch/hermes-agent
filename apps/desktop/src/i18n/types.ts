@@ -2958,6 +2958,8 @@ export interface Translations extends NoticeTranslations {
     voiceEngineChangeFailed: string
     voiceEngineChainedShort: string
     voiceEngineLiveShort: string
+    voiceModeDuplex: string
+    voiceLanguageAuto: string
     voiceEngineUnavailable: string
     voiceEngineSignIn: (provider: string) => string
     voiceEngineMissing: (engine: string) => string

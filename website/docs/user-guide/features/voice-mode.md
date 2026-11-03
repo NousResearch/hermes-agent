@@ -223,7 +223,7 @@ voice:
 
 Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
 
-### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
+### Desktop: Duplex with OpenAI (GPT-Live, delegates to Hermes)
 
 The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
 
@@ -232,10 +232,22 @@ voice:
   voice_chat_mode: gpt-live     # chained (default) | gpt-live | <plugin>:<engine>
   gpt_live:
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
+    language: auto              # existing multilingual behavior, or a language tag such as fr / pt-BR
     instructions: ""            # optional extra persona sentences (tone, pace, language)
 ```
 
-Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
+In **Settings ▸ Voice ▸ Conversation**, choose **Duplex**, then choose **OpenAI** as the
+voice chat engine. Duplex describes the conversation mode, not its vendor. The existing
+`voice.voice_chat_mode: gpt-live` value is unchanged, so saved configurations keep working.
+
+**OpenAI Response Language** offers **Auto** or a chosen language. Auto leaves the existing
+multilingual instructions unchanged. A chosen language adds a response-language instruction,
+including when you speak another language, while retaining the persona and Hermes delegation
+policy. This follows the [GPT-Live prompting guide](https://developers.openai.com/api/docs/guides/live-prompting).
+It does not set a speech-transcription hint or change your `stt.*` configuration. Other language
+tags can be set in `voice.gpt_live.language`; voice-model support and pronunciation vary by language.
+
+Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always.
 
 How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
@@ -245,7 +257,7 @@ Not supported in this mode: the Nous-managed audio proxy (direct key only), the 
 
 A Desktop plugin can add its own live voice engine (for example a Grok voice), shown next to
 speech-to-text and GPT-Live in the voice button's menu and under **Settings ▸ Voice ▸
-Conversation**. Selecting it saves `voice.voice_chat_mode: <plugin>:<engine>` (for example
+Conversation**, after choosing **Duplex**. Selecting it saves `voice.voice_chat_mode: <plugin>:<engine>` (for example
 `hermes-xai:grok`). It works like GPT-Live: the voice model owns the microphone and speaker and
 hands every real request to Hermes as a normal turn on the open chat, with your model, tools and
 approvals.
@@ -254,7 +266,9 @@ approvals.
   **Sign in** (a code to enter on the provider's page) and **Sign out**. Signing out removes that
   provider's sign-in from the profile, for every feature that uses it. The plugin never receives
   your token.
-- The engine's own options (voice, persona, …) appear under it in the same page.
+- The engine's own options (voice, persona, and language when its plugin declares that setting)
+  appear under it in the same page. Language options belong to the selected engine, not the app's
+  display language. OpenAI-only settings are hidden while an extension engine is selected.
 - If the plugin is turned off or uninstalled, the voice button falls back to speech-to-text with a
   notice.
 

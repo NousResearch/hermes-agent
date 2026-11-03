@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -23,6 +23,7 @@ const api = vi.hoisted(() => ({
   getElevenLabsVoices: vi.fn(async () => ({ available: false })),
   getHermesConfigRecord: vi.fn(),
   getHermesConfigSchema: vi.fn(),
+  getProfiles: vi.fn(async () => ({ active: 'default', profiles: [] })),
   listOAuthProviders: vi.fn(),
   pollOAuthSession: vi.fn(),
   saveHermesConfig: vi.fn(async () => ({ ok: true })),
@@ -153,12 +154,55 @@ afterEach(() => {
 })
 
 describe('Settings ▸ Voice with an extension engine', () => {
+  it('separates Duplex mode from its engine without changing persisted identifiers', async () => {
+    loadGrok()
+    renderVoiceConversation('gpt-live')
+
+    const mode = await screen.findByRole('combobox', { name: 'Voice Chat Mode' })
+    const engine = await screen.findByRole('combobox', { name: c.voiceEngine })
+
+    expect(mode.textContent).toContain('Duplex')
+    expect(engine.textContent).toContain('OpenAI')
+    fireEvent.click(engine)
+    fireEvent.click(await screen.findByRole('option', { name: 'Grok Voice' }))
+
+    await waitFor(() =>
+      expect(api.saveHermesConfig).toHaveBeenCalledWith({ voice: { voice_chat_mode: 'hermes-xai:grok' } }, 'default')
+    )
+    expect(mode.textContent).toContain('Duplex')
+  })
+
+  it('offers Auto and chosen response languages for the native OpenAI engine', async () => {
+    api.getHermesConfigSchema.mockResolvedValue({
+      fields: {
+        'voice.voice_chat_mode': { type: 'string' },
+        'voice.gpt_live.language': { type: 'string' }
+      }
+    })
+    api.getHermesConfigRecord.mockResolvedValueOnce({
+      voice: { voice_chat_mode: 'gpt-live', gpt_live: { language: 'auto' } }
+    })
+    renderVoiceConversation('gpt-live')
+
+    const languageLabel = await screen.findByText('OpenAI Response Language')
+    const languageRow = languageLabel.closest('div[id]') as HTMLElement
+
+    fireEvent.click(within(languageRow).getByRole('combobox'))
+    expect(await screen.findByRole('option', { name: 'Auto' })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('option', { name: 'French (fr)' }))
+
+    await waitFor(() =>
+      expect(api.saveHermesConfig).toHaveBeenCalledWith({ voice: { gpt_live: { language: 'fr' } } }, 'default')
+    )
+  })
+
   it('offers the engine by label, never its raw id', async () => {
     loadGrok()
     renderVoiceConversation('chained')
 
-    fireEvent.click(await screen.findByRole('combobox'))
-
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Voice Chat Mode' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Duplex' }))
+    fireEvent.click(await screen.findByRole('combobox', { name: c.voiceEngine }))
     expect(await screen.findByRole('option', { name: 'Grok Voice' })).toBeTruthy()
     expect(screen.queryByText('hermes-xai:grok')).toBeNull()
   })

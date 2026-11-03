@@ -65,7 +65,8 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
-import { useVoiceChatModeChoices, VoiceEngineSettings } from './voice-engine-settings'
+import { liveLanguageLabels, VoiceConversationSettings } from './voice-conversation-settings'
+import { VoiceEngineSettings } from './voice-engine-settings'
 
 const VOICE_CHAT_MODE_KEY = 'voice.voice_chat_mode'
 
@@ -113,7 +114,7 @@ function ConfigSettingsInner({
   importInputRef,
   scopeProfile
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
 
@@ -155,7 +156,7 @@ function ConfigSettingsInner({
   })
 
   const schema = schemaResponse?.fields ?? null
-  const voiceModeChoices = useVoiceChatModeChoices(config ? getNested(config, VOICE_CHAT_MODE_KEY) : undefined)
+  const languageLabels = useMemo(() => liveLanguageLabels(locale, t.composer.voiceLanguageAuto), [locale, t])
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
@@ -543,9 +544,18 @@ function ConfigSettingsInner({
         <div className="grid gap-1">
           {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              {key === 'delegation.model' ? (
+              {key === VOICE_CHAT_MODE_KEY ? (
+                <VoiceConversationSettings
+                  mode={getNested(config, key)}
+                  onChange={value => updateConfig(setConfigField(config, key, value))}
+                />
+              ) : key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                  <DelegationRouteRow
+                    config={config}
+                    onConfigChange={updateConfig}
+                    scope={writeScope ?? scopeProfile}
+                  />
                 </SubagentModelGate>
               ) : (
                 <ConfigField
@@ -557,16 +567,14 @@ function ConfigSettingsInner({
                   enumOptions={
                     key === 'tts.elevenlabs.voice_id'
                       ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                      : key === VOICE_CHAT_MODE_KEY
-                        ? enumOptionsFor(key, getNested(config, key), config, voiceModeChoices.options)
-                        : enumOptionsFor(key, getNested(config, key), config)
+                      : enumOptionsFor(key, getNested(config, key), config)
                   }
                   onChange={value => updateConfig(setConfigField(config, key, value))}
                   optionLabels={
                     key === 'tts.elevenlabs.voice_id'
                       ? elevenLabsVoiceLabels
-                      : key === VOICE_CHAT_MODE_KEY
-                        ? voiceModeChoices.labels
+                      : key === 'voice.gpt_live.language'
+                        ? languageLabels
                         : undefined
                   }
                   schema={field}

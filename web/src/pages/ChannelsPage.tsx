@@ -41,6 +41,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import { useI18n } from "@/i18n";
 import { RelayLinkPanel } from "./ChannelsRelayLink";
 import { AvailablePlatforms } from "./ChannelsCatalog";
 
@@ -60,15 +62,6 @@ const STATE_BADGE: Record<
   fatal: { tone: "destructive", label: "Error" },
 };
 
-function stateBadge(state: string) {
-  return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
-}
-
-function platformBadge(platform: MessagingPlatform) {
-  if (platform.relay_exclusive) return { tone: "secondary" as const, label: "Via Team Gateway" };
-  if (platform.disabled_by_relay) return { tone: "secondary" as const, label: "Managed by Team Gateway" };
-  return stateBadge(platform.state);
-}
 
 // The relay-exclusive rule turns this platform off on every gateway start (#141175):
 // a plain "Disabled" plus a live toggle reads as a setting that will not save.
@@ -159,6 +152,18 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 }
 
 export default function ChannelsPage() {
+  const { t } = useI18n();
+  const channelsUi = t.channelsUi ?? en.channelsUi!;
+  const stateBadge = (state: string) => {
+    const labels = channelsUi.state;
+    const key = { connected: "connected", pending_restart: "pendingRestart", gateway_stopped: "gatewayStopped", startup_failed: "startFailed", disconnected: "disconnected", not_configured: "notConfigured", disabled: "disabled", fatal: "error" }[state] as keyof typeof labels | undefined;
+    return key ? { ...STATE_BADGE[state], label: labels[key] } : { tone: "outline" as const, label: state };
+  };
+  const platformBadge = (platform: MessagingPlatform) => {
+    if (platform.relay_exclusive) return { tone: "secondary" as const, label: channelsUi.state.viaTeamGateway };
+    if (platform.disabled_by_relay) return { tone: "secondary" as const, label: channelsUi.state.managedByTeamGateway };
+    return stateBadge(platform.state);
+  };
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [available, setAvailable] = useState<CatalogMessagingPlatform[]>([]);
   const [listSignature, setListSignature] = useState<string | null>(null);
@@ -217,10 +222,10 @@ export default function ChannelsPage() {
         return res.platforms;
       })
       .catch((e) => {
-        showToast(`Could not load channels: ${errorMessage(e)}`, "error");
+        showToast(channelsUi.loadFailed.replace("{detail}", errorMessage(e)), "error");
         return undefined;
       });
-  }, [showToast]);
+  }, [channelsUi.loadFailed, showToast]);
 
   useEffect(() => {
     load().finally(() => setLoading(false));
@@ -264,7 +269,7 @@ export default function ChannelsPage() {
       }
     });
     if (Object.keys(env).length === 0 && clearEnv.length === 0) {
-      showToast("Nothing to save — fill in at least one field.", "error");
+      showToast(channelsUi.nothingToSave, "error");
       return;
     }
     const missing = editing.env_vars.filter(
@@ -281,7 +286,7 @@ export default function ChannelsPage() {
     });
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
-      showToast("Fix the highlighted fields before saving.", "error");
+      showToast(channelsUi.fixFields, "error");
       return;
     }
     setSaving(true);
@@ -296,12 +301,13 @@ export default function ChannelsPage() {
       const reason = result.live?.applied === false ? result.live.detail : undefined;
       // Enabled without its credentials: the gateway's verdict is "needs setup", never "restart".
       const needsSetup = result.live?.state === "not_configured";
+      const detail = reason ? ` (${reason})` : "";
       showToast(
         needsSetup
-          ? `${editing.name} saved; it still needs setup${result.live?.detail ? ` (${result.live.detail})` : ""}`
+          ? channelsUi.savedNeedsSetup.replace("{name}", editing.name).replace("{detail}", result.live?.detail ? ` (${result.live.detail})` : "")
           : live
-            ? `${editing.name} saved; the running gateway is connecting`
-            : `${editing.name} saved${reason ? ` (${reason})` : ""}`,
+            ? channelsUi.savedConnecting.replace("{name}", editing.name)
+            : channelsUi.saved.replace("{name}", editing.name).replace("{detail}", detail),
         "success",
       );
       settleRestart(editing.id, live);
@@ -309,7 +315,7 @@ export default function ChannelsPage() {
       await load();
       if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to save: ${errorMessage(e)}`, "error");
+      showToast(channelsUi.saveFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setSaving(false);
     }
@@ -341,7 +347,7 @@ export default function ChannelsPage() {
       settleRestart(platform.id, live);
       if (live) setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Could not update the channel: ${errorMessage(e)}`, "error");
+      showToast(channelsUi.updateFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setTogglingId(null);
     }
@@ -353,7 +359,7 @@ export default function ChannelsPage() {
       const res = await api.testMessagingPlatform(platform.id);
       showToast(`${platform.name}: ${res.message}`, res.ok ? "success" : "error");
     } catch (e) {
-      showToast(`Could not test the channel: ${errorMessage(e)}`, "error");
+      showToast(channelsUi.testFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setTestingId(null);
     }
@@ -363,7 +369,7 @@ export default function ChannelsPage() {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      showToast(channelsUi.restarting, "success");
       setRestartNeeded(false);
       setRestartFor(new Set());
       // Give the gateway a moment to come up, then refresh status.
@@ -384,7 +390,7 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? channelsUi.restarting : channelsUi.restartGateway}
       </Button>,
     );
     return () => setEnd(null);
@@ -415,7 +421,7 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
-                Changes are saved. Restart the gateway for them to take effect.
+                {channelsUi.restartRequired}
               </span>
             </div>
             <Button
@@ -425,7 +431,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? channelsUi.restarting : channelsUi.restartNow}
             </Button>
           </CardContent>
         </Card>
@@ -436,18 +442,24 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
-              (or the Restart button above).
+              {channelsUi.gatewayStoppedHint.split("{command}")[0]}
+              <code className="font-courier">{gatewayStartCommand}</code>
+              {channelsUi.gatewayStoppedHint.split("{command}")[1]}
             </span>
           </CardContent>
         </Card>
       )}
 
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; a running
-        gateway connects each enabled channel as soon as it is saved.
+        {channelsUi.configuredSummary
+          .replace("{configured}", String(configured))
+          .replace("{total}", String(platforms.length))
+          .split("{path}")[0]}
+        <code className="font-courier">{envPath}</code>
+        {channelsUi.configuredSummary
+          .replace("{configured}", String(configured))
+          .replace("{total}", String(platforms.length))
+          .split("{path}")[1]}
       </p>
 
       {/* Config modal */}

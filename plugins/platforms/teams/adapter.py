@@ -5,6 +5,11 @@ Requires the ``teams`` extra (auto-installed by the gateway on first start, or
 ``<hermes-venv>/bin/pip install microsoft-teams-apps aiohttp``) and credentials via env
 (TEAMS_CLIENT_ID / TEAMS_CLIENT_SECRET / TEAMS_TENANT_ID, optional TEAMS_PORT) or
 ``platforms.teams.extra`` in config.yaml (``client_id`` / ``client_secret`` / ``tenant_id`` / ``port``).
+
+Instead of TEAMS_CLIENT_SECRET, TEAMS_TOKEN_URL (``extra.token_url``) names an external token
+broker that holds the app credential and returns Bot Framework tokens, so the secret never has to
+be in this process (optional TEAMS_TOKEN_BEARER authenticates to it). Inbound JWT validation needs
+only the client/tenant IDs either way.
 """
 
 from __future__ import annotations
@@ -86,11 +91,22 @@ _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
 
 
-def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
-    """(token URL, client-credentials form) for a Bot Framework bearer token."""
+def _bf_token_request(
+    tenant_id: str, client_id: str, client_secret: str, broker_url: str = "", broker_bearer: str = "",
+    scope: str = _BF_TOKEN_SCOPE,
+) -> tuple[str, dict, dict]:
+    """(token URL, form, auth headers) for an app token, Bot Framework by default.
+
+    With ``broker_url`` (TEAMS_TOKEN_URL) the request goes to an external broker that holds the app
+    credential instead of to Entra: same form encoding, no secret, and the broker answers with
+    Entra's JSON shape (``access_token`` / ``expires_in``)."""
+    if broker_url:
+        headers = {"Authorization": f"Bearer {broker_bearer}"} if broker_bearer else {}
+        return broker_url, {"client_id": client_id, "tenant_id": tenant_id, "scope": scope}, headers
     return (
         f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-        {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret, "scope": _BF_TOKEN_SCOPE},
+        {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret, "scope": scope},
+        {},
     )
 
 
@@ -165,8 +181,22 @@ def _credentials(config) -> tuple[str, str, str]:
         extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID", ""))
 
 
+def _token_broker(config) -> tuple[str, str]:
+    """(TEAMS_TOKEN_URL, TEAMS_TOKEN_BEARER): an external broker that mints this app's tokens, so
+    the client secret can live outside the agent's process. ``("", "")`` when not configured."""
+    extra = getattr(config, "extra", {}) or {}
+    return (
+        str(extra.get("token_url") or _get_scoped_secret("TEAMS_TOKEN_URL", "")).strip(),
+        str(extra.get("token_bearer") or _get_scoped_secret("TEAMS_TOKEN_BEARER", "")).strip())
+
+
+def _has_app_credential(client_id: str, client_secret: str, tenant_id: str, broker_url: str) -> bool:
+    """Client and tenant IDs, plus either the client secret or a token broker."""
+    return bool(client_id and tenant_id and (client_secret or broker_url))
+
+
 def validate_config(config) -> bool:
-    return bool(all(_credentials(config)))
+    return _has_app_credential(*_credentials(config), _token_broker(config)[0])
 
 
 def is_connected(config) -> bool:
@@ -181,8 +211,9 @@ def _env_enablement() -> dict | None:
     seed = _seed_extra_from_env((
         ("TEAMS_CLIENT_ID", "client_id", None), ("TEAMS_CLIENT_SECRET", "client_secret", None),
         ("TEAMS_TENANT_ID", "tenant_id", None), ("TEAMS_PORT", "port", int), ("TEAMS_SERVICE_URL", "service_url", None),
+        ("TEAMS_TOKEN_URL", "token_url", None),
     ), home_env="TEAMS_HOME_CHANNEL")
-    if not all(seed.get(k) for k in ("client_id", "client_secret", "tenant_id")):
+    if not _has_app_credential(*(seed.get(k) for k in ("client_id", "client_secret", "tenant_id", "token_url"))):
         return None
     return seed
 
@@ -198,8 +229,10 @@ async def _standalone_send(
     (SSRF/path traversal). ``media_files`` / ``force_document`` are signature parity only — text-only."""
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
-    if not (client_id and client_secret and tenant_id):
-        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+    broker_url, broker_bearer = _token_broker(pconfig)
+    if not _has_app_credential(client_id, client_secret, tenant_id, broker_url):
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID and TEAMS_TENANT_ID, plus TEAMS_CLIENT_SECRET "
+                          "or TEAMS_TOKEN_URL, are required")
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -211,7 +244,7 @@ async def _standalone_send(
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
             return send_error(f"Teams standalone send: {error}")
-    token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
+    token_url, token_form, token_auth = _bf_token_request(tenant_id, client_id, client_secret, broker_url, broker_bearer)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
         import aiohttp as _aiohttp
@@ -219,7 +252,7 @@ async def _standalone_send(
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
         async with _aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
             async with session.post(
-                token_url, data=token_form, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                token_url, data=token_form, headers={"Content-Type": "application/x-www-form-urlencoded", **token_auth},
                 timeout=per_request_timeout,
             ) as token_resp:
                 if token_resp.status >= 400:
@@ -357,9 +390,10 @@ class TeamsAdapter(BasePlatformAdapter):
         # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
         self._extra: dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
-        # (token, expiry monotonic ts) for connector attachment auth; refreshed under
-        # _bf_token_lock so concurrent attachments can't stampede the STS.
-        self._bf_token_cache: Optional[tuple] = None
+        self._broker_url, self._broker_bearer = _token_broker(config)
+        # scope → (token, expiry monotonic ts) for connector attachment auth (and, with a token broker,
+        # every SDK token); refreshed under _bf_token_lock so concurrent callers can't stampede the STS.
+        self._bf_token_cache: dict[str, tuple] = {}
         self._bf_token_lock: Optional[asyncio.Lock] = None
         self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
         _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
@@ -395,8 +429,11 @@ class TeamsAdapter(BasePlatformAdapter):
             (App is None or ClientOptions is None, "MISSING_SDK",
              f"microsoft-teams-apps could not be installed. Run: {pip} microsoft-teams-apps"),
             (not AIOHTTP_AVAILABLE, "MISSING_SDK", f"aiohttp not installed. Run: {pip} aiohttp"),
-            (not self._client_id or not self._client_secret or not self._tenant_id, "MISSING_CREDENTIALS",
-             "TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")):
+            (not _has_app_credential(self._client_id, self._client_secret, self._tenant_id, self._broker_url),
+             "MISSING_CREDENTIALS",
+             "TEAMS_CLIENT_ID and TEAMS_TENANT_ID are required, plus TEAMS_CLIENT_SECRET or TEAMS_TOKEN_URL"),
+            (bool(self._broker_url) and urlparse(self._broker_url).scheme not in ("http", "https"), "INVALID_CONFIG",
+             "TEAMS_TOKEN_URL must be an http(s) URL")):
             if failed:
                 self._set_fatal_error(code, message, retryable=False)
                 return False
@@ -408,8 +445,11 @@ class TeamsAdapter(BasePlatformAdapter):
             # webhook.py / raft, #58536/#58902).
             aiohttp_app = web.Application(client_max_size=_MAX_BODY_BYTES)
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
+            # A token broker replaces the secret: the SDK takes a ``token=`` provider (TokenCredentials) and
+            # never sees TEAMS_CLIENT_SECRET, which then may be absent from this process entirely.
+            app_auth = {"token": self._sdk_token} if self._broker_url else {"client_secret": self._client_secret}
             self._app = App(
-                client_id=self._client_id, client_secret=self._client_secret, tenant_id=self._tenant_id,
+                client_id=self._client_id, tenant_id=self._tenant_id, **app_auth,
                 http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
                 client=ClientOptions(headers={"User-Agent": "Hermes"}))
             # Handlers (ours, then plugin on_* decorators) must be wired before initialize(),
@@ -449,28 +489,38 @@ class TeamsAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
 
-    async def _get_botframework_token(self) -> str:
-        """Bot Framework bearer token (client credentials), cached until ~5 min before expiry; connector
-        attachments are NOT pre-authenticated, unlike SharePoint downloadUrls. The lock is created lazily
-        because ``asyncio.Lock()`` in __init__ may bind the wrong loop."""
+    async def _get_botframework_token(self, scope: str = _BF_TOKEN_SCOPE) -> str:
+        """App bearer token for ``scope`` (Bot Framework by default), from Entra client credentials or
+        the TEAMS_TOKEN_URL broker, cached per scope until ~5 min before expiry; connector attachments
+        are NOT pre-authenticated, unlike SharePoint downloadUrls. The lock is created lazily because
+        ``asyncio.Lock()`` in __init__ may bind the wrong loop."""
         import time
         import httpx
         if self._bf_token_lock is None:
             self._bf_token_lock = asyncio.Lock()
         async with self._bf_token_lock:
-            cached = self._bf_token_cache
+            cached = self._bf_token_cache.get(scope)
             if cached and cached[1] > time.monotonic() + 300:
                 return cached[0]
-            if not (self._client_id and self._client_secret and self._tenant_id):
-                raise ValueError("Missing TEAMS_CLIENT_ID/SECRET/TENANT_ID for attachment auth")
-            token_url, token_form = _bf_token_request(self._tenant_id, self._client_id, self._client_secret)
+            if not _has_app_credential(self._client_id, self._client_secret, self._tenant_id, self._broker_url):
+                raise ValueError("Missing TEAMS_CLIENT_ID/TENANT_ID plus TEAMS_CLIENT_SECRET or TEAMS_TOKEN_URL")
+            token_url, token_form, token_auth = _bf_token_request(
+                self._tenant_id, self._client_id, self._client_secret, self._broker_url, self._broker_bearer, scope)
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(token_url, data=token_form)
+                resp = await client.post(token_url, data=token_form, **({"headers": token_auth} if token_auth else {}))
                 resp.raise_for_status()
                 payload = resp.json()
             expires_in = float(payload.get("expires_in", 3600) or 3600)
-            self._bf_token_cache = (payload["access_token"], time.monotonic() + expires_in)
-            return self._bf_token_cache[0]
+            self._bf_token_cache[scope] = (payload["access_token"], time.monotonic() + expires_in)
+            return payload["access_token"]
+
+    async def _sdk_token(self, scope: Any, tenant_id: Optional[str] = None) -> str:
+        """``token=`` provider handed to the SDK's ``App`` when a token broker is configured: the SDK calls
+        it for every app-only token (no caching of its own), so it goes through the per-scope cache. The
+        broker serves this app's own tenant; the SDK's resolved ``tenant_id`` is that same value."""
+        if isinstance(scope, (list, tuple)):
+            scope = " ".join(scope)
+        return await self._get_botframework_token(scope or _BF_TOKEN_SCOPE)
 
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;

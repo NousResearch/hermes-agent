@@ -169,6 +169,8 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_CLIENT_ID` | Azure AD App (client) ID |
 | `TEAMS_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
+| `TEAMS_TOKEN_URL` | Token broker to use instead of `TEAMS_CLIENT_SECRET` (see [Keeping the client secret out of Hermes](#keeping-the-client-secret-out-of-hermes)) |
+| `TEAMS_TOKEN_BEARER` | Bearer token Hermes sends to `TEAMS_TOKEN_URL` |
 | `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
 | `TEAMS_ALLOW_ALL_USERS` | Set `true` to skip the allowlist and allow anyone |
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
@@ -257,6 +259,21 @@ teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messa
 ```
 
 Make sure the public HTTPS endpoint is reachable from the internet and uses a valid TLS certificate. Teams rejects self-signed certificates. Keep the Hermes listener behind the proxy; port `3978` does not serve HTTPS itself.
+
+### Keeping the client secret out of Hermes
+
+Any client secret for the bot's Azure AD app can request tokens for *every* permission that app holds, Microsoft Graph included. If the agent's environment shouldn't hold that secret, run a small token broker next to it that does, and point Hermes at it:
+
+```bash
+TEAMS_CLIENT_ID=<app id>
+TEAMS_TENANT_ID=<tenant id>
+TEAMS_TOKEN_URL=http://token-broker:8080/teams/token   # instead of TEAMS_CLIENT_SECRET
+TEAMS_TOKEN_BEARER=<credential the broker expects>     # optional
+```
+
+Hermes then requests every app token from the broker. That covers replies and proactive sends, connector attachment downloads, and cron delivery. The request is a form-encoded `POST` of `client_id`, `tenant_id` and `scope`, with `Authorization: Bearer <TEAMS_TOKEN_BEARER>` when that is set. The broker answers with the same JSON as Entra's token endpoint (`{"access_token": "…", "expires_in": 3599}`), so it can be a thin wrapper around a client-credentials request. It can also refuse scopes other than `https://api.botframework.com/.default`, so the agent only ever holds short-lived Bot Framework tokens.
+
+Inbound messages are unaffected: Hermes validates Bot Framework JWTs with Microsoft's public keys and needs only the client and tenant IDs. When `TEAMS_TOKEN_URL` is set, `TEAMS_CLIENT_SECRET` is not used. Keep the broker on a private network or behind HTTPS, since the bearer travels with every request.
 
 ---
 

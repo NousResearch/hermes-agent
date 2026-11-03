@@ -14,6 +14,7 @@ from cron.lifecycle_guard import (
     _iter_referenced_shell_scripts,
     _shlex_tokens,
     _split_segments,
+    contains_launchctl_submit_command,
     scan_gateway_lifecycle,
 )
 
@@ -73,7 +74,7 @@ class TestSubstitutionInteriorIsStillScanned:
 
     def test_interior_script_is_still_walked_and_blocks(self, tmp_path):
         script = tmp_path / "inner.sh"
-        script.write_text("#!/bin/bash\nhermes gateway stop\n")
+        script.write_text("#!/usr/bin/env bash\nhermes gateway stop\n")
         command = f"diff <(bash {script}) /dev/null"
         assert script in list(_iter_referenced_shell_scripts(command, cwd=str(tmp_path)))
         unsafe, _ = scan_gateway_lifecycle(command, cwd=str(tmp_path))
@@ -95,3 +96,75 @@ class TestOrdinaryRedirectionsAndSubshellsUnchanged:
         tokens = _shlex_tokens("tee >(gzip > out.gz) f.txt; echo hi")
         rebuilt = [t for segment in _split_segments(tokens, keep_controls=True) for t in segment]
         assert rebuilt == tokens
+
+
+class TestNestedSubstitutionInteriorsAreStillScanned:
+    """A command substitution inside a process substitution executes its interior, so that
+    interior must be scanned as a segment of its own — a depth counter alone merges it into the
+    surrounding run's operands and hides `launchctl submit` from the executed-position checks."""
+
+    @pytest.mark.parametrize("command", [
+        "diff <(echo $(launchctl submit -l z -- /bin/sh)) /dev/null",
+        "diff <(echo $(launchctl bootstrap gui/501 /bin/sh)) /dev/null",
+        "diff <(echo $(echo $(launchctl submit -l z -- /bin/sh))) /dev/null",
+    ])
+    def test_command_substitution_inside_process_substitution_blocks(self, command):
+        assert contains_launchctl_submit_command(command) is True
+        unsafe, _refusal = scan_gateway_lifecycle(command)
+        assert unsafe is True
+
+    def test_nested_interior_is_its_own_segment(self):
+        segments = _segments("diff <(echo $(launchctl submit -l z)) x")
+        assert ["launchctl", "submit", "-l", "z"] in segments
+        assert ["diff", "x"] in segments
+
+
+class TestBareRedirectOperatorsStayInTheirRun:
+    """A bare `<`/`>` that does not open a substitution keeps its operator token: dropping it
+    joined adjacent words, and `hermes < gateway restart` (stdin redirect, not a lifecycle
+    command) then matched the lifecycle regex on the re-joined segment."""
+
+    def test_plain_redirect_keeps_its_operator(self):
+        assert _segments("grep < file.txt") == [["grep", "<", "file.txt"]]
+        assert _segments("cat < in > out") == [["cat", "<", "in", ">", "out"]]
+
+    def test_redirect_lookalike_is_not_a_lifecycle_match(self):
+        assert scan_gateway_lifecycle("hermes < gateway restart") == (False, None)
+        assert scan_gateway_lifecycle("hermes > gateway restart") == (False, None)
+
+    def test_stdin_from_substitution_keeps_the_redirect(self):
+        segments = _segments("cmd < <(echo hi)")
+        assert ["cmd", "<"] in segments
+        assert ["echo", "hi"] in segments
+
+
+class TestUnterminatedSubstitutionDoesNotHideTheOuterCommand:
+    """An unterminated substitution must not hide the outer command: the tokens before the opener
+    are still the command the shell would run (bash rejects the line, but the outer tokens may
+    also be reached in a larger script), so they stay scannable."""
+
+    def test_outer_segment_survives_an_unterminated_group(self):
+        segments = _segments("diff <(echo a")
+        assert ["diff"] in segments
+        assert ["echo", "a"] in segments
+
+    def test_outer_script_is_still_walked_with_an_unterminated_group(self, tmp_path):
+        script = tmp_path / "outer.sh"
+        script.write_text("#!/usr/bin/env bash\nhermes gateway stop\n")
+        command = f"bash {script} <(echo hi"
+        assert script in list(_iter_referenced_shell_scripts(command, cwd=str(tmp_path)))
+        unsafe, _ = scan_gateway_lifecycle(command, cwd=str(tmp_path))
+        assert unsafe is True
+
+
+class TestKnownLimitationCasePatternParen:
+    """`case` terminates its patterns with the same `)` that closes a substitution; shlex tokens
+    cannot tell them apart, so the tracked group closes early and the case body lands in the
+    outer run's operands. Reported to the maintainer with #145623 — fixing it needs shell grammar
+    beyond token-level scanning, and the token-level guess (`case`…`in` arming) misfires on data
+    arguments like `grep case in`."""
+
+    @pytest.mark.xfail(reason="case-pattern ')' closes the tracked substitution early")
+    def test_case_body_inside_process_substitution_blocks(self):
+        assert contains_launchctl_submit_command(
+            "diff <(case x in a) launchctl submit -l z -- /bin/sh;; esac) report.txt") is True

@@ -624,14 +624,18 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
     ``<(``/``>(`` process substitutions execute their interior but do not end the outer command: the
     interior is yielded as segment(s) of its own (it runs, so it is scanned) while the tokens after
     the closing ``)`` stay operands of the outer run — ``diff <(echo a) /dev/null`` must not present
-    ``/dev/null`` as the next command's executable (#145145). Nesting and arithmetic expansions are
-    balanced by counting ``(``/``)`` characters. Rebuild mode (``keep_controls=True``) keeps the
-    original token-level behavior so the line text is preserved exactly."""
+    ``/dev/null`` as the next command's executable (#145145). Nested ``(`` groups (`$( … )`, a nested
+    substitution, `(( … ))`) open an interior of their own: a depth counter alone would merge a
+    `launchctl submit` there into the surrounding run's operands and hide it from the
+    executed-position checks. A bare ``<``/``>`` that does not open a substitution stays in its run,
+    so a stdin redirect (`hermes < gateway restart`) cannot glue words together for the re-joined
+    regex pass. Rebuild mode (``keep_controls=True``) keeps the original token-level behavior so the
+    line text is preserved exactly."""
     out: list[list[str]] = []
     segment: list[str] = []
-    stack: list[list[str]] = []  # interior token runs of open process substitutions, innermost last
-    depths: list[int] = []  # unmatched "(" count per open substitution
-    held_redir = False  # a bare "<"/">" seen: its segment flush is deferred one token (may open a substitution)
+    stack: list[list[str]] = []  # interior token runs of open groups, innermost last
+    depths: list[int] = []  # unmatched "(" count per open group
+    held: Optional[str] = None  # bare "<"/">": redirect or the start of "<("/">(" — next token decides
 
     def _flush() -> None:
         nonlocal segment
@@ -645,15 +649,19 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
 
     for token in tokens:
         is_control = bool(token) and set(token) <= _CONTROL_CHARS
-        if not keep_controls and token == "(" and held_redir:
+        if not keep_controls and token == "(" and held is not None:
             stack.append([])  # the held "<"/">" opened a substitution, not a redirect
             depths.append(1)
-            held_redir = False
+            held = None
             continue
         if not keep_controls and token in ("<", ">"):
-            held_redir = True  # bare "<"/">": redirect or the start of "<("/">(" — decide next token
+            if held is not None:
+                (stack[-1] if stack else segment).append(held)  # consecutive redirects keep both
+            held = token
             continue
-        held_redir = False
+        if not keep_controls and held is not None:
+            (stack[-1] if stack else segment).append(held)  # plain redirect: the operator stays
+            held = None
         if stack and is_control and token.startswith(")"):
             closes = len(token)
             while closes > 0 and stack:
@@ -668,7 +676,9 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
                     closes = 0
             continue
         if stack and is_control and token.startswith("("):
-            depths[-1] += len(token)  # nested substitution or arithmetic expansion
+            _flush()  # "$( ", nested "<( ", "(( ": the interior is a command list of its own
+            stack.append([])
+            depths.append(len(token))
             continue
         if is_control:
             _flush()
@@ -676,12 +686,16 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
                 out.append([token])
             continue
         (stack[-1] if stack else segment).append(token)
+    if held is not None:
+        (stack[-1] if stack else segment).append(held)
     _flush()
     while stack:  # unterminated substitution: its interior still executes — scan it
         if stack[-1]:
             out.append(stack[-1])
         stack.pop()
         depths.pop()
+    if segment:  # an unterminated group must not hide the outer command from the scans
+        out.append(segment)
     yield from out
 
 

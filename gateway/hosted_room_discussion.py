@@ -655,9 +655,12 @@ def _make_task_plan(
     turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
     if attachments:
         attachments = driver.validate_bound_task_manifest(list(attachments))
+    # A routing turn's id omits its prompt: the planner re-mints it on every replay to find its receipt, and
+    # the prompt names the room and roster, which a rename or display-name edit changes after the turn ran.
     seed = compact_json({
         "discussion_event_id": discussion_event.event_id, "member_id": member.member_id, "member_index": member_index,
-        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(), "room_id": room.room_id,
+        **({} if lead_routing else {"prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest()}),
+        "room_id": room.room_id,
         "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
         "thread_id": discussion_event.payload["thread_id"],
         **({"input_context": input_context} if input_context is not None else {}),

@@ -136,3 +136,35 @@ def test_racing_claimants_of_a_dead_owners_claim_have_one_winner(tmp_path):
         for r in racers:
             _end(r)
     assert results.count(True) == 1, results
+
+
+def test_without_proc_a_killed_owner_is_still_taken_over_at_once(tmp_path):
+    """macOS and Windows have no /proc boot id: the claim names the host and its boot time instead."""
+    lock = tmp_path / ".task.lock"
+    env = {**os.environ, "PYTHONPATH": str(_ROOT)}
+    holder = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "import gateway.drain_control as d\n"
+        "d.current_instantiation_epoch = lambda: ''\n"
+        "from agent.idle_schedule import claim_run\n"
+        "print(claim_run(Path(sys.argv[1])), flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    owner = subprocess.Popen([sys.executable, "-c", holder, str(lock)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True, env=env, cwd=_ROOT)
+    try:
+        assert _claimed(owner)
+        record = json.loads(lock.read_text(encoding="utf-8"))
+        assert str(record["machine"]).startswith("host:")
+    finally:
+        _end(owner)
+    from gateway import drain_control
+
+    original = drain_control.current_instantiation_epoch
+    drain_control.current_instantiation_epoch = lambda: ""
+    try:
+        assert claim_run(lock) is True
+    finally:
+        drain_control.current_instantiation_epoch = original
+        release_run(lock)

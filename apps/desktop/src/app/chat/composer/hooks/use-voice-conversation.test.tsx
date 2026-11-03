@@ -255,7 +255,35 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     })
 
     expect(onInterrupt).not.toHaveBeenCalled()
-    expect(stopVoicePlayback).toHaveBeenCalled()
+    expect(stopVoicePlayback).not.toHaveBeenCalled()
+
+    await act(async () => {
+      monitorCalls.at(-1)?.onUtterance?.(new Blob(['x'], { type: 'audio/webm' }))
+    })
+
+    await waitFor(() => expect(stopVoicePlayback).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not cut playback for an empty false-trip capture', async () => {
+    const { hook, onInterrupt } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+    await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+
+    hook.rerender({ busy: false })
+    act(() => {
+      monitorCalls.at(-1)?.onSpeech()
+    })
+
+    await act(async () => {
+      monitorCalls.at(-1)?.onUtterance?.(null)
+    })
+
+    expect(onInterrupt).not.toHaveBeenCalled()
+    expect(stopVoicePlayback).not.toHaveBeenCalled()
   })
 
   it('a spoken stop command in the barge capture ends the conversation instead of submitting', async () => {

@@ -382,7 +382,7 @@ documents = [
   "openpyxl==3.1.5",
   "python-pptx==1.0.2",
   "reportlab==5.1.0",
-  "pypdf==6.21.2",
+  "pypdf==6.21.4",
 ]
 # PDF text extraction and rasterization for skills/productivity/pdf. Only in
 # the skills' side environment (`hermes pm environment documents --extra

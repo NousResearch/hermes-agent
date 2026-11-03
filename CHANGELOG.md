@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-03
+
+- Added deterministic coverage proving the post-merge self-improvement check refuses to pass with a dirty backup repository.
+
 ## 2026-11-01
 
 - Added deterministic regression coverage for modern MCP activity names, preserving the full tool suffix in emitted events.

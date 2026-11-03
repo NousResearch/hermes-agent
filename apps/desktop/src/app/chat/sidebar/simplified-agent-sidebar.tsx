@@ -1,18 +1,23 @@
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, useMemo, useState } from 'react'
 
+import { ambientOwnerConnectionId } from '@/api/client'
+import { mutateSessionHttp } from '@/api/sessions'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
+import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { $pinnedSessionIds, $sidebarPinsOpen, pinSession, setSidebarPinsOpen, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, $sidebarPinsOpen, setSidebarPinsOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { $newChatProfile, ALL_PROFILES } from '@/store/profile'
+import { $newChatProfile } from '@/store/profile'
 import {
   $cronSessions,
+  $messagingPlatformTotals,
   $messagingSessions,
+  $messagingTruncated,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoadError,
@@ -21,16 +26,16 @@ import {
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { markSessionUnread } from '@/store/session-unread-remote'
 
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
-import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
-import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { SimplifiedAgentList } from './simplified-agent-list'
-import { useServerSessionSearch } from './use-server-session-search'
+import { sessionRowKey } from './simplified-session-identity'
+import { SimplifiedSessionList } from './simplified-session-list'
+import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
+import { useSimplifiedSessionSearch } from './use-simplified-session-search'
 
-import { type ChatSidebar, mergeSearchResults } from './index'
+import type { ChatSidebar } from './index'
 
 export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const { t } = useI18n()
@@ -45,36 +50,42 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const loading = useStore($sessionsLoading)
   const error = useStore($sessionsLoadError)
   const truncated = useStore($sessionProfilesTruncated)
+  const messagingTruncated = useStore($messagingTruncated)
+  const messagingTotals = useStore($messagingPlatformTotals)
   const [query, setQuery] = useState('')
   const [loadingMore, setLoadingMore] = useState(false)
 
   const all = useMemo(
     () =>
-      [...new Map([...cron, ...messaging, ...sessions].map(row => [row.id, row])).values()]
-        .filter(row => !row.hidden && !row.archived && !removed.has(row.id))
+      [...new Map([...cron, ...messaging, ...sessions].map(row => [sessionRowKey(row), row])).values()]
+        .filter(row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
         .sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at)),
     [sessions, messaging, cron, removed]
   )
 
-  const pinned = useMemo(
-    () => resolvePinnedSessions(pinIds, buildSessionByAnyId(all, [], []), all, unconfirmed),
-    [all, pinIds, unconfirmed]
-  )
+  const pinned = useMemo(() => simplifiedPins(all, pinIds, unconfirmed), [all, pinIds, unconfirmed])
 
-  const pinnedIds = new Set(pinned.map(row => row.id))
+  const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))
 
   const matches = (row: (typeof all)[number]) =>
     !query.trim() ||
     sessionMatchesSearch(row, query.trim()) ||
     (row.profile ?? 'default').toLowerCase().includes(query.trim().toLowerCase())
 
-  const { serverMatches, searchPending } = useServerSessionSearch(query.trim(), ALL_PROFILES)
+  const search = useSimplifiedSessionSearch(query.trim())
 
   const searchRows = query.trim()
-    ? mergeSearchResults(all, query.trim(), serverMatches, buildSessionByAnyId(all, [], []), searchPending)
+    ? [...new Map([...search.rows, ...all.filter(matches)].map(row => [sessionRowKey(row), row])).values()]
     : all
 
-  const rows = searchRows.filter(row => !pinnedIds.has(row.id) && !row.hidden && !row.archived && !removed.has(row.id))
+  const rows = searchRows.filter(
+    row =>
+      !pinnedIds.has(sessionRowKey(row)) &&
+      !row.hidden &&
+      !row.archived &&
+      !removed.has(row.id) &&
+      !removed.has(sessionRowKey(row))
+  )
 
   const shared = {
     activeSessionId,
@@ -82,25 +93,33 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     onDeleteSession: props.onDeleteSession,
     onArchiveSession: props.onArchiveSession,
     onBranchSession: props.onBranchSession,
-    onToggleUnread: (id: string) => {
-      const row = all.find(session => session.id === id)
+    ambiguousIds: ambiguousSessionIds(all),
+    onUpdate: (row: SessionInfo, field: 'pinned' | 'unread', value: boolean) => {
+      void updateRow(row, field, value)
+    }
+  }
 
-      if (row) {
-        void markSessionUnread(id, row.unread !== true).catch(error => notifyError(error, t.sidebar.row.unreadFailed))
-      }
-    },
-    showProfileTags: true,
-    grouping: 'none' as const,
-    preserveOrder: true,
-    contentClassName: 'flex flex-col gap-px',
-    rootClassName: 'shrink-0 p-0'
+  async function updateRow(row: SessionInfo, field: 'pinned' | 'unread', value: boolean) {
+    const scope = { connectionId: row.connection_id || ambientOwnerConnectionId(), profile: row.profile || 'default' }
+
+    try {
+      await mutateSessionHttp(row.id, 'PATCH', { [field]: value }, scope)
+      await props.onRetrySessions()
+    } catch (error) {
+      notifyError(error, t.errors.genericFailure)
+    }
   }
 
   async function loadMore() {
     setLoadingMore(true)
 
     try {
-      await props.onLoadMoreSessions()
+      await Promise.all([
+        props.onLoadMoreSessions(),
+        ...(messagingTruncated && props.onLoadMoreMessaging
+          ? Object.keys(messagingTotals).map(platform => props.onLoadMoreMessaging!(platform))
+          : [])
+      ])
     } catch (error) {
       notifyError(error, t.errors.genericFailure)
     } finally {
@@ -139,35 +158,29 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           value={query}
         />
         <SidebarStorageCorruptNotice />
-        <SidebarSessionsSection
-          {...shared}
-          emptyState={null}
-          label={t.sidebar.pinned}
-          onToggle={() => setSidebarPinsOpen(!pinsOpen)}
-          onTogglePin={unpinSession}
-          open={pinsOpen}
-          pinned
-          rootClassName="max-h-[25%] shrink-0 overflow-y-auto p-0"
-          sessions={pinned.filter(matches)}
-        />
+        {search.failed && (
+          <p className="px-2 text-xs text-destructive" role="alert">
+            {t.errors.genericFailure}
+          </p>
+        )}
+        <section className="max-h-[25%] shrink-0 overflow-y-auto">
+          <Button
+            aria-expanded={pinsOpen}
+            className="w-full justify-start"
+            onClick={() => setSidebarPinsOpen(!pinsOpen)}
+            variant="ghost"
+          >
+            {t.sidebar.pinned}
+          </Button>
+          {pinsOpen && <SimplifiedSessionList {...shared} pinned sessions={pinned.filter(matches)} />}
+        </section>
         <SimplifiedAgentList
           renderSessions={agentSessions => (
-            <SidebarSessionsSection
-              {...shared}
-              contentClassName="flex min-h-0 flex-1 flex-col"
-              emptyState={null}
-              onToggle={() => {}}
-              onTogglePin={pinSession}
-              open
-              pinned={false}
-              rootClassName={
-                agentSessions.length >= VIRTUALIZE_THRESHOLD
-                  ? 'h-64 min-h-0 overflow-hidden py-0 pr-0 pl-3'
-                  : 'py-0 pr-0 pl-3'
-              }
-              sessions={agentSessions}
-            />
+            <div className="pl-3">
+              <SimplifiedSessionList {...shared} sessions={agentSessions} />
+            </div>
           )}
+          searching={Boolean(query.trim())}
           sessions={rows}
         />
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
@@ -176,7 +189,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             {query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}
           </p>
         )}
-        {Object.values(truncated).some(Boolean) && (
+        {(Object.values(truncated).some(Boolean) || (messagingTruncated && props.onLoadMoreMessaging)) && (
           <SidebarLoadMoreRow loading={loading || loadingMore} onClick={() => void loadMore()} step={0} />
         )}
         {error && <SidebarLoadErrorState onRetry={() => void props.onRetrySessions()} />}

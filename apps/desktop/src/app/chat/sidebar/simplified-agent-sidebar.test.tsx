@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -16,7 +17,16 @@ import {
   $showAllProfiles,
   ALL_PROFILES
 } from '@/store/profile'
-import { $cronSessions, $gatewayState, $messagingSessions, $sessions } from '@/store/session'
+import {
+  $cronSessions,
+  $gatewayState,
+  $messagingPlatformTotals,
+  $messagingSessions,
+  $messagingTruncated,
+  $sessionProfilesTruncated,
+  $sessions,
+  $sessionsLoading
+} from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 import { $agentSidebarChoice, setSimplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { makeSessionInfo } from '@/test/session-info'
@@ -37,7 +47,7 @@ function Route() {
   return <output data-testid="route">{useLocation().search}</output>
 }
 
-function mount() {
+function mount(overrides: Partial<ComponentProps<typeof SimplifiedAgentSidebar>> = {}) {
   return render(
     <MemoryRouter>
       <SidebarProvider>
@@ -54,6 +64,7 @@ function mount() {
           onResumeSession={resume}
           onRetrySessions={noop}
           onTriggerCronJob={async () => {}}
+          {...overrides}
         />
         <Route />
       </SidebarProvider>
@@ -73,6 +84,10 @@ beforeEach(() => {
     makeSessionInfo({ id: 'pinned', title: 'Pinned plan', profile: 'research', pinned: true }),
     makeSessionInfo({ id: 'regular', title: 'Regular chat', profile: 'default' })
   ])
+  $sessionsLoading.set(false)
+  $messagingTruncated.set(false)
+  $messagingPlatformTotals.set({})
+  $sessionProfilesTruncated.set({})
   $messagingSessions.set([])
   $cronSessions.set([])
   $pinnedSessionIds.set([])
@@ -176,4 +191,32 @@ it('keeps same-named agents on different gateways separate and groups them by ga
   expect(alpha.queryByText('Beta chat')).toBeNull()
   expect(beta.getByText('Beta chat')).toBeTruthy()
   expect(screen.getByText('Unlisted agent chat')).toBeTruthy()
+})
+
+it('retains same-id chats across profiles and gateways, including pinned twins', () => {
+  $sessions.set([
+    makeSessionInfo({ id: 'same', title: 'Default twin', profile: 'default' }),
+    makeSessionInfo({ id: 'same', title: 'Research twin', profile: 'research', pinned: true }),
+    makeSessionInfo({ id: 'same', title: 'Remote twin', profile: 'research', connection_id: 'remote', pinned: true })
+  ])
+  mount()
+
+  for (const title of ['Default twin', 'Research twin', 'Remote twin']) {
+    fireEvent.click(screen.getByText(title))
+  }
+
+  expect(resume.mock.calls.map(([, row]) => [row.profile, row.connection_id])).toEqual([
+    ['default', undefined],
+    ['research', undefined],
+    ['research', 'remote']
+  ])
+})
+
+it('loads older messaging chats when recents are exhausted', async () => {
+  $messagingTruncated.set(true)
+  $messagingPlatformTotals.set({ telegram: 50 })
+  const loadMessaging = vi.fn()
+  mount({ onLoadMoreMessaging: loadMessaging })
+  fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+  await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
 })

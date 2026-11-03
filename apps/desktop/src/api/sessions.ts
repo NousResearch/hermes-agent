@@ -398,7 +398,7 @@ export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionM
   })
 }
 
-function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+export function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
   const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }

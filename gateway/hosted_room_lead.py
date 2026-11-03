@@ -20,7 +20,6 @@ watermark past the message the lead still has to answer.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +30,6 @@ if TYPE_CHECKING:
 ASSIGNMENT_EVENT_KIND = "room.assignment"
 ASSIGNMENT_FIELDS = frozenset(
     {"discussion_event_id", "thread_id", "task_id", "lead_member_id", "member_ids", "fallback"})
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 _ROUTING_INSTRUCTIONS = (
     "You are the lead of this room. A message arrived that names nobody, so you decide who takes it: pick the "
     "member(s) whose role the request touches (yourself included when it is yours). Do not answer the message "
@@ -78,14 +76,26 @@ def routing_prompt(
         *_ROUTING_INSTRUCTIONS])
 
 
+def _first_assign_object(text: str) -> Mapping[str, Any] | None:
+    """The first balanced JSON object in ``text`` carrying an ``assign`` key. A lead often wraps its answer
+    in prose that has braces of its own (``see {notes}``), so a greedy outer match is not the answer."""
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            value, _end = decoder.raw_decode(text, start)
+        except ValueError:
+            value = None
+        if isinstance(value, Mapping) and "assign" in value:
+            return value
+        start = text.find("{", start + 1)
+    return None
+
+
 def parse_assignment(text: Any, room: DiscussionRoom) -> tuple[str, ...]:
     """Member ids the lead's answer names, in roster order; empty when it names none (or is not JSON)."""
-    match = _JSON_OBJECT_RE.search(str(text or ""))
-    try:
-        answer = json.loads(match.group(0)) if match else None
-    except ValueError:
-        return ()
-    picked = answer.get("assign") if isinstance(answer, Mapping) else None
+    answer = _first_assign_object(str(text or ""))
+    picked = answer.get("assign") if answer is not None else None
     if not isinstance(picked, list):
         return ()
     handles = {str(item).strip().lstrip("@").casefold() for item in picked if isinstance(item, str)}

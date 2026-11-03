@@ -107,6 +107,18 @@ def test_a_failed_routing_turn_falls_back_to_the_lead(room_db: Path):
     assert _plan(room_db, seq).task.member.handle == "ada"
 
 
+@pytest.mark.parametrize("answer", [
+    'Pick: {"assign": ["linus"]} (scheduler work, see {notes})',
+    'Thinking {not json} then {"assign": ["@linus"]}',
+    '{"reason": "x"} {"assign": ["linus"]}'])
+def test_a_routing_answer_wrapped_in_prose_with_braces_still_assigns(room_db: Path, answer: str):
+    _lead_room(room_db)
+    seq = _say(room_db, "The build is slow")
+
+    assignment = _finish(room_db, _plan(room_db, seq), answer)[0]
+    assert assignment["payload"]["member_ids"] == ["member-linus"] and assignment["payload"]["fallback"] is False
+
+
 @pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
 def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
     _lead_room(room_db)

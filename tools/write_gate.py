@@ -220,6 +220,23 @@ def _store_entries(store, target: str) -> list[str]:
     return list(store.user_entries if target == "user" else store.memory_entries)
 
 
+def _disk_entries(store, target: str) -> list[str]:
+    """The TARGET's entries re-read from DISK — the attestation path.
+
+    Stage 7 attests that a write LANDED; reading the store's in-memory lists
+    would attest the cache, not the file — a lost or concurrently reverted
+    write would be attested as success.  Re-reads the target file under the
+    store's own lock and parses with the store's own primitives, so the check
+    follows the store's doc-awareness wherever it goes.
+    """
+    path = store._path_for(target)
+    with store._file_lock(path):
+        raw, read_ok = store._read_raw_checked(path)
+        if not read_ok:
+            raise OSError(f"read-back could not read {path}")
+        return store._parse_entries(raw)
+
+
 def _chain_doc_destination(store) -> str:
     """Name the chain-doc destination for an over_budget reroute (T1-3).
 
@@ -610,14 +627,16 @@ def _stage2_date_flag(add_contents: list[str], is_doc: bool) -> Optional[dict[st
 
 def verify_post_write(store, target: str, action: str, old_text: Optional[str],
                        content: Optional[str] = None) -> Optional[str]:
-    """Stage 7 — re-read *target* after the write and assert *old_text* is gone.
+    """Stage 7 — re-read *target* FROM DISK after the write and assert *old_text* is gone.
 
     Runs in the WRITER path AFTER the store write (bounded cost: one read per
     admitted replace/patch/remove).  Returns ``None`` when the read-back
     confirms eradication, or a JSON error string (failure_class
     ``readback_failed``) when ``old_text`` is still present — the store's own
     guards are the real safety net; this is an integrity attestation that the
-    promised edit actually landed (T1-2).
+    promised edit actually landed (T1-2).  The read-back goes to the FILE
+    (``_disk_entries``), never the in-memory lists: attesting the cache would
+    pass a lost or concurrently reverted write.
 
     ``content`` is the new text the write carried (``new_text`` for patch,
     ``new_content`` for replace, ``None`` for remove).  A landed patch/replace
@@ -631,7 +650,7 @@ def verify_post_write(store, target: str, action: str, old_text: Optional[str],
     if action not in ("replace", "patch", "remove") or not old_text:
         return None
     try:
-        entries = _store_entries(store, target)
+        entries = _disk_entries(store, target)
     except Exception:  # health: allow BLE001 -- read-back failure must not mask a landed write
         _logger.warning("verify_post_write: read-back raised on %s; pass-through by design",
                          target, exc_info=True)

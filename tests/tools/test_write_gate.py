@@ -379,6 +379,32 @@ class TestPostWriteReadbackEradication:
         parsed = json.loads(result)
         assert parsed["failure_class"] == "readback_failed"
 
+    def test_readback_detects_lost_disk_write(self, tmp_path, monkeypatch):
+        """Stage-7 attests DISK, not the cache: if the file write is lost or
+        reverted after the store reports success (an external rollback), the
+        in-memory lists still carry the landed write — the read-back must see
+        the surviving old_text ON DISK and refuse (failure_class
+        readback_failed)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        _make_audit_path(tmp_path, monkeypatch)
+        store = MemoryStore(memory_char_limit=5000, user_char_limit=3000)
+        store.load_from_disk()
+        old_entry = "The deploy target is Fly.io with manual approval."
+        store.add("memory", old_entry)
+        result = store.replace("memory", old_entry,
+                               "The deploy target is Fly.io with automated canary.")
+        assert result["success"] is True
+
+        # External rollback: the file on disk reverts to the pre-write content
+        # while the store's in-memory lists keep the landed write.
+        path = store._path_for("memory")
+        path.write_text(old_entry + "\n", encoding="utf-8")
+
+        result = verify_post_write(store, "memory", "replace", old_entry)
+        assert result is not None, "read-back must refuse when disk still holds old_text"
+        parsed = json.loads(result)
+        assert parsed["failure_class"] == "readback_failed"
+
     def test_readback_doc_variant(self, tmp_path, monkeypatch):
         """Stage-7 doc variant: the span is confirmed gone from the DOC file
         (store._path_for('doc:<name>')), not only the anchor (INTEG-5/T1-2)."""

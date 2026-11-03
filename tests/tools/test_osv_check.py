@@ -75,6 +75,30 @@ class TestParsePackageFromArgs:
         # --from is a flag, mcp[cli] is the package
         # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"
+    def test_pypi_from_with_runtime_and_extras(self):
+        name, ver = _parse_package_from_args(
+            [
+                "--python",
+                "3.12",
+                "--from",
+                "arcade-agent[mcp]==0.4.2",
+                "arcade-mcp",
+            ],
+            "PyPI",
+        )
+        assert (name, ver) == ("arcade-agent", "0.4.2")
+
+    def test_pypi_from_equals_with_extras(self):
+        name, ver = _parse_package_from_args(
+            ["--from=arcade-agent[mcp]==0.4.2", "arcade-mcp"], "PyPI"
+        )
+        assert (name, ver) == ("arcade-agent", "0.4.2")
+
+    def test_pypi_unpinned_from_does_not_parse_pinned_entrypoint(self):
+        name, ver = _parse_package_from_args(
+            ["--from", "arcade-agent[mcp]", "arcade-mcp==9.9.9"], "PyPI"
+        )
+        assert (name, ver) == ("arcade-agent", None)
 
     def test_plain_positional_still_works(self):
         # Regression guard: bare positional with no --package flag is the pkg.

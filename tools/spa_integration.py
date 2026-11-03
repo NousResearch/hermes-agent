@@ -22,6 +22,45 @@ _LOAD_BEARING_MARKERS = (
     "steer", "greenlight", "banked", "measured", "converged",
 )
 
+# Marker → kind classification. The dream cycle's Light Sleep stages only
+# dream_cycle.LOAD_BEARING_KINDS (receipt/decision/falsifier/steer/measured/
+# doctrine) and silently drops anything else — so a preserved item must carry
+# one of those kinds, never the transport shape ("message"). The specific
+# kinds win on first match; every other marker classifies as a receipt.
+_KIND_MARKERS = (
+    ("falsifier", "falsifier"),
+    ("decision", "decision"),
+    ("steer", "steer"),
+    ("measured", "measured"),
+)
+_DEFAULT_KIND = "receipt"
+
+
+def _classify(text: str) -> str:
+    lower = text.lower()
+    for marker, kind in _KIND_MARKERS:
+        if marker in lower:
+            return kind
+    return _DEFAULT_KIND
+
+
+def _preserved_item(msg: dict[str, Any]) -> Optional[dict[str, str]]:
+    """Build one preserved item, or None when the message carries no
+    load-bearing marker. The item's kind is in LOAD_BEARING_KINDS (else Light
+    Sleep drops it silently) and its provenance follows the role — a user's
+    words keep the dream band's PROMOTE floor, agent text is scored on
+    structural evidence."""
+    text = str(msg.get("content", ""))
+    if not any(marker in text.lower() for marker in _LOAD_BEARING_MARKERS):
+        return None
+    role = str(msg.get("role", "?"))
+    return {
+        "kind": _classify(text),
+        "provenance": "user" if role == "user" else "agent",
+        "role": role,
+        "text": text[:500],
+    }
+
 
 def should_preserve(messages: list[dict[str, Any]], *, threshold: int = 3) -> bool:
     """Decision: does the middle window carry load-bearing content worth
@@ -56,9 +95,7 @@ def preserve_session(
     """
     doc_name = f"session-{session_id}"
     load_bearing = [
-        {"kind": "message", "role": m.get("role", "?"), "text": str(m.get("content", ""))[:500]}
-        for m in messages
-        if any(marker in str(m.get("content", "")).lower() for marker in _LOAD_BEARING_MARKERS)
+        item for m in messages if (item := _preserved_item(m)) is not None
     ]
     if not load_bearing:
         return None

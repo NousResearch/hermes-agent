@@ -1576,6 +1576,8 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     while s.retry_count < s.max_retries:
         from agent.quota_preflight import preflight_quota_route
         if preflight_quota_route(agent):
+            s.retry_count = 0
+            s.compression_attempts = 0
             s.active_system_prompt = _arm_fallback_restart(
                 agent, s.api_messages, s.active_system_prompt, s._retry)
             return None

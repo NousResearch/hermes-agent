@@ -2016,7 +2016,7 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None) -> bool:
+def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None, *, quota_preflight: bool = False) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
@@ -2029,7 +2029,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
-            return _fallback_chain_exhausted(agent, reason)
+            return False if quota_preflight else _fallback_chain_exhausted(agent, reason)
         fb = agent._fallback_chain[agent._fallback_index]
         agent._fallback_index += 1
         fb_key = _fallback_entry_key(fb)
@@ -2054,7 +2054,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+                f"({'account quota exhausted' if quota_preflight else _fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."

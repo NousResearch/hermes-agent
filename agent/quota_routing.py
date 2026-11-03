@@ -12,7 +12,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import math
-from threading import RLock
+from threading import Event, RLock
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +30,7 @@ FAILURE_TTL_SECONDS = 15.0
 MAX_CACHE_ENTRIES = 256
 _lock = RLock()
 _cache: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
+_inflight: dict[tuple, Event] = {}
 
 
 def quota_group(provider: str, base_url: str, api_key: Any) -> tuple | None:
@@ -80,22 +81,27 @@ def account_quota(provider: str, base_url: str = "", api_key: Any = None) -> Quo
         return QuotaVerdict("unknown", "unbound_or_unsupported_provider")
     from agent.account_usage import fetch_account_usage
 
-    # Serialize refreshes so simultaneous children cannot stampede the usage endpoint.
-    # Fetches use the read-only native path (15 s HTTP timeout); no credential rotation.
+    # Per-group single flight: network I/O never holds the process-wide cache lock.
     with _lock:
-        now = time.monotonic()
         cached = _cache.get(group)
-        if cached is not None:
-            expires, snapshot = cached
-            verdict = evaluate_snapshot(snapshot)
-            if now < expires:
-                _cache.move_to_end(group)
-                return verdict
+        if cached is not None and time.monotonic() < cached[0]:
+            _cache.move_to_end(group)
+            return evaluate_snapshot(cached[1])
+        flight = _inflight.get(group)
+        owner = flight is None
+        if owner:
+            if len(_inflight) >= MAX_CACHE_ENTRIES:
+                return QuotaVerdict("unknown", "probe_capacity_reached")
+            flight = _inflight[group] = Event()
+    if not owner:
+        if not flight.wait(timeout=20):
+            return QuotaVerdict("unknown", "probe_in_progress")
+        return account_quota(provider, base_url, api_key)
+    try:
         try:
             snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key,
                                            read_only=True, identity_id=group[-1])
-        except Exception:  # health: allow BLE001 -- optional preflight fails open; exception text/tracebacks may contain credentials
-            # Never log exception text: providers can echo credentials in errors.
+        except Exception:  # health: allow BLE001 -- optional preflight fails open; never log credential-bearing exceptions
             snapshot = None
         verdict = evaluate_snapshot(snapshot)
         ttl = MAX_AGE_SECONDS if verdict.state in {"available", "exhausted"} else FAILURE_TTL_SECONDS
@@ -105,11 +111,16 @@ def account_quota(provider: str, base_url: str = "", api_key: Any = None) -> Quo
                       if w.reset_at is not None and w.reset_at.tzinfo is not None and w.reset_at > wall_now]
             if resets:
                 ttl = min(ttl, min(resets))
-        _cache[group] = (time.monotonic() + ttl, snapshot)
-        _cache.move_to_end(group)
-        while len(_cache) > MAX_CACHE_ENTRIES:
-            _cache.popitem(last=False)
+        with _lock:
+            _cache[group] = (time.monotonic() + ttl, snapshot)
+            _cache.move_to_end(group)
+            while len(_cache) > MAX_CACHE_ENTRIES:
+                _cache.popitem(last=False)
         return verdict
+    finally:
+        with _lock:
+            _inflight.pop(group, None)
+            flight.set()
 
 
 def invalidate_quota(provider: str, base_url: str = "", api_key: Any = None) -> None:

@@ -1134,6 +1134,10 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    # Route before preflight compaction can issue inference on an exhausted primary.
+    # Voice routing still binds later, after the session context has been prepared.
+    from agent.quota_preflight import preflight_quota_route
+    preflight_quota_route(agent)
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

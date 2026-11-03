@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, render, renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
 import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -529,6 +529,16 @@ describe('context meter beside an agentless breakdown', () => {
     const panel = item?.menuContent
 
     expect(isValidElement<{ breakdown: ContextBreakdown | null }>(panel) && panel.props.breakdown).toBe(agentless)
+  })
+
+  it('uses the theme accent for the measured context fill', async () => {
+    const item = await contextItem(measured)
+    const { container } = render(<>{item?.detail}</>)
+    const fill = container.querySelector<HTMLElement>('[data-slot="context-meter-fill"]')
+
+    expect(container.textContent).toBe('[████░░░░░░] 40%')
+    expect(fill).not.toBeNull()
+    expect(fill?.style.color).toBe('var(--ui-accent)')
   })
 
   it("never borrows another session's reading from the global usage", async () => {

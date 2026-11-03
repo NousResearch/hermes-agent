@@ -3,6 +3,7 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CompressSessionOutcome } from '@/app/session/compress-session'
+import { contextBarLabel } from '@/lib/statusbar'
 import { clearNotifications } from '@/store/notifications'
 import type { ContextBreakdown, UsageStats } from '@/types/hermes'
 
@@ -316,6 +317,40 @@ describe('ContextUsagePanel compact action', () => {
 })
 
 describe('ContextMeterDetail', () => {
+  it.each([
+    [10, '█', '[█░░░░░░░░░] 10%'],
+    [47, '█████', '[█████░░░░░] 47%'],
+    [85, '█████████', '[█████████░] 85%'],
+    [95, '██████████', '[██████████] 95%'],
+    [100, '██████████', '[██████████] 100%']
+  ] as const)('keeps the theme accent at %i percent instead of a fullness gradient', (percent, blocks, label) => {
+    const { container } = render(<ContextMeterDetail bar={contextBarLabel({ ...usage, context_percent: percent })} />)
+    const fill = container.querySelector<HTMLElement>('[data-slot="context-meter-fill"]')
+
+    expect(fill?.textContent).toBe(blocks)
+    expect(fill?.style.color).toBe('var(--ui-accent)')
+    expect(container.textContent).toBe(label)
+  })
+
+  it('preserves the empty track without inventing a filled segment', () => {
+    const { container } = render(<ContextMeterDetail bar={contextBarLabel({ ...usage, context_percent: 0 })} />)
+
+    expect(container.textContent).toBe('[░░░░░░░░░░] 0%')
+    expect(container.querySelector('[data-slot="context-meter-fill"]')).toBeNull()
+  })
+
+  it('preserves the estimate marker and compression count beside the colored fill', () => {
+    const { container } = render(
+      <ContextMeterDetail bar={contextBarLabel({ ...usage, context_estimated: true })} compressions={2} />
+    )
+
+    expect(container.textContent).toContain('[█████░░░░░] ~47%')
+    expect(container.querySelector<HTMLElement>('[data-slot="context-meter-fill"]')?.style.color).toBe(
+      'var(--ui-accent)'
+    )
+    expect(screen.getByTestId('context-meter-compressions').textContent).toBe('2')
+  })
+
   it('adds the count to the meter only once the session has compacted', () => {
     for (const compressions of [undefined, 0]) {
       const { container, unmount } = render(<ContextMeterDetail bar="[██░░] 47%" compressions={compressions} />)

@@ -161,13 +161,27 @@ function CompactConversationRow({ compact }: { compact: CompactConversationActio
  *  came from a compression, so the two read as one idea. Zero stays out of the
  *  meter (every fresh session would carry noise); the panel shows it. */
 export function ContextMeterDetail({ bar, compressions }: { bar: string; compressions?: number }) {
+  const meter = (
+    <span>
+      {bar.split(/(█+)/).map(part =>
+        part.startsWith('█') ? (
+          <span data-slot="context-meter-fill" key={part} style={{ color: 'var(--ui-accent)' }}>
+            {part}
+          </span>
+        ) : (
+          part
+        )
+      )}
+    </span>
+  )
+
   if (!compressions) {
-    return bar
+    return meter
   }
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      {bar}
+      {meter}
       <span className="inline-flex items-center gap-0.5 tabular-nums" data-testid="context-meter-compressions">
         <Codicon aria-hidden="true" name="layers" size="0.6875rem" />
         {compressions}

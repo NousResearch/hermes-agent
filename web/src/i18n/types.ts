@@ -98,6 +98,8 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      /** Optional — falls back to English literal until translated. */
+      files?: string;
       keys: string;
       logs: string;
       models: string;
@@ -105,6 +107,7 @@ export interface Translations {
       plugins: string;
       sessions: string;
       skills: string;
+      system: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;

@@ -26,6 +26,9 @@ ReadStamp = tuple[float, float, bool]
 _MAX_PATHS_PER_AGENT = 4096
 _MAX_GLOBAL_WRITERS = 4096
 
+# Default timeout in seconds for acquiring path locks before failing fast.
+_DEFAULT_LOCK_TIMEOUT = float(os.environ.get("HERMES_FILE_LOCK_TIMEOUT", "15.0"))
+
 
 def _disabled() -> bool:
     # Re-read each call so tests can toggle via monkeypatch.setenv.
@@ -75,13 +78,27 @@ class FileStateRegistry:
         self._state_lock = threading.Lock()  # guards _reads + _last_writer
 
     @contextmanager
-    def lock_path(self, resolved: str):
+    def lock_path(self, resolved: str, timeout: Optional[float] = None):
         """Per-path lock: threads on the same path serialize, different paths proceed.
         The lock entry is dropped once the last holder/waiter exits."""
+        effective_timeout = _DEFAULT_LOCK_TIMEOUT if timeout is None else float(timeout)
         with self._meta_lock:
             lock = self._path_locks.setdefault(resolved, threading.Lock())
             self._path_lock_users[resolved] = self._path_lock_users.get(resolved, 0) + 1
-        lock.acquire()
+
+        acquired = lock.acquire(timeout=effective_timeout)
+        if not acquired:
+            with self._meta_lock:
+                users = self._path_lock_users[resolved] - 1
+                if users:
+                    self._path_lock_users[resolved] = users
+                else:
+                    self._path_lock_users.pop(resolved, None)
+                    self._path_locks.pop(resolved, None)
+            raise TimeoutError(
+                f"File lock for {resolved} timed out after {effective_timeout}s (concurrent lock contention)"
+            )
+
         try:
             yield
         finally:
@@ -237,8 +254,8 @@ def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
     return _registry.check_stale(task_id, str(resolved_or_path))
 
 
-def lock_path(resolved_or_path: str | Path):
-    return _registry.lock_path(str(resolved_or_path))
+def lock_path(resolved_or_path: str | Path, timeout: Optional[float] = None):
+    return _registry.lock_path(str(resolved_or_path), timeout=timeout)
 
 
 def writes_since(exclude_task_id: str, since_ts: float, paths: Iterable[str | Path]) -> dict[str, list[str]]:

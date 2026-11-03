@@ -624,7 +624,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
             "trap - EXIT")
-        return self._exec(script, stdin_data=content)
+        return self._exec(script, stdin_data=content, timeout=30)
 
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
         """Whether the on-disk file starts with a UTF-8 BOM. ALWAYS probes disk:

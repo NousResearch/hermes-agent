@@ -66,8 +66,10 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
 _BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
 # Streamed uv output keeps only the last 2000 characters. Resolver markers are
 # stitched back if a later verbose flood evicts them; the bytecode marker has
-# to ride the same path or repair/bootstrap never sees the retry signal.
-_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER,)
+# to ride the same path or repair/bootstrap never sees the retry signal, and so
+# does the build marker: a failed native build's traceback runs far past 2000
+# characters, and without it the failure reads as a fetch error, not a verdict.
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
 
 # Retries after purging corrupt cached packages. Each round must name a package
 # not purged before, so this bounds a cache with several damaged entries, never
@@ -111,7 +113,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
-        return BuildFailure("venv", cause)
+        from pm.build_compilers import missing_compiler_remedy
+
+        return BuildFailure("venv", cause, missing_compiler_remedy(output))
     return InstallError("venv", cause)
 
 
@@ -265,10 +269,12 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if sys.platform == "darwin" and python.resolve() == pinned_python.resolve():
-        # PBS's AR still names its deleted build directory. Its CC is already
-        # clang; only the archiver needs a default, and only for our interpreter.
-        build_env.setdefault("AR", "/usr/bin/ar")
+    if python.resolve() == pinned_python.resolve():
+        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+        from pm.build_compilers import pinned_build_defaults
+
+        for key, value in pinned_build_defaults(python, build_env).items():
+            build_env.setdefault(key, value)
     return PythonEnvironment(
         uv=uv, python=python,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
@@ -330,6 +336,12 @@ class PythonEnvironment:
         # or the venv it writes would record the extended-length one in pyvenv.cfg.
         env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
                    UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # CMake 4 removed compatibility with cmake_minimum_required(VERSION < 3.5),
+        # so an sdist carrying an old minimum dies at CONFIGURE time: python-olm
+        # (mautrix[encryption], the matrix extra) vendors libolm declaring 3.4.
+        # Every source build uv drives inherits this env; older CMake ignores
+        # the variable, and a value the caller or user already set wins.
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [native(self.uv), *map(native, args)]

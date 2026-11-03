@@ -79,14 +79,18 @@ export function RelayLinkPanel({
           timer = setTimeout(poll, POLL_MS);
           return;
         }
-        setLink(null);
-        setQrDataUrl("");
         if (state.state === "refused") {
+          setLink(null);
+          setQrDataUrl("");
           setError(`${platform.name} refused the link${state.reason ? ` (${state.reason})` : ""}. Get a new code and try again.`);
           return;
         }
+        // Reload before closing the code: closing re-runs this effect and cancels the rest of it.
         const after = await loadAccounts();
-        if (cancelled || !after) return;
+        if (cancelled) return;
+        setLink(null);
+        setQrDataUrl("");
+        if (!after) return;
         if (after.length > linkedBefore.current || redeemedBeforeExpiry(link)) {
           showToast(`${platform.name} account linked. Message the bot to talk to your agent.`, "success");
         } else {

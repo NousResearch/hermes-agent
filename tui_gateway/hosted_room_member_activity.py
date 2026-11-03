@@ -20,8 +20,9 @@ from typing import Any
 
 HOOK_NAME = "on_room_member_activity"
 
-# Per running task: the tool it is in right now and when it last did anything. In-process only (the
-# process running the turn is the one that sees its frames); ``groups.state`` merges it into
+# Per running task: the tool it is in right now and when it last did anything, fed by this process's own
+# room-turn frames (``project_room_member_activity``) or by the member transport's ``info`` answer that
+# the room driver polls during the turn (``record_task_progress``); ``groups.state`` merges it into
 # ``member_activity`` so a room can tell a bot busy in a tool from one gone quiet.
 _PROGRESS_LIMIT = 512
 _progress: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
@@ -39,6 +40,29 @@ def _note_progress(key: tuple[str, str], kind: str, payload: Mapping[str, Any] |
         _progress[key] = entry
         while len(_progress) > _PROGRESS_LIMIT:
             _progress.popitem(last=False)
+
+
+def record_task_progress(room_id: str, task_id: str, info: Mapping[str, Any]) -> None:
+    """Adopt the ``tool``/``progress_at`` a member transport's ``info`` reported for this running task.
+
+    A gateway-owned room's member turn publishes its frames on the member authority's own event stream,
+    never through ``project_room_member_activity``; the room driver already polls the member's ``info``
+    during the turn, and this is how that answer reaches ``groups.state``. The member's clock stamps
+    ``progress_at``: the time of its last frame, not of this poll."""
+    progress_at, tool = info.get("progress_at"), info.get("tool")
+    if str(info.get("task_id") or "") != task_id or type(progress_at) not in (int, float):
+        return
+    with _progress_lock:
+        _progress.pop((room_id, task_id), None)
+        _progress[(room_id, task_id)] = {
+            "tool": tool[:128] if isinstance(tool, str) and tool else None, "progress_at": float(progress_at)}
+        while len(_progress) > _PROGRESS_LIMIT:
+            _progress.popitem(last=False)
+
+
+def forget_task_progress(room_id: str, task_id: str) -> None:
+    with _progress_lock:
+        _progress.pop((room_id, task_id), None)
 
 
 def task_progress(room_id: str, task_id: str) -> dict[str, Any]:

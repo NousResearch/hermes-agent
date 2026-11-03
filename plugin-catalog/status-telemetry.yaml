@@ -1,0 +1,17 @@
+name: status-telemetry
+repo: https://github.com/shachariph/hermes-status-telemetry
+sha: abc3a5253614007ff61c6195973bb073cac2b0b0
+title: Status Telemetry
+description: "Responsive status bar telemetry chip and analytics popover for Hermes Desktop: session cost ($), live tok/s, API latency, token totals, 7-day spend rollup, and host RAM usage, with automatic status bar decluttering. Disclosure — reads local session metadata and token/cost counters from the active profile's state.db via hermes_state.SessionDB and host physical RAM stats via psutil; updates hermes.desktop.statusbarHidden.v2 in window.localStorage to hide duplicate built-in status bar items; no external network calls."
+maintainer: shachariph
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+version: "1.0.0"
+docs_url: https://github.com/shachariph/hermes-status-telemetry#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

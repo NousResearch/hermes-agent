@@ -1,0 +1,17 @@
+name: prompt-autocomplete
+repo: https://github.com/shachariph/hermes-prompt-autocomplete
+sha: dd8da2cb17e9c67ec2cef260ae4c638635aef45e
+title: Fast Prompt Autocomplete (Implied LTR/RTL)
+description: "Zero-DOM-lag inline sentence autocomplete for the Hermes Desktop prompt composer with automatic LTR (ArrowRight) and RTL (ArrowLeft) direction detection, a <1ms off-main-thread WebWorker history Trie, and ~500ms small-model AI completion. Disclosure — reads up to 400 recent user prompt phrases from the active profile's state.db via hermes_state.SessionDB to seed the local in-memory WebWorker Trie, and sends the last 180 characters of the current draft line to the user's configured LLM provider via agent.plugin_llm.PluginLlm (max_tokens=10) when no local match is found."
+maintainer: shachariph
+tier: community
+category: desktop
+requires_hermes: ">=0.21.0"
+version: "2.0.0"
+docs_url: https://github.com/shachariph/hermes-prompt-autocomplete#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -23,6 +23,7 @@ from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_member_activity import forget_task_progress, record_task_progress, task_progress
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -51,8 +52,6 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _member_activity(task: Mapping[str, Any]) -> dict[str, Any]:
-    from tui_gateway.hosted_room_member_activity import task_progress
-
     row = {"member_id": task_member_id(task), "status": str(task["status"])}
     if task.get("started_at") is not None:
         row["started_at"] = task["started_at"]
@@ -144,7 +143,7 @@ class HostedRoomService:
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
-            pending_action=self._set_pending_action,
+            pending_action=self._set_pending_action, task_progress=record_task_progress,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -536,7 +535,8 @@ class HostedRoomService:
             raise
         stalls.clear(binding.room_id)
 
-    def publish_terminal(self, binding: HostedRoomBinding, _task: Mapping[str, Any]) -> None:
+    def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
+        forget_task_progress(binding.room_id, task["identity"].task_id)
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 

@@ -923,6 +923,19 @@ def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> 
     assert "1 passed" in out.read_text(encoding="utf-8")
 
 
+def test_a_green_file_that_exits_non_zero_reports_its_exit_status(tmp_path: Path) -> None:
+    """The failure dump of a file whose tests all passed must say how the process exited."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    (probe_dir / "conftest.py").write_text(
+        "def pytest_sessionfinish(session):\n    session.exitstatus = 3\n", encoding="utf-8")
+    (probe_dir / "test_green.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    proc = _run_runner(probe_dir, "--file-retries", "0")
+    assert proc.returncode != 0, proc.stdout
+    assert "all tests passed but pytest exited non-zero" in proc.stdout, proc.stdout
+    assert "(pytest child exit status 3)" in proc.stdout, proc.stdout
+
+
 def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
     """A slow file submitted last runs alone at the end of the run; start it first."""
     import importlib.util

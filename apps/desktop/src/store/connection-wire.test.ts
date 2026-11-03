@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { HermesConnection } from '@/global'
 
 import { serverOwnsComposerQueue } from './composer-queue'
-import { $connectionWires, connectionWire, primaryWireConnectionId, recordConnectionWire, recordSecondaryWire } from './connection-wire'
+import { $connectionWires, connectionWire, primaryWireSource, recordConnectionWire, recordSecondaryWire, UNNAMED_REMOTE_WIRE_KEY } from './connection-wire'
 import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 
 afterEach(() => {
@@ -19,7 +19,7 @@ it('records an anonymous primary under the local source, not the foreground conn
   setSessionOwnerHint('chat', { connectionId: 'vps', mode: 'remote', profile: 'default' })
   recordConnectionWire('vps', 'legacy')
 
-  recordConnectionWire(primaryWireConnectionId({ connectionId: null, mode: 'local' }, $connection.get()?.connectionId), 'canonical')
+  recordConnectionWire(primaryWireSource({ connectionId: null, mode: 'local' }, $connection.get()), 'canonical')
 
   expect(connectionWire('vps')).toBe('legacy')
   expect(connectionWire('local')).toBe('canonical')
@@ -27,9 +27,29 @@ it('records an anonymous primary under the local source, not the foreground conn
 })
 
 it('names an established primary by its own route and an unrecorded one by the window', () => {
-  expect(primaryWireConnectionId({ connectionId: 'home', mode: 'remote' }, 'vps')).toBe('home')
-  expect(primaryWireConnectionId({ connectionId: null, mode: 'remote' }, 'vps')).toBeNull()
-  expect(primaryWireConnectionId({ connectionId: null, mode: null }, 'vps')).toBe('vps')
+  const vps = { connectionId: 'vps', mode: 'remote' }
+  expect(primaryWireSource({ connectionId: 'home', mode: 'remote' }, vps)).toEqual({ connectionId: 'home', mode: 'remote' })
+  expect(primaryWireSource({ connectionId: null, mode: 'remote' }, vps)).toEqual({ connectionId: null, mode: 'remote' })
+  expect(primaryWireSource({ connectionId: null, mode: null }, vps)).toBe(vps)
+})
+
+// `HERMES_DESKTOP_REMOTE_URL` gives the primary a remote with no registry id, while a real local
+// source can stay connected as a secondary. Neither may overwrite the other's wire.
+it('keeps an unnamed remote primary apart from the local source', () => {
+  recordConnectionWire('local', 'canonical')
+  recordConnectionWire(primaryWireSource({ connectionId: null, mode: 'remote' }, null), 'legacy')
+
+  expect(connectionWire('local')).toBe('canonical')
+  expect($connectionWires.get()[UNNAMED_REMOTE_WIRE_KEY]).toBe('legacy')
+  setSessionOwnerHint('native', { connectionId: 'local', mode: 'local', profile: 'default' })
+  expect(serverOwnsComposerQueue('native')).toBe(true)
+
+  // A chat with no recorded owner on the unnamed remote window reads that remote's wire.
+  $connection.set({ mode: 'remote', wsUrl: 'wss://remote.example/api/ws?token=t' } as HermesConnection)
+  expect(serverOwnsComposerQueue('remote-chat')).toBe(false)
+  recordConnectionWire({ mode: 'remote' }, 'canonical')
+  expect(serverOwnsComposerQueue('remote-chat')).toBe(true)
+  expect(connectionWire('local')).toBe('canonical')
 })
 
 // A profile-only secondary names no connection, but its descriptor names the backend it reached.

@@ -106,6 +106,8 @@ from gateway.platforms._shared import (
 logger = logging.getLogger(__name__)
 
 # --- Regex patterns ---
+_FEISHU_CARD_TAGS = r"font|text_tag|link|person|number_tag"
+
 _MARKDOWN_HINT_RE = re.compile(
     # Pipe table: any header line + separator line both starting with '|'.
     r"(^\|.*\|\s*\n\|[-:|\s]+\|)"
@@ -121,7 +123,11 @@ _MARKDOWN_HINT_RE = re.compile(
     r"|(<u>.+?</u>)"
     r"|(\*[^*\n]+\*)"
     r"|(\[[^\]]+\]\([^)]+\))"
-    r"|(^>\s)",
+    r"|(^>\s)"
+    # Feishu emoji shortcodes — e.g. :THUMBSUP:, :smile:, :DONE:
+    r"|(:(?:[A-Z][A-Za-z0-9_]+):)"
+    # Feishu Card-exclusive XML tags that only render inside Card JSON 2.0
+    r"|(<(?:" + _FEISHU_CARD_TAGS + r")\b[^>]*?>)",
     re.MULTILINE,
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -440,7 +446,11 @@ def _render_code_block_element(element: dict[str, Any]) -> str:
 
 
 def _strip_markdown_to_plain_text(text: str) -> str:
-    """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF)."""
+    """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF).
+
+    Also strips Feishu Card-exclusive tags (font, text_tag, link, person,
+    number_tag) and emoji shortcodes so text fallback shows clean content.
+    """
     from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
@@ -448,7 +458,21 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
-    return strip_markdown(plain)
+    # Strip Feishu Card-exclusive XML tags, keeping inner text
+    plain = re.sub(
+        r"<(?:" + _FEISHU_CARD_TAGS + r")\b[^>]*?>(.*?)</(?:" + _FEISHU_CARD_TAGS + r")>",
+        r"\1", plain, flags=re.DOTALL,
+    )
+    # Strip self-closing card tags
+    plain = re.sub(
+        r"<(?:" + _FEISHU_CARD_TAGS + r")\b[^>]*?/>",
+        "", plain,
+    )
+    # Strip Feishu emoji shortcodes — show the name without colons as fallback
+    plain = re.sub(r":([A-Z][A-Za-z0-9_]+):", r"\1", plain)
+    # Guard against empty output — prefer raw text over blank bubble
+    result = strip_markdown(plain)
+    return result if result.strip() else text
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -513,11 +537,19 @@ def _build_markdown_post_rows(content: str) -> list[list[dict[str, str]]]:
 # ---------------------------------------------------------------------------
 
 
-def _assemble_card(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Assemble a Card JSON 2.0 structure from a list of elements."""
+def _assemble_card(elements: List[Dict[str, Any]], *, streaming: bool = False) -> Dict[str, Any]:
+    """Assemble a Card JSON 2.0 structure from a list of elements.
+
+    When ``streaming=True`` the card renders with a typing indicator on the
+    Feishu client, suitable for progressive edits.
+    """
     return {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True},
+        "config": {
+            "wide_screen_mode": True,
+            "enable_forward": True,
+            "streaming_mode": streaming,
+        },
         "body": {
             "elements": elements,
         },
@@ -534,6 +566,7 @@ def _split_elements_into_cards(
     elements: List[Dict[str, Any]],
     *,
     max_tables: int = _CARD_MAX_TABLES,
+    streaming: bool = False,
 ) -> List[str]:
     """Split elements into multiple card payloads respecting BOTH byte and table limits."""
     cards: List[str] = []
@@ -543,12 +576,12 @@ def _split_elements_into_cards(
     for element in elements:
         elem_tables = _count_tables_in_element(element)
         trial_elements = current_elements + [element]
-        trial_payload = json.dumps(_assemble_card(trial_elements), ensure_ascii=False)
+        trial_payload = json.dumps(_assemble_card(trial_elements, streaming=streaming), ensure_ascii=False)
         exceeds_bytes = len(trial_payload.encode("utf-8")) > _CARD_PAYLOAD_MAX_BYTES
         exceeds_tables = (current_tables + elem_tables) > max_tables
 
         if (exceeds_bytes or exceeds_tables) and current_elements:
-            cards.append(json.dumps(_assemble_card(current_elements), ensure_ascii=False))
+            cards.append(json.dumps(_assemble_card(current_elements, streaming=streaming), ensure_ascii=False))
             current_elements = [element]
             current_tables = elem_tables
         else:
@@ -556,7 +589,7 @@ def _split_elements_into_cards(
             current_tables += elem_tables
 
     if current_elements:
-        cards.append(json.dumps(_assemble_card(current_elements), ensure_ascii=False))
+        cards.append(json.dumps(_assemble_card(current_elements, streaming=streaming), ensure_ascii=False))
 
     return cards
 
@@ -601,14 +634,19 @@ def _build_markdown_card_elements(content: str) -> List[Dict[str, Any]]:
     Similar to ``_build_markdown_post_rows`` but produces ``{tag: 'markdown'}``
     elements for Card JSON 2.0.  Large elements are also chunked at
     ``_CARD_MD_ELEMENT_MAX_CHARS`` to stay within Feishu element size limits.
+
+    Code-fence segments receive ``"text_size": "notation"`` for visual
+    distinction from prose segments.
     """
     if not content:
         return [{"tag": "markdown", "content": ""}]
 
     raw_segments: List[str] = []
+    is_code: List[bool] = []
 
     if "```" not in content:
         raw_segments = [content]
+        is_code = [False]
     else:
         current: List[str] = []
         in_code_block = False
@@ -618,6 +656,7 @@ def _build_markdown_card_elements(content: str) -> List[Dict[str, Any]]:
             segment = "\n".join(current)
             if segment.strip():
                 raw_segments.append(segment)
+                is_code.append(in_code_block or segment.lstrip().startswith("```"))
             current = []
 
         for raw_line in content.splitlines():
@@ -634,12 +673,17 @@ def _build_markdown_card_elements(content: str) -> List[Dict[str, Any]]:
 
     if not raw_segments:
         raw_segments = [content]
+        is_code = [False]
 
     # Chunk oversized segments
     elements: List[Dict[str, Any]] = []
-    for seg in raw_segments:
+    for idx, seg in enumerate(raw_segments):
+        code_seg = is_code[idx] if idx < len(is_code) else False
+        base: Dict[str, Any] = {"tag": "markdown", "content": seg}
+        if code_seg:
+            base["text_size"] = "notation"
         if len(seg) <= _CARD_MD_ELEMENT_MAX_CHARS:
-            elements.append({"tag": "markdown", "content": seg})
+            elements.append(base)
         else:
             # Split at line boundaries respecting the char limit
             lines = seg.split("\n")
@@ -647,22 +691,31 @@ def _build_markdown_card_elements(content: str) -> List[Dict[str, Any]]:
             chunk_len = 0
             for line in lines:
                 if chunk_len + len(line) + 1 > _CARD_MD_ELEMENT_MAX_CHARS and chunk_lines:
-                    elements.append({"tag": "markdown", "content": "\n".join(chunk_lines)})
+                    el: Dict[str, Any] = {"tag": "markdown", "content": "\n".join(chunk_lines)}
+                    if code_seg:
+                        el["text_size"] = "notation"
+                    elements.append(el)
                     chunk_lines = []
                     chunk_len = 0
                 chunk_lines.append(line)
                 chunk_len += len(line) + 1
             if chunk_lines:
-                elements.append({"tag": "markdown", "content": "\n".join(chunk_lines)})
+                el = {"tag": "markdown", "content": "\n".join(chunk_lines)}
+                if code_seg:
+                    el["text_size"] = "notation"
+                elements.append(el)
 
     return elements
 
 
-def _build_markdown_card_payload(content: str) -> "str | List[str]":
+def _build_markdown_card_payload(content: str, *, streaming: bool = False) -> "str | List[str]":
     """Build Card JSON 2.0 payload(s) for markdown content.
 
     Returns a single JSON string when the content fits one card, or a list of
     JSON strings when it must be split across multiple cards.
+
+    When ``streaming=True`` the card config includes ``streaming_mode: true``
+    for progressive edits with a typing indicator.
     """
     elements = _build_markdown_card_elements(content)
 
@@ -671,7 +724,7 @@ def _build_markdown_card_payload(content: str) -> "str | List[str]":
 
     # If within limits, try a single card first
     if total_tables <= _CARD_MAX_TABLES:
-        single = json.dumps(_assemble_card(elements), ensure_ascii=False)
+        single = json.dumps(_assemble_card(elements, streaming=streaming), ensure_ascii=False)
         if len(single.encode("utf-8")) <= _CARD_PAYLOAD_MAX_BYTES:
             return single
 
@@ -679,7 +732,7 @@ def _build_markdown_card_payload(content: str) -> "str | List[str]":
     if total_tables > _CARD_MAX_TABLES:
         elements = _explode_multi_table_elements(elements)
 
-    cards = _split_elements_into_cards(elements)
+    cards = _split_elements_into_cards(elements, streaming=streaming)
     return cards[0] if len(cards) == 1 else cards
 
 
@@ -2029,11 +2082,20 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
-        """Edit a previously sent Feishu text/post/interactive message."""
+        """Edit a previously sent Feishu text/post/interactive message.
+
+        During streaming edits (``finalize=False``), the card is built with
+        ``streaming_mode: true`` so the client shows a typing indicator.
+        The final edit (``finalize=True``) sets ``streaming_mode: false``
+        to close the indicator.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+        # streaming_mode: show typing indicator during progressive edits,
+        # close it on the final edit.
+        streaming = not finalize
 
         async def _update(msg_type: str, payload: str) -> SendResult:
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -2042,7 +2104,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(response, "update failed")
 
         try:
-            build_result = self._build_outbound_payload(content)
+            build_result = self._build_outbound_payload(content, streaming=streaming)
             # edit_message can only update a single message — if the payload
             # splits into multiple cards, use only the first card.
             if isinstance(build_result, list):
@@ -4058,7 +4120,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     # --- Outbound payload construction and send pipeline ---
     def _build_outbound_payload(
-        self, content: str, *, prefer_card: bool = False,
+        self, content: str, *, prefer_card: bool = False, streaming: bool = False,
     ) -> "tuple[str, str] | List[tuple[str, str]]":
         """Build the outbound (msg_type, payload) pair for *content*.
 
@@ -4075,9 +4137,12 @@ class FeishuAdapter(BasePlatformAdapter):
         ``prefer_card`` lets ``send()`` lock the decision at the
         whole-message level so every chunk of a long split reply
         consistently uses the same format.
+
+        ``streaming`` passes through to ``_build_markdown_card_payload`` so
+        the card config includes ``streaming_mode`` for progressive edits.
         """
         if prefer_card or _MARKDOWN_HINT_RE.search(content):
-            result = _build_markdown_card_payload(content)
+            result = _build_markdown_card_payload(content, streaming=streaming)
             if isinstance(result, list):
                 return [("interactive", p) for p in result]
             return "interactive", result

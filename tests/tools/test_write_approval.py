@@ -265,6 +265,82 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
     assert _REVIEWED in load_on_disk_store().memory_entries
     assert wa.get_pending(wa.MEMORY, pid) is not None
 
+def _fmt(sub, *args):
+    from hermes_cli.write_approval_commands import _fmt_pending_list, _fmt_all_pending_list
+    return _fmt_all_pending_list(sub) if args and args[0] in ("--all", "-a") else _fmt_pending_list(sub)
+
+
+def test_pending_list_caps_at_20(hermes_home):
+    from tools import write_approval as wa
+    for i in range(25):
+        wa.stage_write(wa.MEMORY, {"action": "add"}, summary=f"entry {i}", origin="foreground")
+    out = _fmt("memory")
+    assert "entry 24" in out and "entry 5" in out
+    assert "entry 4" not in out and "5 more" in out
+
+
+def test_pending_list_all_shows_everything(hermes_home):
+    from tools import write_approval as wa
+    for i in range(25):
+        wa.stage_write(wa.MEMORY, {"action": "add"}, summary=f"entry {i}", origin="foreground")
+    assert "entry 24" in _fmt("memory", "--all")
+    assert "entry 0" in _fmt("memory", "--all")
+    assert "more" not in _fmt("memory", "--all")
+
+
+def test_pending_list_clips_long_summaries(hermes_home):
+    from tools import write_approval as wa
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary="x" * 200, origin="foreground")
+    out = _fmt("memory")
+    assert "x" * 80 in out and "x" * 81 not in out
+
+
+def test_pending_list_newest_first(hermes_home):
+    from tools import write_approval as wa
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary="oldest", origin="foreground")
+    wa.stage_write(wa.MEMORY, {"action": "add"}, summary="newest", origin="foreground")
+    out = _fmt("memory")
+    assert out.index("newest") < out.index("oldest")
+
+
+def test_pending_list_groups_by_skill_name(hermes_home):
+    from tools import write_approval as wa
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "demo-1"}, summary="create 'demo-1'", origin="foreground")
+    wa.stage_write(wa.SKILLS, {"action": "edit", "name": "demo-1"}, summary="rewrite 'demo-1'", origin="foreground")
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "other"}, summary="create other", origin="foreground")
+    out = _fmt("skills")
+    assert "⚠ demo-1" in out
+    assert "create, edit" in out or "edit, create" in out
+    assert "Pending skills writes (3):" in out
+
+
+def test_handle_pending_all_flag(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    for i in range(25):
+        wa.stage_write(wa.MEMORY, {"action": "add"}, summary=f"entry {i}", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["pending", "--all"])
+    assert out is not None
+    assert "entry 0" in out and "more" not in out
+
+
+def test_cli_skills_pending_all_shows_entire_queue(hermes_home, capsys, monkeypatch):
+    import sys
+    import types
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from tools import write_approval as wa
+    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(ChatConsole=object))
+    for i in range(21):
+        wa.stage_write(wa.SKILLS, {"action": "create", "name": f"skill-{i}"},
+                       summary=f"create skill-{i}", origin="foreground")
+    cli = CLICommandsMixin.__new__(CLICommandsMixin)
+    cli._handle_skills_command("/skills pending --all")
+    out = capsys.readouterr().out
+    assert "skill-0" in out
+    assert "skill-20" in out
+    assert "more" not in out
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

@@ -685,8 +685,14 @@ whether the write came from a foreground turn or the background review.
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
 
+`/skills pending` lists the newest 20 staged writes first, clips long summaries,
+and groups writes by skill name so multiple pending changes to one skill are
+visible together. Use `--all` to display the entire queue. The count in the
+heading is the total pending count.
+
 ```
-/skills pending             # list staged skill writes + a one-line gist each
+/skills pending             # newest 20 staged writes
+/skills pending --all       # show the full queue
 /skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
 /skills approve <id>        # apply it (or 'all')
 /skills reject <id>         # drop it (or 'all')

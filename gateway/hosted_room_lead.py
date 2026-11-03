@@ -10,7 +10,8 @@ Everything else keeps the room's normal resolution: an @mention or @all/@everyon
 reply inside an existing thread, and every message in an ``everyone`` room (the default).
 
 The routing turn is an ordinary driver task whose payload carries ``lead_routing: true``. Only the planner's
-lead round sets it; the driver accepts it only as exactly true, and it is hashed into the task id, so a
+lead round sets it; the driver accepts it only as exactly true, and it is hashed into the task id (the prompt
+is not: it names the room, and a rename must not orphan the receipt the planner looks up by that id), so a
 persisted task without it (every task admitted before lead routing existed, and every member turn, including
 batch-bounded ones whose ``seen_through_seq`` sits below their source message) is an ordinary member turn.
 Its ``seen_through_seq`` is the message's seq minus one, so its terminal receipt never advances the lead's

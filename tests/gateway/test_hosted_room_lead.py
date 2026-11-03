@@ -258,6 +258,18 @@ def test_a_settings_retry_of_an_event_saved_before_routing_existed_returns_it(ro
                                  routing="lead", lead_member_id="member-ada")
 
 
+@pytest.mark.parametrize(("answer", "status"), [('{"assign": ["ada"]}', "settled"), ("discarded", "cancelled")])
+def test_a_rename_after_routing_never_consumes_the_leads_answer(room_db: Path, answer: str, status: str):
+    """The routing receipt is matched by its durable identity, not by a prompt that names the room."""
+    _lead_room(room_db)
+    seq = _say(room_db, "Anyone?")
+    _finish(room_db, _plan(room_db, seq), answer, status=status)
+    hosted_rooms.rename_room(room_db, room_id=ROOM_ID, event_id="rename", name="Renamed")
+
+    turn = _plan(room_db, seq)
+    assert (turn.status, turn.reason, turn.task.member.handle) == ("task", "member_turn", "ada")
+    assert "lead_routing" not in turn.task.payload
+
 @pytest.mark.parametrize("routing", ["everyone", "lead"])
 def test_batch_bounded_member_turn_publishes_its_real_reply(routing: str):
     """A member turn whose frozen batch stops below its source message is still a member turn, not routing."""

@@ -38,9 +38,12 @@ class LiveEntry:
 def _store_facts(db, session_ids):
     """Worker thread: ``{sid: row}`` and ``{sid: [pending admission]}`` for *session_ids*, in two reads.
 
-    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read):
-    SQLite extracts the target from the receipt, so no receipt is parsed in Python. A malformed or
-    non-local receipt reads as no target, as ``_local_target`` does."""
+    ``target_ended_at`` is the local receipt target's ``ended_at`` (``closed_and_unviewed``'s read) and
+    ``receipt_target_id`` is that target's id (``live_entries``' moved-on read): SQLite extracts both from
+    the receipt, so no receipt is parsed in Python. A malformed or non-local receipt reads as no target,
+    as ``_local_target`` does. The second read follows the receipt's key — a rotation re-points it under
+    the chat's logical id (``advance_local_target`` uses ``parent.chat_id``), which for a plain local
+    session is its own id."""
     from hermes_state_local import POLICY_PREFIX
     ids = json.dumps(list(session_ids))
     with db._read_ctx() as conn:
@@ -48,8 +51,11 @@ def _store_facts(db, session_ids):
             "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.end_reason, s.message_count, s.model, s.hidden, "
             "s.archived, s.runtime_revision, s.runtime_generation, "
             "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
-            "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
-            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
+            "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at, "
+            "(SELECT CASE WHEN json_valid(m.value) THEN json_extract(m.value, '$.entry.session_id') END "
+            "FROM state_meta m WHERE m.key = ? || COALESCE(NULLIF(s.chat_id, ''), s.id)) AS receipt_target_id "
+            "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))",
+            (POLICY_PREFIX, POLICY_PREFIX, ids)).fetchall()
         pending = conn.execute(
             "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
             "WHERE target_session_id IN (SELECT value FROM json_each(?)) "
@@ -102,11 +108,16 @@ async def live_entries(authority, actor) -> list[LiveEntry]:
             live, row = authority.sessions.get(sid), rows.get(sid)
             if live is None or row is None:
                 continue  # retired during the read, or its row was deleted (``_handle``'s not_found)
-            if row.get('end_reason') == 'compression':
-                # A rotation's closed parent: its continuation child owns the conversation now. The
-                # rotation re-points the agent (and the route) without popping this mount, so an
-                # unfiltered feed keeps offering an id every mutate refuses (``session_superseded``,
-                # #143767). Deliberate and automatic ends stay listed: those are resumable.
+            if row.get('ended_at') is not None and (
+                    row.get('end_reason') == 'compression'
+                    or row.get('receipt_target_id') not in (None, sid)):
+                # The conversation continues in another session. A rotation — compression, or a
+                # ``session_reset`` / ``/new`` boundary — closes the parent, re-points the receipt
+                # (and the route) at the child and leaves this mount standing, so an unfiltered
+                # feed keeps offering an id every mutate refuses (``session_superseded``, #143767).
+                # Read the moved-on target rather than the reason string: the same shape comes out
+                # of every rotation, while an end nothing continues stays listed (those are
+                # resumable).
                 continue
             masked = _masked_pending(live, pending.get(sid, []))
             state = _execution_state(masked)

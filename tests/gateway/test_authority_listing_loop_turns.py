@@ -111,17 +111,50 @@ async def test_a_closed_unviewed_local_session_still_leaves_the_live_feed(owner)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
-async def test_a_compression_rotation_s_parent_leaves_the_live_feed(owner, method):
-    """A rotation closes the parent and continues the conversation in its child in one transaction:
-    the agent re-points itself and nobody pops the parent's live mount, so the feeds must drop the
-    ended parent themselves. Its route has moved on to the child, so resuming it is refused — the
-    picker must not offer it as live (#143767)."""
+@pytest.mark.parametrize('reason', ['compression', 'session_reset'])
+async def test_a_rotation_s_closed_parent_leaves_the_live_feed(owner, method, reason):
+    """A rotation closes the parent and continues the conversation in its child in one transaction,
+    re-pointing the receipt (and the route) at the child while nobody pops the parent's live mount:
+    the feeds must drop the ended parent themselves, or the picker offers an id every mutate refuses
+    (``session_superseded``, #143767). The nightly/``/new`` ``session_reset`` rotation produces the
+    identical shape, so the predicate is the moved-on target, never the reason string."""
+    import json
+    from hermes_state_local import POLICY_PREFIX
     parent, live_tail = owner.sids[0], owner.sids[1]
-    owner.db.end_session(parent, 'compression')
+    owner.db.set_meta(POLICY_PREFIX + parent,
+                      json.dumps({'session_id': parent, 'entry': {'session_id': live_tail}}))
+    owner.db.end_session(parent, reason)
     with owner.db._lock:  # newest, so session.list's 200-row window holds both
         owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
     ids = {row['id'] for row in await owner.listing(method)}
     assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_a_compression_parent_without_a_local_receipt_still_leaves_the_feed(owner, method):
+    """A messaging surface keeps no local receipt, so the moved-on target cannot be read there: the
+    compression reason is the fallback for that shape (its child owns the conversation either way)."""
+    parent, live_tail = owner.sids[0], owner.sids[1]
+    owner.db.end_session(parent, 'compression')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id IN (?,?)', (parent, live_tail))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert parent not in ids and live_tail in ids, method
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.list', 'session.active_list'])
+async def test_an_ended_session_with_no_successor_stays_listed(owner, method):
+    """The filter reads successors, not end reasons: a session that ended with nothing continuing it
+    (``tui_close``, a restart's ``agent_close``) is resumable and must stay in the feed — otherwise
+    the rotation fix would hide exactly the rows a picker exists for."""
+    ended = owner.sids[0]
+    owner.db.end_session(ended, 'tui_close')
+    with owner.db._lock:
+        owner.db._conn.execute('UPDATE sessions SET started_at = 9e9 WHERE id = ?', (ended,))
+    ids = {row['id'] for row in await owner.listing(method)}
+    assert ended in ids, method
 
 
 @pytest.mark.asyncio

@@ -1019,7 +1019,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             async with self._async_profile_scope_for_source(source):
                 return True, await plain_handler(event)
         if canonical in self._HM_CANONICAL_COMMANDS:
-            return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
+            async with self._async_profile_scope_for_source(source):
+                return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None
 
     def _hm_bundle_slash_rewrite(

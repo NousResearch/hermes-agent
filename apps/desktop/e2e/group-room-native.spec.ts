@@ -1,0 +1,298 @@
+/**
+ * Live evidence rig for Bot Mode group rooms: drives a gateway-owned
+ * (canonical) room and a legacy Desktop-driven room through working, settled
+ * and failure states and writes full-window screenshots plus DOM dumps.
+ *
+ * Verdicts are PROBE_RESULT console lines and JSON files next to the PNGs,
+ * not pass/fail: SHOT_DIR (default `<tmpdir>/group-room-native`) receives
+ * everything. Mock scripting (tests-js/scripts/mock-server.ts):
+ * E2E_SAY(<handle>)[line] replies, E2E_TOOL(<handle>)[terminal:cmd] runs a tool,
+ * E2E_FAIL(<handle>) answers HTTP 401; unscripted members `(pass)`.
+ */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { type MockServerOptions, startMockServer } from '../../../tests-js/scripts/mock-server'
+
+import { buildAppEnv, createSandbox, launchDesktop, type MockBackendFixture, waitForAppReady } from './fixtures'
+import { allowErrorBanners, expect, test } from './test'
+
+type Page = MockBackendFixture['page']
+
+const SHOT_DIR = process.env.SHOT_DIR || path.join(os.tmpdir(), 'group-room-native')
+const NL = String.fromCharCode(10)
+const MULTIPLEX = ['gateway:', '  multiplex_profiles: true', ''].join(NL)
+let fixture: MockBackendFixture | null = null
+
+fs.mkdirSync(SHOT_DIR, { recursive: true })
+
+function probe(label: string, data: unknown): void {
+  console.log(`PROBE_RESULT ${label} ${JSON.stringify(data)}`)
+}
+
+/**
+ * setupMockBackend whose .env carries the provider key. A routed profile reads keys only
+ * from its own .env, and the stock fixture's .env lacks the provider's
+ * `key_env` (OPENAI_API_KEY), so the gateway refuses every turn
+ * ("No API key for custom provider 'Mock'") and the app parks on onboarding.
+ */
+async function setupKeyedBackend(mockServer: MockServerOptions, multiplex: boolean): Promise<MockBackendFixture> {
+  const mock = await startMockServer(mockServer)
+  const sandbox = createSandbox('mock')
+  writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, multiplex ? MULTIPLEX : undefined)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
+  const { app, page } = await launchDesktop(buildAppEnv(sandbox))
+
+  return {
+    app, page, mock, mockUrl: mock.url, sandbox,
+    cleanup: async () => {
+      await app.close().catch(() => undefined)
+      await mock.close()
+      sandbox.cleanup()
+    }
+  }
+}
+
+async function sizeWindow(): Promise<void> {
+  const bounds = await fixture!.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => {
+    win.unmaximize()
+    win.setBounds({ x: 0, y: 0, width: 1400, height: 900 })
+
+    return win.getBounds()
+  }))
+
+  await fixture!.page.waitForTimeout(500)
+  probe('window', { bounds, viewport: await fixture!.page.evaluate(() => [window.innerWidth, window.innerHeight]) })
+}
+
+async function dumpState(page: Page, composerLabel: string) {
+  return page.evaluate(label => {
+    const box = document.querySelector(`[aria-label="${label}"]`)
+    let region: Element | null = box
+
+    while (region && !region.querySelector('header')) {
+      region = region.parentElement
+    }
+
+    const visibleLog = [...document.querySelectorAll('[role=log]')].find(el => (el as HTMLElement).offsetParent !== null)
+
+    return {
+      alerts: [...document.querySelectorAll('[role=alert]')].map(el => (el.textContent || '').trim()).filter(Boolean),
+      header: (region?.querySelector('header') as HTMLElement | null)?.innerText ?? null,
+      log: (document.querySelector('[role=log]') as HTMLElement | null)?.innerText ?? null,
+      visibleLog: (visibleLog as HTMLElement | undefined)?.innerText ?? null,
+      region: ((region as HTMLElement | null)?.innerText ?? '').slice(0, 6000),
+      tabs: [...document.querySelectorAll('[role=tab]')].map(el => `${(el.textContent || '').trim()}${el.getAttribute('aria-selected') === 'true' ? ' [selected]' : ''}`)
+    }
+  }, composerLabel)
+}
+
+async function capture(name: string, composerLabel: string, extra: Record<string, unknown> = {}): Promise<void> {
+  const page = fixture!.page
+  await page.evaluate(() => {
+    for (const viewport of document.querySelectorAll('[role=log], [data-radix-scroll-area-viewport]')) {
+      viewport.scrollTop = viewport.scrollHeight
+    }
+  })
+  await page.screenshot({ path: path.join(SHOT_DIR, `${name}.png`) })
+  const dump = { ...(await dumpState(page, composerLabel)), ...extra, prompts: fixture!.mock.receivedPrompts.length, held: fixture!.mock.heldCompletionCount() }
+  fs.writeFileSync(path.join(SHOT_DIR, `${name}.json`), JSON.stringify(dump, null, 2))
+  probe(name, { header: dump.header, log: dump.log, alerts: dump.alerts })
+}
+
+async function openBots(page: Page): Promise<void> {
+  const tab = page.getByRole('button', { name: 'Bots', exact: true }).or(page.getByRole('tab', { name: 'Bots', exact: true })).first()
+  await tab.click()
+  await expect(page.getByRole('button', { name: 'New bot or group chat' })).toBeVisible()
+}
+
+async function createAgent(page: Page, name: string, title: string): Promise<void> {
+  await page.getByRole('button', { name: 'New bot or group chat' }).click()
+  await page.getByRole('menuitem', { name: 'New Bot' }).click()
+
+  const dialog = page.getByRole('dialog', { name: 'New Bot' })
+  await dialog.getByPlaceholder('inbox-triage').fill(name)
+  await dialog.getByPlaceholder('Inbox Triage').fill(title)
+  await dialog.getByRole('button', { name: 'Create Bot' }).click()
+  await expect(dialog).toBeHidden({ timeout: 60_000 })
+  await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 60_000 })
+}
+
+async function createRoom(page: Page, bots: [string, string][], roomName: string): Promise<void> {
+  await openBots(page)
+
+  for (const [name, title] of bots) {
+    await createAgent(page, name, title)
+  }
+
+  // A late bot birth can foreground its own tab; return to Bots before the dialog.
+  await page.waitForTimeout(3000)
+  await openBots(page)
+  await page.getByRole('button', { name: 'New bot or group chat' }).click()
+  await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
+
+  const dialog = page.getByRole('dialog', { name: 'New Group Chat' })
+
+  for (const [, title] of bots) {
+    await dialog.getByText(title, { exact: true }).locator('xpath=ancestor::label').getByRole('checkbox').click()
+  }
+
+  await dialog.getByRole('textbox', { name: 'Group name' }).fill(roomName)
+  await dialog.getByRole('button', { name: `Create Group (${bots.length})` }).click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
+}
+
+/** Send once (retrying only until the composer takes the text), then report whether inference saw it. */
+async function send(page: Page, roomName: string, composerLabel: string, text: string): Promise<boolean> {
+  const composer = page.getByRole('textbox', { name: composerLabel, exact: true }).filter({ visible: true })
+
+  await expect(async () => {
+    const tab = page.getByRole('tab', { name: new RegExp(`^${roomName}`) }).first()
+
+    if (await tab.count()) {
+      await tab.click()
+    }
+
+    await expect(composer).toBeEnabled({ timeout: 5000 })
+    await composer.fill(text)
+    await composer.press('Enter')
+    await expect.poll(() => composer.evaluate(el => (el as HTMLTextAreaElement).value ?? el.textContent ?? ''), { timeout: 10_000 }).toBe('')
+  }).toPass({ timeout: 150_000 })
+
+  const delivered = await expect.poll(() => fixture!.mock.receivedPrompts.some(p => p.includes(text.slice(0, 24))), { timeout: 60_000 })
+    .toBe(true).then(() => true, () => false)
+
+  probe('send', { text: text.slice(0, 40), delivered })
+
+  return delivered
+}
+
+/** The room's visible text stops changing and no working line remains. */
+async function waitSettled(page: Page, composerLabel: string, timeoutMs = 90_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  let last = ''
+  let stableSince = Date.now()
+
+  while (Date.now() < deadline) {
+    const state = await dumpState(page, composerLabel)
+    const now = `${state.region}|${fixture!.mock.receivedPrompts.length}`
+
+    if (now !== last) {
+      last = now
+      stableSince = Date.now()
+    } else if (Date.now() - stableSince > 8000 && !/working|thinking|running/i.test(state.visibleLog ?? state.region)) {
+      return true
+    }
+
+    await page.waitForTimeout(1000)
+  }
+
+  return false
+}
+
+test.afterEach(async () => {
+  // Backend receipts (install stamp, member turns) die with the sandbox; keep a copy.
+  const logs = fixture && path.join(fixture.sandbox.hermesHome, 'logs')
+
+  if (logs && fs.existsSync(logs)) {
+    fs.cpSync(logs, path.join(SHOT_DIR, `logs-${test.info().title.split(':')[0].replace(/[^a-z0-9]+/gi, '-')}`), { recursive: true })
+  }
+
+  await fixture?.cleanup()
+  fixture = null
+})
+
+test('gateway-owned room: working, settled, failure', async () => {
+  test.setTimeout(600_000)
+  allowErrorBanners()
+  const sentinel = path.join(os.tmpdir(), `grn-release-${process.pid}-${Date.now()}`)
+  fixture = await setupKeyedBackend({ holdFirstCompletionContaining: 'SCOUT_42' }, true)
+  await waitForAppReady(fixture, 120_000)
+  await sizeWindow()
+  const page = fixture.page
+  const room = 'Builder, Critic, Scout'
+  const label = 'Group message'
+
+  await createRoom(page, [['builder', 'Builder'], ['critic', 'Critic'], ['scout', 'Scout']], room)
+  await expect(page.getByRole('textbox', { name: label, exact: true }).filter({ visible: true })).toBeVisible({ timeout: 60_000 })
+  await sizeWindow()
+
+  // SCOUT_42 only exists in Scout's tool OUTPUT, so the hold lands on Scout's post-tool completion.
+  await send(page, room, label, [
+    'Kickoff ROOM_NATIVE_ONE',
+    'E2E_SAY(builder)[Scaffold is up; {at}scout please check the build logs.]',
+    `E2E_TOOL(scout)[terminal:echo SCOUT_$((40+2)); until test -f ${sentinel}; do sleep 0.5; done]`,
+    'E2E_SAY(scout)[Build logs are clean.]'
+  ].join(' '))
+
+  // Tool still running (sentinel absent): the 2 s poll should show tool + elapsed.
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('You are @scout')).length, { timeout: 90_000 }).toBeGreaterThan(0)
+  await page.waitForTimeout(6000)
+  await capture('01-working', label, { phase: 'scout terminal tool running' })
+
+  fs.writeFileSync(sentinel, 'go')
+  const held = await expect.poll(() => fixture!.mock.heldCompletionCount(), { timeout: 60_000 }).toBe(1).then(() => true, () => false)
+  await page.waitForTimeout(5000)
+  await capture('01b-working-held', label, { phase: 'scout post-tool completion held', heldReached: held })
+
+  fixture.mock.releaseHeldStream()
+  const settled = await waitSettled(page, label)
+  await capture('02-settled', label, { settled })
+
+  await send(page, room, label, 'Second round ROOM_NATIVE_TWO E2E_FAIL(critic) E2E_SAY(builder)[Noted, nothing more from me.]')
+  const failSettled = await waitSettled(page, label, 180_000)
+  await capture('03-failure', label, { settled: failSettled })
+
+  const menu = page.getByRole('button', { name: /more|actions|options/i }).filter({ visible: true }).first()
+
+  if (await menu.count()) {
+    await menu.click().catch(() => undefined)
+    await page.waitForTimeout(1000)
+    await capture('04-header-menu', label, { menu: true })
+    await page.keyboard.press('Escape')
+  } else {
+    probe('04-header-menu', { skipped: 'no visible button named more/actions/options' })
+  }
+
+  fs.rmSync(sentinel, { force: true })
+})
+
+test('legacy Desktop-driven room: working and settled', async () => {
+  test.setTimeout(400_000)
+  allowErrorBanners()
+  // group-turn-integrity's shape (no multiplex), plus the provider key: on trees where the
+  // gateway always owns rooms, members otherwise fail with "No API key for custom provider".
+  fixture = await setupKeyedBackend({ holdFirstCompletionContaining: 'LEGACY_42' }, false)
+  await waitForAppReady(fixture, 120_000)
+  await sizeWindow()
+  const page = fixture.page
+  const room = 'Programmer, Reviewer'
+  const legacyLabel = `Message ${room}`
+
+  await createRoom(page, [['programmer', 'Programmer'], ['reviewer', 'Reviewer']], room)
+  // Trees whose gateway always answers groups.capabilities with a driver build a
+  // canonical room here even without multiplexing; record which one appeared.
+  const legacy = page.getByRole('textbox', { name: legacyLabel, exact: true }).filter({ visible: true })
+  const canonical = page.getByRole('textbox', { name: 'Group message', exact: true }).filter({ visible: true })
+  await expect(legacy.or(canonical).first()).toBeVisible({ timeout: 60_000 })
+  const roomKind = (await legacy.count()) ? 'legacy' : 'canonical'
+  const label = roomKind === 'legacy' ? legacyLabel : 'Group message'
+  probe('legacy-room-kind', { roomKind, label })
+  await sizeWindow()
+
+  await send(page, room, label, [
+    'Legacy kickoff ROOM_LEGACY_ONE',
+    'E2E_TOOL(programmer)[terminal:echo LEGACY_$((6*7))]',
+    'E2E_SAY(programmer)[Patch is ready for review.]'
+  ].join(' '))
+
+  const held = await expect.poll(() => fixture!.mock.heldCompletionCount(), { timeout: 90_000 }).toBe(1).then(() => true, () => false)
+  await page.waitForTimeout(5000)
+  await capture('06-legacy-working', label, { heldReached: held, roomKind })
+
+  fixture.mock.releaseHeldStream()
+  const settled = await waitSettled(page, label)
+  await capture('05-legacy-settled', label, { settled, roomKind })
+})

@@ -31,7 +31,7 @@ def run(
 ) -> None:
     # First, before anything can spawn: a session of our own, so the runner's
     # killpg(pid) takes out every process this file starts and nothing else.
-    os.setsid()
+    os.setsid()  # windows-footgun: ok — the fork server is Linux-only
     fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.dup2(fd, 1)
     os.dup2(fd, 2)

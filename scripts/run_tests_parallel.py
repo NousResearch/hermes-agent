@@ -631,7 +631,8 @@ _FORK_PRELOAD = (
     "asyncio", "email.message", "importlib.metadata", "psutil", "pygments",
     "pydantic", "httpx", "urllib3", "rich", "ruamel.yaml",
 )
-_fork_server: "_ForkServer | None" = None  # set by main() when enabled
+_fork_server: _ForkServer | None = None  # started by _fork_server_for_run() on first use
+_fork_server_checked = False
 # Process.start() is not thread-safe, and it also polls every live child
 # (multiprocessing.process._cleanup). A child's exit status is 8 bytes the fork
 # server writes once: if that poll and the owning thread's join() read it at the
@@ -659,7 +660,7 @@ def _start_fork_server(repo_root: Path) -> _ForkServer:
     # interpreter's own entries (never this script's directory).
     base = json.loads(subprocess.run(
         [sys.executable, "-c", "import json, sys; print(json.dumps(sys.path[1:]))"],
-        cwd=repo_root, capture_output=True, text=True, check=True,
+        cwd=repo_root, capture_output=True, text=True, check=True, timeout=60,
     ).stdout)
     import pytest
 
@@ -675,6 +676,22 @@ def _forked_exit_status(proc, timeout: float | None) -> int | None:
     with _fork_lock:
         proc.join()
         return proc.exitcode
+
+
+def _fork_server_for_run(repo_root: Path) -> _ForkServer | None:
+    """The run's fork server when HERMES_TEST_FORKSERVER=1 on Linux, started by the first file.
+
+    The first file calls this before it copies os.environ, so popping the knob
+    here still keeps it out of every test's environment.
+    """
+    global _fork_server, _fork_server_checked
+    with _fork_lock:
+        if not _fork_server_checked:
+            _fork_server_checked = True
+            if os.environ.pop("HERMES_TEST_FORKSERVER", "") == "1" and sys.platform == "linux":
+                _fork_server = _start_fork_server(repo_root)
+                print("  fork server: on (third-party imports shared; each file still a fresh process)", flush=True)
+        return _fork_server
 
 
 class _ForkedPytest:
@@ -701,7 +718,7 @@ class _ForkedPytest:
             raise subprocess.TimeoutExpired(str(self._out), timeout or 0)
         self.returncode = rc
         try:
-            with open(self._out, encoding="utf-8", errors="replace") as fh:
+            with open(self._out, encoding="utf-8-sig", errors="replace") as fh:
                 return fh.read(), None
         finally:
             os.unlink(self._out)
@@ -723,6 +740,7 @@ def _run_one_file_once(
 ) -> tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    fork_server = _fork_server_for_run(repo_root)
 
     # Give this subprocess its own pytest temp root.
     #
@@ -749,8 +767,8 @@ def _run_one_file_once(
 
     subproc_start = time.monotonic()
     pgid: int | None = None
-    if _fork_server is not None:
-        proc = _ForkedPytest(_fork_server, file, pytest_args, repo_root, env)
+    if fork_server is not None:
+        proc = _ForkedPytest(fork_server, file, pytest_args, repo_root, env)
         # The child's first act is setsid(), so its pid is its group. Never ask
         # getpgid here: until setsid runs it reports the fork server's group,
         # which is the runner's own.
@@ -1609,7 +1627,6 @@ def main() -> int:
     # Read once, here: test processes inherit this env, and a runner they start (the
     # runner's own probe tests) must run its whole file set, not "its" slice of it.
     os.environ.pop("HERMES_TEST_SLICE", None)
-    use_fork_server = os.environ.pop("HERMES_TEST_FORKSERVER", "") == "1" and sys.platform == "linux"
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
@@ -1755,10 +1772,6 @@ def main() -> int:
         sys.path.insert(0, str(repo_root))
     _sweep_killed_run_roots(_runner_scratch_root())
 
-    if use_fork_server:
-        global _fork_server
-        _fork_server = _start_fork_server(repo_root)
-        print("  fork server: on (third-party imports shared; each file still a fresh process)", flush=True)
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         # Duration cache for the timeout scaler: known-slow files get
         # proportional headroom instead of a false timeout-kill under

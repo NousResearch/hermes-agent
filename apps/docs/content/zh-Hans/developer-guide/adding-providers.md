@@ -81,7 +81,7 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 5. `agent/auxiliary_client.py`
 6. `agent/model_metadata.py`
 7. 测试
-8. `website/docs/` 下的用户文档
+8. `apps/docs/content/zh-Hans/` 下的用户文档
 
 :::tip
 `hermes_cli/setup.py` **无需**修改。setup 向导将 provider/model 选择委托给 `main.py` 中的 `select_provider_and_model()`——在那里添加的任何 provider 都会自动出现在 `hermes setup` 中。
@@ -373,9 +373,9 @@ python hermes setup
 
 如果该 provider 打算作为一流选项发布，也更新用户文档：
 
-- `website/docs/getting-started/quickstart.md`
-- `website/docs/user-guide/configuration.md`
-- `website/docs/reference/environment-variables.md`
+- `apps/docs/content/zh-Hans/getting-started/quickstart.mdx`
+- `apps/docs/content/zh-Hans/user-guide/configuration.mdx`
+- `apps/docs/content/zh-Hans/reference/environment-variables.md`
 
 开发者可以完美地接线 provider，但仍然让用户无法发现所需的环境变量或 setup 流程。
 

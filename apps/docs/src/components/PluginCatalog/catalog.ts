@@ -115,7 +115,7 @@ export const TIER_CONFIG: Record<
 
 // Browse taxonomy. Order here is the order of the filter pills and of the
 // grouped sections; keep it in sync with CATALOG_CATEGORIES in
-// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
+// hermes_cli/plugin_catalog.py and apps/docs/scripts/extract-plugins.py.
 export const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
   desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
   memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },

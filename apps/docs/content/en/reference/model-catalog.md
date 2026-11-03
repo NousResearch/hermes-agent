@@ -16,7 +16,7 @@ When the manifest is unreachable (offline, network blocked, hosting failure), He
 https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
 ```
 
-Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pages pipeline. The source of truth lives in the repo at `website/static/api/model-catalog.json`.
+Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pages pipeline. The canonical source lives at `apps/docs/public/api/model-catalog.json`. Keep `website/static/api/model-catalog.json` byte-identical for released clients that still fetch its raw GitHub URL.
 
 ## Schema
 
@@ -120,6 +120,6 @@ Maintainers:
 python scripts/build_model_catalog.py
 ```
 
-Then PR the resulting change to `website/static/api/model-catalog.json` to `main`. The docs site auto-deploys on merge and the new manifest is live within a few minutes.
+Then PR both generated copies, `apps/docs/public/api/model-catalog.json` and `website/static/api/model-catalog.json`, to `main`. The docs site auto-deploys on merge and the new manifest is live within a few minutes.
 
 You can also hand-edit the JSON directly for fine-grained metadata changes that don't belong in the in-repo snapshot — the generator script is a convenience, not the single source of truth.

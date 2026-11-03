@@ -1,6 +1,9 @@
 """Opt-in cron subscription preflight; no live provider calls."""
 from datetime import UTC, datetime, timedelta
 
+import pytest
+from agent.credential_pool import CredentialPool, PooledCredential
+
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from cron.capacity_preflight import select_capacity_route, _usage_snapshot
 from cron.scheduler import _CronJobConfig, _resolve_job_runtime
@@ -24,6 +27,94 @@ def test_cron_resolver_preflights_only_opted_in_unpinned_job():
             assert (runtime["provider"], model) == (expected, "gpt-6-sol" if expected == "openai-codex" else "claude-opus-5")
         assert fetch.call_count == 2
 
+
+
+@pytest.mark.parametrize("primary, fallback", [("anthropic", "openai-codex"), ("openai-codex", "anthropic")])
+def test_single_credential_pools_route_selected_accounts(primary, fallback):
+    models = {"anthropic": "claude-opus-5", "openai-codex": "gpt-6-sol"}
+    pools = {
+        provider: CredentialPool(provider, [PooledCredential(
+            provider=provider, id=provider, label="test account", auth_type="oauth",
+            priority=0, source="manual", access_token=f"{provider}-token")])
+        for provider in models
+    }
+    jc = _CronJobConfig(cfg={"cron": {"capacity_preflight": {"enabled": True}},
+                             "fallback_providers": [{"provider": fallback, "model": models[fallback]}]},
+                        model=models[primary], model_cfg={}, cron_default_provider=primary)
+
+    def resolve(**kwargs):
+        provider = kwargs["requested"]
+        selected = pools[provider].select(model=kwargs["target_model"])
+        assert selected is not None
+        return {"provider": provider, "api_key": selected.runtime_api_key, "base_url": ""}
+
+    usage = {primary: snap(primary, window("Current week" if primary == "anthropic" else "Weekly", 98)),
+             fallback: snap(fallback, window("Current session" if fallback == "anthropic" else "Session", 20),
+                            window("Current week" if fallback == "anthropic" else "Weekly", 20))}
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("agent.credential_pool.load_pool", side_effect=lambda provider: pools[provider]), \
+         patch("cron.capacity_preflight._usage_snapshot", side_effect=lambda runtime: usage[runtime["provider"]]) as fetch:
+        runtime, model = _resolve_job_runtime({}, "job", jc)
+    assert (runtime["provider"], model) == (fallback, models[fallback])
+    assert fetch.call_count == 2
+
+
+def test_single_pool_entry_with_different_runtime_key_does_not_preflight():
+    pool = CredentialPool("anthropic", [PooledCredential(
+        provider="anthropic", id="other", label="other", auth_type="oauth",
+        priority=0, source="manual", access_token="selected-token")])
+    jc = _CronJobConfig(cfg={"cron": {"capacity_preflight": {"enabled": True}},
+                             "fallback_providers": [{"provider": "openai-codex", "model": "gpt-6-sol"}]},
+                        model="claude-opus-5", model_cfg={}, cron_default_provider="")
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+               return_value={"provider": "anthropic", "api_key": "ambient-token"}), \
+         patch("agent.credential_pool.load_pool", return_value=pool), \
+         patch("cron.capacity_preflight._usage_snapshot") as fetch:
+        runtime, model = _resolve_job_runtime({}, "job", jc)
+    assert (runtime["provider"], model) == ("anthropic", "claude-opus-5")
+    fetch.assert_not_called()
+
+
+def test_single_fallback_pool_entry_with_different_runtime_key_is_rejected():
+    pools = {provider: CredentialPool(provider, [PooledCredential(
+        provider=provider, id=provider, label="selected", auth_type="oauth", priority=0,
+        source="manual", access_token=f"{provider}-token")])
+        for provider in ("anthropic", "openai-codex")}
+    jc = _CronJobConfig(cfg={"cron": {"capacity_preflight": {"enabled": True}},
+                             "fallback_providers": [{"provider": "openai-codex", "model": "gpt-6-sol"}]},
+                        model="claude-opus-5", model_cfg={}, cron_default_provider="anthropic")
+    def resolve(**kwargs):
+        provider = kwargs["requested"]
+        key = "ambient-token" if provider == "openai-codex" else pools[provider].entries()[0].runtime_api_key
+        return {"provider": provider, "api_key": key}
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("agent.credential_pool.load_pool", side_effect=lambda provider: pools[provider]), \
+         patch("cron.capacity_preflight._usage_snapshot", return_value=snap("anthropic", window("Current week", 99))) as fetch:
+        runtime, model = _resolve_job_runtime({}, "job", jc)
+    assert (runtime["provider"], model) == ("anthropic", "claude-opus-5")
+    assert fetch.call_count == 1
+
+
+def test_multi_account_fallback_remains_conservative_even_when_runtime_key_matches():
+    primary = CredentialPool("anthropic", [PooledCredential(
+        provider="anthropic", id="primary", label="primary", auth_type="oauth",
+        priority=0, source="manual", access_token="primary-token")])
+    codex = CredentialPool("openai-codex", [PooledCredential(
+        provider="openai-codex", id=str(n), label=str(n), auth_type="oauth",
+        priority=n, source="manual", access_token=f"codex-{n}") for n in range(2)])
+    pools = {"anthropic": primary, "openai-codex": codex}
+    jc = _CronJobConfig(cfg={"cron": {"capacity_preflight": {"enabled": True}},
+                             "fallback_providers": [{"provider": "openai-codex", "model": "gpt-6-sol"}]},
+                        model="claude-opus-5", model_cfg={}, cron_default_provider="anthropic")
+    def resolve(**kwargs):
+        provider = kwargs["requested"]
+        return {"provider": provider, "api_key": pools[provider].entries()[0].runtime_api_key}
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("agent.credential_pool.load_pool", side_effect=lambda provider: pools[provider]), \
+         patch("cron.capacity_preflight._usage_snapshot", return_value=snap("anthropic", window("Current week", 99))) as fetch:
+        runtime, model = _resolve_job_runtime({}, "job", jc)
+    assert (runtime["provider"], model) == ("anthropic", "claude-opus-5")
+    assert fetch.call_count == 1
 
 
 def test_pooled_primary_credential_does_not_route_on_ambient_snapshot():

@@ -1737,6 +1737,19 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
+def _capacity_pool_account_unambiguous(runtime: dict, load_pool) -> bool:
+    """A singleton pool can only serve this runtime account if its key matches.
+
+    Runtime resolution selects from the pool, but can also fall back to an ambient
+    credential; do not attribute that credential's usage to a different pool entry.
+    Multiple entries can rotate after resolution, so remain conservative there.
+    """
+    entries = load_pool(runtime.get("provider") or "").entries()
+    if not entries:
+        return True
+    return len(entries) == 1 and bool(runtime.get("api_key")) and runtime["api_key"] == entries[0].runtime_api_key
+
+
 def _capacity_preflight_route(job: dict, jc: _CronJobConfig, runtime: dict, model: str) -> tuple[dict, str]:
     """Opt-in, cron-only routing before AIAgent exists; no config/session mutation."""
     settings = ((jc.cfg.get("cron") or {}).get("capacity_preflight") or {}) if isinstance(jc.cfg, dict) else {}
@@ -1751,9 +1764,9 @@ def _capacity_preflight_route(job: dict, jc: _CronJobConfig, runtime: dict, mode
         from cron.capacity_preflight import preflight_cron_route
         from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key, pre_agent_fallback_notice
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        # The agent may select a different account from its pool after setup.
-        # Never apply an ambient credential's usage to that unknown account.
-        if load_pool(runtime.get("provider") or "").entries():
+        # A singleton pool is safe only when resolution selected that exact key.
+        # Multiple accounts may rotate after setup; never infer their usage.
+        if not _capacity_pool_account_unambiguous(runtime, load_pool):
             return runtime, model
 
         def resolve(entry):
@@ -1764,7 +1777,7 @@ def _capacity_preflight_route(job: dict, jc: _CronJobConfig, runtime: dict, mode
                 kw["explicit_api_key"] = key
             candidate = resolve_runtime_provider(**kw)
             candidate["provider"] = effective_runtime_provider(entry, candidate)
-            if load_pool(candidate.get("provider") or "").entries():
+            if not _capacity_pool_account_unambiguous(candidate, load_pool):
                 raise ValueError("candidate account selected by credential pool is unknown")
             return candidate
 

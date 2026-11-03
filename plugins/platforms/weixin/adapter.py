@@ -1173,9 +1173,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         re-queueing can never extend a message's life past its own TTL. ``ttl`` bounds the hold:
         ``math.inf`` (a turn's final reply — the result the user is owed, valuable however much
         later the peer returns) never expires; anything else defaults to the intermediate-update
-        TTL. Text already pending is never queued twice: a refused reply gets retried many times
-        over, and one copy per attempt would fill the queue with the same text and flush it all
-        at once."""
+        TTL. Repeated intermediate updates with the same text share a queue entry; distinct final
+        replies must not be collapsed merely because their text matches."""
         queue = self._held_outbound.setdefault(chat_id, [])
         expires_after = self._held_outbound_ttl_seconds if ttl is None else ttl
         now = time.time()
@@ -1184,16 +1183,26 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.warning("[%s] %d held outbound message(s) for %s expired after their TTL without an inbound",
                            self.name, len(queue) - len(keep), _safe_id(chat_id))
         queue[:] = keep
-        if any(pending == chunks for _, pending, _ in queue):
+        if not math.isinf(expires_after) and any(
+            pending == chunks and not math.isinf(held_ttl) for _, pending, held_ttl in queue
+        ):
             logger.warning("[%s] %s already has this text held; not queueing a duplicate copy",
                            self.name, _safe_id(chat_id))
             return len(queue)
         queue.append((now if enqueued_at is None else enqueued_at, list(chunks), expires_after))
-        overflow = len(queue) - self._held_outbound_max
+        # Final replies do not consume the bounded intermediate-message allowance.
+        overflow = sum(not math.isinf(entry[2]) for entry in queue) - self._held_outbound_max
         if overflow > 0:
-            del queue[:overflow]
-            logger.warning("[%s] held outbound queue for %s is over capacity (%d); dropped the %d oldest message(s)",
-                           self.name, _safe_id(chat_id), self._held_outbound_max, overflow)
+            retained = []
+            dropped = 0
+            for entry in queue:
+                if dropped < overflow and not math.isinf(entry[2]):
+                    dropped += 1
+                else:
+                    retained.append(entry)
+            queue[:] = retained
+            logger.warning("[%s] held intermediate queue for %s is over capacity (%d); dropped the %d oldest intermediate message(s)",
+                           self.name, _safe_id(chat_id), self._held_outbound_max, dropped)
         return len(queue)
 
     async def _flush_held_outbound(self, chat_id: str) -> None:

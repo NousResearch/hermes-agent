@@ -3,10 +3,12 @@
 iLink refuses bot-initiated sends once the peer's reply window has closed (``ret=-2 prepare
 failed``). The adapter must hold the undelivered chunks per peer and flush them on that peer's
 next inbound instead of discarding the reply (#135921), never duplicating a chunk the peer
-already saw, and never letting the hold queue outlive ``held_outbound_ttl_seconds``.
+already saw, and never letting an intermediate hold outlive ``held_outbound_ttl_seconds``.
+Final replies use an infinite TTL and do not count toward the intermediate queue limit.
 """
 
 import asyncio
+import math
 import time
 from typing import Optional
 from unittest.mock import AsyncMock, patch
@@ -140,6 +142,46 @@ class TestWeixinHeldOutbound:
 
         assert (first, second, third) == (1, 1, 2)
         assert [chunks for _, chunks, _ in adapter._held_outbound["wxid_test123"]] == [["same text"], ["other text"]]
+
+    def test_final_replies_survive_intermediate_queue_capacity(self):
+        adapter = _make_adapter()
+        adapter._held_outbound_max = 2
+        peer = "wxid_test123"
+
+        adapter._hold_outbound_text(peer, ["final A"], ttl=math.inf)
+        adapter._hold_outbound_text(peer, ["intermediate"], ttl=30)
+        adapter._hold_outbound_text(peer, ["final B"], ttl=math.inf)
+        adapter._hold_outbound_text(peer, ["final C"], ttl=math.inf)
+
+        assert [chunks for _, chunks, _ in adapter._held_outbound[peer]] == [
+            ["final A"], ["intermediate"], ["final B"], ["final C"]
+        ]
+
+    def test_new_intermediate_is_held_when_finals_exceed_capacity(self):
+        adapter = _make_adapter()
+        adapter._held_outbound_max = 2
+        peer = "wxid_test123"
+        for text in ("final A", "final B", "final C"):
+            adapter._hold_outbound_text(peer, [text], ttl=math.inf)
+
+        adapter._hold_outbound_text(peer, ["new intermediate"], ttl=30)
+
+        assert [chunks for _, chunks, _ in adapter._held_outbound[peer]] == [
+            ["final A"], ["final B"], ["final C"], ["new intermediate"]
+        ]
+
+    def test_separate_identical_final_replies_flush_twice(self):
+        adapter = _connected_adapter()
+        adapter._send_chunk_delay_seconds = 0
+        peer = "wxid_test123"
+        adapter._hold_outbound_text(peer, ["same final"], ttl=math.inf)
+        adapter._hold_outbound_text(peer, ["same final"], ttl=math.inf)
+        bridge = _FakeILinkBridge(window_open=True)
+
+        with patch("plugins.platforms.weixin.adapter._send_message", new=bridge):
+            asyncio.run(adapter._flush_held_outbound(peer))
+
+        assert bridge.texts == ["same final", "same final"]
 
 
 class TestWeixinHeldOutboundTimeline:

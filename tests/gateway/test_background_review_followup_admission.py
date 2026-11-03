@@ -674,14 +674,21 @@ def test_goal_clear_and_empty_promotion_keep_overflow_fenced_and_visible(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "fast_path", ["photo_burst", "telegram_grace", "max_interrupt_depth"]
+    "fast_path",
+    [
+        "photo_burst",
+        "telegram_grace",
+        "max_interrupt_depth",
+        "max_interrupt_depth_eventless",
+    ],
 )
 async def test_busy_fast_path_merges_publish_the_followup_fence(monkeypatch, fast_path):
-    """Every remaining direct pending-slot write queues the next live turn too.
+    """Every remaining pending-slot write queues the next live turn too.
 
-    The PRIORITY busy fast path and the interrupt-depth cap write the adapter's pending slot
-    directly, so without the shared fence a review sampling "no follow-up" a moment earlier still
-    publishes its full-transcript request.
+    The PRIORITY busy fast path and the interrupt-depth cap (``_requeue_at_depth_cap``, which
+    also parks an eventless leftover /steer as a real turn at the FIFO head) put the next turn in
+    the adapter's pending slot, so without the shared fence a review sampling "no follow-up" a
+    moment earlier still publishes its full-transcript request.
     """
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(
@@ -713,6 +720,7 @@ async def test_busy_fast_path_merges_publish_the_followup_fence(monkeypatch, fas
         )
     else:
         event = _event(message_type=MessageType.TEXT)
+        pending_event = None if fast_path.endswith("_eventless") else event
         turn_ctx = types.SimpleNamespace(
             source=event.source,
             session_id="session-id",
@@ -728,11 +736,15 @@ async def test_busy_fast_path_merges_publish_the_followup_fence(monkeypatch, fas
             turn_ctx,
             adapter,
             "queued text",
-            event,
+            pending_event,
             "response",
             {"interrupted": True},
             None,
         ) == {"final_response": "response", "messages": []}
+        if pending_event is None:
+            # Parked as a real (non-internal) turn carrying the leftover text.
+            event = adapter._pending_messages[session_key]
+            assert event.text == "queued text" and not event.internal
 
     assert adapter._pending_messages[session_key] is event
     assert fenced_under_admission == [True]

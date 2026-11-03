@@ -252,6 +252,90 @@ async def test_an_unsettled_producer_turn_reports_failure_and_releases_its_revie
     assert sum("released without delivery" in line for line in lines) == 1, caplog.text
 
 
+def _register_post_delivery(authority, monkeypatch, fired):
+    """The real ``_hmwa_prepare_turn`` registers the turn's review-notice release on the delivery
+    adapter under the turn's key (``run_turn_runner``); the stand-in registers a recorder there."""
+    runner = authority.runner
+    inner = runner._hmwa_prepare_turn
+
+    async def prepare(
+        event, source, session_entry, session_key, quick_key, run_generation
+    ):
+        runner._delivery_adapter_for(source).register_post_delivery_callback(
+            session_key, lambda: fired.append(event.text), generation=run_generation
+        )
+        return await inner(
+            event, source, session_entry, session_key, quick_key, run_generation
+        )
+
+    monkeypatch.setattr(runner, "_hmwa_prepare_turn", prepare)
+
+
+@pytest.mark.asyncio
+async def test_an_unsettled_producer_turn_runs_its_post_delivery_slot_once_then_releases_its_review(
+    tmp_path, monkeypatch, caplog
+):
+    """The drain's unsettled path runs the turn's post-delivery slot (the release that flushes a
+    held review notice, a deferred verdict) exactly once, as an adapter task's finally would, and
+    the review token is released ``turn_unsettled`` with no spawn: nothing was delivered."""
+    monkeypatch.setattr(recovery, "settle_with_retry", _unsettled)
+    timeline, turns, fired = [], {}, []
+    authority, ref, _row = await _queued_producer_row(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    _register_post_delivery(authority, monkeypatch, fired)
+    with caplog.at_level("INFO"):
+        sid = await _drained(authority, ref, turns, timeline, status="unknown")
+    await async_wait_until(
+        lambda: _completions(timeline, "one") == [ProcessingOutcome.FAILURE], timeout=10
+    )
+
+    assert fired == ["one"]
+    (adapter,) = authority.runner.adapters.values()
+    assert adapter._post_delivery_callbacks == {}
+    assert getattr(authority, "post_delivery", {}) == {}
+    assert ("spawn", sid) not in timeline
+    assert authority.producer_turns == {}
+    assert getattr(authority, "review_completions", {}) == {}
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_TURN_UNSETTLED in record.getMessage()
+    ]
+    assert sum("released without delivery" in line for line in lines) == 1, caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_post_delivery_slot_that_raises_does_not_skip_the_unsettled_review_release(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(recovery, "settle_with_retry", _unsettled)
+
+    async def exploding_fire(_authority, _admission_id):
+        raise RuntimeError("post-delivery slot exploded")
+
+    monkeypatch.setattr(ingress_module, "fire_post_delivery", exploding_fire)
+    timeline, turns = [], {}
+    authority, ref, _row = await _queued_producer_row(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    with caplog.at_level("INFO"):
+        sid = await _drained(authority, ref, turns, timeline, status="unknown")
+    await async_wait_until(
+        lambda: _completions(timeline, "one") == [ProcessingOutcome.FAILURE], timeout=10
+    )
+
+    assert ("spawn", sid) not in timeline
+    assert authority.producer_turns == {}
+    assert getattr(authority, "review_completions", {}) == {}
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_TURN_UNSETTLED in record.getMessage()
+    ]
+    assert sum("released without delivery" in line for line in lines) == 1, caplog.text
+
+
 @pytest.mark.asyncio
 async def test_a_producer_drop_that_raises_does_not_skip_the_unsettled_review_release(
     tmp_path, monkeypatch, caplog

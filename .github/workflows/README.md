@@ -273,7 +273,7 @@ When a new job joins the required set, bump the version here and in the
 | E2E suites | off | off | on | on |
 | PR-only jobs | on | skip | skip | skip |
 | Gate | lenient | lenient | lenient (strict with `-f release=true`) | strict |
-| Cancelled by a newer push | yes | orchestrator no; `ref`-keyed children (`tests.yml`, `lint.yml`, …) can be | no | no (`run_id` group) |
+| Cancelled by a newer push | yes | orchestrator no; `ref`-keyed children (`tests.yml`, `lint.yml`, …) can be | orchestrator no; unpinned children can be on the same branch, even with `release=true` | no (`run_id` group) |
 | Commit tested | PR merge ref | `main` head | dispatched ref | claim commit via `commit` |
 
 ### Triggering CI by hand

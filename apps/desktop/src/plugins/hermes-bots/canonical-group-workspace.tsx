@@ -7,6 +7,7 @@ import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, pub
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { markRoomLead } from './canonical-group-lead'
 import { forgetCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -239,7 +240,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <CanonicalGroupHeader busy={busy} canStop={!!driver} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
         onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
-        room={state?.room} statuses={statuses} working={working} />
+        room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} working={working} />
       {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}
         <Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="xs" variant="ghost">{labels.refresh}</Button></div>}
       {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}

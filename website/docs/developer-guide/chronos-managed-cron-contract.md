@@ -151,7 +151,7 @@ Gateway unreachable from hop 1 (scale-to-zero wake still booting, restart
 window, api_server disabled) → the dashboard returns **503** and NAS retries
 (non-2xx = retryable, below); the store CAS de-dupes the eventual double fire.
 There is deliberately no in-dashboard execution fallback. The verifier is
-`plugins/cron/chronos/verify.py`.
+`plugins/cron_providers/chronos/verify.py`.
 
 - **Auth:** `Authorization: Bearer <NAS-minted JWT>`. The agent verifies:
   - signature against the NAS JWKS (`cron.chronos.nas_jwks_url`),
@@ -218,6 +218,16 @@ credentials. For hosted agents NAS sets these at provision time:
 | `cron.chronos.callback_url` | the agent's own public base URL for NAS→agent fires |
 | `cron.chronos.expected_audience` | this agent's JWT `aud` (`agent:{instance_id}`) |
 | `cron.chronos.nas_jwks_url` | NAS JWKS for verifying the fire JWT |
+
+NAS writes these into the **root** Hermes home's `config.yaml` only
+(`HERMES_HOME=/opt/data` on hosted agents) and checks them there. They describe
+the machine, not a profile, so arming and both fire verifiers read every
+`cron.chronos.*` key from the root config for every profile, whether a request
+runs in a multiplexed `/p/<profile>/` scope or the process was launched as a
+profile (`plugins/cron_providers/chronos/settings.py`). A named profile's own
+copy, taken when it was cloned or imported (possibly from another agent, or
+before a host move), is ignored. `cron.provider` is still read from the active
+profile.
 
 If `callback_url` / `portal_url` is blank or the agent has no Nous login,
 `is_available()` returns False and the resolver falls back to the built-in

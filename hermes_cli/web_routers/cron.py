@@ -821,7 +821,7 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    # Same launch-home settings the gateway re-verifies with; never the job's profile config.
+    # Same root-config settings the gateway re-verifies with; never a profile's config.
     settings = await asyncio.to_thread(fire_verification_settings)
     claims = get_fire_verifier()(token=token, **settings)
     if claims is None:

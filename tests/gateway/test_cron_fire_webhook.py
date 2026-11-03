@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from tests.chronos_fixtures import ROOT_CHRONOS, enter_stale_profile
 
 _MOD = "gateway.platforms.api_server"
 
@@ -288,6 +289,36 @@ async def test_crashing_verifier_fails_closed_401(adapter, monkeypatch):
 
     await asyncio.sleep(0.05)
     assert spy.fired == []
+
+
+@pytest.mark.asyncio
+async def test_profile_gateway_verifies_fires_against_the_root_chronos_keys(adapter, monkeypatch, tmp_path):
+    """A gateway launched as a profile whose config.yaml holds another agent's Chronos keys must
+    check THIS machine's audience, JWKS and issuer, which NAS seeds into the root config only."""
+    enter_stale_profile(tmp_path, monkeypatch)
+    seen = {}
+
+    def recording_verifier(**kw):  # records what it was asked to check, then rejects (None)
+        seen.update(kw)
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: recording_verifier,
+    )
+
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/cron/fire",
+                              headers={"Authorization": "Bearer tok"},
+                              json={"job_id": "abc123"})
+        assert resp.status == 401
+
+    assert seen == {
+        "token": "tok",
+        "expected_audience": ROOT_CHRONOS["expected_audience"],
+        "jwks_or_key": ROOT_CHRONOS["nas_jwks_url"],
+        "issuer": ROOT_CHRONOS["portal_url"],
+    }
 
 
 @pytest.mark.asyncio

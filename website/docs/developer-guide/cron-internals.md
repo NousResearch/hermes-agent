@@ -304,7 +304,8 @@ create/update a cron job
     one-shot
 ```
 
-Config (all non-secret; on hosted agents Nous sets these at provision time):
+Config (all non-secret; on hosted agents Nous sets these at provision time, in the root
+Hermes home's `config.yaml`, and every profile reads the `cron.chronos.*` keys from there):
 
 | key | meaning |
 |---|---|

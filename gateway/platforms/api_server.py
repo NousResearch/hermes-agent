@@ -3463,7 +3463,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
         verifier = get_fire_verifier()
-        # Launch-home settings even under a /p/<profile>/ scope: the token identifies the instance.
+        # Root-config settings in any profile scope or launch: the token identifies the instance.
         verify_kwargs = dict(token=token, **fire_verification_settings())
         try:
             claims = await _call_verifier(verifier, **verify_kwargs)

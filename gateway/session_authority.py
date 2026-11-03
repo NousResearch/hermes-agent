@@ -903,14 +903,16 @@ class SessionAuthority:
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
         self.pending_results.pop(admission_id, None)
-        # A resolution racing recovery leaves publication, delivery and collection to the drain.
-        live = self.sessions[ref.session_id]
-        drain_owns = live.event_stream.execution.get('admission_id') == admission_id
+        # A resolution racing recovery leaves publication, delivery and collection to the drain. A
+        # conversation idle retirement let go has no drain; ``_publish_pending`` below restores it.
+        live = self.sessions.get(ref.session_id)
+        drain_owns = live is not None and live.event_stream.execution.get('admission_id') == admission_id
         if not drain_owns:
             from gateway.session_ingress import deliver_resolved
             from gateway.session_settlement_recovery import _publish_completion, release_media_after_delivery
             try:
                 if prepared is not None and row['owner_epoch'] == self.epoch:
+                    live = self.sessions[ref.session_id]
                     with live.event_stream.lock:
                         _publish_completion(self, live, ref, row, row,
                                             captured['result'].get('final_response') or '', captured)

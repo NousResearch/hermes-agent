@@ -145,6 +145,41 @@ async def test_resolution_racing_recovery_releases_once(tmp_path, monkeypatch, c
 
 
 @pytest.mark.asyncio
+async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkeypatch):
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
+    monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: None)
+
+    def fail(*args, **kwargs):
+        raise OSError('storage unavailable')
+
+    async def execute(owner, ref, row):
+        return 'reply'
+
+    monkeypatch.setattr(session_results, 'finish_result', fail)
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    restored = []
+    with db:
+        receipt = await _submit(authority, 'photo')
+        await asyncio.wait_for(authority._drain(REF), 5)
+        row = get_session_admission(db, admission_id=receipt.admission_id)
+        assert row['status'] == 'unknown'
+        authority.pending_results.pop(receipt.admission_id, None)  # discarded: no captured answer
+        live = authority.sessions.pop(REF.session_id)  # idle retirement let the conversation go
+
+        def restore(owner, session_id):
+            restored.append(session_id)
+            owner.sessions.setdefault(session_id, live)
+
+        monkeypatch.setattr('gateway.session_retirement.restore_retired', restore)
+        receipt_after = await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
+        assert receipt_after is not None
+        assert restored and REF.session_id in authority.sessions
+        await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='resolution cleanup')
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['commit', 'delivery'])
 async def test_cancelled_drain_keeps_delivery_and_collection_owned(tmp_path, monkeypatch, phase):
     db, authority = _authority(tmp_path, monkeypatch)
@@ -324,4 +359,3 @@ async def test_shutdown_joins_cleanup_created_after_its_initial_snapshot(monkeyp
         resume_delivery.set()
         finish_cleanup.set()
         await asyncio.gather(shutdown, return_exceptions=True)
-

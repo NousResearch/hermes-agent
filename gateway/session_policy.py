@@ -1046,18 +1046,22 @@ def restore_policy(data):
         policy = LocalSessionPolicy(**data)
         from gateway.session_a2a import is_forward_policy
         surfaces = {**SURFACES, 'cron': 'cron', 'kanban': 'cli', 'bot_room': 'bot_room'}
-        if not is_forward_policy(policy) and (
-                policy.source not in surfaces or policy.platform != surfaces[policy.source]):
+        # A peer refresh relabels an interactive receipt's source to ``local`` and keeps its platform
+        # (#148473): that pair restores; a ``local`` label on any other platform still refuses.
+        source_ok = ((policy.source in surfaces and policy.platform == surfaces[policy.source])
+                     or (policy.source == 'local'
+                         and policy.platform in {SURFACES[name] for name in STORED_AS_LOCAL}))
+        if not is_forward_policy(policy) and not source_ok:
             raise _policy_refused('source', f'stored source/platform {policy.source}/'
                                             f'{policy.platform} is not a known surface pair')
         if not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute():
             raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
-        # model=None is what our own writers persist when the model cannot be resolved (session_local
+        # model=None/'' is what our own writers persist when the model cannot be resolved (session_local
         # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model
         # from the profile's config (session_hosted_rpc falls back to _resolve_gateway_model; #35381
         # made the runtime recover it). Refusing it here stranded the session forever (#148540).
-        if policy.model is not None and not isinstance(policy.model, str):
-            raise _policy_refused('model', 'the stored model is not a string')
+        if policy.model not in (None, '') and (not isinstance(policy.model, str) or not policy.model.strip()):
+            raise _policy_refused('model', 'the stored model is not a model name')
         if not isinstance(policy.toolsets, (list, tuple)) or any(
                 not isinstance(name, str) for name in policy.toolsets):
             raise _policy_refused('toolsets', 'the stored toolsets are not a list of names')
@@ -1077,7 +1081,8 @@ def restore_policy(data):
                                                            'malformed')
         if policy.edit_approval_policy not in EDIT_APPROVAL_POLICIES:
             raise _policy_refused('edit_approval_policy', 'the stored edit approval policy is unknown')
-        if policy.edit_approval_policy != 'ask' and policy.source != 'acp':
+        if policy.edit_approval_policy != 'ask' and (policy.source, policy.platform) not in {
+                ('acp', 'acp'), ('local', 'acp')}:
             raise _policy_refused('edit_approval_policy', 'only an acp receipt may store a non-ask '
                                                           'edit approval policy')
         if policy.safe_mode and not policy.ignore_user_config:

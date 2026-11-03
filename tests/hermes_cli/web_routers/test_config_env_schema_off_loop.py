@@ -5,8 +5,8 @@ per-request schema walk plus the plugin-name scan ran on the uvicorn event loop 
 also serves ``/api/ws`` and every other dashboard route — a slow scan froze the whole
 gateway for its duration. ``get_egress_status`` had the same inline shape, reading the
 profile's config block from disk on the loop. Both handlers now offload to a worker
-thread via ``config_scoped_to_thread``, the same helper their sibling ``get_config``
-uses.
+thread via ``config_scoped_to_thread``, the config-scoped counterpart of the
+``scoped_to_thread`` hop their sibling ``get_config`` uses.
 """
 
 import asyncio

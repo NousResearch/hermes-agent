@@ -4,8 +4,8 @@ Regression for a measured 3.6s gateway freeze: ``get_schema`` ran
 ``_schema_with_dynamic_provider_options()`` inline on the uvicorn event loop —
 the same loop that serves the JSON-RPC chat WebSocket (``/api/ws``), the PTY
 bridge and every other dashboard request — so an unrelated request arriving
-during the build was not dispatched until it finished. The handler now takes the
-same ``config_scoped_to_thread`` hop its sibling ``get_config`` already used.
+during the build was not dispatched until it finished. The handler now takes a
+``config_scoped_to_thread`` hop, the off-loop helper other dashboard routers use.
 
 Both halves of the claim are pinned without wall-clock sleeps: the build runs on
 a worker thread, and an unrelated callback queued on the requesting loop runs to

@@ -13,6 +13,8 @@ fix, so resuming a polluted session doesn't re-teach the model to keep
 emitting the marker. Unaffected sessions pass through unchanged.
 """
 
+import logging
+
 from hermes_state import (
     _is_stale_tool_call_marker_message,
     _strip_stale_tool_call_markers,
@@ -60,7 +62,7 @@ class TestIsStaleToolCallMarkerMessage:
 
 
 class TestStripStaleToolCallMarkers:
-    def test_clears_contaminated_content_keeps_tool_calls(self):
+    def test_clears_contaminated_content_keeps_tool_calls_without_mutating_input(self):
         messages = [
             {"role": "user", "content": "do the full task"},
             {
@@ -70,10 +72,28 @@ class TestStripStaleToolCallMarkers:
             },
             {"role": "tool", "content": "ok", "tool_call_id": "1"},
         ]
-        out = _strip_stale_tool_call_markers(messages)
+        out = _strip_stale_tool_call_markers(messages, session_id="repair-session")
         assert out[1]["content"] == ""
         # Tool call itself must survive — provider tool_call/result pairing.
         assert out[1]["tool_calls"] == [{"id": "1", "function": {"name": "skill_manage", "arguments": "{}"}}]
+        assert out is not messages
+        assert out[1] is not messages[1]
+        assert messages[1]["content"] == "[memory]"
+
+    def test_logs_structured_repair_event_with_session_and_counter(self, caplog):
+        caplog.set_level(logging.INFO, logger="hermes_state")
+        messages = [{
+            "role": "assistant",
+            "content": "[memory]",
+            "tool_calls": [{"id": "1", "function": {"name": "skill_manage", "arguments": "{}"}}],
+        }]
+
+        _strip_stale_tool_call_markers(messages, session_id="repair-session")
+
+        assert (
+            "event=stale_tool_call_marker_repaired session_id=repair-session "
+            "stale_tool_call_marker_repaired_total=1"
+        ) in caplog.messages
 
     def test_unaffected_session_passes_through_unchanged(self):
         messages = [

@@ -24,7 +24,6 @@ from agent.auxiliary_client import (
     CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
-    _is_connection_error,
     _message_field,
     aux_interrupt_protection,
     call_llm,
@@ -42,7 +41,7 @@ from agent.context_compressor_tail import (
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -220,7 +219,7 @@ def _is_refusal_response(response: Any, content: str) -> bool:
     return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
 
 
-def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+def _is_summary_access_or_quota_error(exc: Exception, verdict: Optional[ClassifiedError] = None) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
     # No active secret scope is a missing-credential failure of our own making;
@@ -236,7 +235,7 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
         UnscopedSecretError = ()  # type: ignore[assignment]
     if UnscopedSecretError and isinstance(exc, UnscopedSecretError):
         return True
-    reason = classify_api_error(exc).reason
+    reason = (verdict or classify_api_error(exc)).reason
     if reason is FailoverReason.rate_limit:
         return False
     if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
@@ -717,7 +716,7 @@ class _SummaryFailureKind:
         return next((reason for flagged, reason in reasons if flagged), "failed")
 
 
-def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
+def _classify_summary_failure(e: Exception, verdict: ClassifiedError) -> _SummaryFailureKind:
     """Classify a summary-call exception by status code / message shape.
 
     A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
@@ -738,8 +737,8 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
-        # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e) and not stall,
+        # Premature-close / dead-network errors (a TLS certificate failure too): short cooldown, then abort.
+        streaming_closed=(verdict.reason is FailoverReason.ssl_cert_verification or bool(verdict.error_context.get("transport"))) and not stall,
         # HTTP 200 with empty body from a degraded provider, the sibling "no usable response" shapes from
         # _validate_llm_response, and Gemini's prompt block of the summary request (once empty content).
         empty_content=getattr(e, "code", None) == "gemini_prompt_blocked" or (isinstance(e, RuntimeError) and any(
@@ -749,7 +748,7 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         )),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
-        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        overloaded=verdict.reason is FailoverReason.overloaded
         or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
@@ -4103,8 +4102,9 @@ Write only the summary body. Do not include any preamble or prefix."""
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
             return None
-        kind = _classify_summary_failure(e)
-        access_error = _is_summary_access_or_quota_error(e)
+        verdict = classify_api_error(e)
+        kind = _classify_summary_failure(e, verdict)
+        access_error = _is_summary_access_or_quota_error(e, verdict)
         # Auth/permission/quota failures are not retryable: flag so compress() preserves the
         # session. A distinct summary_model still gets the one-shot main-model fallback.
         if access_error:

@@ -110,6 +110,67 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_fingerprint_read_failure_is_not_recycled(board, monkeypatch):
+    """A transient fingerprint read failure (start time returns None) must NOT classify the live
+    worker as recycled: unverifiable is treated as live, so a possibly-healthy worker is never
+    reclaimed on a race. A genuinely different fingerprint is still recycled."""
+    import gateway.status as status
+
+    conn = board
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+
+    # Simulate the transient read failure the bug report describes (darwin psutil returns None).
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+    # ``|`` branch: unreadable fingerprint -> NOT recycled.
+    assert kbd._pid_recycled(os.getpid(), live) is False
+    # integer branch: unreadable start time -> NOT recycled.
+    assert kbd._pid_recycled(os.getpid(), 42) is False
+    monkeypatch.undo()
+
+    # A genuinely foreign fingerprint (same boot format, different value) IS recycled.
+    other = "deadbeef-boot:1|999999"
+    assert kbd._pid_recycled(os.getpid(), other) is True
+    # An integer fingerprint that provably disagrees is recycled too.
+    assert kbd._pid_recycled(os.getpid(), 42) is True
+
+
+def test_reclaim_double_checks_live_worker_before_crash(board, monkeypatch):
+    """_reclaim_dead_workers re-probes a still-alive PID before declaring a crash: a worker whose
+    fingerprint transiently MISmatches (first read wrong, then correct) survives the sweep (task
+    stays running), while a truly dead PID is reclaimed immediately (no artificial delay)."""
+    import gateway.status as status
+
+    conn = board
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=live)
+    # First probe returns a WRONG start time (=> fingerprint mismatch => _worker_alive False),
+    # later probes return the real value (the transient read that made it look recycled).
+    real = status._get_process_start_time
+    calls = {"n": 0}
+
+    def flaky(pid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 1  # wrong (no live process started at tick 1)
+        return real(pid)
+
+    monkeypatch.setattr(status, "_get_process_start_time", flaky)
+    assert kbd.detect_crashed_workers(conn) == []
+    assert kb.get_task(conn, tid).status == "running"
+    assert calls["n"] >= 2  # the double-check actually ran
+
+    # A truly dead PID is reclaimed immediately (still one probe, no double-check sleep).
+    tid2 = _claimed_running(conn, pid=os.getpid(), started_at=live)
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    reclaimed = kbd.detect_crashed_workers(conn)
+    # tid (first half) and tid2 are both dead PIDs now -> both reclaimed.
+    assert sorted(reclaimed) == sorted([tid, tid2])
+    assert kb.get_task(conn, tid).status == "ready"
+    assert kb.get_task(conn, tid2).status == "ready"
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released

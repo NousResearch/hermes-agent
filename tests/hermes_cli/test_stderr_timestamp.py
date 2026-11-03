@@ -337,3 +337,27 @@ def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
 
     assert rc == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert "restart requested" in log_path.read_text(encoding="utf-8")
+
+
+
+def test_rotating_writer_keeps_bounded_backups(tmp_path, monkeypatch):
+    monkeypatch.setattr(stderr_timestamp, "_rotation_config", lambda: (1, 2))
+    path = tmp_path / "gateway.error.log"
+    writer = stderr_timestamp._RotatingWriter(path)
+    try:
+        # Real writes and file handles; multiple lines cross 1 MiB boundaries.
+        for _ in range(10):
+            writer.write("x" * 400_000 + "\n")
+    finally:
+        writer.close()
+    files = [path, path.with_name(path.name + ".1"), path.with_name(path.name + ".2")]
+    assert all(item.exists() for item in files)
+    assert not path.with_name(path.name + ".3").exists()
+    assert all(item.stat().st_size <= 1_000_000 for item in files)
+
+
+def test_rotation_config_uses_logging_overrides(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("logging:\n  max_size_mb: 2\n  backup_count: 7\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_logging.get_config_path", lambda: config_path)
+    assert stderr_timestamp._rotation_config() == (2, 7)

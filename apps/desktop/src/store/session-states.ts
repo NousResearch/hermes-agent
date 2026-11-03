@@ -53,7 +53,7 @@ import {
 } from './preview'
 import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
-import { $activeGatewayProfile, normalizeProfileKey } from './profile'
+import { $activeGatewayProfile, $showAllProfiles, $tileViewScope, ALL_PROFILES, normalizeProfileKey } from './profile'
 import { $projectTree } from './project-tree'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -95,6 +95,25 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { orderTilesByTree } from './session-tile-order'
+import {
+  BOTS_TILE_BUCKET,
+  dropViewMemory,
+  isTileStoreWriter,
+  loadTilesByProfile,
+  migrateViewMemory,
+  persistAllTileBuckets,
+  persistTileBuckets,
+  readStoredTileBucket,
+  rememberActivePanes,
+  rememberedActivePanes,
+  rememberedTileConnectionId,
+  rememberTileConnectionId,
+  seedAllProfilesBuckets,
+  type StoredTile,
+  tileConnectionScopeId,
+  toStored
+} from './session-tile-storage'
+import { bindViewConnection, frontChatPanes, frontPanes, snapshotTileStrip } from './session-tile-views'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -1194,173 +1213,22 @@ export interface SessionTileWorkspaceScope {
   workspaceTabTitle?: string
 }
 
-// Tiles are persisted per connection and profile: same-named profiles on two
-// backends own different sessions. Switching either scope swaps the visible
-// set, with runtime bindings dropped so tiles re-resume on their own gateway.
-const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
-const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
-const BOTS_TILE_BUCKET = '__bots_workspace__'
-
-/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
- *  restart / profile swap re-adopts tiles in the same order, not all stacked
- *  right of workspace. */
-type StoredTile = Pick<
-  SessionTile,
-  | 'anchor'
-  | 'before'
-  | 'dir'
-  | 'ownerProfile'
-  | 'ownerRoute'
-  | 'storedSessionId'
-  | 'workspaceMode'
-  | 'workspaceOwnerKey'
-  | 'workspaceTabTitle'
->
-
-const toStored = (t: SessionTile): StoredTile => ({
-  anchor: t.anchor,
-  before: t.before,
-  dir: t.dir,
-  ...(t.ownerProfile ? { ownerProfile: t.ownerProfile } : {}),
-  ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
-  storedSessionId: t.storedSessionId,
-  ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
-  ...(t.workspaceOwnerKey ? { workspaceOwnerKey: t.workspaceOwnerKey } : {}),
-  ...(t.workspaceTabTitle ? { workspaceTabTitle: t.workspaceTabTitle } : {})
-})
-
-function parseTileList(value: unknown): StoredTile[] {
-  return Array.isArray(value)
-    ? value
-        .filter((t): t is SessionTile => Boolean(t && typeof (t as SessionTile).storedSessionId === 'string'))
-        .map(t => {
-          const raw = t as SessionTile
-
-          return {
-            // #108679: a tile whose anchor is its OWN pane id is
-            // self-referential — the re-dock target can never exist (the
-            // pane is not in the tree at adoption time), so the dock falls
-            // through to an arbitrary same-placement neighbor instead of the
-            // recorded layout. Rewrite it to the workspace anchor at load,
-            // the same surface an anchorless tile re-docks against.
-            anchor:
-              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
-                ? raw.anchor
-                : undefined,
-            before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
-            dir: raw.dir,
-            ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
-            ownerRoute:
-              raw.ownerRoute &&
-              typeof raw.ownerRoute.connectionId === 'string' &&
-              typeof raw.ownerRoute.profile === 'string'
-                ? {
-                    connectionId: raw.ownerRoute.connectionId,
-                    mode: raw.ownerRoute.mode,
-                    profile: raw.ownerRoute.profile,
-                    ...(typeof raw.ownerRoute.targetProfile === 'string'
-                      ? { targetProfile: raw.ownerRoute.targetProfile }
-                      : {})
-                  }
-                : undefined,
-            storedSessionId: raw.storedSessionId,
-            workspaceMode: raw.workspaceMode === 'bots' ? 'bots' : 'sessions',
-            workspaceOwnerKey:
-              raw.workspaceMode === 'bots' && typeof raw.workspaceOwnerKey === 'string'
-                ? raw.workspaceOwnerKey
-                : undefined,
-            workspaceTabTitle: typeof raw.workspaceTabTitle === 'string' ? raw.workspaceTabTitle : undefined
-          }
-        })
-    : []
-}
-
-function loadTilesByProfile(): Record<string, StoredTile[]> {
-  const byProfile: Record<string, StoredTile[]> = Object.create(null)
-  const parsed = readJson<unknown>(TILES_KEY)
-
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    for (const [profile, list] of Object.entries(parsed as Record<string, unknown>)) {
-      const tiles = parseTileList(list)
-      // Existing profile-only buckets belong to the local connection. New
-      // remote buckets carry the same backend scope key as the socket pool;
-      // never collapse them back into a same-named local profile on reload.
-      const separator = profile.lastIndexOf('::')
-      const isScopedBucket = profile.startsWith('conn:') && separator > 'conn:'.length
-
-      const key =
-        profile === BOTS_TILE_BUCKET
-          ? BOTS_TILE_BUCKET
-          : isScopedBucket
-            ? backendScopeKey(
-                profile.slice('conn:'.length, separator),
-                normalizeProfileKey(profile.slice(separator + 2))
-              )
-            : normalizeProfileKey(profile)
-
-      if (tiles.length > 0) {
-        const sessionTiles = tiles.filter(tile => tile.workspaceMode !== 'bots')
-        const botTiles = tiles.filter(tile => tile.workspaceMode === 'bots')
-
-        for (const tile of sessionTiles) {
-          // Old profile-only buckets can contain remote tiles whose owner was
-          // already recorded. Preserve those tabs on upgrade; unknown owners
-          // stay local rather than being guessed onto another backend.
-          const scope = isScopedBucket ? key : backendScopeKey(tile.ownerRoute?.connectionId, key)
-          byProfile[scope] = [...(byProfile[scope] ?? []), tile]
-        }
-
-        if (botTiles.length > 0) {
-          byProfile[BOTS_TILE_BUCKET] = [...(byProfile[BOTS_TILE_BUCKET] ?? []), ...botTiles]
-        }
-      }
-    }
-  }
-
-  // Migrate a v1 flat list into the default profile, then retire the key.
-  const legacy = parseTileList(readJson<unknown>(LEGACY_TILES_KEY))
-
-  if (legacy.length > 0) {
-    const key = normalizeProfileKey('default')
-    const sessionTiles = legacy.filter(tile => tile.workspaceMode !== 'bots')
-    const botTiles = legacy.filter(tile => tile.workspaceMode === 'bots')
-
-    byProfile[key] = [...(byProfile[key] ?? []), ...sessionTiles]
-    byProfile[BOTS_TILE_BUCKET] = [...(byProfile[BOTS_TILE_BUCKET] ?? []), ...botTiles]
-  }
-
-  if (byProfile[BOTS_TILE_BUCKET]?.length) {
-    byProfile[BOTS_TILE_BUCKET] = [
-      ...new Map(byProfile[BOTS_TILE_BUCKET].map(tile => [tile.storedSessionId, tile])).values()
-    ]
-  }
-
-  writeJson(LEGACY_TILES_KEY, null)
-
-  return byProfile
-}
-
 const tilesByProfile = loadTilesByProfile()
-// Keyed by the GATEWAY profile: the rail's profile switch is a soft swap
+
+seedAllProfilesBuckets(tilesByProfile, $activeGatewayProfile.get(), $showAllProfiles.get())
+persistAllTileBuckets(tilesByProfile)
+// The profile a tile without an owner route is assumed to belong to. Keyed by
+// the GATEWAY profile: the rail's profile switch is a soft swap
 // ($activeGatewayProfile moves, no reload) — $activeProfile mirrors the
-// window's primary backend and never changes on a rail switch, so keying on
-// it left the previous profile's tiles registered (phantom "Session" tabs).
+// window's primary backend and never changes on a rail switch.
 const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 
-const tileConnectionScopeId = (connection: ReturnType<typeof $connection.get>) => {
-  const id = connection?.connectionId?.trim()
-
-  if (id) {
-    return id
-  }
-
-  // Older direct remotes have no registry id. Keep them separate from local
-  // and from each other instead of writing into the local profile bucket.
-  return connection?.mode === 'remote' ? `url:${connection.baseUrl || 'remote'}` : null
-}
-
-let tileConnectionId = tileConnectionScopeId($connection.get())
-const tileScopeKey = () => backendScopeKey(tileConnectionId, profileKey())
+// Until the connection publishes, the tabs on screen are the last connection's:
+// a remote window otherwise booted on the local bucket.
+let tileConnectionId = tileConnectionScopeId($connection.get()) ?? rememberedTileConnectionId()
+bindViewConnection(() => tileConnectionId)
+// Buckets are keyed by the profile VIEW, so "All profiles" owns its own tabs.
+const tileScopeKey = () => backendScopeKey(tileConnectionId, $tileViewScope.get())
 let visibleTileScope = tileScopeKey()
 
 // Runtime ids are process-scoped — never trust a persisted one, so the live
@@ -1401,14 +1269,8 @@ export const $sessionTiles = atom<SessionTile[]>(
     : [...(tilesByProfile[visibleTileScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])]
 )
 
-function persistTiles() {
-  // Shares the origin's storage; a secondary / browser pop-out holds no tiles,
-  // so a write back would only wipe the primary's set.
-  if (isSecondaryWindow() || isBrowserWindow()) {
-    return
-  }
-
-  writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
+function persistTiles(buckets: readonly string[]) {
+  persistTileBuckets(tilesByProfile, buckets)
 }
 
 function saveTiles(tiles: SessionTile[]) {
@@ -1428,7 +1290,7 @@ function saveTiles(tiles: SessionTile[]) {
     delete tilesByProfile[BOTS_TILE_BUCKET]
   }
 
-  persistTiles()
+  persistTiles([visibleTileScope, BOTS_TILE_BUCKET])
   $sessionTiles.set(tiles)
 }
 
@@ -1441,10 +1303,26 @@ function saveTileBucket(bucket: string, tiles: SessionTile[]) {
     delete tilesByProfile[bucket]
   }
 
-  persistTiles()
+  persistTiles([bucket])
 }
 
-// Profile or connection switch: surface only this backend's stored tiles.
+/** Record the strip the user is leaving as it stands in the tree: a tab drag
+ *  reorders panes without touching the tile list, and the front tab is tree
+ *  state only. */
+function leaveTileView() {
+  const tree = $layoutTree.get()
+  const tiles = $sessionTiles.get().filter(tile => tileWorkspaceMode(tile) !== 'bots')
+  const adopted = tree && tiles.some(tile => findGroupOfPane(tree, `${TILE_PANE_PREFIX}${tile.storedSessionId}`))
+
+  if (!adopted) {
+    return
+  }
+
+  saveTileBucket(visibleTileScope, snapshotTileStrip(tree, tiles))
+  rememberActivePanes(visibleTileScope, frontChatPanes(tree))
+}
+
+// Profile view or connection switch: surface only this view's stored tiles.
 // Null connection is a reconnect blip, not a switch; keep the last scope.
 // A secondary window never carries tiles, so it stays out entirely.
 if (!isSecondaryWindow() && !isBrowserWindow()) {
@@ -1455,17 +1333,32 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
       return
     }
 
+    leaveTileView()
     visibleTileScope = nextScope
-    $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+
+    // Another window may have changed this view's tabs since we loaded.
+    const stored = readStoredTileBucket(nextScope)
+
+    if (stored) {
+      tilesByProfile[nextScope] = stored
+    } else if (isTileStoreWriter()) {
+      delete tilesByProfile[nextScope]
+    }
+
+    const tiles = [...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])]
+    const panes = new Set(tiles.map(tile => `${TILE_PANE_PREFIX}${tile.storedSessionId}`)).add('workspace')
+    $sessionTiles.set(tiles)
+    frontPanes(rememberedActivePanes(nextScope).filter(pane => panes.has(pane)))
   }
 
-  $activeGatewayProfile.subscribe(restoreVisibleTiles)
+  $tileViewScope.subscribe(restoreVisibleTiles)
   $connection.subscribe(connection => {
     if (!connection) {
       return
     }
 
     tileConnectionId = tileConnectionScopeId(connection)
+    rememberTileConnectionId(tileConnectionId)
     restoreVisibleTiles()
   })
 }
@@ -2772,6 +2665,24 @@ export function dropTilesForProfile(
     }
   }
 
+  // "All profiles" mixes owners in one bucket: drop only the deleted
+  // profile's tabs, or restoring them would re-dial its backend.
+  const allScope = backendScopeKey(route ? routeConnection : ambientConnection, ALL_PROFILES)
+
+  const ownedByRemoved = (tile: StoredTile): boolean =>
+    tile.ownerRoute
+      ? ownerMatches(tile.ownerRoute)
+      : ownerProfileKey(tile.ownerProfile ?? knownSessionOwner(ownerLookupSessionRows(), tile.storedSessionId)) ===
+        (routeProfile || name)
+
+  const allTiles = tilesByProfile[allScope]?.filter(tile => !ownedByRemoved(tile))
+
+  if (allTiles?.length) {
+    tilesByProfile[allScope] = allTiles
+  } else {
+    delete tilesByProfile[allScope]
+  }
+
   // Live atom: drop the deleted profile's Bot tiles, and — when the deleted
   // profile IS the live gateway's profile — the session tiles in view (they
   // belong to that bucket; the caller re-homes afterwards).
@@ -2782,16 +2693,19 @@ export function dropTilesForProfile(
     // the deleted profile's bots, matched by owner.
     tile.workspaceMode === 'bots'
       ? !ownerMatches(tile.ownerRoute)
-      : // Session tiles map to the owning profile's own bucket: drop only when
-        // the deleted profile IS the live gateway's profile.
-        visibleTileScope !== removedScope
+      : visibleTileScope === allScope
+        ? !ownedByRemoved(tile)
+        : // Session tiles map to the owning profile's own bucket: drop only when
+          // the deleted profile IS the live gateway's profile.
+          visibleTileScope !== removedScope
   )
 
   if (next.length !== live.length) {
     $sessionTiles.set(next)
   }
 
-  persistTiles()
+  persistTiles([removedScope, BOTS_TILE_BUCKET, allScope])
+  dropViewMemory(removedScope)
   // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
   // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
   dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
@@ -2846,6 +2760,17 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     tilesByProfile[BOTS_TILE_BUCKET] = botTiles.map(tile => ({ ...tile, ownerRoute: renamedOwner(tile.ownerRoute) }))
   }
 
+  // "All profiles" holds tabs of every profile; the renamed one's go with it.
+  const allTiles = tilesByProfile[ALL_PROFILES]
+
+  if (allTiles) {
+    tilesByProfile[ALL_PROFILES] = allTiles.map(tile => ({
+      ...tile,
+      ownerProfile: tile.ownerProfile && normalizeProfileKey(tile.ownerProfile) === from ? to : tile.ownerProfile,
+      ownerRoute: renamedOwner(tile.ownerRoute)
+    }))
+  }
+
   const live = $sessionTiles.get()
   const next = live.map(tile => (tile.ownerRoute ? { ...tile, ownerRoute: renamedOwner(tile.ownerRoute) } : tile))
 
@@ -2853,7 +2778,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     $sessionTiles.set(next)
   }
 
-  persistTiles()
+  persistTiles([from, to, BOTS_TILE_BUCKET, ALL_PROFILES])
+  migrateViewMemory(from, to)
   migrateTranscriptTailsForProfile(from, to)
   migrateRememberedNavigationForProfile(from, to)
   migrateSessionOwnerHintsForProfile(from, to)

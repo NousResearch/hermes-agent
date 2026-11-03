@@ -971,6 +971,36 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
 )
 
+// The profile a rail pick is switching to while its gateway dial is in flight.
+const $pendingProfileView = atom<null | string>(null)
+
+$activeGatewayProfile.listen(gateway => {
+  if ($pendingProfileView.get() === normalizeProfileKey(gateway)) {
+    $pendingProfileView.set(null)
+  }
+})
+
+// The view that owns the chat area's tabs. Unlike $profileScope it moves to a
+// picked profile at the click, not when the dial settles: in between, the old
+// gateway profile would briefly own the strip and the main chat being
+// restored. In "All profiles" a gateway move (opening another profile's chat)
+// is not a view change, so the tabs stay put.
+export const $tileViewScope = computed(
+  [$showAllProfiles, $activeGatewayProfile, $pendingProfileView],
+  (showAll, gateway, pending) => (showAll ? ALL_PROFILES : (pending ?? normalizeProfileKey(gateway)))
+)
+
+/** Brings back a view's main chat: true when it handled the switch (routed to
+ *  the view's last chat or started its draft), false when the view has no
+ *  memory yet. Registered by the session-tile store; absent → old behaviour. */
+type ProfileViewRestore = (view: string) => boolean
+
+let profileViewRestore: null | ProfileViewRestore = null
+
+export function setProfileViewRestore(restore: null | ProfileViewRestore): void {
+  profileViewRestore = restore
+}
+
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).
@@ -979,6 +1009,7 @@ export function selectProfile(name: string): void {
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  $pendingProfileView.set(target === normalizeProfileKey($activeGatewayProfile.get()) ? null : target)
   $showAllProfiles.set(false)
   $newChatProfile.set(target)
   $newChatRoute.set(null)
@@ -990,7 +1021,18 @@ export function selectProfile(name: string): void {
 
   if (switching) {
     leaveForeignProjectScope(target)
-    requestFreshSession()
+
+    // A view the user has been in comes back on its own main chat; a new one
+    // starts fresh.
+    if (!profileViewRestore?.(target)) {
+      requestFreshSession()
+    }
+  }
+
+  const settlePendingView = () => {
+    if ($pendingProfileView.get() === target) {
+      $pendingProfileView.set(null)
+    }
   }
 
   // A profile with a remote override can fail to activate because the remote
@@ -1008,6 +1050,8 @@ export function selectProfile(name: string): void {
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
+      settlePendingView()
+
       if (shouldRemember) {
         return window.hermesDesktop?.profile?.remember(target)
       }
@@ -1015,6 +1059,9 @@ export function selectProfile(name: string): void {
       return undefined
     })
     .catch((error: unknown) => {
+      // The dial failed and the gateway stayed put: the tabs follow it back.
+      settlePendingView()
+
       if (!notifyRemoteOverrideAuthFailure(target, error)) {
         notifyError(error, `Failed to switch to profile "${target}"`)
       }
@@ -1154,6 +1201,18 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
 
 export function setShowAllProfiles(value: boolean): void {
   $showAllProfiles.set(value)
+}
+
+/** The rail's "All profiles" pick: the browse view comes back on the main chat
+ *  it had, like a profile pick does. Programmatic setShowAllProfiles callers
+ *  (opening a session in All, grouping by owner) keep the chat they route to. */
+export function enterAllProfilesView(): void {
+  if ($showAllProfiles.get()) {
+    return
+  }
+
+  $showAllProfiles.set(true)
+  profileViewRestore?.(ALL_PROFILES)
 }
 
 export function toggleShowAllProfiles(): void {

@@ -1,9 +1,12 @@
 import * as sdk from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { Codicon, Tip } from '@hermes/plugin-sdk'
+import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
+import { roomHandoffs, type RoomLogEvent } from './group-room-status'
+import { fill, RoomActivityRow, RoomMessage } from './group-room-ui'
 
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
@@ -13,7 +16,7 @@ export interface CanonicalGroupEvent {
   event_id?: string
   room_id?: string
   kind: string
-  payload: { text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string; reason_code?: string; status?: string }
+  payload: { text?: string; content?: string; attachments?: CanonicalGroupAttachment[]; member_id?: string; error?: string; reason?: string; reason_code?: string; status?: string; [key: string]: unknown }
   actor?: { kind?: string; id?: string; display_name?: string }
   created_at?: number
 }
@@ -23,6 +26,10 @@ interface CanonicalGroupHistoryProps {
   events: CanonicalGroupEvent[]
   members?: CanonicalRoomMember[]
   disabled?: boolean
+  /** Hover Reply on a member's message: address the composer to that member. */
+  onReply?: (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => void
+  /** A member's face; the workspace passes the Bot Mode avatar. */
+  avatarFor?: (name: string, size: number) => ReactNode
 }
 
 function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean) {
@@ -37,33 +44,29 @@ function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRo
     (isMessage ? event.actor?.id : memberId)
 }
 
-function EventTime({ timestamp }: { timestamp?: number }) {
-  if (typeof timestamp !== 'number') {return null}
-  const at = new Date(timestamp * 1000)
+function eventTimeMs(timestamp?: number) {
+  if (typeof timestamp !== 'number') {return undefined}
+  const at = timestamp * 1000
 
-  if (!Number.isFinite(at.getTime())) {return null}
-
-  return <time className="text-[0.625rem] text-(--ui-text-quaternary)" dateTime={at.toISOString()}>{sdk.relativeTime(at.getTime())}</time>
+  return Number.isFinite(new Date(at).getTime()) ? at : undefined
 }
 
 function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: string }) {
   if (notice) {
     const detail = event.payload.error || event.payload.reason || event.payload.reason_code
 
-    return <p className="text-xs text-(--ui-text-secondary)" data-selectable-text="true">
-      <strong>{notice}</strong>{detail && <>: {detail}</>}
+    return <p className="min-w-0 text-[0.6875rem] text-(--ui-text-tertiary)" data-selectable-text="true">
+      <strong className="font-medium text-(--ui-text-secondary)">{notice}</strong>{detail && <>: {detail}</>}
     </p>
   }
 
   const text = event.payload.text || event.payload.content || ''
 
-  return <div className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" data-selectable-text="true">
-    {/* The shared renderer (layout and large-message safeguards). media={false}: room text
-        may come from another machine, so its MEDIA: paths never resolve against this gateway;
-        room files keep their own download path below. */}
-    {MessageTextContent ? <MessageTextContent media={false} text={text} />
-      : Streamdown ? <Streamdown>{text}</Streamdown> : text}
-  </div>
+  // The shared renderer (layout and large-message safeguards). media={false}: room text
+  // may come from another machine, so its MEDIA: paths never resolve against this gateway;
+  // room files keep their own download path below.
+  return MessageTextContent ? <MessageTextContent media={false} text={text} />
+    : Streamdown ? <Streamdown>{text}</Streamdown> : <>{text}</>
 }
 
 // Previews download the whole file over RPC; larger or unsized images keep only Download.
@@ -153,9 +156,14 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ binding, events, members = [], disabled = false }: CanonicalGroupHistoryProps) {
+export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
+  const handoffs = roomHandoffs(events as RoomLogEvent[], members)
+
+  const nameOf = (id: string) => { const member = roster.get(id);
+
+ return member?.display_name || member?.handle || id }
 
   const notices = new Map([
     ['turn.failed', labels.turnFailed],
@@ -167,7 +175,23 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
     ['authority.lost', labels.authorityLost]
   ])
 
-  return <>{events.map(event => {
+  return <>{events.map(event => <Fragment key={event.seq}>
+    <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />
+    {handoffs.filter(handoff => handoff.afterSeq === event.seq).map(handoff =>
+      <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
+  </Fragment>)}</>
+}
+
+interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' | 'binding' | 'onReply'> {
+  disabled: boolean
+  event: CanonicalGroupEvent
+  notices: Map<string, string>
+  roster: Map<string, CanonicalRoomMember>
+}
+
+function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
+  const labels = useCanonicalGroupLabels()
+
     const notice = event.kind === 'room.activity' && event.payload.status === 'bounded'
       ? labels.workLimitReached : notices.get(event.kind)
 
@@ -175,18 +199,54 @@ export function CanonicalGroupHistory({ binding, events, members = [], disabled 
 
     if (!notice && !isMessage) {return null}
     const author = eventAuthor(event, roster, isMessage)
-    const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
+    const memberId = isMessage ? (event.actor?.kind === 'member' ? event.actor.id : undefined) : event.payload.member_id
+    const member = roster.get(memberId ?? '')
+    const isUser = isMessage && event.actor?.kind !== 'member'
+    const text = event.payload.text || event.payload.content || ''
 
-    return <div className="grid grid-cols-[minmax(0,1fr)] gap-1 px-2 py-1.5" key={event.seq}>
-    <div className="flex items-center gap-2">
-      {author && <strong className="text-[0.7rem] font-semibold text-(--ui-accent)">{author}</strong>}
-      <EventTime timestamp={event.created_at} />
-    </div>
-    <EventBody event={event} notice={notice} />
+    const replyAction = onReply && text && (member || typeof event.payload.thread_id === 'string')
+      ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply} text={text} />
+      : undefined
+
+    const row = notice
+      ? <div className="flex min-w-0 items-center gap-2 px-3 py-1" data-room-notice={event.kind}>
+        {member && avatarFor?.(member.profile || member.handle, 16)}
+        {author && <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-secondary)">{author}</span>}
+        <EventBody event={event} notice={notice} />
+      </div>
+      : <RoomMessage actions={replyAction} author={author} avatar={isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', 24)}
+        isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
+        <EventBody event={event} />
+        <EventFiles binding={binding} disabled={disabled} event={event} />
+      </RoomMessage>
+
+    return row
+}
+
+function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBinding; disabled: boolean; event: CanonicalGroupEvent }) {
+  const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined
+
+  return <>
     {previewEventId && event.payload.attachments?.filter(a => a.kind === 'image').map(a =>
       <ImagePreview attachment={a} binding={binding} disabled={disabled} eventId={previewEventId} key={a.attachment_id ?? a.name} />)}
     {!!event.payload.attachments?.length && <CanonicalGroupAttachments
       attachments={event.payload.attachments.map(attachment => ({ ...attachment, event_id: event.event_id }))}
       binding={binding} disabled={disabled || !event.event_id || event.room_id !== binding.roomId} readOnly />}
-  </div>})}</>
+  </>
+}
+
+/** Hover Reply: continue this message's thread, addressed to its author. */
+function ReplyAction({ author, event, member, onReply, text }: {
+  author: string; event: CanonicalGroupEvent; member?: CanonicalRoomMember; text: string
+  onReply: NonNullable<CanonicalGroupHistoryProps['onReply']>
+}) {
+  const labels = useCanonicalGroupLabels()
+  const label = fill(labels.replyTo, { name: author })
+  const thread = typeof event.payload.thread_id === 'string' ? event.payload.thread_id : undefined
+
+  return <Tip label={label}>
+    <sdk.Button aria-label={label} className="text-(--ui-text-tertiary)" onClick={() => onReply(member, text, thread, author)} size="icon-xs" variant="ghost">
+      <Codicon name="reply" />
+    </sdk.Button>
+  </Tip>
 }

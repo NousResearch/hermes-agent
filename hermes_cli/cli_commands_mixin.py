@@ -903,15 +903,66 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return target_id, session_meta
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
-        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
-        an explicit target delegates to /resume so both spellings behave identically."""
-        arg = _command_arg(cmd_original)
-        if arg and arg.lower() not in {"list", "ls", "browse"}:
-            self._handle_resume_command(f"/resume {arg}")
-        elif not self._session_db:
-            _cp(_db_unavailable_line())
-        elif not self._show_recent_sessions(reason="sessions"):
-            _cp(f"  {_t('sessions.none_yet')}")
+        """Bounded management grammar; all other targets retain /resume compatibility."""
+        from hermes_cli.cli_sessions_command import parse_sessions, USAGE
+        try:
+            if any(c in cmd_original for c in "\r\n\0"):
+                raise ValueError(USAGE)
+            verb, target, value = parse_sessions(_command_arg(cmd_original))
+        except ValueError as exc:
+            return _cp(str(exc))
+        if verb == "resume":
+            return self._handle_resume_command(f"/resume {target}")
+        if verb == "prune":
+            age = f" --older-than {target}" if target else ""
+            return _cp("Bulk prune needs a native operator and a store-wide preview; it is not available "
+                       "in this chat. On the gateway host, run "
+                       f"`hermes sessions prune{age} --dry-run`, then `hermes sessions prune{age}` to confirm.")
+        if not self._session_db:
+            return _cp(_db_unavailable_line())
+        if verb == "list":
+            if not self._show_recent_sessions(reason="sessions"):
+                _cp(f"  {_t('sessions.none_yet')}")
+            return
+        from hermes_cli.cli_sessions_command import SessionCommandAction, SessionsModal
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        from hermes_cli.gateway_client import GatewayClientError
+        if not isinstance(self._session_db, GatewaySessionStore):
+            return _cp("Session management requires the gateway owner; nothing was written.")
+        # A synchronous guard also covers nested/double confirmation callbacks.
+        if getattr(self, "_sessions_action_pending", False):
+            return _cp("A sessions action is already pending.")
+        self._sessions_action_pending = True
+        try:
+            action = SessionCommandAction(self, verb)
+            if verb == "delete":
+                if action.held(target):
+                    return _cp("Cannot delete a current/live conversation; close/switch first.")
+                view_id = self.session_id
+                if not value:
+                    app = getattr(self, "_app", None)
+                    if app is None or not app.is_running:
+                        return _cp("Deletion requires explicit confirmation; use --yes for this one invocation.")
+                    choices = [("once", "Delete once", "Delete this entire conversation"),
+                               ("cancel", "Cancel", "Keep the conversation")]
+                    raw = SessionsModal(self)._prompt_text_input_modal(
+                        title="Delete conversation?",
+                        detail=f"Delete exact ID {target} and its entire lineage, including pinned data. This cannot be undone.",
+                        choices=choices)
+                    if raw is None or self._normalize_slash_confirm_choice(raw, choices) != "once":
+                        return _cp("Session deletion cancelled.")
+                if self.session_id != view_id:
+                    return _cp("Session view changed; deletion cancelled.")
+            try:
+                receipt = action.run(target, value if verb == "rename" else None)
+            except (GatewayClientError, ValueError) as exc:
+                return _cp(f"Session {verb} not confirmed: {exc}. Completion may be unknown after transport loss; not retried.")
+            if verb == "rename":
+                _cp(f"Session {target} title set: {receipt.get('title') or value}")
+            else:
+                _cp(f"Deleted conversation {target}.")
+        finally:
+            self._sessions_action_pending = False
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

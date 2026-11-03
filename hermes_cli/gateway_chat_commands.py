@@ -31,7 +31,7 @@ VIEW_ROUTES = {
     "yolo": "config.set yolo", "help": "local",
     "title": "session.mutate rename", "undo": "session.mutate rewind", "retry": "session.mutate rewind + resubmit",
     "new": "session.create", "clear": "session.create", "usage": "slash.exec + last-turn receipt",
-    "tools": "session.info launch toolsets",
+    "tools": "session.info launch toolsets", "sessions": "local refusal (management parity incomplete)",
 }
 
 
@@ -203,10 +203,17 @@ async def forward(view, name, rest):
         print(reply.get("output") or f"/{name}: no output")
 
 
+async def _sessions(view, rest):
+    print("/sessions management is not available in GatewayChatView; parity is incomplete. "
+          "Use the normal classic CLI or Ink session manager for exact-ID rename/delete. "
+          "Bulk prune requires a native operator and a store-wide preview: on the gateway host, "
+          "run `hermes sessions prune --dry-run`, then `hermes sessions prune` to confirm.")
+
+
 _VIEW_CONTROLS = frozenset({"quit", "stop", "approve", "branch", "model", "compress", "yolo", "help"})
 # /clear is main's "new session + clear screen"; the gateway view keeps scrollback and starts fresh.
 _HANDLERS = {"title": _title, "undo": _undo, "retry": _retry, "new": _new, "clear": _new, "usage": _usage,
-             "tools": _tools}
+             "tools": _tools, "sessions": _sessions}
 
 
 async def run_command(view, command, rest):

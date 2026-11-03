@@ -288,3 +288,77 @@ class TestAtomicRoundtripYamlSave:
         atomic_roundtrip_yaml_save(config_path, {"model": {"default": "updated-model"}})
 
         assert chown_calls == [(config_path, 345, 678)]
+
+    def test_emptying_a_commented_list_stays_parseable(self, config_path):
+        """#148524: emptying a list in place under a commented key emitted ``[]`` at column 0
+        and joined the following keys onto one line, leaving config.yaml unparseable — a config
+        the gateway then refused to load. The key's inline comment must survive the write."""
+        config_path.write_text(
+            "kanban:\n"
+            "  dispatch_profiles:     # dispatch targets\n"
+            "    - mordecai\n"
+            "  dispatch_in_gateway: true\n"
+            "  dispatch_interval_seconds: 60\n",
+            encoding="utf-8",
+        )
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(
+            config_path,
+            {"kanban": {
+                "dispatch_profiles": [],
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 60,
+            }},
+        )
+
+        text = config_path.read_text(encoding="utf-8")
+        assert yaml.safe_load(text) == {"kanban": {
+            "dispatch_profiles": [],
+            "dispatch_in_gateway": True,
+            "dispatch_interval_seconds": 60,
+        }}
+        assert "# dispatch targets" in text
+
+    def test_emptying_a_commented_mapping_stays_parseable(self, config_path):
+        """Same shape for a mapping: an emptied CommentedMap carries the same emitter state."""
+        config_path.write_text(
+            "kanban:\n"
+            "  dispatch:     # routing\n"
+            "    profile: mordecai\n"
+            "  dispatch_in_gateway: true\n",
+            encoding="utf-8",
+        )
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(
+            config_path, {"kanban": {"dispatch": {}, "dispatch_in_gateway": True}},
+        )
+
+        text = config_path.read_text(encoding="utf-8")
+        assert yaml.safe_load(text) == {"kanban": {"dispatch": {}, "dispatch_in_gateway": True}}
+        assert "# routing" in text
+
+    def test_refuses_to_replace_the_file_with_a_document_that_does_not_parse(
+        self, config_path, monkeypatch,
+    ):
+        """Second line of defence: a rendered document its own reader refuses must not land.
+
+        Pinned with a stubbed dumper rather than a real ruamel state, so the guard stays
+        covered even if the emitter stops producing the shape #148524 reported.
+        """
+        original = "kanban:\n  dispatch_profiles:\n    - mordecai\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        class _BrokenDumper:
+            def dump(self, data, stream):
+                stream.write("kanban:\n  dispatch_profiles:     # dispatch targets\n[]\n")
+
+        from utils import _roundtrip_dump
+
+        with pytest.raises(ValueError, match="does not parse"):
+            _roundtrip_dump(config_path, _BrokenDumper(), {})
+
+        assert config_path.read_text(encoding="utf-8") == original

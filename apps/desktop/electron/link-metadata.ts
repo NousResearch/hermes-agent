@@ -6,6 +6,7 @@ import { app, BrowserWindow, net as electronNet, session } from 'electron'
 
 import { type FaviconIo, resolveFavicon } from './favicon'
 import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
+import { createLinkTitleRequestTracker } from './link-title-third-party'
 import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -45,6 +46,8 @@ const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
   'ping',
   'stylesheet'
 ])
+
+const linkTitleTracker = createLinkTitleRequestTracker()
 
 let linkTitleSession = null
 let renderTitleInFlight = 0
@@ -155,8 +158,13 @@ function getLinkTitleSession() {
 
   linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
+    callback({
+      cancel:
+        RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) ||
+        linkTitleTracker.shouldBlock(details)
+    })
   })
+  linkTitleTracker.bindSession(linkTitleSession, app)
   guardLinkTitleSession(linkTitleSession)
 
   return linkTitleSession

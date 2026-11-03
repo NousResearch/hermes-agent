@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,9 +40,10 @@ test('postbuild publishes the exported route set as a public bilingual sitemap',
   assert.equal(result.status, 0, result.stderr);
   const xml = readFileSync(path.join(appDir, 'out/sitemap.xml'), 'utf8');
   const locations = [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]);
-  assert.deepEqual(locations.sort(), bilingualPages.map((route) => 'https://hermes-agent.nousresearch.com/docs' + route).sort());
+  assert.deepEqual(locations.sort(), bilingualPages.map((route) => 'https://hermes-agent.nousresearch.com/docs' + (route === '/' ? route : route + '/')).sort());
   assert.ok(!xml.includes('_not-found'));
-  assert.ok(xml.includes('hreflang="zh-Hans" href="https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/quickstart"'));
+  assert.ok(xml.includes('hreflang="zh-Hans" href="https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/quickstart/"'));
+  assert.ok(xml.includes('hreflang="x-default" href="https://hermes-agent.nousresearch.com/docs/getting-started/quickstart/"'));
 });
 
 test('legacy aliases preserve language, preview origin, query and fragment', (t) => {
@@ -57,7 +58,7 @@ test('legacy aliases preserve language, preview origin, query and fragment', (t)
   };
   for (const prefix of ['', '/zh-Hans']) {
     for (const [from, to] of Object.entries(aliases)) {
-      const target = '/docs' + prefix + to;
+      const target = '/docs' + prefix + to + '/';
       const aliasFile = path.join(appDir, 'out', prefix + from, 'index.html');
       assert.ok(existsSync(aliasFile), `Missing legacy alias: ${prefix + from}`);
       const html = readFileSync(aliasFile, 'utf8');
@@ -98,6 +99,35 @@ test('postbuild does not overwrite an existing page with an alias', (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Refusing to replace existing export: \/quickstart/);
   assert.equal(readFileSync(file, 'utf8'), original);
+});
+
+test('postbuild mirrors canonical artifact bytes at the legacy locale URLs', (t) => {
+  const appDir = exportFixture(t);
+  const artifacts = ['api/model-catalog.json', 'api/nested/feed.json', 'oauth/client-metadata.json', 'llms.txt', 'llms-full.txt'];
+  for (const relative of artifacts) {
+    const file = path.join(appDir, 'out', relative);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `Canonical ${relative}\n`);
+  }
+  const result = runPostbuild(appDir);
+  assert.equal(result.status, 0, result.stderr);
+  for (const relative of artifacts) {
+    assert.deepEqual(
+      readFileSync(path.join(appDir, 'out', 'zh-Hans', relative)),
+      readFileSync(path.join(appDir, 'out', relative)),
+    );
+  }
+  assert.equal(runPostbuild(appDir).status, 0);
+});
+
+test('the postbuild CLI executes through a symlinked entry point', (t) => {
+  const appDir = exportFixture(t);
+  const link = path.join(appDir, 'postbuild-link.mjs');
+  symlinkSync(postbuild, link);
+  const result = spawnSync(process.execPath, [link, '--app-dir', appDir], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(existsSync(path.join(appDir, 'out/sitemap.xml')));
+  assert.match(result.stdout, /pages/);
 });
 
 test('repeated postbuild preserves identical sitemap and redirect bytes', (t) => {

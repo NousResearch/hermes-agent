@@ -9,6 +9,7 @@ export function catalogAlternates(path: string, locale: Locale): Metadata['alter
     languages: {
       en: canonicalUrl(localizedHref(path, 'en')),
       'zh-Hans': canonicalUrl(localizedHref(path, 'zh-Hans')),
+      'x-default': canonicalUrl(localizedHref(path, 'en')),
     },
   };
 }

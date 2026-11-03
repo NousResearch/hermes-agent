@@ -37,5 +37,7 @@ export function publicHref(href: string): string {
 }
 
 export function canonicalUrl(href: string): string {
-  return new URL(publicHref(href), SITE_URL).href;
+  const url = new URL(publicHref(href), SITE_URL);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
+  return url.href;
 }

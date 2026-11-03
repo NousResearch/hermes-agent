@@ -192,7 +192,8 @@ async def test_resolution_the_drain_owned_is_collected_when_its_recovery_fails(t
 
 
 @pytest.mark.asyncio
-async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkeypatch):
+@pytest.mark.parametrize('captured', [False, True], ids=['discarded', 'captured-answer'])
+async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkeypatch, captured):
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
@@ -202,17 +203,22 @@ async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkey
         raise OSError('storage unavailable')
 
     async def execute(owner, ref, row):
+        owner.pending_results[row['admission_id']] = {'result': {'final_response': 'reply'}, 'usage': {}}
         return 'reply'
 
     monkeypatch.setattr(session_results, 'finish_result', fail)
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
-    restored = []
+    restored, published = [], []
+    publish = recovery._publish_completion
+    monkeypatch.setattr(recovery, '_publish_completion',
+                        lambda *args: (published.append(args[3]['admission_id']), publish(*args)))
     with db:
         receipt = await _submit(authority, 'photo')
         await asyncio.wait_for(authority._drain(REF), 5)
         row = get_session_admission(db, admission_id=receipt.admission_id)
         assert row['status'] == 'unknown'
-        authority.pending_results.pop(receipt.admission_id, None)  # discarded: no captured answer
+        if not captured:
+            authority.pending_results.pop(receipt.admission_id, None)  # discarded: no captured answer
         live = authority.sessions.pop(REF.session_id)  # idle retirement let the conversation go
 
         def restore(owner, session_id):
@@ -223,6 +229,7 @@ async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkey
         receipt_after = await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
         assert receipt_after is not None
         assert restored and REF.session_id in authority.sessions
+        assert published == ([receipt.admission_id] if captured else []), 'the captured answer reaches viewers'
         await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='resolution cleanup')
 
 

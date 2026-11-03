@@ -26,8 +26,9 @@ from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_
 # ``module:Name`` entries allow one name. Re-harvest when those docs or PluginContext change.
 _PUBLIC = frozenset({
     # developer-guide / plugins docs
-    "agent.account_usage", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
+    "agent.account_usage", "agent.acp_client", "agent.browser_provider", "agent.context_engine", "agent.credential_pool",
     "agent.delegation_backends", "agent.delegation_provider", "hermes_cli.auth_model_picker:prompt_model_selection",
+    "hermes_cli.auth:resolve_external_process_provider_credentials", "hermes_cli.model_setup",
     "agent.image_gen_provider", "agent.memory_manager", "agent.memory_provider", "agent.secret_scope",
     "agent.secret_sources.base", "agent.subagent_lifecycle", "agent.terminal_env_provider",
     "agent.transports", "agent.transports.chat_completions", "agent.video_gen_provider",
@@ -61,6 +62,8 @@ _PUBLIC = frozenset({
     "tools.skills_tool:find_all_skills", "tools.skills_tool:sort_skills", "tools.skills_tool:skill_search_dirs",
     "tools.skills_tool:locate_skill", "tools.skills_tool:skill_lookup_path_error",
     "tools.skills_sync:dir_hash", "tools.skill_usage:read_skill_name",
+    # plugins/index.md § platform plugins: read session identity through the task-local context
+    "gateway.session_context:get_session_env",
 })
 
 _SHOWN = 10
@@ -110,30 +113,53 @@ def _imported(node: ast.AST) -> list[tuple[str, str]]:
     return []
 
 
+@lru_cache(maxsize=512)
+def _core_module_exists(module: str) -> bool:
+    path = Path(__file__).resolve().parents[1].joinpath(*module.split("."))
+    return path.with_suffix(".py").is_file() or path.is_dir()
+
+
+def _is_own_module_path(module: str, local: set[str]) -> bool:
+    """A Hermes-shaped path that core does not ship but whose tail is one of the plugin's own modules:
+    the fallback spelling of the plugin's install location (``plugins.memory.openltm._db`` beside
+    ``from . import _db``). A path core DOES ship stays a core import."""
+    parts = module.split(".")
+    return any(".".join(parts[i:]) in local for i in range(1, len(parts))) and not _core_module_exists(module)
+
+
 def _private_target(module: str, name: str, core: frozenset, local: set[str]) -> str:
     """The dotted target to report, or "" when the import is public, local or not Hermes's."""
     target = f"{module}.{name}" if name else module
-    hermes = module.split(".")[0] in core and module not in local
+    own = _is_own_module_path(module, local) or bool(name) and _is_own_module_path(target, local)
+    hermes = module.split(".")[0] in core and module not in local and not own
     public = target in _PUBLIC or f"{module}:{name}" in _PUBLIC \
         or (module in _PUBLIC and not name.startswith("_"))  # ``from gateway.platforms import base`` too
     return target if hermes and not public else ""
+
+
+def _parsed_files(plugin_dir: Path) -> list[tuple[Path, ast.AST]]:
+    """``(rel, tree)`` for every plugin module that can load inside Hermes. Hidden dirs (``.github/``
+    CI helpers) never do; tests and vendored envs are skipped by ``_python_files``."""
+    parsed = []
+    for path, rel in _python_files(plugin_dir):
+        if any(p.startswith(".") for p in rel.parts[:-1]):
+            continue
+        try:
+            parsed.append((rel, ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))))
+        except (SyntaxError, ValueError):
+            continue
+    return parsed
 
 
 def private_import_findings(plugin_dir: Path) -> list[str]:
     """``["<rel>:<line> <module>[.<name>]", ...]`` for every import of a private Hermes core module:
     the first site of each distinct module first (so a truncated list still shows the breadth),
     then the rest, each group in file/line order."""
-    plugin_dir = Path(plugin_dir)
-    # Hidden dirs (``.github/`` CI helpers) never load inside Hermes.
-    files = [(path, rel) for path, rel in _python_files(plugin_dir) if not any(p.startswith(".") for p in rel.parts[:-1])]
-    local = _local_modules(rel for _path, rel in files)
+    files = _parsed_files(Path(plugin_dir))
+    local = _local_modules(rel for rel, _tree in files)
     core = _hermes_packages()
     found: set[tuple[str, int, str, str]] = set()
-    for path, rel in files:
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8-sig", errors="replace"))
-        except (SyntaxError, ValueError):
-            continue
+    for rel, tree in files:
         skipped = _type_checking_nodes(tree)
         for node in ast.walk(tree):
             if id(node) in skipped:
@@ -148,13 +174,69 @@ def private_import_findings(plugin_dir: Path) -> list[str]:
     return [f"{rel}:{line} {target}" for rel, line, target, _module in first + rest]
 
 
+# The core objects a plugin holds a live handle to — ``SessionDB`` (``ctx`` session APIs, the
+# dashboard), ``AIAgent`` and ``GatewayRunner`` (hook kwargs), ``PluginContext`` — split across their
+# facade + sibling files. Calling one of their private methods (``db._execute_write(...)``,
+# ``runner._evict_cached_agent(...)``) couples the plugin to core internals exactly like a private
+# import, but no import names it, so the import pass above cannot see it.
+_CORE_HANDLE_SOURCES = ("hermes_state.py", "hermes_state_*.py", "run_agent.py", "agent/turn_*.py",
+                        "gateway/run.py", "gateway/run_*.py", "hermes_cli/plugins.py")
+
+
+@lru_cache(maxsize=1)
+def _core_private_methods() -> frozenset:
+    root = Path(__file__).resolve().parents[1]
+    names: set[str] = set()
+    for pattern in _CORE_HANDLE_SOURCES:
+        for path in root.glob(pattern):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            except (OSError, SyntaxError, ValueError):
+                continue
+            names |= {item.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef) for item in node.body
+                      if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                      and item.name.startswith("_") and not item.name.startswith("__")}
+    return frozenset(names)
+
+
+def _own_names(files: list[tuple[Path, ast.AST]]) -> set[str]:
+    """Every name the plugin defines or assigns, so its own ``obj._helper()`` never reads as core."""
+    own: set[str] = set()
+    for _rel, tree in files:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                own.add(node.name)
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+                own.add(node.attr)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                own.add(node.id)
+    return own
+
+
+def private_attribute_findings(plugin_dir: Path) -> list[str]:
+    """``["<rel>:<line> <expr>", ...]`` for every access to a private method of a core handle class
+    that the plugin does not define itself (``self``/``cls`` receivers excluded)."""
+    files = _parsed_files(Path(plugin_dir))
+    private = _core_private_methods() - _own_names(files)
+    found = {(rel.as_posix(), node.lineno, ast.unparse(node)[:80]) for rel, tree in files for node in ast.walk(tree)
+             if isinstance(node, ast.Attribute) and node.attr in private
+             and not (isinstance(node.value, ast.Name) and node.value.id in ("self", "cls"))}
+    return [f"{rel}:{line} {expr}" for rel, line, expr in sorted(found)]
+
+
+def _warn_sites(report, label: str, hits: list[str]) -> None:
+    more = f"; and {len(hits) - _SHOWN} more" if len(hits) > _SHOWN else ""
+    report.warn(
+        f"{label} (catalog rule 9: public surfaces only; these can break on any release): "
+        + "; ".join(hits[:_SHOWN]) + more
+        + ". Use ctx.* / documented plugin APIs, or open an issue for the seam you need."
+    )
+
+
 def check_private_imports(report, plugin_dir: Path) -> None:
-    """Warn (never fail) when the plugin imports private Hermes core modules."""
-    hits = private_import_findings(plugin_dir)
-    if hits:
-        more = f"; and {len(hits) - _SHOWN} more" if len(hits) > _SHOWN else ""
-        report.warn(
-            "private core imports (catalog rule 9: public surfaces only; these can break on any release): "
-            + "; ".join(hits[:_SHOWN]) + more
-            + ". Use ctx.* / documented plugin APIs, or open an issue for the seam you need."
-        )
+    """Warn (never fail) when the plugin imports private Hermes core modules or calls private
+    methods on the core objects it is handed."""
+    if hits := private_import_findings(plugin_dir):
+        _warn_sites(report, "private core imports", hits)
+    if hits := private_attribute_findings(plugin_dir):
+        _warn_sites(report, "private core attribute access", hits)

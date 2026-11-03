@@ -3,19 +3,20 @@
 import './preview-mind'
 
 import { useStore } from '@nanostores/react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { ComponentProps, PointerEvent as ReactPointerEvent } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
+import { hostHas } from '@/lib/host-capabilities'
 import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   addAnnotatePin,
   beginAnnotateMode,
@@ -125,7 +126,7 @@ function webPreviewSurface(isWebPreview: boolean, isRemoteHtml: boolean): 'ifram
     return null
   }
 
-  return isBrowserHostedDesktop() ? 'iframe' : 'webview'
+  return hostHas('webviewPreview') ? 'webview' : 'iframe'
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -154,6 +155,8 @@ interface PreviewPaneProps {
   onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
+  /** The session that owns the tab; a file it names resolves in that session's workspace. */
+  sessionId?: string
   /** The preview tab this pane renders. Keys the per-tab console store the
    *  browser bar's console toggle and the console panel both read. */
   tabId?: string
@@ -268,11 +271,21 @@ function PreviewLoadError({
   )
 }
 
+/** The body of a tab that is not a web page: a generated artifact or a file. */
+function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
+  return props.target.kind === 'artifact' ? (
+    <ArtifactPreview onClose={props.onClose} target={props.target} />
+  ) : (
+    <LocalFilePreview {...props} />
+  )
+}
+
 export function PreviewPane({
   embedded = false,
   onClose,
   onRestartServer,
   reloadRequest = 0,
+  sessionId,
   tabId,
   target
 }: PreviewPaneProps) {
@@ -1100,7 +1113,7 @@ export function PreviewPane({
 
     // A browser host has no `<webview>` tag: past the guard above, this is
     // exactly `usesBrowserIframe`, so the iframe mounts instead.
-    if (isBrowserHostedDesktop()) {
+    if (!hostHas('webviewPreview')) {
       return mountBrowserPreviewFrame({
         host,
         navigationRef,
@@ -1433,7 +1446,7 @@ export function PreviewPane({
       // guest page gets its own via `app-command` in main), and unhandled they
       // walk the HOST document's history. A browser tab keeps its own back button.
       onMouseDown={event => {
-        if (isBrowserHostedDesktop() || (event.button !== 3 && event.button !== 4)) {
+        if (!hostHas('appMouseHistoryButtons') || (event.button !== 3 && event.button !== 4)) {
           return
         }
 
@@ -1530,7 +1543,7 @@ export function PreviewPane({
             ref={hostRef}
           />
           {isRemoteHtml && (
-            <iframe
+            <PreviewDocumentFrame
               className="absolute inset-0 size-full border-0 bg-white"
               referrerPolicy="no-referrer"
               sandbox=""
@@ -1538,17 +1551,15 @@ export function PreviewPane({
               title={target.label || copy.fallbackTitle}
             />
           )}
-          {!isWebPreview &&
-            (target.kind === 'artifact' ? (
-              <ArtifactPreview onClose={onClose} target={target} />
-            ) : (
-              <LocalFilePreview
-                onClose={onClose}
-                onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
-                reloadKey={localReloadKey}
-                target={target}
-              />
-            ))}
+          {!isWebPreview && (
+            <PreviewDocumentBody
+              onClose={onClose}
+              onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
+              reloadKey={localReloadKey}
+              sessionId={sessionId}
+              target={target}
+            />
+          )}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">
               <PanelEmpty description={copy.blankPageBody} icon="globe" />

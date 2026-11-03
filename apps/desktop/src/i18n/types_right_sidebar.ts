@@ -43,10 +43,16 @@ export interface RightSidebarTranslations {
   terminalOpenInteractive: string
   terminalCloseOthers: string
   terminalCloseAll: string
+  terminalNewOn: string
+  terminalGatewayRemoved: string
+  terminalGatewayRemovedBody: string
+  terminalGatewayNoShellBody: string
+  terminalDisconnectedBody: string
   terminalDropUploadFailed: (name: string) => string
   terminalDropTooLargeTitle: string
   terminalDropTooLarge: (names: string, limit: string) => string
   terminalDropControlTitle: string
   terminalDropControl: (paths: string) => string
+  terminalDropUnquotable: (shell: string, paths: string) => string
   addToChat: string
 }

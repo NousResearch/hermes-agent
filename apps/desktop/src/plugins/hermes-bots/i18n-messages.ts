@@ -386,6 +386,7 @@ export type BotsMessages = {
     otherControls: string
     agentControls: string
     controlTaken: string
+    needsHttps: string
   }
 
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,

@@ -88,6 +88,8 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
     await adapter.handle_message(event)
     await async_wait_until(lambda: not adapter._active_sessions, timeout=15, what='the adapter to finish its session')
     entry = runner.session_store.get_or_create_session(source)
+    # The FIFO-drained turn's route records the receiving bot, so a restored session answers through it.
+    assert entry.transport_profile == 'transport', entry
     committed = rows(entry.session_id)
     assert committed and committed[0]['outcome'] == 'completed', (committed, adapter.deliveries)
     provenance = committed[0]['payload']['native_text_v1']['provenance']

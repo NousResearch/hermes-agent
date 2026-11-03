@@ -1076,6 +1076,12 @@ class GatewaySessionCommandsMixin:
         if isinstance(resolved, str):
             return resolved
         target_id, name = resolved
+        # A local conversation moves onto this lane from its current head, as /handoff carries it: a
+        # title naming its first segment (a local /new moved on) would strand the live one (#143286).
+        from gateway.session_route_recovery import conversation_head, follow_hand_off
+        authority, local_owner, head = await conversation_head(self, target_id)
+        if local_owner is not None:
+            target_id = head
         denied = await self._resume_access_denied_reply(source, target_id, name, allow_all, allow_cross_room)
         if denied is not None:
             return denied
@@ -1088,6 +1094,8 @@ class GatewaySessionCommandsMixin:
         )
         if not new_entry:
             return t("gateway.resume.switch_failed")
+        if local_owner is not None and authority is not None:  # a Desktop still viewing it follows it
+            follow_hand_off(authority, source, session_key, authority.logical_owner(target_id), local_owner)
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
         # Conversation boundary: clear ALL conversation-scoped per-session state (model/reasoning overrides
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security

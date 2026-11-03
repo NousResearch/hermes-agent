@@ -80,7 +80,7 @@ class AgentInputs:
             raise ValueError("bin_dir must be one output-relative directory")
         if self.resources.keys() - RESOURCE_ENV.keys():
             raise ValueError("unknown resource names")
-        if self.frontends.keys() - {"tui", "web"}:
+        if self.frontends.keys() - {"tui", "web", "webapp"}:
             raise ValueError("unknown frontend names")
         paths = [self.project, self.code, self.python, self.site_packages, self.environment,
                  self.pm_runtime, *self.resources.values(), *self.frontends.values()]

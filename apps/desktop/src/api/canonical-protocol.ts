@@ -1,6 +1,8 @@
 // Canonical local authority wire adapter. Remote legacy transports keep their
 // existing protocol; unsupported explicit semantics fail before network admission.
 
+import { randomUuid } from '@hermes/shared'
+
 export const CANONICAL_GATEWAY_PROTOCOL = 'hermes-gateway-v1'
 
 /** Dial `/api/ws` or a sibling stream beside it. A local gateway's one-use ticket leaves the URL
@@ -90,7 +92,10 @@ export function pickerModelMutation(value: unknown): { model: string; provider: 
 }
 
 function mutationSummary(operation: string, value: Record<string, unknown>): string {
-  if (operation === 'model') { return `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}` }
+  if (operation === 'model') {
+    // `/model reset` already on the configured default answers with the owner's note.
+    return typeof value.note === 'string' ? value.note : `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}`
+  }
 
   if (operation === 'branch') { return `branch: ${value.branched_session_id}` }
 
@@ -183,7 +188,7 @@ const OWNER_CONNECTION_VERBS = new Set([
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
 // Shift+click global yolo zap).
 const CANONICAL_CONFIG_KEYS = new Set([
-  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'daybreak', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
   'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
 ])
 
@@ -209,7 +214,7 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
 
   // The owner admits identified input only. An identityless producer (session tile, quick entry,
   // bot chats) is a fresh send on every call, which is what the legacy wire did with it.
-  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: crypto.randomUUID() } }
+  if (method === 'prompt.submit' && !params.submission_id && !params.input_id) { return { ...params, submission_id: randomUuid() } }
 
   return method === 'bot_relay.deliver' ? canonicalBotDelivery(params) : params
 }
@@ -335,7 +340,7 @@ export class CanonicalDesktopProtocol {
 
     if (withGeneration && generation === undefined) { throw new Error('Session execution identity unavailable; reconnect before this command') }
 
-    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: crypto.randomUUID(), expected_revision: revision,
+    const mutation: Record<string, unknown> = { session_id: sessionId, request_id: randomUuid(), expected_revision: revision,
       ...(withGeneration ? { expected_generation: generation } : {}), operation, payload }
 
     this.mutations.set(key, mutation)
@@ -537,7 +542,7 @@ export class CanonicalDesktopProtocol {
       ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
 
     const key = JSON.stringify(result)
-    const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
+    const requestId = params.request_id ?? this.creates.get(key) ?? randomUuid()
     this.creates.set(key, String(requestId))
 
     return { ...result, request_id: requestId, source: 'gui' }

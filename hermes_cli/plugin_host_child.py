@@ -527,7 +527,6 @@ def _take_protocol_streams():
 def capture_profiles(path: str, module_name: str) -> list[Any]:
     """Import a model-provider plugin and return the profiles it passes to ``register_provider``."""
     import providers
-    from providers.base import ProviderProfile
     providers.list_providers()  # bundled + known profiles register before the capture window
     captured: list[Any] = []
     original = providers.register_provider
@@ -536,12 +535,22 @@ def capture_profiles(path: str, module_name: str) -> list[Any]:
         _import_plugin({"path": path, "module_name": module_name, "name": Path(path).name})
     finally:
         providers.register_provider = original  # type: ignore[assignment]
-    for profile in captured:
-        if type(profile).create_client is not ProviderProfile.create_client:
-            raise PluginHostUnsupported(
-                f"provider profile {getattr(profile, 'name', '?')!r} overrides create_client(), which returns "
-                "a live SDK client; it runs only in-process")
     return captured
+
+
+def _host_unsupported_reason(profile: Any) -> str | None:
+    """Why *profile* cannot run behind the plugin host (it then loads in-process), or None."""
+    from providers.base import ProviderProfile
+    if type(profile).create_client is not ProviderProfile.create_client:
+        return "it overrides create_client(), which returns a live SDK client"
+    return None
+
+
+def _extraction_entry(profile: Any) -> dict[str, Any]:
+    reason = _host_unsupported_reason(profile)
+    if reason is not None:
+        return {"name": profile.name, "in_process": reason}
+    return describe_profile(profile)
 
 
 def describe_profile(profile: Any) -> dict[str, Any]:
@@ -577,7 +586,7 @@ def extract_profiles_main(path: str, module_name: str) -> int:
     del reader
     import hermes_bootstrap
     try:
-        payload = {"profiles": [describe_profile(p) for p in capture_profiles(path, module_name)]}
+        payload = {"profiles": [_extraction_entry(p) for p in capture_profiles(path, module_name)]}
     except Exception as exc:
         payload = {"error": f"{type(exc).__name__}: {exc}"}
     writer.write(json.dumps(payload).encode("utf-8"))

@@ -424,6 +424,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (local) { return local as T }
 
+    // The clarify card answers a whole question set as one form: declared, the owner asks the
+    // turn's multi-question clarify as ONE request; undeclared, one card per question. An older
+    // owner refuses the unknown key, so it rides only where `client.capabilities` advertised it.
+    if (method === 'prompt.submit' && this.backendClarifyBatch) { params = { ...params, clarify_batch: true } }
+
     let prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
 
@@ -808,4 +813,33 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     connectionId,
     ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
   }
+}
+
+/** The backend a gateway FILE request naming session `id` must go to: the owner's
+ *  backend-facing profile, plus its connection when that is not the ambient one.
+ *  Null when no owner profile is known. A file route looks `session_id` up in
+ *  the profile the request names, so the id must never travel with another
+ *  profile: a caller that gets null names no session at all. */
+export function sessionFileOwnerScope(id: string): { connectionId?: string; profile: string } | null {
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner) {
+    return null
+  }
+
+  if (typeof owner === 'string') {
+    const profile = owner.trim()
+
+    return profile ? { profile } : null
+  }
+
+  const profile = String(owner.targetProfile || owner.profile || '').trim()
+
+  if (!profile) {
+    return null
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
 }

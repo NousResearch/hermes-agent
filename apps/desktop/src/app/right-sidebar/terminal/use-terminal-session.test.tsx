@@ -1,9 +1,12 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type { DesktopConnectionsRegistry } from '@/global'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
+import { $connectionsRegistry } from '@/store/connections'
+import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
@@ -94,6 +97,8 @@ class Socket {
   static OPEN = 1
   static instances: Socket[] = []
   static persistent = false
+  // Set: every new socket is closed with this instead of answering.
+  static refusal: [number, string] | null = null
   url: URL
   sent: string[] = []
   readyState = 1
@@ -103,6 +108,12 @@ class Socket {
     this.url = new URL(url)
     Socket.instances.push(this)
     queueMicrotask(() => {
+      if (Socket.refusal) {
+        this.close(...Socket.refusal)
+
+        return
+      }
+
       const metadata = Socket.persistent
         ? { shell: 'fish', cwd: '/work', terminalId: this.url.searchParams.get('attach') || `shell-${Socket.instances.length}`, closed: this.url.searchParams.get('action') === 'close' }
         : { shell: 'fish' }
@@ -169,6 +180,7 @@ afterEach(() => {
   $terminals.set([])
   Socket.instances = []
   Socket.persistent = false
+  Socket.refusal = null
   emulator.output = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -297,6 +309,38 @@ it('replays server history once, suppresses parser replies, and detaches on remo
   act(() => emulator.input('\r'))
   await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
   expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
+})
+
+// Typing `exit` ends the host shell: the tab closes as it does in native Desktop, instead of
+// staying open as an expired terminal.
+it('closes a persistent browser tab when its host shell exits', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  act(() => Socket.instances[0].close(4410, 'Process exited'))
+  expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  expect(emulator.output).not.toContain('Press Enter to create a new shell')
+})
+
+// The shell exited while no view was attached (`exit`, then the tab was hidden or the page reloaded).
+it('closes a persistent browser tab whose shell exited while it was detached', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  const firstView = render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  firstView.unmount()
+  Socket.refusal = [4410, 'Process exited']
+  render(<Harness id={id} />)
+  await waitFor(() => expect($terminals.get().some(tab => tab.id === id)).toBe(false))
+  expect(Socket.instances[1].url.searchParams.get('attach')).toBe('shell-1')
+  expect(emulator.output).not.toContain('Press Enter to create a new shell')
 })
 
 it('close others and close all terminate mounted and unmounted persisted shells', async () => {
@@ -428,4 +472,105 @@ it("native Desktop: xterm's reply to the shell's cursor query is not activity; t
   })
 
   await waitFor(() => expect(saved()).toContain('$ make'), { timeout: 2000 })
+})
+
+// An SSH gateway tab survives its host going away: after teardown, Enter re-dials the gateway, and
+// while the host is still offline each failed start arms Enter again until the host is back.
+it('native Desktop: an SSH tab keeps Enter armed while its gateway is offline', async () => {
+  let exit: ((payload: { code: null | number; signal: null | string }) => void) | null = null
+
+  const start = vi
+    .fn()
+    .mockResolvedValueOnce({ connectionId: 'nas', id: 'pty-1', shell: 'ssh' })
+    .mockRejectedValueOnce(new Error('NAS is offline'))
+    .mockResolvedValueOnce({ connectionId: 'nas', id: 'pty-2', shell: 'ssh' })
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach: vi.fn(async () => true),
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn(() => () => {}),
+      onExit: vi.fn((_id: string, callback: typeof exit) => {
+        exit = callback
+
+        return () => {}
+      }),
+      resize: vi.fn(async () => true),
+      start,
+      write: vi.fn(async () => true)
+    }
+  }
+  const id = createTerminal('/work', { connectionId: 'nas', profile: 'default' })
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  act(() => exit!({ code: null, signal: 'disconnected' }))
+  act(() => emulator.input('\r'))
+  await waitFor(() => expect(emulator.output).toContain('Terminal failed to start: NAS is offline. Press Enter to retry.'))
+  expect(screen.getByText('closed')).toBeTruthy()
+
+  act(() => emulator.input('\r'))
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  expect(start).toHaveBeenCalledTimes(3)
+  expect(start.mock.calls[2][0]).toMatchObject({ connectionId: 'nas', profile: 'default' })
+})
+
+function nativeTerminalApi(start: ReturnType<typeof vi.fn>) {
+  const attach = vi.fn(async () => true)
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach,
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      resize: vi.fn(async () => true),
+      start,
+      write: vi.fn(async () => true)
+    }
+  }
+
+  return attach
+}
+
+// The PR's contract: a tab's recorded gateway wins over whatever Sessions has picked since.
+it('native Desktop: a recorded SSH tab starts on its gateway while Sessions shows This device', async () => {
+  $connectionsRegistry.set({
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'nas', kind: 'ssh', label: 'NAS' }
+    ],
+    primary: 'local',
+    version: 2
+  } as unknown as DesktopConnectionsRegistry)
+  $connection.set({ connectionId: 'local' } as never)
+
+  try {
+    const start = vi.fn(async (_payload: unknown) => ({ connectionId: 'nas', id: 'pty-1', shell: 'ssh' }))
+    nativeTerminalApi(start)
+    const id = createTerminal('/work', { connectionId: 'nas', profile: 'work' })
+    render(<Harness id={id} />)
+    await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+    expect(start.mock.calls[0][0]).toMatchObject({ connectionId: 'nas', profile: 'work' })
+  } finally {
+    $connection.set(null)
+    $connectionsRegistry.set(null)
+  }
+})
+
+it('native Desktop: a removed gateway shows the exited state and never attaches', async () => {
+  const start = vi.fn(async () => ({ connectionId: 'nas', cwd: null, id: '', shell: '', unavailable: 'missing' }))
+  const attach = nativeTerminalApi(start)
+  const id = createTerminal('/work', { connectionId: 'nas', profile: 'work' })
+  render(<Harness id={id} />)
+
+  await waitFor(() => expect(emulator.output).toContain('removed'))
+  expect(screen.getByText('closed')).toBeTruthy()
+  expect(attach).not.toHaveBeenCalled()
+  expect($terminals.get().some(tab => tab.id === id)).toBe(true)
 })

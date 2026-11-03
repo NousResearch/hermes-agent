@@ -1,6 +1,6 @@
 import type { HermesApiRequest, HermesSelectPathsOptions, HermesStagedUpload } from '@/global'
-import { blobToDataUrl, bytesToBase64 } from '@/lib/base64'
-import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
+import { blobToDataUrl } from '@/lib/base64'
+import { type BrowserBootstrap, browserFetch, endpointUrl } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
 
@@ -19,6 +19,11 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.tiff': 'image/tiff',
   '.webp': 'image/webp'
 }
+
+// Image types the composer attaches but the browser cannot stage: /api/chat/image-upload
+// takes only the raster formats it can sniff, and the send reads an image chip
+// back from that host path. A blob: URL here would become a chip whose Send fails.
+const UNSENDABLE_IMAGE_EXTENSIONS = new Set(['.ico', '.svg'])
 
 export const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntries(
   Object.entries(IMAGE_MIME_BY_EXTENSION).map(([extension, mime]) => [mime, extension])
@@ -46,15 +51,42 @@ function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
   }
 }
 
-function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
-  const source = `data:text/html;charset=utf-8;base64,${bytesToBase64(bytes)}`
+// Keep HTML as inert attribute data until the external loader sends it to the preview
+// route. A blob/srcdoc would inherit the app CSP; a data URL hits Chromium's 2 MiB
+// navigation limit. The preview's inner srcdoc needs an explicit base for #anchors.
+// Insert it inside the authored head (or after the doctype) to retain attributes and mode.
+const SRCDOC_BASE = '<base href="about:srcdoc">'
+const LEADING_DOCTYPE = /^\s*<!doctype[^>]*>/i
+const BASE_ELEMENT = /<base[\s/>]/i
+const START_TAG_REST = String.raw`(?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*>`
+const HEAD_START = new RegExp(`<head${START_TAG_REST}`, 'i')
+const HTML_START = new RegExp(`<html${START_TAG_REST}`, 'i')
+
+function withSrcdocBase(page: string): string {
+  if (BASE_ELEMENT.test(page)) {
+    return page
+  }
+
+  const anchor = HEAD_START.exec(page) ?? HTML_START.exec(page) ?? LEADING_DOCTYPE.exec(page)
+  const at = anchor ? anchor.index + anchor[0].length : 0
+
+  return page.slice(0, at) + SRCDOC_BASE + page.slice(at)
+}
+
+function sandboxedHtmlBlob(bytes: Uint8Array, bootstrap: BrowserBootstrap): Blob {
+  const srcdoc = withSrcdocBase(new TextDecoder('utf-8').decode(bytes))
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 
   const wrapper = [
     '<!doctype html>',
     '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
     '<style>html,body,iframe{box-sizing:border-box;width:100%;height:100%;margin:0;border:0}</style>',
     '</head><body>',
-    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${source}"></iframe>`,
+    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" data-preview-html="${srcdoc}" src="${endpointUrl('/assets/webapp-preview.html', bootstrap.basePath).href}"></iframe>`,
+    `<script src="${endpointUrl('/assets/webapp-preview.js', bootstrap.basePath).href}"></script>`,
     '</body></html>'
   ].join('')
 
@@ -94,6 +126,15 @@ async function stageBrowserFile(
   profile: null | string,
   onStaged: OnStaged
 ): Promise<string> {
+  // The server refuses a larger file anyway, with a 413 that doesn't name the limit: say it here.
+  // The reason leaves out the name, which a drop warning adds: a long name would push the reason
+  // past readableError's length cap and lose the limit.
+  if (file.size > BROWSER_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      `The file is larger than ${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB, the largest file the browser can attach.`
+    )
+  }
+
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
 
@@ -203,6 +244,10 @@ export function createBrowserUploadsBridge({
     const extension = normalizedExtension(ext)
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
 
+    if (UNSENDABLE_IMAGE_EXTENSIONS.has(extension)) {
+      throw new Error("SVG and ICO images can't be attached in the browser. Attach a PNG, JPEG, GIF, WebP or BMP instead.")
+    }
+
     // /api/chat/image-upload stores images up to 25 MiB, but the send reads the staged image back
     // with the 16 MiB file-read cap: refuse a larger one here, before it shows as attached.
     if (imageMime && bytes.byteLength > BROWSER_UPLOAD_MAX_BYTES) {
@@ -232,7 +277,7 @@ export function createBrowserUploadsBridge({
     const isHtml = extension === '.htm' || extension === '.html'
 
     const blob = isHtml
-      ? sandboxedHtmlBlob(bytes)
+      ? sandboxedHtmlBlob(bytes, bootstrap)
       : new Blob([bytes.buffer], { type: 'application/octet-stream' })
 
     const url = URL.createObjectURL(blob)

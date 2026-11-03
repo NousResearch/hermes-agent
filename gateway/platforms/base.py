@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
 
-from utils import normalize_proxy_url
+from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
@@ -246,6 +246,12 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
     return lo
 
 
+def fit_prefix(text: str, budget: int, measure, suffix: str = "...") -> str:
+    """``text``, or its longest prefix within ``budget`` ``measure`` units plus ``suffix`` (outside it)."""
+    n = _custom_unit_to_cp(text, budget, measure)
+    return text if n == len(text) else text[:n] + suffix
+
+
 def _prefix_within_utf16_limit(s: str, limit: int) -> str:
     """Longest prefix of *s* with UTF-16 length ≤ *limit*; never splits a surrogate pair."""
     return s[:_custom_unit_to_cp(s, limit, utf16_len)]
@@ -425,7 +431,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.helpers import fence_state_after, typing_metadata_for_turn
+from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -434,6 +441,7 @@ from gateway.platforms.base_streaming_tts import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -543,7 +551,7 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         return d
 
     def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
-        return _cleanup_cache_dir(get_dir(), max_age_hours)
+        return unlink_files_older_than(get_dir(), "*", max_age_hours * 3600)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
     return get_dir, cleanup
@@ -669,18 +677,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         cache_fn=cache_image_from_bytes, log_label="Media")
 
 
-def _cleanup_cache_dir(cache_dir: Path, max_age_hours: int) -> int:
-    """Delete files in *cache_dir* older than *max_age_hours*; return the count removed."""
-    cutoff = time.time() - (max_age_hours * 3600)
-    removed = 0
-    for f in cache_dir.iterdir():
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            with contextlib.suppress(OSError):
-                f.unlink()
-                removed += 1
-    return removed
-
-
 # Audio cache utilities (same pattern as images; feeds the STT tool).
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
 get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
@@ -788,8 +784,7 @@ def _sqlite_files(name: str) -> tuple[str, ...]:
 _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
-    "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens", "webapp",
+    "webhook_subscriptions.json", *SECRET_CACHE_STORES, "pairing", "mcp-tokens", "webapp",
     # Whole conversation history (every secret ever pasted into a chat) and the copied browser
     # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
     # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
@@ -1004,13 +999,13 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
 
 
 def _translate_docker_container_media_path(
-    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False,
+    candidate: Path, session_key: str = "", workspace_key: str = "", *, quiet: bool = False, workspace_cwd: str = "",
 ) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``.
 
-    ``workspace_key`` is the 16-hex digest of one session's host cwd. It selects that
-    session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
+    ``workspace_key`` is the 16-hex digest of one session's host cwd ``workspace_cwd`` (its cwd
+    mount). It selects that session's ``<base>:ws:<digest>`` sandbox and is empty for MEDIA delivery.
     """
     if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
@@ -1029,7 +1024,7 @@ def _translate_docker_container_media_path(
     if "/workspace" not in mounted:
         mounts.extend(
             (root, Path("/workspace"))
-            for root in _default_docker_workspace_host_roots(session_key, workspace_key))
+            for root in _default_docker_workspace_host_roots(session_key, workspace_key, workspace_cwd))
     # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
     # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
     # translating it via the home mount would dodge the host denylist.
@@ -1590,6 +1585,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
+    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
 
     @property
     def choices(self) -> list[str]:
@@ -1602,8 +1598,8 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
-    # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # Adapter-specific metadata. Contracts: raw_response["partial_overflow"] (Telegram edit-overflow partial: the stream
+    # consumer sends the missing tail); raw_response["failure_notice_sent"] (a failed media send already posted a notice).
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
@@ -1721,8 +1717,7 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_media(event)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
@@ -2490,8 +2485,7 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+                existing.extend_media(event)
             existing.absorb_reply_expected(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -2733,19 +2727,8 @@ class BasePlatformAdapter(ABC):
         ``message_len_fn`` units: the platform cap applies to the wire payload, and escaping
         expands (``&`` → ``&amp;``), so a raw-length cut can still overflow. Returns raw text (the
         caller escapes); ``suffix`` rides outside ``budget`` like ``_truncate_preview``."""
-        text = str(text or "")
         escape = escape or self._ea_escape
-        len_fn = self.message_len_fn
-        if len_fn(escape(text)) <= budget:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi:  # escaped length is monotonic in the raw prefix, so bisect it
-            mid = (lo + hi + 1) // 2
-            if len_fn(escape(text[:mid])) <= budget:
-                lo = mid
-            else:
-                hi = mid - 1
-        return text[:lo] + suffix
+        return fit_prefix(str(text or ""), budget, lambda s: self.message_len_fn(escape(s)), suffix)
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         """Chars of command preview that fit; platforms with a hard message cap compute it."""
@@ -2802,16 +2785,15 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via
-        ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
-        render them natively in ``_send_exec_approval_prompt``."""
+        """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
+        Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``."""
         if description is None:
             description = ea_default_reason_text()
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            description=description, smart_denied=smart_denied, request_id=request_id,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))
@@ -4249,8 +4231,7 @@ class BasePlatformAdapter(ABC):
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
-            """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+            """MEDIA tags may route to send_voice (bare files never); an adapter's own failure notice is not repeated."""
             ext = Path(path).suffix.lower()
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                 result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
@@ -4263,7 +4244,8 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                if not (isinstance(result.raw_response, dict) and result.raw_response.get("failure_notice_sent")):
+                    await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
@@ -4449,13 +4431,9 @@ class BasePlatformAdapter(ABC):
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
         read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
         would let stale runs fire a fresher run's callbacks."""
-        _post_cb = self.pop_post_delivery_callback(
-            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
-        if callable(_post_cb):
-            with contextlib.suppress(asyncio.TimeoutError, Exception):
-                _post_result = _post_cb()
-                if inspect.isawaitable(_post_result):
-                    await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        await run_post_delivery_callback(self.pop_post_delivery_callback(
+            session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None)),
+            _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -4494,7 +4472,9 @@ class BasePlatformAdapter(ABC):
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
+        _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
+            self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)
+        typing_task = self._start_typing_refresh(event, interrupt_event, _typing_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
@@ -4576,7 +4556,7 @@ class BasePlatformAdapter(ABC):
                     self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
                 self._spawn_drain_task(pending_event, session_key, delay=delay)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4588,20 +4568,18 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
-            # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
-            if isinstance(e, (SystemExit, KeyboardInterrupt)):
+            await self._notify_turn_error(event, e)
+            from hermes_cli.config_backend import ConfigBackendUnavailable as _outage  # this turn only
+            if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
+            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
             self._finish_session_task(session_key, interrupt_event)

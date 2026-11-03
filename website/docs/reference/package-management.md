@@ -238,6 +238,14 @@ This applies to source and bundle builds alike. Explicit `AR` and `CC` values
 remain authoritative; PM does not change the toolchain of a caller-supplied
 interpreter such as Nix Python. No `CC` default is needed for the current pin.
 
+The pinned Linux Python records `clang`/`clang++` as `CC`/`CXX` and the same
+temporary `llvm-ar` as `AR`. When a recorded compiler is not on `PATH` but its
+GCC equivalent is (`gcc`/`g++`, as on stock Debian, Ubuntu and WSL), PM points
+`CC`/`CXX` and the matching `LDSHARED`/`LDCXXSHARED` at it, keeping flags such
+as `-pthread`, and defaults `AR` to the host's `ar`. A `CC`, `CXX`, `LDSHARED`,
+`LDCXXSHARED` or `AR` you set yourself wins. With no compiler at all, a source
+build fails with a hint to install one (`sudo apt install build-essential`).
+
 Clone the repository and select your branch before preparing dependencies:
 
 ```bash
@@ -499,6 +507,7 @@ Use the public `pm` module for Python dependency work:
 | `pm.build_environment(source=..., out=..., explicit=True)` | Build and validate a fresh caller-owned output. No plugin discovery or application selection. |
 | `pm.lock_project(source, explicit=True)` | Refresh an explicit project's lock without selecting an environment. |
 | `pm.ensure_environment(name, requirements, explicit=True)` | Prepare and select an isolated dependency generation. Return its Python path. |
+| `pm.ensure_project_environment(name, project, extras=..., explicit=True)` | Prepare and select an isolated generation of a project's locked dependencies, without installing the project. Return its Python path. |
 | `pm.ensure_python_tool(name, requirements, executable, explicit=True)` | Prepare an isolated tool and return its executable path. |
 | `pm.environment_python(name)` / `pm.python_tool(name, executable)` | Read selected paths without installing anything. |
 | `pm.venv_is_current()` | Ask a ready PM worker whether application dependencies are current. Return false if the manager runtime is unavailable. |
@@ -537,12 +546,14 @@ hermes pm install chromium
 |---|---|
 | `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`chromium`, the browser Hermes launches, and `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
 | `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`chromium` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` (`--without cua-driver`) use this. The browser opt-out passes the legacy name `--without agent-browser`, which every PM release accepts and this one reads as `chromium`; a choice recorded under that name still skips `chromium`. |
+| `pm install --without EXTRA` | Drop a recorded Python extra that `[all]` does not include (for example `matrix`, which a migration from a pre-PM venv carries forward when that venv held its packages). The bare install's sync builds a generation without it, and the choice is recorded beside the install's dependency state: `hermes update`, the pre-PM venv scan, the update's install of configured platforms' extras, and a lazy install at first use never add it back. Packages another recorded extra also pulls in (a recorded `messaging` includes Slack, Telegram and Discord) stay until that extra goes too. `pm install --extra EXTRA` opts back in. Extras inside `[all]` (`web`, `mcp`, ...) are refused, since every sync selects them. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
-| `pm doctor` | Check installed tool identities, files, and digests against the lock. |
+| `pm doctor` | Check installed tool identities, files, and digests against the lock, and look for corrupt entries in PM's uv cache. `--repair` removes those entries so they are fetched again. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
+| `pm environment NAME --extra EXTRA` / `--requirement REQ` | Make the isolated side environment `HERMES_HOME/environments/NAME` current and print only its Python path on stdout (progress goes to stderr), for shell callers such as skills: `PY="$(hermes pm environment documents --extra documents --extra documents-pdf)"`. `--extra` installs the pinned requirements of extras declared in `pyproject.toml`; `--requirement` takes bounded ad hoc requirements. The environment records its own lock, and only a changed requirement set or Python pin builds a new generation. Concurrent calls serialize on the environment's lock, and a rebuild lands in a new generation, so a caller already using the previous one keeps its files. An explicit install: it runs even where lazy installs are off. Never `pip install` into the result. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
-| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of deleted checkouts (a worktree removed from a `.worktrees/` dir that still exists, or a clone under the data root; checkouts this process cannot see, such as a host install viewed from a container sharing the data root, are kept, as is any state whose install lock or generation lease is still held). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |
+| `pm gc` | Remove unreferenced tool-store entries, eligible download partials, unused lease-managed Python generations, and the `installs/INSTALL_KEY/` state of deleted checkouts (a worktree removed from a `.worktrees/` dir that still exists, or a clone under the data root; a missing checkout anywhere else, such as a host install viewed from a container sharing the data root, is kept until its state has gone unused, with no sync and no launch, for `worktrees.install_state_retention_days` (default 14, 0 = forever); state whose install lock or generation lease is still held is always kept). The worktree pruner that runs at startup reclaims those orphaned state dirs too. |
 
 `pm env` excludes inherited process variables, including credentials. Its
 output can still reveal local installation paths; review it before sharing.
@@ -615,6 +626,7 @@ without upload times, it stops with `has no publish time`; use
 - **New environment requires restart:** restart the affected Hermes process. Do not add a second site-packages tree to its live imports.
 - **Dependency conflict:** read `hermes pm status`. Correct the plugin requirements before retrying admission.
 - **Damaged Python dependencies:** run `hermes pm repair`, then restart Hermes. Repair replays the selected generation's saved workspace and lock without parsing plugin configuration. An unreadable record or missing saved lock fails without selecting a reduced dependency set. Before a generation exists, repair uses the shipped or committed lock and recorded feature set.
+- **Corrupt cached package** (`The wheel is invalid`, `RECORD file is invalid`): a machine stop during an install can leave a uv cache entry whose files are empty or NUL-filled. Installs remove the damaged package from PM's uv cache and retry on their own; `hermes pm doctor` reports such entries and `hermes pm doctor --repair` removes them. If the same package is still invalid after a fresh download, the package source is serving a broken wheel.
 - **Interrupted dependency install:** startup requests the same PM repair before dependency activation. Automatic attempts are bounded; `pm repair` retries explicitly. A failed repair preserves the previous selection and its retry marker.
 - **Damaged Python executable or application source:** repair or reinstall through the package owner. PM cannot run without those files. Signed payload files are never modified by dependency repair.
 - **Unknown package or extra:** use the declared name. `pm install` takes package names, not Python extra names or pip specifications.

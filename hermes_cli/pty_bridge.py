@@ -302,6 +302,17 @@ class PtyBridge:
         except OSError:
             pass
 
+    def size(self) -> Optional[tuple[int, int]]:
+        """The child's ``(cols, rows)`` (``TIOCGWINSZ``), or None once the PTY is closed."""
+        if self._closed:
+            return None
+        try:
+            rows, cols, _xpixel, _ypixel = struct.unpack(
+                "HHHH", fcntl.ioctl(self._fd, termios.TIOCGWINSZ, bytes(8)))
+        except OSError:
+            return None
+        return cols, rows
+
     def _discard_output(self, timeout: float) -> None:
         # Exiting children flush their pending terminal output first; on macOS a process stays in
         # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain

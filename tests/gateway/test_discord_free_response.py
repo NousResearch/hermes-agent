@@ -1058,3 +1058,123 @@ class TestNonConversationalTrackerOffload:
         assert sorted(writes[-1]) == ["1", "2"]
 
 
+
+
+# ── Threads opened on the bot's own post (a cron post, a broadcast) ────────────────────
+# Someone opens a thread on a message the bot posted and asks about it. Discord gives the
+# thread the post's id, and the post itself lives in the parent channel, not in the
+# thread's history. The bot never replied there, so before this the unmentioned question
+# was dropped by require_mention; the post is what the question is about, so it rides in
+# as context on the first turn.
+
+
+class FakeThreadOnPost(FakeThread):
+    def __init__(self, *, starter, parent, cached=False, **kwargs):
+        super().__init__(parent=parent, **kwargs)
+        self.starter_message = starter if cached else None
+
+
+class FakeParentWithPost(FakeTextChannel):
+    def __init__(self, post=None, **kwargs):
+        super().__init__(**kwargs)
+        self._post = post
+        self.fetch_message = AsyncMock(side_effect=self._fetch)
+
+    async def _fetch(self, message_id):
+        if self._post is None or int(message_id) != int(self._post.id):
+            raise RuntimeError("404 Not Found (error code: 10008): Unknown Message")
+        return self._post
+
+
+def _thread_on_post(*, post_author, cached=False):
+    post = make_history_message(author=post_author, content="Jobs · 2 worth a look of 20\n- 1. Agentic Python Engineer", msg_id=555)
+    post.clean_content = post.content
+    parent = FakeParentWithPost(post=post, channel_id=1550)
+    return FakeThreadOnPost(starter=post, parent=parent, cached=cached, channel_id=555), parent
+
+
+class _Threads(set):
+    async def mark_async(self, thread_id):
+        self.add(str(thread_id))
+
+
+def _ready(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter._ready_event.set()
+    adapter._is_allowed_user = lambda *a, **k: True
+    adapter._threads = _Threads()
+
+
+@pytest.mark.asyncio
+async def test_thread_on_own_post_is_answered_with_the_post_as_context(adapter, monkeypatch):
+    _ready(adapter, monkeypatch)
+    thread, parent = _thread_on_post(post_author=adapter._client.user)
+    question = make_message(channel=thread, content="why are most of these source unreachable?")
+    question.id = 777
+
+    await adapter._dispatch_discord_message(question)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "why are most of these source unreachable?"
+    assert "Jobs · 2 worth a look of 20" in (event.channel_context or "")
+    assert "555" in adapter._threads  # follow-ups need no lookup and no mention
+    parent.fetch_message.assert_awaited_once_with(555)
+
+
+@pytest.mark.asyncio
+async def test_thread_on_own_post_uses_the_cached_starter(adapter, monkeypatch):
+    _ready(adapter, monkeypatch)
+    thread, parent = _thread_on_post(post_author=adapter._client.user, cached=True)
+    question = make_message(channel=thread, content="tell me more")
+    question.id = 777
+
+    await adapter._dispatch_discord_message(question)
+
+    adapter.handle_message.assert_awaited_once()
+    parent.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_on_someone_elses_post_still_needs_a_mention(adapter, monkeypatch):
+    _ready(adapter, monkeypatch)
+    other = SimpleNamespace(id=42, display_name="Jezza", name="Jezza", bot=False)
+    thread, parent = _thread_on_post(post_author=other)
+    first = make_message(channel=thread, content="anyone?")
+    first.id = 777
+    second = make_message(channel=thread, content="still nobody?")
+    second.id = 778
+
+    await adapter._dispatch_discord_message(first)
+    await adapter._dispatch_discord_message(second)
+
+    adapter.handle_message.assert_not_awaited()
+    assert "555" not in adapter._threads
+    parent.fetch_message.assert_awaited_once()  # the answer is remembered per thread
+
+
+@pytest.mark.asyncio
+async def test_thread_on_own_post_respects_thread_require_mention(adapter, monkeypatch):
+    _ready(adapter, monkeypatch)
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    thread, parent = _thread_on_post(post_author=adapter._client.user)
+    question = make_message(channel=thread, content="tell me more")
+    question.id = 777
+
+    await adapter._dispatch_discord_message(question)
+
+    adapter.handle_message.assert_not_awaited()
+    parent.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_whose_starter_is_gone_stays_gated(adapter, monkeypatch):
+    _ready(adapter, monkeypatch)
+    thread, _ = _thread_on_post(post_author=adapter._client.user)
+    thread.parent = FakeParentWithPost(post=None, channel_id=1550)
+    question = make_message(channel=thread, content="tell me more")
+    question.id = 777
+
+    await adapter._dispatch_discord_message(question)
+
+    adapter.handle_message.assert_not_awaited()

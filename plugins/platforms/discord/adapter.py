@@ -1285,6 +1285,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._voice_fx_cfg: dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Threads someone opened on the bot's own post: the post, held for the first turn's
+        # context, and threads already found to start elsewhere (one lookup per thread).
+        self._own_post_starters: dict[str, Any] = {}
+        self._not_own_post_threads: dict[str, None] = {}
         self._semantic_thread_renames = SemanticThreadRenames()
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: dict[str, asyncio.Task] = {}
@@ -1759,6 +1763,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except TimeoutError:
                 pass
+        await self._join_thread_on_own_post(message)
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
@@ -2561,8 +2566,58 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             and not self._discord_thread_require_mention()
         )
 
+    async def _join_thread_on_own_post(self, message: Any) -> None:
+        """A thread opened on a message this bot posted (a cron post, a broadcast) counts as
+        joined, so a question there needs no @mention. The post lives in the parent channel,
+        not in the thread's history, so it is held for the first turn's context. Discord gives
+        such a thread its starter message's id. One lookup per thread; runs before the gates."""
+        channel = getattr(message, "channel", None)
+        me = getattr(self._client, "user", None) if self._client else None
+        if not isinstance(channel, discord.Thread) or me is None or getattr(message, "author", None) == me:
+            return
+        thread_id = str(channel.id)
+        if (thread_id in self._threads or thread_id in self._not_own_post_threads
+                or self._discord_thread_require_mention()):
+            return
+        starter = getattr(channel, "starter_message", None)
+        if starter is None:
+            fetch = getattr(getattr(channel, "parent", None), "fetch_message", None)
+            if fetch is None:
+                return
+            try:
+                starter = await fetch(channel.id)
+            except Exception as exc:  # deleted post, no access, or a thread not opened on a message
+                logger.debug("[%s] thread %s: starter lookup failed: %s", self.name, thread_id, exc)
+                if getattr(exc, "status", None) not in (403, 404):
+                    return  # transient: look again on the next message
+                starter = None
+        if starter is None or str(getattr(getattr(starter, "author", None), "id", "")) != str(me.id):
+            self._not_own_post_threads[thread_id] = None
+            if len(self._not_own_post_threads) > 1000:
+                self._not_own_post_threads.pop(next(iter(self._not_own_post_threads)))
+            return
+        self._own_post_starters[thread_id] = starter
+        if len(self._own_post_starters) > 100:
+            self._own_post_starters.pop(next(iter(self._own_post_starters)))
+        await self._threads.mark_async(thread_id)
+
+    def _own_post_context(self, thread_id: Optional[str]) -> str:
+        """The post a thread was opened on, once, as a context block; "" for any other thread."""
+        starter = self._own_post_starters.pop(thread_id, None) if thread_id else None
+        if starter is None:
+            return ""
+        content = (getattr(starter, "clean_content", None) or getattr(starter, "content", "") or "").strip()
+        files = [getattr(a, "filename", "") for a in (getattr(starter, "attachments", None) or [])]
+        if files:
+            content = (content + "\n" if content else "") + "(attachments: " + ", ".join(f for f in files if f) + ")"
+        if not content:
+            return ""
+        name = getattr(starter.author, "display_name", None) or getattr(starter.author, "name", None) or "bot"
+        return f"[Thread opened on this post of yours; the user is asking about it]\n[{name} [bot]] {content}"
+
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
+        await self._join_thread_on_own_post(message)
         if not isinstance(message.channel, discord.DMChannel):
             parent_id = self._get_parent_channel_id(message.channel)
             channel_keys = self._discord_channel_keys(message, parent_id)
@@ -6296,6 +6351,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
+        if _own_post := self._own_post_context(thread_id):
+            _channel_context = f"{_own_post}\n\n{_channel_context}" if _channel_context else _own_post
         # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
         if (not event_text or not event_text.strip()) and not _channel_context:
             # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.

@@ -71,6 +71,12 @@ _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 # Drain retries of a refused watch event follow the same bounded-backoff policy, keyed to the
 # 2 s drain cadence instead of the watcher's check interval (#140899).
 _WATCH_INJECTION_RETRY_BASE_DELAY = 4.0
+# A background delegation completion the gateway keeps refusing for a transient reason is deferred with its
+# durable attempt refunded, so nothing else ever tells the user. After this many consecutive refusals, or
+# this long of continuous deferral, ONE concise notice goes to the originating chat (no model turn).
+_STUCK_DELEGATION_NOTICE_REFUSALS = _MAX_COMPLETION_INJECTION_ATTEMPTS
+_STUCK_DELEGATION_NOTICE_AFTER_S = 300.0
+_STUCK_DELEGATION_GOAL_CHARS = 120
 
 
 def _refusal_retry_at(step: int) -> float:
@@ -1345,6 +1351,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # ``dropped`` across restarts too (#141153); any other (restart wait, full FIFO, an owner
             # not yet proven) is refunded and never drops a completion the owner will take later.
             refused = not exc.permanent
+            # The watcher's requeue copy is not ours to touch here (admission may run on a sibling copy), so
+            # leave the reason where ``_flag_stuck_delegations`` collects it for the stuck-row notice.
+            reasons = self.__dict__.setdefault("_async_completion_refusal_reasons", {})
+            for delegation_id in {claim.delegation_id, str(evt.get("delegation_id") or ""),
+                                  *(str(sibling.get("delegation_id") or "") for sibling, _cid in sibling_claims)}:
+                if delegation_id:
+                    reasons[delegation_id] = exc.reason or str(exc) or "not_accepted"
             return False
         finally:
             if identity_claimed and not accepted:
@@ -1704,6 +1717,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                             self._back_off_refused_completions(group)
                             for evt in group:
                                 _pr.completion_queue.put(evt)
+                            await self._flag_stuck_delegations(group)
                     except Exception as e:
                         for evt in group:
                             _pr.completion_queue.put(evt)
@@ -1719,6 +1733,68 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             step = int(evt.get("_watch_retry_step") or 0) + 1
             evt["_watch_retry_step"] = step
             evt["_watch_next_retry_at"] = _refusal_retry_at(step)
+
+    async def _flag_stuck_delegations(self, group: list[dict]) -> None:
+        """Tell the chat ONCE when a refused async completion keeps being deferred (best-effort, no model turn).
+
+        ``_watch_retry_step`` (just advanced by ``_back_off_refused_completions``) counts consecutive refusals
+        of the in-memory event; a deferral refunds the durable attempt, so the row would otherwise sit
+        ``pending`` with nothing shown. The row is never dropped or acked here: delivery keeps retrying and
+        this notice is extra signal. Deduped per ``delegation_id`` in memory; a restart may notify again.
+        """
+        reasons = self.__dict__.setdefault("_async_completion_refusal_reasons", {})
+        notified = self.__dict__.setdefault("_stuck_delegations_notified", set())
+        now = time.monotonic()
+        for evt in group:
+            delegation_id = str(evt.get("delegation_id") or "")
+            if not delegation_id or evt.get("type") != "async_delegation" or evt.get("task_failure_notice"):
+                continue
+            # Refusal reason rides the requeued event so the notice can say why (latest wins).
+            evt["_refusal_reason"] = reasons.pop(delegation_id, None) or evt.get("_refusal_reason") or "not_ready"
+            evt.setdefault("_deferred_since", now)
+            if delegation_id in notified:
+                continue
+            refusals = int(evt.get("_watch_retry_step") or 0)
+            if refusals < _STUCK_DELEGATION_NOTICE_REFUSALS and now - evt["_deferred_since"] < _STUCK_DELEGATION_NOTICE_AFTER_S:
+                continue
+            try:
+                if await self._send_stuck_delegation_notice(evt, refusals, now - evt["_deferred_since"]):
+                    notified.add(delegation_id)
+            except Exception:
+                logger.warning("Stuck-delegation notice for %s failed", delegation_id, exc_info=True)
+
+    async def _send_stuck_delegation_notice(self, evt: dict, refusals: int, deferred_s: float) -> bool:
+        """Post the concise stuck notice through the process watcher's transport. True once the decision is
+        final (sent, or suppressed by ``suppress_warning_notifications``); False to try again next pass."""
+        platform_name = str(evt.get("platform") or "")
+        chat_id, thread_id = evt.get("chat_id", ""), evt.get("thread_id", "")
+        if not platform_name or not chat_id:
+            return False  # not routable (yet): the retry keeps trying; the notice follows once it is
+        from gateway.run import _redact_gateway_user_facing_secrets
+        from gateway.warning_notifications import present_notification
+        from hermes_constants import get_hermes_home
+        async with self._completion_event_scope(evt):
+            source = await asyncio.to_thread(self._build_process_event_source, evt)
+            if not self._resolve_injection_adapter(platform_name, source):
+                return False  # no transport right now: a notice sent into the void must not spend the dedupe
+            goal = evt.get("goal") or next(iter(evt.get("goals") or []), "")
+            goal = " ".join(_redact_gateway_user_facing_secrets(str(goal)).split())
+            if len(goal) > _STUCK_DELEGATION_GOAL_CHARS:
+                goal = goal[:_STUCK_DELEGATION_GOAL_CHARS - 1] + "…"
+            text = (
+                f"⚠️ Background delegation {evt.get('delegation_id')} ({evt.get('status') or 'unknown'}) has a "
+                f"result that could not be delivered here: refused {refusals} times over {int(deferred_s // 60)} min "
+                f"(reason: {evt.get('_refusal_reason')}). Delivery is still being retried. Goal: {goal or '(none)'}. "
+                f"To read the result now, check the delegation ledger: {get_hermes_home() / 'state.db'} "
+                "table async_delegations, column result_json."
+            )
+            logger.warning("Async delegation %s completion refused %d times (%s); posting a stuck notice",
+                           evt.get("delegation_id"), refusals, evt.get("_refusal_reason"))
+            # Automatic diagnostic: the same opt-out as the process watcher's failure notice.
+            await present_notification(
+                lambda: self._send_watcher_message(platform_name, chat_id, thread_id, text, evt),
+                platform=platform_name, diagnostic=True)
+        return True
 
     @staticmethod
     def _redacted_output_tail(session, limit: int) -> str:

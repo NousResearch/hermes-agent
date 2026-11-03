@@ -60,13 +60,20 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   // Build a plain string from the clustered chars to run through bidi
   const plainText = characters.map(c => c.value).join('')
 
-  // Check if there are any RTL characters — skip bidi if pure LTR
-  if (!hasRTLCharacters(plainText)) {
+  // Preserve the common terminal fast path without initializing bidi-js.
+  if (isAscii(plainText)) {
     return characters
   }
 
   const bidi = getBidi()
-  const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
+  const { baseDirection, hasRtl } = contentMajorityBaseDirection(plainText, bidi)
+
+  // Check if there are any RTL characters — skip bidi if pure LTR
+  if (!hasRtl) {
+    return characters
+  }
+
+  const { levels } = bidi.getEmbeddingLevels(plainText, baseDirection)
 
   // Map bidi levels back to ClusteredChar indices.
   // Each ClusteredChar may be multiple code units in the joined string.
@@ -110,6 +117,16 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   return reordered
 }
 
+function isAscii(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 0x7f) {
+      return false
+    }
+  }
+
+  return true
+}
+
 function reverseRange<T>(arr: T[], start: number, end: number): void {
   while (start < end) {
     const temp = arr[start]!
@@ -131,15 +148,30 @@ function reverseRangeNumbers(arr: number[], start: number, end: number): void {
 }
 
 /**
- * Quick check for RTL characters (Hebrew, Arabic, and related scripts).
- * Avoids running the full bidi algorithm on pure-LTR text.
+ * Select the paragraph base from all bidi-strong characters instead of only
+ * the first one. This keeps English-first, RTL-majority technical prose on an
+ * RTL base while preserving LTR-majority lines and UAX#9 first-strong behavior
+ * for ties.
  */
-function hasRTLCharacters(text: string): boolean {
-  // Hebrew: U+0590-U+05FF, U+FB1D-U+FB4F
-  // Arabic: U+0600-U+06FF, U+0750-U+077F, U+08A0-U+08FF, U+FB50-U+FDFF, U+FE70-U+FEFF
-  // Thaana: U+0780-U+07BF
-  // Syriac: U+0700-U+074F
-  return /[\u0590-\u05FF\uFB1D-\uFB4F\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0780-\u07BF\u0700-\u074F]/u.test(
-    text
-  )
+function contentMajorityBaseDirection(
+  text: string,
+  bidi: ReturnType<typeof bidiFactory>
+): { baseDirection: 'auto' | 'ltr' | 'rtl'; hasRtl: boolean } {
+  let ltr = 0
+  let rtl = 0
+
+  for (const character of text) {
+    const bidiClass = bidi.getBidiCharTypeName(character)
+
+    if (bidiClass === 'L') {
+      ltr++
+    } else if (bidiClass === 'R' || bidiClass === 'AL') {
+      rtl++
+    }
+  }
+
+  return {
+    baseDirection: rtl === ltr ? 'auto' : rtl > ltr ? 'rtl' : 'ltr',
+    hasRtl: rtl > 0
+  }
 }

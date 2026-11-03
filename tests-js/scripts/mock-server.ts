@@ -35,6 +35,13 @@ import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /**
+   * Group-room scripts kept out of the visible message: when a member's turn prompt
+   * contains a key, its value (E2E_SAY / E2E_TOOL / E2E_FAIL tokens) is scripted as
+   * if the user had typed it, so a screenshot shows a natural sentence.
+   */
+  groupScripts?: Record<string, string>
+
   /** Choose distinct replies from the latest input without replaying history. */
   replyForPrompt?: (prompt: string) => string
 
@@ -1018,7 +1025,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          if (answerGroupScript(res, model, stream, userText, messages, holdThisCompletion)) {
+          const scriptedText = [userText, ...Object.entries(options.groupScripts ?? {}).filter(([key]) => userText.includes(key)).map(([, script]) => script)].join(' ')
+
+          if (answerGroupScript(res, model, stream, scriptedText, messages, holdThisCompletion)) {
             return
           }
 

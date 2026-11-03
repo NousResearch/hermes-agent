@@ -121,6 +121,11 @@ _MAX_SSRF_CONNECT_IPS = 8
 # ipaddress — must be blocked explicitly (Tailscale/WireGuard, cloud internal nets).
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# RFC 2765 IPv4-translated wrapper ``::ffff:0:a.b.c.d`` — the second form resolvers may use to
+# answer an IPv4 name (on the reporting macOS host, fake-IP TUN DNS returns it alongside the
+# plain address). ``ip.ipv4_mapped`` does not read it; ``_embedded_ipv4`` handles it explicitly.
+_IPV4_TRANSLATED_NETWORK = ipaddress.ip_network("::ffff:0:0:0/96")
+
 # Address classes a ``security.fake_ip_ranges`` declaration can never excuse: a local proxy owns
 # none of them, and a declaration is trusted like ``allow_private_urls`` for whatever it names,
 # so an entry overlapping one of these (including 0.0.0.0/0 and ::/0) would make real internal
@@ -221,6 +226,63 @@ def _normalize_hostname(host: Optional[str]) -> str:
     return (host or "").strip().lower().rstrip(".")
 
 
+# urllib.parse and WHATWG parsers (browsers, Node-based fetch backends, also urllib3) can take a
+# different host from one string: WHATWG ends the authority at ``\``, percent-decodes the host and
+# accepts ``http:\\host`` or ``http:///host``; urlsplit does none of these. So
+# ``http://127.0.0.1:8080\@1.1.1.1`` is 1.1.1.1 here and 127.0.0.1:8080 in a browser. Such
+# URLs are refused rather than guessed at. WHATWG strips every C0 control from the ends, but urlsplit
+# keeps a trailing one in the host, so only ordinary whitespace is stripped before looking for controls.
+_URL_EDGE_WHITESPACE = " \t\n\r\x0b\x0c"
+# Dots IDNA maps to "." (ideographic, fullwidth, halfwidth ideographic); used when IDNA encoding fails.
+_IDNA_DOTS = str.maketrans(dict.fromkeys("。．｡", "."))
+
+
+def _url_hostname(url: str, *, percent_decode: bool = False) -> str:
+    """The host of *url* in the form a WHATWG client dials it: IDNA-encoded (so ``169.254.169.254。``
+    is ``169.254.169.254``), lowercased, trailing dot dropped, optionally percent-decoded first."""
+    host = urlsplit(url.strip(_URL_EDGE_WHITESPACE)).hostname or ""
+    if percent_decode:
+        host = unquote(host)
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        host = host.translate(_IDNA_DOTS)
+    return _normalize_hostname(host)
+
+
+def _authority_ambiguity(url: str, *, floor: bool = False) -> Optional[str]:
+    """Why another client could read a different host or port from an http(s) *url* than urlsplit
+    does, else None. ``\\`` and ``@`` after the authority (path, query, fragment) are accepted: every
+    parser has fixed the host by then, and WHATWG's ``\\`` -> ``/`` rewrite only changes the path.
+    ``floor`` keeps only what can move the host itself (controls, no ``//``, ``\\`` in the authority):
+    userinfo and an unparseable port (templated ``{port}``/``%d`` literals) leave the host as is, and
+    the floor checks a percent-encoded host after decoding it."""
+    url = url.strip(_URL_EDGE_WHITESPACE)
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in _HTTP_SCHEMES:
+        return None
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in url):
+        return "control character in URL"  # urlsplit silently drops tab/CR/LF anywhere
+    if not parts.netloc:
+        return "authority not introduced by //"
+    if "\\" in parts.netloc:
+        return "backslash in authority"
+    if floor:
+        return None
+    _, at, host = parts.netloc.rpartition("@")
+    if at:
+        return "userinfo in authority"
+    if "%" in host:
+        return "percent-encoding in host"
+    if any(c.isspace() for c in host):
+        return "whitespace in host"
+    try:
+        parts.port
+    except ValueError:
+        return "invalid port"
+    return None
+
+
 def _parse_ip(hostname: str) -> Optional[_IPAddress]:
     """IP object for a literal-IP hostname, else None."""
     try:
@@ -242,7 +304,21 @@ def _getaddrinfo(hostname: str, port: Optional[int] = None):
     return socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
 
 
+def _embedded_ipv4(ip: _IPAddress) -> _IPAddress:
+    """The IPv4 address an IPv6 wrapper stands for — IPv4-mapped (``::ffff:x.x.x.x``) or
+    IPv4-translated (``::ffff:0:x.x.x.x``); *ip* unchanged otherwise. ``ipaddress`` reads both
+    wrappers as distinct IPv6 addresses, so every classification must see through them, or a
+    resolver's sentinel / a cloud-metadata answer arrives as unrelated IPv6 space."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if ip in _IPV4_TRANSLATED_NETWORK:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip
+
+
 def _is_always_blocked_ip(ip: _IPAddress) -> bool:
+    ip = _embedded_ipv4(ip)
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
 
 
@@ -250,16 +326,15 @@ def _is_declared_fake_ip(ip: _IPAddress) -> bool:
     """True when *ip* falls in a block declared in ``security.fake_ip_ranges``. The dial still goes
     to the local proxy, which resolves and connects to the real target, so a declared block grants
     no reach an attacker lacks through the proxy's own DNS; undeclared ranges keep the private verdict."""
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    ip = _embedded_ipv4(ip)
     return any(ip in net for net in _global_fake_ip_ranges())
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
-    # IPv4-mapped IPv6 (``::ffff:x.x.x.x``) is classified by its embedded IPv4.
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    # IPv4-wrapped IPv6 (mapped ``::ffff:x.x.x.x`` or translated ``::ffff:0:x.x.x.x``) is
+    # classified by its embedded IPv4.
+    ip = _embedded_ipv4(ip)
     return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
             or ip.is_multicast or ip.is_unspecified or ip in _CGNAT_NETWORK)
 
@@ -269,9 +344,15 @@ def is_always_blocked_url(url: str) -> bool:
     hostnames/IPs, regardless of backend, routing, or ``allow_private_urls``. For callers that
     deliberately bypass the full check (e.g. hybrid cloud browser routing private URLs to a local
     sidecar) but must still enforce the floor. False for ordinary private/loopback URLs, DNS
-    failures and parse errors (the caller's ordinary fail-closed path handles those)."""
+    failures and parse errors (the caller's ordinary fail-closed path handles those); True for an
+    http(s) URL whose host another client could read differently, which may hide a metadata target.
+    A percent-encoded host is judged decoded, as WHATWG clients read it."""
     try:
-        hostname = _normalize_hostname(urlparse(url).hostname)
+        reason = _authority_ambiguity(url, floor=True)
+        if reason is not None:
+            logger.warning("Blocked request — ambiguous URL authority (always-blocked floor): %s", reason)
+            return True
+        hostname = _url_hostname(url, percent_decode=True)
         if not hostname:
             return False
         if hostname in _BLOCKED_HOSTNAMES:
@@ -320,15 +401,20 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
 
 def is_safe_url(url: str) -> bool:
     """True if the URL target is not a private/internal address. Resolves the hostname and checks
-    every answer; fails closed on DNS errors and unexpected exceptions. ``allow_private_urls``
-    skips private-IP blocking, but cloud metadata endpoints remain blocked regardless."""
+    every answer; fails closed on DNS errors, unexpected exceptions and URLs whose authority other
+    clients could parse differently (userinfo included). ``allow_private_urls`` skips private-IP
+    blocking, but cloud metadata endpoints remain blocked regardless."""
     try:
-        parsed = urlparse(url)
-        hostname = _normalize_hostname(parsed.hostname)
-        scheme = (parsed.scheme or "").strip().lower()
+        scheme = (urlparse(url).scheme or "").strip().lower()
         if scheme not in _HTTP_SCHEMES:
             logger.warning("Blocked request — unsupported URL scheme: %s", scheme or "<empty>")
             return False
+        reason = _authority_ambiguity(url)
+        if reason is not None:
+            # The reason only: the URL may carry userinfo credentials.
+            logger.warning("Blocked request — ambiguous URL authority: %s", reason)
+            return False
+        hostname = _url_hostname(url)
         if not hostname:
             return False
 
@@ -562,60 +648,3 @@ def redirect_target_from_response(response: Any) -> Optional[str]:
         return urljoin(str(getattr(response, "url", "")), str(location))
     next_request = getattr(response, "next_request", None)
     return str(next_request.url) if next_request else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_sensitive_query_params(url: str) -> bool:
-    """Return True when ``url`` carries likely credential-bearing query params."""
-    return sensitive_query_param_name(url) is not None
-
-def ssrf_safe_async_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx async transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_async_origin_schemes")
-
-    class _Transport(httpx.AsyncHTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedAsyncNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        async def handle_async_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return await super().handle_async_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
-
-def ssrf_safe_http_transport(**kwargs: Any) -> Any:
-    """Return an httpx sync transport that pins direct TCP connects to vetted IPs."""
-    import contextvars
-    import httpx
-
-    schemes_by_origin_var = contextvars.ContextVar("hermes_ssrf_origin_schemes")
-
-    class _Transport(httpx.HTTPTransport):
-        def __init__(self, **transport_kwargs: Any):
-            super().__init__(**transport_kwargs)
-            self._pool._network_backend = _SSRFGuardedNetworkBackend(  # type: ignore[attr-defined]
-                schemes_by_origin_var
-            )
-
-        def handle_request(self, request: Any) -> Any:
-            token = schemes_by_origin_var.set(_origin_scheme_context(request))
-            try:
-                return super().handle_request(request)
-            finally:
-                schemes_by_origin_var.reset(token)
-
-    return _Transport(**kwargs)
-# ---- END PLUGIN-COMPAT ----

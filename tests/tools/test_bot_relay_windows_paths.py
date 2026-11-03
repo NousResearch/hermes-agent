@@ -9,9 +9,9 @@ Two failures on a Windows desktop install talking to a remote gateway:
    path as argv, rewritten to forward slashes the way the delivery runner's
    argv is — the tracked local backend runs commands through Git Bash there.
 
-2. ``local_delivery_command`` hardcoded ``"hermes"``, relying on PATH —
+2. the delivery runner argv hardcoded ``"hermes"``, relying on PATH —
    which service contexts (systemd units, desktop launchers, non-login
-   SSH shells) do not provide, so delivery died with ENOENT. It now
+   SSH shells) do not provide, so delivery died with ENOENT. ``_hermes_cli``
    resolves the CLI next to this gateway's own interpreter (the venv
    bin/Scripts sibling), falling back to the bare name. The #93091
    turn-lock recognition in bot_mode_dm matches the CLI element by
@@ -24,14 +24,15 @@ from pathlib import Path
 
 import pytest
 
-import tools.bot_mode_dm as bot_mode_dm
-import tools.bot_relay as bot_relay
+from tools import bot_mode_dm
+from tools import bot_relay
+import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_waiter_argv_uses_forward_slashes_on_windows():
     """On native Windows the reply path rides as a forward-slash argv element, like the delivery
     runner's paths: Git Bash runs those, and parses a backslash path as a command name."""
@@ -42,6 +43,7 @@ def test_waiter_argv_uses_forward_slashes_on_windows():
     assert not any("\\" in part for part in parts)
 
 
+@pytest.mark.platforms("linux")
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     bin_dir = tmp_path / "venv" / "bin"
     bin_dir.mkdir(parents=True)
@@ -49,11 +51,11 @@ def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     sibling.touch()
     sibling.chmod(0o755)
     monkeypatch.setattr("sys.executable", str(bin_dir / "python"))
+    # The checkout's own published launcher (.hermes/bin, written by scripts/run_tests.sh's venv
+    # step) outranks the sibling by design (#124868): keep it out of this probe.
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "checkout" / "tools" / "bot_relay.py"))
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == str(sibling)
-    assert argv[1:3] == ["-p", "ops"]
-    assert argv[argv.index("--query-file") + 1] == "query.json"
+    assert bot_relay._hermes_cli() == str(sibling)
 
 
 def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch):
@@ -62,13 +64,15 @@ def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch)
     empty = tmp_path / "nowhere"
     empty.mkdir(parents=True)
     monkeypatch.setattr("sys.executable", str(empty / "python"))
+    # Keep this checkout's own published install launcher out of the resolution
+    # when probing the fallback ladder (#124868).
+    monkeypatch.setattr(bot_relay, "__file__", str(empty / "bot_relay.py"))
     which_hit = str(tmp_path / "usr-local-bin" / "hermes")
     monkeypatch.setattr(
         bot_relay.shutil, "which", lambda name: which_hit if name == "hermes" else None
     )
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == which_hit
+    assert bot_relay._hermes_cli() == which_hit
 
 
 def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
@@ -76,10 +80,9 @@ def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
     empty.mkdir(parents=True)
     monkeypatch.setattr("sys.executable", str(empty / "python"))
     monkeypatch.setattr(bot_relay.shutil, "which", lambda name: None)
+    monkeypatch.setattr(bot_relay, "__file__", str(empty / "bot_relay.py"))
 
-    argv = bot_relay.local_delivery_command("ops", "query.json")
-    assert argv[0] == "hermes"
-    assert argv[1:3] == ["-p", "ops"]
+    assert bot_relay._hermes_cli() == "hermes"
 
 
 def test_delivery_lock_recognizes_resolved_cli_paths(tmp_path, monkeypatch):

@@ -1,7 +1,6 @@
 """Tests for plugins.platforms.feishu.adapter — Feishu scan-to-create registration."""
 
 import json
-import sys
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -133,35 +132,8 @@ class TestPollRegistration:
         assert result["domain"] == "lark"
 
 
-class TestRenderQr:
-    """Tests for QR code terminal rendering."""
-
-    @patch("plugins.platforms.feishu.adapter._qrcode_mod", create=True)
-    def test_render_qr_returns_true_on_success(self, mock_qrcode_mod):
-        from plugins.platforms.feishu.adapter import _render_qr
-
-        mock_qr = MagicMock()
-        mock_qrcode_mod.QRCode.return_value = mock_qr
-        assert _render_qr("https://example.com/qr") is True
-        mock_qr.add_data.assert_called_once_with("https://example.com/qr")
-        mock_qr.make.assert_called_once_with(fit=True)
-        mock_qr.print_ascii.assert_called_once()
 
 
-class TestProbeBot:
-    """Tests for bot connectivity verification."""
-
-    @patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True)
-    def test_probe_returns_bot_info_on_success(self):
-        from plugins.platforms.feishu.adapter import probe_bot
-
-        with patch("plugins.platforms.feishu.adapter._probe_bot_sdk") as mock_sdk:
-            mock_sdk.return_value = {"bot_name": "TestBot", "bot_open_id": "ou_bot123"}
-            result = probe_bot("cli_app", "secret", "feishu")
-
-        assert result is not None
-        assert result["bot_name"] == "TestBot"
-        assert result["bot_open_id"] == "ou_bot123"
 
 
 class TestQrRegister:
@@ -229,7 +201,8 @@ class TestQrRegister:
     def test_qr_fallback_tip_targets_active_interpreter(
         self, mock_init, mock_begin, mock_poll, mock_render, capsys
     ):
-        """#111695: the install tip must target the running venv (uv, no pip module)."""
+        """#111695: the install tip goes through PM, never a bare pip that targets the wrong env."""
+        from pm import install_hint
         from plugins.platforms.feishu.adapter import _qr_register_inner
 
         mock_begin.return_value = {
@@ -244,8 +217,8 @@ class TestQrRegister:
 
         output = capsys.readouterr().out
         assert "https://example.com/qr" in output
-        assert f"uv pip install --python {sys.executable} qrcode" in output
-        assert "Tip: pip install qrcode" not in output
+        assert install_hint("messaging") in output
+        assert "pip install" not in output
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 

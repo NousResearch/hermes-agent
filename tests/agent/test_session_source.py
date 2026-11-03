@@ -1,7 +1,7 @@
 import pytest
 
 from gateway.session_context import _UNSET, _VAR_MAP, clear_session_vars, set_session_vars
-from run_agent import _session_source_for_agent
+from agent.session_source import session_source_for
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def test_session_source_context_overrides_platform(monkeypatch):
 
     tokens = set_session_vars(source="tool")
     try:
-        assert _session_source_for_agent("tui") == "tool"
+        assert session_source_for("tui") == "tool"
     finally:
         clear_session_vars(tokens)
 
@@ -26,7 +26,7 @@ def test_session_source_context_overrides_platform(monkeypatch):
 def test_session_source_falls_back_to_platform(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
 
-    assert _session_source_for_agent("tui") == "tui"
+    assert session_source_for("tui") == "tui"
 
 
 
@@ -38,7 +38,7 @@ def test_oneshot_run_gets_distinct_source(monkeypatch, inherited):
     monkeypatch.setenv("HERMES_SESSION_SOURCE", inherited)
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
 
-    assert _session_source_for_agent("cli") == "oneshot"
+    assert session_source_for("cli") == "oneshot"
 
 
 def test_oneshot_marker_does_not_relabel_subagents(monkeypatch):
@@ -46,7 +46,7 @@ def test_oneshot_marker_does_not_relabel_subagents(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
 
-    assert _session_source_for_agent("subagent") == "subagent"
+    assert session_source_for("subagent") == "subagent"
 
 
 @pytest.mark.parametrize("inherited", ["kanban", "tool", "a2a"])
@@ -54,7 +54,7 @@ def test_oneshot_child_keeps_inherited_automation_source(monkeypatch, inherited)
     monkeypatch.setenv("HERMES_SESSION_SOURCE", inherited)
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
 
-    assert _session_source_for_agent("cli") == inherited
+    assert session_source_for("cli") == inherited
 
 
 @pytest.mark.parametrize("explicit", ["tui", "desktop"])
@@ -65,4 +65,4 @@ def test_oneshot_keeps_explicit_source_flag(monkeypatch, explicit):
     monkeypatch.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
 
-    assert _session_source_for_agent("cli") == explicit
+    assert session_source_for("cli") == explicit

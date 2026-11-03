@@ -16,6 +16,7 @@ import {
   compactPreview,
   contextValue,
   formatDurationSeconds,
+  isNeutralFailure,
   isRecord,
   numberValue,
   parseMaybeObject,
@@ -706,8 +707,9 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'running'
   }
 
+  // A call the user stopped is expected to have no result; don't warn about it.
   if (part.result === undefined && !part.isError) {
-    return 'warning'
+    return part.interrupted ? 'notice' : 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -734,6 +736,10 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'notice'
   }
 
+  if (isNeutralFailure(part.toolName, part.result)) {
+    return 'notice'
+  }
+
   // A rejected memory write is a budget negotiation, not a failure: the store
   // refuses an over-limit batch and the agent retries smaller. Soft warning —
   // never destructive-red beside routine bookkeeping.
@@ -750,9 +756,27 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
   return formatDurationSeconds(seconds)
 }
 
+const NON_DELIVERABLE_TOOLS = new Set([
+  'annotate_preview',
+  'drive_preview',
+  'gui_tour',
+  'list_files',
+  'read_file',
+  'search_files'
+])
+
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (toolName === 'tool_call') {
+    const calls = Array.isArray(args.calls) ? args.calls : [args]
+    const call = parseMaybeObject(calls[0])
+
+    if (calls.length === 1 && typeof call.name === 'string') {
+      return toolPreviewTarget(call.name, parseMaybeObject(call.arguments), result)
+    }
+  }
+
   // Reading an existing file is not producing a deliverable.
-  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+  if (NON_DELIVERABLE_TOOLS.has(toolName) || (toolName === 'desktop_preview' && args.action !== 'open')) {
     return ''
   }
 
@@ -1321,6 +1345,22 @@ function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
   }
 }
 
+// A model-authored terminal `context`/`preview` sometimes already opens with
+// the verb the title template prepends ("Running grep …"), which renders as a
+// doubled "Running Running grep …". Drop a leading word that matches the action
+// we're about to prefix so the verb appears once.
+function withoutLeadingAction(value: string, action: string): string {
+  const verb = action.trim()
+  const text = value.trimStart()
+  const boundary = text.search(/\s/)
+
+  if (!verb || boundary < 0) {
+    return value
+  }
+
+  return text.slice(0, boundary).toLowerCase() === verb.toLowerCase() ? text.slice(boundary + 1).trimStart() : value
+}
+
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
@@ -1410,7 +1450,7 @@ function dynamicTitle(
         translateNow(
           'assistant.tool.titleTemplates.actionCommand',
           action,
-          compactPreview(summarizeShellCommand(command), 160)
+          withoutLeadingAction(compactPreview(summarizeShellCommand(command), 160), action)
         )
       )
     }
@@ -1477,7 +1517,11 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   )
 
   const unavailable = part.result === undefined && part.completedAt !== undefined
-  const title = unavailable ? translateNow('assistant.tool.resultUnavailable') : titleParts.title
+
+  const title = unavailable
+    ? translateNow(part.interrupted ? 'assistant.tool.resultInterrupted' : 'assistant.tool.resultUnavailable')
+    : titleParts.title
+
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 
@@ -1528,7 +1572,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),
     inlineDiff,
-    previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
+    previewTarget: toolPreviewTarget(part.innerToolName || part.toolName, argsRecord, resultRecord),
     rendersAnsi: rendersAnsi || undefined,
     searchQuery: searchQuery || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,

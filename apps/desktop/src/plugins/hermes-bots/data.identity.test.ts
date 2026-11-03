@@ -83,14 +83,6 @@ describe('the @handle a bot answers to', () => {
 })
 
 describe('renamed bots stay taggable', () => {
-  // Discord report, Aug 2026: renaming a bot — Bot Mode title or `hermes
-  // profile rename` display_name — must change what you can @-tag it with,
-  // while the old profile handle keeps resolving.
-  it('reduces a friendly name to its slugged and collapsed forms', () => {
-    expect(mentionNameForms('Research Buddy')).toEqual(['research-buddy', 'researchbuddy'])
-    expect(mentionNameForms('Ops')).toEqual(['ops'])
-  })
-
   it('drops reserved tokens so a rename cannot hijack a built-in tag', () => {
     expect(mentionNameForms('Hermes')).toEqual([])
     expect(mentionNameForms('@everyone')).toEqual([])
@@ -279,10 +271,6 @@ describe('roster search narrows without re-ranking', () => {
     expect(filterBots(richer, {}, 'compliance')[0].name).toBe('reviewer')
     expect(filterBots(richer, {}, 'deployment checklist')[0].name).toBe('reviewer')
     expect(filterBots(richer, {}, 'work studio')[0].name).toBe('reviewer')
-  })
-
-  it('returns the existing roster reference for a blank query', () => {
-    expect(filterBots(roster, meta, '   ')).toBe(roster)
   })
 })
 

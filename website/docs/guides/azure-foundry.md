@@ -6,6 +6,10 @@ description: "Use Hermes Agent with Microsoft Foundry — OpenAI-style and Anthr
 
 # Microsoft Foundry
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent's `azure-foundry` provider supports Microsoft Foundry (formerly Azure AI Foundry) and Azure OpenAI. A single Foundry resource can host models with two different wire formats:
 
 - **OpenAI-style** — `POST /v1/chat/completions` on endpoints like `https://<resource>.openai.azure.com/openai/v1`. Used for GPT-4.x, GPT-5.x, Llama, Mistral, and most open-weight models.
@@ -101,7 +105,7 @@ The wizard runs a bounded preflight probe (10 s timeout). On failure it offers t
 `azure-identity` is installed automatically on first use via Hermes' lazy-install path. To pre-install:
 
 ```bash
-pip install azure-identity
+python -c "import pm; pm.sync_venv(['azure-identity'], explicit=True)"
 ```
 
 ### Configuration written to `config.yaml`
@@ -140,6 +144,8 @@ No secrets land in `~/.hermes/.env` for Entra mode — `azure-identity` caches t
 8. **Broker** (Windows / WSL only) — Web Account Manager.
 
 Interactive browser credential is excluded by default for unattended Hermes runs; use Azure CLI, Azure Developer CLI, managed identity, workload identity, or service principal credentials instead.
+
+**Multiplexed profiles (`gateway.multiplex_profiles: true`):** every source in that chain resolves from the *process* — the launch profile's `AZURE_*`, its `az login` session, the host's managed identity. A served profile that sets no `AZURE_*` of its own is therefore refused instead of borrowing the launch identity (the same rule the Vertex adapter applies to Application Default Credentials). Give each profile its own `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + `AZURE_CLIENT_SECRET` (or `AZURE_FEDERATED_TOKEN_FILE`) in its `.env`; `AZURE_CLIENT_ID` alone opts that profile into the host's user-assigned managed identity. Single-profile runs (`hermes`, `hermes -p beta`) keep the full chain.
 
 ### Deployment patterns
 

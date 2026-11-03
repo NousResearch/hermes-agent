@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from acp_adapter.session import SessionManager
 
@@ -52,3 +52,22 @@ def test_acp_agent_receives_configured_reasoning(acp_env):
              "agent": {"reasoning_effort": "none", "reasoning_overrides": {"gpt-5.6": "high"}}})
     agent = sm._make_agent(session_id="s2", cwd=".", model="gpt-5.6")
     assert agent.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+
+
+def test_acp_agent_receives_custom_provider_request_body(acp_env, monkeypatch):
+    """#103738: the resolver's ``request_overrides`` (a custom entry's ``extra_body``) reach the ACP agent, as
+    on the CLI; an explicit base_url naming a different endpoint does not inherit them."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **_kwargs: {"provider": "custom", "api_mode": "chat_completions",
+                                           "base_url": "https://proxy.example/v1", "api_key": "k",
+                                           "request_overrides": {"extra_body": {"user": "proxy-user"}}},
+    )
+    acp_env({"model": {"default": "some-model", "provider": "custom:my-proxy"}})
+    sm = SessionManager(db=None)
+    sm._get_db = lambda: None
+    assert sm._make_agent(session_id="s1", cwd=".").kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+    same = sm._make_agent(session_id="s2", cwd=".", base_url="https://proxy.example/v1")
+    assert same.kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+    other = sm._make_agent(session_id="s3", cwd=".", base_url="https://elsewhere.example/v1")
+    assert "request_overrides" not in other.kwargs

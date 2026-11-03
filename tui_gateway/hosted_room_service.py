@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -20,6 +21,7 @@ from gateway import hosted_rooms
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
+from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
@@ -35,6 +37,43 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+logger = logging.getLogger(__name__)
+
+
+def task_member_id(task: Mapping[str, Any]) -> str:
+    return str(task["payload"].get("target_member_id") or task["payload"]["target_profile"])
+
+
+def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
+    """A pending action naming the exact attempt ``groups.retry``/``discard`` fence on."""
+    return {"kind": kind, "member_id": task_member_id(task), "task_id": task["identity"].task_id,
+            "execution_generation": task["execution_generation"]}
+
+
+def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
+    """Read the room owner's config, never the current member's profile scope. A malformed value
+    keeps today's defaults (logged) rather than taking every room on this store offline."""
+    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(root))
+    try:
+        config = load_user_config_effective(root / "config.yaml")
+    finally:
+        reset_hermes_home_override(token)
+    try:
+        rooms = config.get("hosted_rooms", {})
+        if not isinstance(rooms, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms must be a mapping")
+        settings = rooms.get("discussion", {})
+        if not isinstance(settings, Mapping):
+            raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
+        return discussion.DiscussionLimits(
+            max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+    except discussion.DiscussionValidationError as exc:
+        logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
+        return discussion.DiscussionLimits()
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -69,15 +108,19 @@ class HostedRoomService:
         peer_routes: Mapping[tuple[str, str], PeerMemberRoute] | None = None,
         peer_clients: Mapping[Any, HostedRoomPeerClient] | None = None) -> None:
         self.server, self.db_path = server, Path(db_path or hosted_rooms.default_db_path())
+        self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
-        self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
-        self.rpc = HostedRoomServerRPC(server)
+        self.policy_checkpoint = HostedRoomPolicyCheckpoint(
+            self.db_path,
+            max_active_events=1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds)
+        self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
         self.peer_clients: dict[tuple[str, str], Any] = {}
+        self._prepare_stalls = prepare_stall.PrepareStallTracker()
         try:
             self._load_stored_links()
         except Exception as exc:
@@ -91,11 +134,14 @@ class HostedRoomService:
         self.runtime = HostedRoomRuntime(
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
-            prepare_room=self.prepare_room, publish_terminal=self.publish_terminal,
+            prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
             pending_action=self._set_pending_action,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
+
+    def _make_rpc(self, server):
+        return HostedRoomServerRPC(server, db_path=self.db_path)
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
@@ -136,6 +182,11 @@ class HostedRoomService:
                 if path.is_dir() and not path.name.startswith(".")
                 and named_profile_has_identity(path) and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
+
+    def room_profiles(self, room: Mapping[str, Any]) -> tuple[str, ...]:
+        """Profiles a SAVED room's roster is checked against. New groups use ``local_profiles``;
+        a subclass may keep a seated member valid after it stops being eligible for new groups."""
+        return self.local_profiles()
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
         local_gateway_id = hosted_rooms.local_authority_gateway_id()
@@ -371,7 +422,8 @@ class HostedRoomService:
             room_id=str(room["room_id"]), latest_seq=int(room["latest_seq"]))
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
-        changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        changed, room_id, local_profiles = False, str(room["room_id"]), self.room_profiles(room)
+        cursor = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
             if self.policy_checkpoint.publication_exists(
@@ -379,15 +431,23 @@ class HostedRoomService:
                 execution_generation=execution_generation):
                 continue
             task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]),
+                input_context=task["payload"].get("input_context"), task_id=task["identity"].task_id)
             plan = discussion.reconstruct_task_plan(
                 room, task_events, task, local_profiles=local_profiles)
+            message_id = f"dmessage:{task['identity'].task_id.removeprefix('dtask:')}"
+            if any(event.get("event_id") == message_id and event["kind"] == "message.member" for event in task_events):
+                # Finish an already visible immutable reply even if a later request arrived.
+                task_events = [event for event in task_events if event["kind"] != "message.user"
+                               or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
-                hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
+                appended = hosted_rooms.append_event(
+                    self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
+                cursor = max(cursor, int(appended["seq"]))
             changed = True
         return changed
 
@@ -410,7 +470,12 @@ class HostedRoomService:
         with self._policy_lock:
             room = self._room(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
-            if self._publish_terminal_tasks(room):
+            try:
+                changed = self._publish_terminal_tasks(room)
+            except hosted_rooms.EventCursorConflictError:
+                # Rebuild publication next poll; the settled task is never readmitted.
+                return
+            if changed:
                 room = self._room(binding.room_id)
                 snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
@@ -419,25 +484,54 @@ class HostedRoomService:
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
             decision = discussion.plan_next_task(
-                room, list(snapshot.events), local_profiles=self.local_profiles(),
-                initial_watermarks=snapshot.watermarks)
+                room, list(snapshot.events), local_profiles=self.room_profiles(room),
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits)
             if decision.status == "task" and decision.task is not None:
-                driver.admit_task(
-                    self.db_path, decision.task.identity, payload=decision.task.payload,
-                    clock=time.time)
+                existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
+                legacy_payload = dict(decision.task.payload)
+                legacy_payload.pop("input_context", None)
+                if existing is not None and "input_context" in existing["payload"]:
+                    # A rebuilt cache may add older committed context. The slot
+                    # already belongs to its original, frozen admission.
+                    prior_events = self.policy_checkpoint.events_for_task(
+                        room_id=binding.room_id, source_event_seq=existing["payload"]["source_event_seq"],
+                        input_context=existing["payload"]["input_context"], task_id=existing["identity"].task_id)
+                    discussion.reconstruct_task_plan(room, prior_events, existing, local_profiles=self.room_profiles(room))
+                    admitted = existing
+                elif existing is not None and existing["payload"] == legacy_payload:
+                    discussion.reconstruct_task_plan(room, list(snapshot.events), existing,
+                                                     local_profiles=self.room_profiles(room))
+                    admitted = existing
+                else:
+                    admitted = driver.admit_task(
+                        self.db_path, decision.task.identity, payload=decision.task.payload, clock=time.time)
                 # A stop can race the policy read from another process: re-read after admission
                 # and cancel a task whose source event is now behind the room stop fence.
                 fence = self._policy_snapshot(self._room(binding.room_id)).stopped_through_seq
                 if decision.source_event_seq is not None and decision.source_event_seq < fence:
-                    self.runtime.cancel(decision.task.identity, cancel_id=f"stop-fence:{fence}")
+                    self.runtime.cancel(admitted["identity"], cancel_id=f"stop-fence:{fence}")
             elif decision.status in {"settled", "bounded"}:
                 self._append_room_status(room, decision)
 
+    def _prepare_tracked(self, binding: HostedRoomBinding, *, retry_stalled: bool = False) -> None:
+        """``prepare_room`` with its failures counted per room: a stalled room is skipped (not retried)
+        until the next Send or Retry, and is reported once in the room (hosted_room_prepare_stall)."""
+        stalls = self._prepare_stalls
+        if stalls.stalled(binding.room_id) and not retry_stalled:
+            return
+        try:
+            self.prepare_room(binding)
+        except Exception as exc:
+            if stalls.failed(binding.room_id, exc):
+                prepare_stall.report_stall(self.db_path, binding.room_id, exc)
+            raise
+        stalls.clear(binding.room_id)
+
     def publish_terminal(self, binding: HostedRoomBinding, _task: Mapping[str, Any]) -> None:
-        self.prepare_room(binding)
+        self._prepare_tracked(binding)
         self.runtime.wakeup()
 
-    def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
+    def create_room(self, *, room_id: str, name: str, members: Any, admit: Any = None) -> dict[str, Any]:
         normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
         room = hosted_rooms.create_room(
             self.db_path, room_id=room_id, name=name,
@@ -447,21 +541,29 @@ class HostedRoomService:
                     "handle": member.handle, "target": dict(member.target or {}),
                     **({"display_name": member.display_name} if member.display_name else {})}
                 for member in normalized],
-            authority_gateway_id=hosted_rooms.local_authority_gateway_id())
+            authority_gateway_id=hosted_rooms.local_authority_gateway_id(), admit=admit)
         self.runtime.wakeup()
         return room
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
-        event = hosted_rooms.append_event(
-            self.db_path, room_id=room_id, event_id=event_id, kind="message.user",
-            actor={"kind": "user", "id": "desktop"}, payload=normalized,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
-        if binding is None:
-            raise hosted_rooms.RoomNotFoundError("hosted room not found")
-        self.prepare_room(binding)
+        from gateway.session_hosted_attachments import append_user_event
+        event = append_user_event(
+            self, room_id=room_id, event_id=event_id, payload=normalized,
+            gateway_id=gateway_id, epoch=epoch)
+        # The committed event is the Send's result: a failure from here on is the room driver's,
+        # which runs the same preparation on its next passes and, if it keeps failing, says so in
+        # the room once. Raising would tell the client a message it can already see in the room was
+        # not sent (#143239). A new message starts a fresh attempt streak for a stalled room.
+        self._prepare_stalls.clear(room_id)
+        try:
+            binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+            if binding is not None:
+                self._prepare_tracked(binding)
+        except Exception:
+            logger.warning("hosted room %s: preparing the room after a stored Send failed; "
+                           "the room driver retries it", room_id, exc_info=True)
         self.runtime.wakeup()
         return event
 
@@ -487,13 +589,35 @@ class HostedRoomService:
         self.runtime.wakeup()
         return len(tasks)
 
-    def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
+    def retry_room_task(
+        self, room_id: str, *, task_id: str, member_id: str | None = None,
+        execution_generation: int | None = None) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""
+        if task_id.startswith(prepare_stall.RETRY_TASK_PREFIX):
+            return self._retry_preparation(room_id, task_id)
         candidates = self._list_tasks(room_id, _RETRYABLE_STATUSES)
-        task = next((c for c in candidates if c["identity"].task_id == task_id), None)
+        task = next((c for c in candidates if c["identity"].task_id == task_id
+                     and member_id in (None, task_member_id(c))
+                     and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
-        return self.runtime.retry_indeterminate(task["identity"])
+        return self.runtime.retry_indeterminate(
+            task["identity"], execution_generation=task["execution_generation"])
+
+    def _retry_preparation(self, room_id: str, task_id: str) -> dict[str, Any]:
+        """The stalled room's Retry: prepare once now; a failure stays stalled and is the RPC's error."""
+        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+        if (binding is None or task_id != f"{prepare_stall.RETRY_TASK_PREFIX}{room_id}"
+                or not self._prepare_stalls.stalled(room_id)):
+            raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        try:
+            self._prepare_tracked(binding, retry_stalled=True)
+        except Exception as exc:
+            self._prepare_stalls.stall(room_id, exc)
+            raise
+        self.runtime.wakeup()
+        return {"identity": driver.TaskIdentity(room_id=room_id, task_id=task_id, thread_id=task_id, turn_id=task_id),
+                "status": "prepared", "execution_generation": 1, "cancel_generation": 0}
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,
@@ -542,17 +666,24 @@ class HostedRoomService:
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts = Counter(str(task["status"]) for task in tasks)
         pending_actions = [
-            {"kind": "retry", "task_id": task["identity"].task_id}
-            for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+            attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]
+        if self._prepare_stalls.stalled(room_id):
+            pending_actions.append(prepare_stall.retry_action(room_id, self._room(room_id)))
         with self._policy_lock:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
+        # Who is answering right now: clients render per-member working indicators from it.
+        member_activity = [
+            {"member_id": task_member_id(task), "status": str(task["status"])}
+            for task in tasks if task["status"] in _LIVE_STATUSES]
         return {
-            "running": runtime["running"], "working": any(counts.get(s) for s in _LIVE_STATUSES),
+            "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]
             or bool(counts.get("indeterminate") or counts.get("stopping")),
             "counts": dict(counts), "pending_actions": pending_actions,
+            "member_activity": member_activity,
+            "last_error": self._prepare_stalls.last_error(room_id),
             "peer_routes": self._route_statuses(room_id)}
 
 
@@ -621,11 +752,3 @@ class _RouteStatusPeerClient:
                 self._on_ready()
             return result
         return tracked
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import hashlib  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

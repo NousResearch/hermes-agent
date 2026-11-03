@@ -113,7 +113,6 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       data-active={active}
       data-closeable={(onClose && !vertical) || undefined}
       data-selected={selected || undefined}
-      data-slot="pane-tab"
       data-vertical={vertical || undefined}
       onClickCapture={event => {
         // Sites whose tab activates on the label's own onClick (the preview
@@ -152,6 +151,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       }}
       ref={ref}
       {...props}
+      data-slot="pane-tab"
     >
       <div
         className={cn('pane-tab-content flex h-full min-w-0 max-w-full flex-1 items-center', vertical && 'contents')}
@@ -223,7 +223,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
     >
       <span
         className={cn(
-          'block min-w-0 truncate text-[9px] font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
+          'block min-w-0 truncate font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
           className
         )}
       >

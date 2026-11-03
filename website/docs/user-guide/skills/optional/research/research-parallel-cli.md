@@ -15,13 +15,13 @@ Agent-native web search, deep research, and enrichment.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/parallel-cli` |
-| Path | `optional-skills/research\parallel-cli` |
+| Path | `optional-skills/research/parallel-cli` |
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Web`, `Search`, `Deep-Research`, `Enrichment`, `CLI` |
-| Related skills | [`duckduckgo-search`](./research-duckduckgo-search.md), [`mcporter`](../mcp/mcp-mcporter.md) |
+| Related skills | [`duckduckgo-search`](../../optional/research/research-duckduckgo-search.md), [`mcporter`](../../optional/mcp/mcp-mcporter.md) |
 
 ## Reference: full SKILL.md
 

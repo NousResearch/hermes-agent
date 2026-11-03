@@ -92,9 +92,18 @@ export const af: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktiewe geheueverskaffer",
+    noProvider: "geen — slegs ingebou",
+    builtinLayer: "Ingeboude laag",
+    builtinNote: "MEMORY.md en USER.md is Hermes se eie geheue, apart van enige eksterne verskaffer. Albei word by verstek in sessies gelaai; die konfigurasieskakelaars (memory.memory_enabled / memory.user_profile_enabled) skakel elkeen af. 'n Verskaffer voeg daarby; dit vervang hulle nooit.",
+  },
+
   status: {
     actionFailed: "Aksie het misluk",
     actionFinished: "Voltooi",
+    actionFinishedOwed: "Bygewerk, maar nog uitstaande (voer `hermes update` weer uit om klaar te maak)",
     actions: "Aksies",
     agent: "Agent",
     activeSessions: "Aktiewe Sessies",
@@ -162,9 +171,14 @@ export const af: Translations = {
     deleteSelectedConfirmMessage:
       "Dit verwyder {count} gekose sessies en al hul boodskappe permanent. Dit kan nie ongedaan gemaak word nie.",
     selectedSessionsDeleted: "{count} sessies geskrap",
+    selectedSessionsSkippedActive: "{deleted} geskrap; {count} behou omdat 'n beurt nog loop",
     failedToDeleteSelected: "Kon nie gekose sessies skrap nie",
     resumeInChat: "Hervat in Klets",
     newChat: "Nuwe klets",
+    workspace: "werkruimte",
+    workspaceDefault: "Verstek",
+    workspaceRescan: "Herskandeer bewaarplekke",
+    workspaceCustom: "Ander pad…",
     previousPage: "Vorige bladsy",
     nextPage: "Volgende bladsy",
     roles: {
@@ -324,6 +338,8 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
+    toggleTakesEffectAfterRestart:
+      "Gestoor — herbegin die gateway om die verandering toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
     headline:
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",

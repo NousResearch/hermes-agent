@@ -8,18 +8,44 @@ model_tools."""
 import ast
 import functools
 import importlib
+import inspect
 import json
 import logging
 import sys
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
+
+_session_tool_scope = ContextVar("session_tool_scope", default=None)
+
+
+@contextmanager
+def session_tool_scope(scope):
+    """Execution-owned overlay, additive to the existing profile registry."""
+    token = _session_tool_scope.set(scope)
+    try:
+        yield
+    finally:
+        _session_tool_scope.reset(token)
+
+
+def current_session_tool_scope():
+    return _session_tool_scope.get()
+
+
+def _session_slot_key():
+    """The overlay slot key for the current session scope: writes go through ``normalize_scope``
+    (``register``/``deregister``), so reads must key the same way or the overlay is invisible."""
+    return normalize_scope(_session_tool_scope.get())
+
 
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
@@ -70,7 +96,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     Only module-body statements count, so helpers registering inside a function are skipped;
     a text prefilter avoids ``ast.parse`` for files lacking both words."""
     try:
-        source = module_path.read_text(encoding="utf-8")
+        source = module_path.read_text(encoding="utf-8-sig")
         if "registry" not in source or "register" not in source:
             return False
         tree = ast.parse(source, filename=str(module_path))
@@ -83,7 +109,7 @@ def _module_registers_tools(module_path: Path) -> bool:
         for stmt in tree.body)
 
 
-def _tool_module_candidates(tools_path: Path) -> List[Path]:
+def _tool_module_candidates(tools_path: Path) -> list[Path]:
     """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
     sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
     by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
@@ -92,16 +118,25 @@ def _tool_module_candidates(tools_path: Path) -> List[Path]:
     return sorted(candidates)
 
 
-def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
+def discover_builtin_tools(tools_dir: Optional[Path] = None) -> list[str]:
     """Import built-in self-registering tool modules and return their module names. The
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        # Toolset filtering happens AFTER import. Keep the troubleshooting worker's
+        # import graph closed over reviewed core tools, not plugin-backed wrappers
+        # or a profile-writable discovery cache. Core approval/redaction stay intact.
+        module_names = ["tools.file_tools", "tools.terminal_tool", "tools.process_registry"]
+        for module_name in module_names:
+            importlib.import_module(module_name)
+        return module_names
     tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
     cache = _load_discovery_cache()
-    fresh_cache: Dict[str, list] = {}
+    fresh_cache: dict[str, list] = {}
     cache_dirty = False
-    module_names: List[str] = []
+    module_names: list[str] = []
     for path in _tool_module_candidates(tools_path):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
             continue
@@ -130,7 +165,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
         _save_discovery_cache(fresh_cache)
-    imported: List[str] = []
+    imported: list[str] = []
     for mod_name in module_names:
         try:
             importlib.import_module(mod_name)
@@ -150,20 +185,20 @@ def _discovery_cache_path() -> Optional[Path]:
         return None
 
 
-def _load_discovery_cache() -> Dict[str, list]:
+def _load_discovery_cache() -> dict[str, list]:
     """Read the discovery cache; any error → empty dict (full scan)."""
     path = _discovery_cache_path()
     if path is None:
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _save_discovery_cache(cache: Dict[str, list]) -> None:
+def _save_discovery_cache(cache: dict[str, list]) -> None:
     """Best-effort atomic write of the discovery cache. Never raises."""
     path = _discovery_cache_path()
     if path is None:
@@ -194,6 +229,7 @@ class ToolEntry:
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
+    execution_timeout: float | None = None
 
 
 class _PluginOverridePolicy:
@@ -223,24 +259,55 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # Grace window after a success in which a failure counts as a flake; kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
+# How long a list built on a grace-served True may be reused (``check_fn_verdict_window``). Inside the
+# grace window the tool is advertised whatever the re-probe returns, so reuse changes no result and only
+# bounds how often a failing probe re-runs: at most 12 per 60 s grace per memo key instead of one per
+# catalog read or tool_call, which a probe that fails by timing out would block for its full duration.
+_CHECK_FN_GRACE_REUSE_SECONDS = 5.0
 _CHECK_FN_CACHE_MAX = 512
-_check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
-_check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
-_check_fn_ever_good: Set[tuple[Callable, Optional[str]]] = set()  # probes that admitted tools this process
-_check_fn_core_drop_warned: Set[tuple[Callable, Optional[str]]] = set()  # once-per-process WARNING gate
+_check_fn_cache: dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
+_check_fn_last_good: dict[tuple[Callable, Optional[str]], float] = {}
+_check_fn_ever_good: set[tuple[Callable, Optional[str]]] = set()  # probes that admitted tools this process
+_check_fn_core_drop_warned: set[tuple[Callable, Optional[str]]] = set()  # once-per-process WARNING gate
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
-_NO_CACHE_CHECK_FNS: Set[Callable] = set()
-_BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+_NO_CACHE_CHECK_FNS: set[Callable] = set()
+# Bumped by invalidate_check_fn_cache(): anything derived from the dropped verdicts is void.
+_check_fn_epoch = 0
+# Earliest expiry of the verdicts consulted inside check_fn_verdict_window() (None outside one).
+_verdict_expiry: ContextVar[Optional[list]] = ContextVar("check_fn_verdict_expiry", default=None)
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
     return fn
+
+
+def check_fn_cache_epoch() -> int:
+    """Changes whenever ``invalidate_check_fn_cache()`` drops the cached verdicts."""
+    return _check_fn_epoch
+
+
+@contextmanager
+def check_fn_verdict_window():
+    """Yield a one-item list holding the earliest expiry (``time.monotonic``) of the cached
+    ``check_fn`` verdicts consulted inside the block, ``inf`` when none was. A result filtered on
+    those verdicts must not be reused past it: reusing it would replay a verdict this cache has
+    already expired. A grace-served True expires after ``_CHECK_FN_GRACE_REUSE_SECONDS``, never past
+    the end of its grace window. ``no_cache_check_fn`` probes are config-backed and set no expiry."""
+    sink = [float("inf")]
+    token = _verdict_expiry.set(sink)
+    try:
+        yield sink
+    finally:
+        _verdict_expiry.reset(token)
+
+
+def _note_verdict_expiry(deadline: float) -> None:
+    sink = _verdict_expiry.get()
+    if sink is not None and deadline < sink[0]:
+        sink[0] = deadline
 
 
 def _fn_label(fn: Callable) -> object:
@@ -260,23 +327,9 @@ def _prune_check_fn_caches(now: float) -> None:
 
 
 def check_fn_cache_scope() -> Optional[str]:
-    """Return the active profile key when availability is profile-scoped. Browser-controller
-    availability is request-bound (changes on every attach/detach), so a fully bound
-    browser-control request bypasses this cache AND model_tools' outer definition cache (same
-    sentinel) — one Browser session's live tools must not leak into another. Single-profile
+    """Return the active profile key when availability is profile-scoped. Single-profile
     processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
     per profile turn, so the canonical profile key is the boundary."""
-    try:
-        from gateway.session_context import get_session_env
-        if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            # api_server binds a server-derived principal + transport family on EVERY request, so
-            # identity-present != controller-attached; only bypass when the extension-control
-            # feature is actually on (#79047).
-            from gateway.browser_control_broker import browser_control_enabled
-            if browser_control_enabled():
-                return CHECK_FN_CACHE_BYPASS
-    except Exception:
-        pass
     try:
         from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
@@ -334,6 +387,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
+            _note_verdict_expiry(cached[0] + _CHECK_FN_TTL_SECONDS)
             return cached[1]
     exc_info = None
     try:
@@ -345,16 +399,21 @@ def _check_fn_cached(fn: Callable) -> bool:
         value, outcome, exc_info = False, "raised", exc
     # Resolved outside the cache lock: the registry snapshot takes its own lock.
     core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
+    # Stamped at completion: a probe that fails by timing out has spent its timeout, and a window
+    # measured from its start would already be over when it returns, so every read would re-probe.
+    now = time.monotonic()
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
             _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
+            _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
             return True
         last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
-            # Recent success → flake: serve last-good True, do NOT cache (next call re-probes).
+            # Recent success → flake: serve last-good True, do NOT cache (next direct check re-probes).
+            _note_verdict_expiry(min(now + _CHECK_FN_GRACE_REUSE_SECONDS, last_good + _CHECK_FN_FAILURE_GRACE_SECONDS))
             logger.warning(
                 "check_fn %s failed (%s) within %.0fs of last success; "
                 "treating as transient and keeping tool(s) available",
@@ -381,10 +440,11 @@ def _check_fn_cached(fn: Callable) -> bool:
                 "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
                 exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
+        _note_verdict_expiry(now + _CHECK_FN_TTL_SECONDS)
         return False
 
 
-def _core_tools_gated_by(fn: Callable) -> Set[str]:
+def _core_tools_gated_by(fn: Callable) -> set[str]:
     """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
     try:
         from toolsets import _HERMES_CORE_TOOLS
@@ -394,7 +454,7 @@ def _core_tools_gated_by(fn: Callable) -> Set[str]:
     return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
 
 
-def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
+def _memo_check(fn: Callable, memo: dict[Callable, bool]) -> bool:
     """Per-pass memo on top of the TTL cache: one probe per distinct check_fn."""
     if fn not in memo:
         memo[fn] = _check_fn_cached(fn)
@@ -403,7 +463,9 @@ def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_epoch
     with _check_fn_cache_lock:
+        _check_fn_epoch += 1
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
         _check_fn_ever_good.clear()
@@ -427,16 +489,16 @@ class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
     def __init__(self):
-        self._tools: Dict[str, ToolEntry] = {}  # built-in / process-global registrations
+        self._tools: dict[str, ToolEntry] = {}  # built-in / process-global registrations
         # Plugin overlays keyed by resolved HERMES_HOME; a profile sees its overlay first.
-        self._scoped_tools: Dict[str, Dict[str, ToolEntry]] = {}
+        self._scoped_tools: dict[str, dict[str, ToolEntry]] = {}
         # Plugin namespace -> operator opt-in for built-in override (lifecycle-managed);
         # scope attribution stays durable after policy removal so delayed callbacks
         # remain confined to the profile that loaded them.
-        self._plugin_override_policy: Dict[tuple[Optional[str], str], _PluginOverridePolicy] = {}
-        self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
-        self._toolset_checks: Dict[str, Callable] = {}
-        self._toolset_aliases: Dict[str, str] = {}
+        self._plugin_override_policy: dict[tuple[Optional[str], str], _PluginOverridePolicy] = {}
+        self._plugin_module_scopes: dict[str, set[Optional[str]]] = {}
+        self._toolset_checks: dict[str, Callable] = {}
+        self._toolset_aliases: dict[str, str] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -447,15 +509,16 @@ class ToolRegistry:
         return hermes_home_key()
 
     @staticmethod
-    def _grouped(entries: List[ToolEntry]) -> Dict[str, List[ToolEntry]]:
+    def _grouped(entries: list[ToolEntry]) -> dict[str, list[ToolEntry]]:
         """``{toolset: entries}`` in first-appearance order."""
-        groups: Dict[str, List[ToolEntry]] = {}
+        groups: dict[str, list[ToolEntry]] = {}
         for entry in entries:
             groups.setdefault(entry.toolset, []).append(entry)
         return groups
 
-    def _slot(self, scope: Optional[str], *, create: bool = False) -> Dict[str, ToolEntry]:
+    def _slot(self, scope: Optional[str], *, create: bool = False) -> dict[str, ToolEntry]:
         """The registration map for *scope*: global when None, else that profile's overlay."""
+        scope = normalize_scope(scope)
         if scope is None:
             return self._tools
         if create:
@@ -466,15 +529,18 @@ class ToolRegistry:
         self._toolset_aliases = {
             alias: target for alias, target in self._toolset_aliases.items() if target != toolset}
 
-    def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
+    def _merged_tools(self, scope: Optional[str] = None) -> dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        entries = {**self._tools, **self._scoped_tools.get(hermes_home_key(scope), {})}
+        if scope is None:
+            entries.update(self._scoped_tools.get(_session_slot_key(), {}))
+        return entries
 
-    def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
+    def _toolset_entries(self, toolset: str, scope: Optional[str]) -> list[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
 
     def _snapshot_state(
-        self, scope: Optional[str] = None) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+        self, scope: Optional[str] = None) -> tuple[list[ToolEntry], dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
         with self._lock:
             entries = list(self._merged_tools(scope).values())
@@ -482,22 +548,34 @@ class ToolRegistry:
             checks.update({e.toolset: e.check_fn for e in entries if e.check_fn is not None})
             return entries, checks
 
-    def _snapshot_entries(self) -> List[ToolEntry]:
+    def _snapshot_entries(self) -> list[ToolEntry]:
         return self._snapshot_state()[0]
 
-    def _toolset_has_exposable_tools(self, toolset: str, entries: List[ToolEntry]) -> bool:
+    def _toolset_has_exposable_tools(self, toolset: str, entries: list[ToolEntry]) -> bool:
         """True when at least one tool in *toolset* would be exposed. Mirrors
         :meth:`get_definitions` per-tool filtering so doctor/banners agree with runtime:
         mixed toolsets (``terminal`` + desktop-only ``read_terminal``) must not be gated
         by the first ``check_fn``."""
-        memo: Dict[Callable, bool] = {}
+        memo: dict[Callable, bool] = {}
         members = (e for e in entries if e.toolset == toolset)
         return any(not e.check_fn or _memo_check(e.check_fn, memo) for e in members)
 
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
         """Active profile's entry by name, falling back to global."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            return self._lookup(name, scope or self.current_scope_key(), explicit_scope=scope is not None)
+
+    def _lookup(self, name: str, scope_key: Optional[str], *, explicit_scope: bool = True) -> Optional[ToolEntry]:
+        """``_merged_tools(scope).get(name)`` without building the merged dict. An implicit scope
+        (the caller passed none) also sees the current session's tool overlay, as the merge does."""
+        if not explicit_scope:
+            session_scoped = self._scoped_tools.get(_session_slot_key())
+            if session_scoped is not None and name in session_scoped:
+                return session_scoped[name]
+        scoped = self._scoped_tools.get(scope_key)
+        if scoped is not None and name in scoped:
+            return scoped[name]
+        return self._tools.get(name)
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
@@ -505,13 +583,13 @@ class ToolRegistry:
         with self._lock:
             return self._slot(scope).get(name)
 
-    def get_registered_toolset_names(self) -> List[str]:
+    def get_registered_toolset_names(self) -> list[str]:
         return sorted(self._grouped(self._snapshot_entries()))
 
-    def get_all_entries(self) -> List[ToolEntry]:
+    def get_all_entries(self) -> list[ToolEntry]:
         return self._snapshot_entries()
 
-    def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
+    def get_tool_names_for_toolset(self, toolset: str) -> list[str]:
         return sorted(e.name for e in self._grouped(self._snapshot_entries()).get(toolset, []))
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
@@ -525,7 +603,7 @@ class ToolRegistry:
             self._toolset_aliases[alias] = toolset
             self._generation += 1
 
-    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+    def get_registered_toolset_aliases(self) -> dict[str, str]:
         with self._lock:
             return dict(self._toolset_aliases)
 
@@ -540,6 +618,7 @@ class ToolRegistry:
     ) -> _PluginOverridePolicy:
         """Bind a plugin module namespace to its current operator opt-in. The identity-bearing
         result lets unload/reload revoke a stale authorization without losing attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             policy = _PluginOverridePolicy(allowed)
             self._plugin_override_policy[(scope, module_namespace)] = policy
@@ -550,6 +629,7 @@ class ToolRegistry:
         self, module_namespace: str, *, scope: Optional[str] = None,
     ) -> Optional[_PluginOverridePolicy]:
         """Return one local authorization generation without fallback."""
+        scope = normalize_scope(scope)
         with self._lock:
             return self._plugin_override_policy.get((scope, module_namespace))
 
@@ -557,6 +637,7 @@ class ToolRegistry:
         self, module_namespace: str, current: _PluginOverridePolicy,
         previous: Optional[_PluginOverridePolicy], *, scope: Optional[str] = None) -> bool:
         """CAS-restore policy state while retaining durable scope attribution."""
+        scope = normalize_scope(scope)
         with self._lock:
             key = (scope, module_namespace)
             if self._plugin_override_policy.get(key) is not current:
@@ -585,7 +666,7 @@ class ToolRegistry:
     def _callable_module(handler: Callable) -> str:
         """Resolve defining module through wrappers, partials, and objects."""
         current = handler
-        seen: Set[int] = set()
+        seen: set[int] = set()
         while id(current) not in seen:
             seen.add(id(current))
             globals_dict = getattr(current, "__globals__", None)
@@ -653,10 +734,10 @@ class ToolRegistry:
 
     def register(
         self, name: str, toolset: str, schema: dict, handler: Callable,
-        check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
-        description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
-        dynamic_schema_overrides: Callable = None, override: bool = False,
-        scope: Optional[str] = None):
+        check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
+        description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
+        dynamic_schema_overrides: Callable | None = None, override: bool = False,
+        scope: Optional[str] = None, execution_timeout: float | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -676,9 +757,10 @@ class ToolRegistry:
         owner = caller_owner or handler_owner
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
+        scope = normalize_scope(scope)
         with self._lock:
             target = self._slot(scope, create=True)
-            existing = (self._tools if scope is None else self._merged_tools(scope)).get(name)
+            existing = self._lookup(name, scope)
             plugin_override_denied = (
                 owner is not None and not self._plugin_override_allowed(scope, owner))
             shadows_global = (
@@ -719,7 +801,7 @@ class ToolRegistry:
                 name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
-                max_result_size_chars=max_result_size_chars,
+                max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
                 dynamic_schema_overrides=dynamic_schema_overrides)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
@@ -738,6 +820,7 @@ class ToolRegistry:
         ``register(override=True)``, else a plugin could deregister a tool it doesn't own
         and re-register over the empty slot (the override check only runs when an entry
         exists). ``mcp-*`` toolsets are exempt — discovery repaves its own tools per refresh."""
+        scope = normalize_scope(scope)
         with self._lock:
             caller_mod = self._caller_module()
             caller_owner = self._plugin_namespace_of_module(caller_mod)
@@ -786,6 +869,16 @@ class ToolRegistry:
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
+    def move_to_scope(self, names, scope: str) -> None:
+        """Move process-global registrations into *scope*'s overlay (a single-profile process that
+        starts multiplexing hands its launch profile's MCP tools to that profile's own scope)."""
+        scope = normalize_scope(scope)
+        with self._lock:
+            moved = {name: self._tools.pop(name) for name in names if name in self._tools}
+            if moved:
+                self._slot(scope, create=True).update(moved)
+                self._generation += 1
+
     def restore_registration(
         self, name: str, current: ToolEntry, previous: Optional[ToolEntry], *,
         scope: Optional[str] = None) -> bool:
@@ -826,11 +919,11 @@ class ToolRegistry:
 
     # ---- Schema retrieval --------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: set[str], quiet: bool = False) -> list[dict]:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
         absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
         result = []
-        check_results: Dict[Callable, bool] = {}
+        check_results: dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
@@ -884,6 +977,10 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
+            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
+            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -907,7 +1004,7 @@ class ToolRegistry:
     def _attr(self, name: str, attr: str):
         return getattr(self.get_entry(name), attr, None)
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(self, name: str, default: float | None = None) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""
         size = self._attr(name, "max_result_size_chars")
         if size is not None:
@@ -917,7 +1014,7 @@ class ToolRegistry:
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         return DEFAULT_RESULT_SIZE_CHARS
 
-    def get_all_tool_names(self) -> List[str]:
+    def get_all_tool_names(self) -> list[str]:
         return sorted(entry.name for entry in self._snapshot_entries())
 
     def get_schema(self, name: str) -> Optional[dict]:
@@ -931,7 +1028,7 @@ class ToolRegistry:
         """Return the emoji for a tool, or *default* if unset."""
         return self._attr(name, "emoji") or default
 
-    def get_tool_to_toolset_map(self) -> Dict[str, str]:
+    def get_tool_to_toolset_map(self) -> dict[str, str]:
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}
 
     def is_toolset_available(self, toolset: str) -> bool:
@@ -939,16 +1036,16 @@ class ToolRegistry:
         return self._toolset_has_exposable_tools(toolset, self._snapshot_entries())
 
 
-    def check_toolset_requirements(self) -> Dict[str, bool]:
+    def check_toolset_requirements(self) -> dict[str, bool]:
         entries = self._snapshot_entries()
         return {
             toolset: self._toolset_has_exposable_tools(toolset, entries)
             for toolset in sorted(self._grouped(entries))}
 
-    def get_available_toolsets(self) -> Dict[str, dict]:
+    def get_available_toolsets(self) -> dict[str, dict]:
         """Return toolset metadata for UI display."""
         entries = self._snapshot_entries()
-        toolsets: Dict[str, dict] = {}
+        toolsets: dict[str, dict] = {}
         for toolset, members in self._grouped(entries).items():
             toolsets[toolset] = {
                 "available": self._toolset_has_exposable_tools(toolset, entries),
@@ -957,10 +1054,10 @@ class ToolRegistry:
                 "requirements": _unique_env(members)}
         return toolsets
 
-    def get_toolset_requirements(self) -> Dict[str, dict]:
+    def get_toolset_requirements(self) -> dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
         entries, toolset_checks = self._snapshot_state()
-        result: Dict[str, dict] = {}
+        result: dict[str, dict] = {}
         for toolset, members in self._grouped(entries).items():
             result[toolset] = {
                 "name": toolset,
@@ -985,7 +1082,7 @@ class ToolRegistry:
         return available, unavailable
 
 
-def _unique_env(entries: List[ToolEntry]) -> list:
+def _unique_env(entries: list[ToolEntry]) -> list:
     """Union of ``requires_env`` across *entries*, first-seen order, no duplicates."""
     out: list = []
     for entry in entries:
@@ -1010,3 +1107,16 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
+
+
+def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
+    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
+    cannot be introspected (builtins, some C callables)."""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

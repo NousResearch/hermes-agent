@@ -21,7 +21,7 @@ Read Reddit: subreddits, search, threads, users. No browser.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Reddit`, `Social Media`, `Research`, `Discussions`, `Community` |
-| Related skills | [`rss-feeds`](../research/research-rss-feeds.md), [`grounded-citations`](../../bundled/research/research-grounded-citations.md), [`blocked-page-recovery`](../../bundled/web/web-blocked-page-recovery.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
+| Related skills | [`rss-feeds`](../../optional/research/research-rss-feeds.md), [`grounded-citations`](../../bundled/research/research-grounded-citations.md), [`blocked-page-recovery`](../../bundled/web/web-blocked-page-recovery.md), [`xurl`](../../bundled/social-media/social-media-xurl.md) |
 
 ## Reference: full SKILL.md
 
@@ -40,7 +40,7 @@ backend routing in [Agent Reach](https://github.com/Panniantong/Agent-Reach).
 
 - "What is r/LocalLLaMA saying about X", "find Reddit threads on Y", "summarise this
   Reddit thread", "what has u/someone posted lately".
-- Any `reddit.com` URL the user shares. `web_extract`, `browser_navigate` and the
+- Any `reddit.com` URL the user shares. `web_extract`, `browser_exec` and the
   `.json` endpoints all fail from server IPs (403 or a "Prove your humanity" wall);
   this skill is the working path.
 - Not for posting, voting, messaging, or anything needing a user login.
@@ -126,7 +126,7 @@ account. Never ask for a Reddit password or browser cookies.
 - `www.reddit.com/…/.json`, `api.reddit.com` and `old.reddit.com` return 403 or an
   empty "Welcome to Reddit" shell for datacentre IPs. Do not fall back to them; do not
   spoof a browser User-Agent (also 403).
-- `r.jina.ai` and the `browser_navigate` tool hit the same block ("blocked by network
+- `r.jina.ai` and the `browser_exec` tool hit the same block ("blocked by network
   security" / humanity check). `blocked-page-recovery`'s Wayback route can still recover
   an **old** thread that was archived; it cannot fetch fresh ones.
 - Anonymous thread feeds only contain the post plus top-level comments (Reddit caps the

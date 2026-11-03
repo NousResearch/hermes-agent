@@ -5,12 +5,11 @@ event building, or response generation occurs.
 """
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.event import MessageType
 
 
 def _make_adapter(allow_from=None, allowed_chats=None, group_allowed_chats=None, callback_auth=None, **extra_overrides):
@@ -118,6 +117,7 @@ async def test_command_from_unauthorized_user_blocked():
 async def test_location_from_unauthorized_user_blocked():
     """Location messages from unauthorized users should be blocked."""
     adapter = _make_adapter(group_allow_from=["222"])
+    adapter.handle_message = AsyncMock()
 
     msg = _make_message(from_user_id=111, chat_type="group")
     msg.text = None
@@ -129,8 +129,9 @@ async def test_location_from_unauthorized_user_blocked():
         effective_message=None,
     )
 
-    # Should not raise — just silently return
     await adapter._handle_location_message(update, SimpleNamespace())
+
+    adapter.handle_message.assert_not_awaited()
 
 
 def test_is_user_authorized_from_message_allow_from():

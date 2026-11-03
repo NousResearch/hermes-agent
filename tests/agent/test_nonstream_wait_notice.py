@@ -23,7 +23,7 @@ def _request():
     request.call_start = 1000.0
     request.wd = SimpleNamespace(
         codex=True, stale_timeout=600.0, ttfb_enabled=True, ttfb_timeout=120.0,
-        idle_enabled=True, idle_timeout=180.0, idle_requires_progress=False,
+        idle_enabled=True, idle_timeout=180.0, idle_requires_progress=False, progress_timeout=0.0,
     )
     request.codex_watchdog_state = SimpleNamespace(
         lock=threading.Lock(), last_event_ts=None, last_progress_ts=None,

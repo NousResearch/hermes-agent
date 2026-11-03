@@ -20,7 +20,9 @@ import globals from 'globals'
 
 export default [
   {
-    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/package-lock.json']
+    // *.generated.ts is written by scripts/gen_gateway_contracts.py; the on-merge `npm run fix` bot
+    // must not rewrite it (it stripped the file's own eslint-disable header and left the tree stale).
+    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/package-lock.json', '**/*.generated.ts']
   },
   js.configs.recommended,
   {

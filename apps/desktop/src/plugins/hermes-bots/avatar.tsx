@@ -189,6 +189,11 @@ export function blobShapeString(seedPart: string, kind: string) {
   return seedPart ? `blobatar:${seedPart}` : 'blobatar'
 }
 
+/** *text* as an HTML attribute value: no quote or angle bracket in it ends the attribute or the tag. */
+function attributeText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /** Static SVG markup for a blob face, tagged data-bot-face so the roster's
  *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
 function blobMarkup(shape: null | string | undefined, name: string, size: number) {
@@ -209,7 +214,8 @@ function blobMarkup(shape: null | string | undefined, name: string, size: number
   }
 
   try {
-    return blobatarSvg(seed, opts).replace('<svg ', '<svg data-bot-face=' + JSON.stringify(name) + ' ')
+    // The name goes in as escaped text, through a replacer so `$&`-style patterns in it stay literal.
+    return blobatarSvg(seed, opts).replace('<svg ', () => `<svg data-bot-face="${attributeText(name)}" `)
   } catch {
     return null
   }

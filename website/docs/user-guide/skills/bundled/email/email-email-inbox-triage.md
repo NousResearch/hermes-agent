@@ -21,7 +21,7 @@ Triage an inbox: prioritize threads, draft replies safely.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Email`, `Inbox`, `Triage`, `Replies`, `Productivity` |
-| Related skills | [`himalaya`](./email-himalaya.md), [`google-workspace`](../productivity/productivity-google-workspace.md) |
+| Related skills | [`himalaya`](../../bundled/email/email-himalaya.md), [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md) |
 
 ## Reference: full SKILL.md
 

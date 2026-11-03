@@ -120,10 +120,14 @@ def test_rewind_fails_closed_when_new_turn_lands_after_id_snapshot(
     sibling = SessionDB(db_path=store._db.db_path)
     original_load = store._db.get_messages_as_conversation
 
+    calls = []
+
     def _load_then_append(*args, **kwargs):
         snapshot = original_load(*args, **kwargs)
-        sibling.append_message(sid, "user", "q3-from-other-process")
-        sibling.append_message(sid, "assistant", "a3-from-other-process")
+        if not calls:  # one new turn lands between the id snapshot and the write, however often the DB is read
+            sibling.append_message(sid, "user", "q3-from-other-process")
+            sibling.append_message(sid, "assistant", "a3-from-other-process")
+        calls.append(1)
         return snapshot
 
     monkeypatch.setattr(store._db, "get_messages_as_conversation", _load_then_append)

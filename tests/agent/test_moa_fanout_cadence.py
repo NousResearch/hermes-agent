@@ -5,7 +5,8 @@ Redesigned from PR #63448's intent (issue #63393 — advisor fan-out multiplies
 turn latency/cost by the tool-iteration count). Unlike the submitted shape
 (which dropped references entirely on off-cadence iterations), off-cadence
 iterations here still feed the aggregator the LAST advisor guidance via the
-same cache-reuse mechanism the user_turn fanout uses.
+same cache-reuse mechanism the user_turn fanout uses. Also: a preset's
+reference_timeout reaches each advisor request.
 """
 
 from types import SimpleNamespace
@@ -17,15 +18,16 @@ def _response(content="done", *, tool_calls=None):
     return SimpleNamespace(choices=[choice], usage=None, model="fake-model")
 
 
-def _cadence_config(home, fanout="every_n:3"):
+def _cadence_config(home, fanout="every_n:3", *, reference_timeout=None):
     home.mkdir()
+    timeout_line = f"\n      reference_timeout: {reference_timeout}" if reference_timeout is not None else ""
     (home / "config.yaml").write_text(
         f"""
 moa:
   default_preset: review
   presets:
     review:
-      fanout: "{fanout}"
+      fanout: "{fanout}"{timeout_line}
       reference_models:
         - provider: openai-codex
           model: gpt-5.5
@@ -114,16 +116,43 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
     assert len(ref_runs) == 1
     # Every iteration's aggregator request carries reference guidance...
     assert all(p["guidance"] for p in prepared)
-    # ...and the off-cadence ones reuse iteration 1's exact advice text.
+    # ...and the off-cadence ones reuse iteration 1's exact advice text, marked as
+    # predating the tool results they are now shown beside.
+    from agent.moa_loop import _STALE_GUIDANCE_NOTE
+
     assert "advice #1" in prepared[0]["guidance"]
-    assert prepared[1]["guidance"] == prepared[0]["guidance"]
-    assert prepared[2]["guidance"] == prepared[0]["guidance"]
+    assert _STALE_GUIDANCE_NOTE not in prepared[0]["guidance"]
+    for reused in prepared[1:]:
+        assert "advice #1" in reused["guidance"]
+        assert _STALE_GUIDANCE_NOTE in reused["guidance"]
+        assert reused["guidance"].replace(_STALE_GUIDANCE_NOTE, "") == prepared[0]["guidance"]
 
 
 
 
 
 
+
+
+def test_preset_reference_timeout_reaches_reference_calls(monkeypatch, tmp_path):
+    """A preset's reference_timeout is the timeout each advisor call_llm request carries."""
+    home = tmp_path / ".hermes"
+    _cadence_config(home, "user_turn", reference_timeout=900)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    timeouts = []
+
+    def fake_call_llm(**kwargs):
+        if kwargs["task"] == "moa_reference":
+            timeouts.append(kwargs.get("timeout"))
+        return _response("advice")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("agent.moa_loop._reference_context_length", lambda *a, **k: None)  # no metadata fetch
+    from agent.moa_loop import MoAChatCompletions
+
+    MoAChatCompletions("review").create(messages=[{"role": "user", "content": "task"}], tools=[])
+    assert timeouts == [900]
 
 
 def test_per_iteration_default_unchanged_by_cadence_state(monkeypatch, tmp_path):

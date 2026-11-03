@@ -19,7 +19,10 @@ const displayPrefix = (() => {
     return []
   }
 
-  const xvfbRun = (process.env.PATH ?? '').split(delimiter).map(dir => join(dir, 'xvfb-run')).find(existsSync)
+  const xvfbRun = (process.env.PATH ?? '')
+    .split(delimiter)
+    .map(dir => join(dir, 'xvfb-run'))
+    .find(existsSync)
 
   return xvfbRun ? [xvfbRun, '-a'] : null
 })()
@@ -42,7 +45,9 @@ test.skipIf(displayPrefix === null)(
       const env: NodeJS.ProcessEnv = {}
 
       for (const name of ['PATH', 'SystemRoot', 'WINDIR', 'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']) {
-        if (process.env[name]) {env[name] = process.env[name]}
+        if (process.env[name]) {
+          env[name] = process.env[name]
+        }
       }
 
       const electron: string = createRequire(import.meta.url)('electron')
@@ -66,7 +71,9 @@ test.skipIf(displayPrefix === null)(
         // execFile's rejection carries only "Command failed"; Electron's real
         // reason (sandbox abort, missing libs, fixture assertion) is on stderr.
         const { stderr = '', stdout: partial = '' } = error as { stderr?: string; stdout?: string }
-        throw new Error(`Electron fixture failed.\n--- stdout ---\n${partial}\n--- stderr ---\n${stderr}`, { cause: error })
+        throw new Error(`Electron fixture failed.\n--- stdout ---\n${partial}\n--- stderr ---\n${stderr}`, {
+          cause: error
+        })
       }
 
       expect(stdout).toContain('PORTAL_SESSION_LIVE_OK')

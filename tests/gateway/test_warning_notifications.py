@@ -36,7 +36,6 @@ class Emitter(StatusOutputMixin):
 
 
 @pytest.mark.parametrize("platform", [Platform.SLACK, Platform.TELEGRAM, Platform.LOCAL])
-@pytest.mark.parametrize("thread_id", [None, "1700.1"])
 @pytest.mark.parametrize("configured,enabled", [
     ("", True), ("display: null", True),
     ("display: {suppress_warning_notifications: null}", True),
@@ -49,8 +48,10 @@ class Emitter(StatusOutputMixin):
     ("display: {platforms: broken}", True),
     ("display: {suppress_warning_notifications: true, platforms: {slack: {suppress_warning_notifications: false}}}", True),
 ])
-def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platform, thread_id, configured, enabled):
+def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platform, configured, enabled):
     from gateway import run
+
+    thread_id = "1700.1"  # threaded vs. unthreaded delivery is covered in test_warning_notifications_transport
 
     (tmp_path / "config.yaml").write_text(configured)
     monkeypatch.setattr(run, "_hermes_home", tmp_path)

@@ -394,6 +394,45 @@ def _reference_active(requirement, contexts: Iterable[str], target: Mapping[str,
         return True
 
 
+def _prune_member_sources(settings: dict, installed: set[str]) -> bool:
+    """Drop ``tool.uv.sources`` alternatives for an extra or group this generation removed.
+
+    uv refuses a source qualified by an extra or group the project no longer declares
+    ("Source entry ... only applies to extra `dev`, but the `dev` extra does not exist"), so a
+    pruned development extra must take its sources with it. An extra declared but left empty
+    installs nothing, so its sources go too. A package keeps its key while any alternative
+    remains; unqualified (runtime) alternatives always stay.
+    """
+    from pm.install import _extra_key
+
+    sources = settings.get("sources")
+    if not isinstance(sources, dict):
+        return False
+
+    def applies(spec) -> bool:
+        if not isinstance(spec, dict):
+            return True
+        if "group" in spec:
+            return False
+        return "extra" not in spec or _extra_key(str(spec["extra"])) in installed
+
+    pruned = {}
+    for package, entry in sources.items():
+        if isinstance(entry, list):
+            alternatives = [spec for spec in entry if applies(spec)]
+            if alternatives:
+                pruned[package] = alternatives
+        elif applies(entry):
+            pruned[package] = entry
+    if pruned == sources:
+        return False
+    if pruned:
+        settings["sources"] = pruned
+    else:
+        settings.pop("sources")
+    return True
+
+
 def _runtime_member_metadata(document: dict, extras: Iterable[str],
                              target: Mapping[str, str] | None = None) -> bool:
     """Keep what this generation installs, not a plugin checkout's development environment.
@@ -409,6 +448,7 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str],
     document.pop("dependency-groups", None)
     project = document.get("project", {})
     optional = project.get("optional-dependencies")
+    keep: set[str] = set()
     if optional:
         keep, named = _selected_member_extras(document, extras, target)
         # A named-only extra stays declared but empty: its pins cannot reach the lock.
@@ -422,6 +462,7 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str],
                 project.pop("optional-dependencies")
     kept_extras = {_extra_key(key) for key in project.get("optional-dependencies", {})}
     settings = document.get("tool", {}).get("uv", {})
+    changed = _prune_member_sources(settings, keep) or changed
     for key in ("default-groups", "dependency-groups", "dev-dependencies"):
         if key in settings:
             settings.pop(key)

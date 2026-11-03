@@ -304,6 +304,11 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+    if event.internal:
+        # A claim commits only while admission is open, so this automation row (a wake, heartbeat or
+        # completion whose producer took its receipt as final) was admitted before any drain: a drain
+        # that began since must run it, not answer it with the drain notice and settle it unrun.
+        event._admitted_before_drain = True
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.

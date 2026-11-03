@@ -75,7 +75,7 @@ def wake_runs(executed):
 @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
 async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_restart(monkeypatch, busy):
     from gateway.platforms.event import MessageEvent
-    from gateway.run_runtime import recover_profile_native_sessions
+    from gateway.run_runtime import recover_profile_native_sessions, settle_gateway_runtime
     from gateway.wake import deliver_wake
 
     executed, hold = [], Hold() if busy else None
@@ -92,10 +92,10 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
     runner._draining = True  # /restart begins before the wake's turn is claimed
     if hold is not None:
         hold.finish.set()
-    await async_wait_until(
-        lambda: admissions(runner, authority, source)[0] == ("messaging", "terminal", "completed"),
-        what="the human turn to settle",
-    )
+    # A drain that claimed the wake just before the flag runs it; the stop settles that turn before
+    # the successor takes the epoch, or the owner's settlement fails stale_epoch mid-turn.
+    await asyncio.wait_for(settle_gateway_runtime(runner), 30)
+    assert admissions(runner, authority, source)[0] == ("messaging", "terminal", "completed")
     wake_row = admissions(runner, authority, source)[-1]
     assert wake_row[0] == "automation"
     assert wake_row[1] == "queued" or (wake_row[1:] == ("terminal", "completed") and wake_runs(executed) == ["owner"])
@@ -107,3 +107,31 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
         what="the wake to run",
     )
     assert len(wake_runs(executed)) == 1  # ran once, on whichever gateway claimed it
+
+
+@pytest.mark.asyncio
+async def test_a_wake_claimed_before_the_drain_runs_when_the_drain_begins_before_its_dispatch(monkeypatch):
+    from gateway.platforms.event import MessageEvent
+    from gateway.run_runtime import settle_gateway_runtime
+    from gateway.wake import deliver_wake
+
+    executed = []
+    runner, adapter, authority, source = await authority_route(monkeypatch, "owner", executed)
+    await adapter.handle_message(MessageEvent(text="A", source=source, message_id="A"))
+    await async_wait_until(
+        lambda: admissions(runner, authority, source) == [("messaging", "terminal", "completed")],
+        what="the human turn to settle",
+    )
+    dispatch = runner._handle_message
+
+    async def drain_starts_after_the_claim(event):
+        if event.text == WAKE:
+            runner._draining = True  # /restart lands between the claim's commit and the turn's dispatch
+        return await dispatch(event)
+
+    monkeypatch.setattr(runner, "_handle_message", drain_starts_after_the_claim)
+    await asyncio.wait_for(deliver_wake(adapter, text=WAKE, source=source), 10)
+    await async_wait_until(lambda: runner._draining, what="the wake to be claimed")
+    await asyncio.wait_for(settle_gateway_runtime(runner), 30)
+    assert admissions(runner, authority, source)[-1] == ("automation", "terminal", "completed")
+    assert wake_runs(executed) == ["owner"]  # run, not answered with the drain notice and settled unrun

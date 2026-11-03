@@ -71,11 +71,7 @@ def _start_fork_server(repo_root: Path) -> _ForkServer:
 
 
 def _fork_server_for_run(repo_root: Path) -> _ForkServer | None:
-    """The run's fork server when HERMES_TEST_FORKSERVER=1 on Linux, started by the first file.
-
-    The first file calls this before it copies os.environ, so popping the knob
-    here still keeps it out of every test's environment.
-    """
+    """The run's fork server when HERMES_TEST_FORKSERVER=1 on Linux, started by the first file."""
     global _fork_server, _fork_server_checked
     with _fork_lock:
         if not _fork_server_checked:
@@ -153,6 +149,8 @@ def start_pytest(
     *scratch_dir* holds a forked child's output file until the runner reads it.
     """
     server = _fork_server_for_run(repo_root)
+    # The first files copied os.environ before the knob was popped; no test sees it.
+    env.pop("HERMES_TEST_FORKSERVER", None)
     if server is not None:
         proc = _ForkedPytest(server, [server.argv0, str(file), *pytest_args], repo_root, env, scratch_dir)
         # The child's first act is setsid(), so its pid is its group. Never ask

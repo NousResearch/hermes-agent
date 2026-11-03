@@ -126,6 +126,55 @@ def test_room_link_is_enabled_only_when_this_gateway_can_host_a_member(gateway, 
     contract.GroupsCapabilitiesResult.model_validate(asyncio.run(call(gateway.owner, 'groups.capabilities')))
 
 
+@pytest.mark.asyncio
+async def test_home_without_room_link_can_register_and_run_a_lent_member(gateway, monkeypatch, linked_peer, tmp_path):
+    """The home owns the group chat without lending bots; a separate gateway lends its member."""
+    from gateway.platforms import api_server_runs
+    from gateway.run import _profile_runtime_scope
+
+    async def complete(adapter, run, **kwargs):
+        adapter._set_run_status(run.run_id, 'completed', output='peer reply', completed=True)
+
+    monkeypatch.setattr(api_server_runs, '_execute_run', complete)
+    _server, url, catalog, _room = linked_peer
+    lender = await call(gateway.owner, 'groups.capabilities')
+    assert lender['room_link']['enabled'] is True and 'groups.peer.invite' in lender['methods']
+    assert lender['room_link']['catalog'] == catalog
+
+    home = tmp_path / 'owner'
+    home.mkdir()
+    with SessionDB(home / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id='home', db=db, events={}, sessions={},
+                                    epoch=begin_runtime_epoch(db, instance_id='home'))
+        with _profile_runtime_scope(home):
+            service = authority.hosted_room_service = CanonicalHostedRoomService(authority, None)
+        service.runtime.status = lambda: {'running': True, 'stopping': False}
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'}, operator=True)
+        capabilities = await call(owner, 'groups.capabilities')
+        assert capabilities['driver'] is True and capabilities['persistent_process'] is True
+        assert 'groups.peer.register' in capabilities['methods']
+        assert capabilities['room_link']['enabled'] is False
+
+        room = await linked_room(SimpleNamespace(owner=owner), catalog)
+        grant = (await invite(gateway, room))['grant']
+        registered = await call(owner, 'groups.peer.register', room_id='linked', member_id='reviewer',
+                                target_url=url, target_profile='default', grant=grant, catalog=catalog)
+        assert isinstance(registered, dict) and registered['registered'], registered
+        assert (await call(owner, 'groups.send', room_id='linked', event_id='ask',
+                           payload={'text': '@reviewer review this', 'thread_id': 'thread'}))['accepted']
+
+        def drive():
+            with _profile_runtime_scope(home):
+                binding, = service.bindings()
+                service.runtime._run_room_once(binding)
+                service.prepare_room(binding)
+
+        await asyncio.to_thread(drive)
+        log = await call(owner, 'groups.log', room_id='linked')
+        replies = [event for event in log['events'] if event['kind'] == 'message.member']
+        assert [(reply['actor']['id'], reply['payload']['text']) for reply in replies] == [('reviewer', 'peer reply')]
+
+
 def test_peer_methods_enforce_operator_control_and_exact_params(gateway, monkeypatch):
     authority = gateway.authority
     member = AuthorityConnection(authority, object(), {'user_id': 'owner'})

@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { $apiRequestScope } from '@/api/client'
@@ -16,13 +15,11 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $sessionListDensity } from '@/store/session-list-density'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 
 import { SessionStatusDot } from '../session-status-dot'
 
 import { SessionActionsMenu } from './session-actions-menu'
-import { sessionRowEstimate } from './session-row-details'
 import { sessionRowKey } from './simplified-session-identity'
 
 interface SimplifiedSessionListProps {
@@ -45,9 +42,6 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
   const navigate = useNavigate()
   const activeProfile = useStore($activeGatewayProfile)
   const activeScope = useStore($apiRequestScope)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const density = useStore($sessionListDensity)
-  const virtual = props.showAgent === true && props.sessions.length >= 60
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (props.showAgent) {
@@ -58,14 +52,6 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
 
     return () => window.clearInterval(timer)
   }, [props.showAgent])
-
-  const list = useVirtualizer({
-    count: virtual ? props.sessions.length : 0,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => sessionRowEstimate(density),
-    getItemKey: index => sessionRowKey(props.sessions[index]),
-    overscan: 8
-  })
 
   const renderRow = (row: SessionInfo) => {
     const title = sessionTitle(row)
@@ -155,24 +141,5 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
     )
   }
 
-  return (
-    <div className={virtual ? 'h-64 overflow-y-auto' : 'flex flex-col gap-px'} ref={scrollRef}>
-      {virtual ? (
-        <div style={{ height: list.getTotalSize(), position: 'relative' }}>
-          {list.getVirtualItems().map(item => (
-            <div
-              data-index={item.index}
-              key={item.key}
-              ref={list.measureElement}
-              style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${item.start}px)` }}
-            >
-              {renderRow(props.sessions[item.index])}
-            </div>
-          ))}
-        </div>
-      ) : (
-        props.sessions.map(renderRow)
-      )}
-    </div>
-  )
+  return <div className="flex flex-col gap-px">{props.sessions.map(renderRow)}</div>
 }

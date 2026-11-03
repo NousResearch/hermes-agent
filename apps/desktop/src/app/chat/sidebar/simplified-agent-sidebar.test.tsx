@@ -457,11 +457,11 @@ it('keeps a newly pinned search result visible after clearing search, before the
   }
 })
 
-it('previews five pins, lets users reveal the rest, and searches beyond the preview', async () => {
+it('renders every pin and agent chat without count limits and preserves search', () => {
   $sessions.set(
-    Array.from({ length: 6 }, (_, index) =>
+    Array.from({ length: 9 }, (_, index) =>
       makeSessionInfo({
-        id: `pin-${index}`,
+        id: `saved-${index}`,
         title: `Saved ${index}`,
         profile: 'research',
         pinned: true,
@@ -472,48 +472,17 @@ it('previews five pins, lets users reveal the rest, and searches beyond the prev
   vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
   mount()
   const pins = within(screen.getByRole('region', { name: 'Pinned' }))
-  expect(pins.getAllByText(/^Saved /)).toHaveLength(5)
-  expect(screen.queryByText('Saved 5')).toBeNull()
-  fireEvent.click(pins.getByRole('button', { name: 'Show 1 more in Pinned' }))
-  expect(pins.getAllByText(/^Saved /)).toHaveLength(6)
-  fireEvent.click(pins.getByRole('button', { name: 'Collapse' }))
-  expect(pins.getAllByText(/^Saved /)).toHaveLength(5)
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Saved 5' } })
-  expect(pins.getByText('Saved 5')).toBeTruthy()
-  fireEvent.click(pins.getByText('Saved 5'))
-  expect(resume).toHaveBeenCalledWith('pin-5', expect.objectContaining({ profile: 'research' }))
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
-  expect(pins.getAllByText(/^Saved /)).toHaveLength(5)
-})
-
-it('limits agent previews, keeps the active chat, and reveals an older pinned chat without opening other agents', () => {
-  $sessions.set(
-    Array.from({ length: 9 }, (_, index) =>
-      makeSessionInfo({
-        id: `recent-${index}`,
-        title: `Recent ${index}`,
-        profile: 'research',
-        pinned: index === 8,
-        last_active: 100 - index
-      })
-    )
+  const agent = within(
+    screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
   )
-  $activeGatewayProfile.set('research')
-  $selectedStoredSessionId.set('recent-7')
-  mount()
-  const agent = screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
-  expect(within(agent).getAllByText(/^Recent /)).toHaveLength(6)
-  expect(within(agent).getByText('Recent 7')).toBeTruthy()
-  expect(within(agent).queryByText('Recent 8')).toBeNull()
-  fireEvent.click(screen.getByText('Recent 8'))
-  expect(within(agent).getByText('Recent 8')).toBeTruthy()
-  fireEvent.click(within(agent).getByRole('button', { name: 'Show 2 more in research' }))
-  expect(within(agent).getAllByText(/^Recent /)).toHaveLength(9)
-  fireEvent.click(within(agent).getByRole('button', { name: 'Collapse' }))
-  expect(within(agent).getByText('Recent 7')).toBeTruthy()
-  expect(within(agent).getByText('Recent 8')).toBeTruthy()
-  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Recent' } })
-  expect(within(agent).getAllByText(/^Recent /)).toHaveLength(9)
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(9)
+  expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
+  expect(screen.queryByRole('button', { name: /^Show .* more/ })).toBeNull()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Saved 8' } })
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(1)
+  expect(agent.getByText('Saved 8')).toBeTruthy()
+  fireEvent.click(pins.getByText('Saved 8'))
+  expect(resume).toHaveBeenCalledWith('saved-8', expect.objectContaining({ profile: 'research' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
-  expect(within(agent).getAllByText(/^Recent /)).toHaveLength(7)
+  expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
 })

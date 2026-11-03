@@ -29,10 +29,10 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
-import { SimplifiedAgentSessions } from './simplified-agent-sessions'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
+import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
 import { useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
 import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
@@ -57,7 +57,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const messagingTruncated = useStore($messagingTruncated)
   const messagingTotals = useStore($messagingPlatformTotals)
   const [query, setQuery] = useState('')
-  const [revealedSessionKey, setRevealedSessionKey] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -175,40 +174,35 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             {t.errors.genericFailure}
           </p>
         )}
-        <SimplifiedPinnedSessions
-          {...shared}
-          onResumeSession={(id, row) => {
-            if (row) {
-              setRevealedSessionKey(sessionRowKey(row))
-              const owner = row.connection_id || agents.owner
-              setExpanded(current => ({
-                ...current,
-                [JSON.stringify(['gateway', owner])]: true,
-                [JSON.stringify([owner, row.profile || 'default'])]: true
-              }))
-            }
+        <div className="flex min-h-44 flex-1 flex-col gap-2.5">
+          <SimplifiedPinnedSessions
+            {...shared}
+            onResumeSession={(id, row) => {
+              if (row) {
+                const owner = row.connection_id || agents.owner
+                setExpanded(current => ({
+                  ...current,
+                  [JSON.stringify(['gateway', owner])]: true,
+                  [JSON.stringify([owner, row.profile || 'default'])]: true
+                }))
+              }
 
-            props.onResumeSession(id, row)
-          }}
-          searching={Boolean(query.trim())}
-          sessions={pinned.filter(matches)}
-        />
-        <SimplifiedAgentList
-          agents={agents}
-          expanded={expanded}
-          onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
-          renderSessions={agentSessions => (
-            <div className="mb-2 ml-8 mt-0.5 border-l border-(--ui-stroke-secondary) pl-2">
-              <SimplifiedAgentSessions
-                {...shared}
-                revealedSessionKey={revealedSessionKey}
-                searching={Boolean(query.trim())}
-                sessions={agentSessions}
-              />
-            </div>
-          )}
-          searching={Boolean(query.trim())}
-        />
+              props.onResumeSession(id, row)
+            }}
+            sessions={pinned.filter(matches)}
+          />
+          <SimplifiedAgentList
+            agents={agents}
+            expanded={expanded}
+            onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
+            renderSessions={agentSessions => (
+              <div className="mb-2 ml-8 mt-0.5 border-l border-(--ui-stroke-secondary) pl-2">
+                <SimplifiedSessionList {...shared} sessions={agentSessions} />
+              </div>
+            )}
+            searching={Boolean(query.trim())}
+          />
+        </div>
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
         {query.trim() && search.pending && (
           <p className="px-2 py-3 text-xs text-(--ui-text-tertiary)" role="status">

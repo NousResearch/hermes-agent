@@ -6,6 +6,7 @@ import { SETTINGS_ROUTE } from '@/app/routes'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { FadeScroll } from '@/components/ui/fade-scroll'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
@@ -77,81 +78,85 @@ export function SimplifiedAgentList({
   const isOpen = (id: string) => searching || (expanded[id] ?? true)
 
   return (
-    <section aria-label={t.simplifiedAgents.agents} className="flex shrink-0 flex-col gap-1">
-      <SidebarPanelLabel className="px-2 py-2 [&>span:first-child]:mx-1">{t.simplifiedAgents.agents}</SidebarPanelLabel>
-      {gateways.map(connectionId => {
-        const group = sorted.filter(agent => agent.connectionId === connectionId)
-        const gatewayId = JSON.stringify(['gateway', connectionId])
-        const open = gateways.length === 1 || isOpen(gatewayId)
-        const selected = connectionId === (activeConnection ?? owner)
+    <section aria-label={t.simplifiedAgents.agents} className="flex min-h-24 shrink flex-col gap-1">
+      <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1">
+        {t.simplifiedAgents.agents}
+      </SidebarPanelLabel>
+      <FadeScroll className="min-h-0" maxHeight="none">
+        {gateways.map(connectionId => {
+          const group = sorted.filter(agent => agent.connectionId === connectionId)
+          const gatewayId = JSON.stringify(['gateway', connectionId])
+          const open = gateways.length === 1 || isOpen(gatewayId)
+          const selected = connectionId === (activeConnection ?? owner)
 
-        return (
-          <div className="shrink-0" key={gatewayId}>
-            <SimplifiedGatewayHeader
-              connectionId={connectionId}
-              fallbackLabel={group[0].gateway}
-              onToggle={gateways.length > 1 ? () => onToggle(gatewayId, open) : undefined}
-              open={open}
-              selected={selected}
-            />
-            {open &&
-              group.map(agent => {
-                const agentOpen = group.length === 1 || isOpen(agent.id)
-                const toggleLabel = `${agentOpen ? t.common.collapse : t.common.expand}: ${agent.label}`
+          return (
+            <div className="shrink-0" key={gatewayId}>
+              <SimplifiedGatewayHeader
+                connectionId={connectionId}
+                fallbackLabel={group[0].gateway}
+                onToggle={gateways.length > 1 ? () => onToggle(gatewayId, open) : undefined}
+                open={open}
+                selected={selected}
+              />
+              {open &&
+                group.map(agent => {
+                  const agentOpen = group.length === 1 || isOpen(agent.id)
+                  const toggleLabel = `${agentOpen ? t.common.collapse : t.common.expand}: ${agent.label}`
 
-                return (
-                  <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                    <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2">
-                      {group.length > 1 ? (
-                        <Tip label={toggleLabel}>
+                  return (
+                    <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
+                      <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2">
+                        {group.length > 1 ? (
+                          <Tip label={toggleLabel}>
+                            <Button
+                              aria-expanded={agentOpen}
+                              aria-label={toggleLabel}
+                              onClick={() => onToggle(agent.id, agentOpen)}
+                              size="icon-xs"
+                              variant="grip"
+                            >
+                              <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                            </Button>
+                          </Tip>
+                        ) : (
+                          <span aria-hidden />
+                        )}
+                        <RowButton
+                          aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
+                          className="flex min-h-7.5 min-w-0 items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                          disabled={pending !== null}
+                          onClick={() => void openAgent(agent)}
+                        >
+                          <ProfileGlyph
+                            color={resolveProfileColor(agent.profile, colors)}
+                            isDefault={agent.profile === 'default'}
+                            name={agent.label}
+                          />
+                          <span className="truncate">{agent.label}</span>
+                        </RowButton>
+                        <Tip label={t.sidebar.newSessionIn(agent.label)}>
                           <Button
-                            aria-expanded={agentOpen}
-                            aria-label={toggleLabel}
-                            onClick={() => onToggle(agent.id, agentOpen)}
+                            aria-label={t.sidebar.newSessionIn(agent.label)}
+                            className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                            onClick={() => {
+                              recordAction('session.new', 'click')
+                              startSimplifiedAgentSession(agent)
+                            }}
                             size="icon-xs"
-                            variant="grip"
+                            variant="ghost"
                           >
-                            <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
+                            <Codicon name="add" size={14} />
                           </Button>
                         </Tip>
-                      ) : (
-                        <span aria-hidden />
-                      )}
-                      <RowButton
-                        aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                        className="flex min-h-7.5 min-w-0 items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
-                        disabled={pending !== null}
-                        onClick={() => void openAgent(agent)}
-                      >
-                        <ProfileGlyph
-                          color={resolveProfileColor(agent.profile, colors)}
-                          isDefault={agent.profile === 'default'}
-                          name={agent.label}
-                        />
-                        <span className="truncate">{agent.label}</span>
-                      </RowButton>
-                      <Tip label={t.sidebar.newSessionIn(agent.label)}>
-                        <Button
-                          aria-label={t.sidebar.newSessionIn(agent.label)}
-                          className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
-                          onClick={() => {
-                            recordAction('session.new', 'click')
-                            startSimplifiedAgentSession(agent)
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name="add" size={14} />
-                        </Button>
-                      </Tip>
+                      </div>
+                      {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}
                     </div>
-                    {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}
-                  </div>
-                )
-              })}
-          </div>
-        )
-      })}
+                  )
+                })}
+            </div>
+          )
+        })}
+      </FadeScroll>
     </section>
   )
 }

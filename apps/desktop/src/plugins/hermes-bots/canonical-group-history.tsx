@@ -191,36 +191,40 @@ interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' |
 
 function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
   const labels = useCanonicalGroupLabels()
+  const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : notices.get(event.kind)
+  const isMessage = MESSAGE_KINDS.has(event.kind)
 
-    const notice = event.kind === 'room.activity' && event.payload.status === 'bounded'
-      ? labels.workLimitReached : notices.get(event.kind)
+  if (!notice && !isMessage) {return null}
+  const author = eventAuthor(event, roster, isMessage)
+  const memberId = isMessage ? (event.actor?.kind === 'member' ? event.actor.id : undefined) : event.payload.member_id
+  const member = roster.get(memberId ?? '')
 
-    const isMessage = event.kind === 'message' || event.kind === 'message.user' || event.kind === 'message.member'
+  if (notice) {
+    return <div className="flex min-w-0 items-center gap-2 px-3 py-1" data-room-notice={event.kind}>
+      {member && avatarFor?.(member.profile || member.handle, 16)}
+      {author && <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-secondary)">{author}</span>}
+      <EventBody event={event} notice={notice} />
+    </div>
+  }
 
-    if (!notice && !isMessage) {return null}
-    const author = eventAuthor(event, roster, isMessage)
-    const memberId = isMessage ? (event.actor?.kind === 'member' ? event.actor.id : undefined) : event.payload.member_id
-    const member = roster.get(memberId ?? '')
-    const isUser = isMessage && event.actor?.kind !== 'member'
-    const text = event.payload.text || event.payload.content || ''
+  return <MessageRow author={author} avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} member={member} memberId={memberId} onReply={onReply} />
+}
 
-    const replyAction = onReply && text && (member || typeof event.payload.thread_id === 'string')
-      ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply} text={text} />
-      : undefined
+const MESSAGE_KINDS = new Set(['message', 'message.user', 'message.member'])
 
-    const row = notice
-      ? <div className="flex min-w-0 items-center gap-2 px-3 py-1" data-room-notice={event.kind}>
-        {member && avatarFor?.(member.profile || member.handle, 16)}
-        {author && <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-secondary)">{author}</span>}
-        <EventBody event={event} notice={notice} />
-      </div>
-      : <RoomMessage actions={replyAction} author={author} avatar={isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', 24)}
-        isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
-        <EventBody event={event} />
-        <EventFiles binding={binding} disabled={disabled} event={event} />
-      </RoomMessage>
+function MessageRow({ author, avatarFor, binding, disabled, event, member, memberId, onReply }: Omit<HistoryRowProps, 'notices' | 'roster'> & {
+  author?: string; member?: CanonicalRoomMember; memberId?: string
+}) {
+  const isUser = event.actor?.kind !== 'member'
+  const text = event.payload.text || event.payload.content || ''
+  const canReply = !!onReply && !!text && (!!member || typeof event.payload.thread_id === 'string')
+  const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', 24)
 
-    return row
+  return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
+    author={author} avatar={face} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>
+    <EventBody event={event} />
+    <EventFiles binding={binding} disabled={disabled} event={event} />
+  </RoomMessage>
 }
 
 function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBinding; disabled: boolean; event: CanonicalGroupEvent }) {

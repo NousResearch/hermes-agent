@@ -123,6 +123,16 @@ _BILLING_PATTERNS = (
 # marked unverified so surfaces hedge and the pool uses a short cooldown.
 _UNVERIFIED_BILLING_PATTERNS = ("out of extra usage",)
 
+# Anthropic subscription entitlement gate, HTTP 400: "Third-party apps now draw from your extra
+# usage. To continue, enable extra usage in your account settings." Billing (user must act on the
+# account; another credential may serve), not format_error. Each phrase names an account action on
+# extra usage, so none matches the long-context tier gate ("extra usage" + "long context"), and
+# ``_entitlement_hints`` declines any message naming long context.
+_ENTITLEMENT_PATTERNS = (
+    "draw from your extra usage", "draw from extra usage", "enable extra usage",
+    "exceed your extra usage", "extra usage allowance",
+)
+
 # xAI's Grok credit-exhaustion code arrives as HTTP 403, not 402. Provider-
 # scoped on purpose: other providers' billing codes on a 403 stay auth failures.
 _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
@@ -622,11 +632,22 @@ def _billing_hints(error_msg: str) -> Verdict:
     return {**_V_BILLING, "error_context": ctx}
 
 
-def _first_match(error_msg: str, rules: Sequence[tuple[Sequence[str], Any]]) -> Optional[Verdict]:
-    """Verdict of the first rule whose pattern list hits ``error_msg``."""
+def _entitlement_hints(error_msg: str) -> Optional[Verdict]:
+    """Billing for the extra-usage entitlement gate; the long-context tier gate is not ours."""
+    return None if "long context" in error_msg else _V_BILLING
+
+
+def _first_match(
+    error_msg: str, rules: Sequence[tuple[Sequence[str], Verdict | Callable[[str], Optional[Verdict]]]],
+) -> Optional[Verdict]:
+    """Verdict of the first rule whose pattern list hits ``error_msg`` (a callable may decline with None)."""
     for patterns, verdict in rules:
         if any(p in error_msg for p in patterns):
-            return verdict(error_msg) if callable(verdict) else verdict
+            if not callable(verdict):
+                return verdict
+            hit = verdict(error_msg)
+            if hit is not None:
+                return hit
     return None
 
 
@@ -656,6 +677,7 @@ _404_RULES = (
 _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
+    (_ENTITLEMENT_PATTERNS, _entitlement_hints),
 )
 
 # LM Studio / llama.cpp raise a bare status-less ``APIError`` when chat-template Jinja rendering
@@ -673,7 +695,8 @@ _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
 # wording last, classified as transport (never compression).
 _MESSAGE_TAIL_RULES = (
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_BILLING_PATTERNS, _billing_hints),
-    (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
+    (_ENTITLEMENT_PATTERNS, _entitlement_hints), (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT),
+    (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
     (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),

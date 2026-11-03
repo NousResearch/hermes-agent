@@ -1,0 +1,21 @@
+name: hermes-token-speed
+repo: https://github.com/Ayshinko/hermes-token-speed
+sha: 0c0bb14b92ea1bd7d1287a22d845393632d14a71
+subdir: ""
+description: 'Live decode tokens-per-second chip for the Hermes Desktop status
+  bar: 1-second sliding window while the model is still streaming, tool execution
+  time excluded from decode seconds, UI spinner frames never counted, TTFT tracked
+  separately, cumulative totals calibrated against authoritative provider usage
+  at turn end. Desktop-only (desktop/plugin.js); no agent tools, hooks, middleware
+  or env vars.'
+maintainer: Ayshinko
+tier: community
+category: desktop
+version: "1.1.0"
+docs_url: https://github.com/Ayshinko/hermes-token-speed#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

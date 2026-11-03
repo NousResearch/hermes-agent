@@ -1,0 +1,18 @@
+name: nowstamp
+repo: https://github.com/zakiyys/hermes-nowstamp
+sha: 26148cca897f0798ca2cfc035e9eb2e00349bcf8
+description: Give the agent a clock. Appends the current date and time, plus the real gap since the previous message, to every user turn. Optional spaced-out timestamps on tool results for long runs.
+maintainer: zakiyys
+tier: community
+category: general
+docs_url: https://github.com/zakiyys/hermes-nowstamp#readme
+version: "1.0.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - transform_tool_result
+  provides_middleware: []
+  requires_env: []

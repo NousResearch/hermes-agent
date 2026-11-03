@@ -2557,6 +2557,135 @@ describe('overlayConcurrentMessageChanges', () => {
 
     expect(overlaid.at(-1)?.id).toBe('assistant-stream-1-2')
   })
+
+  // A still-pending row is the turn's stream target: the committed row may
+  // retire it only when it already spells the live text out. Folding a row
+  // that streamed past the fold throws away text that never reached disk —
+  // "the reply paints twice" must never cost the unseen tail.
+  const pendingCoverage = (durableText: string, liveText: string, extra: Partial<ChatMessage> = {}) => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', durableText, { rowId: 4 })
+    ]
+
+    const live = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: liveText }],
+      ...extra
+    } as ChatMessage
+
+    return overlayConcurrentMessageChanges(page, [page[0]], [page[0], live])
+  }
+
+  it('keeps a pending live row whose text streamed past the committed row', () => {
+    const overlaid = pendingCoverage('A', 'A B')
+
+    expect(overlaid.at(-1)?.id).toBe('assistant-stream-1-2')
+  })
+
+  it('keeps a pending live row that carries a row id but streamed past it', () => {
+    const overlaid = pendingCoverage('A', 'A B', { rowId: 4 } as Partial<ChatMessage>)
+
+    expect(overlaid.at(-1)?.id).toBe('assistant-stream-1-2')
+  })
+
+  it('folds a pending live row the committed row spells out exactly', () => {
+    const overlaid = pendingCoverage('A', 'A')
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant'])
+  })
+
+  it('folds a pending live row the committed row extends', () => {
+    const overlaid = pendingCoverage('A B', 'A')
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant'])
+  })
+
+  it('folds a pending live row whose tools the committed row carries, and keeps one that outgrew them', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      {
+        ...msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 }),
+        parts: [
+          { type: 'text', text: 'A2 finished' },
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+          { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal' }
+        ]
+      } as ChatMessage
+    ]
+
+    const subset = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'text', text: 'A2 finished' }
+      ]
+    } as ChatMessage
+
+    expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], subset]).map(message => message.id)).toEqual([
+      '3-user',
+      '4-assistant'
+    ])
+
+    const otherTool = {
+      ...subset,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-9', toolName: 'terminal' },
+        { type: 'text', text: 'A2 finished' }
+      ]
+    } as ChatMessage
+
+    expect(overlayConcurrentMessageChanges(page, [page[0]], [page[0], otherTool]).at(-1)?.id).toBe(
+      'assistant-stream-1-2'
+    )
+  })
+
+  it('keeps a pending row the baseline already carried, even when the text matches', () => {
+    const user = msg('3-user', 'user', 'prompt b', { rowId: 3 })
+    const durable = msg('4-assistant', 'assistant', 'A', { rowId: 4 })
+
+    const live = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'A' }]
+    } as ChatMessage
+
+    const overlaid = overlayConcurrentMessageChanges([user, durable], [user, durable], [user, durable, live])
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant', 'assistant-stream-1-2'])
+  })
+
+  it('reconciling the same pending rows twice is idempotent', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A', { rowId: 4 })
+    ]
+
+    const kept = {
+      id: 'assistant-stream-kept',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'A B' }]
+    } as ChatMessage
+
+    const folded = {
+      id: 'assistant-stream-folded',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'A' }]
+    } as ChatMessage
+
+    const once = overlayConcurrentMessageChanges(page, [page[0]], [page[0], kept, folded])
+    const twice = overlayConcurrentMessageChanges(page, [page[0]], once)
+
+    expect(once.map(message => message.id)).toEqual(['3-user', '4-assistant', 'assistant-stream-kept'])
+    expect(twice.map(message => message.id)).toEqual(once.map(message => message.id))
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {

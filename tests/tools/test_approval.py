@@ -57,6 +57,12 @@ class TestApprovalModeParsing:
 
 
 class TestSmartApproval:
+    @staticmethod
+    def _guardian_response(content: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+
     def test_smart_approval_uses_call_llm(self):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
@@ -65,6 +71,45 @@ class TestSmartApproval:
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
         assert result == "approve"
+
+    @pytest.mark.parametrize("reply,expected", [
+        # Exact one-word replies (existing contract).
+        ("APPROVE", "approve"),
+        ("DENY", "deny"),
+        # The prompt asks for ESCALATE but the classifier only grants approve/deny;
+        # an ESCALATE word is not an exact key and must keep escalating.
+        ("ESCALATE", "escalate"),
+        # #148382: a chatty guardian appends a justification after the verdict
+        # (often truncated at max_tokens=16). The first line is an explicit
+        # verdict, so the reply must not escalate.
+        ("APPROVE\n\nThis script only performs a simple arithmetic computation", "approve"),
+        ("DENY\n\nThis deletes every file in the directory.", "deny"),
+        # Markdown-wrapped bare verdicts count as explicit.
+        ("**APPROVE**", "approve"),
+        ("**DENY**", "deny"),
+        # Anything hedged or annotated on the verdict line still escalates.
+        ("**DENY** - this deletes files", "escalate"),
+        ("APPROVE, but it depends on the environment", "escalate"),
+        ("I think APPROVE is right", "escalate"),
+        ("APPROVED", "escalate"),
+        # Empty reply: infrastructure failure, escalates.
+        ("", "escalate"),
+    ])
+    def test_verdict_reply_parsing(self, reply, expected):
+        with mock_patch("agent.auxiliary_client.call_llm",
+                        return_value=self._guardian_response(reply)):
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == expected
+
+    def test_trailing_text_after_verdict_is_logged(self, caplog):
+        reply = "APPROVE\n\nThis script only performs a simple arithmetic computation"
+        with mock_patch("agent.auxiliary_client.call_llm",
+                        return_value=self._guardian_response(reply)), caplog.at_level(
+                "INFO", logger="tools.approval"):
+            _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert any("first line" in r.message for r in caplog.records)
 
     def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
         session_key = "test-smart-per-command"

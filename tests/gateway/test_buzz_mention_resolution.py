@@ -394,3 +394,27 @@ class TestLongerMemberNameMention:
     def test_strip_mention_leaves_longer_name_alone(self, adapter):
         assert adapter._strip_mention("@Chip Sales /whoami", ["Chip Sales"]) == "@Chip Sales /whoami"
         assert adapter._strip_mention("@Chip /whoami", ["Chip Sales"]) == "/whoami"
+
+    @pytest.mark.asyncio
+    async def test_sender_p_tags_are_validated_and_capped(self, adapter):
+        cli = adapter._cli
+        cli.responses[("channels", "members")] = [(0, "[]", "")]
+        valid = [f"{i:02x}" * 32 for i in range(40)]
+        junk = [f"junk-{i}" for i in range(10)]
+        await self._poll(adapter, "@Chip hola", p_tags=junk[:5] + valid + junk[5:], then_empty=True)
+        looked_up = [c[0][2:] for c in cli.calls if c[0][:2] == ["users", "get"] and c[0][3] != SENDER_PUBKEY]  # sender comes from the roster fallback
+        assert 0 < len(looked_up) <= 8
+        assert not any(j in a for a in looked_up for j in junk)
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_lookup_cli_failure_fails_open(self, adapter):
+        cli = adapter._cli
+        cli.responses[("channels", "members")] = [(1, "", "boom")]
+        cli.responses[("messages", "get")] = [(1, "", "boom")]
+        event = {
+            "id": "e1", "pubkey": SENDER_PUBKEY, "content": "@Chip hola", "created_at": 10, "kind": 9,
+            "tags": [["h", CHANNEL]],
+        }
+        await adapter._handle_events(CHANNEL, adapter._channel_state[CHANNEL], [event])
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]

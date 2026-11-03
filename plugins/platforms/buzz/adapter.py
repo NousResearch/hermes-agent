@@ -104,6 +104,8 @@ _CLI_TIMEOUT = 30.0
 # Mention-resolution caches: member lists are hit on every publish containing "@"; names must not outlive a rename.
 _MEMBER_CACHE_TTL = 60.0
 _PROFILE_NAME_TTL = 300.0
+# Sender-controlled p-tags feed pre-authorization name lookups (one CLI subprocess each); bound them.
+_MENTION_PTAG_LOOKUP_CAP = 8
 # Inbound attachments download only after the gates pass and must match their declared NIP-94 size + SHA-256.
 _MAX_INBOUND_ATTACHMENTS = 4
 _MAX_INBOUND_ATTACHMENT_BYTES = 20 * 1024 * 1024
@@ -1545,19 +1547,20 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
 
     async def _longer_member_names(self, channel_id: str, event: dict) -> list[str]:
         """Other members' display names that extend ours ("Chip Sales" for "Chip"): "@Chip Sales" addresses them, not us.
-        Lookups only run when the text has "@<our name>"; CLI failures yield [] (fail open, a real mention is never lost)."""
+        Lookups only run when the text has "@<our name>"; non-zero CLI exits yield [] (a real mention is never lost)."""
         content, own = event.get("content"), (self._display_name or "").lower()
         if not own or not isinstance(content, str) or f"@{own}" not in content.lower():
             return []
         pks = [str(t[1]).lower() for t in event.get("tags") or [] if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
-        names: dict[str, str] = {}
+        pks = [pk for pk in pks if _HEX64_RE.fullmatch(pk)][:_MENTION_PTAG_LOOKUP_CAP]
+        names: set[str] = set()
         for pk in dict.fromkeys(pks + await self._channel_member_pubkeys(channel_id)):
             if pk == self._self_pubkey:
                 continue
             name = await self._profile_display_name(pk)
             if len(name) > len(own) and name.lower().startswith(own):
-                names.setdefault(name.lower(), name)
-        return list(names.values())
+                names.add(name.lower())
+        return list(names)
 
     def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""

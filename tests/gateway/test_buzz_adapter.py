@@ -90,7 +90,7 @@ def _make_adapter(extra=None):
     # GatewayRunner installs this callback before intake starts. Attachment
     # tests are authorized by default and override the callback at the boundary.
     adapter.set_authorization_check(lambda *_args: True)
-    # Inbound tests that bypass the CLI have no roster to consult; longer-name lookup is covered in test_buzz_mention_resolution.
+    # Inbound tests that bypass the CLI have no roster to consult; longer-name lookup (deliberate, bounded: hex-only capped p-tags) is covered in test_buzz_mention_resolution.
     adapter._longer_member_names = AsyncMock(return_value=[])
     return adapter
 

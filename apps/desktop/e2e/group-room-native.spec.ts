@@ -55,6 +55,14 @@ async function setupKeyedBackend(mockServer: MockServerOptions, multiplex: boole
   }
 }
 
+/** Every shot in the maintainer's theme: dark, unless THEME=light. */
+async function applyTheme(): Promise<void> {
+  const scheme = process.env.THEME === 'light' ? 'light' : 'dark'
+  await fixture!.app.evaluate(({ nativeTheme }, mode) => { nativeTheme.themeSource = mode }, scheme)
+  await fixture!.page.emulateMedia({ colorScheme: scheme })
+  await fixture!.page.waitForTimeout(300)
+}
+
 async function sizeWindow(): Promise<void> {
   const bounds = await fixture!.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(win => {
     win.unmaximize()
@@ -64,6 +72,7 @@ async function sizeWindow(): Promise<void> {
   }))
 
   await fixture!.page.waitForTimeout(500)
+  await applyTheme()
   probe('window', { bounds, viewport: await fixture!.page.evaluate(() => [window.innerWidth, window.innerHeight]) })
 }
 
@@ -192,6 +201,49 @@ async function waitSettled(page: Page, composerLabel: string, timeoutMs = 90_000
   return false
 }
 
+/** Reply in thread + its chip, the @ picker, the details panel and the Bots-list row. */
+async function shootExtras(page: Page, room: string, label: string): Promise<void> {
+  const composer = page.getByRole('textbox', { name: label, exact: true }).filter({ visible: true })
+  const message = page.locator('[data-room-message="member"]').filter({ visible: true }).last()
+  await message.hover()
+  const reply = message.getByRole('button', { name: /^Reply/ }).first()
+
+  if (await reply.count()) {
+    await reply.click()
+    await page.waitForTimeout(500)
+    await capture('07-reply-chip', label, { replyChip: await page.locator('[data-room-reply]').count() })
+    await page.locator('[data-room-reply]').getByRole('button').first().click().catch(() => undefined)
+    await composer.fill('')
+  } else {
+    probe('07-reply-chip', { skipped: 'no Reply action on the last member message' })
+  }
+
+  await composer.click()
+  await composer.pressSequentially('@')
+  await page.waitForTimeout(800)
+  await capture('08-mention-picker', label, { listbox: await page.getByRole('listbox').count() })
+  await page.keyboard.press('Escape')
+  await composer.fill('')
+
+  const title = page.getByRole('button', { name: /details/i }).filter({ visible: true }).first()
+
+  if (await title.count()) {
+    await title.click()
+    await page.waitForTimeout(800)
+    await capture('09-details-panel', label, { details: true })
+    await title.click().catch(() => undefined)
+  } else {
+    probe('09-details-panel', { skipped: 'no details trigger' })
+  }
+
+  await openBots(page)
+  await page.waitForTimeout(800)
+  await capture('10-bots-row', label, { rowState: await page.locator('[data-room-state]').count() })
+  const tab = page.getByRole('tab', { name: new RegExp(`^${room}`) }).first()
+
+  if (await tab.count()) {await tab.click()}
+}
+
 test.afterEach(async () => {
   // Backend receipts (install stamp, member turns) die with the sandbox; keep a copy.
   const logs = fixture && path.join(fixture.sandbox.hermesHome, 'logs')
@@ -208,7 +260,21 @@ test('gateway-owned room: working, settled, failure', async () => {
   test.setTimeout(600_000)
   allowErrorBanners()
   const sentinel = path.join(os.tmpdir(), `grn-release-${process.pid}-${Date.now()}`)
-  fixture = await setupKeyedBackend({ holdFirstCompletionContaining: 'SCOUT_42' }, true)
+  // The scripts ride hidden keys (mock `groupScripts`) so the transcript reads like a real chat.
+  const kickoff = 'Can the team get the release branch green? @builder scaffold it, @scout check the build logs.'
+  const second = 'Thanks all. One more pass on the changelog before we ship?'
+
+  fixture = await setupKeyedBackend({
+    holdFirstCompletionContaining: 'SCOUT_42',
+    groupScripts: {
+      'release branch green': [
+        'E2E_SAY(builder)[Scaffold is up on `release/0.23`. {at}scout the CI run is yours.]',
+        `E2E_TOOL(scout)[terminal:echo SCOUT_$((40+2)); until test -f ${sentinel}; do sleep 0.5; done]`,
+        'E2E_SAY(scout)[Build logs are clean: **312 passed**, 0 failed. Ready to tag.]'
+      ].join(' '),
+      'changelog before we ship': 'E2E_FAIL(critic) E2E_SAY(builder)[Changelog reads well. Nothing more from me.]'
+    }
+  }, true)
   await waitForAppReady(fixture, 120_000)
   await sizeWindow()
   const page = fixture.page
@@ -220,12 +286,7 @@ test('gateway-owned room: working, settled, failure', async () => {
   await sizeWindow()
 
   // SCOUT_42 only exists in Scout's tool OUTPUT, so the hold lands on Scout's post-tool completion.
-  await send(page, room, label, [
-    'Kickoff ROOM_NATIVE_ONE',
-    'E2E_SAY(builder)[Scaffold is up; {at}scout please check the build logs.]',
-    `E2E_TOOL(scout)[terminal:echo SCOUT_$((40+2)); until test -f ${sentinel}; do sleep 0.5; done]`,
-    'E2E_SAY(scout)[Build logs are clean.]'
-  ].join(' '))
+  await send(page, room, label, kickoff)
 
   // Tool still running (sentinel absent): the 2 s poll should show tool + elapsed.
   await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('You are @scout')).length, { timeout: 90_000 }).toBeGreaterThan(0)
@@ -241,7 +302,9 @@ test('gateway-owned room: working, settled, failure', async () => {
   const settled = await waitSettled(page, label)
   await capture('02-settled', label, { settled })
 
-  await send(page, room, label, 'Second round ROOM_NATIVE_TWO E2E_FAIL(critic) E2E_SAY(builder)[Noted, nothing more from me.]')
+  await shootExtras(page, room, label)
+
+  await send(page, room, label, second)
   const failSettled = await waitSettled(page, label, 180_000)
   await capture('03-failure', label, { settled: failSettled })
 
@@ -264,10 +327,30 @@ test('legacy Desktop-driven room: working and settled', async () => {
   allowErrorBanners()
   // group-turn-integrity's shape (no multiplex), plus the provider key: on trees where the
   // gateway always owns rooms, members otherwise fail with "No API key for custom provider".
-  fixture = await setupKeyedBackend({ holdFirstCompletionContaining: 'LEGACY_42' }, false)
+  fixture = await setupKeyedBackend({
+    holdFirstCompletionContaining: 'LEGACY_42',
+    groupScripts: { 'review the retry patch': 'E2E_TOOL(programmer)[terminal:echo LEGACY_$((6*7))] E2E_SAY(programmer)[Patch is ready for review: retries now back off **exponentially**.]' }
+  }, false)
   await waitForAppReady(fixture, 120_000)
   await sizeWindow()
   const page = fixture.page
+  // Current gateways own every this-device room; answer the capability probe the way a
+  // gateway without a room driver does so the Desktop-driven view opens (turns stay real).
+  await page.evaluate(() => {
+    const original = WebSocket.prototype.send
+
+    WebSocket.prototype.send = function(data) {
+      let frame: any = null
+
+      try { frame = JSON.parse(String(data)) } catch { frame = null }
+
+      if (frame?.method === 'groups.capabilities') {
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { driver: false, persistent_process: false } }) })))
+      } else {
+        original.call(this, data)
+      }
+    }
+  })
   const room = 'Programmer, Reviewer'
   const legacyLabel = `Message ${room}`
 
@@ -282,11 +365,7 @@ test('legacy Desktop-driven room: working and settled', async () => {
   probe('legacy-room-kind', { roomKind, label })
   await sizeWindow()
 
-  await send(page, room, label, [
-    'Legacy kickoff ROOM_LEGACY_ONE',
-    'E2E_TOOL(programmer)[terminal:echo LEGACY_$((6*7))]',
-    'E2E_SAY(programmer)[Patch is ready for review.]'
-  ].join(' '))
+  await send(page, room, label, '@programmer can you review the retry patch before lunch?')
 
   const held = await expect.poll(() => fixture!.mock.heldCompletionCount(), { timeout: 90_000 }).toBe(1).then(() => true, () => false)
   await page.waitForTimeout(5000)

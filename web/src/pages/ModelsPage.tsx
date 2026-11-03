@@ -558,6 +558,8 @@ function AuxiliaryTasksModal({
   onSaved(): void;
   onClose(): void;
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -594,7 +596,7 @@ function AuxiliaryTasksModal({
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={modelsUi.close}
         >
           <X />
         </Button>
@@ -605,7 +607,7 @@ function AuxiliaryTasksModal({
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"
             >
-              Auxiliary Tasks
+              {modelsUi.auxiliaryTasks}
             </h2>
             <Button
               size="sm"
@@ -615,14 +617,11 @@ function AuxiliaryTasksModal({
               className="h-6 text-xs uppercase"
               prefix={resetBusy ? <Spinner /> : null}
             >
-              Reset all to auto
+              {modelsUi.resetAllToAuto}
             </Button>
           </div>
           <p className="text-xs text-text-secondary mt-2">
-            Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
+            {modelsUi.auxiliaryTasksDescription}
           </p>
         </header>
 
@@ -634,8 +633,8 @@ function AuxiliaryTasksModal({
             const eff = cur?.effective;
             const effRoute =
               eff?.provider && eff.provider !== "auto"
-                ? `${eff.provider} · ${eff.model || "(provider default)"}`
-                : "auto (use main model)";
+                ? `${eff.provider} · ${eff.model || modelsUi.providerDefault}`
+                : modelsUi.autoUsesMain;
             return (
               <div
                 key={t.key}
@@ -650,10 +649,10 @@ function AuxiliaryTasksModal({
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
                     {isAuto && t.inheritFrom
-                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
+                      ? `${modelsUi.inherits.replace("{task}", auxTaskLabel(aux?.tasks, t.inheritFrom))} · ${effRoute}`
                       : isAuto
-                        ? "auto (use main model)"
-                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                        ? modelsUi.autoUsesMain
+                        : `${cur?.provider} · ${cur?.model || modelsUi.providerDefault}`}
                   </div>
                 </div>
                 {t.inheritFrom && !isAuto && (
@@ -671,7 +670,7 @@ function AuxiliaryTasksModal({
                     }}
                     className="h-6 text-xs uppercase"
                   >
-                    Follow {auxTaskLabel(aux?.tasks, t.inheritFrom)}
+                    {modelsUi.follow.replace("{task}", auxTaskLabel(aux?.tasks, t.inheritFrom))}
                   </Button>
                 )}
                 <Button
@@ -680,7 +679,7 @@ function AuxiliaryTasksModal({
                   onClick={() => setPicker({ kind: "aux", task: t.key })}
                   className="h-6 text-xs uppercase"
                 >
-                  Change
+                  {modelsUi.change}
                 </Button>
               </div>
             );
@@ -695,7 +694,7 @@ function AuxiliaryTasksModal({
             currentAssignment={assignmentToPickerCurrent(
               aux?.tasks.find((a) => a.task === picker.task),
             )}
-            title={`Set Auxiliary: ${auxTaskLabel(aux?.tasks, picker.task)}`}
+            title={modelsUi.setAuxiliary.replace("{task}", auxTaskLabel(aux?.tasks, picker.task))}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await api.setModelAssignment({
                 confirm_expensive_model: confirmExpensiveModel,
@@ -714,10 +713,10 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
-          description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
+          title={modelsUi.resetAuxiliaryModels}
+          description={modelsUi.resetAuxiliaryDescription}
           destructive
-          confirmLabel="Reset all"
+          confirmLabel={modelsUi.resetAll}
           loading={resetBusy}
         />
       </div>
@@ -736,6 +735,8 @@ function MoaModelsModal({
   onClose(): void;
   onSaved(next: MoaConfigResponse): void;
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const [draft, setDraft] = useState<MoaConfigResponse>(config);
   const [selected, setSelected] = useState(config.default_preset || Object.keys(config.presets)[0] || "default");
   const [newName, setNewName] = useState("");
@@ -849,12 +850,12 @@ function MoaModelsModal({
             id="moa-modal-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
-            Configure Mixture of Agents presets
+            {modelsUi.configureMoaPresets}
           </h2>
         </header>
         <div className="space-y-4 p-5">
           <p className="text-xs text-text-secondary">
-            Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.
+            {modelsUi.moaDescription}
           </p>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -865,23 +866,23 @@ function MoaModelsModal({
             >
               {presetNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
-            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>Set default</Button>
-            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
+            <Button size="sm" outlined onClick={() => setDraft((prev) => ({ ...prev, default_preset: selected }))}>{modelsUi.setDefault}</Button>
+            <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>{modelsUi.delete}</Button>
             <input
               className="border border-border bg-background px-2 py-1 text-xs"
-              placeholder="new preset name"
+              placeholder={modelsUi.newPresetName}
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
             />
-            <Button size="sm" outlined disabled={!newName.trim() || !!draft.presets[newName.trim()]} onClick={addPreset}>Add preset</Button>
+            <Button size="sm" outlined disabled={!newName.trim() || !!draft.presets[newName.trim()]} onClick={addPreset}>{modelsUi.addPreset}</Button>
           </div>
 
           <div className="text-xs text-text-secondary">
-            Default: <span className="font-mono">{draft.default_preset}</span>
+            {modelsUi.default}: <span className="font-mono">{draft.default_preset}</span>
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Reference models</div>
+            <div className="text-display text-xs font-medium tracking-wider">{modelsUi.referenceModels}</div>
             {preset.reference_models.map((slot, index) => (
               <div
                 key={`${selected}-${slot.provider}-${slot.model}-${index}`}
@@ -902,25 +903,25 @@ function MoaModelsModal({
                   }
                 />
                 <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
-                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
-                <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>{modelsUi.change}</Button>
+                <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>{modelsUi.remove}</Button>
               </div>
             ))}
-            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }] }))}>Add reference model</Button>
+            <Button size="sm" outlined onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: [...prev.reference_models, { ...prev.aggregator, enabled: true }] }))}>{modelsUi.addReferenceModel}</Button>
           </div>
 
           <div className="space-y-2">
-            <div className="text-display text-xs font-medium tracking-wider">Aggregator</div>
+            <div className="text-display text-xs font-medium tracking-wider">{modelsUi.aggregator}</div>
             <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
               <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.aggregator)}</div>
-              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>Change</Button>
+              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>{modelsUi.change}</Button>
             </div>
           </div>
 
           {error && <div className="text-xs text-destructive">{error}</div>}
           <div className="flex justify-end gap-2 pt-2">
-            <Button ghost onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button onClick={() => void save()} disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
+            <Button ghost onClick={onClose} disabled={busy}>{modelsUi.cancel}</Button>
+            <Button onClick={() => void save()} disabled={busy}>{busy ? modelsUi.saving : modelsUi.save}</Button>
           </div>
         </div>
       </div>
@@ -934,10 +935,10 @@ function MoaModelsModal({
               ? preset.aggregator
               : preset.reference_models[picker.index]
           }
-          title="Select MoA Model"
+          title={modelsUi.selectMoaModel}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
-              setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");
+              setError(modelsUi.moaNoRecursive);
               return;
             }
             setError(null);
@@ -966,6 +967,8 @@ function ModelSettingsPanel({
   refreshKey: number;
   onSaved(): void;
 }) {
+  const { t } = useI18n();
+  const modelsUi = t.modelsUi ?? en.modelsUi!;
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
@@ -1018,9 +1021,9 @@ function ModelSettingsPanel({
       <CardHeader className="min-w-0 pb-3">
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <CardTitle className="text-sm">Model Settings</CardTitle>
+          <CardTitle className="text-sm">{modelsUi.modelSettings}</CardTitle>
           <span className="max-w-full min-w-0 text-xs text-text-secondary [overflow-wrap:anywhere]">
-            applies to new sessions
+            {modelsUi.appliesToNewSessions}
           </span>
         </div>
       </CardHeader>
@@ -1032,13 +1035,13 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Main model
+                {modelsUi.mainModel}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
-              {mainProv || "(unset)"}
+              {mainProv || modelsUi.unset}
               {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {mainModel || modelsUi.unset}
             </div>
           </div>
           <Button
@@ -1046,7 +1049,7 @@ function ModelSettingsPanel({
             onClick={() => setPicker({ kind: "main" })}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Change
+            {modelsUi.change}
           </Button>
         </div>
 
@@ -1056,13 +1059,15 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Auxiliary tasks
+                {modelsUi.auxiliaryTasks}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {auxOverrideCount > 0
-                ? `${auxOverrideCount} override${auxOverrideCount > 1 ? "s" : ""} · ${auxTaskCount - auxOverrideCount} auto`
-                : `${auxTaskCount} tasks · all auto`}
+                ? modelsUi.overridesAndAuto
+                    .replace("{overrides}", String(auxOverrideCount))
+                    .replace("{auto}", String(auxTaskCount - auxOverrideCount))
+                : modelsUi.tasksAllAuto.replace("{count}", String(auxTaskCount))}
             </div>
           </div>
           <Button
@@ -1071,7 +1076,7 @@ function ModelSettingsPanel({
             onClick={() => setAuxModalOpen(true)}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {modelsUi.configure}
           </Button>
         </div>
 
@@ -1080,13 +1085,15 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Brain className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Mixture of Agents
+                {modelsUi.mixtureOfAgents}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
               {moa
-                ? `${moa.reference_models.length} reference${moa.reference_models.length === 1 ? "" : "s"} · ${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`
-                : "not loaded"}
+                ? modelsUi.moaSummary
+                    .replace("{count}", String(moa.reference_models.length))
+                    .replace("{model}", `${moa.aggregator.provider}/${shortModelName(moa.aggregator.model)}`)
+                : modelsUi.notLoaded}
             </div>
           </div>
           <Button
@@ -1096,7 +1103,7 @@ function ModelSettingsPanel({
             disabled={!moa}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {modelsUi.configure}
           </Button>
         </div>
 
@@ -1105,7 +1112,7 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={modelsUi.setMainModel}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await applyAssignment({
                 confirmExpensiveModel,

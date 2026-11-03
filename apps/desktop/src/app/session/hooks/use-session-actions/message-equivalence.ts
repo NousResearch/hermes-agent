@@ -155,6 +155,15 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
   )
 }
 
+// Optional flags, unset meaning false. `interim` gates the action footer, so
+// flipping it must repaint (e.g. a previewed final settling onto a sealed
+// interim bubble restores the bar); `queuedTurnStarted` must reach the view's
+// copy because resume seeds session state from it.
+const FLAG_FIELDS = ['interim', 'queuedTurnStarted'] as const
+
+const flagsDiffer = (a: ChatMessage, b: ChatMessage) =>
+  FLAG_FIELDS.some(field => (a[field] ?? false) !== (b[field] ?? false))
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
     a.id !== b.id ||
@@ -174,9 +183,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.branchGroupId !== b.branchGroupId ||
     a.timestamp !== b.timestamp ||
     a.completedAt !== b.completedAt ||
-    // Interim gates the action footer, so flipping it must repaint (e.g. a
-    // previewed final settling onto a sealed interim bubble restores the bar).
-    (a.interim ?? false) !== (b.interim ?? false) ||
+    flagsDiffer(a, b) ||
     !chatReactionsEquivalent(a.reactions, b.reactions)
   ) {
     return false

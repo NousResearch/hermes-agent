@@ -193,13 +193,21 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
                 continue
             real_change_count += 1
             if not search_lines:  # addition-only: the context hint must be unique
+                hint_ok = True
                 if hunk.context_hint:
                     occurrences, ambiguous = _hint_ambiguity(simulated, hunk.context_hint)
                     if occurrences == 0:
                         errors.append(f"{op.file_path}: addition-only hunk context hint "
                                       f"'{hunk.context_hint}' not found")
+                        hint_ok = False
                     elif ambiguous:
                         errors.append(f"{op.file_path}: addition-only hunk {ambiguous}")
+                        hint_ok = False
+                if hint_ok:
+                    replacement = '\n'.join(replace_lines)
+                    new_simulated, _ = _insert_addition_only(simulated, hunk, replacement)
+                    if new_simulated is not None:
+                        simulated = new_simulated
                 continue
             search_pattern, replacement = '\n'.join(search_lines), '\n'.join(replace_lines)
             new_simulated, count, _strategy, match_error = fuzzy_find_and_replace(

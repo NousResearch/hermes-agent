@@ -27,6 +27,7 @@ MAX_OUTPUT_CHARS = 8000
 URL_TIMEOUT_SECONDS = 30
 MAX_URL_BYTES = 262_144  # 256 KiB
 MAX_URL_REDIRECTS = 5
+_URL_READ_CHUNK_BYTES = 65_536
 _REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 _URL_POLICY_REFUSAL = (
     "monitor_url target refused by the URL safety policy (private/internal or cloud metadata "
@@ -98,6 +99,10 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
     ``tools.url_safety`` policy like other Hermes URL fetches: every hop is checked before a
     request is sent (redirects are followed here, not by the client), and the guarded client
     re-validates the resolved address at TCP connect.
+
+    The body is read as raw wire bytes (``Accept-Encoding: identity``, no client-side
+    decompression), so the output hashed for change detection is the same as with the earlier
+    urllib fetch, and the size cap bounds bytes read rather than bytes decoded.
     """
     from urllib.parse import urljoin
 
@@ -109,7 +114,7 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
     try:
         with create_ssrf_safe_client(
             timeout=URL_TIMEOUT_SECONDS, follow_redirects=False,
-            headers={"User-Agent": "hermes-cron-monitor"},
+            headers={"User-Agent": "hermes-cron-monitor", "Accept-Encoding": "identity"},
         ) as client:
             for _ in range(MAX_URL_REDIRECTS + 1):
                 if not is_safe_url(current_url):
@@ -123,11 +128,11 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
                         continue
                     resp.raise_for_status()
                     body = bytearray()
-                    for chunk in resp.iter_bytes():
-                        body += chunk
-                        if len(body) > MAX_URL_BYTES:
+                    for chunk in resp.iter_raw(_URL_READ_CHUNK_BYTES):
+                        body += chunk[: MAX_URL_BYTES - len(body)]
+                        if len(body) >= MAX_URL_BYTES:
                             break
-                return True, bytes(body[:MAX_URL_BYTES]).decode("utf-8", errors="replace")
+                return True, bytes(body).decode("utf-8", errors="replace")
         return False, f"monitor_url fetch failed: more than {MAX_URL_REDIRECTS} redirects"
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"

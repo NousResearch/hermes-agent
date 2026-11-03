@@ -122,6 +122,20 @@ def test_auto_approved_call_emits_one_auto_approved_event(hooks, cli_prompt, mon
     assert (event["verdict"], event["source"]) == ("auto_approved", "allowlist")
 
 
+def test_flagged_command_with_every_finding_approved_emits_one_allowlist_event(hooks, cli_prompt, monkeypatch):
+    """check_all_command_guards: a flagged command whose findings are all session-approved runs unprompted."""
+    monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
+
+    def terminal_handler(name, args, **kwargs):
+        verdict = approval.check_all_command_guards(args["command"], "local")
+        return '{"ok": true}' if verdict["approved"] else json.dumps({"error": verdict.get("message", "")})
+
+    result, _ = _call("terminal", {"command": f"git push --force origin {SECRET}"}, dispatch=terminal_handler)
+    assert json.loads(result) == {"ok": True}  # cli_prompt answers "deny", so a prompt would have refused it
+    [event] = hooks.decisions
+    assert (event["verdict"], event["source"]) == ("auto_approved", "allowlist")
+
+
 def test_deny_rule_inside_the_handler_emits_one_denied_by_rule_event(hooks, monkeypatch):
     monkeypatch.setattr(approval, "_match_user_deny_rule", lambda command: "git push --force*")
 
@@ -148,27 +162,51 @@ def terminal(monkeypatch):
     return terminal_tool
 
 
-def _run_terminal(terminal):
-    return _call("terminal", {"command": "echo ok"},
-                 dispatch=lambda name, args, **k: terminal.terminal_tool(args["command"]))[0]
+_REFUSED = '{"error": "Blocked: refused", "status": "blocked"}'
 
 
-@pytest.mark.parametrize("guard, source", [("gateway_lifecycle_block", "gateway_lifecycle"),
-                                           ("self_repo_block", "self_repo"), ("locked_skill_block", "locked_skill")])
-def test_terminal_pre_exec_guard_refusal_emits_one_blocked_by_policy_event(hooks, monkeypatch, terminal, guard, source):
+def _run_terminal(terminal, ids=None, **kwargs):
+    return _call("terminal", {"command": "echo ok"}, ids=ids,
+                 dispatch=lambda name, args, **k: terminal.terminal_tool(args["command"], **kwargs))[0]
+
+
+@pytest.mark.parametrize("guard, workdir, source", [
+    ("gateway_lifecycle_block", None, "gateway_lifecycle"), (None, "/w;x", "workdir"),
+    ("self_repo_block", None, "self_repo"), ("locked_skill_block", None, "locked_skill")])
+def test_terminal_pre_exec_guard_refusal_emits_one_blocked_by_policy_event(hooks, monkeypatch, terminal, guard,
+                                                                           workdir, source):
     """These guards refuse on the deadline worker, before the approval gate could note anything."""
-    monkeypatch.setattr(terminal, guard, lambda **k: '{"error": "Blocked: refused", "status": "blocked"}')
-    assert "Blocked: refused" in _run_terminal(terminal)
+    if guard:
+        monkeypatch.setattr(terminal, guard, lambda **k: _REFUSED)
+    assert "Blocked" in _run_terminal(terminal, workdir=workdir)
     [event] = hooks.decisions
     assert (event["verdict"], event["source"]) == ("blocked_by_policy", source)
+
+
+def test_terminal_guard_refusal_in_a_suppressed_dispatch_reaches_the_executor_emission(hooks, monkeypatch, terminal):
+    """Sequential executor path: its single terminal emission reports the refusal noted on the worker."""
+    monkeypatch.setattr(terminal, "locked_skill_block", lambda **k: _REFUSED)
+    ids = dict(IDS, turn_id=tool_decision.DispatchTurn(IDS["turn_id"]))
+    with model_tools.suppress_post_tool_call_hook():
+        result = _run_terminal(terminal, ids=ids)
+    assert hooks.decisions == []
+    emit_terminal_post_tool_call(_agent(), function_name="terminal", function_args={"command": "echo ok"},
+                                 result=result, effective_task_id=IDS["task_id"], tool_call_id=IDS["tool_call_id"],
+                                 dispatch_turn_id=ids["turn_id"])
+    [event] = hooks.decisions
+    assert (event["verdict"], event["source"]) == ("blocked_by_policy", "locked_skill")
 
 
 def test_terminal_pre_exec_guard_timeout_emits_one_blocked_by_policy_event(hooks, monkeypatch, terminal):
     """A guard that never rendered a verdict fails closed: the command did not run, so it is not allowed."""
     monkeypatch.setattr(terminal, "_PRE_EXEC_GUARD_MIN_TIMEOUT_S", 0)
     terminal._plan_execution().effective_timeout = 0.05
-    monkeypatch.setattr(terminal, "_pre_exec_block", lambda *a, **k: threading.Event().wait(1))
-    assert "did not finish" in _run_terminal(terminal)
+    release = threading.Event()  # set only once the call has returned, so the guard cannot beat the deadline
+    monkeypatch.setattr(terminal, "_pre_exec_block", lambda *a, **k: release.wait(10))
+    try:
+        assert "did not finish" in _run_terminal(terminal)
+    finally:
+        release.set()
     [event] = hooks.decisions
     assert (event["verdict"], event["source"]) == ("blocked_by_policy", "pre_exec_timeout")
 

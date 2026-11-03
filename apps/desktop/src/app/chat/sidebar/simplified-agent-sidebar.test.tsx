@@ -254,6 +254,8 @@ it('offers Unpin under the agent as well as in Pinned, keeping the owning profil
 
     fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
+    expect(screen.getAllByText('Pinned plan')).toHaveLength(1)
+    expect(within(research).getByText('Pinned plan')).toBeTruthy()
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith(
         'pinned',

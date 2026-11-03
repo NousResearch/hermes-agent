@@ -59,7 +59,12 @@ import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    IS_WINDOWS,
+    kill_process_tree,
+    selected_git_env,
+    windows_hide_flags,
+)
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -155,6 +160,16 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Virtual disk images / raw disk dumps — a checkpoint must never hash a
+    # data disk into the shared store (2026-10-11: an unguarded checkpoint of
+    # a 1.2 TB recovery VHDX wrote ~310 GiB of tmp_pack; the live 748 GiB
+    # Docker VHDX in D:\WSL is the same hazard). Pair with _MAX_STAGE_BYTES.
+    "*.vhdx",
+    "*.vhd",
+    "*.qcow2",
+    "*.qcow",
+    "*.vmdk",
+    "*.evm",
 ]
 
 # Git subprocess timeout (seconds).
@@ -162,6 +177,18 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
+
+# Max bytes that may be staged into the store from one workdir, counted the
+# way ``git add -A`` would see it: files that are *not* ignored by the
+# workdir's ``.gitignore`` (and the store's ``info/exclude``). A raw
+# recursive size would wrongly reject legitimate workdirs whose large data
+# (weights, media, disk images) is already ``.gitignore``d, while *letting
+# through* a workdir holding one unignored 1.2 TB VHDX — the exact class of
+# failure of 2026-10-11 (unguarded checkpoint of an E: recovery VHDX wrote a
+# ~310 GiB tmp_pack before the orphaned ``git add`` was killed). The walk is
+# capped: it stops as soon as the scanned total exceeds the limit. Tune via
+# HERMES_CHECKPOINT_MAX_STAGE_BYTES.
+_MAX_STAGE_BYTES = env_int("HERMES_CHECKPOINT_MAX_STAGE_BYTES", 10 * 1024**3)
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
@@ -305,6 +332,43 @@ def _uncaptured_note(nested_repos: list[str]) -> str:
     return f" [nested git repos not captured: {shown}{more}]"
 
 
+def _stage_current_tree(store: Path, working_dir: str, index_file: Path) -> tuple[bool, str, str]:
+    """Keep uncaptured gitlinks when their nested metadata no longer resolves.
+
+    An indexed repository can outlive its .git directory (for example a pruned
+    scratch checkout). Git then aborts the entire parent's add, even though
+    .git itself is ignored. Retain that gitlink, whose existing rollback
+    disclosure and refusal still apply, without touching the nested checkout.
+    """
+    ok, entries, error = _run_git(
+        ["ls-files", "--stage", "-z"], store, working_dir, index_file=index_file,
+    )
+    if not ok:
+        return False, "", error
+    exclusions = []
+    for entry in entries.split("\x00"):
+        if not entry.startswith("160000 ") or "\t" not in entry:
+            continue
+        relative = entry.split("\t", 1)[1]
+        nested = Path(working_dir) / relative
+        if not nested.is_dir():
+            continue  # A removed checkout must still disappear from the new tree.
+        metadata = nested / ".git"
+        valid, resolved, _ = _run_git(
+            ["rev-parse", "--resolve-git-dir", str(metadata)], store, working_dir,
+            index_file=index_file, allowed_returncodes={128},
+        )
+        if valid:
+            valid, _, _ = _run_git(
+                [f"--git-dir={resolved}", "rev-parse", "--verify", "HEAD^{commit}"],
+                store, working_dir, index_file=index_file, allowed_returncodes={128},
+            )
+        if not valid:
+            exclusions.append(f":(top,exclude,literal){relative}")
+    args = ["add", "-A"] + (["--", ".", *exclusions] if exclusions else [])
+    return _run_git(args, store, working_dir, timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+
+
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
     return store / _PROJECTS_DIRNAME / f"{dir_hash}.json"
 
@@ -389,13 +453,18 @@ def _run_git(
     allowed_returncodes = allowed_returncodes or set()
 
     try:
-        # NUL-delimited git output contains literal filenames, not text lines.
-        text_options = {} if "-z" in args else {"text": True, "encoding": "utf-8", "errors": "replace"}
-        result = subprocess.run(
+        # Git output is read as raw bytes in every case (NUL-delimited git
+        # output contains literal filenames, not text lines) and decoded
+        # below, so Popen never gets text=True and communicate() always
+        # yields bytes.
+        # POSIX: own session/process group so a timed-out git can be killed
+        # with its descendants (kill_process_tree -> SIGKILL to the group).
+        # No-op on Windows, where taskkill /T walks the tree instead.
+        popen_kwargs = {"start_new_session": True} if not IS_WINDOWS else {}
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            **text_options,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=env,
             cwd=str(normalized_working_dir),
             stdin=subprocess.DEVNULL,
@@ -403,28 +472,36 @@ def _run_git(
             # console-less desktop/gateway backend; suppress the per-call
             # conhost flash on Windows (no-op on POSIX).
             creationflags=windows_hide_flags(),
-            check=False,
+            # (Upstream's run() form carries check=False; Popen takes no
+            # `check` kwarg, so the return code is checked explicitly below.)
+            **popen_kwargs,
         )
-        ok = result.returncode == 0
-        stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
-        stderr = result.stderr.decode("utf-8", errors="replace").strip() if "-z" in args else result.stderr.strip()
-        if not ok and result.returncode not in allowed_returncodes:
+        try:
+            stdout_b, stderr_b = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # The child is NOT dead on timeout — kill the whole tree, or it
+            # outlives this process and keeps writing the store (2026-10-11
+            # incident: orphaned `git add -A` ran 3.5h on a 1.2 TB workdir).
+            kill_process_tree(proc)
+            msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
+            logger.error(msg, exc_info=True)
+            return False, "", msg
+        ok = proc.returncode == 0
+        stdout = os.fsdecode(stdout_b) if "-z" in args else stdout_b.decode("utf-8", "replace").strip()
+        stderr = stderr_b.decode("utf-8", "replace").strip()
+        if not ok and proc.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
+                " ".join(cmd), proc.returncode, stderr,
             )
         return ok, stdout, stderr
-    except subprocess.TimeoutExpired:
-        msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
-        logger.error(msg, exc_info=True)
-        return False, "", msg
     except FileNotFoundError as exc:
         missing_target = getattr(exc, "filename", None)
         if missing_target == "git":
             logger.error("Git executable not found: %s", " ".join(cmd), exc_info=True)
             return False, "", "git not found"
         msg = f"working directory not found: {normalized_working_dir}"
-        logger.error("Git command failed before execution: %s (%s)", " ".join(cmd), msg, exc_info=True)
+        logger.error("Git command failed before execution: %s", msg, exc_info=True)
         return False, "", msg
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
@@ -759,6 +836,63 @@ def _dir_size_bytes(path: Path) -> int:
     return total
 
 
+def _stage_bytes_scan(
+    store: Path, working_dir: str, limit: int
+) -> int:
+    """Bytes ``git add -A`` would actually stage from *working_dir*, capped at
+    *limit*.
+
+    Mirrors git's own rules by asking git (``ls-files -o -z`` under the same
+    ``info/exclude`` + workdir ``.gitignore`` the snapshot uses), then stat-ing
+    the listed files.  Returns ``limit + 1`` as soon as the scanned total
+    crosses the limit, so a data disk is detected after a few hundred KB of
+    walking instead of a full recursive hash.  A git listing failure (not
+    found, bad path, timeout) returns 0 — the caller degrades to the
+    unguarded path rather than blocking every checkpoint on a probe error.
+    """
+    wd = Path(working_dir)
+    if not wd.is_dir():
+        return 0
+    env = _git_env(store, str(wd))
+    git = shutil.which("git", path=env.get("PATH", ""))
+    if git is None:
+        return 0
+    try:
+        # Same tree-kill discipline as _run_git: this is a fast probe, but a
+        # hung git here would orphan the same way.
+        popen_kwargs = {"start_new_session": True} if not IS_WINDOWS else {}
+        proc = subprocess.Popen(
+            [git, "-c", "core.untrackedCache=false", "ls-files", "-o", "--exclude-standard", "-z"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=str(wd),
+            stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
+            **popen_kwargs,
+        )
+        try:
+            out_b, _ = proc.communicate(timeout=_GIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            kill_process_tree(proc)
+            return 0
+        if proc.returncode != 0:
+            return 0
+    except (OSError):
+        return 0
+    total = 0
+    for rel in out_b.split(b"\x00"):
+        if not rel:
+            continue
+        try:
+            total += (wd / os.fsdecode(rel)).stat().st_size
+        except OSError:
+            continue
+        if total > limit:
+            return total
+    return total
+
+
 # ---------------------------------------------------------------------------
 # CheckpointManager
 # ---------------------------------------------------------------------------
@@ -874,8 +1008,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        _stage_current_tree(store, abs_dir, index_file)
         ok, names_out, err = _run_git(
             ["diff", "--name-only", "-z", commit_hash, "--cached"],
             store, abs_dir, index_file=index_file,
@@ -1055,8 +1188,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        _stage_current_tree(store, abs_dir, index_file)
 
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
@@ -1431,6 +1563,23 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
+        # Pre-stage size gate — the file-count guard cannot see a directory of
+        # *few huge* files (e.g. one unignored 1.2 TB VHDX), and the per-file
+        # ``max_file_size_mb`` prune runs only AFTER ``git add -A`` has already
+        # hashed the whole workdir into a tmp_pack. Reject oversized workdirs
+        # *before* staging. The scan is gitignore-aware (mirrors what
+        # ``git add -A`` would actually stage) and capped — it stops as soon as
+        # the scanned total exceeds the limit, so a data disk is detected after
+        # a few hundred KB of walking, not a full 1.2 TB hash.
+        if _MAX_STAGE_BYTES > 0 and _stage_bytes_scan(
+            store, working_dir, _MAX_STAGE_BYTES
+        ) > _MAX_STAGE_BYTES:
+            logger.debug(
+                "Checkpoint skipped: >%d stageable bytes in %s",
+                _MAX_STAGE_BYTES, working_dir,
+            )
+            return False
+
         dir_hash = _project_hash(working_dir)
         index_file = _index_path(store, dir_hash)
         ref = _ref_name(dir_hash)
@@ -1465,10 +1614,7 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
-        )
+        ok, _, err = _stage_current_tree(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False

@@ -965,7 +965,9 @@ def append_event(
     expected_latest_seq: int | None = None, control_reserve: bool = False) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed. ``control_reserve`` lets a
-    bounded gateway notice use the control headroom, so a room whose log is full can still say why."""
+    bounded gateway notice use the control headroom, so a room whose log is full can still say why.
+    ``payload`` may be a function of the write-locked connection returning the payload, for one derived
+    from current room state: no concurrent append can land between that read and this write."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
     if expected_latest_seq is not None:
@@ -977,11 +979,12 @@ def append_event(
     if normalized_actor["kind"] == "gateway" and normalized_actor["id"] != authority_gateway_id:
         raise HostedRoomError("gateway actor.id must match authority_gateway_id")
     authority_epoch = _require_positive_int(authority_epoch, "authority_epoch")
-    if not isinstance(payload, dict):
-        raise HostedRoomError("payload must be an object")
-    payload_json = _payload_json(payload)
+    resolve = payload if callable(payload) else lambda _conn: payload
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        if not isinstance(resolved := resolve(conn), dict):
+            raise HostedRoomError("payload must be an object")
+        payload_json = _payload_json(resolved)
         existing = _load_event(conn, room_id, event_id)
         if existing is not None:
             if _event_content(existing) != (kind, actor_json, authority_epoch, payload_json):

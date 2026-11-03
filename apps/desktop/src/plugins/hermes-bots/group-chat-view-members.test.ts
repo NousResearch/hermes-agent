@@ -220,4 +220,26 @@ describe('a room that spans machines', () => {
 
     expect(local.chat.$groupChats.get().Core.engine).toBeUndefined()
   })
+
+  it('a remote member removed in Manage members gets no seat and no turn on the next @all send', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+    // Creation writes groups[] for every seated bot, the remote one included.
+    room.data.$botMeta.set({
+      ...room.data.$botMeta.get(),
+      [room.data.botMetaKey(remote)]: { groups: ['Core'] }
+    })
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer', 'scout'])
+
+    await room.members.setGroupChatMembers('Core', [programmer, reviewer])
+
+    expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
+
+    room.rounds.sendToGroupChat('Core', seatedNames(room).map(name => ({ name })), '@all go')
+    await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
+
+    expect(room.gateway.calls.map(call => call.profile)).not.toContain('scout')
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
+  })
 })

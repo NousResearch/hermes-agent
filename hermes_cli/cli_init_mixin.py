@@ -122,6 +122,10 @@ class CLIInitMixin:
         from gateway.display_config import local_display_config
         display = local_display_config(CLI_CONFIG["display"])
         self.compact = compact if compact is not None else display.get("compact", False)
+        # display.banner: false drops the startup intro (banner, welcome line, tip); warnings stay.
+        self.show_intro = bool(display.get("banner", True))
+        # display.composer_hints: false drops the idle "/ commands · @ files · ! shell" footer hints.
+        self.composer_hints = bool(display.get("composer_hints", True))
         # tool_progress: "off" | "new" | "all" | "verbose"; YAML 1.1 parses bare `off` as False.
         _raw_tp = display.get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)

@@ -12,6 +12,9 @@ export interface RoomMemberActivity {
   started_at?: number
   tool?: string
   progress_at?: number
+  /** The thread and 0-based round the task works in (newer gateways only). */
+  thread_id?: string
+  round_index?: number
 }
 
 export interface RoomLogEvent {
@@ -42,28 +45,41 @@ export type MemberStatus =
 /** A running member with no frame for this long reads as stalled. */
 export const STALL_AFTER_S = 120
 
-const TERMINAL_KINDS = new Set(['turn.settled', 'turn.failed', 'turn.cancelled', 'member.unavailable'])
+const TERMINAL_KINDS = new Set(['turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred'])
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
 const firstLine = (text: string) => text.split('\n').map(line => line.trim()).find(Boolean) ?? ''
+const threadOf = (event: RoomLogEvent) => str(event.payload.thread_id)
+const isUserMessage = (event: RoomLogEvent) => event.kind === 'message.user' || event.kind === 'message'
 
-/** The discussion the room is on now: the newest user message (its event id keys every
- *  turn it started). */
-export function currentDiscussionId(events: readonly RoomLogEvent[]): string | undefined {
+/** Each thread's current discussion: its newest user message (that event id keys every turn it started). */
+export function threadDiscussions(events: readonly RoomLogEvent[]): Map<string, string> {
+  const discussions = new Map<string, string>()
+
+  for (const event of events) {
+    if (isUserMessage(event) && event.event_id) {
+      discussions.set(threadOf(event), event.event_id)
+    }
+  }
+
+  return discussions
+}
+
+/** The thread the room is read in: the one being replied in, else the newest user message's. */
+export function focusThread(events: readonly RoomLogEvent[], replyThread?: string): string | undefined {
+  if (replyThread) {
+    return replyThread
+  }
+
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-
-    if (event.kind === 'message.user' || event.kind === 'message') {
-      return event.event_id
+    if (isUserMessage(events[i])) {
+      return threadOf(events[i])
     }
   }
 
   return undefined
 }
 
-const inDiscussion = (event: RoomLogEvent, discussion: string | undefined) =>
-  !!discussion && str(event.payload.discussion_event_id) === discussion
-
-const OUTCOME_OF: Record<string, (event: RoomLogEvent) => MemberOutcome> = {
+const OUTCOME_OF: Record<string, (event: RoomLogEvent) => MemberOutcome | null> = {
   'turn.settled': event => ({ kind: event.payload.passed === true ? 'passed' : 'replied' }),
   'turn.failed': event => {
     const error = str(event.payload.error)
@@ -71,19 +87,31 @@ const OUTCOME_OF: Record<string, (event: RoomLogEvent) => MemberOutcome> = {
     return { kind: 'failed', reason: str(event.payload.reason_code) || firstLine(error) || undefined, detail: error || undefined }
   },
   'turn.cancelled': () => ({ kind: 'cancelled' }),
-  'member.unavailable': event => ({ kind: 'unavailable', detail: str(event.payload.reason) || str(event.payload.error) || undefined })
+  // The driver parks a member it cannot reach; the room-level `member.unavailable` names no member.
+  'turn.deferred': event => (event.payload.reason === 'member_unavailable' ? { kind: 'unavailable' } : null)
 }
 
-/** Each member's last turn outcome in the current discussion (later turns win). */
+/**
+ * Each member's last turn outcome, read per thread: a turn counts while it belongs to its own thread's
+ * current discussion (later turns win). A newer message in that thread supersedes it; a message in another
+ * thread does not, so a failure in one thread stays visible while another thread runs.
+ */
 export function memberOutcomes(events: readonly RoomLogEvent[]): Map<string, MemberOutcome> {
-  const discussion = currentDiscussionId(events)
+  const discussions = threadDiscussions(events)
   const outcomes = new Map<string, MemberOutcome>()
 
   for (const event of events) {
     const member = str(event.payload.member_id)
+    const thread = threadOf(event)
 
-    if (member && TERMINAL_KINDS.has(event.kind) && inDiscussion(event, discussion)) {
-      outcomes.set(member, OUTCOME_OF[event.kind](event))
+    if (!member || !TERMINAL_KINDS.has(event.kind) || str(event.payload.discussion_event_id) !== discussions.get(thread)) {
+      continue
+    }
+
+    const outcome = OUTCOME_OF[event.kind](event)
+
+    if (outcome) {
+      outcomes.set(member, outcome)
     }
   }
 
@@ -149,53 +177,76 @@ const ENDING: Record<string, (event: RoomLogEvent) => RoomCycle | null> = {
   'room.stop_requested': () => ({ kind: 'stopped' })
 }
 
-/**
- * Where the current discussion is: `Round N` (1-based) while members work, else how it ended.
- * The round is the newest `round_index` a turn of this discussion settled in, moved on by one
- * when a member already done in that round is working again.
- */
-export function roomCycle(
-  events: readonly RoomLogEvent[],
-  activity: readonly RoomMemberActivity[] | undefined,
-  maxRounds?: number | null
-): RoomCycle | null {
-  const discussion = currentDiscussionId(events)
+const ended = (events: readonly RoomLogEvent[], discussion: string | undefined): RoomCycle | null => {
+  const userAt = events.findIndex(event => !!discussion && event.event_id === discussion)
+  let result: RoomCycle | null = null
 
-  if (!discussion) {
+  if (userAt < 0) {
     return null
   }
-
-  const live = (activity ?? []).filter(row => row.status !== 'queued').map(row => row.member_id)
-  const userAt = events.findIndex(event => event.event_id === discussion)
-  let round = -1
-  const doneInRound = new Map<number, Set<string>>()
-  let ended: RoomCycle | null = null
 
   for (const event of events.slice(userAt + 1)) {
     const ending = ENDING[event.kind]?.(event)
 
-    if (ending && (event.kind === 'room.stop_requested' || inDiscussion(event, discussion))) {
-      ended = ending
-    }
-
-    if (TERMINAL_KINDS.has(event.kind) && inDiscussion(event, discussion)) {
-      const index = Number(event.payload.round_index)
-
-      if (Number.isInteger(index) && index >= 0) {
-        round = Math.max(round, index)
-        doneInRound.set(index, (doneInRound.get(index) ?? new Set()).add(str(event.payload.member_id)))
-      }
+    if (ending && (event.kind === 'room.stop_requested' || str(event.payload.discussion_event_id) === discussion)) {
+      result = ending
     }
   }
 
-  if (live.length || (activity ?? []).length) {
-    const current = round < 0 ? 0 : live.some(id => doneInRound.get(round)?.has(id)) ? round + 1 : round
-    const max = typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : undefined
+  return result
+}
 
-    return { kind: 'working', round: current + 1, maxRounds: max }
+/** Older gateways send no `round_index`: the newest round a turn of this discussion finished in, moved on
+ *  by one when a member already done in that round is working again. */
+function guessedRound(events: readonly RoomLogEvent[], discussion: string | undefined, live: readonly string[]): number {
+  let round = -1
+  const doneInRound = new Map<number, Set<string>>()
+
+  for (const event of events) {
+    const index = Number(event.payload.round_index)
+
+    if (TERMINAL_KINDS.has(event.kind) && !!discussion && str(event.payload.discussion_event_id) === discussion &&
+        Number.isInteger(index) && index >= 0) {
+      round = Math.max(round, index)
+      doneInRound.set(index, (doneInRound.get(index) ?? new Set()).add(str(event.payload.member_id)))
+    }
   }
 
-  return ended
+  return round < 0 ? 0 : live.some(id => doneInRound.get(round)?.has(id)) ? round + 1 : round
+}
+
+/**
+ * Where the room is: `Round N` (1-based) while members work, else how the focused thread's discussion
+ * ended. The round is the live tasks' own (the focused thread's when it has any, else whichever thread
+ * works), never another thread's.
+ */
+export function roomCycle(
+  events: readonly RoomLogEvent[],
+  activity: readonly RoomMemberActivity[] | undefined,
+  maxRounds?: number | null,
+  focus: string | undefined = focusThread(events)
+): RoomCycle | null {
+  const discussions = threadDiscussions(events)
+
+  if (!discussions.size) {
+    return null
+  }
+
+  const rows = activity ?? []
+
+  if (!rows.length) {
+    return ended(events, focus === undefined ? undefined : discussions.get(focus))
+  }
+
+  const inFocus = rows.filter(row => row.thread_id !== undefined && row.thread_id === focus)
+  const owning = inFocus.length ? inFocus : rows
+  const rounds = owning.map(row => row.round_index).filter((index): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
+  const thread = owning.find(row => row.thread_id !== undefined)?.thread_id ?? focus
+  const live = owning.filter(row => row.status !== 'queued').map(row => row.member_id)
+  const current = rounds.length ? Math.max(...rounds) : guessedRound(events, thread === undefined ? undefined : discussions.get(thread), live)
+  const max = typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : undefined
+
+  return { kind: 'working', round: current + 1, maxRounds: max }
 }
 
 export interface RoomHandoff {
@@ -211,11 +262,23 @@ const mentions = (text: string, handle: string) =>
 /**
  * Visible handoffs: a member's reply that @mentions a teammate who then took a turn in the
  * same discussion. Display only, read from the log; routing is the gateway's business.
+ * One pass over the log: each (member, discussion) keeps the index of its last turn.
  */
 export function roomHandoffs(
   events: readonly RoomLogEvent[],
   members: readonly { member_id: string; handle: string }[]
 ): RoomHandoff[] {
+  const lastTurn = new Map<string, number>()
+
+  events.forEach((event, index) => {
+    const member = str(event.payload.member_id)
+
+    if (member && TERMINAL_KINDS.has(event.kind)) {
+      lastTurn.set(JSON.stringify([member, str(event.payload.discussion_event_id)]), index)
+      lastTurn.set(JSON.stringify([member, null]), index)
+    }
+  })
+
   const handoffs: RoomHandoff[] = []
 
   events.forEach((event, index) => {
@@ -228,15 +291,9 @@ export function roomHandoffs(
     }
 
     for (const member of members) {
-      if (member.member_id === from || !mentions(text, member.handle)) {
-        continue
-      }
+      const turnAt = lastTurn.get(JSON.stringify([member.member_id, discussion || null]))
 
-      const tookTurn = events.slice(index + 1).some(later =>
-        str(later.payload.member_id) === member.member_id && TERMINAL_KINDS.has(later.kind) &&
-        (!discussion || str(later.payload.discussion_event_id) === discussion))
-
-      if (tookTurn) {
+      if (member.member_id !== from && turnAt !== undefined && turnAt > index && mentions(text, member.handle)) {
         handoffs.push({ afterSeq: event.seq, from, to: member.member_id })
       }
     }

@@ -1,19 +1,19 @@
 name: hermes-ide
 repo: https://github.com/CoeusInstitute/hermes-ide
-sha: d6c88b0dfd817a8de82141a8e621d892c99d6615
+sha: 8c368c0e7498eba6c0914fb1638fcb13b3ef820c
 title: Hermes IDE
 description: "Cursor-style IDE for Hermes Desktop: any chat opens in its own IDE window with an Explorer, a tabbed CodeMirror editor, search, git status and Quick Open beside the real session chat; it finds the project's web UI, runs its dev server once you trust the project, and its element picker hands page elements (selector, styles, component and source line) to the chat. Disclosure — backend routes on the agent's machine read and write the files the agent's file tools reach (Hermes credential files refused), run git status/show and rg, and for trusted projects only run the project's package manager (install, then its dev script; install fetches from the package registry) as background dev servers stopped two minutes after the last IDE window closes; a pre_llm_call note marks turns sent from an IDE window; no telemetry, no third-party network calls of its own."
 maintainer: CoeusInstitute
 tier: community
 category: desktop
 requires_hermes: ">=0.22.5"
-version: "0.6.6"
+version: "0.6.7"
 docs_url: https://github.com/CoeusInstitute/hermes-ide#readme
-image: https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/d6c88b0dfd817a8de82141a8e621d892c99d6615/docs/images/hermes-ide-banner.png
+image: https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/8c368c0e7498eba6c0914fb1638fcb13b3ef820c/docs/images/hermes-ide-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/d6c88b0dfd817a8de82141a8e621d892c99d6615/docs/images/ide-window.png
-  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/d6c88b0dfd817a8de82141a8e621d892c99d6615/docs/images/element-pick-chat.png
-  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/d6c88b0dfd817a8de82141a8e621d892c99d6615/docs/images/agent-edit-review.png
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/8c368c0e7498eba6c0914fb1638fcb13b3ef820c/docs/images/ide-window.png
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/8c368c0e7498eba6c0914fb1638fcb13b3ef820c/docs/images/element-pick-chat.png
+  - https://raw.githubusercontent.com/CoeusInstitute/hermes-ide/8c368c0e7498eba6c0914fb1638fcb13b3ef820c/docs/images/agent-edit-review.png
 readme: true
 platforms: []
 known_issues:

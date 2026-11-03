@@ -18,8 +18,8 @@ constraints that apply whichever you choose.
 
 1. **A non-loopback bind requires an auth provider.** The dashboard fails closed at startup otherwise. A loopback
    bind (`127.0.0.1`) is the only shape that serves without one, and it accepts loopback peers only — which is exactly
-   why "tunnel in, then talk to localhost" stays the cheapest option below. See
-   [remote dashboard setup](./features/web-dashboard.md#remote-dashboard-setup).
+   why "tunnel in, then talk to localhost" stays the cheapest option below; see *Remote dashboard setup* in
+   [the dashboard guide](./features/web-dashboard.md).
 2. **`GET /api/status` answering says nothing about chat.** Chat lives on separate WebSockets (`/api/ws`, `/api/pty`)
    behind two extra checks. A WS closed with **4403** was rejected by the request guard (Host/peer mismatch); **4401**
    means the single-use ticket did not authenticate. Both are transport-independent, and both look like "the app

@@ -133,6 +133,7 @@ jobs:
         # PSModuleAnalysisCachePath); cold, each launch costs ~22s on arm64. Started
         # from cmd: a PowerShell step's own shell would pay the cold analysis too.
         if: runner.os == 'Windows'
+        timeout-minutes: 3
         shell: cmd
         run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\ci\warm_powershell_module_cache.ps1
 

@@ -214,6 +214,18 @@ def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db
         "purpose": "New purpose", "notes": "", "routing": "lead", "lead_member_id": "member-ada"}
 
 
+def test_retried_settings_save_returns_its_first_event_after_a_routing_edit(room_db: Path):
+    first = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
+    _lead_room(room_db)  # another client turns on a lead meanwhile
+
+    retry = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
+
+    assert retry["event"]["idempotent"] and retry["event"]["seq"] == first["event"]["seq"]
+    assert context.room_context(room_db, room_id=ROOM_ID)["routing"] == "lead"
+    with pytest.raises(hosted_rooms.EventConflictError):  # a different save under the same id still conflicts
+        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Other", notes="")
+
+
 @pytest.mark.parametrize("routing", ["everyone", "lead"])
 def test_batch_bounded_member_turn_publishes_its_real_reply(routing: str):
     """A member turn whose frozen batch stops below its source message is still a member turn, not routing."""

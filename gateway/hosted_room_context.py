@@ -86,17 +86,21 @@ def set_room_context(
 ) -> dict[str, Any]:
     """Record new room settings as one replayable room event. Omitted routing fields keep their current
     values, so a client that only edits purpose/notes never switches a lead room back to everyone. Those
-    values are read under the append's write lock: a concurrent routing change cannot be written back stale."""
+    values are read under the append's write lock: a concurrent routing change cannot be written back stale.
+    A retried save (same ``event_id``) fills them from its own first write instead, so it returns that event
+    even after another client changed the routing meanwhile."""
     state = _local_authority(db_path, room_id)
     seated = {str(member.get("member_id")) for member in state.get("members") or ()}
     saved: dict[str, str] = {}
 
     def settings(conn: Any) -> dict[str, str]:
-        current = _latest_context(conn, state["room_id"], None)
+        first = hosted_rooms._load_event(conn, state["room_id"], hosted_rooms._event_id(event_id))
+        current = (json.loads(first["payload_json"]) if first is not None and first["kind"] == CONTEXT_EVENT_KIND
+                   else _latest_context(conn, state["room_id"], None))
         context = validate_context(
             purpose, notes, current["routing"] if routing is None else routing,
             current["lead_member_id"] if lead_member_id is None else lead_member_id)
-        if context["routing"] == "lead" and context["lead_member_id"] not in seated:
+        if first is None and context["routing"] == "lead" and context["lead_member_id"] not in seated:
             raise hosted_rooms.HostedRoomError("the lead must be a member of this Group Chat")
         saved.update(context)
         return context

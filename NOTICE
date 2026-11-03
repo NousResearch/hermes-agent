@@ -1,0 +1,17 @@
+B-3PO Bot Platform
+==================
+
+This product is a fork of Hermes Agent.
+
+  Upstream: https://github.com/NousResearch/hermes-agent
+  Copyright (c) 2025 Nous Research
+  Licensed under the MIT License (see LICENSE).
+
+Modifications and branding:
+  Copyright (c) 2026 DZ23-LTDA
+
+The MIT License requires this notice to be preserved in redistributions.
+The B-3PO name, the robot mark and the 20 mascots are the property of DZ23-LTDA
+and are not covered by the upstream MIT license.
+
+Third-party components keep their own licenses; see their package metadata.

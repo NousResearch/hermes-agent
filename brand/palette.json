@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "source": "logo/logomarca-b3po.png (SHA-256 a89606e96db51502eb1a8587007cc3e9255620f83d6dd098a8658c9de73f1b0d)",
+  "note": "Primitivas amostradas da arte. Semânticos derivados; contraste verificado por scripts/brand_check.py.",
+  "primitives": {
+    "night": "#000105",
+    "night2": "#000209",
+    "night3": "#020812",
+    "glow": "#73C4EA",
+    "glowSoft": "#B6D9EF",
+    "deep": "#0454A0",
+    "deepMuted": "#06376B",
+    "steel": "#255586",
+    "mist": "#4A8CC4",
+    "silver": "#D6DBE6",
+    "silverDim": "#AFB5C4",
+    "paper": "#EFF4FA",
+    "white": "#FCFDFE"
+  },
+  "semantic": {
+    "bg": "night",
+    "surface": "night3",
+    "text": "white",
+    "textMuted": "silver",
+    "textDim": "silverDim",
+    "accent": "glow",
+    "accentSoft": "glowSoft",
+    "accentStrong": "deep",
+    "border": "steel",
+    "danger": null,
+    "warning": null,
+    "success": null
+  },
+  "rules": [
+    "accent = interativo ou vivo, nunca decoração",
+    "nada saturado sobre saturado; contraste vem de claro sobre noite",
+    "mascotes mantêm a paleta da arte; accent de marca só em chrome de UI"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "level": 2,
+  "scope": [
+    "pyproject metadata",
+    "CLI entry points",
+    "environment variables",
+    "home directory",
+    "npm package names",
+    "appId / productName",
+    "user-visible strings"
+  ],
+  "rules": [
+    {
+      "kind": "env_prefix",
+      "from": "HERMES_",
+      "to": "B3PO_",
+      "dualRead": true,
+      "note": "ler os dois prefixos por 2 ciclos de release; emitir aviso de depreciação"
+    },
+    {
+      "kind": "home_env",
+      "from": "HERMES_HOME",
+      "to": "B3PO_HOME",
+      "fallback": "HERMES_HOME"
+    },
+    {
+      "kind": "home_dir",
+      "from": "~/.hermes",
+      "to": "~/.b3po",
+      "migration": "copy-validate-fallback",
+      "note": "nunca mover dados sem cópia validada; manter fallback de leitura"
+    },
+    {
+      "kind": "cli",
+      "from": "hermes",
+      "to": "b3po",
+      "keepAlias": true
+    },
+    {
+      "kind": "package",
+      "from": "hermes-agent",
+      "to": "b3po-agent"
+    },
+    {
+      "kind": "display",
+      "from": "Hermes Agent",
+      "to": "B-3PO Bot Platform",
+      "allowOmittedIn": ["LICENSE", "NOTICE", "upstream attribution"]
+    }
+  ],
+  "exclusions": [
+    "LICENSE",
+    "NOTICE and upstream attribution",
+    "URLs and project names of third parties (e.g. NousResearch/hermes-agent, agentskills.io)",
+    "provider, model and vendor names",
+    "Python module names, imports and file names (level 3 — explicitly out of scope)",
+    "database keys and persisted identifiers without a migration plan"
+  ],
+  "forbidden": {
+    "level3_renames": true,
+    "note": "Renomear módulos/imports está proibido pela Deliberação 02 (D2). Este mapa não cobre nível 3."
+  }
+}

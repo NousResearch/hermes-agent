@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "B-3PO",
+  "productName": "B-3PO Bot Platform",
+  "slug": "b3po",
+  "packageName": "b3po-agent",
+  "cliCommand": "b3po",
+  "owner": "DZ23-LTDA",
+  "license": "MIT — fork of Hermes Agent (Nous Research); see ../../NOTICE and ../../LICENSE",
+  "legacy": {
+    "name": "Hermes Agent",
+    "slug": "hermes",
+    "cliCommand": "hermes",
+    "homeDir": ".hermes",
+    "homeEnv": "HERMES_HOME",
+    "envPrefix": "HERMES_"
+  },
+  "compat": {
+    "dualReadEnv": true,
+    "homeFallback": "~/.hermes",
+    "legacyReleases": 2,
+    "renameLevel": 2
+  },
+  "assets": {
+    "logo": "logo/logomarca-b3po.png",
+    "wordmark": "logo/b3po-wordmark-1536.png",
+    "wordmarkSmall": "logo/b3po-wordmark-768.png",
+    "icon": "icons/b3po-icon-1024.png",
+    "favicon": "icons/b3po-icon-32.png",
+    "avatarsDir": "avatars",
+    "avatarManifest": "avatars/manifest.json"
+  },
+  "palette": "palette.json",
+  "publicLaunch": {
+    "blocked": true,
+    "requires": [
+      "prior-art search",
+      "domain availability",
+      "C-3PO/Star Wars association risk assessment",
+      "owner approval"
+    ]
+  }
+}

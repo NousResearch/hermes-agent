@@ -1,0 +1,202 @@
+[
+  {
+    "id": "bit",
+    "name": "Bit",
+    "src": "bit.png",
+    "file": "avatars/bit.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "pixel",
+    "name": "Pixel",
+    "src": "pixel.png",
+    "file": "avatars/pixel.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "chip",
+    "name": "Chip",
+    "src": "chip.png",
+    "file": "avatars/chip.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "cache",
+    "name": "Cache",
+    "src": "cache.png",
+    "file": "avatars/cache.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "buffer",
+    "name": "Buffer",
+    "src": "buffer.png",
+    "file": "avatars/buffer.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "kernel",
+    "name": "Kernel",
+    "src": "kernel.png",
+    "file": "avatars/kernel.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "node",
+    "name": "Node",
+    "src": "node.png",
+    "file": "avatars/node.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "syntax",
+    "name": "Syntax",
+    "src": "syntax.png",
+    "file": "avatars/syntax.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "volt",
+    "name": "Volt",
+    "src": "volt.png",
+    "file": "avatars/volt.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "watt",
+    "name": "Watt",
+    "src": "watt.png",
+    "file": "avatars/watt.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "spark",
+    "name": "Spark",
+    "src": "spark.png",
+    "file": "avatars/spark.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "pulse",
+    "name": "Pulse",
+    "src": "pulse.png",
+    "file": "avatars/pulse.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "flux",
+    "name": "Flux",
+    "src": "flux.png",
+    "file": "avatars/flux.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "vector",
+    "name": "Vector",
+    "src": "vector.png",
+    "file": "avatars/vector.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "bot",
+    "name": "Bot",
+    "src": "bot.png",
+    "file": "avatars/bot.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "cortex",
+    "name": "Cortex",
+    "src": "cortex.png",
+    "file": "avatars/cortex.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "sync",
+    "name": "Sync",
+    "src": "sync.png",
+    "file": "avatars/sync.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "prompt",
+    "name": "Prompt",
+    "src": "prompt.png",
+    "file": "avatars/prompt.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "logic",
+    "name": "Logic",
+    "src": "logic.png",
+    "file": "avatars/logic.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  },
+  {
+    "id": "nexus",
+    "name": "Nexus",
+    "src": "nexus.png",
+    "file": "avatars/nexus.png",
+    "format": "png",
+    "width": 512,
+    "height": 512,
+    "transparent": true
+  }
+]

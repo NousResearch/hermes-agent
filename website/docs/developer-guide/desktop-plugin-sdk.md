@@ -944,6 +944,111 @@ reads of the Kanban plugin's query cache. The whole decoration becomes the
 `KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
 set, in the same order).
 
+### Live voice engines {#live-voice-engines}
+
+`VOICE_ENGINE_AREA` (`'voice.liveEngines'`) lets a plugin provide a live,
+full-duplex voice engine that appears next to the built-in engines
+(speech-to-text + Hermes voice, and GPT-Live). Users pick it from the voice
+button's menu or under Settings ▸ Voice ▸ Conversation. The choice is saved
+as `voice.voice_chat_mode`.
+
+Core and the plugin split the work like this:
+
+- **The plugin owns the vendor side:** the transport (WebRTC or WebSocket), the
+  microphone and speaker audio, and the short-lived session secret. Its own
+  backend mints that secret, through `ctx.rest` to its `plugin_api.py`.
+- **Core owns everything around it:**
+  - the engine row in the picker and in Settings ▸ Voice;
+  - the provider sign-in UI;
+  - one call at a time;
+  - teardown when the user ends the call, says the stop phrase, or the composer unmounts;
+  - delegation: each request the voice hands over becomes a normal Hermes turn
+    on the open chat (`prompt.submit`, surface `voice-live`). The chat's model,
+    tools, memory and approvals all apply as usual.
+
+```ts
+import { type LiveVoiceEngine, VOICE_ENGINE_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  area: VOICE_ENGINE_AREA,
+  id: 'grok',                               // persisted as 'hermes-xai:grok'
+  data: {
+    label: 'Grok Voice',
+    description: 'full-duplex, delegates to Hermes',
+    // Optional: a Hermes OAuth provider id from GET /api/providers/oauth.
+    signIn: { provider: 'xai-oauth' },
+    // Optional: keys of THIS plugin's manifest config_schema to show inline.
+    settingsKeys: ['voice', 'instructions'],
+    status: async () => {
+      const s = await ctx.rest<{ ready: boolean; reason?: string }>('/status')
+      return { available: s.ready, reason: s.reason ?? null }
+    },
+    start: async io => {
+      const { secret } = await ctx.rest<{ secret: string }>('/session', { method: 'POST' })
+      const call = await openVendorCall(secret, {
+        history: io.history,              // recent text turns of the chat
+        onToolCall: async request => io.delegate(request.text, request.context),
+        onUserCaption: text => io.onTranscript?.('user', text),
+        onSpeaking: speaking => io.onSpeakingChange?.(speaking),
+        onError: (message, fatal) => io.onError(message, fatal),
+        onClose: reason => io.onClosed(reason)
+      })
+      return { stop: () => call.close(), setMuted: muted => call.mute(muted) }
+    }
+  } satisfies LiveVoiceEngine
+})
+```
+
+**The contract.**
+
+- **`id`.** `ctx.register` namespaces it (`<plugin>:<engine>`). The namespaced id must match
+  `^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$`, because it is the value stored in
+  `voice.voice_chat_mode`. A contribution with another id, no `label`, or no `status()`/`start()`
+  is skipped (logged once).
+- **`status()`.** Runs when a picker opens and again before a call starts. If it answers
+  `{ available: false, reason }`, the row shows the reason and the press falls back to
+  speech-to-text with a notice. A `status()` that throws, or takes longer than 5 s, counts as
+  unavailable.
+- **`start(io)`.** Resolves once the session is up. Reject to abort; core shows the error. The
+  `io` it receives has these members:
+  - `io.sessionId`: the chat the call belongs to.
+  - `io.history`: the chat's recent text turns, oldest first.
+  - `io.delegate(request, voiceContext)`: runs the request as a Hermes turn and resolves with the
+    turn's final reply text, prepared for speech. It resolves `''` when the turn produced no reply,
+    when a newer request superseded it, or when the call ended. It rejects only when the turn could
+    not be submitted. `voiceContext` (the recent spoken exchange) reaches the model input only,
+    never the chat transcript.
+  - `io.onTranscript('user', text)`: lets core judge the spoken stop phrase ("stop", "goodbye", …).
+  - `io.onError(message, fatal)` and `io.onClosed(reason)`: report vendor errors and a session that
+    ended on its own. Core ends the call and tells the user. Pass `'close_requested'` when the user
+    hung up through the voice (a spoken goodbye): the call then ends with no warning.
+- **The returned session.** `stop()` releases the microphone and closes the transport. It must
+  be idempotent. `setMuted` is optional.
+- **`signIn.provider`.** A provider id from `GET /api/providers/oauth`. Core shows whether that
+  provider is signed in for the profile. Under Settings ▸ Voice it adds **Sign in** (the existing
+  device-code flow, with a Cancel button) and **Sign out** (after a confirmation, because it removes
+  that provider's sign-in for the whole profile). When the provider is signed out, the voice menu
+  shows "Sign in with …". **The plugin never receives a token.** Its backend reaches the provider
+  through `credentialed_provider_request` with `requires_auth` (see the catalog rules), or uses its
+  own API key through `get_secret`.
+- **`settingsKeys`.** These keys of the plugin's manifest `config_schema` render under the engine
+  in Settings ▸ Voice. The form and the save are the same as the plugin's own page under
+  Settings ▸ Plugins. Values stay in `plugins.entries.<id>.settings`.
+
+**Older hosts and fallback.** A host without this area does not export `VOICE_ENGINE_AREA`.
+Feature-detect it and keep your own composer button only as a fallback:
+
+```js
+import * as sdk from '@hermes/plugin-sdk'
+
+if (sdk.VOICE_ENGINE_AREA) ctx.register({ area: sdk.VOICE_ENGINE_AREA, id: 'grok', data: engine })
+else ctx.register({ area: sdk.COMPOSER_AREAS.actions, id: 'talk', render: VoiceButton })
+```
+
+If the selected engine's plugin is turned off or uninstalled, the voice button falls back to
+speech-to-text with a notice. Settings keeps showing the saved choice as "(not installed or turned
+off)".
+
 ### Appearance settings
 
 `APPEARANCE_AREAS.extra` renders contributions at the end of **Settings →
@@ -2486,8 +2591,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `VOICE_ENGINE_AREA`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `LiveVoiceEngine` (+ `LiveVoiceEngineIO`, `LiveVoiceEngineSession`, `LiveVoiceEngineStatus`, `LiveVoiceEngineHistoryMessage`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

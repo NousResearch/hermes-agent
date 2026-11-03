@@ -787,6 +787,63 @@ export interface Translations {
     saved: string;
   };
 
+  /** Optional while existing locales adopt Skills Hub strings. */
+  skillsHubUi?: {
+    searchFailed: string;
+    installing: string;
+    installFailed: string;
+    updating: string;
+    updateFailed: string;
+    searchPlaceholder: string;
+    search: string;
+    updateAll: string;
+    running: string;
+    done: string;
+    dismiss: string;
+    starting: string;
+    featured: string;
+    featuredHint: string;
+    emptyHub: string;
+    noMatches: string;
+    connecting: string;
+    resultsFrom: string;
+    connectedHubs: string;
+    githubRateLimited: string;
+    indexUnavailable: string;
+    rateLimited: string;
+    resultCountOne: string;
+    resultCountOther: string;
+    timedOut: string;
+    openNamed: string;
+    installed: string;
+    details: string;
+    install: string;
+    previewFailed: string;
+    scanFailed: string;
+    previewDescription: string;
+    readSkill: string;
+    rescan: string;
+    securityScan: string;
+    files: string;
+    emptySkillFile: string;
+    sourceLoadFailed: string;
+    fetchingAndScanning: string;
+    scanPrompt: string;
+    installAllowed: string;
+    needsConfirmation: string;
+    installBlocked: string;
+    verdict: string;
+    findingsSummaryOne: string;
+    findingsSummaryOther: string;
+    noRiskyPatterns: string;
+    safe: string;
+    caution: string;
+    dangerous: string;
+    trusted: string;
+    builtin: string;
+    community: string;
+  };
+
   // ── Config page ──
   config: {
     configPath: string;

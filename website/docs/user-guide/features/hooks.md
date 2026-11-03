@@ -2201,7 +2201,7 @@ hooks:
     - name: tool-monitor
       url: https://metrics.example.com/hooks/hermes
       events: [post_tool_call]
-      matcher: "terminal|delegate_task"     # regex, tool-scoped events only
+      matcher: "terminal|delegate_task"     # regex; pre/post_tool_call and transform_tool_result
 ```
 
 Any event from the plugin-hook set is valid (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `subagent_start`, `subagent_stop`, ...). Malformed entries warn and are skipped — a broken webhook never crashes the agent. Changes take effect on the next CLI session / gateway restart.

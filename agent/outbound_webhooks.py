@@ -1,5 +1,5 @@
 """Outbound webhooks: ``hooks.outbound`` entries (url, events, secret_env|secret, matcher for
-pre/post_tool_call, timeout clamped to [1, 60], name) -> notify-only callbacks on the plugin hook
+pre/post_tool_call and transform_tool_result, timeout clamped to [1, 60], name) -> notify-only callbacks on the plugin hook
 manager, so every ``invoke_hook()`` site can POST lifecycle events (mirror of
 ``gateway/platforms/webhook.py``).  Fire-and-forget through a bounded queue + one daemon worker,
 so a target can never block a tool call or influence agent flow.  HMAC-SHA256 signed
@@ -26,7 +26,7 @@ from urllib import request as urlrequest
 
 from agent.deadline import poll_until
 from agent.shell_hooks import (
-    _TOOL_EVENTS as _TOOL_SCOPED_EVENTS,
+    _MATCHER_EVENTS,
     _ToolMatcherMixin,
     _forget_home_registrations,
     _home_key,
@@ -192,8 +192,9 @@ def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
     if matcher is not None and not isinstance(matcher, str):
         warn(".matcher must be a string regex; ignoring")
         matcher = None
-    if matcher is not None and not any(e in _TOOL_SCOPED_EVENTS for e in events):
-        warn(".matcher=%r will be ignored — matcher is only honored for pre_tool_call / post_tool_call.", matcher)
+    if matcher is not None and not any(e in _MATCHER_EVENTS for e in events):
+        warn(".matcher=%r will be ignored — matcher is only honored for "
+             "pre_tool_call / post_tool_call / transform_tool_result.", matcher)
         matcher = None
     timeout_raw = raw.get("timeout", DEFAULT_TIMEOUT_SECONDS)
     try:
@@ -229,7 +230,7 @@ def _make_callback(event: str, target: WebhookTarget):
 
         if safe_worker_enabled():
             return
-        if event in _TOOL_SCOPED_EVENTS and not target.matches_tool(kwargs.get("tool_name")):
+        if event in _MATCHER_EVENTS and not target.matches_tool(kwargs.get("tool_name")):
             return
         delivery_id = uuid.uuid4().hex
         try:

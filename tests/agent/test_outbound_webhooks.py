@@ -513,6 +513,39 @@ class TestDelivery:
         payload = json.loads(http_server.captured[0]["body"])
         assert payload["tool_name"] == "terminal"
 
+    def test_matcher_scopes_transform_tool_result(self, http_server):
+        """A matcher on transform_tool_result is kept and limits delivery.
+
+        The event carries tool_name, so it belongs in the same matcher set as
+        pre_tool_call / post_tool_call. Dropping the regex at parse time, or
+        skipping the runtime check, would POST every tool result.
+        """
+        cfg = _cfg(
+            {
+                "url": _url(http_server),
+                "events": ["transform_tool_result"],
+                "matcher": "terminal",
+            }
+        )
+        assert outbound_webhooks.iter_configured_targets(cfg)[0].matcher == "terminal"
+        outbound_webhooks.register_from_config(cfg)
+
+        from hermes_cli.plugins import get_plugin_manager
+
+        manager = get_plugin_manager()
+        manager.invoke_hook(
+            "transform_tool_result", tool_name="web_search", args={}, result="raw",
+        )
+        manager.invoke_hook(
+            "transform_tool_result", tool_name="terminal", args={}, result="raw",
+        )
+        assert outbound_webhooks.flush()
+
+        assert len(http_server.captured) == 1
+        payload = json.loads(http_server.captured[0]["body"])
+        assert payload["hook_event_name"] == "transform_tool_result"
+        assert payload["tool_name"] == "terminal"
+
     def test_4xx_not_retried(self, http_server):
         http_server.respond_status = 400
         target = outbound_webhooks.WebhookTarget(

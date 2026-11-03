@@ -5,8 +5,11 @@ import { type OauthLoginWindowLike, startOauthLoginWindow } from './oauth-login-
 
 const GATEWAY = 'https://fedora.example.ts.net'
 
+/** A queued load outcome that never settles: an edge holding the request open. */
+const HANG = Symbol('hang')
+
 /** A login window double that records visibility and lets a test fire events.
- *  Each load rejects with the next queued failure, then succeeds. */
+ *  Each load rejects with the next queued failure (or hangs on HANG), then succeeds. */
 function fakeWindow(loadFailures: unknown[] = []) {
   const closed: Array<() => void> = []
   const navigations: Array<(event: unknown, url: string) => void> = []
@@ -27,7 +30,13 @@ function fakeWindow(loadFailures: unknown[] = []) {
       state.loads += 1
 
       if (loadFailures.length > 0) {
-        throw loadFailures.shift()
+        const failure = loadFailures.shift()
+
+        if (failure === HANG) {
+          return new Promise(() => {})
+        }
+
+        throw failure
       }
     },
     on: (_event, listener) => closed.push(listener),
@@ -192,6 +201,30 @@ test('an agent that never wakes fails once the wake budget runs out', async () =
   await vi.advanceTimersByTimeAsync(6_000)
   expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
   expect(h.windows[0].state.destroyed).toBe(true)
+})
+
+test('a waking agent whose retry hangs still fails once the wake budget runs out', async () => {
+  const h = harness({ present: false }, [reset(), HANG])
+  const outcome = h.start({ silent: true, background: false }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(59_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, loads: 2, shown: false })
+
+  await vi.advanceTimersByTimeAsync(1_000)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.destroyed).toBe(true)
+})
+
+test('an agent that answered is not cut off by the wake budget while the user signs in', async () => {
+  const h = harness({ present: false }, [reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(120_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, shown: true })
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
 })
 
 test('a background sign-in does not wait for a waking gateway', async () => {

@@ -37,7 +37,6 @@ export interface OauthLoginWindowDeps<S> {
   createWindow: (options: { session: S; show: boolean; title: string }) => OauthLoginWindowLike
   hasSessionCookie: () => Promise<boolean>
   isExpectedNavigationAbort: (error: unknown) => boolean
-  isWakingLoadFailure?: (error: unknown) => boolean
   loadOptionsFor: (loginUrl: string) => unknown
   log: (message: string) => void
   onLanded: () => void
@@ -69,8 +68,7 @@ export function startOauthLoginWindow<S>(
     revealAfterMs = 2_500,
     deadlineMs = 12_000,
     wakeRetryMs = 1_000,
-    wakeBudgetMs = 60_000,
-    isWakingLoadFailure = isWakingAgentLoadFailure
+    wakeBudgetMs = 60_000
   } = deps
 
   let reveal = (): void => {}
@@ -83,6 +81,9 @@ export function startOauthLoginWindow<S>(
     let revealTimer: ReturnType<typeof setTimeout> | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     let wakeTimer: ReturnType<typeof setTimeout> | null = null
+    // Bounds a wake as a whole: a retry the edge holds open never fails, so a check made only
+    // on failure would leave a hidden window waiting forever.
+    let wakeBudgetTimer: ReturnType<typeof setTimeout> | null = null
 
     const finish = (err: Error | null) => {
       if (settled) {
@@ -105,6 +106,10 @@ export function startOauthLoginWindow<S>(
 
       if (wakeTimer) {
         clearTimeout(wakeTimer)
+      }
+
+      if (wakeBudgetTimer) {
+        clearTimeout(wakeBudgetTimer)
       }
 
       try {
@@ -222,7 +227,6 @@ export function startOauthLoginWindow<S>(
     // `next` is omitted on purpose: the gateway lands on `/` after login,
     // which sets the cookies; only the jar matters.
     const loginUrl = silent ? `${baseUrl.replace(/\/+$/, '')}/` : chooserUrl
-    const startedAt = Date.now()
     let waking = false
 
     const load = () =>
@@ -231,6 +235,12 @@ export function startOauthLoginWindow<S>(
           // The agent answered: give auto-SSO its usual time before revealing.
           if (waking && !settled) {
             waking = false
+
+            if (wakeBudgetTimer) {
+              clearTimeout(wakeBudgetTimer)
+              wakeBudgetTimer = null
+            }
+
             armReveal()
           }
         },
@@ -248,9 +258,15 @@ export function startOauthLoginWindow<S>(
           // only show a failed load.
           const connecting = silent && !hiddenRecovery
 
-          if (!settled && connecting && isWakingLoadFailure(error) && Date.now() - startedAt < wakeBudgetMs) {
-            deps.log(`OAuth login: ${baseUrl} is not answering yet, retrying while it wakes`)
-            waking = true
+          if (!settled && connecting && isWakingAgentLoadFailure(error)) {
+            if (!waking) {
+              deps.log(`OAuth login: ${baseUrl} is not answering yet, retrying while it wakes`)
+              waking = true
+              wakeBudgetTimer = setTimeout(
+                () => finish(error instanceof Error ? error : new Error(String(error))),
+                wakeBudgetMs
+              )
+            }
 
             if (revealTimer) {
               clearTimeout(revealTimer)

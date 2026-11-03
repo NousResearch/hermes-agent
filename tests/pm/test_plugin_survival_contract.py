@@ -652,23 +652,32 @@ def test_plugin_requiring_a_newer_hermes_sits_out_until_hermes_fits(admission_en
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
-def test_enabling_a_plugin_that_only_requires_a_newer_hermes_is_refused(admission_env, monkeypatch):
-    """Admission refuses a plugin whose sole declared dependency is a Hermes it is not, as it
-    refuses a failing requires_hermes, although it installs nothing and is no workspace member."""
+@pytest.mark.parametrize("enabled_before", [[], ["needs-newer"]], ids=["enabling-it", "enabled-before"])
+def test_only_enabling_a_plugin_that_requires_a_newer_hermes_is_refused(admission_env, monkeypatch,
+                                                                         enabled_before):
+    """Admission refuses enabling a plugin whose sole declared dependency is a Hermes it is not,
+    as it refuses a failing requires_hermes, although it installs nothing and is no workspace
+    member. One enabled before sits out as the build leaves it out, so enabling another plugin
+    beside it is admitted."""
     from hermes_cli import plugins_admission as admission
     from hermes_cli import plugins_manifest
 
     _tmp_path, home = admission_env
     monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
-    plugin = home / "plugins" / "needs-newer"
-    plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text("name: needs-newer\npip_dependencies: ['hermes-agent>=99']\n",
-                                        encoding="utf-8")
+    for name, declaration in (("needs-newer", "pip_dependencies: ['hermes-agent>=99']\n"), ("other", "")):
+        (home / "plugins" / name).mkdir(parents=True)
+        (home / "plugins" / name / "plugin.yaml").write_text(f"name: {name}\n{declaration}", encoding="utf-8")
+    _write_enabled(home, enabled_before)
     before = (home / "config.yaml").read_bytes()
 
-    with pytest.raises(admission.AdmissionRefused, match=r"needs-newer.*requires hermes-agent>=99, running 1\.0\.0"):
-        admission.admit_plugin_set_change({"needs-newer"}, set(), active_plugins_dir=home / "plugins")
-    assert (home / "config.yaml").read_bytes() == before
+    if not enabled_before:
+        with pytest.raises(admission.AdmissionRefused,
+                           match=r"needs-newer.*requires hermes-agent>=99, running 1\.0\.0"):
+            admission.admit_plugin_set_change({"needs-newer"}, set(), active_plugins_dir=home / "plugins")
+        assert (home / "config.yaml").read_bytes() == before
+    else:
+        admission.admit_plugin_set_change({"needs-newer", "other"}, set(), active_plugins_dir=home / "plugins")
+        assert yaml.safe_load((home / "config.yaml").read_text())["plugins"]["enabled"] == ["needs-newer", "other"]
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")

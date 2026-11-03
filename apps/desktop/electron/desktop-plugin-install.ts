@@ -16,10 +16,12 @@ import {
   desktopHalfSource,
   PACKAGE_MARKER,
   publishDesktopTree,
+  rootLayoutFilter,
   withDesktopPluginsRoot,
   writeDesktopHalfMarker
 } from './desktop-plugins-root'
 import { execGit, hiddenGitSpawnSpec } from './no-console-git'
+import { stripLikePython, WIN_RESERVED_RE } from './plugin-files-guards'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
 
@@ -134,6 +136,30 @@ export function repoNameFromUrl(url: string): string {
   }
 
   return name
+}
+
+/** *name* when it can be one folder directly under the desktop-plugins root, else throw. It comes from
+ *  the repository (a manifest's `name`, a subdirectory's last segment), so it must never reach a path
+ *  unchecked: `..` would make a forced install replace the Hermes home. No separators, no leading dot
+ *  (the root's staging folders use it), and none of the names Windows reads as something else (a colon
+ *  makes `C:..` drive-relative, a device name opens the device, a trailing dot is dropped). The agent
+ *  side's `_checked_name` refuses the same names (#146394). */
+export function checkedDesktopFolderName(name: string): string {
+  const candidate = stripLikePython(name)
+
+  if (
+    !candidate ||
+    candidate.startsWith('.') ||
+    candidate.endsWith('.') ||
+    /[/\\:]/.test(candidate) ||
+    [...candidate].some(char => char.charCodeAt(0) < 32) ||
+    [...candidate].length > 128 ||
+    WIN_RESERVED_RE.test(candidate.split('.', 1)[0].replace(/ +$/, ''))
+  ) {
+    throw new Error(`'${name}' is not a desktop plugin folder name: it must be a plain folder name, not a path.`)
+  }
+
+  return candidate
 }
 
 /** Stable on-disk folder for a desktop plugin. Never the clone temp dir or a generic `desktop/` folder. */
@@ -527,7 +553,7 @@ export async function installDesktopPluginFromGit(
       // and the Plugins page pairs them into one row. A desktop-only repo keeps
       // the git-derived folder name and stays a standalone plugin.
       const packageName = detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null
-      const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
+      const pluginName = checkedDesktopFolderName(packageName ?? desktopPluginFolderName(gitUrl, subdir))
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
@@ -549,30 +575,35 @@ export async function installDesktopPluginFromGit(
         // part of that publication — without it the Plugins page cannot tell this
         // copy belongs to the agent row (it sits on "copying…" forever) and the
         // half loads default-enabled instead of opt-in.
-        await publishDesktopTree({ dir: sourceDir, plainWithin: cloneRoot }, targetDir, async staged => {
-          if (!packageName) {
-            // A desktop-only repo is a standalone plugin. A package marker it
-            // ships would name another package's agent half as its own (pairing
-            // it on the Plugins page and letting it render that package's tool
-            // media), so only this installer or the reconcile pass writes one.
-            await fsp.rm(path.join(staged, PACKAGE_MARKER), { force: true })
+        await publishDesktopTree(
+          { dir: sourceDir, plainWithin: cloneRoot },
+          targetDir,
+          async staged => {
+            if (!packageName) {
+              // A desktop-only repo is a standalone plugin. A package marker it
+              // ships would name another package's agent half as its own (pairing
+              // it on the Plugins page and letting it render that package's tool
+              // media), so only this installer or the reconcile pass writes one.
+              await fsp.rm(path.join(staged, PACKAGE_MARKER), { force: true })
 
-            return
-          }
+              return
+            }
 
-          await writeDesktopHalfMarker(staged, {
-            package: packageName,
-            repo: gitUrl,
-            // The published folder, not the temp clone. The clone is deleted
-            // below; a source that disappears is ghost-pruned on the next
-            // reconcile when no local `plugins/<name>/desktop` exists to
-            // re-copy from (remote backend, or Desktop UI only). A later pass
-            // that does find the agent package still replaces this copy,
-            // because this path is not that package's `desktop/` dir.
-            source: targetDir,
-            sourceMtimeMs: (await fsp.stat(path.join(staged, 'plugin.js'))).mtimeMs
-          })
-        })
+            await writeDesktopHalfMarker(staged, {
+              package: pluginName,
+              repo: gitUrl,
+              // The published folder, not the temp clone. The clone is deleted
+              // below; a source that disappears is ghost-pruned on the next
+              // reconcile when no local `plugins/<name>/desktop` exists to
+              // re-copy from (remote backend, or Desktop UI only). A later pass
+              // that does find the agent package still replaces this copy,
+              // because this path is not that package's `desktop/` dir.
+              source: targetDir,
+              sourceMtimeMs: (await fsp.stat(path.join(staged, 'plugin.js'))).mtimeMs
+            })
+          },
+          detected.desktopSourceSubdir === '.' ? rootLayoutFilter : undefined
+        )
 
         if (!(await pathIsFile(targetPlugin))) {
           return { ok: false, error: `Install completed but ${targetPlugin} is missing.` }

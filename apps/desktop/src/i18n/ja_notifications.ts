@@ -35,6 +35,18 @@ export const jaNotifications = {
       description: 'Hermes がバックグラウンドの間に、デスクトッププラグインが通知を送信しました。'
     }
   },
+  browserPermission: {
+    title: 'ブラウザー通知',
+    allow: '許可',
+    states: {
+      default:
+        'タブがバックグラウンドにある間、このブラウザーで通知を表示します。許可するまではタブのタイトルだけが点滅します。',
+      granted: '許可済み。このタブがバックグラウンドにある間に通知が表示され、タブのタイトルも点滅します。',
+      denied: 'このブラウザーのサイト設定でブロックされています。タブのタイトルは引き続き点滅します。',
+      insecure: 'HTTPS(Tailscale serve など)が必要です。通常の HTTP ではタブのタイトルだけが点滅します。',
+      unsupported: 'このブラウザーは通知を表示できません。タブのタイトルは引き続き点滅します。'
+    }
+  },
   test: 'テスト通知を送信',
   testTitle: 'Hermes',
   testBody: '通知は正常に動作しています。',

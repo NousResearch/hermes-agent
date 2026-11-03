@@ -21,6 +21,7 @@ from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.process_identity import own_process_groups, release_process_groups
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
@@ -1141,13 +1142,20 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
+        # its group to the owner-death supervisor and _wait_for_process releases it.
         proc = subprocess.Popen(
             args, text=True, env=run_env, encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            # detached-spawn: ok — owned via own_process_groups right below
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
+            # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
+            # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
+            own_process_groups([proc.pid])
+            proc._hermes_owned_pgid = proc.pid
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
                 # Record the group leader's start-time fingerprint so _kill_process can
@@ -1159,6 +1167,18 @@ class LocalEnvironment(BaseEnvironment):
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
+
+    def _wait_for_process(self, proc, *args, **kwargs) -> dict:
+        """Base wait, then hand the command's group back from the owner-death supervisor: once the
+        command returned, what it left running in the background (`server &`) is not ours to kill,
+        exactly as on a graceful exit. A command that yielded to background took the group with it
+        (``ProcessRegistry.adopt_local`` clears ``_hermes_owned_pgid``)."""
+        try:
+            return super()._wait_for_process(proc, *args, **kwargs)
+        finally:
+            if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:
+                proc._hermes_owned_pgid = None
+                release_process_groups([owned_pgid])
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

@@ -237,21 +237,29 @@ def poll_container(
     ``deadline_s`` elapses.
 
     Returns ``(success, last_stdout)``. Useful for waiting on a process
-    to appear, a port to open, a file to contain a string, etc.
+    to appear, a port to open, a file to contain a string, etc. Raises
+    ``AssertionError`` when no attempt completed (every ``docker exec``
+    stalled): that is no verdict, so a negative ``assert not ok`` must not pass.
     """
     end = time.monotonic() + deadline_s
     last = ""
-    while time.monotonic() < end:
+    completed = False
+    while (remaining := end - time.monotonic()) > 0:
         try:
-            r = docker_exec_sh(container, probe, user=user, timeout=10)
-        except subprocess.TimeoutExpired:
+            r = docker_exec_sh(container, probe, user=user, timeout=min(10.0, remaining))
+        except subprocess.TimeoutExpired as exc:
             # A stalled ``docker exec`` (busy daemon on a loaded runner) is one failed attempt,
-            # not the verdict: keep polling until the deadline like any other non-zero probe.
+            # not the verdict: keep polling until the deadline. Keep the last real stdout if any.
+            if not completed:
+                last = f"docker exec stalled: {exc}"
             continue
+        completed = True
         last = r.stdout
         if r.returncode == 0:
             return True, last
-        time.sleep(interval_s)
+        time.sleep(min(interval_s, max(0.0, end - time.monotonic())))
+    if not completed:
+        raise AssertionError(f"No probe of {container} completed within {deadline_s}s; {last}")
     return False, last
 
 
@@ -266,7 +274,8 @@ def wait_for_path(
     """Poll ``test -<kind> <path>`` inside the container until success or timeout.
 
     ``kind`` is the ``test`` flag: ``'f'`` for file, ``'d'`` for directory,
-    ``'e'`` for existence. Returns ``True`` on success, ``False`` on timeout.
+    ``'e'`` for existence. Returns ``True`` on success, ``False`` on timeout;
+    raises ``AssertionError`` if no probe completed.
     """
     return poll_container(
         container, f"test -{kind} {path}",

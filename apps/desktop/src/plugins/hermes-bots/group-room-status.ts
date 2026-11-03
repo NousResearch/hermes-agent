@@ -164,7 +164,7 @@ export function formatElapsed(seconds: number): string {
 }
 
 export type RoomCycle =
-  | { kind: 'working'; round: number; maxRounds?: number }
+  | { kind: 'working'; round: number; maxRounds?: number; /** The live members of the thread `round` is from. */ members: string[] }
   | { kind: 'bounded' | 'messageCap' | 'settled' | 'stopped' }
 
 const ENDING: Record<string, (event: RoomLogEvent) => RoomCycle | null> = {
@@ -238,15 +238,20 @@ export function roomCycle(
     return ended(events, focus === undefined ? undefined : discussions.get(focus))
   }
 
-  const inFocus = rows.filter(row => row.thread_id !== undefined && row.thread_id === focus)
-  const owning = inFocus.length ? inFocus : rows
+  // One thread owns the strip, so its round and the names beside it agree: the focused thread when it has
+  // running work, else a thread that does, else the focused thread's queued work.
+  const isLive = (row: RoomMemberActivity) => row.status !== 'queued'
+  const inThread = (thread: string | undefined) => rows.filter(row => row.thread_id !== undefined && row.thread_id === thread)
+  const inFocus = inThread(focus)
+  const running = rows.find(row => isLive(row) && row.thread_id !== undefined)?.thread_id
+  const owning = inFocus.some(isLive) ? inFocus : running !== undefined ? inThread(running) : inFocus.length ? inFocus : rows
   const rounds = owning.map(row => row.round_index).filter((index): index is number => typeof index === 'number' && Number.isInteger(index) && index >= 0)
   const thread = owning.find(row => row.thread_id !== undefined)?.thread_id ?? focus
-  const live = owning.filter(row => row.status !== 'queued').map(row => row.member_id)
+  const live = owning.filter(isLive).map(row => row.member_id)
   const current = rounds.length ? Math.max(...rounds) : guessedRound(events, thread === undefined ? undefined : discussions.get(thread), live)
   const max = typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : undefined
 
-  return { kind: 'working', round: current + 1, maxRounds: max }
+  return { kind: 'working', round: current + 1, maxRounds: max, members: live }
 }
 
 export interface RoomHandoff {

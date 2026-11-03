@@ -40,8 +40,8 @@ it('tracks the round while members work and says how the discussion ended', () =
   const events = [user(1, 'd'), turn(2, 'turn.settled', 'ada', 'd', 0), turn(3, 'turn.settled', 'linus', 'd', 0)]
 
   // Ada already answered round 0 and works again: round 2 of 3.
-  expect(roomCycle(events, [{ member_id: 'ada', status: 'running' }], 3)).toEqual({ kind: 'working', round: 2, maxRounds: 3 })
-  expect(roomCycle(events, [{ member_id: 'grace', status: 'running' }], null)).toEqual({ kind: 'working', round: 1, maxRounds: undefined })
+  expect(roomCycle(events, [{ member_id: 'ada', status: 'running' }], 3)).toEqual({ kind: 'working', round: 2, maxRounds: 3, members: ['ada'] })
+  expect(roomCycle(events, [{ member_id: 'grace', status: 'running' }], null)).toEqual({ kind: 'working', round: 1, maxRounds: undefined, members: ['grace'] })
 
   const end = (payload: Record<string, unknown>) => [...events, { seq: 9, kind: 'room.activity', payload: { discussion_event_id: 'd', ...payload } }]
   expect(roomCycle(end({ status: 'settled' }), [], 3)).toEqual({ kind: 'settled' })

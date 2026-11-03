@@ -96,7 +96,6 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
       custom_providers: [{ name: 'Mock', base_url: 'http://127.0.0.1:9001/v1', key_env: 'OPENAI_API_KEY' }],
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
       onboarding: { run: false },
-      // Off so an old release's boot-time STT probe never lazy-installs ahead of the send.
       stt: { provider: 'local', enabled: false },
     })
     expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('OTHER_TEST_VALUE=kept\nMOCK_API_KEY=e2e-mock-key\n')

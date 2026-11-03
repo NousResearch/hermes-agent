@@ -492,7 +492,11 @@ export const deOverrides = {
       liveError: 'Live-Sprache',
       liveDelegationFailed: 'Anfrage konnte nicht an Hermes übergeben werden',
       liveUnavailable: reason =>
-        `GPT-Live-Sprachchat ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`
+        `GPT-Live-Sprachchat ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionUnavailable: (engine, reason) =>
+        `${engine} ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`,
+      extensionMissing: engine =>
+        `Die Sprach-Engine ${engine} ist nicht installiert oder ausgeschaltet. Stattdessen wird Sprache-zu-Text verwendet.`
     },
     native: {
       approvalTitle: 'Genehmigung erforderlich',
@@ -3809,6 +3813,20 @@ export const deOverrides = {
     voiceEngineChangeFailed: 'Sprachchat-Engine konnte nicht geändert werden',
     voiceEngineChainedShort: 'Sprache-zu-Text',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Derzeit nicht verfügbar',
+    voiceEngineSignIn: provider => `Mit ${provider} anmelden`,
+    voiceEngineMissing: engine => `${engine} (nicht installiert oder ausgeschaltet)`,
+    voiceEngineAccount: provider => `${provider}-Anmeldung`,
+    voiceEngineSignedIn: provider => `Für dieses Profil mit ${provider} angemeldet.`,
+    voiceEngineNotSignedIn: provider => `Nicht mit ${provider} angemeldet. Diese Sprach-Engine benötigt die Anmeldung.`,
+    voiceEngineSignInAction: 'Anmelden',
+    voiceEngineSignOutAction: 'Abmelden',
+    voiceEngineSignInCode: code => `Gib den Code ${code} auf der geöffneten Seite ein und kehre dann hierher zurück.`,
+    voiceEngineSignInFailed: message => `Anmeldung nicht abgeschlossen: ${message}`,
+    voiceEngineSignOutTitle: provider => `Von ${provider} abmelden?`,
+    voiceEngineSignOutBody: provider =>
+      `Dadurch wird die ${provider}-Anmeldung aus diesem Profil entfernt. Alles, was sie nutzt, nicht nur diese Sprach-Engine, funktioniert erst nach einer erneuten Anmeldung wieder.`,
+    voiceEngineSignOutFailed: 'Abmelden fehlgeschlagen',
     voiceDictation: 'Sprachdiktat',
     speakReplies: 'Antworten vorlesen',
     stopSpeakingReplies: 'Antworten nicht mehr vorlesen',

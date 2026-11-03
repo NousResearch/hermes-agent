@@ -36,3 +36,19 @@ def test_unknown_engine_is_refused_rather_than_written(config_home):
 
     assert answer["error"]["code"] == 4002
     assert not config_home.exists()
+
+
+def test_extension_engine_id_is_written_as_the_mode(config_home):
+    """A Desktop extension engine (`<plugin>:<engine>`) is a mode the menu can pick; the plugin's
+    presence is the renderer's check, so the writer validates the shape only."""
+    assert _set("Hermes-XAI:grok")["result"] == {"key": "voice.voice_chat_mode", "value": "hermes-xai:grok"}
+    assert yaml.safe_load(config_home.read_text())["voice"]["voice_chat_mode"] == "hermes-xai:grok"
+
+
+@pytest.mark.parametrize("value", ["hermes-xai:", "hermes xai:grok", "a:b:c", "../x:y"])
+def test_malformed_extension_ids_are_refused(config_home, value):
+    answer = _set(value)
+
+    assert answer["error"]["code"] == 4002
+    assert "<plugin>:<engine>" in answer["error"]["message"]
+    assert not config_home.exists()

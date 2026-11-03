@@ -254,6 +254,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
+  // Extension engines (`<plugin>:<engine>`, contrib/voice-engines.ts) are appended live by
+  // useVoiceChatModeChoices.
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
   'voice.gpt_live.voice': [
     'marin',

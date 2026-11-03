@@ -588,6 +588,17 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
+        # OpenAI-compatible sampling params from config (frequency_penalty/presence_penalty).
+        # These reduce degenerate repetition loops that trip the repetition guard and
+        # fail the turn. Only sent when explicitly set in config.yaml; the API ignores
+        # them for providers that don't support them.
+        _fp = params.get("frequency_penalty")
+        _pp = params.get("presence_penalty")
+        if _fp is not None:
+            api_kwargs["frequency_penalty"] = _fp
+        if _pp is not None:
+            api_kwargs["presence_penalty"] = _pp
+
         # Kimi / TokenHub by host (agents with no registered profile): top-level reasoning_effort (unless thinking disabled).
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)

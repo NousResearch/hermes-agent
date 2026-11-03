@@ -1466,6 +1466,20 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url, scope=agent)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
+    # OpenAI-compatible sampling params from config (frequency_penalty/presence_penalty).
+    # These reduce degenerate repetition loops (e.g. a model re-issuing the same
+    # tool call round after round) that trip the repetition guard and fail the
+    # turn. Only sent when explicitly set in config.yaml; the API ignores them
+    # for providers that don't support them.
+    _freq_pen = None
+    _pres_pen = None
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config() or {}
+        _freq_pen = _cfg.get("frequency_penalty")
+        _pres_pen = _cfg.get("presence_penalty")
+    except Exception:
+        pass
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
@@ -1475,7 +1489,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         provider_preferences=_prefs or None, openrouter_min_coding_score=agent.openrouter_min_coding_score,
         supports_reasoning=agent._supports_reasoning_extra_body(),
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        qwen_session_metadata=_qwen_meta)
+        qwen_session_metadata=_qwen_meta,
+        frequency_penalty=_freq_pen, presence_penalty=_pres_pen)
     if _profile:
         # Profiles handle per-provider quirks via hooks fed the context above.
         return transport.build_kwargs(provider_profile=_profile, **_common)

@@ -1148,6 +1148,15 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             reader.start()
             self._running[session.id] = session
         self._write_checkpoint()
+        # A background command leads its own session (start_new_session, and a systemd scope
+        # moves it out of ours anyway), so the worker's death cannot reach it. Record the group
+        # in the worker's ledger — except for a persist_on_release job, which the caller
+        # explicitly asked to outlive the turn (reclaim skips it).
+        if session.pid and not session.systemd_unit:
+            from tools.worker_process_groups import note_group
+            note_group(session.pid, label=f"background: {session.command}",
+                       persist=bool(getattr(session, "persist_on_release", False)),
+                       roots=[session.cwd] if session.cwd else None)
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
         """PTY spawn for interactive CLI tools (Codex, Claude Code, REPLs).

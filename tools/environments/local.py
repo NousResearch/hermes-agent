@@ -1120,6 +1120,13 @@ class LocalEnvironment(BaseEnvironment):
                 # platform, macOS included.
                 from gateway.status import get_process_start_time
                 proc._hermes_pgid_start = get_process_start_time(proc.pid)
+            # This command's group left the worker's own session on purpose, so the worker's
+            # death cannot reach it (a killed worker runs no code). Record it: the worker's
+            # exit hooks and its owner reclaim the ledger, and `hermes kanban orphans` finds
+            # whatever escaped (tools/worker_process_groups.py).
+            from tools.worker_process_groups import note_group
+            note_group(proc.pid, getattr(proc, "_hermes_pgid", None), label=cmd_string,
+                       roots=[self.cwd])
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc

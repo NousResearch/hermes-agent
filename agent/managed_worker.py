@@ -340,6 +340,11 @@ def execute(frame, channel):
     store = RuntimeSessionStore(rpc, scope, outbox_dir(frame['home'], scope['execution_id']), adopted)
     from gateway.session_kanban import bind_worker_context
     bind_worker_context(frame)
+    # Arm exit-time reclamation now that the workspace is bound: every tool child this worker
+    # opens (terminal command, execute_code kernel) leads its own session, so this process's
+    # death cannot reach it. The ledger is what the owner reclaims when we are SIGKILLed.
+    from tools.worker_process_groups import install as install_process_group_reclaim
+    install_process_group_reclaim(roots=[os.getcwd()])
     # Background processes a previous admission of this session started outlive that worker
     # (F24); adopt them so process_manage in this turn can poll and kill them.
     from tools.process_registry import process_registry

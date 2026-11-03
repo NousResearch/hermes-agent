@@ -2853,6 +2853,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
+    # The owner reclaims this worker's ledger by PID once the worker dies, so both sides must
+    # resolve the same directory. `hermes -p <profile>` rewrites HERMES_HOME, which would put the
+    # worker's ledger under a profile dir the owner never scans.
+    from tools.worker_process_groups import ledger_dir
+    env["HERMES_PROCESS_GROUPS_DIR"] = str(ledger_dir())
     # This is the grant boundary: the dispatcher assigned this new worker's task.
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)

@@ -440,6 +440,23 @@ _SPECS = [
         _arg("--log-retention-days", type=_nonnegative_int, default=30,
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+    _cmd("orphans", [
+        _arg("--kill", action="store_true",
+             help="Reclaim what is listed (SIGTERM the group, SIGKILL after the grace). "
+                  "Without this flag nothing is signalled."),
+        _arg("--min-age", type=float, default=60.0, metavar="SECONDS",
+             help="Only report processes at least this old (default: 60)"),
+        _arg("--root", action="append", default=None, metavar="DIR",
+             help="Workspace/scratch root to scan (repeatable; default: this profile's "
+                  "kanban workspaces + cache/scratch)"),
+        _arg("--grace", type=float, default=10.0, metavar="SECONDS",
+             help="TERM→KILL grace for --kill (default: 10)"),
+        _arg("--include-unowned", action="store_true",
+             help="Also reclaim rows marked 'unowned' (cwd under a workspace root but no proof a "
+                  "dead worker owned them)"),
+        _json_flag(),
+    ], help="List (default) or reclaim processes a dead worker left running in a "
+            "workspace/scratch tree (PPID=1 orphans + groups named by a dead worker's ledger)"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(

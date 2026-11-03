@@ -302,6 +302,30 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return _poll_loop(args.interval, tick)
 
 
+def _cmd_orphans(args: argparse.Namespace) -> int:
+    """Report (default) or reclaim processes a dead worker left running.
+
+    The board's own concern: a retried card whose previous attempt's child is still
+    running doubles the memory and I/O of that card inside the shared gateway cgroup.
+    ``tools.worker_process_groups`` owns the mechanism; this is its CLI surface.
+    """
+    from tools.worker_process_groups import main as orphans_main
+    argv: list[str] = []
+    if getattr(args, "kill", False):
+        argv.append("--kill")
+    if getattr(args, "min_age", None) is not None:
+        argv.extend(["--min-age", str(args.min_age)])
+    for root in (getattr(args, "root", None) or []):
+        argv.extend(["--root", root])
+    if getattr(args, "grace", None) is not None:
+        argv.extend(["--grace", str(args.grace)])
+    if getattr(args, "include_unowned", False):
+        argv.append("--include-unowned")
+    if getattr(args, "json", False):
+        argv.append("--json")
+    return orphans_main(argv)
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
     import shutil

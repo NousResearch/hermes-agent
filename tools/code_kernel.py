@@ -649,6 +649,11 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
             close_handle(parent_handle)
         if death_r is not None:
             os.close(death_r)
+    # The kernel leads its own session (start_new_session), so the host's death does not reach
+    # it once the parent-death pipe cannot be read. Record the group in the host's ledger: the
+    # exit hooks reclaim it, and `hermes kanban orphans` finds it if the host was SIGKILLed.
+    from tools.worker_process_groups import note_group
+    note_group(kernel.proc.pid, label=f"execute_code kernel {kernel.tmpdir}", roots=[child_cwd or kernel.tmpdir])
     # Deliberately NOT propagate_context_to_thread: that would freeze the spawning cell's
     # context/callbacks into the server thread for life. Authority is rebound per cell.
     for target, args in ((_rpc_forever, (kernel, max_tool_calls, sandbox_tools)),

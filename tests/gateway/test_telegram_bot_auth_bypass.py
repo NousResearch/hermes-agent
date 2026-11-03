@@ -97,7 +97,7 @@ def _build_telegram_message(*, is_bot: bool):
 
 
 def _capture_build_source_is_bot(is_bot: bool):
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)

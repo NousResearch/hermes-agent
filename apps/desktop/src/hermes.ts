@@ -11,13 +11,15 @@ export {
   HermesGateway,
   profileScopeKey,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
+  resolveOwnerNow,
   setApiRequestConnection,
   setApiRequestProfile,
   STARTUP_REQUEST_TIMEOUT_MS
 } from './api/client'
-export type { ProfileScope } from './api/client'
+export type { ProfileScope, ResolvedOwner } from './api/client'
 export * from './api/config'
 export * from './api/cron'
+export * from './api/delegation'
 export * from './api/local-models'
 export * from './api/mcp'
 export * from './api/messaging'
@@ -28,6 +30,7 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
+export * from './api/webapp-access'
 
 export type {
   ActionResponse,
@@ -44,6 +47,7 @@ export type {
   AutomationBlueprint,
   AutomationBlueprintField,
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   BackendUpdateCheckResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
@@ -64,7 +68,6 @@ export type {
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
-  GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
@@ -86,8 +89,6 @@ export type {
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
-  ModelOptionProvider,
-  ModelOptionsResponse,
   PaginatedSessions,
   PairingResponse,
   PairingUser,
@@ -100,12 +101,11 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
-  RpcEvent,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,
   SessionMessagesResponse,
-  SessionResumeResponse,
+  SessionResumeResult,
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,
@@ -120,6 +120,9 @@ export type {
   StaleAuxAssignment,
   StarmapGraph,
   StatusResponse,
+  TelegramOnboardingApplyResponse,
+  TelegramOnboardingStartResponse,
+  TelegramOnboardingStatusResponse,
   ToolsetConfig,
   ToolsetInfo,
   ToolsetModel,

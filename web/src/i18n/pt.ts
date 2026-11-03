@@ -92,9 +92,18 @@ export const pt: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Provedor de memória ativo",
+    noProvider: "nenhum — apenas integrada",
+    builtinLayer: "Camada integrada",
+    builtinNote: "MEMORY.md e USER.md são a memória própria do Hermes, independente de qualquer provedor externo. Ambos são carregados nas sessões por padrão; as opções de configuração (memory.memory_enabled / memory.user_profile_enabled) desativam cada um. Um provedor se soma a eles; nunca os substitui.",
+  },
+
   status: {
     actionFailed: "Ação falhou",
     actionFinished: "Concluído",
+    actionFinishedOwed: "Atualizado, mas ainda pendente (execute `hermes update` novamente para concluir)",
     actions: "Ações",
     agent: "Agente",
     activeSessions: "Sessões ativas",
@@ -162,9 +171,14 @@ export const pt: Translations = {
     deleteSelectedConfirmMessage:
       "Isto remove permanentemente {count} sessões selecionadas e todas as suas mensagens. Não pode ser desfeito.",
     selectedSessionsDeleted: "{count} sessões eliminadas",
+    selectedSessionsSkippedActive: "{deleted} eliminadas; {count} mantidas porque há um turno em curso",
     failedToDeleteSelected: "Falha ao eliminar as sessões selecionadas",
     resumeInChat: "Retomar no Chat",
     newChat: "Novo chat",
+    workspace: "área de trabalho",
+    workspaceDefault: "Padrão",
+    workspaceRescan: "Reexaminar repositórios",
+    workspaceCustom: "Outro caminho…",
     previousPage: "Página anterior",
     nextPage: "Página seguinte",
     roles: {
@@ -325,6 +339,8 @@ export const pt: Translations = {
     disableRuntime: "Desativar",
     enableAfterInstall: "Ativar após instalação",
     enableRuntime: "Ativar",
+    toggleTakesEffectAfterRestart:
+      "Salvo — reinicie o gateway para aplicar a alteração.",
     forceReinstall: "Forçar reinstalação (eliminar pasta existente primeiro)",
     headline:
       "Descobrir, instalar, ativar e atualizar plugins Hermes (paridade com `hermes plugins`).",

@@ -11,7 +11,7 @@ runtime resolver then makes of it.
 
 import os
 
-import yaml
+import hermes_yaml as yaml
 
 import hermes_cli.runtime_provider as rp
 from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock_api_key
@@ -42,7 +42,7 @@ def _run_wizard(monkeypatch, selected="openai.gpt-5.6-terra"):
 
 
 def test_wizard_writes_named_provider_carrying_the_key_env(monkeypatch):
-    home, cfg = _run_wizard(monkeypatch)
+    _home, cfg = _run_wizard(monkeypatch)
 
     # The credential must travel via a named provider entry: that is the only
     # resolution branch that reads key_env.

@@ -233,7 +233,7 @@ Open WebUI 在首次启动后会将 OpenAI 兼容连接设置持久化到其自�
 
 ## 多用户设置与 Profiles
 
-要为每个用户运行独立的 Hermes 实例——各自拥有独立的配置、记忆和技能——请使用 [profiles](/user-guide/profiles)。每个 profile 在不同端口上运行自己的 API 服务器，并自动将 profile 名称作为模型名称公告给 Open WebUI。
+要为每个用户运行独立的 Hermes 实例——各自拥有独立的配置、记忆和技能——请使用 [profiles](../profiles.md)。每个 profile 在不同端口上运行自己的 API 服务器，并自动将 profile 名称作为模型名称公告给 Open WebUI。
 
 ### 1. 创建 profiles 并配置 API 服务器
 

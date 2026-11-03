@@ -49,7 +49,7 @@ def run_preflight_gate(
         v.failed = True
         v._turn_exit_reason = "ollama_runtime_context_too_small"
         append_message(messages, {"role": "assistant", "content": v.final_response})
-        agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+        agent._emit_diagnostic_status("❌ Ollama runtime context is too small for Hermes tool use")
         v.api_call_count -= 1
         agent._api_call_count = v.api_call_count
         with suppress(Exception):
@@ -90,8 +90,11 @@ def run_preflight_gate(
     return run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
-        defer_preflight=getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
+        # estimate waits for the provider's count.
+        defer_preflight=(
+            (lambda _t: False) if getattr(agent, "_request_pressure_anchored", False)
+            else getattr(_compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
         ),
         moa_prepared_request=_moa_prepared_request, system_message=system_message,
         user_message=user_message, max_compression_attempts=max_compression_attempts,

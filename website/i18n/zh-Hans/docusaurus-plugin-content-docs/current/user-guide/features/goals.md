@@ -118,7 +118,7 @@ goals:
 
 ### 选择裁判模型
 
-裁判使用 `goal_judge` 辅助任务。默认情况下，它解析为你的主模型（参见[辅助模型](/user-guide/configuration#auxiliary-models)）。若想将裁判路由到廉价快速的模型以降低成本，可添加覆盖配置：
+裁判使用 `goal_judge` 辅助任务。默认情况下，它解析为你的主模型（参见[辅助模型](../configuration.md#auxiliary-models)）。若想将裁判路由到廉价快速的模型以降低成本，可添加覆盖配置：
 
 ```yaml
 auxiliary:

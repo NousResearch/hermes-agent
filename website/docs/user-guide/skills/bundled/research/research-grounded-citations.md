@@ -15,13 +15,13 @@ Ground answers and documents in cited, verifiable sources.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/research\grounded-citations` |
-| Version | `1.1.0` |
+| Path | `skills/research/grounded-citations` |
+| Version | `1.2.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Citations`, `Grounding`, `Sources`, `Web`, `Reports` |
-| Related skills | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv), `ocr-and-documents` |
+| Related skills | [`arxiv`](../../bundled/research/research-arxiv.md), [`pdf`](../../bundled/productivity/productivity-pdf.md), [`reddit-reading`](../../optional/social-media/social-media-reddit-reading.md), [`rss-feeds`](../../optional/research/research-rss-feeds.md), [`youtube-content`](../../bundled/media/media-youtube-content.md) |
 
 ## Reference: full SKILL.md
 
@@ -65,7 +65,7 @@ Mention a URL only if the user would plausibly want the link.
 
 None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3.
 Retrieval comes from whatever is configured: `web_search`, `web_extract`,
-`browser_navigate`, or `terminal` (curl, CLIs).
+`browser_exec`, or `terminal` (curl, CLIs).
 
 Ledger location: `$HERMES_HOME/cache/citations/ledger.json` (profile-aware).
 Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
@@ -108,7 +108,7 @@ answer or document. Skip the reset when continuing work whose ids are already
 in a draft — reusing the ledger keeps the numbering stable.
 
 ② **Register every source at retrieval time.** After each `web_search` /
-`web_extract` / `browser_navigate` / fetch, pass the URLs to `sources.py add`
+`web_extract` / `browser_exec` / fetch, pass the URLs to `sources.py add`
 (or pipe the raw JSON through `sources.py ingest`). Do this *before* writing
 prose. Registering later, from memory, is the failure mode this skill exists to
 prevent.
@@ -142,6 +142,31 @@ unknown ids, on a Sources block that disagrees with the ledger, or (with
 sources, cite inline, end with the rendered `Sources:` list. For a short answer
 you may render the block from `sources.py render --only <ids>` instead of
 writing to a file.
+
+## Multi-Platform Sweeps
+
+"What are people saying about X" / "research X across the web" is not one
+`web_search`. Fan out across source types, collect in parallel, then synthesise
+with every claim attributed to the platform it came from:
+
+| Source type | Route | What it adds |
+|---|---|---|
+| Open web | `web_search` → `web_extract` | official docs, articles, announcements |
+| Community discussion | `reddit-reading` (`search`, `thread`) | real user experience, complaints, workarounds |
+| Blogs / releases / changelogs | `rss-feeds` (`read`, `discover`) | dated primary posts, version history |
+| Video | `youtube-content` | walkthroughs, demos, talks |
+| Code | `terminal` with `gh search repos` / `gh search issues` | implementations, open bugs |
+| X/Twitter | `xurl` (needs API access) | announcements, developer chatter |
+
+The `reddit-reading` and `rss-feeds` skills are optional. If absent, install with
+`hermes skills install official/social-media/reddit-reading` or
+`hermes skills install official/research/rss-feeds` before using them.
+
+Register every URL from every route in the ledger as it arrives (step ②). Keep
+opinion and measurement apart: a Reddit thread is evidence that users *report*
+something, not that it is true; pair it with a primary source or label it as
+sentiment. Report per-platform coverage gaps ("Reddit search returned nothing
+newer than March") rather than silently narrowing to what worked.
 
 ## Fact-Checking Mode
 

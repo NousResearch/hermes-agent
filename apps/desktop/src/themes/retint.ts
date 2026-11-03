@@ -34,7 +34,7 @@ import {
   normalizeHex,
   type Oklch,
   oklchToHex,
-  readableOn
+  readableInk
 } from './color'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
@@ -117,8 +117,8 @@ function retintColors(colors: DesktopThemeColors, seed: string, isDark: boolean)
 
   // Foregrounds that sit ON the accent have to be re-picked: a new seed can
   // cross the light/dark readability boundary.
-  next.primaryForeground = readableOn(seed)
-  next.midgroundForeground = readableOn(seed)
+  next.primaryForeground = readableInk(seed)
+  next.midgroundForeground = readableInk(seed)
 
   return next
 }

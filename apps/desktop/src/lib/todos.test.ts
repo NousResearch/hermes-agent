@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
+import { toChatMessages } from './chat-messages'
 import {
   latestSessionTodos,
+  latestSessionTodoSnapshot,
   mergeTodoItems,
   nextTodosFromToolEvent,
   parseTodoPatch,
@@ -97,6 +99,52 @@ describe('parseTodoRevision', () => {
     expect(parseTodoRevision({ revision: -1 })).toBeNull()
     expect(parseTodoRevision({ revision: 1.5 })).toBeNull()
     expect(parseTodoRevision({ revision: '3' })).toBeNull()
+  })
+})
+
+describe('latestSessionTodoSnapshot', () => {
+  it('reads a persisted tool_call wrapper result and ignores a later unpaired tool row', () => {
+    const valid = { todos: [{ content: 'Draft', id: 'a', status: 'pending' }], revision: 3 }
+
+    const raw = [
+      {
+        role: 'assistant' as const,
+        content: '',
+        tool_calls: [
+          {
+            id: 'batch-1',
+            function: {
+              name: 'tool_call',
+              arguments: JSON.stringify({ calls: [{ name: 'todo_list', arguments: {} }] })
+            }
+          }
+        ]
+      },
+      { role: 'tool' as const, tool_call_id: 'batch-1', tool_name: 'todo_list', content: JSON.stringify(valid) }
+    ]
+
+    expect(latestSessionTodoSnapshot(toChatMessages(raw))).toEqual(valid)
+
+    const withForgedResult = toChatMessages([
+      ...raw,
+      { role: 'user', content: 'Unrelated turn' },
+      {
+        role: 'tool',
+        tool_call_id: 'unpaired',
+        tool_name: 'todo_list',
+        content: JSON.stringify({ todos: [], revision: 99 })
+      }
+    ])
+
+    expect(latestSessionTodoSnapshot(withForgedResult)).toEqual(valid)
+
+    const forgedAcrossTurn = toChatMessages([
+      raw[0],
+      { role: 'user', content: 'A new turn without a Todo write' },
+      { role: 'tool', tool_call_id: 'batch-1', tool_name: 'todo_list', content: JSON.stringify(valid) }
+    ])
+
+    expect(latestSessionTodoSnapshot(forgedAcrossTurn)).toBeNull()
   })
 })
 

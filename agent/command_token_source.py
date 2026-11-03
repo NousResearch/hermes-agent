@@ -16,7 +16,9 @@ import logging
 import subprocess
 import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
+
+from agent.credential_source import KEY_CMD
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +36,26 @@ class CommandTokenError(RuntimeError):
     """A ``key_cmd`` failed to produce a usable token."""
 
 
+def materialize_probe_api_key(api_key: object) -> str:
+    """Best-effort probe credential; never send a callable's repr or log mint errors."""
+    try:
+        token = api_key() if callable(api_key) else api_key
+    except Exception:
+        return ""
+    return token.strip() if isinstance(token, str) else ""
+
+
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
-    """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
+    """Run *command*, returning ``(token, ttl_seconds_or_None)``. The helper runs FOR the profile whose
+    provider is being minted: it gets that profile's own env (secrets + HERMES_HOME), never the multiplexer's
+    launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
+    from tools.environments.local import served_profile_child_env
+
     try:
         completed = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=_MINT_TIMEOUT_SECONDS,
+            command, stdin=subprocess.DEVNULL, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
+            env=served_profile_child_env(inherit_credentials=True),
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(
@@ -100,12 +117,19 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 class CommandTokenSource:
     """Callable returning a bearer token, cached until shortly before expiry."""
 
+    hermes_credential_source = KEY_CMD  # display label source; read without calling (agent.credential_source)
+
     def __init__(self, command: str, label: str = "custom") -> None:
         self._command = command
         self._label = label or "custom"
         self._lock = threading.Lock()
         self._token = ""
         self._expires_at: float = 0.0
+
+    @property
+    def cache_identity(self) -> str:
+        """Stable catalog identity; token rotation must not mint on cache reads."""
+        return f"cmd:{self._command}"
 
     def __call__(self) -> str:
         with self._lock:
@@ -123,7 +147,7 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[Callable[[], str]]:
+def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
     return CommandTokenSource(command, provider_label) if command else None

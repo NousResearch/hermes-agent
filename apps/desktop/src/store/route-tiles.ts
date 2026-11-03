@@ -10,7 +10,7 @@ import type { SplitDir } from './session-states'
  * the page analog of session tiles. Persisted by path so they re-open on boot.
  */
 export interface RouteTile {
-  /** The route path this tile renders, e.g. `/skills`. */
+  /** The route path this tile renders, e.g. `/capabilities`. */
   path: string
   /** Edge to dock against main on adoption (default right). */
   dir?: SplitDir

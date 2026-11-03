@@ -1,18 +1,18 @@
 name: enhance-prompt
 repo: https://github.com/tuancookiez-hub/hermes-enhance-prompt
-sha: cb8b1f422f0db9160d26722d207c17385379fda2
-version: "0.6.0"
+sha: 8417827ff80db2335e18742c1f5317aeb4b036cb
+version: "0.7.0"
 requires_hermes: ">=0.21.5"
 title: Enhance Prompt
-description: "A sparkle beside Send that rewrites the composer draft in place without sending it, deepening it into a clarifier, a task list, then a phased plan on further clicks, with a one-click discard back to the original. Also registers the `/enhance` slash command and the `enhance_prompt` tool for the same rewrite from the agent. Draft read and write go through `host.composer`, so `@file` and `/command` chips survive. Disclosure — every click opens a hidden session on your own gateway and runs one rewrite with your model, plus an optional second hidden session to score the result, so it spends your model credits; sessions are closed after each read. The model follows the active chat by default and can be pinned to another model id in Settings, which needs the `llm.model_override` consent. The plugin reads its own settings through `plugins.manage`. Nothing is sent to a third party by the plugin itself, it never sends the composer message, and there is no telemetry and no self-update."
+description: "A sparkle beside Send that rewrites the composer draft in place without sending it, deepening it into a clarifier, a task list, then a phased plan on further clicks, with a one-click discard back to the original. Also registers the `/enhance` slash command and the `enhance_prompt` tool for the same rewrite from the agent. Draft read and write go through `host.composer`, so `@file` and `/command` chips survive. Disclosure — every click runs one stateless `llm.oneshot` call on your own gateway with the current chat's model, plus an optional second short call to score the result, so it spends your model credits. It is not an agent turn: no tools run and nothing is written to a session you cannot see. It overrides no model, sends nothing to a third party, never sends the composer message, and carries no telemetry, no credentials and no self-update."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
-docs_url: https://github.com/tuancookiez-hub/hermes-enhance-prompt/blob/cb8b1f422f0db9160d26722d207c17385379fda2/README.md
+docs_url: https://github.com/tuancookiez-hub/hermes-enhance-prompt/blob/8417827ff80db2335e18742c1f5317aeb4b036cb/README.md
 readme: true
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/cb8b1f422f0db9160d26722d207c17385379fda2/assets/hero-banner.png
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/8417827ff80db2335e18742c1f5317aeb4b036cb/assets/hero-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/cb8b1f422f0db9160d26722d207c17385379fda2/assets/overview.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/8417827ff80db2335e18742c1f5317aeb4b036cb/assets/overview.png
 platforms:
   - linux
   - macos
@@ -25,6 +25,6 @@ capabilities:
   requires_env: []
 known_issues:
   - "The Desktop half needs a Hermes build with the composer draft API (`host.composer`); on an older Desktop the sparkle reports that an update is needed."
-  - "A pinned Enhance model needs the `llm.model_override` consent; `auto` needs nothing."
-  - "One model turn per click, and the score is an extra turn. Cancel stops the wait only — the hidden turn may still finish."
+  - "One model call per click, and the score is an extra call. Cancel stops the client-side wait only — the in-flight call may still finish."
+  - "Uses the chat's model; there is no separate model setting. Switch the chat model first to enhance with another one."
   - "Not a fork of `prompt-enhancer`: this one is a separate plugin with an agent tool, a slash command, three deepening stages and a scorer."

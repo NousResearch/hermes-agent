@@ -315,12 +315,15 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
     return members
 
 
-def build_member_dirs(extras: Iterable[str]) -> list[Path]:
+def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
     """``enabled_member_dirs`` for a build selecting core *extras*: a plugin extra they select
-    can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too."""
-    extras = list(extras)
-    return [path for path in enabled_member_dirs()
-            if not core_requirement_error(read_python_declaration(path), extras)]
+    can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too.
+    A build passes its interpreter *python*, whose markers the generation (and so the loader)
+    sees; PM itself may run under a bootstrap Python."""
+    extras, members = list(extras), enabled_member_dirs()
+    target = _target_environment(python) if members and python is not None else None
+    return [path for path in members
+            if not core_requirement_error(read_python_declaration(path), extras, target)]
 
 
 def _member_key(identity: Path) -> str:
@@ -539,16 +542,18 @@ def _recorded_extras() -> list[str]:
     return [extra for extra in extras if isinstance(extra, str)] if isinstance(extras, list) else []
 
 
-def core_requirement_error(declaration, extras: Iterable[str] | None = None) -> Optional[str]:
+def core_requirement_error(declaration, extras: Iterable[str] | None = None,
+                           target: Mapping[str, str] | None = None) -> Optional[str]:
     """Why the plugin's applicable requirement on ``hermes-agent`` rejects the running Hermes.
 
     PM satisfies ``hermes-agent`` from the checkout itself: a runtime requirement naming it is
     dropped, and a selected extra naming it binds to the workspace root, where uv ignores the
     specifier. So the specifier is judged here, PEP 440 like any requirement, under *extras*
-    (the core extras the build selects; ``None`` reads the recorded selection) and this host's
-    markers. The identity is the one ``requires_hermes`` reads (the committed pyproject
-    version is a placeholder); with none (``unknown``) nothing is judged. It is read only for
-    a plugin that names core: the read walks git, and every plugin passes here at startup.
+    (the core extras the build selects; ``None`` reads the recorded selection) and the markers
+    of *target* (the installing interpreter; ``None`` is this process, which the loader runs
+    in). The identity is the one ``requires_hermes`` reads (the committed pyproject version is
+    a placeholder); with none (``unknown``) nothing is judged. It is read only for a plugin
+    that names core: the read walks git, and every plugin passes here at startup.
     """
     import tomllib
 
@@ -560,15 +565,15 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None) -> 
 
     if declaration.external:
         return None
-    target = default_environment()
+    environment = default_environment() if target is None else target
     specs, installed = list(declaration.requirements), set()
     if declaration.pyproject is not None:
         document = tomllib.loads(declaration.pyproject.read_text(encoding="utf-8-sig"))
-        installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, target)[0]
+        installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, environment)[0]
         specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
                   if _extra_key(name) in installed for spec in values]
     pins = [requirement for requirement in _self_references(specs, "hermes-agent")
-            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), target)]
+            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), environment)]
     if not pins:
         return None
     current = running_hermes_version()

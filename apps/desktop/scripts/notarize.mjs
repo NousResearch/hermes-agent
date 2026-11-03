@@ -25,6 +25,20 @@ function inlineKeyLooksValid(value) {
   return value.includes('BEGIN PRIVATE KEY') && value.includes('END PRIVATE KEY')
 }
 
+// Apple's notary and ticket-delivery services sometimes drop connections for many minutes. These
+// NSURLError codes mean a request got no answer (timed out, connection lost, host unreachable), not a
+// verdict, so the same request is repeated while the notarization budget lasts.
+const LOST_CONTACT = /NSURLErrorDomain\s+Code=-(?:1001|1003|1004|1005|1006|1009)\b/
+const CONTACT_DELAYS = [15000, 30000, 60000, 120000]
+
+function contactDelay(attempt) {
+  return CONTACT_DELAYS[Math.min(attempt, CONTACT_DELAYS.length - 1)]
+}
+
+function commandOutput(error) {
+  return `${error.stdout ?? ''}\n${error.stderr ?? ''}\n${error.message}`
+}
+
 function resolveApiKeyPath(rawValue) {
   const value = String(rawValue || '').trim()
   if (!value) return { keyPath: '', cleanup: () => {} }
@@ -54,7 +68,6 @@ function resolveApiKeyPath(rawValue) {
 async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now }) {
   log(`[notarize] submitting ${zipPath}. Waiting for Apple's decision.`)
   const deadline = now() + 4 * 60 * 60 * 1000
-  const waitDelays = [15000, 30000, 60000]
   let resumeId
   let result
   let submitError
@@ -74,13 +87,13 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
       // A rejected submission can still return a JSON result and a log ID.
       result = error
       submitError = error
-      const output = `${error.stdout ?? ''}\n${error.stderr ?? ''}\n${error.message}`
-      if (!/NSURLErrorDomain\s+Code=-1001\b/.test(output)) break
+      const output = commandOutput(error)
+      if (!LOST_CONTACT.test(output)) break
       // The status-request URL identifies the uploaded app, unlike other UUIDs in the error.
       resumeId ??= output.match(/https:\/\/appstoreconnect\.apple\.com\/notary\/v2\/submissions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?=[?\s,}]|$)/i)?.[1]
-      const delay = waitDelays[attempt]
-      if (!resumeId || delay === undefined || now() + delay >= deadline) break
-      log(`[notarize] request timed out for ${resumeId}. Resuming wait in ${delay / 1000}s.`)
+      const delay = contactDelay(attempt)
+      if (!resumeId || now() + delay >= deadline) break
+      log(`[notarize] lost contact with Apple while waiting for ${resumeId}. Resuming wait in ${delay / 1000}s.`)
       await sleep(delay)
     }
   }
@@ -111,18 +124,27 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
 
   // Accepted tickets can take time to reach Apple's CloudKit lookup service.
   const delays = [15000, 30000, 60000, 120000, 120000]
-  for (let attempt = 0; ; attempt++) {
+  let ticketRetries = 0
+  let contactRetries = 0
+  for (let attempt = 1; ; attempt++) {
     try {
-      log(`[notarize] stapling attempt ${attempt + 1}/${delays.length + 1}`)
+      log(`[notarize] stapling attempt ${attempt}`)
       await run('xcrun', ['stapler', 'staple', '-v', appPath], { timeout: 120000 })
       log(`[notarize] ticket stapled for submission ${id}`)
       return
     } catch (error) {
-      const output = `${error.stdout ?? ''}\n${error.stderr ?? ''}\n${error.message}`
+      const output = commandOutput(error)
       const missingTicket = error.code === 65 && /CloudKit query[^\n]*Record not found/i.test(output)
-      if (!missingTicket || attempt === delays.length) throw error
-      log(`[notarize] accepted ticket not available. Retrying in ${delays[attempt] / 1000}s.`)
-      await sleep(delays[attempt])
+      if (missingTicket && ticketRetries < delays.length) {
+        const delay = delays[ticketRetries++]
+        log(`[notarize] accepted ticket not available. Retrying in ${delay / 1000}s.`)
+        await sleep(delay)
+        continue
+      }
+      const delay = contactDelay(contactRetries++)
+      if (!LOST_CONTACT.test(output) || now() + delay >= deadline) throw error
+      log(`[notarize] lost contact with Apple while stapling ${id}. Retrying in ${delay / 1000}s.`)
+      await sleep(delay)
     }
   }
 }

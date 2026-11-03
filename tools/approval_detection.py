@@ -1596,6 +1596,9 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
             elif pattern_re.search(command_lower):
                 yield description
     if only is not None:
+        # The variation-selector check is a content rule too, so the content-only scan keeps it.
+        if _INVISIBLE_UNICODE_DESCRIPTION in only and _HIDDEN_VARIATION_SELECTOR_RE.search(command):
+            yield _INVISIBLE_UNICODE_DESCRIPTION
         return
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

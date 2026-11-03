@@ -44,3 +44,11 @@ def test_selector_after_ordinary_character_is_flagged(command):
 ])
 def test_emoji_presentation_and_plain_text_pass(command):
     assert detect_dangerous_command(command)[0] is False
+
+
+def test_hidden_selector_is_its_own_content_key_after_another_rule():
+    from tools.approval_detection import detect_content_rule_keys
+
+    command = "rm -rf /tmp/x; printf 'a\ufe0f'"
+    assert detect_dangerous_command(command)[1] != INVISIBLE  # another rule matches first
+    assert INVISIBLE in detect_content_rule_keys(command)

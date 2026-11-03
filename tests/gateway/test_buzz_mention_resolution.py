@@ -460,6 +460,27 @@ class TestLongerMemberNameMention:
         await adapter._handle_events(CHANNEL, adapter._channel_state[CHANNEL], [event])
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
 
+    @pytest.mark.asyncio
+    async def test_lookup_exception_keeps_mention(self, adapter):
+        inner = adapter._run_cli
+
+        async def raising(args, *, input_text=None):
+            if args[:2] == ["users", "get"] and CHIP_SALES_PUBKEY in args:
+                raise OSError("cannot spawn cli")
+            return await inner(args, input_text=input_text)
+
+        adapter._run_cli = raising
+        await self._poll(adapter, "@Chip hola")
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_sender_triggers_no_name_lookups(self, adapter):
+        adapter._allowed_pubkeys = {FIZZ_PUBKEY}
+        adapter._reaction_only_pubkeys = set()
+        await self._poll(adapter, "@Chip Sales hola", p_tags=[CHIP_SALES_PUBKEY])
+        assert adapter._dispatched == []
+        assert not [c for c in adapter._cli.calls if c[0][:2] in (["channels", "members"], ["users", "get"])]
+
     def _two_longer_members(self, adapter):
         cli = adapter._cli
         cli.responses[("channels", "members")] = [(0, json.dumps(_members(SELF_PUBKEY, CHIP_SALES_PUBKEY, CHIP_ING_PUBKEY)), "")]

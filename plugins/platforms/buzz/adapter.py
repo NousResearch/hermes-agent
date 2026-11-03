@@ -1465,7 +1465,9 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return
         # Reclassify a leaked DM before gating so its first un-mentioned message both latches and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
-        longer_names = await self._longer_member_names(channel_id, event)
+        # Senders that can never dispatch or earn a reaction don't get to spend CLI lookups.
+        can_act = not self._allowed_pubkeys or pubkey in self._allowed_pubkeys or pubkey in self._reaction_only_pubkeys
+        longer_names = await self._longer_member_names(channel_id, event) if can_act else []
         is_dm = state["chat_type"] == "dm"
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
@@ -1566,8 +1568,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 budget -= 1
             lookups.append(pk)
         # One CLI subprocess per uncached name: run them concurrently so a cold roster doesn't stall intake serially.
-        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups))
-        return list({n.lower() for n in resolved if n.lower().startswith(own) and re.search(r"\w", n[len(own):])})
+        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups), return_exceptions=True)  # enrichment must not drop the event
+        return list({n.lower() for n in resolved if isinstance(n, str) and n.lower().startswith(own) and re.search(r"\w", n[len(own):])})
 
     def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""

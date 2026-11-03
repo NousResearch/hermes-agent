@@ -683,6 +683,24 @@ export const sv = defineLocale({
     currentProfile: 'nuvarande ({name})',
     managingProfile: 'Hanterar profilen ”{name}” — växlingar gäller den profilen, inte denna instrumentpanel.'
   },
+  skillsUi: {
+    browseHub: 'Bläddra bland färdigheter',
+    learnSkill: 'Lär agenten en färdighet',
+    newSkill: 'Ny färdighet',
+    configure: 'Konfigurera',
+    editNamed: 'Redigera {name}',
+    learnDescription:
+      'Låt Hermes utgå från valfritt underlag och skapa en återanvändbar färdighet enligt projektets skrivregler. Du kan fylla i ett eller flera fält; agenten hämtar underlaget och skriver färdigheten i chatten.',
+    localSource: 'Lokal fil eller katalog',
+    localSourcePlaceholder: '~/projekt/något-sdk (läs med read_file eller search_files)',
+    url: 'URL',
+    urlPlaceholder: 'https://docs.example.com/api (hämtas med web_extract)',
+    additionalSource: 'Annat underlag: beskriv arbetsflödet, klistra in anteckningar eller skriv ”det vi nyss gjorde”',
+    additionalSourcePlaceholder: 'Till exempel: så här lämnar jag in en utläggsrapport – öppna portalen …',
+    cancel: 'Avbryt',
+    learnIt: 'Lär in färdigheten',
+    saved: '{name} sparades ✓'
+  },
   config: {
     configPath: '~/.hermes/config.yaml',
     filters: 'Filter',

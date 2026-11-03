@@ -35,10 +35,8 @@ import {
   setCurrentBranch,
   setCurrentCwdTransient,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentModelTransient,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
@@ -2177,14 +2175,27 @@ interface ApplyRuntimeInfoOptions {
 }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
- *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */
+ *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions.
+ *
+ *  Model and provider go through the TRANSIENT setters on purpose: `info` is the
+ *  runtime's resolved identity, not the user's pick. A named `providers:` entry
+ *  reports its billing class — the generic `custom` — which is not a provider id
+ *  any `session.create` can resolve. Persisting it wrote that class into
+ *  localStorage, so the composer (whose source flips to 'manual' the moment the
+ *  user touches the picker) shipped it as the next chat's `provider`, and the
+ *  backend refused the turn with "provider 'custom' resolved without credentials"
+ *  — surfaced to the user as "<provider> rejected your sign-in", which points at
+ *  the API key instead of at the route. Same trap `syncRuntimeMetadataToView`
+ *  documents for the session.info heartbeat (#102793); the persistence here
+ *  clobbered a real selection just the same, and did it on every runtime metadata
+ *  update rather than only on a heartbeat. */
 function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
   if (state.model !== undefined) {
-    setCurrentModel(state.model)
+    setCurrentModelTransient(state.model)
   }
 
   if (state.provider !== undefined) {
-    setCurrentProvider(state.provider)
+    setCurrentProviderTransient(state.provider)
   }
 
   if (state.cwd !== undefined) {

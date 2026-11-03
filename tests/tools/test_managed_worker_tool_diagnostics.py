@@ -1,11 +1,11 @@
 """A tool this session cannot reach must never be answered with "call it directly".
 
-``_HERMES_CORE_TOOLS`` is static, so ``tool_call`` matched any core tool by name, including
+``_HERMES_CORE_TOOLS`` is static, so ``invoke_tool`` matched any core tool by name, including
 ``clarify`` inside a subagent, where no direct call can ever succeed and the model retries. Absence
 is reported as unavailability. In a managed worker (every Kanban card) ``delegate_task`` works
 through owner-reserved children (#141793), so a turn whose toolsets leave delegation off gets the
 same ordinary answer, never a claim that the worker boundary itself forbids delegation. The tests
-drive the real ``tool_call`` bridge in ``model_tools``.
+drive the real ``invoke_tool`` bridge in ``model_tools``.
 """
 import json
 
@@ -21,7 +21,7 @@ from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
 def _bridge(name: str, toolsets: list[str]) -> str:
     result = model_tools.handle_function_call(
-        "tool_call", {"calls": [{"name": name, "arguments": {}}]}, enabled_toolsets=toolsets)
+        "invoke_tool", {"calls": [{"name": name, "arguments": {}}]}, enabled_toolsets=toolsets)
     return json.loads(result).get("error", "")
 
 

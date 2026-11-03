@@ -44279,7 +44279,7 @@
         "type": "object"
       },
       "ToolLabelKind": {
-        "description": "Which surface one inner call of a bridged ``tool_call`` runs on.",
+        "description": "Which surface one inner call of a bridged ``invoke_tool`` runs on.",
         "enum": [
           "connector",
           "mcp",

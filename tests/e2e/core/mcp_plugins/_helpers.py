@@ -248,11 +248,11 @@ def script(*calls: tuple[str, dict[str, Any] | str]) -> Callable[[dict[str, Any]
 
 
 def call_tool(body: dict[str, Any], name: str, args: dict[str, Any] | str) -> ToolCall:
-    """Call ``name`` directly when offered, else through the Tool Search ``tool_call`` bridge."""
+    """Call ``name`` directly when offered, else through the Tool Search ``invoke_tool`` bridge."""
     offered = tool_names(body)
-    if name in offered or "tool_call" not in offered:
+    if name in offered or "invoke_tool" not in offered:
         return ToolCall(name, args)
-    return ToolCall("tool_call", {"calls": [{"name": name, "arguments": args}]})
+    return ToolCall("invoke_tool", {"calls": [{"name": name, "arguments": args}]})
 
 
 def run_chat_q(eh: E2EHome, prompt: str, *, timeout: float = TURN_TIMEOUT,

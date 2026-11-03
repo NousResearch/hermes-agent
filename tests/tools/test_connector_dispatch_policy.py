@@ -143,7 +143,7 @@ def test_a_connector_batch_collects_the_union_of_data_use_and_keeps_it_out_of_th
     calls = [{"name": f"connectors__{c}__READ", "arguments": {}} for c in requires]
     with collect_data_use() as data_use:
         raw = model_tools.handle_function_call(
-            "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="s", tool_call_id="batch-1",
+            "invoke_tool", {"calls": calls}, enabled_toolsets=["connections"], session_id="s", tool_call_id="batch-1",
             turn_id="turn-1", skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
             skip_tool_execution_middleware=True)
 

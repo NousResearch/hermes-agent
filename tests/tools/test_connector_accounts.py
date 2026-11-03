@@ -67,7 +67,7 @@ def test_the_account_a_call_ran_under_reaches_the_model_on_both_dispatch_paths(m
         "connectors__gmail__FETCH_EMAILS", {"connector_alias": "work"}, **kwargs))
     assert single["account"] == "work"
 
-    batch = json.loads(model_tools.handle_function_call("tool_call", {"calls": [
+    batch = json.loads(model_tools.handle_function_call("invoke_tool", {"calls": [
         {"name": "connectors__gmail__FETCH_EMAILS", "arguments": {"connector_alias": "home"}},
         {"name": "connectors__gmail__FETCH_EMAILS", "arguments": {}},
     ]}, **kwargs))

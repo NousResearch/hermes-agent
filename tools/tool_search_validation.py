@@ -157,7 +157,7 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         try:
             raw_calls = json.loads(raw_calls)
         except json.JSONDecodeError as e:
-            return [], f"tool_call 'calls' is not valid JSON: {e}"
+            return [], f"{TOOL_CALL_NAME} 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -202,10 +202,10 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     if len(args) > _ECHO_ARGS_MAX_CHARS:
         args = "{...}"  # keep the correction readable; the model still has its own arguments
     retry = '{{"calls":[{{"name":{},"arguments":{}}}]}}'.format(json.dumps(first["name"], ensure_ascii=False), args)
-    remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
+    remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate {TOOL_CALL_NAME} invocations"
                  if len(entries) > 1 else "")
     return (
-        f"tool_call takes exactly one entry for local tools; you sent {len(entries)}. "
+        f"{TOOL_CALL_NAME} takes exactly one entry for local tools; you sent {len(entries)}. "
         f"Retry with only: {retry}{remaining}. Only connectors__ names may be batched together."
     )
 

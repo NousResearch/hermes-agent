@@ -1,6 +1,6 @@
 {
   "description": "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per invocation (batch independent calls; results come back in order). Arguments match the schema from `tool_describe`; approvals and hooks apply as usual.",
-  "name": "tool_call",
+  "name": "invoke_tool",
   "parameters": {
     "properties": {
       "calls": {

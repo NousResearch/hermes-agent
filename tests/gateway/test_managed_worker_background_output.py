@@ -70,7 +70,7 @@ class Model(BaseHTTPRequestHandler):
             name, args = 'terminal', {'command': COMMAND, 'background': True}
         elif last['role'] == 'user' and last.get('content') == 'WAIT':
             proc = re.findall(r'proc_[0-9a-f]{12}', json.dumps(messages))[0]
-            name, args = 'tool_call', {'calls': [{'name': 'process_manage',
+            name, args = 'invoke_tool', {'calls': [{'name': 'process_manage',
                                                   'arguments': {'action': 'wait', 'session_id': proc, 'timeout': 30}}]}
         else:
             name, args = None, {}

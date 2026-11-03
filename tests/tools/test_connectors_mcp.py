@@ -202,7 +202,7 @@ def test_install_waits_for_the_credentials_it_declares_and_installs_with_them():
     assert settled["state"] == TargetState.connected.value
     assert settled["tools"] == ["mcp__figma__get_file", "mcp__figma__list_files"]
     assert all(name in settled["tools_listing"] for name in settled["tools"])
-    assert "tool_describe" in settled["tools_listing"] and "tool_call" in settled["tools_listing"]
+    assert "tool_describe" in settled["tools_listing"] and "invoke_tool" in settled["tools_listing"]
 
 
 def test_a_card_claim_other_than_approved_or_skipped_moves_nothing(backend):

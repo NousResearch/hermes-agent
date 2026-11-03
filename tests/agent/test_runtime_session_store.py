@@ -132,7 +132,7 @@ def test_worker_store_persists_and_restores_the_tools_prefix_pin(tmp_path):
         store = RuntimeSessionStore(lambda method, **p: mutate_worker_execution(db, **p), scope, tmp_path / 'outbox')
         try:
             tools = [{'type': 'function', 'function': {'name': n, 'parameters': {}}}
-                     for n in ('terminal', 'tool_search', 'tool_describe', 'tool_call')]
+                     for n in ('terminal', 'tool_search', 'tool_describe', 'invoke_tool')]
             persist_agent_tool_names(SimpleNamespace(_session_db=store, session_id='owned', tools=tools))
             db.create_session('direct', 'cli', system_prompt='prefix')
             persist_agent_tool_names(SimpleNamespace(_session_db=db, session_id='direct', tools=tools))

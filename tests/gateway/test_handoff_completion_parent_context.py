@@ -60,10 +60,10 @@ class ScriptedModel(BaseHTTPRequestHandler):
                 # Held open until the handoff has landed: a process that exits first cannot be handed off.
                 return _call('terminal', command=f'while [ ! -e {shlex.quote(str(state.release))} ]; do sleep 0.2; done; echo FIRST_DONE',
                              background=True, notify_on_complete=True)
-            if 'tool_call' not in called:  # process_manage is a deferred tool for the child
+            if 'invoke_tool' not in called:  # process_manage is a deferred tool for the child
                 started = next(str(m['content']) for m in messages if m['role'] == 'tool')
                 state.first_proc = re.search(r'proc_[0-9a-f]+', started).group(0)
-                return _call('tool_call', calls=[{'name': 'process_manage', 'arguments': {
+                return _call('invoke_tool', calls=[{'name': 'process_manage', 'arguments': {
                     'action': 'handoff', 'session_id': state.first_proc,
                     'data': 'watcher for the parent; report its result'}}])
             if last['role'] == 'tool' and not state.release.exists():

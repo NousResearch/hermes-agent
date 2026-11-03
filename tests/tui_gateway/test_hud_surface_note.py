@@ -60,7 +60,7 @@ class TestNoteContents:
 
     def test_deferred_tools_count_and_are_routed_through_the_bridge(self):
         """Tool search defers the desktop tools by default; the note must still fire and name the bridge."""
-        note = hud_surface_note({"tool_call"}, {"read_window_below", "computer_use"})
+        note = hud_surface_note({"invoke_tool"}, {"read_window_below", "computer_use"})
         bridge_clause = note[note.index("Call "):]
 
         assert "read_window_below identifies that app" in note
@@ -80,7 +80,7 @@ class TestTurnRouting:
         discover_builtin_tools()
         enabled = server._load_enabled_toolsets("desktop")
         agent = types.SimpleNamespace(enabled_toolsets=enabled, disabled_toolsets=None,
-                                      valid_tool_names={"tool_search", "tool_describe", "tool_call"})
+                                      valid_tool_names={"tool_search", "tool_describe", "invoke_tool"})
 
         note = server._hud_surface_note(_session(client_surface="hud") | {"agent": agent})
 

@@ -46,7 +46,7 @@ class Model(BaseHTTPRequestHandler):
         elif last['role'] == 'user':
             call = {'name': 'cronjob_manage', 'arguments': {'action': 'run', 'job_id': self.server.job_id}}
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'run-1', 'index': 0, 'type': 'function',
-                       'function': {'name': 'tool_call', 'arguments': json.dumps({'calls': [call]})}}]}
+                       'function': {'name': 'invoke_tool', 'arguments': json.dumps({'calls': [call]})}}]}
         else:
             message = {'role': 'assistant', 'content': 'PARENT_DONE'}
         choice = {'index': 0, 'delta': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}

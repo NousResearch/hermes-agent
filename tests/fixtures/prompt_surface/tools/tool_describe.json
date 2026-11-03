@@ -1,5 +1,5 @@
 {
-  "description": "Load the full JSON schemas for tools returned by `tool_search`. Required before `tool_call` if a tool's parameters are unknown. Batch every schema you need into one call.",
+  "description": "Load the full JSON schemas for tools returned by `tool_search`. Required before `invoke_tool` if a tool's parameters are unknown. Batch every schema you need into one call.",
   "name": "tool_describe",
   "parameters": {
     "properties": {

@@ -95,7 +95,7 @@ describe('ThemeTool', () => {
 
     renderRow({
       args: { calls: [{ arguments: { picker: 'layout' }, name: 'set_theme' }] },
-      toolName: 'tool_call'
+      toolName: 'invoke_tool'
     })
     fireEvent.click(screen.getByRole('button', { name: /Elite/ }))
 

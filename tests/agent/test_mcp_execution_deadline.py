@@ -38,7 +38,7 @@ def test_registered_deadline_survives_sequential_execution_and_bridge(tmp_path):
                     save_trajectories=False)
     try:
         cases = [(names[0], {}, True),
-                 ("tool_call", {"calls": [{"name": names[0], "arguments": {}}]}, True),
+                 ("invoke_tool", {"calls": [{"name": names[0], "arguments": {}}]}, True),
                  (names[1], {}, False)]
         for index, (name, args, succeeds) in enumerate(cases):
             release.clear()
@@ -77,7 +77,7 @@ def test_extended_deadline_is_a_barrier_for_direct_and_bridged_batches():
     try:
         from agent.tool_dispatch_helpers import _batch_admission
 
-        for exposed, args in [(name, {}), ("tool_call", {"calls": [{"name": name, "arguments": {}}]})]:
+        for exposed, args in [(name, {}), ("invoke_tool", {"calls": [{"name": name, "arguments": {}}]})]:
             call = SimpleNamespace(function=SimpleNamespace(name=exposed, arguments=json.dumps(args)))
             assert _batch_admission(call, None) is None
     finally:

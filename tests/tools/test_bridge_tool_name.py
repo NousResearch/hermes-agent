@@ -84,7 +84,7 @@ def test_every_locale_labels_the_bridge_under_its_current_name():
         if not match:
             continue
         seen += 1
-        keys = re.findall(r"^    (\w+):", match.group(1), re.M)
+        keys = re.findall(r"^    (\w+):", match.group(1), re.MULTILINE)
         assert TOOL_CALL_NAME in keys, path.name
         assert "tool_call" not in keys, path.name
     assert seen

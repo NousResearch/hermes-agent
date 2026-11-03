@@ -31,7 +31,9 @@ DECLARED = {
     "ace-step": {"tags", "lyrics", "duration", "seed", "guidance_scale", "minimum_guidance_scale", "scheduler",
                  "number_of_steps", "guidance_type", "lyric_guidance_scale", "guidance_interval", "tag_guidance_scale",
                  "guidance_interval_decay", "granularity_scale"},
+    # SFX v3 captured 2026-11-02 (same keys as v2, max 30 s).
     "elevenlabs-sfx": {"text", "duration_seconds", "loop", "prompt_influence", "output_format"},
+    "elevenlabs-sfx-v2": {"text", "duration_seconds", "loop", "prompt_influence", "output_format"},
 }
 
 

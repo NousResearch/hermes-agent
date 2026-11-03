@@ -61,7 +61,8 @@ generation (use `heartmula`).
 | `mureka-9-instrumental` | `mureka/v9/generate/instrumental` | model-decided | no | $0.045 instrumental tracks, prompt ≤ 1,024 chars |
 | `stable-audio-3` | `fal-ai/stable-audio-3/medium/text-to-audio` | 1–380 s | no | long instrumentals, licensed training data, `--negative-prompt`, `--seed` |
 | `ace-step` | `fal-ai/ace-step` | 5–240 s | yes | cheapest ($0.0002 / s ≈ 83 min per $1); prompt is a comma-separated tag list |
-| `elevenlabs-sfx` | `fal-ai/elevenlabs/sound-effects/v2` | 0.5–22 s | n/a | sound effects, `--loop` for seamless loops |
+| `elevenlabs-sfx` | `elevenlabs/sound-effects/v3` | 0.5–30 s | n/a | sound effects (SFX v3, Nov 2026), `--loop` for seamless loops |
+| `elevenlabs-sfx-v2` | `fal-ai/elevenlabs/sound-effects/v2` | 0.5–22 s | n/a | previous SFX generation, same knobs |
 
 Prices come from fal's model pages at authoring time and change; `--dry-run` never
 bills. Only elevenlabs-music, ace-step and the Mureka entries publish a per-unit price in

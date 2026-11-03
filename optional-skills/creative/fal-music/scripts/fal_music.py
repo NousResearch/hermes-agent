@@ -163,9 +163,14 @@ MODELS: dict[str, dict[str, Any]] = {
         "notes": "Open-source ACE-Step; $0.0002 per second (~83 min per $1). Prompt is a comma-separated tag list.",
     },
     "elevenlabs-sfx": {
-        "endpoint": "fal-ai/elevenlabs/sound-effects/v2", "build": _elevenlabs_sfx, "duration": (0.5, 22), "ext": "mp3",
+        "endpoint": "elevenlabs/sound-effects/v3", "build": _elevenlabs_sfx, "duration": (0.5, 30), "ext": "mp3",
         "kind": "sound effects", "lyrics": False,
-        "notes": "0.5-22 s effects; --loop for seamless loops. Duration inferred from the prompt when omitted.",
+        "notes": "ElevenLabs SFX v3 (fal, Nov 2026). 0.5-30 s effects; --loop for seamless loops. Duration inferred from the prompt when omitted.",
+    },
+    "elevenlabs-sfx-v2": {
+        "endpoint": "fal-ai/elevenlabs/sound-effects/v2", "build": _elevenlabs_sfx, "duration": (0.5, 22), "ext": "mp3",
+        "kind": "sound effects, previous generation", "lyrics": False,
+        "notes": "ElevenLabs SFX v2. Same knobs as elevenlabs-sfx, 0.5-22 s.",
     },
 }
 

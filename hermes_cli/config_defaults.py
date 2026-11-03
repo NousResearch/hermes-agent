@@ -1880,6 +1880,11 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Opt-in board gates (five-field cards + debrief-before-done). The enabled flag is read
+        # from the SHARED install config (get_default_hermes_root()/config.yaml), never the calling
+        # profile's config, so every profile writing to a shared board sees the same gate
+        # (see kanban_db._board_gates_enabled). Default off keeps stock installs permissive.
+        "board_gates": {"enabled": False},
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

@@ -125,23 +125,22 @@ async def test_the_users_own_references_still_expand(expansion):
     # Control: the same harness does expand a reference the user typed, and only that one.
     runner, calls = expansion
 
-    seen = await _first_turn(runner, "read @url:https://mine.example/x")
+    seen = await _first_turn(runner, "read @url:https://mine.example/x and @file:secret.txt")
 
     assert calls.urls == ["https://mine.example/x"] and calls.git == []
-    assert "--- Attached Context ---" in seen and "LOCAL-SECRET-TEXT" not in seen
+    assert "--- Attached Context ---" in seen and "LOCAL-SECRET-TEXT" in seen
 
 
 @pytest.mark.asyncio
-async def test_the_triggering_note_stays_outermost(expansion):
+async def test_the_triggering_note_stays_outermost(expansion, monkeypatch):
     # The persisted row is stripped of exactly the leading triggering note, so the post sits inside it.
-    from gateway.run_inbound import strip_discord_triggering_note
+    from gateway.run_inbound import discord_triggering_note
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
     runner, _ = expansion
 
     seen = await _first_turn(runner, "why?", message_id="m1")
-    event, _ = _thread_event("u1", "why?")
-    event.message_id = "m1"
 
-    assert strip_discord_triggering_note(event, seen).startswith(PLANTED)
+    assert seen.startswith(discord_triggering_note("m1") + "\n\n" + PLANTED + "\n\n")
 
 
 @pytest.mark.asyncio

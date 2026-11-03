@@ -9,12 +9,14 @@
  * when Bot Mode's last chat closed; bot chats are ordinary tabs in the main
  * strip, beside session tabs.
  *
- * No persistence here by design: the remembered active-pane map is window-local
- * memory so a switch away and back can restore where the user was, without any
- * of it surviving the window.
+ * The remembered active-pane map is window-local by design, so a switch away and
+ * back can restore where the user was without any of it surviving the window.
+ * Only the owner labels persist (see `$workspaceOwnerLabels`).
  */
 
 import { atom, batch } from 'nanostores'
+
+import { readJson, writeJson } from '@/lib/storage'
 
 import type { WorkspaceMode } from '../../contrib/types'
 
@@ -46,15 +48,36 @@ export type WorkspaceNewSessionTarget =
 /** Sessions uses its established ambient behavior (`null`). */
 export const $workspaceNewSessionTarget = atom<WorkspaceNewSessionTarget | null>(null)
 
+const OWNER_LABELS_KEY = 'hermes.desktop.workspaceOwnerLabels.v1'
+
+function storedOwnerLabels(): Record<string, string> {
+  const raw = readJson<unknown>(OWNER_LABELS_KEY)
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+  )
+}
+
 /** Display name per exact owner key, published by the workspace that owns the
  *  key (Bot Mode: the roster's display name). Presentation only — never a
  *  session title, which for a canonical Bot Chat is an identity the backend
- *  resolves by name and must stay exactly as stored. */
-export const $workspaceOwnerLabels = atom<Readonly<Record<string, string>>>({})
+ *  resolves by name and must stay exactly as stored.
+ *
+ *  The last-known names persist (unlike the active-pane memory below): only the
+ *  Bots pane publishes them, so a window-local map left every restored bot tab
+ *  reading the stored "Bot Chat" after a relaunch until that pane was opened. */
+export const $workspaceOwnerLabels = atom<Readonly<Record<string, string>>>(storedOwnerLabels())
 
 export function setWorkspaceOwnerLabel(ownerKey: string, label: string): void {
   if ($workspaceOwnerLabels.get()[ownerKey] !== label) {
-    $workspaceOwnerLabels.set({ ...$workspaceOwnerLabels.get(), [ownerKey]: label })
+    const next = { ...$workspaceOwnerLabels.get(), [ownerKey]: label }
+
+    $workspaceOwnerLabels.set(next)
+    writeJson(OWNER_LABELS_KEY, next)
   }
 }
 

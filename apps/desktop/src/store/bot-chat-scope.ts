@@ -11,6 +11,11 @@ import { readJson, writeJson } from '@/lib/storage'
 import type { SessionTileWorkspaceScope } from './session-states'
 
 const BOT_CHAT_SCOPE_KEY = 'hermes.desktop.botChatSessions.v1'
+const BOT_CHAT_SCOPES_KEY = 'hermes.desktop.botChatScopes.v1'
+
+/** Every rotation adds the tip and keeps the previous id (see
+ *  `carryBotChatScope`), so the persisted map is capped: oldest entries go. */
+const MAX_PERSISTED_SCOPES = 200
 
 /** Stored ids last opened as a bot's chat. A tile carries `workspaceMode`, but
  *  a bot chat normally lands in MAIN — `in-place` mints no tile when there is
@@ -21,10 +26,46 @@ export const $botChatSessionIds = atom<ReadonlySet<string>>(
   new Set((readJson<unknown>(BOT_CHAT_SCOPE_KEY) as unknown[] | null)?.filter(id => typeof id === 'string') ?? [])
 )
 
+const optionalString = (value: unknown) => value === undefined || typeof value === 'string'
+
+function isStoredBotScope(value: unknown): value is SessionTileWorkspaceScope {
+  const scope = value as null | Partial<SessionTileWorkspaceScope>
+
+  return Boolean(
+    scope &&
+      typeof scope === 'object' &&
+      scope.workspaceMode === 'bots' &&
+      optionalString(scope.workspaceOwnerKey) &&
+      optionalString(scope.workspaceTabTitle) &&
+      optionalString(scope.ownerProfile)
+  )
+}
+
+function storedBotChatScopes(): Record<string, SessionTileWorkspaceScope> {
+  const raw = readJson<unknown>(BOT_CHAT_SCOPES_KEY)
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw).filter((entry): entry is [string, SessionTileWorkspaceScope] => isStoredBotScope(entry[1]))
+  )
+}
+
 /** The bot-mode scope each stored id was last opened under, for the main tab
- *  (which has no tile to carry one). Window-local: the caption falls back to
- *  the stored title until the chat is opened again. */
-export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>({})
+ *  (which has no tile to carry one). Persisted like tile scope: a window-local
+ *  map left a Bot Chat restored into main captioned by its stored "Bot Chat"
+ *  after every relaunch, until the chat was opened from its bot again. */
+export const $botChatScopes = atom<Readonly<Record<string, SessionTileWorkspaceScope>>>(storedBotChatScopes())
+
+function setBotChatScopes(next: Readonly<Record<string, SessionTileWorkspaceScope>>): void {
+  const entries = Object.entries(next)
+  const kept = entries.length > MAX_PERSISTED_SCOPES ? Object.fromEntries(entries.slice(-MAX_PERSISTED_SCOPES)) : next
+
+  $botChatScopes.set(kept)
+  writeJson(BOT_CHAT_SCOPES_KEY, Object.keys(kept).length ? kept : null)
+}
 
 export function rememberBotChatScope(storedSessionId: string, scope: SessionTileWorkspaceScope): void {
   const isBotChat = scope.workspaceMode === 'bots'
@@ -36,7 +77,7 @@ export function rememberBotChatScope(storedSessionId: string, scope: SessionTile
     : Boolean(previous)
 
   if (changed) {
-    $botChatScopes.set(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
+    setBotChatScopes(isBotChat ? { ...rest, [storedSessionId]: scope } : rest)
   }
 
   if (current.has(storedSessionId) === isBotChat) {
@@ -66,11 +107,11 @@ export function carryBotChatScope(previousStoredSessionId: string, nextStoredSes
   const scope = scopes[previousStoredSessionId]
 
   if (scope && !scopes[nextStoredSessionId]) {
-    $botChatScopes.set({ ...scopes, [nextStoredSessionId]: scope })
+    setBotChatScopes({ ...scopes, [nextStoredSessionId]: scope })
   }
 
-  // The mark is persisted while the scopes are window-local: after a relaunch
-  // only the mark is left to carry.
+  // A mark persisted before the scopes were has no scope to carry: the mark
+  // still follows on its own.
   const ids = $botChatSessionIds.get()
 
   if (ids.has(previousStoredSessionId) && !ids.has(nextStoredSessionId)) {

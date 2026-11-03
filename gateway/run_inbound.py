@@ -74,6 +74,11 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
+def _thread_starter(event: Any, history: Any) -> Optional[str]:
+    """The post a thread was opened on, for a session's first turn only (empty history)."""
+    return None if history else getattr(event, "thread_starter_context", None)
+
+
 class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionMixin, GatewayPluginInjectionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
@@ -1409,8 +1414,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _prefix_inbound_sender_context(
         self, event: MessageEvent, source: SessionSource, message_text: str, history: Any = (),
     ) -> str:
-        """Attribute the sender in shared multi-user sessions and prepend the context blocks: the
-        post a thread was opened on (a session's first turn only), then history-backfill context."""
+        """Attribute the sender in shared multi-user sessions and prepend history-backfill context.
+        A post a thread was opened on is folded in after ``@`` expansion (``_fold_thread_starter``),
+        but its ``[New message]`` marker is placed here so the trigger is marked either way."""
         _is_shared_multi_user = is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
@@ -1426,10 +1432,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
-        starter = None if history else getattr(event, "thread_starter_context", None)
-        context = "\n\n".join(c for c in (starter, getattr(event, "channel_context", None)) if c)
+        context = getattr(event, "channel_context", None)
         if context:
             message_text = f"{context}\n\n[New message]\n{message_text}"
+        elif _thread_starter(event, history):
+            message_text = f"[New message]\n{message_text}"
         return message_text
 
     @staticmethod
@@ -1726,8 +1733,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         message_text = await turn_references(self, event, source, session_key, message_text)
         if message_text is None:
             return None
-        # After expansion: the quoted reply is someone else's text and stays literal — an
-        # ``@file:`` inside it must never read a local file on the replier's behalf.
+        # After expansion: the thread's starter post and the quoted reply are someone else's text
+        # and stay literal — an ``@url:`` or ``@file:`` inside them must never fetch a page or
+        # read a local file on the user's behalf.
+        if starter := _thread_starter(event, history):
+            message_text = f"{starter}\n\n{message_text}"
         return self._prepend_inbound_reply_context(event, source, message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(

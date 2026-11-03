@@ -579,9 +579,12 @@ dependencies) install on first use into PM dependency generations under
 `/opt/data/installs`, so they survive container recreation and image updates.
 The image's own `/opt/hermes/.venv` is never modified. On each boot the
 container re-resolves the recorded selection against the new image's lock
-before services start; if that fails (for example offline), it boots the
-image's own environment and keeps the recorded extras for the next boot or
-install. Set `security.allow_lazy_installs: false` to refuse on-demand
+before services start. A selection the image already ships boots the image's
+own environment, and its copy on the volume is collected. Otherwise it
+rebuilds, but only when the data volume has room for the rebuild (the image's
+uv cache it merges plus 256 MB); if the rebuild fails (for example offline) or
+there is no room, it boots the image's own environment and keeps the recorded
+extras for the next boot or install. Set `security.allow_lazy_installs: false` to refuse on-demand
 installs. The old `lazy-packages` overlay is not used.
 
 Image provenance lives at `/etc/hermes/image-provenance.json`, outside both the

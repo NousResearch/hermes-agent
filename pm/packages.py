@@ -398,20 +398,11 @@ def uv_cache_path() -> Path:
     return get_default_hermes_root() / "cache" / "uv"
 
 
-def uv_cache_dir() -> Path:
-    """The hermes-owned uv cache: machine-scoped and shared (keyed by
-    content — two profiles reuse one cache), anchored to the DEFAULT
-    hermes root like partials_root(). A bundle ships a seeded copy at
-    the payload root (uv-cache/); the first call under each uv.lock
-    merges it into the writable machine cache (the read-only payload
-    can't serve uv's working cache), and a warm `uv sync --offline`
-    from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
-    on-update contract depends on it. uv's default cache location is
-    per-user/platform-opinionated and never used by pm."""
+def _uv_cache_seed() -> tuple[Path, str, Path]:
+    """The ``.seeded`` marker, the seed still to merge ("" once merged), and the payload cache."""
     from pm.paths import repo_root, store_root
 
-    machine_cache = uv_cache_path()
-    marker = machine_cache / ".seeded"
+    marker = uv_cache_path() / ".seeded"
     # The marker names the lock whose payload was merged. An update ships a new payload cache for
     # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
     # from the network (and built sdists where the index has no wheel for the target).
@@ -430,7 +421,51 @@ def uv_cache_dir() -> Path:
         current = marker.read_text(encoding="utf-8-sig").strip() == seed
     except OSError:
         current = False
-    if not current:
+    return marker, ("" if current else seed), payload_cache
+
+
+def uv_cache_seed_bytes() -> int:
+    """Disk the next ``uv_cache_dir()`` merge would take, read without writing; 0 once merged.
+
+    Counts what ``_copy_seed_file`` would copy (a destination of the same size is done), each
+    file rounded up to a 4 KiB block: uv's unpacked archives are mostly small files.
+    """
+    import stat
+
+    _, pending, payload_cache = _uv_cache_seed()
+    if not pending or not payload_cache.is_dir():
+        return 0
+    seeded = long_root(uv_cache_path())
+    total = 0
+    # Links are recreated, not copied, and a linked directory is never followed (as in _seed_tree).
+    for dirpath, _, filenames in os.walk(payload_cache):
+        relative = os.path.relpath(dirpath, payload_cache)
+        for name in filenames:
+            source = os.lstat(os.path.join(dirpath, name))
+            if stat.S_ISLNK(source.st_mode) or (relative == "." and name == ".seeded"):
+                continue
+            try:
+                if os.stat(os.path.join(seeded, relative, name)).st_size == source.st_size:
+                    continue
+            except OSError:
+                pass
+            total += -(-source.st_size // 4096) * 4096
+    return total
+
+
+def uv_cache_dir() -> Path:
+    """The hermes-owned uv cache: machine-scoped and shared (keyed by
+    content — two profiles reuse one cache), anchored to the DEFAULT
+    hermes root like partials_root(). A bundle ships a seeded copy at
+    the payload root (uv-cache/); the first call under each uv.lock
+    merges it into the writable machine cache (the read-only payload
+    can't serve uv's working cache), and a warm `uv sync --offline`
+    from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
+    on-update contract depends on it. uv's default cache location is
+    per-user/platform-opinionated and never used by pm."""
+    machine_cache = uv_cache_path()
+    marker, seed, payload_cache = _uv_cache_seed()
+    if seed:
         # Seed from a shipped bundle cache when present (payload root =
         # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
         # partial seed that marked itself done would never be retried, and every later offline

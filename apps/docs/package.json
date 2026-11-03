@@ -25,6 +25,7 @@
     "fumadocs-ui": "16.17.2",
     "mermaid": "11.17.2",
     "next": "16.4.3",
+    "parse5": "7.3.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "rehype-raw": "7.0.0",

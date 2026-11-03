@@ -71,29 +71,36 @@ export function redirectEntries(routes) {
   }));
 }
 
-function writeRedirects(outputDir, entries) {
+export function redirectScriptAsset() {
   const digest = createHash('sha256').update(redirectScript).digest('hex').slice(0, 16);
-  const asset = `/_next/static/docs-redirect-${digest}.js`;
-  const assetFile = path.join(outputDir, asset);
-  mkdirSync(path.dirname(assetFile), { recursive: true });
-  writeFileSync(assetFile, redirectScript);
-  for (const { from, to, locale } of entries) {
-    const file = htmlPath(outputDir, from);
-    if (existsSync(file) && !readFileSync(file, 'utf8').startsWith(redirectMarker)) {
-      throw new Error(`Refusing to replace existing export: ${from}`);
-    }
-    const target = escapeMarkup(publicHref(to));
-    const html = `${redirectMarker}
+  return { url: `/_next/static/docs-redirect-${digest}.js`, content: redirectScript };
+}
+
+export function redirectHtml({ to, locale }, scriptUrl) {
+  const target = escapeMarkup(publicHref(to));
+  return `${redirectMarker}
 <!doctype html>
 <html lang="${locale}"><head><meta charset="utf-8">
 <title>Redirecting</title>
 <link rel="canonical" href="${escapeMarkup(canonicalUrl(to))}">
-<script src="${publicHref(asset)}" data-redirect="${target}"></script>
+<script src="${publicHref(scriptUrl)}" data-redirect="${target}"></script>
 <meta http-equiv="refresh" content="0;url=${target}">
 </head><body><p>Continue to <a href="${target}">${target}</a>.</p></body></html>
 `;
+}
+
+function writeRedirects(outputDir, entries) {
+  const asset = redirectScriptAsset();
+  const assetFile = path.join(outputDir, asset.url);
+  mkdirSync(path.dirname(assetFile), { recursive: true });
+  writeFileSync(assetFile, asset.content);
+  for (const entry of entries) {
+    const file = htmlPath(outputDir, entry.from);
+    if (existsSync(file) && !readFileSync(file, 'utf8').startsWith(redirectMarker)) {
+      throw new Error(`Refusing to replace existing export: ${entry.from}`);
+    }
     mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, html);
+    writeFileSync(file, redirectHtml(entry, asset.url));
   }
 }
 

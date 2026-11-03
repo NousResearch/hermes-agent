@@ -8,9 +8,9 @@ translations live in `content/zh-Hans`. Public URLs remain under `/docs/` and
 This app has its own npm lockfile and is deliberately excluded from the root
 product workspaces. Installing Hermes does not install the docs toolchain.
 
-> **Migration status:** the development preview is available for review. The
-> static-export postbuild and output validator are still being completed;
-> production publishing is not ready.
+> **Migration status:** the reviewed UI and static-export pipeline are implemented.
+> Production cutover still needs legacy URL/anchor, metadata, catalog-consumer
+> and publishing verification.
 
 ## Local development
 
@@ -80,11 +80,28 @@ tables instead of ASCII box diagrams.
 workflows own publication to GitHub Pages and retained assets from earlier
 deployments; there is no separate `yarn deploy` step.
 
-The `build` command and CI currently reference `scripts/postbuild.mjs` and
-`scripts/validate-output.mjs`. Those migration gates must be completed before
-this branch is ready to publish. Validation must cover both locales, route and
-anchor parity, catalogs, OAuth metadata, LLM documents and generated-file
-freshness.
+Build and check the publishable artifact from `apps/docs`:
+
+```sh
+npm ci
+npm run build
+node scripts/validate-output.mjs
+```
+
+Postbuild emits the bilingual sitemap and legacy redirect pages. Redirects keep
+query strings, fragments and the current origin, so they also work in a local
+static preview. Their hashed script is covered by the existing `_next/static`
+asset-retention policy.
+
+The read-only validator checks source-derived routes and locale fallbacks, catalog
+pages, HTML/RSC files, redirect/sitemap recipes, published JSON and copied public
+and Next assets. Missing or malformed artifacts fail CI rather than passing as
+empty development fallbacks. The production skills-index health check remains
+owned by the deployment workflow; the output validator does not crawl registries.
+
+Passing these checks is not a production-cutover approval. Legacy URL/anchor and
+metadata parity, catalog-consumer compatibility, and the root staging/CDN
+contracts still need their release verification.
 
 `public/api` also contains machine-consumed catalogs. The repository retains
 `website/static/api/model-catalog.json` for released clients whose fallback URL

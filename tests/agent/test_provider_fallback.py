@@ -132,6 +132,10 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_index == 2
             assert agent._rate_limit_backoff_count == 1
+            assert (
+                "⚠️ Fallback candidate nope via broken could not be resolved; "
+                "trying next provider..."
+            ) in [message for _kind, message in agent._retry_status_buffer]
 
     def test_activation_counts_once_with_classifier_reason(self, monkeypatch):
         """A skipped candidate is not an activation; the one that binds records its FailoverReason."""

@@ -3361,6 +3361,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "Provider returned an empty stream with no stop_reason "
                     "(possible upstream error or malformed event stream)."
                 )
+            # Capture 7d_oi rate-limit headers from the completed stream.
+            # Anthropic returns these on every successful response, not only
+            # on 429s.  Must be best-effort — a header extraction failure
+            # must never break inference.
+            try:
+                _h = getattr(getattr(stream, "response", None), "headers", None)
+                if _h is not None:
+                    from agent.account_usage import record_unified_7d_oi_headers
+                    record_unified_7d_oi_headers(_h)
+            except Exception:
+                pass
             return _final_message
 
     def _call():

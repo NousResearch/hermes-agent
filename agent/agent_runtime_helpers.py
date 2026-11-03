@@ -3407,6 +3407,22 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)
     if headers:
+        # Anthropic's unified rate-limit reset header is an epoch-second Unix timestamp
+        # for the actual quota window reset — prefer it over the relative retry-after.
+        # Guard against NaN/Inf and out-of-range epoch values (negative, far-future) that
+        # would silently poison the retry-after fallback path.
+        unified_reset = headers.get("anthropic-ratelimit-unified-reset")
+        if unified_reset and "reset_at" not in context:
+            try:
+                import math as _math
+                _val = float(unified_reset)
+                _EPOCH_MIN = 1_600_000_000.0  # 2020-09-13 — anything older is a bad value
+                _EPOCH_MAX = 4_000_000_000.0  # 2096-10-02 — sanity upper bound
+                if _math.isfinite(_val) and _EPOCH_MIN <= _val <= _EPOCH_MAX:
+                    context["reset_at"] = _val
+                # else: bad value — fall through to retry-after / x-ratelimit-reset
+            except (TypeError, ValueError):
+                pass
         retry_after = headers.get("retry-after") or headers.get("Retry-After")
         if retry_after and "reset_at" not in context:
             try:
@@ -3416,6 +3432,16 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
+        # Cache Anthropic 7d_oi unified rate-limit utilization for the usage meter.
+        # The anthropic-ratelimit-unified-7d_oi-utilization header (value 0–1) is
+        # present on 429 responses from high-tier models and lets the usage meter
+        # surface the 7d_oi bucket that the /api/oauth/usage endpoint may omit.
+        if headers.get("anthropic-ratelimit-unified-7d_oi-utilization"):
+            try:
+                from agent.account_usage import record_unified_7d_oi_headers
+                record_unified_7d_oi_headers(headers)
+            except Exception:
+                pass
 
     if "message" not in context:
         raw_message = str(error).strip()

@@ -87,6 +87,222 @@ _RATE_LIMIT_UNTIL: dict[tuple[str, str], float] = {}
 _FILE_CACHE_TTL_DEFAULT = 120.0
 _file_cache_ttl_resolved: Optional[float] = None
 
+# ---------------------------------------------------------------------------
+# 7d_oi unified rate-limit header cache
+#
+# Anthropic returns anthropic-ratelimit-unified-7d_oi-* headers on inference
+# API responses (including 429s and successful responses). These carry the
+# weekly output-input bucket utilization for high-tier models (e.g.
+# claude-fable-5-1). We cache the most-recent value here so the usage meter
+# can display it even though the /api/oauth/usage endpoint may not expose
+# this bucket yet.
+#
+# The in-memory dict is backed by a JSON file under ~/.hermes/cache/ so the
+# value survives process restarts.  File I/O is best-effort: any failure is
+# swallowed silently — a missed cache write is the worst outcome, not a
+# broken inference call.
+# ---------------------------------------------------------------------------
+
+_UNIFIED_7D_OI_CACHE: dict[str, dict] = {}  # key: credential fingerprint or "_global"
+_UNIFIED_7D_OI_CACHE_TTL = 3600.0  # 1 hour
+_UNIFIED_7D_OI_LOCK = threading.Lock()
+# True once the backing file has been loaded into _UNIFIED_7D_OI_CACHE (lazy).
+_UNIFIED_7D_OI_CACHE_LOADED: bool = False
+# Override-able in tests (monkeypatch to a tmp_path).  None → resolved lazily.
+_UNIFIED_7D_OI_CACHE_FILE: Optional[Path] = None
+
+
+def _get_7d_oi_cache_path() -> Path:
+    """Return the filesystem path for the persistent 7d_oi cache file.
+
+    Respects the active HERMES_HOME (``get_hermes_home()``) so multi-profile
+    installs keep their caches separate.  Falls back to ``~/.hermes/cache/``
+    if *hermes_constants* is unavailable (e.g. standalone test environments).
+    """
+    if _UNIFIED_7D_OI_CACHE_FILE is not None:
+        return _UNIFIED_7D_OI_CACHE_FILE
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "cache" / "7d_oi_rl_cache.json"
+    except Exception:
+        return Path.home() / ".hermes" / "cache" / "7d_oi_rl_cache.json"
+
+
+def _load_7d_oi_cache_from_file() -> None:
+    """Populate *_UNIFIED_7D_OI_CACHE* from the backing JSON file (best-effort).
+
+    Must be called while holding *_UNIFIED_7D_OI_LOCK*.  Sets
+    ``_UNIFIED_7D_OI_CACHE_LOADED = True`` unconditionally so we only attempt
+    the read once even when the file does not exist yet.
+
+    Handles both the old flat format (``{"utilization": ..., "captured_at": ...}``)
+    and the current fingerprint-keyed format
+    (``{"_global": {"utilization": ..., ...}, "sha256:...": {...}}``).
+    Old-format files are silently migrated to the ``"_global"`` bucket.
+    """
+    global _UNIFIED_7D_OI_CACHE_LOADED
+    _UNIFIED_7D_OI_CACHE_LOADED = True
+    try:
+        cache_path = _get_7d_oi_cache_path()
+        if cache_path.exists():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                # Detect old flat format: top-level keys are data fields, not
+                # fingerprints.  Migrate to the "_global" bucket.
+                if "utilization" in data:
+                    _UNIFIED_7D_OI_CACHE["_global"] = data
+                else:
+                    for fp, entry in data.items():
+                        if isinstance(entry, dict):
+                            _UNIFIED_7D_OI_CACHE[fp] = entry
+    except Exception:
+        pass
+
+
+def _save_7d_oi_cache_to_file(snapshot: dict) -> None:
+    """Persist *snapshot* to the backing JSON file (best-effort, outside lock).
+
+    Takes a pre-captured snapshot dict so the caller can release
+    *_UNIFIED_7D_OI_LOCK* before the file write without risking a race on the
+    shared dict.
+
+    Uses an atomic tempfile → os.replace() pattern so concurrent writes from
+    multiple Hermes processes (e.g. 6 bot profiles sharing the same HERMES_HOME)
+    never produce a partially-written / truncated JSON file.  Last-write-wins
+    is intentional: all processes write the same account's headers, so the
+    most recent capture is always the most accurate.
+    """
+    import tempfile
+    tmp_path: Optional[str] = None
+    try:
+        cache_path = _get_7d_oi_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(snapshot, indent=2)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=cache_path.parent,
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
+        ) as fh:
+            tmp_path = fh.name
+            fh.write(payload)
+        os.replace(tmp_path, cache_path)
+        tmp_path = None  # os.replace succeeded; nothing to clean up
+    except Exception:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+def record_unified_7d_oi_headers(
+    headers: Any,
+    credential_fingerprint: Optional[str] = None,
+) -> None:
+    """Parse and cache anthropic-ratelimit-unified-7d_oi-* headers.
+
+    Called from:
+    - :func:`~agent.agent_runtime_helpers.extract_api_error_context` on 429
+      responses.
+    - The successful Anthropic streaming response path in
+      ``chat_completion_helpers._call_anthropic`` after the stream completes.
+
+    The cached values supplement the OAuth usage endpoint when it does not yet
+    expose the 7d_oi bucket.  Values are persisted to
+    ``~/.hermes/cache/7d_oi_rl_cache.json`` so they survive process restarts.
+
+    Header name verified against a live Anthropic response captured on
+    2026-11-03 (hermes-안정화 probe): the bucket identifier uses an underscore,
+    not a hyphen: ``anthropic-ratelimit-unified-7d_oi-utilization``.
+
+    *credential_fingerprint* keys the cache bucket so that multiple Anthropic
+    accounts in the same pool cannot cross-contaminate each other's meter
+    readings.  ``None`` falls back to ``"_global"`` for backward compatibility.
+    """
+    fp = credential_fingerprint if credential_fingerprint is not None else "_global"
+    try:
+        lowered: dict = {k.lower(): v for k, v in headers.items()}
+    except Exception:
+        return
+    util_raw = lowered.get("anthropic-ratelimit-unified-7d_oi-utilization")
+    if util_raw is None:
+        return
+    try:
+        utilization = float(util_raw)
+    except (TypeError, ValueError):
+        return
+    # Bug 3: reject non-finite or out-of-range utilization values.
+    if not math.isfinite(utilization) or not (0.0 <= utilization <= 1.0):
+        return
+    reset_raw = lowered.get("anthropic-ratelimit-unified-7d_oi-reset")
+    reset_at: Optional[float] = None
+    if reset_raw:
+        try:
+            reset_at = float(reset_raw)
+        except (TypeError, ValueError):
+            pass
+    # Bug 3: reject non-finite or negative reset timestamps.
+    if reset_at is not None:
+        if not math.isfinite(reset_at) or reset_at < 0:
+            reset_at = None
+    status = lowered.get("anthropic-ratelimit-unified-7d_oi-status") or None
+    with _UNIFIED_7D_OI_LOCK:
+        # Bug 1: set CACHE_LOADED=True inside the lock so concurrent readers
+        # cannot observe LOADED=False and trigger a stale file-reload that
+        # overwrites the values we are about to write.
+        global _UNIFIED_7D_OI_CACHE_LOADED
+        _UNIFIED_7D_OI_CACHE_LOADED = True
+        # Bug 2: store under the credential fingerprint, not a flat global dict.
+        _UNIFIED_7D_OI_CACHE[fp] = {
+            "utilization": utilization,  # 0.0–1.0 fraction from the header
+            "reset_at": reset_at,        # Unix epoch seconds, or None
+            "status": status,            # "allowed" / "rejected" / None
+            "captured_at": time.time(),
+        }
+        _snapshot = dict(_UNIFIED_7D_OI_CACHE)
+    # Persist outside the lock: best-effort, failures are silently swallowed.
+    _save_7d_oi_cache_to_file(_snapshot)
+    logger.debug(
+        "record_unified_7d_oi_headers: fp=%s utilization=%.3f status=%s reset_at=%s",
+        fp,
+        utilization,
+        status,
+        reset_at,
+    )
+
+
+def get_unified_7d_oi_cache(
+    credential_fingerprint: Optional[str] = None,
+) -> Optional[dict]:
+    """Return cached 7d_oi rate-limit data, or None if not yet seen or expired.
+
+    On the very first call, attempts to load the backing JSON file into memory
+    so values from previous process runs are available immediately.
+
+    *credential_fingerprint* selects the per-account bucket written by
+    :func:`record_unified_7d_oi_headers`.  ``None`` falls back to ``"_global"``
+    for backward compatibility with callers that don't pass a fingerprint.
+    """
+    fp = credential_fingerprint if credential_fingerprint is not None else "_global"
+    with _UNIFIED_7D_OI_LOCK:
+        if not _UNIFIED_7D_OI_CACHE_LOADED:
+            # Lazy load from file (sets _UNIFIED_7D_OI_CACHE_LOADED = True).
+            _load_7d_oi_cache_from_file()
+        entry = _UNIFIED_7D_OI_CACHE.get(fp)
+        if not entry:
+            return None
+        # Bug 4: guard against malformed/non-numeric captured_at values that
+        # would otherwise propagate an unhandled TypeError/ValueError.
+        try:
+            captured_at = float(entry.get("captured_at") or 0.0)
+        except (TypeError, ValueError):
+            captured_at = 0.0
+        if time.time() - captured_at > _UNIFIED_7D_OI_CACHE_TTL:
+            return None
+        return dict(entry)
+
 
 class UsageRateLimitedError(Exception):
     """Raised when the usage endpoint returns HTTP 429.
@@ -1322,6 +1538,7 @@ def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[Ac
     mapping = (
         ("five_hour", "Current session"),
         ("seven_day", "Current week"),
+        ("seven_day_oi", "Output-input week"),  # top-tier model weekly bucket (7d_oi)
         ("seven_day_opus", "Opus week"),
         ("seven_day_sonnet", "Sonnet week"),
     )
@@ -1341,6 +1558,26 @@ def _fetch_anthropic_account_usage(api_key: Optional[str] = None) -> Optional[Ac
                 reset_at=_parse_dt(window.get("resets_at")),
             )
         )
+    # Supplement from inference-API response header cache if the OAuth usage
+    # endpoint did not return a seven_day_oi bucket.  Header values are 0–1
+    # fractions; convert to 0–100 percent for AccountUsageWindow.
+    if not any(w.label == "Output-input week" for w in windows):
+        cached_oi = get_unified_7d_oi_cache()
+        if cached_oi and cached_oi.get("utilization") is not None:
+            oi_pct = float(cached_oi["utilization"]) * 100.0
+            oi_reset: Optional[datetime] = None
+            if cached_oi.get("reset_at"):
+                try:
+                    oi_reset = datetime.fromtimestamp(float(cached_oi["reset_at"]), tz=timezone.utc)
+                except Exception:
+                    pass
+            windows.append(
+                AccountUsageWindow(
+                    label="Output-input week",
+                    used_percent=oi_pct,
+                    reset_at=oi_reset,
+                )
+            )
     details: list[str] = []
     extra = payload.get("extra_usage") or {}
     if extra.get("is_enabled"):

@@ -45,4 +45,9 @@ describe('async report hydration', () => {
     ).toBeUndefined()
     expect(hydrate('').metadata.custom.asyncResult).toBeUndefined()
   })
+
+  it('separates batch result blocks whose headers carry capped task labels', () => {
+    const content = `[ASYNC DELEGATION BATCH COMPLETE — batch]\nPrivate instructions\nRole: leaf\nTask text in this message is cut to 200 chars; the full text is in your delegate_task call and in async_delegations.task_json (delegation_id batch) in ~/.hermes/state.db.\n\n--- ✓ TASK 1/2: ${'step '.repeat(40).trim()}...  (status=completed, api_calls=3, 12.5s) ---\n${report}\n\n--- ✗ TASK 2/2: Short goal  (status=failed) ---\nPlain result`
+    expect(hydrate(content).metadata.custom.asyncResult).toBe(`${report}\n\nPlain result`)
+  })
 })

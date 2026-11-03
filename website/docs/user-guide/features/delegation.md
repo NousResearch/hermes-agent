@@ -212,6 +212,7 @@ The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_ind
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
+- **Echoed task text:** the dispatch handle's `goals` and the completion message show each goal and context as one line of at most `delegation.max_task_echo_chars` characters (default 200; `0` = verbatim). The full text stays in the parent's own `delegate_task` call and in the `async_delegations` row of the session database; a completion that shortened anything says so in one line.
 - **Cancellation:** Follow-up messages and stopping the current turn (Ctrl+C, Esc, the Desktop/TUI Stop button, an ACP cancel) do not cancel a top-level background batch. The `/stop` command (gateway or CLI) or closing/resetting the owning session ends its background children and every synchronous descendant beneath them; each stopped child still returns as a completion with `status="interrupted"` and its partial output
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
@@ -765,6 +766,7 @@ delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+  # max_task_echo_chars: 200                # Goal/context chars echoed back in receipts and completions (0 = verbatim)
   # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.

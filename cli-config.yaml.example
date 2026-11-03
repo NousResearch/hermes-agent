@@ -1544,19 +1544,6 @@ platform_toolsets:
 #       # Public HTTPS origin in front of this listener; MCP servers with
 #       # `events: true` POST event deliveries to <public_url>/webhooks/<route>.
 #       public_url: "https://hermes.example.com"
-#   mcp_http:
-#     # Let Claude Code (or any MCP client) chat with this Hermes over Streamable
-#     # HTTP MCP. Tokens are SECRETS and stay in .env (MCP_HTTP_PEER_TOKENS /
-#     # MCP_HTTP_BEARER_TOKEN); with no token the server binds 127.0.0.1 only.
-#     enabled: true
-#     extra:
-#       port: 8765
-#       host: 0.0.0.0                             # honoured only when a token is set
-#       public_url: https://hermes.example.net/mcp   # URL you hand to clients (tunnel/proxy)
-#       # allowed_hosts: [hermes.example.net]     # extra Host headers to accept
-#       # trusted_peers: [laptop-claude]           # allow-list of authenticated names
-#       # rate_limit: 30                           # chat() starts / minute / identity
-#       # reply_timeout: 300
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

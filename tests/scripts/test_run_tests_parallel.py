@@ -883,10 +883,14 @@ def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, mon
         out = tmp_path / f"facts{fork}.json"
         (probe_dir / "test_probe_fork.py").write_text(_FORK_PROBE.format(out=str(out), fail="no"), encoding="utf-8")
         # Runs first (-j 1, path order): the probe must not be the server's first child,
-        # which inherits less runner state than every later one.
-        (probe_dir / "test_a_first.py").write_text("def test_first():\n    pass\n", encoding="utf-8")
+        # which inherits less runner state than every later one. The first file copies
+        # the runner's environment before the knob is consumed, so it checks that.
+        (probe_dir / "test_a_first.py").write_text(
+            "import os\n\ndef test_first():\n    assert 'HERMES_TEST_FORKSERVER' not in os.environ\n",
+            encoding="utf-8")
         monkeypatch.setenv("HERMES_TEST_FORKSERVER", fork)
-        proc = _run_runner(probe_dir)
+        # No retries: a retried first file runs after the knob is consumed and passes anyway.
+        proc = _run_runner(probe_dir, "--file-retries", "0")
         assert proc.returncode == 0, proc.stdout
         assert ("fork server: on" in proc.stdout) == bool(fork), proc.stdout
         facts = json.loads(out.read_text())
@@ -904,6 +908,20 @@ def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, mon
     assert seen["1"]["nested_workers"] == {"spawn": worker, "default": worker}, seen["1"]
     assert seen["1"]["own_session"] and seen["1"]["product_preloaded"] == []
     assert seen["1"]["forkserver_env"] is None  # the runner consumes it; tests never see it
+
+
+@pytest.mark.platforms("linux")
+def test_no_file_in_the_opening_wave_sees_the_fork_server_knob(tmp_path: Path, monkeypatch) -> None:
+    """Files that copy the runner's env before the first one starts the server must not see the knob."""
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    check = "import os\n\ndef test_knob_absent():\n    assert 'HERMES_TEST_FORKSERVER' not in os.environ\n"
+    for i in range(24):
+        (probe_dir / f"test_wave_{i:02d}.py").write_text(check, encoding="utf-8")
+    monkeypatch.setenv("HERMES_TEST_FORKSERVER", "1")
+    proc = _run_runner(probe_dir, "-j", "12", "--file-retries", "0")
+    assert proc.returncode == 0, proc.stdout
+    assert "fork server: on" in proc.stdout and "24 tests passed" in proc.stdout, proc.stdout
 
 
 @pytest.mark.platforms("linux")

@@ -57,12 +57,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # The CI lane selector owns the platforms() spec resolver; share it so the
 # "skipped on this host" note and the lanes can never disagree.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.ci.list_os_marked_tests import gated_specs, spec_hosts
+from scripts.run_tests_launch import start_pytest
 
 
 def _sweep_killed_run_roots(root: str) -> None:
@@ -622,126 +623,6 @@ _FLAKY_RESULTS: list[tuple[Path, str]] = []
 _flaky_lock = threading.Lock()
 
 
-# Third-party modules nearly every test file imports. The fork server imports
-# them once; product code and tests/conftest.py stay out so each file imports
-# them fresh. pytest plugins (anyio, pytest_asyncio) stay out too: pytest must
-# import them itself to rewrite their asserts.
-_FORK_PRELOAD = (
-    "pytest", "_pytest.python", "_pytest.fixtures", "_pytest.assertion.rewrite",
-    "asyncio", "email.message", "importlib.metadata", "psutil", "pygments",
-    "pydantic", "httpx", "urllib3", "rich", "ruamel.yaml",
-)
-_fork_server: _ForkServer | None = None  # started by _fork_server_for_run() on first use
-_fork_server_checked = False
-# Process.start() is not thread-safe, and it also polls every live child
-# (multiprocessing.process._cleanup). A child's exit status is 8 bytes the fork
-# server writes once: if that poll and the owning thread's join() read it at the
-# same time, the loser reads EOF and multiprocessing reports exit status 255.
-# Starting children and reading their statuses both hold this lock.
-_fork_lock = threading.Lock()
-
-
-class _ForkServer(NamedTuple):
-    """The run's fork-server context plus what each child sets up (run_tests_fork_child)."""
-
-    ctx: Any
-    sys_path: list[str]
-    argv0: str
-
-
-def _start_fork_server(repo_root: Path) -> _ForkServer:
-    """Linux only: one fork server for the whole run."""
-    import multiprocessing
-
-    ctx = multiprocessing.get_context("forkserver")
-    # "__main__" (this script) too: otherwise every child re-runs it as __mp_main__.
-    ctx.set_forkserver_preload(["__main__", *_FORK_PRELOAD])
-    # What ``python -m pytest`` would put on sys.path: the cwd first, then the
-    # interpreter's own entries (never this script's directory).
-    base = json.loads(subprocess.run(
-        [sys.executable, "-c", "import json, sys; print(json.dumps(sys.path[1:]))"],
-        cwd=repo_root, capture_output=True, text=True, check=True, timeout=60,
-    ).stdout)
-    import pytest
-
-    return _ForkServer(ctx, [str(repo_root), *base], str(Path(pytest.__file__).with_name("__main__.py")))
-
-
-def _start_forked(proc) -> None:
-    with _fork_lock:
-        proc.start()
-
-
-def _forked_exit_status(proc, timeout: float | None) -> int | None:
-    """Wait for a fork-server child, then read its status under _fork_lock (None on timeout)."""
-    from multiprocessing.connection import wait
-
-    if not wait([proc.sentinel], timeout):
-        return None
-    with _fork_lock:
-        proc.join()
-        return proc.exitcode
-
-
-def _fork_server_for_run(repo_root: Path) -> _ForkServer | None:
-    """The run's fork server when HERMES_TEST_FORKSERVER=1 on Linux, started by the first file.
-
-    The first file calls this before it copies os.environ, so popping the knob
-    here still keeps it out of every test's environment.
-    """
-    global _fork_server, _fork_server_checked
-    with _fork_lock:
-        if not _fork_server_checked:
-            _fork_server_checked = True
-            if os.environ.pop("HERMES_TEST_FORKSERVER", "") == "1" and sys.platform == "linux":
-                _fork_server = _start_fork_server(repo_root)
-                print("  fork server: on (third-party imports shared; each file still a fresh process)", flush=True)
-        return _fork_server
-
-
-class _ForkedPytest:
-    """The subprocess.Popen surface _run_one_file_once uses, for a fork-server child."""
-
-    def __init__(self, server: _ForkServer, file: Path, pytest_args: list[str], repo_root: Path, env: dict[str, str]):
-        from scripts import run_tests_fork_child
-
-        fd, self._out = tempfile.mkstemp(prefix="o-", dir=_runner_scratch_root())
-        os.close(fd)
-        self._proc = server.ctx.Process(
-            target=run_tests_fork_child.run,
-            kwargs=dict(argv=[server.argv0, str(file), *pytest_args], cwd=str(repo_root), env=env,
-                        sys_path=server.sys_path, out_path=self._out),
-        )
-        try:
-            _start_forked(self._proc)
-        except BaseException:
-            os.unlink(self._out)
-            raise
-        self.pid = self._proc.pid
-        self.returncode: int | None = None
-
-    def communicate(self, timeout: float | None = None) -> tuple[str, None]:
-        rc = _forked_exit_status(self._proc, timeout)
-        if rc is None:
-            raise subprocess.TimeoutExpired(str(self._out), timeout or 0)
-        self.returncode = rc
-        try:
-            with open(self._out, encoding="utf-8-sig", errors="replace") as fh:
-                return fh.read(), None
-        finally:
-            os.unlink(self._out)
-
-    def kill(self) -> None:
-        import signal as _signal
-
-        if self.returncode is not None:
-            return  # reaped: the pid may already belong to another process
-        try:
-            os.kill(self.pid, _signal.SIGKILL)  # windows-footgun: ok (Linux only)
-        except (ProcessLookupError, OSError):
-            pass
-
-
 def _run_one_file_once(
     file: Path,
     pytest_args: list[str],
@@ -749,8 +630,6 @@ def _run_one_file_once(
     file_timeout: float,
 ) -> tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    fork_server = _fork_server_for_run(repo_root)
 
     # Give this subprocess its own pytest temp root.
     #
@@ -776,38 +655,7 @@ def _run_one_file_once(
     env["TMPDIR"] = temproot
 
     subproc_start = time.monotonic()
-    pgid: int | None = None
-    if fork_server is not None:
-        proc = _ForkedPytest(fork_server, file, pytest_args, repo_root, env)
-        # The child's first act is setsid(), so its pid is its group. Never ask
-        # getpgid here: until setsid runs it reports the fork server's group,
-        # which is the runner's own.
-        pgid = proc.pid
-    else:
-        # launch the pytest process
-        proc = subprocess.Popen(
-            cmd,
-            cwd=repo_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
-            env=env,
-            # POSIX: place the child at the head of its own process group so
-            # _kill_tree can SIGKILL the group atomically.
-            # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-            # _kill_tree handles the Windows path via taskkill /F /T.
-            start_new_session=True,
-        )
-
-    # Capture the pgid NOW, before the leader can exit and be reaped. Once
-    # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
-    # even though grandchildren in that group are still alive — defeating
-    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
-    if sys.platform != "win32" and pgid is None:
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError):
-            pgid = None
+    proc, pgid = start_pytest(file, pytest_args, repo_root, env, _runner_scratch_root())
 
     try:
         output, _ = proc.communicate(timeout=file_timeout)

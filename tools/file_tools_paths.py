@@ -35,6 +35,10 @@ def _expand_tilde(path: str) -> str:
 
     This mirrors ``hermes_constants.get_subprocess_home()`` so that ``~`` resolves consistently regardless
     of whether the tool runs interactively or inside a gateway-driven cron job (#48552).
+
+    Both separators count: ``~\\`` is the Windows spelling of ``~/`` and must reach the profile home
+    too — ``os.path.expanduser`` would name the process user's home instead (#148376). The same
+    two-spelling test is already used by ``hermes_constants`` and ``agent.skill_utils``.
     """
     if not path or "~" not in path:
         return path
@@ -44,7 +48,7 @@ def _expand_tilde(path: str) -> str:
         home = get_subprocess_home()
     except Exception:
         home = None
-    if home and (path == "~" or path.startswith("~/")):
+    if home and (path == "~" or path.startswith(("~/", "~\\"))):
         return home if path == "~" else os.path.join(home, path[2:])
     return os.path.expanduser(path)
 

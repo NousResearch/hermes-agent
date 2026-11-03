@@ -158,7 +158,9 @@ _BOT_COMMAND_DESCRIPTION_LIMIT = 256
 
 # PTB ships every reaction string outside ``telegram.constants.ReactionEmoji`` as a custom emoji id
 # (``ReactionTypeCustomEmoji``) instead of refusing it, so the allowlist check has to happen here.
-_STANDARD_REACTIONS = frozenset(ReactionEmoji) if ReactionEmoji is not None else frozenset()
+# Keyed by the VS16-free form: members are unique without U+FE0F, and the key maps back to the
+# allowlist's own spelling (which keeps the VS16 inside ``❤️‍🔥`` but has none on ``❤``).
+_STANDARD_REACTIONS = {str(m).replace("\ufe0f", ""): str(m) for m in (ReactionEmoji or ())}
 _UNSUPPORTED_REACTION_ERROR = (
     "telegram accepts only its supported standard emoji reactions "
     "(telegram.constants.ReactionEmoji); custom emoji IDs are not supported")
@@ -167,15 +169,12 @@ _UNSUPPORTED_REACTION_ERROR = (
 def _normalize_standard_reaction(emoji: Optional[str]) -> Optional[str]:
     """``emoji`` as Telegram accepts it, or ``None`` when it is not a standard reaction.
 
-    Exact members win (the composed ``❤️‍🔥`` keeps its own VS16); a stray U+FE0F is stripped only
-    when the result is itself a member (``❤️`` → ``❤``, the allowlist spelling clients send).
+    U+FE0F is presentation-only, so fully-, minimally- and over-qualified spellings of one emoji
+    (``❤️``/``❤``, ``❤️‍🔥``/``❤‍🔥``) all resolve to the allowlist member's exact string.
     """
     if not isinstance(emoji, str) or not emoji:
         return None
-    if emoji in _STANDARD_REACTIONS:
-        return emoji
-    stripped = emoji.replace("\ufe0f", "")
-    return stripped if stripped in _STANDARD_REACTIONS else None
+    return _STANDARD_REACTIONS.get(emoji.replace("\ufe0f", ""))
 
 
 def _unauthorized() -> str:

@@ -32,7 +32,7 @@ HEART_VS16 = "❤\ufe0f"  # what clients/emoji pickers send
 DOVE = "🕊"
 DOVE_VS16 = "🕊\ufe0f"
 HEART_ON_FIRE = "❤\ufe0f\u200d🔥"  # the composed allowlist member (VS16 inside)
-HEART_ON_FIRE_NO_VS16 = "❤\u200d🔥"  # not a member: composition with the VS16 removed
+HEART_ON_FIRE_NO_VS16 = "❤\u200d🔥"  # Unicode's minimally-qualified spelling of the same emoji
 UNICORN = "🦄"  # IS a ReactionEmoji member (must be accepted)
 HORSE = "🐴"  # is not
 
@@ -125,12 +125,21 @@ async def test_composed_heart_on_fire_keeps_its_exact_allowlist_payload(reaction
 
 
 @pytest.mark.asyncio
-async def test_composed_heart_on_fire_without_the_vs16_is_rejected(reactions):
-    """``❤‍🔥`` is nobody's allowlist member, so VS16 stripping must not "repair" it into one."""
-    assert await reactions.adapter._set_reaction("123", "456", HEART_ON_FIRE_NO_VS16) is False
-    result = await reactions.adapter.add_reaction("123", HEART_ON_FIRE_NO_VS16, message_id="456")
-    assert result["success"] is False
-    assert reactions.sent == []
+@pytest.mark.parametrize(
+    ("sent_emoji", "expected"),
+    [
+        pytest.param(HEART_ON_FIRE_NO_VS16, HEART_ON_FIRE, id="heart-on-fire"),
+        pytest.param("🤷\u200d♂", "🤷\u200d♂\ufe0f", id="man-shrugging"),
+        pytest.param("🤷\u200d♀", "🤷\u200d♀\ufe0f", id="woman-shrugging"),
+    ],
+)
+async def test_minimally_qualified_composed_members_resolve_to_the_allowlist_spelling(
+        reactions, sent_emoji, expected):
+    """Unicode's minimally-qualified ``❤‍🔥`` IS heart-on-fire (VS16 is presentation-only), so it
+    is sent as the member's exact string rather than refused or shipped as a custom emoji."""
+    assert await reactions.adapter._set_reaction("123", "456", sent_emoji) is True
+    assert (await reactions.adapter.add_reaction("123", sent_emoji, message_id="456"))["success"] is True
+    assert [_payload(record) for record in reactions.sent] == [[{"type": "emoji", "emoji": expected}]] * 2
 
 
 @pytest.mark.asyncio

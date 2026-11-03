@@ -651,7 +651,9 @@ missing adapter degrades to a structured error, never an exception.
 
 Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
 *sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
-than stacking). Every action — allowed or denied — is written to the log with
+than stacking) and accepts only Telegram's standard reaction emoji
+(`telegram.constants.ReactionEmoji`); anything else returns `action_failed`
+without an API call. Every action — allowed or denied — is written to the log with
 the plugin id, verb, platform, and outcome.
 
 :::warning Security note

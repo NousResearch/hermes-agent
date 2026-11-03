@@ -625,6 +625,31 @@ retry budget. This usually means
 the model wrote a plain-text answer and exited without using the Kanban tool
 surface.
 
+#### Opt-in protocol retry holds
+
+By default, exhausting this consecutive-violation
+budget still emits `gave_up` and leaves the task sticky-blocked. An operator may
+explicitly set `kanban.protocol_violation_actions` to
+`{board_slug: {assignee_profile: "block"|"defer"}}`; only the exact `defer`
+action creates a hold, and omitted or invalid policy fails closed to the existing
+block. At the same protocol limit, a configured task becomes `scheduled` with one
+`protocol_retry_held` event and a durable hold bound to the failed run, source
+event, current task/body/assignee and event snapshot. This state is **not** a
+normal timer schedule: dispatch, automatic ready recomputation, ordinary unblock,
+and direct claim cannot release it. The original failed runs, failure error and
+protocol events remain intact.
+
+Recovery is a fenced core API, not a model tool: `adopt_protocol_failure` can
+adopt only an unchanged legacy protocol `gave_up`; `get_retry_hold` returns the
+active hold and its current concurrency token; and `resolve_retry_hold` accepts only
+`resume` or `retire` with that token and an audited reason code. Resume records a
+release boundary (`retry_hold_resolved`) so only subsequent protocol runs count toward
+the next group; retire archives the task (`retry_retired`, non-grade) and refuses while
+live dependent work would be released. Neither wall-clock age, a successful run elsewhere,
+nor configuration changes reset these budgets. Hold and resolution metadata contain only
+bounded trusted identifiers and receipts—never prompts, outputs, tool arguments or provider
+credentials.
+
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
 **Worker session names.** A worker's session is titled after its card (`Fix the swap modal`, or `Kanban task <id>` when the board row can't be read) at spawn, so `hermes sessions` and session search show the card, not a model's guess. Workers never make the auxiliary `title_generation` model call that names interactive sessions; a manual `/title` in a worker session still wins.
@@ -1013,12 +1038,14 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
+| `kanban.protocol_violation_actions` | `{}` | Per-board/per-assignee protocol-violation action (`block` or `defer`). Only an exact `defer` opts that pair into durable retry holds; omitted, malformed or invalid policy keeps the existing sticky block. Holds are not released by age, ordinary unblock or automatic recomputation. See [Opt-in protocol retry holds](#opt-in-protocol-retry-holds). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
   max_in_progress: 2
+  protocol_violation_actions: {}
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```

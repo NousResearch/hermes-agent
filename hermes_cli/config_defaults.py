@@ -1920,7 +1920,7 @@ DEFAULT_CONFIG = {
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a
         # root profile named "default", so on a shared kanban.db every home can otherwise claim
         # default-assigned cards.
-        "dispatch_profiles": None,
+        "dispatch_profiles": None, "protocol_violation_actions": {},
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

@@ -7,6 +7,7 @@ import asyncio
 import atexit
 import contextlib
 import logging
+import re
 import threading
 import time
 import weakref
@@ -16,6 +17,10 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger("hermes_state")
 
 _TOKEN_COUNTERS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+# Retry-provenance route projection: identifiers only, never a URL, credential or "@" form.
+_ROUTE_PROVIDER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_ROUTE_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}\Z")
+_ROUTE_PAIR_LIMIT = 32
 
 
 def _token_update_sql(delta: bool) -> str:
@@ -452,6 +457,42 @@ class SessionUsageMixin:
             chain,
         )
         return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
+
+    def main_loop_route_pairs(self, session_id: str) -> list[dict[str, str]]:
+        """Actual main-loop ``(provider, model)`` pairs across a session's compression lineage.
+
+        Read-only and fail-closed for trusted retry provenance: auxiliary rows (``task != ''``),
+        base URLs and credentials are never selected, and any row outside the strict identifier
+        shape (or an over-long lineage/pair list) returns ``[]`` so the caller records the field
+        as unknown rather than guessing a route.
+        """
+        if not session_id:
+            return []
+        self.flush_token_counts()
+        chain = self._session_lineage_root_to_tip(session_id)
+        if not chain or len(chain) > 64:
+            return []
+        for i in range(len(chain) - 1, -1, -1):
+            if self._is_explicit_branch_session(chain[i]):
+                chain = chain[i:]
+                break
+        rows = self._read_all(
+            "SELECT DISTINCT model, billing_provider FROM session_model_usage "
+            f"WHERE session_id IN ({','.join('?' * len(chain))}) AND task = '' "
+            "AND COALESCE(model, '') != '' AND COALESCE(billing_provider, '') != '' "
+            "ORDER BY model, billing_provider",
+            chain,
+        )
+        if len(rows) > _ROUTE_PAIR_LIMIT:
+            return []
+        pairs = []
+        for row in rows:
+            provider, model = row["billing_provider"], row["model"]
+            if (not _ROUTE_PROVIDER_RE.fullmatch(provider) or "@" in provider
+                    or not _ROUTE_MODEL_RE.fullmatch(model) or "://" in model or "@" in model):
+                return []
+            pairs.append({"provider": provider, "model": model})
+        return pairs
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not

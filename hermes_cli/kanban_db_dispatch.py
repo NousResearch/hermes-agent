@@ -935,40 +935,6 @@ def _error_fingerprint(error_text: str) -> str:
 # nor extend it. Per-task ``max_retries`` overrides it.
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
 
-# Closed runs to walk when counting the streak; it trips at a handful anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
-
-
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
-
-    Walks closed runs newest-first (including the one ``detect_crashed_workers``
-    just closed). ``rate_limited`` runs are neutral and skipped (a quota wall
-    says nothing about the task); any other closed run breaks the streak, so
-    the budget counts ONLY protocol violations. Violations are recognized by the
-    ``protocol_violation`` run-metadata marker, with the error text as fallback
-    for runs recorded before the marker existed.
-    """
-    streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
-    for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
-            continue
-        head = (row["error"] or "").partition(WORKER_OUTPUT_SEP)[0]  # never the worker's own words
-        if outcome == "crashed" and (
-                _kb._json_dict(row["metadata"]).get("protocol_violation") or "protocol violation" in head):
-            streak += 1
-            continue
-        break
-    return streak
-
-
 WORKER_OUTPUT_SEP = " Worker's last output: "  # dead-worker error text: our words, then the worker's
 _PROTOCOL_VIOLATION_ERROR = (
     # Worker subprocess returned 0 but its task is still ``running`` in the DB — it exited without calling
@@ -1163,6 +1129,8 @@ class _CrashSweep:
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
+    from hermes_cli import kanban_retry_holds as retry_holds
+
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
@@ -1208,9 +1176,17 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 conn, row["id"],
                 outcome=dead.run_outcome, status=dead.run_outcome,
                 error=dead.error_text,
-                metadata=dict(dead.event_payload),
+                metadata=retry_holds.carry_run_provenance(conn, row["id"], dict(dead.event_payload)),
             )
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
+            event_id = None
+            if dead.protocol_violation:
+                source_event = conn.execute(
+                    "SELECT id FROM task_events WHERE task_id = ? AND run_id = ? "
+                    "AND kind = 'protocol_violation' ORDER BY id DESC LIMIT 1",
+                    (row["id"], run_id),
+                ).fetchone()
+                event_id = int(source_event["id"]) if source_event else None
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
                 "assignee": row["assignee"],
@@ -1231,6 +1207,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
+                if dead.protocol_violation and event_id is not None:
+                    retry_holds._maybe_hold_protocol_failure(
+                        conn, row["id"], run_id, event_id, board, _PROTOCOL_VIOLATION_FAILURE_LIMIT,
+                    )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
             else:
@@ -1248,6 +1228,8 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     terminal provider errors (credential revoked, model gone — a retry cannot
     heal them) trip immediately.
     """
+    from hermes_cli import kanban_retry_holds as retry_holds
+
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
     for _, _, _, dead in crash_details:
@@ -1256,7 +1238,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     for tid, pid, claimer, dead in crash_details:
         error_text = dead.error_text
         if dead.protocol_violation:
-            streak = _protocol_violation_streak(conn, tid)
+            if _kb._retry_hold_exists(conn, tid):
+                continue
+            streak = retry_holds._protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
             if trow is None:
                 continue  # task deleted mid-loop
@@ -1265,11 +1249,8 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 int(task_override) if task_override is not None else _PROTOCOL_VIOLATION_FAILURE_LIMIT
             )
             if streak < violation_limit:
-                # Below budget: already back at ``ready`` with the error stamped.
-                # No ``_record_task_failure`` — must not consume the unified budget.
+                # Below budget: no unified failure-budget charge.
                 continue
-            # ``force_trip``: the decision (incl. per-task ``max_retries``) was
-            # already made against the violation streak above.
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,

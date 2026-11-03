@@ -8,8 +8,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import hashlib
+import json
 import logging
 import os
+import re
 import sys
 import time
 from agent.i18n import t
@@ -127,6 +130,80 @@ def _sync_cli_session_id_from_agent(cli) -> None:
     """Keep ``cli.session_id`` in sync when mid-run compression rotated the agent's session."""
     if getattr(cli.agent, "session_id", None) and cli.agent.session_id != cli.session_id:
         cli.session_id = cli.agent.session_id
+
+
+_SOURCE_GENERATION_RE = re.compile(r"gen-[0-9a-f]{32}")
+def _build_kanban_retry_provenance(cli) -> dict:
+    """Project only trusted worker/session facts needed to bound a later retry."""
+    agent = getattr(cli, "agent", None)
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 128:
+        session_id = None
+    unknown = []
+
+    try:
+        source_generation = next(
+            (part for part in Path(__file__).resolve().parts if _SOURCE_GENERATION_RE.fullmatch(part)),
+            None,
+        )
+    except OSError:
+        source_generation = None
+    if source_generation is None:
+        unknown.append("source_generation_id")
+
+    schema_sha256 = None
+    tools = getattr(agent, "tools", None)
+    if isinstance(tools, list):
+        try:
+            schema_bytes = json.dumps(
+                tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode("utf-8")
+            schema_sha256 = hashlib.sha256(schema_bytes).hexdigest()
+        except (TypeError, ValueError):
+            pass
+    if schema_sha256 is None:
+        unknown.append("schema_sha256")
+
+    routes = []
+    session_db = getattr(agent, "_session_db", None) or getattr(cli, "_session_db", None)
+    if session_id is not None and session_db is not None:
+        try:
+            routes = session_db.main_loop_route_pairs(session_id)
+        except Exception:
+            logger.debug("could not read actual worker route projection; recording it as unknown", exc_info=True)
+    if not routes:
+        unknown.append("actual_routes")
+
+    return {
+        "version": 1,
+        "worker_session_id": session_id,
+        "source_generation_id": source_generation,
+        "schema_sha256": schema_sha256,
+        "actual_routes": routes,
+        "unknown_fields": unknown,
+    }
+
+
+def _record_kanban_retry_provenance(cli) -> None:
+    """Attach the core-built projection only while this process still owns that run."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    try:
+        run_id = int(os.environ.get("HERMES_KANBAN_RUN_ID", ""))
+    except (TypeError, ValueError):
+        return
+    if not task_id or run_id <= 0:
+        return
+    provenance = _build_kanban_retry_provenance(cli)
+    try:
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+
+        with kbc.connect_closing() as conn:
+            kb.record_retry_run_provenance(
+                conn, task_id, expected_run_id=run_id, provenance=provenance,
+            )
+    except Exception:
+        logger.debug("could not persist bounded worker retry provenance; task/run state is unchanged", exc_info=True)
 
 
 # ``failure_reason`` values that say nothing about the task itself: the provider is walled,
@@ -592,3 +669,4 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             credentials_terminal=getattr(cli, "_credentials_terminal", False)))
     finally:
         _finalize_single_query(cli)
+        _record_kanban_retry_provenance(cli)

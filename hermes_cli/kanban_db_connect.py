@@ -712,6 +712,32 @@ def _refuse_dead_board_resurrection(path: Path, board: Optional[str]) -> None:
         raise ValueError(f"kanban board {slug!r} does not exist; create it with `hermes kanban boards create {slug}`")
 
 
+_RETRY_HOLD_SCHEMA_SQL = """
+-- A scheduled protocol-retry hold is non-dispatchable but not a block. Its
+-- task/run/event binding survives ordinary board backups and task lifecycle.
+CREATE TABLE IF NOT EXISTS task_retry_holds (
+    task_id                TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    failed_run_id          INTEGER NOT NULL,
+    source_failure_event_id INTEGER NOT NULL,
+    created_at             INTEGER NOT NULL,
+    metadata_json          TEXT NOT NULL
+);
+
+-- Resolution receipts remain queryable and idempotent after the active hold is
+-- removed. The hold token is a snapshot witness, not a credential.
+CREATE TABLE IF NOT EXISTS task_retry_hold_resolutions (
+    hold_token         TEXT PRIMARY KEY,
+    task_id            TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    failed_run_id      INTEGER NOT NULL,
+    resolution_event_id INTEGER NOT NULL,
+    action             TEXT NOT NULL,
+    receipt_json       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retry_hold_resolutions_task
+    ON task_retry_hold_resolutions(task_id, resolution_event_id);
+"""
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -776,6 +802,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
                 conn.executescript(_kb.SCHEMA_SQL)
+                conn.executescript(_RETRY_HOLD_SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
 

@@ -419,6 +419,133 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# monitor_url: fetched through the shared tools.url_safety policy
+# ---------------------------------------------------------------------------
+
+_METADATA_HOST = "169.254.169.254"
+
+
+@pytest.fixture
+def monitor_server(hermes_env, monkeypatch):
+    """Loopback HTTP server recording request paths and User-Agents.
+
+    ``socket.create_connection`` is fenced so a fetch that tries to dial the
+    metadata address fails locally and is recorded — no real network traffic.
+    """
+    import http.server
+    import socket
+    import threading
+
+    from cron.monitor import MAX_URL_BYTES
+    from tools import url_safety
+
+    hits: list[str] = []
+    agents: list[str] = []
+    dialed: list[str] = []
+    routes = {
+        "/status": (200, {}, b"state A\n"),
+        "/hop": (302, {"Location": "/status"}, b""),
+        "/to-metadata": (302, {"Location": f"http://{_METADATA_HOST}/latest/meta-data/"}, b""),
+        "/big": (200, {}, b"x" * (MAX_URL_BYTES + 100)),
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            agents.append(self.headers.get("User-Agent", ""))
+            status, headers, body = routes.get(self.path, (404, {}, b"missing"))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    real_create_connection = socket.create_connection
+
+    def fenced_create_connection(address, *args, **kwargs):
+        if address[0] == _METADATA_HOST:
+            dialed.append(address[0])
+            raise OSError("test fence: metadata address dialed")
+        return real_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", fenced_create_connection)
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield {"base": f"http://127.0.0.1:{httpd.server_address[1]}", "hits": hits,
+               "agents": agents, "dialed": dialed}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        url_safety._reset_allow_private_cache()
+
+
+def _allow_private_urls(monkeypatch):
+    from tools import url_safety
+
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+    url_safety._reset_allow_private_cache()
+
+
+def test_monitor_url_to_loopback_is_refused_before_connect(monitor_server):
+    """A private/loopback monitor_url is refused by default, like other URL fetches."""
+    from cron.monitor import check_monitor
+
+    outcome = check_monitor({"id": "mon-private", "monitor_url": monitor_server["base"] + "/status"})
+
+    assert outcome.ok is False
+    assert "allow_private_urls" in (outcome.error or "")
+    assert monitor_server["hits"] == []
+
+
+def test_monitor_url_redirect_to_metadata_is_refused(monitor_server, monkeypatch):
+    """Redirect hops are re-validated; the metadata floor holds even with private URLs allowed."""
+    from cron.monitor import _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    ok, message = _fetch_monitor_url(monitor_server["base"] + "/to-metadata")
+
+    assert ok is False
+    assert monitor_server["hits"] == ["/to-metadata"]
+    assert monitor_server["dialed"] == []
+    assert "test fence" not in message
+
+
+def test_monitor_url_allowed_fetch_keeps_redirects_cap_and_errors(monitor_server, monkeypatch):
+    """With private URLs allowed: redirects followed, User-Agent sent, body capped, 4xx is an error."""
+    from cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
+
+    _allow_private_urls(monkeypatch)
+    base = monitor_server["base"]
+
+    assert _fetch_monitor_url(base + "/hop") == (True, "state A\n")
+    assert monitor_server["hits"] == ["/hop", "/status"]
+    assert set(monitor_server["agents"]) == {"hermes-cron-monitor"}
+
+    ok, body = _fetch_monitor_url(base + "/big")
+    assert ok is True
+    assert body == "x" * MAX_URL_BYTES
+
+    ok, message = _fetch_monitor_url(base + "/missing")
+    assert ok is False
+    assert "404" in message
+
+
+def test_monitor_url_rejects_non_http_scheme(hermes_env):
+    from cron.monitor import _fetch_monitor_url
+
+    ok, message = _fetch_monitor_url("file:///etc/passwd")
+    assert ok is False
+    assert "http(s)" in message
+
+
+# ---------------------------------------------------------------------------
 # cronjob tool: API-layer wiring
 # ---------------------------------------------------------------------------
 

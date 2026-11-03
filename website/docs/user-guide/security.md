@@ -781,6 +781,8 @@ SSRF protection is always active for internet-facing use and DNS failures are tr
 
 The same guard covers fetches whose URL comes from a remote party rather than from you: image/video URLs returned by a generation provider, reference-image URLs a model supplies for edits, pet spritesheets and the petdex manifest, and skills.sh sitemap entries. A provider or index that points one of those at a private or metadata address is refused before any connection opens; the operator's own provider `base_url` is not affected — a download fetched directly from your configured `base_url` (the OpenRouter video content endpoint) skips only the private-address class check on that first hop, while the cloud-metadata floor still applies and any redirect it issues is re-validated in full — and an image-generation provider hosted on your LAN needs `security.allow_private_urls: true` (below) for the *result* URLs it returns to be cached locally.
 
+Cron monitor jobs fetch their `monitor_url` source through the same guard (the URL can be set by the model through the `cronjob` tool): every redirect hop is re-validated, and a monitor that watches a LAN or localhost status page needs `security.allow_private_urls: true` (below). A refused target fails the tick with an error rather than counting as a change.
+
 #### Intentionally allowing private URLs
 
 Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, and the like. For those cases there's a global opt-out:

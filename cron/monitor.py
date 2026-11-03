@@ -26,6 +26,12 @@ MAX_DIFF_CHARS = 4000
 MAX_OUTPUT_CHARS = 8000
 URL_TIMEOUT_SECONDS = 30
 MAX_URL_BYTES = 262_144  # 256 KiB
+MAX_URL_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+_URL_POLICY_REFUSAL = (
+    "monitor_url target refused by the URL safety policy (private/internal or cloud metadata "
+    "address); set security.allow_private_urls: true to monitor LAN/localhost services"
+)
 
 _SNAPSHOT_FILENAME = "monitor_last_output.txt"
 
@@ -86,16 +92,43 @@ def _write_last_output(job_id: str, output: str) -> None:
 
 
 def _fetch_monitor_url(url: str) -> tuple[bool, str]:
-    """Bounded GET of a monitor URL. Returns (ok, body-or-error)."""
-    import urllib.request
+    """Bounded GET of a monitor URL. Returns (ok, body-or-error).
+
+    The URL may come from the model-facing cronjob tool, so it follows the shared
+    ``tools.url_safety`` policy like other Hermes URL fetches: every hop is checked before a
+    request is sent (redirects are followed here, not by the client), and the guarded client
+    re-validates the resolved address at TCP connect.
+    """
+    from urllib.parse import urljoin
+
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
     if not str(url).lower().startswith(("http://", "https://")):
         return False, f"monitor_url must be http(s): {url!r}"
+    current_url = url
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-cron-monitor"})
-        with urllib.request.urlopen(req, timeout=URL_TIMEOUT_SECONDS) as resp:  # nosec B310 — scheme checked above
-            body = resp.read(MAX_URL_BYTES + 1)
-        return True, body[:MAX_URL_BYTES].decode("utf-8", errors="replace")
+        with create_ssrf_safe_client(
+            timeout=URL_TIMEOUT_SECONDS, follow_redirects=False,
+            headers={"User-Agent": "hermes-cron-monitor"},
+        ) as client:
+            for _ in range(MAX_URL_REDIRECTS + 1):
+                if not is_safe_url(current_url):
+                    return False, _URL_POLICY_REFUSAL
+                with client.stream("GET", current_url) as resp:
+                    if resp.status_code in _REDIRECT_STATUS_CODES:
+                        location = resp.headers.get("location")
+                        if not location:
+                            return False, "monitor_url fetch failed: redirect without a Location header"
+                        current_url = urljoin(current_url, location)
+                        continue
+                    resp.raise_for_status()
+                    body = bytearray()
+                    for chunk in resp.iter_bytes():
+                        body += chunk
+                        if len(body) > MAX_URL_BYTES:
+                            break
+                return True, bytes(body[:MAX_URL_BYTES]).decode("utf-8", errors="replace")
+        return False, f"monitor_url fetch failed: more than {MAX_URL_REDIRECTS} redirects"
     except Exception as exc:
         return False, f"monitor_url fetch failed: {exc}"
 

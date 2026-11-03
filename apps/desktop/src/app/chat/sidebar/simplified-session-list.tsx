@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { Pin } from '@/lib/icons'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -92,30 +93,38 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
           <span className="min-w-0 flex-1 truncate" title={title}>
             {title}
           </span>
-          {pinned && !props.showAgent && (
-            <span
-              aria-label={t.sidebar.pinned}
-              className="shrink-0 text-(--ui-text-tertiary)"
-              role="img"
-              title={t.sidebar.pinned}
-            >
-              <Codicon name="pin" size={12} />
-            </span>
-          )}
           <span
-            aria-label={props.showAgent ? `${t.simplifiedAgents.agents}: ${row.profile || 'default'}` : undefined}
             className={cn(
-              'min-w-6 max-w-[30%] truncate text-right text-[0.6875rem] text-(--ui-text-tertiary)',
-              !props.ambiguousIds.has(row.id) && 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
+              'shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)',
+              props.showAgent
+                ? 'min-w-6 max-w-[30%] truncate text-right'
+                : 'grid grid-cols-[1rem_2rem] items-center gap-1'
             )}
           >
-            {props.showAgent ? (
-              row.profile || 'default'
-            ) : (
-              <time aria-label={`${age}, ${absoluteAge}`} dateTime={timestamp.toISOString()} title={absoluteAge}>
-                {age}
-              </time>
+            {!props.showAgent && (
+              <span className="grid size-4 place-items-center">
+                {pinned && (
+                  <span aria-label={t.sidebar.pinned} className="inline-flex" role="img" title={t.sidebar.pinned}>
+                    <Pin aria-hidden size={12} />
+                  </span>
+                )}
+              </span>
             )}
+            <span
+              aria-label={props.showAgent ? `${t.simplifiedAgents.agents}: ${row.profile || 'default'}` : undefined}
+              className={cn(
+                'block truncate text-right tabular-nums',
+                !props.ambiguousIds.has(row.id) && 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
+              )}
+            >
+              {props.showAgent ? (
+                row.profile || 'default'
+              ) : (
+                <time aria-label={`${age}, ${absoluteAge}`} dateTime={timestamp.toISOString()} title={absoluteAge}>
+                  {age}
+                </time>
+              )}
+            </span>
           </span>
         </RowButton>
         {/* shortcut: legacy actions accept bare IDs; restore menus for twins when those actions accept owners. */}

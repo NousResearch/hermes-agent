@@ -573,6 +573,9 @@ class GatewayTurnProgressMixin:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # progress_lines[:delivered] already reached the chat (sent or edited in); without an edit
+        # handle only the rest goes out, so lines absorbed during a throttle wait are not lost.
+        delivered: int = 0
 
     def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
@@ -662,6 +665,7 @@ class GatewayTurnProgressMixin:
         # The newest continuation is the only mutable bubble: keep just its lines so later
         # edits update it instead of replaying the full transcript into new messages.
         st.progress_lines = groups[-1]
+        st.delivered = len(st.progress_lines)
         return True
 
     @staticmethod
@@ -671,7 +675,7 @@ class GatewayTurnProgressMixin:
     def _reset_progress_bubble(self, st) -> None:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
-        st.progress_msg_id, st.progress_lines = None, []
+        st.progress_msg_id, st.progress_lines, st.delivered = None, [], 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
     def _progress_absorb(self, st, raw) -> Any:
@@ -689,6 +693,10 @@ class GatewayTurnProgressMixin:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
                 await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+        elif not st.can_edit and st.delivered < len(st.progress_lines):
+            # Lines absorbed while a one-message-per-line send was throttled.
+            with suppress(Exception):
+                await self._send_undelivered_lines(st)
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -726,6 +734,7 @@ class GatewayTurnProgressMixin:
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
             if result.success:
+                st.delivered = len(st.progress_lines)
                 return True
             if getattr(result, "retryable", False):
                 logger.debug("[%s] Transient edit failure — keeping can_edit=True", st.adapter.name)
@@ -734,17 +743,29 @@ class GatewayTurnProgressMixin:
                 logger.info("[%s] Progress edit flood control, backing off", st.adapter.name)
             else:
                 st.can_edit = False
-            await self._send_progress_text(st, msg)
+            await self._send_undelivered_lines(st, msg)
             return True
-        # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        if not st.can_edit:
+            # Editing unsupported: one message per line not delivered yet (several pile up while a
+            # send is throttled), or this tick's repeat-count line.
+            await self._send_undelivered_lines(st, msg)
+            return True
+        # First tool: send all accumulated text as a new message.
+        result = await self._send_progress_text(st, "\n".join(st.progress_lines))
+        if result.success:
+            st.delivered = len(st.progress_lines)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
-        elif result.success and st.can_edit:
-            # Delivered but not addressable for a later edit: one new line per update from here,
+        elif result.success:
+            # Delivered but not addressable for a later edit: one message per new line from here,
             # instead of replaying the accumulated transcript into a fresh bubble every tick.
             st.can_edit = False
         return True
+
+    async def _send_undelivered_lines(self, st, current=None) -> None:
+        for line in st.progress_lines[st.delivered:] or ([current] if current is not None else []):
+            await self._send_progress_text(st, str(line))
+        st.delivered = len(st.progress_lines)
 
     async def send_progress_messages(self):
         ctx = self._ctx

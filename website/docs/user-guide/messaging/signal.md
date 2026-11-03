@@ -193,7 +193,7 @@ The bot sends typing indicators while processing messages, refreshing every 8 se
 
 Signal and signal-cli support editing already-sent messages through timestamp-based edit handles. Hermes uses that API to keep enabled tool progress in one accumulated message instead of posting a new message for every tool call.
 
-Tool progress remains **off by default** on Signal, and token-by-token response streaming remains disabled. This avoids noisy edit traffic unless you explicitly opt in. To enable the single-message progress view for Signal:
+Tool progress remains **off by default** on Signal, and token-by-token response streaming remains disabled. This avoids noisy edit traffic unless you opt in. A global `display.tool_progress` value counts as that opt-in for Signal too; to keep Signal quiet while other platforms show progress, set `display.platforms.signal.tool_progress: off`. To enable the single-message progress view for Signal only:
 
 ```yaml
 display:

@@ -166,6 +166,20 @@ class TestSignalEditMessage:
         assert "fresh timestamp" in result.error
 
     @pytest.mark.asyncio
+    async def test_oversized_edit_is_refused_before_any_rpc(self, monkeypatch):
+        """send() splits a long text into parts, but an edit replaces one message: an edit above the
+        UTF-16 limit (a single huge verbose progress entry) must not reach signal-cli."""
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})
+        adapter = _editable(monkeypatch, mock_rpc)
+
+        result = await adapter.edit_message(chat_id="+155****4567", message_id="1712345678000",
+                                            content="x" * (adapter.MAX_MESSAGE_LENGTH + 1))
+
+        assert result.success is False
+        assert "length limit" in result.error
+        assert captured == []
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(("message_id", "error_part"), [("", "message_id"), ("not-a-timestamp", "numeric")])
     async def test_edit_requires_a_numeric_timestamp_handle(self, monkeypatch, message_id, error_part):
         mock_rpc, captured = _stub_rpc({"timestamp": 1712345679000})

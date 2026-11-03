@@ -253,12 +253,15 @@ async def test_progress_edits_follow_the_adapter_edit_target_contract(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_progress_without_an_edit_handle_degrades_to_one_line_per_update(monkeypatch, tmp_path):
-    """A delivered but unaddressable bubble must not replay the accumulated transcript each tick."""
+async def test_progress_without_an_edit_handle_sends_each_line_once(monkeypatch, tmp_path):
+    """A delivered but unaddressable bubble must not replay the accumulated transcript each tick, and
+    the lines absorbed while the next send was throttled still reach the chat, each exactly once."""
     adapter, result = await _run_signal(monkeypatch, tmp_path, _PacedToolAgent, _MissingIdProgressAdapter, "sess-no-id")
 
     assert result["final_response"] == "done"
-    assert [len(call["content"].splitlines()) for call in adapter.sent] == [1, 1]
+    assert [len(call["content"].splitlines()) for call in adapter.sent] == [1, 1, 1]
+    delivered = "\n".join(call["content"] for call in adapter.sent)
+    assert [delivered.count(word) for word in ("first", "second", "third")] == [1, 1, 1]
     assert adapter.edits == []
 
 

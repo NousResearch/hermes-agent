@@ -761,8 +761,12 @@ class SignalAdapter(BasePlatformAdapter):
             edit_timestamp = int(str(message_id))
         except (TypeError, ValueError):
             return SendResult(success=False, error="Signal edit requires numeric message_id timestamp")
-        await self._stop_typing_indicator(chat_id)
         plain_text, text_styles = markdown_to_signal(content)
+        if utf16_len(plain_text) > self.MAX_MESSAGE_LENGTH:
+            # One edit replaces one message and cannot be split like send(): refuse it so the caller
+            # falls back to a new message instead of pushing an oversized body at one chunk.
+            return SendResult(success=False, error="Signal edit exceeds the message length limit")
+        await self._stop_typing_indicator(chat_id)
         params = await self._with_target(
             {"account": self.account, "message": plain_text, "editTimestamp": edit_timestamp}, chat_id)
         result, err = await self._rpc_send(self._with_text_styles(params, text_styles), "RPC edit failed")

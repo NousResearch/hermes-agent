@@ -63,7 +63,7 @@ async def _device_metadata(client, server_url, auth_server_url):
     """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
     from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
 
-    from tools.mcp_oauth_provider import metadata_issued_by_origin
+    from tools.mcp_oauth_provider import entra_issuer_template_matches, metadata_issued_by_origin
 
     for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
@@ -78,10 +78,13 @@ async def _device_metadata(client, server_url, auth_server_url):
         # form, so the SDK's exact-string check (RFC 8414 §3.3) would reject Google's issuer
         # ("https://accounts.google.com" != "https://accounts.google.com/"). Compare both sides
         # root-slash-normalized, the same convention _metadata_issuer and the refresh-token issuer
-        # binding already use; any other mismatch is still rejected.
+        # binding already use; Entra's multi-tenant documents keep the documented {tenantid}
+        # template instead of a concrete issuer (#132730) and match entra_issuer_template_matches.
+        # Any other mismatch is still rejected.
         expected = auth_server_url.rstrip("/") if auth_server_url else auth_server_url
         if expected and not metadata_issued_by_origin(metadata, expected, response):
-            if str(metadata.issuer).rstrip("/") != expected:
+            if (str(metadata.issuer).rstrip("/") != expected
+                    and not entra_issuer_template_matches(metadata, expected)):
                 from mcp.client.auth.exceptions import OAuthFlowError
                 raise OAuthFlowError(f"Authorization server metadata issuer mismatch: {metadata.issuer} != {expected}")
         grants = metadata.grant_types_supported

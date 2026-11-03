@@ -472,9 +472,11 @@ it('renders every pin and agent chat without count limits and preserves search',
   vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
   mount()
   const pins = within(screen.getByRole('region', { name: 'Pinned' }))
+
   const agent = within(
     screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
   )
+
   expect(pins.getAllByText(/^Saved /)).toHaveLength(9)
   expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
   expect(screen.queryByRole('button', { name: /^Show .* more/ })).toBeNull()
@@ -485,4 +487,29 @@ it('renders every pin and agent chat without count limits and preserves search',
   expect(resume).toHaveBeenCalledWith('saved-8', expect.objectContaining({ profile: 'research' }))
   fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
   expect(agent.getAllByText(/^Saved /)).toHaveLength(9)
+})
+
+it('marks pinned agent chats and sorts them first, restoring recency when unpinned', async () => {
+  vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({})
+  $sessions.set([
+    makeSessionInfo({ id: 'newest', title: 'Newest', profile: 'research', last_active: 400 }),
+    makeSessionInfo({ id: 'pin-newer', title: 'Pinned newer', profile: 'research', last_active: 300, pinned: true }),
+    makeSessionInfo({ id: 'pin-older', title: 'Pinned older', profile: 'research', last_active: 200, pinned: true }),
+    makeSessionInfo({ id: 'oldest', title: 'Oldest', profile: 'research', last_active: 100 })
+  ])
+  mount()
+  const agent = within(
+    screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
+  )
+  const titles = () => agent.getAllByText(/^(Newest|Pinned newer|Pinned older|Oldest)$/).map(row => row.textContent)
+  expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest', 'Oldest'])
+  expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(2)
+  const pins = within(screen.getByRole('region', { name: 'Pinned' }))
+  expect(pins.getByText('Pinned older')).toBeTruthy()
+  expect(pins.queryByRole('img', { name: 'Pinned' })).toBeNull()
+  fireEvent.keyDown(agent.getByRole('button', { name: 'Session actions: Pinned older' }), { key: 'Enter' })
+  fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
+  expect(titles()).toEqual(['Pinned newer', 'Newest', 'Pinned older', 'Oldest'])
+  expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(1)
+  expect(pins.queryByText('Pinned older')).toBeNull()
 })

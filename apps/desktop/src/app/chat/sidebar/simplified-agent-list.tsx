@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { SETTINGS_ROUTE } from '@/app/routes'
@@ -14,38 +14,36 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
-import { $fleetRoster } from '@/store/fleet-roster'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profileColors, ensureGatewayProfile } from '@/store/profile'
-import { $focusedStoredSessionId } from '@/store/session-focus'
 import { setSettingsScope } from '@/store/settings-scope'
 
+import { SimplifiedGatewayHeader } from './simplified-gateway-header'
 import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import { useFleetRoster } from './use-fleet-roster'
-import { useSimplifiedAgents } from './use-simplified-agents'
+import type { useSimplifiedAgents } from './use-simplified-agents'
 
 export function SimplifiedAgentList({
-  sessions,
+  agents,
+  expanded,
+  onToggle,
   renderSessions,
   searching = false
 }: {
   searching?: boolean
-  sessions: SessionInfo[]
+  agents: ReturnType<typeof useSimplifiedAgents>
+  expanded: Record<string, boolean>
+  onToggle: (id: string, open: boolean) => void
   renderSessions: (sessions: SessionInfo[]) => ReactNode
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const colors = useStore($profileColors)
-  const roster = useStore($fleetRoster)
   const registry = useStore($connectionsRegistry)
   const activeConnection = useStore($activeConnectionId)
-  const focusedId = useStore($focusedStoredSessionId)
-  const activeProfile = useStore($activeGatewayProfile)
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  useEffect(() => setExpanded({}), [focusedId, activeProfile, activeConnection])
   const [pending, setPending] = useState<string | null>(null)
   useFleetRoster(true)
-  const { agents: sorted, owner, sessionsByAgent } = useSimplifiedAgents(sessions)
+  const { agents: sorted, owner, sessionsByAgent } = agents
 
   async function openAgent(agent: (typeof sorted)[number]) {
     setPending(agent.id)
@@ -75,9 +73,7 @@ export function SimplifiedAgentList({
   }
 
   const gateways = [...new Set(sorted.map(agent => agent.connectionId))]
-  const focusedAgent = focusedId ? JSON.stringify([owner, activeProfile || 'default']) : null
-  const isOpen = (id: string, focused: boolean) => searching || (expanded[id] ?? (!focusedAgent || focused))
-  const toggle = (id: string, open: boolean) => setExpanded(current => ({ ...current, [id]: !open }))
+  const isOpen = (id: string) => searching || (expanded[id] ?? true)
 
   return (
     <section aria-label={t.simplifiedAgents.agents} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
@@ -85,33 +81,21 @@ export function SimplifiedAgentList({
       {gateways.map(connectionId => {
         const group = sorted.filter(agent => agent.connectionId === connectionId)
         const gatewayId = JSON.stringify(['gateway', connectionId])
-        const open = gateways.length === 1 || isOpen(gatewayId, connectionId === owner)
-        const reachable = roster?.sources.find(source => source.connectionId === connectionId)?.reachable
+        const open = gateways.length === 1 || isOpen(gatewayId)
+        const selected = connectionId === (activeConnection ?? owner)
 
         return (
           <div className="shrink-0" key={gatewayId}>
-            <div className="grid min-h-8.5 grid-cols-[1rem_minmax(0,1fr)_1.5rem] items-center gap-2 px-2 text-xs text-(--ui-text-tertiary)">
-              <span aria-hidden className="grid size-4 place-items-center">
-                <span className={`size-1.5 rounded-full ${reachable ? 'bg-green-500' : 'bg-(--ui-text-quaternary)'}`} />
-              </span>
-              <span className="truncate" title={group[0].gateway}>
-                {group[0].gateway}
-              </span>
-              {gateways.length > 1 && (
-                <Button
-                  aria-expanded={open}
-                  aria-label={group[0].gateway}
-                  onClick={() => toggle(gatewayId, open)}
-                  size="icon-xs"
-                  variant="grip"
-                >
-                  <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
-                </Button>
-              )}
-            </div>
+            <SimplifiedGatewayHeader
+              connectionId={connectionId}
+              fallbackLabel={group[0].gateway}
+              onToggle={gateways.length > 1 ? () => onToggle(gatewayId, open) : undefined}
+              open={open}
+              selected={selected}
+            />
             {open &&
               group.map(agent => {
-                const agentOpen = group.length === 1 || isOpen(agent.id, agent.id === focusedAgent)
+                const agentOpen = group.length === 1 || isOpen(agent.id)
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
@@ -120,7 +104,7 @@ export function SimplifiedAgentList({
                         <Button
                           aria-expanded={agentOpen}
                           aria-label={agent.label}
-                          onClick={() => toggle(agent.id, agentOpen)}
+                          onClick={() => onToggle(agent.id, agentOpen)}
                           size="icon-xs"
                           variant="grip"
                         >

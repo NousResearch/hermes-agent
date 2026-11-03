@@ -1,31 +1,156 @@
-name: Validate Open-System Hermes upgrade
+# Open-System release pipeline (hillstreet-ph/open-system)
+#
+# One workflow owns the whole path for the production image:
+#   detect upstream release -> bump digest -> build -> validate -> publish (Docker Hub)
+#   -> pre-deploy backup -> deploy (Zeabur) -> health gate -> rollback on failure
+#   -> record release + merge the bump into main only after the gate passes.
+#
+# Triggers
+#   schedule          daily upstream check; auto-upgrades when a new vX.Y.Z is published
+#   push main         Dockerfile/workflow change on main -> build, validate, deploy
+#   push compat branch  chore/hermes-v*-compat -> build + validate + publish only
+#   workflow_dispatch manual run; choose whether to check upstream and/or deploy
+#
+# Required configuration (names only; never commit values)
+#   secrets.DOCKERHUB_USERNAME / secrets.DOCKERHUB_TOKEN   publish image (already used)
+#   secrets.ZEABUR_TOKEN                                   Zeabur API token (deploy/rollback)
+#   vars.ZEABUR_SERVICE_ID                                 production service id
+#   vars.ZEABUR_ENVIRONMENT_ID                             production environment id
+#   vars.OPEN_SYSTEM_STATUS_URL   (optional) default https://open-system.space/api/status
+# Without ZEABUR_TOKEN the deploy job is skipped with a warning, and nothing is merged.
+name: Open-System release
 
 on:
+  schedule:
+    - cron: '43 22 * * *' # 06:43 Asia/Manila
+  workflow_dispatch:
+    inputs:
+      check_upstream:
+        description: Look for a newer upstream Hermes release and bump to it
+        type: boolean
+        default: true
+      deploy:
+        description: Deploy the validated image to production
+        type: boolean
+        default: true
   push:
-    branches: [codex/hermes-v0225-compat]
+    branches: ['main', 'codex/hermes-v0225-compat', 'chore/hermes-v*-compat']
     paths:
       - deploy/open-system-compat.Dockerfile
+      - deploy/open-system.release
       - .github/workflows/open-system-compat-validation.yml
 
 permissions:
   contents: read
 
+concurrency:
+  group: open-system-release
+  cancel-in-progress: false
+
+env:
+  DOCKERFILE: deploy/open-system-compat.Dockerfile
+  RELEASE_FILE: deploy/open-system.release
+  IMAGE_REPO: hillstreet/open-system
+  UPSTREAM_IMAGE: nousresearch/hermes-agent
+  ZEABUR_CLI: zeabur@0.24.0
+
 jobs:
-  image:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      bumped: ${{ steps.plan.outputs.bumped }}
+      build: ${{ steps.plan.outputs.build }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+      tag: ${{ steps.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          sparse-checkout: deploy/open-system-compat.Dockerfile
+          sparse-checkout: |
+            deploy
           sparse-checkout-cone-mode: false
-      - name: Build compatibility image
-        run: docker build -f deploy/open-system-compat.Dockerfile -t open-system-compat:test .
-      - name: Verify release, tunnel and plugin
+      - name: Decide what this run does
+        id: plan
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          IN_CHECK: ${{ inputs.check_upstream }}
+          IN_DEPLOY: ${{ inputs.deploy }}
         run: |
           set -euo pipefail
-          docker run --rm --entrypoint /bin/sh open-system-compat:test -c '
+          current="$(sed -n 's/^# hermes-version: \(v[0-9.]*\).*/\1/p' "$DOCKERFILE")"
+          test -n "$current"
+          version="$current"; bumped=false
+          check=false
+          if [ "$EVENT" = schedule ] || { [ "$EVENT" = workflow_dispatch ] && [ "$IN_CHECK" = true ]; }; then check=true; fi
+          if [ "$check" = true ]; then
+            tags="$(curl -fsSL --retry 3 "https://hub.docker.com/v2/repositories/${UPSTREAM_IMAGE}/tags?page_size=100&ordering=last_updated")"
+            latest="$(printf '%s' "$tags" | python3 -c '
+          import json, re, sys
+          rows = [t for t in json.load(sys.stdin)["results"] if re.fullmatch(r"v\d+\.\d+\.\d+", t["name"])]
+          key = lambda t: tuple(int(x) for x in t["name"][1:].split("."))
+          best = max(rows, key=key)
+          print(best["name"], best["digest"])')"
+            lv="${latest% *}"; ld="${latest#* }"
+            newer="$(python3 -c "import sys;a=tuple(map(int,'${lv#v}'.split('.')));b=tuple(map(int,'${current#v}'.split('.')));print(str(a>b).lower())")"
+            echo "current=$current upstream=$lv ($ld) newer=$newer"
+            if [ "$newer" = true ]; then
+              case "$ld" in sha256:[0-9a-f]*) ;; *) echo "bad digest"; exit 1;; esac
+              sed -i "s/^# hermes-version: v[0-9.]*/# hermes-version: ${lv}/" "$DOCKERFILE"
+              sed -i "s#^FROM ${UPSTREAM_IMAGE}@sha256:[0-9a-f]*#FROM ${UPSTREAM_IMAGE}@${ld}#" "$DOCKERFILE"
+              grep -q "FROM ${UPSTREAM_IMAGE}@${ld}" "$DOCKERFILE"
+              version="$lv"; bumped=true
+            fi
+          fi
+          build=true; deploy=false
+          case "$EVENT" in
+            push) [ "$REF" = main ] && deploy=true ;;
+            schedule) if [ "$bumped" = true ]; then deploy=true; else build=false; fi ;;
+            workflow_dispatch) [ "$IN_DEPLOY" = true ] && deploy=true ;;
+          esac
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            tag="${version}-compat-auto-${GITHUB_RUN_ID}"
+          else
+            tag="${version}-compat-${GITHUB_SHA}"
+          fi
+          {
+            echo "version=$version"; echo "bumped=$bumped"; echo "build=$build"
+            echo "deploy=$deploy"; echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Plan"; echo "- event: \`$EVENT\` ref: \`$REF\`"
+            echo "- Hermes: \`$current\` -> \`$version\` (bumped: $bumped)"
+            echo "- build: $build, deploy: $deploy, image: \`${IMAGE_REPO}:${tag}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compat-dockerfile
+          path: deploy/open-system-compat.Dockerfile
+          retention-days: 7
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: compat-dockerfile
+          path: deploy
+      - name: Build compatibility image
+        run: docker build -f "$DOCKERFILE" -t open-system-compat:test .
+      - name: Verify release, tunnel and plugins
+        shell: bash
+        env:
+          HERMES_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e HERMES_VERSION --entrypoint /bin/sh open-system-compat:test -c '
             set -eu
             test -x /usr/local/bin/tunnel-client
             test -f /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-mcp-tunnel
@@ -34,18 +159,20 @@ jobs:
             test -f /opt/hermes/plugins/spotify/plugin.yaml
             test -f /opt/hermes/plugins/langfuse/plugin.yaml
             /opt/hermes/.venv/bin/hermes --version > /tmp/version.txt
-            grep -q "v0.22.5" /tmp/version.txt
+            grep -q "$HERMES_VERSION" /tmp/version.txt
             mkdir -p /tmp/hermes-test
             printf "plugins:\\n  enabled:\\n    - mcp-serve\\n    - spotify\\n    - langfuse\\n" > /tmp/hermes-test/config.yaml
             export HOME=/tmp/hermes-test HERMES_HOME=/tmp/hermes-test
             /opt/hermes/.venv/bin/hermes pm install venv
             /opt/hermes/.venv/bin/python -c "import pm; assert not pm.drift()"
             /opt/hermes/.venv/bin/python -c "from pathlib import Path; from pm.environments import activate_dependencies; activate_dependencies(Path(\"/opt/hermes\")); import mcp.server, langfuse, httpx, cryptography"
-            HOME=/tmp/hermes-test HERMES_HOME=/tmp/hermes-test /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
+            /opt/hermes/.venv/bin/hermes mcp-serve --help > /tmp/mcp-help.txt
             grep -q "stdio MCP server" /tmp/mcp-help.txt
           '
-      - name: Publish tested image under a unique commit tag
+      - name: Publish tested image under an immutable tag
+        id: publish
         env:
+          TAG: ${{ needs.plan.outputs.tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         shell: bash
@@ -53,7 +180,132 @@ jobs:
           set -euo pipefail
           test -n "$DOCKERHUB_USERNAME" && test -n "$DOCKERHUB_TOKEN"
           printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
-          image="hillstreet/open-system:v0.22.5-compat-${GITHUB_SHA}"
+          image="${IMAGE_REPO}:${TAG}"
           docker tag open-system-compat:test "$image"
           docker push "$image"
           docker logout
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "- published \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: [plan, build]
+    if: needs.plan.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    permissions:
+      contents: write
+      issues: write
+    env:
+      ZEABUR_TOKEN: ${{ secrets.ZEABUR_TOKEN }}
+      SID: ${{ vars.ZEABUR_SERVICE_ID }}
+      EID: ${{ vars.ZEABUR_ENVIRONMENT_ID }}
+      STATUS_URL: ${{ vars.OPEN_SYSTEM_STATUS_URL || 'https://open-system.space/api/status' }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: main
+      - name: Check deploy configuration
+        id: cfg
+        shell: bash
+        run: |
+          if [ -z "$ZEABUR_TOKEN" ] || [ -z "$SID" ] || [ -z "$EID" ]; then
+            echo "::warning::ZEABUR_TOKEN / ZEABUR_SERVICE_ID / ZEABUR_ENVIRONMENT_ID not configured; deploy skipped. Image ${TAG} is published and can be deployed manually."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Zeabur login and record rollback point
+        if: steps.cfg.outputs.ready == 'true'
+        id: prev
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
+          prev="$(sed -n 's/^tag=//p' "$RELEASE_FILE" 2>/dev/null || true)"
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          echo "- rollback point: \`${IMAGE_REPO}:${prev:-<none recorded>}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pre-deploy backup (on the persistent volume)
+        if: steps.cfg.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- \
+            sh -c "mkdir -p /opt/data/backups && HERMES_HOME=/opt/data /opt/hermes/.venv/bin/hermes backup -o /opt/data/backups/hermes-backup-${ts}-pre-deploy.zip -k 7 && ls -la /opt/data/backups | tail -n 3"
+      - name: Deploy image to Zeabur
+        if: steps.cfg.outputs.ready == 'true'
+        id: rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y "$ZEABUR_CLI" service update tag --id "$SID" --env-id "$EID" -t "$TAG" -y -i=false
+      - name: Health gate
+        if: steps.cfg.outputs.ready == 'true'
+        id: gate
+        shell: bash
+        run: |
+          set -uo pipefail
+          want="${VERSION#v}"
+          for i in $(seq 1 40); do
+            sleep 15
+            body="$(curl -fsS --max-time 15 "$STATUS_URL" 2>/dev/null)" || { echo "try $i: unreachable"; continue; }
+            if printf '%s' "$body" | WANT="$want" python3 -c '
+          import json, os, sys
+          s = json.load(sys.stdin)
+          tg = (s.get("gateway_platforms") or {}).get("telegram", {}).get("state")
+          ok = s.get("version") == os.environ["WANT"] and s.get("gateway_running") is True and tg in (None, "connected")
+          print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
+          sys.exit(0 if ok else 1)'; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          exit 1
+      - name: Roll back to the previous release
+        if: failure() && steps.prev.outputs.prev != '' && (steps.rollout.outcome == 'failure' || steps.gate.outcome == 'failure')
+        shell: bash
+        env:
+          PREV: ${{ steps.prev.outputs.prev }}
+        run: |
+          set -euo pipefail
+          npx -y "$ZEABUR_CLI" service update tag --id "$SID" --env-id "$EID" -t "$PREV" -y -i=false
+          for i in $(seq 1 40); do
+            sleep 15
+            if curl -fsS --max-time 15 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)'; then
+              echo "- rolled back to \`${IMAGE_REPO}:${PREV}\` and gateway is running" >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+          done
+          echo "::error::Rollback to ${PREV} did not become healthy"; exit 1
+      - name: Open incident issue
+        if: failure()
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Production deploy of ${process.env.TAG} failed`,
+              body: `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\nTarget: ${process.env.TAG}\nThe pipeline attempted an automatic rollback; see the run summary.`,
+              labels: ['incident'],
+            });
+      - name: Record release and merge the validated bump into main
+        if: success() && steps.cfg.outputs.ready == 'true'
+        shell: bash
+        env:
+          BUMPED: ${{ needs.plan.outputs.bumped }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$BUMPED" = true ]; then
+            gh run download "$GITHUB_RUN_ID" -n compat-dockerfile -D /tmp/df
+            cp /tmp/df/open-system-compat.Dockerfile "$DOCKERFILE"
+          fi
+          printf 'tag=%s\nversion=%s\ndeployed_at=%s\nrun=%s\n' "$TAG" "$VERSION" "$(date -u +%FT%TZ)" "$GITHUB_RUN_ID" > "$RELEASE_FILE"
+          git config user.name "open-system-release[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$DOCKERFILE" "$RELEASE_FILE"
+          git diff --cached --quiet && exit 0
+          git commit -m "release(open-system): ${VERSION} deployed as ${TAG} [skip ci]"
+          git push origin HEAD:main

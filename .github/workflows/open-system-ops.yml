@@ -1,0 +1,142 @@
+# Open-System production operations: health watch, self-heal, scheduled backups.
+#
+#   health  every 20 min   probe /api/status; on failure restart via Zeabur, re-probe,
+#                          open (or update) one incident issue if still unhealthy.
+#   backup  daily          full `hermes backup` onto the persistent volume (/opt/data/backups,
+#                          newest 7 kept) + an encrypted off-site copy as a workflow artifact.
+#
+# Config: secrets.ZEABUR_TOKEN, vars.ZEABUR_SERVICE_ID, vars.ZEABUR_ENVIRONMENT_ID,
+#         secrets.BACKUP_PASSPHRASE (off-site copy; skipped when unset - this repo is public,
+#         so an unencrypted backup is never uploaded), vars.OPEN_SYSTEM_STATUS_URL (optional).
+name: Open-System ops
+
+on:
+  schedule:
+    - cron: '7,27,47 * * * *'
+    - cron: '17 19 * * *' # 03:17 Asia/Manila
+  workflow_dispatch:
+    inputs:
+      task:
+        type: choice
+        options: [health, backup]
+        default: health
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-system-ops-${{ github.event.schedule || inputs.task }}
+  cancel-in-progress: false
+
+env:
+  ZEABUR_CLI: zeabur@0.24.0
+  ZEABUR_TOKEN: ${{ secrets.ZEABUR_TOKEN }}
+  SID: ${{ vars.ZEABUR_SERVICE_ID }}
+  EID: ${{ vars.ZEABUR_ENVIRONMENT_ID }}
+  STATUS_URL: ${{ vars.OPEN_SYSTEM_STATUS_URL || 'https://open-system.space/api/status' }}
+
+jobs:
+  health:
+    if: github.event.schedule == '7,27,47 * * * *' || inputs.task == 'health'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      issues: write
+    steps:
+      - name: Probe
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          check() {
+            curl -fsS --max-time 20 "$STATUS_URL" | python3 -c '
+          import json, sys
+          s = json.load(sys.stdin)
+          tg = (s.get("gateway_platforms") or {}).get("telegram", {}).get("state")
+          print("version=%s gateway=%s telegram=%s" % (s.get("version"), s.get("gateway_state"), tg))
+          sys.exit(0 if s.get("gateway_running") is True and tg in (None, "connected") else 1)'
+          }
+          for i in 1 2 3; do check && { echo "healthy=true" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 20; done
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+      - name: Self-heal (restart service)
+        id: heal
+        if: steps.probe.outputs.healthy == 'false' && env.ZEABUR_TOKEN != ''
+        shell: bash
+        run: |
+          set -uo pipefail
+          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
+          npx -y "$ZEABUR_CLI" service restart --id "$SID" --env-id "$EID" -y -i=false
+          for i in $(seq 1 30); do
+            sleep 15
+            curl -fsS --max-time 20 "$STATUS_URL" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("gateway_running") else 1)' \
+              && { echo "recovered=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          done
+          echo "recovered=false" >> "$GITHUB_OUTPUT"
+      - name: Report incident
+        if: steps.probe.outputs.healthy == 'false'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          RECOVERED: ${{ steps.heal.outputs.recovered }}
+        with:
+          script: |
+            const recovered = process.env.RECOVERED === 'true';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = 'Production health check failing (open-system)';
+            const { data } = await github.rest.issues.listForRepo({ ...context.repo, state: 'open', labels: 'incident', per_page: 50 });
+            const open = data.find(i => i.title === title);
+            const line = `${new Date().toISOString()} unhealthy; auto-restart ${recovered ? 'recovered the service' : 'did NOT recover it (or no ZEABUR_TOKEN)'} - ${run}`;
+            if (open) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: open.number, body: line });
+              if (recovered) await github.rest.issues.update({ ...context.repo, issue_number: open.number, state: 'closed' });
+            } else if (!recovered) {
+              await github.rest.issues.create({ ...context.repo, title, body: line, labels: ['incident'] });
+            }
+            if (!recovered) core.setFailed('production unhealthy');
+
+  backup:
+    if: github.event.schedule == '17 19 * * *' || inputs.task == 'backup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - name: Require Zeabur access
+        shell: bash
+        run: |
+          if [ -z "$ZEABUR_TOKEN" ] || [ -z "$SID" ] || [ -z "$EID" ]; then
+            echo "::error::ZEABUR_TOKEN / ZEABUR_SERVICE_ID / ZEABUR_ENVIRONMENT_ID not configured"; exit 1
+          fi
+      - name: Backup onto the persistent volume
+        id: vol
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y "$ZEABUR_CLI" auth login --token "$ZEABUR_TOKEN" -i=false >/dev/null
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          name="hermes-backup-${ts}.zip"
+          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- \
+            sh -c "mkdir -p /opt/data/backups && HERMES_HOME=/opt/data /opt/hermes/.venv/bin/hermes backup -o /opt/data/backups/${name} -k 7"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "- volume backup: \`/opt/data/backups/${name}\` (newest 7 kept)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Encrypted off-site copy
+        if: env.BACKUP_PASSPHRASE != ''
+        env:
+          NAME: ${{ steps.vol.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          size="$(npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- stat -c %s "/opt/data/backups/${NAME}" | tr -dc 0-9)"
+          if [ "${size:-0}" -gt 400000000 ]; then echo "::warning::backup is ${size} bytes; off-site copy skipped"; exit 0; fi
+          npx -y "$ZEABUR_CLI" service exec --id "$SID" --env-id "$EID" -i=false -- base64 -w0 "/opt/data/backups/${NAME}" \
+            | tr -d '\r\n' | base64 -d > backup.zip
+          python3 -c "import zipfile,sys; zipfile.ZipFile('backup.zip').testzip() is None or sys.exit(1)"
+          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --symmetric --cipher-algo AES256 \
+            -o "${NAME}.gpg" backup.zip 3<<<"$BACKUP_PASSPHRASE"
+          rm -f backup.zip
+          echo "- off-site: \`${NAME}.gpg\` (AES256, 30-day artifact)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: hashFiles('*.gpg') != ''
+        with:
+          name: open-system-backup-${{ github.run_id }}
+          path: '*.gpg'
+          retention-days: 30

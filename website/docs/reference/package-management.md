@@ -153,7 +153,12 @@ them, because PM never installs them yet uv would still
 resolve them against core's pins. The original plugin metadata and core development
 pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
 build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
-its own extras (`myplugin[runtime]`) are renamed with it. The generated workspace and extended lock remain
+its own extras (`myplugin[runtime]`) are renamed with it. Hermes itself always comes from
+the checkout: a plugin requirement naming `hermes-agent` (a runtime dependency or a selected
+extra such as `hermes-agent[web]>=0.20`) is satisfied by it, and its version specifier is
+checked against the running Hermes version (the one `requires_hermes` reads). A plugin that
+excludes that version is refused; during `hermes update` it is disabled like any other plugin
+that no longer builds. The generated workspace and extended lock remain
 outside shipped source. The workspace is solved only for the platform and
 architecture of the interpreter it installs into, so a plugin dependency with no
 wheels for another platform (onnxruntime or torch on Android) does not block it;

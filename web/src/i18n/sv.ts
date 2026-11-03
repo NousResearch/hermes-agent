@@ -313,6 +313,8 @@ export const sv = defineLocale({
     moaSummary: '{count} referensmodeller · {model}',
     notLoaded: 'inte inläst',
     setMainModel: 'Ställ in huvudmodell',
+    providerPlaceholder: '(leverantör)',
+    modelPlaceholder: '(modell)',
     tokenAnalyticsHiddenBefore:
       'Token- och kostnadsanalys visas inte eftersom de lokala värdena inte omfattar hjälpanrop som komprimering, bildtolkning och webbutdrag eller leverantörens omförsök. De kan därför skilja sig från leverantörens faktura. Aktivera',
     tokenAnalyticsHiddenAfter:

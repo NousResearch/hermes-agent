@@ -757,7 +757,8 @@ function MoaModelsModal({
 
   const presetNames = Object.keys(draft.presets || {});
   const preset = draft.presets[selected] || draft.presets[presetNames[0]];
-  const slotLabel = (slot: MoaModelSlot) => `${slot.provider || "(provider)"} · ${slot.model || "(model)"}`;
+  const slotLabel = (slot: MoaModelSlot) =>
+    `${slot.provider || modelsUi.providerPlaceholder} · ${slot.model || modelsUi.modelPlaceholder}`;
 
   const updateSelectedPreset = (updater: (preset: MoaConfigResponse["presets"][string]) => MoaConfigResponse["presets"][string]) => {
     setDraft((prev) => ({

@@ -116,6 +116,55 @@ jobs:
         if: runner.os == 'Windows' && runner.arch == 'ARM64'
         uses: ./.github/actions/setup-windows-build-deps
 
+      - name: PROBE restore the PM tools cache (diagnostic, do not merge)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\setup-pm\tools
+          key: setup-pm-tools-v1-win32-arm64-python-git-ripgrep-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py', '!**/__pycache__/**') }}-
+
+      - name: PROBE why PM re-installs cached tools (diagnostic, do not merge)
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: bash
+        env:
+          HERMES_HOME: ${{ runner.temp }}\setup-pm
+          HERMES_RUNTIME_DIR: ${{ runner.temp }}\setup-pm\tools
+          PYTHONUTF8: '1'
+        run: |
+          ls -la "$HERMES_RUNTIME_DIR" | sed 's/^/PROBE ls: /'
+          python -S - <<'PY'
+          import collections, json, os, sys
+          sys.path.insert(0, os.getcwd())
+          from pm.paths import facts_path, store_root
+          from pm.store import Store, current_target, tree_digest
+          from pm.registry import get_package
+          from pm.lock import Facts
+          target = current_target()
+          print("PROBE store_root", store_root(), "facts", facts_path(), facts_path().is_file(), flush=True)
+          if not facts_path().is_file():
+              raise SystemExit(0)
+          facts = Facts(facts_path())
+          store = Store(store_root())
+          for name in ("python", "git", "ripgrep", "uv"):
+              fact = facts.get(name)
+              if not fact:
+                  print("PROBE", name, "no fact", flush=True)
+                  continue
+              entry = store.entry(fact["entry"])
+              try:
+                  reason = get_package(name).verify(entry, target)
+              except Exception as e:
+                  reason = f"verify raised {e!r}"
+              d = tree_digest(entry) if entry.exists() else None
+              print(f"PROBE {name} entry={fact['entry']} exists={entry.exists()} verify={reason!r} digest_ok={d == fact.get('digest')} fact_keys={sorted(fact)}", flush=True)
+              if entry.exists() and d != fact.get("digest"):
+                  top = collections.Counter()
+                  for dp, dn, fn in os.walk(entry):
+                      for f in fn:
+                          top[os.path.relpath(dp, entry).split(os.sep)[0]] += 1
+                  print("PROBE", name, "top-level file counts", dict(top.most_common(15)), flush=True)
+          PY
+
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:

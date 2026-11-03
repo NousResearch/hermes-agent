@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     activeProfile: makeAtom('default'),
+    apiScope: makeAtom<{ connectionId: null | string; profile: null | string }>({ connectionId: null, profile: null }),
     gatewayState: makeAtom<'closed' | 'open'>('closed'),
     getHermesConfigRecord: vi.fn(),
     notify: vi.fn(),
@@ -43,9 +44,15 @@ vi.mock('@/hermes', () => ({
   setMcpServerEnabled: mocks.setMcpServerEnabled
 }))
 
+vi.mock('@/api/client', () => ({
+  $apiRequestScope: mocks.apiScope
+}))
+
 vi.mock('@/store/gateway', () => ({
-  requestGatewayForProfile: (_profile: string, method: string) =>
-    method === 'mcp.servers.status' ? mocks.mcpStatus() : Promise.reject(new Error(`unexpected ${method}`))
+  requestGatewayForAgent: (connectionId: null | string, profile: string, method: string) =>
+    method === 'mcp.servers.status'
+      ? mocks.mcpStatus(connectionId, profile)
+      : Promise.reject(new Error(`unexpected ${method}`))
 }))
 
 vi.mock('@/i18n', () => ({
@@ -90,6 +97,7 @@ afterEach(() => {
   stopMcpHealthChecker()
   mocks.gatewayState.set('closed')
   mocks.activeProfile.set('default')
+  mocks.apiScope.set({ connectionId: null, profile: null })
   mocks.getHermesConfigRecord.mockReset()
   mocks.notify.mockReset()
   mocks.mcpStatus.mockReset()
@@ -284,4 +292,20 @@ it('never nags about a local server that is not running, but does about a failin
 
   expect(mocks.notify).toHaveBeenCalledTimes(1)
   expect(mocks.notify.mock.calls[0][0].id).toBe('mcp-health-default::remote')
+})
+
+it('reads config and runtime status from the same connection as the active window', async () => {
+  mocks.apiScope.set({ connectionId: 'remote-1', profile: 'default' })
+  mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: { remote: { url: 'https://mcp.example.com/mcp' } } })
+  mocks.mcpStatus.mockResolvedValue(statusOf(['remote', 'failed']))
+  window.localStorage.clear()
+
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  await flush()
+
+  expect(mocks.getHermesConfigRecord).toHaveBeenCalledWith({ connectionId: 'remote-1', profile: 'default' })
+  expect(mocks.mcpStatus).toHaveBeenCalledWith('remote-1', 'default')
+  expect(mocks.notify.mock.calls[0][0].id).toBe('mcp-health-remote-1::default::remote')
 })

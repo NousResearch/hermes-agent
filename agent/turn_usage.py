@@ -45,6 +45,21 @@ def _loop_mod():
     return _cl
 
 
+def response_row_token_count(agent: Any, response: Any) -> Optional[int]:
+    """THIS response's own completion figure for its transcript row (``token_count``).
+
+    Pure metadata read, deliberately separate from ``record_response_usage``: it does not
+    touch session counters and does not fold MoA advisor fan-out (the row shows what the
+    aggregator produced; the session totals still do). ``None`` means the provider
+    reported no usage at all (unknown) — a reported ``0`` is a real figure."""
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return None
+    return int(normalize_usage(
+        usage, provider=getattr(agent, "provider", None), api_mode=getattr(agent, "api_mode", None),
+    ).output_tokens)
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -92,9 +107,6 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
-        # Per-row stamp source (#136851): this response reported no usage, so clear the
-        # figure instead of leaving the previous response's for the next built row.
-        agent._last_response_completion_tokens = None
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
@@ -109,10 +121,6 @@ def record_response_usage(
     _moa_client, canonical_usage, _moa_ref_cost = _fold_moa_usage(agent, canonical_usage)
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
-    # Per-row stamp source for build_assistant_message (#136851): this response's own
-    # provider-reported completion figure. Kept separate from _last_turn_usage so the
-    # per-message stamp never depends on turn-level aggregation semantics.
-    agent._last_response_completion_tokens = completion_tokens
     total_tokens = canonical_usage.total_tokens
     # Gemini long decode sums every hop's re-sent prefix into prompt_tokens (billing, session totals);
     # the context actually in the window is the first hop's prompt: compaction and the meter read that.

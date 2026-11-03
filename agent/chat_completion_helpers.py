@@ -1735,16 +1735,15 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         msg.update({k: v for k, v in record.items() if k != "type"})
         msg["reasoning_details"] = [*msg.get("reasoning_details", ()), record]
 
-    # Per-row token figure (#136851): the provider-reported completion tokens for THIS
-    # response, stashed by record_response_usage (None when the provider reported no
-    # usage). The column has been NULL for every row since the schema shipped; stamping
-    # here — where the row is built from its own response — makes per-row size readable
-    # downstream (per-day usage attribution), and the never-overwrite guard keeps a
-    # replay from revising committed history (transcript_repair's None-means-unknown
-    # contract).
-    _row_completion_tokens = getattr(agent, "_last_response_completion_tokens", None)
-    if _row_completion_tokens and not msg.get("token_count"):
-        msg["token_count"] = int(_row_completion_tokens)
+    # Per-row token figure (#136851): read the completion count off the normalized object
+    # THIS row is built from — not off agent state, which a truncation-recovery row would
+    # read before the current response's usage was folded (it would see the previous
+    # response's figure). None means the provider reported no usage (unknown) and is
+    # omitted; a reported 0 is a real figure and is stamped (transcript_repair's
+    # None-means-unknown contract).
+    _row_token_count = getattr(assistant_message, "row_token_count", None)
+    if _row_token_count is not None:
+        msg["token_count"] = int(_row_token_count)
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]

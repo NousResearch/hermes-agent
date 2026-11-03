@@ -32,3 +32,6 @@ post_install: |
   `hermes mcp login adaption`). Choose the organization, click Authorize,
   then restart the session so tools load. Install the skills with
   `hermes plugins install adaption`.
+
+  Launching runs spends Adaption credits; ask for an estimate first
+  (tools accept `estimate: true`).

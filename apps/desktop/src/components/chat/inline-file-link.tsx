@@ -15,7 +15,11 @@ import { openPreview } from '@/store/preview'
  * preview pane, resolved at CLICK time against this session's cwd/backend
  * (local reads the file; remote goes over the /api/fs bridge) — the same
  * resolution PreviewAttachment uses, so the transcript works from any machine.
- * Download stays one click away inside the preview pane.
+ *
+ * The link only opens the preview. It does not carry the card's Download
+ * (remote) or Reveal (local) action, and the file preview it opens has no
+ * Download either. A file handed over as a deliverable belongs on its own
+ * `MEDIA:` line, which keeps the full card with those actions.
  */
 export function InlineFileLink({
   children,

@@ -290,13 +290,16 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   // A document the agent named mid-sentence: inline link text, not a card.
+  // The plugin that owns the tool which produced the file may still draw it.
   const inlineFilePath = fileLinkPathFromMarkdownHref(href)
 
   if (inlineFilePath) {
     return (
-      <InlineFileLink className={className} path={inlineFilePath}>
-        {children}
-      </InlineFileLink>
+      <ToolMediaSlot path={inlineFilePath}>
+        <InlineFileLink className={className} path={inlineFilePath}>
+          {children}
+        </InlineFileLink>
+      </ToolMediaSlot>
     )
   }
 
@@ -630,7 +633,10 @@ function holdsMediaLink(children: ReactNode): boolean {
     const href = typeof child.props.href === 'string' ? child.props.href : ''
 
     return (
-      (href !== '' && (mediaPathFromMarkdownHref(href) !== null || (!href.startsWith('#') && isFileMediaPath(href)))) ||
+      (href !== '' &&
+        (mediaPathFromMarkdownHref(href) !== null ||
+          fileLinkPathFromMarkdownHref(href) !== null ||
+          (!href.startsWith('#') && isFileMediaPath(href)))) ||
       holdsMediaLink(child.props.children)
     )
   })

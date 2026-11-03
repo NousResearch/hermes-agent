@@ -10,6 +10,7 @@ tests pin the invariant: the kill sweep runs off-loop, in phase order.
 import asyncio
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,20 @@ def _make_ctx():
     ctx = GatewayShutdownMixin._StopContext(deferred_count=lambda: 0)
     ctx.started_at = time.monotonic()
     return ctx
+
+
+@pytest.mark.asyncio
+async def test_timeout_log_reports_managed_work(monkeypatch, caplog):
+    """A managed worker outside the agent map must appear in a drain timeout log."""
+    runner, _ = _make_phase_runner(monkeypatch, [])
+    worker = SimpleNamespace(closed=asyncio.Event())
+    runner.session_authority = SimpleNamespace(sessions={}, _managed_workers={"s": worker})
+    monkeypatch.setattr(runner, "_interrupt_running_agents", lambda _reason: worker.closed.set())
+
+    assert runner._active_work_count() == 1
+    await runner._stop_interrupt_remaining_work(_make_ctx())
+
+    assert "0 active agent(s), 1 uncounted work unit(s)" in caplog.text
 
 
 @pytest.mark.asyncio

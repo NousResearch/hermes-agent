@@ -1903,9 +1903,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         """Drain timed out: mark resume_pending, interrupt, settle, kill tool subprocesses, notify cron."""
         from gateway.run import GatewayRunner
         logger.warning(
-            "Gateway drain timed out after %.1fs with %d active agent(s), "
+            "Gateway drain timed out after %.1fs with %d active agent(s), %d uncounted work unit(s), "
             "%d in-flight cron job(s), %d api_server run(s), and %d deferred agent worker(s); "
-            "interrupting remaining work.", ctx.drain_elapsed, self._running_agent_count(),
+            "interrupting remaining work.", ctx.drain_elapsed, self._running_agent_count(), managed_turn_count(self),
             self._active_cron_job_count(), self._active_api_run_count(), ctx.deferred_count(),
         )
         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions

@@ -905,3 +905,47 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+class TestTelegramStartDeepLink:
+    """`/start <id>` (t.me/<bot>?start=...) resumes through /resume; bare /start stays a ping."""
+
+    @pytest.mark.asyncio
+    async def test_start_payload_resumes_session(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/start r_sess_abc")
+        runner = _make_runner(session_db=db, event=event)
+        runner._handle_resume_command = AsyncMock(return_value="resumed")
+
+        result = await runner._handle_message(event)
+
+        assert result == "resumed"
+        runner._handle_resume_command.assert_awaited_once_with(event)
+        assert event.get_command() == "resume"
+        assert event.get_command_args() == "sess_abc"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_start_stays_silent_ping(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/start")
+        runner = _make_runner(session_db=db, event=event)
+        runner._handle_resume_command = AsyncMock(return_value="resumed")
+
+        result = await runner._handle_message(event)
+
+        assert result == ""
+        runner._handle_resume_command.assert_not_awaited()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_busy_start_payload_never_switches(self, tmp_path):
+        event = _make_event(text="/start r_sess_abc")
+        runner = _make_runner(event=event)
+
+        result = await runner._busy_start_command(event, "k", event.source)
+
+        assert "resume" in result
+        assert (await runner._busy_start_command(_make_event(text="/start"), "k", event.source)) == ""

@@ -1164,6 +1164,8 @@ class GatewayBusySessionMixin:
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
         # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
         await _busy_accepted()
+        if (event.get_command_args() or "").strip():
+            return t("gateway.busy.slash_rejected", command="resume")  # never switch mid-turn
         logger.info("Ignoring /start platform ping for active session %s", quick_key)
         return ""
 

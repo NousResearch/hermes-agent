@@ -199,6 +199,33 @@ describe('the main tab follows the view the user picks', () => {
     app.profile.selectProfile('new')
     expect(app.profile.$freshSessionRequest.get()).toBe(fresh + 1)
   })
+
+  it('the All toggle (filter menu, keybind) brings back each side’s main chat', async () => {
+    const app = await boot()
+    const routed = () => app.recovery.$routeRequest.get()?.path
+    app.profile.$activeGatewayProfile.set('infra')
+    app.session.$selectedStoredSessionId.set('infra-main')
+    app.profile.toggleShowAllProfiles()
+    app.session.$selectedStoredSessionId.set('all-main')
+
+    app.profile.toggleShowAllProfiles()
+    expect(routed()).toBe(`${routePrefix()}infra-main`)
+
+    app.session.$selectedStoredSessionId.set('infra-main')
+    app.profile.toggleShowAllProfiles()
+    expect(routed()).toBe(`${routePrefix()}all-main`)
+  })
+
+  it('a rename while in All carries the owner of the tabs on screen', async () => {
+    const app = await boot({ connect: false })
+    app.profile.$activeGatewayProfile.set('default')
+    app.profile.enterAllProfilesView()
+    app.states.openSessionTile('x', 'center', 'workspace', undefined, { ...SESSIONS, ownerProfile: 'old' })
+
+    app.states.migrateTilesForProfile('old', 'new')
+
+    expect(app.states.$sessionTiles.get().map(tile => tile.ownerProfile)).toEqual(['new'])
+  })
 })
 
 describe('tabs survive a relaunch', () => {

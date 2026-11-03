@@ -5,6 +5,7 @@ from contextvars import ContextVar
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
+from gateway.platforms.base_followup_admission import publish_followup_queue_mutation
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
 from gateway.session_ingress_review import (adopt_review_completion, complete_review_delivery,
@@ -602,7 +603,9 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     # review admission the way a slot write is (``_record_and_fence_followup_locked`` bumps the
     # follow-up epoch and cancels that turn's review), so the review never spawns beside, or runs
     # beside, the follower.
-    adapter.apply_followup_queue_mutation(session_key, lambda: True)
+    # Through the tolerant path every runner-side slot write takes: an adapter binding the
+    # fence contract (every production adapter) is fenced; a minimal one is not pretended at.
+    publish_followup_queue_mutation(adapter, session_key, lambda: True)
 
 
 def _hold_until_committed(adapter, committed, task):

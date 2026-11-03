@@ -63,9 +63,6 @@ class _Adapter:
     async def _release_turn_marker(self, event):
         return None
 
-    def apply_followup_queue_mutation(self, session_key, mutation):
-        return mutation()  # an accepted follow-up's review-admission fence: no review here
-
 
 def _message(text):
     return MessageEvent(text=text, source=SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="7"))

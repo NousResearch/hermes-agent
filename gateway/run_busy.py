@@ -20,6 +20,7 @@ from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base_followup_admission import publish_followup_queue_mutation
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
@@ -117,11 +118,9 @@ class GatewayBusySessionMixin:
     @staticmethod
     def _apply_followup_queue_mutation(adapter: Any, session_key: str, mutation) -> bool:
         """Use the adapter's review-admission fence when available; minimal test/legacy adapters
-        retain the exact queue behavior without pretending to expose that contract."""
-        apply_mutation = getattr(type(adapter), "apply_followup_queue_mutation", None)
-        if callable(apply_mutation):
-            return bool(apply_mutation(adapter, session_key, mutation))
-        return bool(mutation())
+        retain the exact queue behavior without pretending to expose that contract. The runner's
+        seam over the one tolerant path ``dispatch_shared_busy`` shares."""
+        return publish_followup_queue_mutation(adapter, session_key, mutation)
 
     def _enqueue_fifo(self, session_key: str, queued_event: MessageEvent, adapter: Any) -> None:
         """Append a /queue event to the FIFO chain for a session."""

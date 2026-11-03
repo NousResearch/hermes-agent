@@ -52,6 +52,22 @@ class FollowupAdmissionState:
     cancel_review: Optional[Callable[[], None]] = None
 
 
+def publish_followup_queue_mutation(
+    adapter: Any, session_key: str, mutation: Callable[[], bool]
+) -> bool:
+    """Apply one accepted future-turn mutation through the adapter's review-admission fence
+    when the adapter binds the contract (``FollowupAdmissionMixin``, every production adapter);
+    a minimal test or legacy adapter keeps the exact queue behaviour without pretending to
+    expose it. The one tolerant path for every follow-up publication: the runner's slot and
+    overflow writes (``gateway/run_busy.py``) and the durable follower ``dispatch_shared_busy``
+    accepts (``gateway/session_ingress.py``). Looked up on the type: an instance attribute is
+    not the contract."""
+    apply_mutation = getattr(type(adapter), "apply_followup_queue_mutation", None)
+    if callable(apply_mutation):
+        return bool(apply_mutation(adapter, session_key, mutation))
+    return bool(mutation())
+
+
 class FollowupAdmissionMixin:
     """Follow-up fence, busy-text debounce and delivery-gated review completion."""
 

@@ -39,3 +39,9 @@ MEDIA_TYPE_IMAGE = 1
 MEDIA_TYPE_VIDEO = 2
 MEDIA_TYPE_VOICE = 3
 MEDIA_TYPE_FILE = 4
+
+# Parked-state revival probe interval (seconds). After the reconnect ladder
+# tops out (60s x 100 ≈ 1.7h), the adapter parks instead of going terminally
+# silent; this probe keeps trying a full reconnect at a bounded low frequency
+# until the platform is reachable again (MCP parking pattern).
+PARKED_PROBE_INTERVAL_SECONDS = 300

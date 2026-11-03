@@ -329,6 +329,18 @@ CASES = {
         ["apps/bootstrap-installer/src-tauri/src/lib.rs"],
         _lanes(frontend=True, bootstrap=True, rust=True),
     ),
+    "gateway native wrapper → python + rust": (
+        ["gateway/native_stream_buffer.py"],
+        _lanes(python=True, scan=True, rust=True),
+    ),
+    "gateway stream consumer → python + rust": (
+        ["gateway/stream_consumer.py"],
+        _lanes(python=True, scan=True, rust=True),
+    ),
+    "gateway native crate → python + rust": (
+        ["native/rust_stream_buffer/src/lib.rs"],
+        _lanes(python=True, rust=True),
+    ),
     "composite action → fail-open all": (
         [".github/actions/retry/action.yml"],
         DEFAULT,

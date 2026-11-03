@@ -38,9 +38,9 @@ Lanes:
   shared runner; running them on every Python PR made their timing noise
   everyone's problem. They still run on push (fail-open) and whenever the
   script, its siblings, or their tests change.
-* ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
-  lives under ``apps/``, so without this lane a Rust change matched ``frontend``
-  and only the TypeScript matrix ran.
+* ``rust``        — ``cargo test`` for the Tauri bootstrap installer and the
+  optional gateway stream buffer. Gateway wrapper/ABI changes also run this
+  lane so the loader and native contract are exercised together.
 * ``catalog``     — the plugin-catalog tests (catalog-tests.yml). A diff made
   only of catalog entry data (``plugin-catalog/*.yaml``, ``contributors/emails/``)
   runs this lane INSTEAD of the Python suite: those files are data that a known
@@ -203,11 +203,18 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
 # electron/update-* starts the Desktop update E2E, which never reads the corpus).
 _FIXTURE_CONSUMER_LANES = ("python", "rust", "frontend", "desktop_updater")
 
-# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
-# These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
-# ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
-# and the crate's unit tests had never executed in CI at all.
-_RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
+# Rust crates — bootstrap installer plus the optional gateway stream buffer.
+# These live under ``apps/`` and ``native/``. Gateway's Python wrapper and ABI
+# test are included explicitly so the Rust workflow also exercises loader changes.
+_RUST_PATHS = (
+    "apps/bootstrap-installer/src-tauri/",
+    "native/rust_stream_buffer/",
+)
+_RUST_FILES = {
+    "gateway/native_stream_buffer.py",
+    "gateway/stream_consumer.py",
+    "tests/gateway/test_native_stream_buffer.py",
+}
 _RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
 # The real SSH/Docker backend lane: the backends, the terminal tool that drives
@@ -602,6 +609,7 @@ def _is_rust(p: str) -> bool:
     return (
         p.endswith(".rs")
         or p.startswith(_RUST_PATHS)
+        or p in _RUST_FILES
         or os.path.basename(p) in _RUST_FILENAMES
     )
 

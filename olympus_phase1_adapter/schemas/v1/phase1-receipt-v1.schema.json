@@ -1,0 +1,841 @@
+{
+  "$defs": {
+    "phase0_evidence_manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "domain": {
+                "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                "type": "string"
+              },
+              "name": {
+                "pattern": "^[0-9]{2}-[a-z0-9-]+\\.json$",
+                "type": "string"
+              },
+              "sequence": {
+                "maximum": 7,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "size": {
+                "maximum": 262144,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence",
+              "name",
+              "domain",
+              "digest",
+              "size"
+            ],
+            "type": "object"
+          },
+          "maxItems": 7,
+          "minItems": 4,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "contract_id": {
+          "const": "olympus.repo-analysis.evidence-manifest/v1"
+        },
+        "events": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "artifact_name": {
+                "pattern": "^[0-9]{2}-[a-z0-9-]+\\.json$",
+                "type": "string"
+              },
+              "event_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "event_type": {
+                "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+                "type": "string"
+              },
+              "previous_event_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "sequence": {
+                "maximum": 7,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence",
+              "event_type",
+              "artifact_name",
+              "artifact_digest",
+              "previous_event_digest",
+              "event_digest"
+            ],
+            "type": "object"
+          },
+          "maxItems": 7,
+          "minItems": 4,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "package_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "packetization_status": {
+          "enum": [
+            "NOT_ATTEMPTED",
+            "REFUSED",
+            "SEALED"
+          ],
+          "type": "string"
+        },
+        "pair_a_status": {
+          "enum": [
+            "NOT_ATTEMPTED",
+            "SUCCEEDED",
+            "TIMEOUT",
+            "MALFORMED",
+            "TRANSPORT_FAILURE"
+          ],
+          "type": "string"
+        },
+        "pair_b_status": {
+          "enum": [
+            "NOT_ATTEMPTED",
+            "SUCCEEDED",
+            "TIMEOUT",
+            "MALFORMED",
+            "TRANSPORT_FAILURE"
+          ],
+          "type": "string"
+        },
+        "repository_post_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository_postcheck_status": {
+          "enum": [
+            "NOT_ATTEMPTED",
+            "UNCHANGED",
+            "CHANGED",
+            "FAILED"
+          ],
+          "type": "string"
+        },
+        "repository_pre_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+          "type": "string"
+        },
+        "terminal_report_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "package_id",
+        "request_id",
+        "packetization_status",
+        "pair_a_status",
+        "pair_b_status",
+        "repository_postcheck_status",
+        "artifacts",
+        "events",
+        "repository_pre_digest",
+        "repository_post_digest",
+        "terminal_report_digest"
+      ],
+      "type": "object"
+    },
+    "phase0_terminal_report": {
+      "additionalProperties": false,
+      "properties": {
+        "comparison_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "contract_id": {
+          "const": "olympus.repo-analysis.terminal-report/v1"
+        },
+        "outcome": {
+          "enum": [
+            "AGREEMENT",
+            "MINOR_DISAGREEMENT",
+            "MATERIAL_CONTRADICTION",
+            "INCOMPLETE_ANALYSIS",
+            "TIMEOUT",
+            "MALFORMED_RESULT"
+          ],
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "repository_post_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository_pre_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "terminal_state": {
+          "enum": [
+            "COMPLETED",
+            "FAILED",
+            "DENIED"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "request_id",
+        "terminal_state",
+        "outcome",
+        "reason_codes",
+        "comparison_digest",
+        "repository_pre_digest",
+        "repository_post_digest",
+        "summary"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "olympus.hermes.phase1.receipt/v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "phase0_evidence_directory_name": {
+            "const": null
+          },
+          "phase0_evidence_manifest": {
+            "const": null
+          },
+          "phase0_evidence_manifest_digest": {
+            "const": null
+          },
+          "phase0_evidence_package_id": {
+            "const": null
+          },
+          "phase0_terminal_report": {
+            "const": null
+          },
+          "phase0_terminal_report_digest": {
+            "const": null
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "receipt_state": {
+            "const": "ENGINE_TERMINAL"
+          }
+        },
+        "required": [
+          "receipt_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "bound_operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "correlation_id": {
+            "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "durability": {
+            "const": "SEALED"
+          },
+          "idempotency_key_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "ownership_record_digest": {
+            "description": "For transient conflict receipts, the immutable sequence-1 OWNERSHIP_ACQUIRED record digest; for SEALED receipts, the exact last pre-final record digest.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_id": {
+            "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "phase0_evidence_directory_name": {
+            "pattern": "^phase0-[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "phase0_evidence_manifest": {
+            "type": "object"
+          },
+          "phase0_evidence_manifest_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "phase0_evidence_package_id": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "phase0_terminal_report": {
+            "type": "object"
+          },
+          "phase0_terminal_report_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reason_codes": {
+            "const": [
+              "PHASE0_TERMINAL"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_state": {
+            "const": "CONFLICT_IN_PROGRESS"
+          }
+        },
+        "required": [
+          "receipt_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "bound_operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "correlation_id": {
+            "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "durability": {
+            "const": "TRANSIENT"
+          },
+          "idempotency_key_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "ownership_record_digest": {
+            "description": "For transient conflict receipts, the immutable sequence-1 OWNERSHIP_ACQUIRED record digest; for SEALED receipts, the exact last pre-final record digest.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_id": {
+            "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "reason_codes": {
+            "const": [
+              "ACTIVE_OWNER"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_state": {
+            "const": "IDEMPOTENCY_CONFLICT"
+          }
+        },
+        "required": [
+          "receipt_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "bound_operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "correlation_id": {
+            "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "durability": {
+            "const": "TRANSIENT"
+          },
+          "idempotency_key_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "ownership_record_digest": {
+            "description": "For transient conflict receipts, the immutable sequence-1 OWNERSHIP_ACQUIRED record digest; for SEALED receipts, the exact last pre-final record digest.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_id": {
+            "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "reason_codes": {
+            "const": [
+              "KEY_BOUND_TO_DIFFERENT_OPERATION"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_state": {
+            "const": "INDETERMINATE_NO_RETRY"
+          }
+        },
+        "required": [
+          "receipt_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "bound_operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "correlation_id": {
+            "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "durability": {
+            "const": "SEALED"
+          },
+          "idempotency_key_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "operation_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "ownership_record_digest": {
+            "description": "For transient conflict receipts, the immutable sequence-1 OWNERSHIP_ACQUIRED record digest; for SEALED receipts, the exact last pre-final record digest.",
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "payload_request_id": {
+            "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "enum": [
+                "CANCELLED_AFTER_INVOCATION_CLAIM",
+                "ENGINE_EXCEPTION_WITHOUT_SEALED_RECEIPT",
+                "EVIDENCE_MISSING",
+                "EVIDENCE_VERIFICATION_FAILED",
+                "PERSISTENCE_CORRUPTION",
+                "RECOVERED_AFTER_INVOCATION_CLAIM",
+                "WORKFLOW_CONSTRUCTION_FAILED"
+              ],
+              "type": "string"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "receipt_state": {
+            "const": "REJECTED_PRE_INVOKE"
+          }
+        },
+        "required": [
+          "receipt_state"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "bound_operation_digest": {
+                "const": null
+              },
+              "correlation_id": {
+                "const": null
+              },
+              "durability": {
+                "const": "TRANSIENT"
+              },
+              "idempotency_key_digest": {
+                "const": null
+              },
+              "operation_digest": {
+                "const": null
+              },
+              "ownership_record_digest": {
+                "const": null
+              },
+              "payload_request_digest": {
+                "const": null
+              },
+              "payload_request_id": {
+                "const": null
+              },
+              "reason_codes": {
+                "items": {
+                  "enum": [
+                    "ENGINE_CONTRACT_MISMATCH",
+                    "ENVELOPE_INVALID_JSON",
+                    "ENVELOPE_SCHEMA_MISMATCH",
+                    "ENVELOPE_TOO_LARGE",
+                    "FAKE_TRANSPORT_INVALID",
+                    "PERSISTENCE_CORRUPTION",
+                    "PHASE0_PROVENANCE_MISMATCH",
+                    "ROOTS_OVERLAP",
+                    "UNSAFE_EVIDENCE_ROOT",
+                    "UNSAFE_RECEIPT_ROOT",
+                    "UNSAFE_REPOSITORY_ROOT"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            }
+          },
+          {
+            "properties": {
+              "bound_operation_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "correlation_id": {
+                "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+                "type": "string"
+              },
+              "durability": {
+                "const": "SEALED"
+              },
+              "idempotency_key_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "operation_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "ownership_record_digest": {
+                "description": "For transient conflict receipts, the immutable sequence-1 OWNERSHIP_ACQUIRED record digest; for SEALED receipts, the exact last pre-final record digest.",
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "payload_request_digest": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "payload_request_id": {
+                "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+                "type": "string"
+              },
+              "reason_codes": {
+                "items": {
+                  "enum": [
+                    "CANCELLED_BEFORE_INVOCATION_CLAIM",
+                    "PERSISTENCE_CORRUPTION",
+                    "RECOVERED_BEFORE_INVOCATION_CLAIM"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "automatic_engine_retry_permitted": {
+      "const": false
+    },
+    "bound_operation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "correlation_id": {
+      "pattern": "^corr-[a-z0-9][a-z0-9._-]{0,62}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "durability": {
+      "enum": [
+        "SEALED",
+        "TRANSIENT"
+      ],
+      "type": "string"
+    },
+    "engine_contract_digest": {
+      "const": "2c5860582fcc73192b4e301544e043189dac1079b47078bad3c1f93371b8ee85"
+    },
+    "gate1_packet_sha256": {
+      "const": "6ef02d1e63d19853e0794b6c324f0e7233ec082744419fae529ed16e6e11cacf"
+    },
+    "idempotency_key_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "operation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ownership_record_digest": {
+      "description": "Null only for unkeyable transient rejection. For transient conflicts this binds immutable sequence-1 OWNERSHIP_ACQUIRED; for SEALED receipts it binds the exact last pre-final record.",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload_request_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload_request_id": {
+      "pattern": "^req-[a-z0-9][a-z0-9._-]{0,62}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_evidence_directory_name": {
+      "pattern": "^phase0-[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_evidence_manifest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/phase0_evidence_manifest"
+        }
+      ]
+    },
+    "phase0_evidence_manifest_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_evidence_package_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase0_terminal_report": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/phase0_terminal_report"
+        }
+      ]
+    },
+    "phase0_terminal_report_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "phase1_contract_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "reason_codes": {
+      "items": {
+        "enum": [
+          "ACTIVE_OWNER",
+          "CANCELLED_AFTER_INVOCATION_CLAIM",
+          "CANCELLED_BEFORE_INVOCATION_CLAIM",
+          "ENGINE_CONTRACT_MISMATCH",
+          "ENGINE_EXCEPTION_WITHOUT_SEALED_RECEIPT",
+          "ENVELOPE_INVALID_JSON",
+          "ENVELOPE_SCHEMA_MISMATCH",
+          "ENVELOPE_TOO_LARGE",
+          "EVIDENCE_MISSING",
+          "EVIDENCE_VERIFICATION_FAILED",
+          "FAKE_TRANSPORT_INVALID",
+          "KEY_BOUND_TO_DIFFERENT_OPERATION",
+          "PERSISTENCE_CORRUPTION",
+          "PHASE0_PROVENANCE_MISMATCH",
+          "PHASE0_TERMINAL",
+          "RECOVERED_AFTER_INVOCATION_CLAIM",
+          "RECOVERED_BEFORE_INVOCATION_CLAIM",
+          "ROOTS_OVERLAP",
+          "UNSAFE_EVIDENCE_ROOT",
+          "UNSAFE_RECEIPT_ROOT",
+          "UNSAFE_REPOSITORY_ROOT",
+          "WORKFLOW_CONSTRUCTION_FAILED"
+        ],
+        "type": "string"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "receipt_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "receipt_state": {
+      "enum": [
+        "REJECTED_PRE_INVOKE",
+        "CONFLICT_IN_PROGRESS",
+        "IDEMPOTENCY_CONFLICT",
+        "ENGINE_TERMINAL",
+        "INDETERMINATE_NO_RETRY"
+      ],
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "olympus.hermes.phase1.receipt/v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "gate1_packet_sha256",
+    "phase1_contract_digest",
+    "engine_contract_digest",
+    "receipt_state",
+    "durability",
+    "correlation_id",
+    "idempotency_key_digest",
+    "operation_digest",
+    "payload_request_id",
+    "payload_request_digest",
+    "bound_operation_digest",
+    "ownership_record_digest",
+    "reason_codes",
+    "phase0_terminal_report",
+    "phase0_terminal_report_digest",
+    "phase0_evidence_manifest",
+    "phase0_evidence_manifest_digest",
+    "phase0_evidence_package_id",
+    "phase0_evidence_directory_name",
+    "automatic_engine_retry_permitted",
+    "receipt_digest"
+  ],
+  "title": "olympus.hermes.phase1.receipt/v1",
+  "type": "object"
+}

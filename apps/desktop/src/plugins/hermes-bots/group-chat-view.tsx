@@ -90,6 +90,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
+import { stickyGroupEngine } from './group-engine'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
@@ -227,6 +228,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+          ...stickyGroupEngine(room),
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }

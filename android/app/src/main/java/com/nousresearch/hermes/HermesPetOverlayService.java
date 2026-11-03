@@ -143,7 +143,7 @@ public class HermesPetOverlayService extends Service {
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
         return builder
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle("Hermes Pet está activo")
                 .setContentText("Toca la mascota para abrir sus ajustes. Arrástrala para moverla.")
                 .setContentIntent(pendingIntent)

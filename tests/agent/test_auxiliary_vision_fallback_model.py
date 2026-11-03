@@ -95,3 +95,20 @@ class TestUnavailableVisionProviderFallsBackToItsOwnModel:
 
         assert route.client is not None
         assert route.final_model == PINNED_MODEL
+
+    def test_resolvable_pinned_provider_keeps_its_route_no_fallback(self):
+        """Guard: a pinned provider that resolves keeps its own route and model — the
+        fallback branch must stay gated on client-is-None, never rewrite a live pin."""
+
+        def fake_resolve(provider, model=None, async_mode=False, **_kw):
+            if str(provider).startswith("custom:does-not-exist"):
+                return MagicMock(name="pinned-client"), PINNED_MODEL
+            raise AssertionError(f"fallback reached {provider!r}; pinned provider was resolvable")
+
+        with patch.object(aux, "resolve_provider_client", side_effect=fake_resolve):
+            route = _resolve_vision_route(PINNED_PROVIDER, PINNED_MODEL)
+
+        assert route.client is not None
+        # _normalize_vision_provider strips the "custom:" prefix from the route label.
+        assert route.effective_provider == "does-not-exist"
+        assert route.final_model == PINNED_MODEL

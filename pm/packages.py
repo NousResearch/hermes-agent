@@ -534,7 +534,8 @@ class Venv(StatePackage):
             # An update does evict them, loudly: it must not fail on another profile's config.
             from pm.plugins_state import enabled_plugins_ordered
             enabled_plugins_ordered(skip_invalid_secondary=skip_invalid_secondary)
-        members = [] if repair else (build_member_dirs(extras) if plugin_dirs is None else plugin_dirs)
+        members = [] if repair else (build_member_dirs(extras, environment.python) if plugin_dirs is None
+                                     else plugin_dirs)
         try:
             generation.mkdir(parents=True)
             (generation / ".lease-managed").touch()

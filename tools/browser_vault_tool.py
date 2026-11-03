@@ -103,12 +103,12 @@ def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
 
 def _ensure_supervisor(task_id: str):
     """The supervisor for ``task_id`` (browser_exec attaches one on every call), attaching one on demand to
-    the task's session CDP endpoint when none is running. None when no endpoint is known; a fill then
-    refuses rather than touching argv."""
+    the task's session CDP endpoint when none is running or the registered one died. None when no endpoint
+    is known; a fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
-    if supervisor is not None:
+    if supervisor is not None and supervisor.is_healthy():
         return supervisor
     from tools.browser_session import session_for_task
     from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override

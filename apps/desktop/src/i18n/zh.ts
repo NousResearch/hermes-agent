@@ -264,7 +264,9 @@ export const zhOverrides = {
       liveEndedClosed: '实时语音会话已被服务端关闭。',
       liveError: '实时语音',
       liveDelegationFailed: '无法将请求交给 Hermes',
-      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`,
+      extensionUnavailable: (engine, reason) => `${engine} 不可用：${reason}。已改用语音转文字。`,
+      extensionMissing: engine => `语音引擎 ${engine} 未安装或已关闭。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -3227,6 +3229,20 @@ export const zhOverrides = {
     voiceEngineChangeFailed: '无法更改语音聊天引擎',
     voiceEngineChainedShort: '语音转文字',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: '暂不可用',
+    voiceEngineSignIn: provider => `使用 ${provider} 登录`,
+    voiceEngineMissing: engine => `${engine}（未安装或已关闭）`,
+    voiceEngineAccount: provider => `${provider} 登录`,
+    voiceEngineSignedIn: provider => `此配置文件已使用 ${provider} 登录。`,
+    voiceEngineNotSignedIn: provider => `尚未使用 ${provider} 登录。此语音引擎需要登录。`,
+    voiceEngineSignInAction: '登录',
+    voiceEngineSignOutAction: '退出登录',
+    voiceEngineSignInCode: code => `请在打开的页面中输入代码 ${code}，然后返回这里。`,
+    voiceEngineSignInFailed: message => `登录未完成：${message}`,
+    voiceEngineSignOutTitle: provider => `退出 ${provider} 登录？`,
+    voiceEngineSignOutBody: provider =>
+      `这会从此配置文件中移除 ${provider} 登录。所有使用它的功能（不仅是此语音引擎）都会停止工作，直到你重新登录。`,
+    voiceEngineSignOutFailed: '无法退出登录',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',

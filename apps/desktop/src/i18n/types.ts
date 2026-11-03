@@ -505,6 +505,8 @@ export interface Translations extends NoticeTranslations {
       liveError: string
       liveDelegationFailed: string
       liveUnavailable: (reason: string) => string
+      extensionUnavailable: (engine: string, reason: string) => string
+      extensionMissing: (engine: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -2924,6 +2926,19 @@ export interface Translations extends NoticeTranslations {
     voiceEngineChangeFailed: string
     voiceEngineChainedShort: string
     voiceEngineLiveShort: string
+    voiceEngineUnavailable: string
+    voiceEngineSignIn: (provider: string) => string
+    voiceEngineMissing: (engine: string) => string
+    voiceEngineAccount: (provider: string) => string
+    voiceEngineSignedIn: (provider: string) => string
+    voiceEngineNotSignedIn: (provider: string) => string
+    voiceEngineSignInAction: string
+    voiceEngineSignOutAction: string
+    voiceEngineSignInCode: (code: string) => string
+    voiceEngineSignInFailed: (message: string) => string
+    voiceEngineSignOutTitle: (provider: string) => string
+    voiceEngineSignOutBody: (provider: string) => string
+    voiceEngineSignOutFailed: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string

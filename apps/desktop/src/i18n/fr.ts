@@ -486,7 +486,11 @@ export const frOverrides = {
       liveError: 'Voix en direct',
       liveDelegationFailed: 'Impossible de transmettre la demande à Hermes',
       liveUnavailable: reason =>
-        `Le chat vocal GPT-Live n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`
+        `Le chat vocal GPT-Live n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`,
+      extensionUnavailable: (engine, reason) =>
+        `${engine} n'est pas disponible : ${reason}. Utilisation de la reconnaissance vocale à la place.`,
+      extensionMissing: engine =>
+        `Le moteur vocal ${engine} n'est pas installé ou est désactivé. Utilisation de la reconnaissance vocale à la place.`
     },
     native: {
       approvalTitle: 'Approbation requise',
@@ -3778,6 +3782,20 @@ export const frOverrides = {
     voiceEngineChangeFailed: 'Impossible de changer le moteur de conversation vocale',
     voiceEngineChainedShort: 'reconnaissance vocale',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Indisponible pour le moment',
+    voiceEngineSignIn: provider => `Se connecter avec ${provider}`,
+    voiceEngineMissing: engine => `${engine} (non installé ou désactivé)`,
+    voiceEngineAccount: provider => `Connexion ${provider}`,
+    voiceEngineSignedIn: provider => `Connecté avec ${provider} pour ce profil.`,
+    voiceEngineNotSignedIn: provider => `Non connecté avec ${provider}. Ce moteur vocal en a besoin.`,
+    voiceEngineSignInAction: 'Se connecter',
+    voiceEngineSignOutAction: 'Se déconnecter',
+    voiceEngineSignInCode: code => `Saisissez le code ${code} sur la page ouverte, puis revenez ici.`,
+    voiceEngineSignInFailed: message => `La connexion n'a pas abouti : ${message}`,
+    voiceEngineSignOutTitle: provider => `Se déconnecter de ${provider} ?`,
+    voiceEngineSignOutBody: provider =>
+      `Cela retire la connexion ${provider} de ce profil. Tout ce qui l'utilise, pas seulement ce moteur vocal, cesse de fonctionner jusqu'à une nouvelle connexion.`,
+    voiceEngineSignOutFailed: 'Impossible de se déconnecter',
     voiceDictation: 'Dictée vocale',
     speakReplies: 'Lire les réponses à haute voix',
     stopSpeakingReplies: 'Arrêter la lecture des réponses à haute voix',

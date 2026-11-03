@@ -1204,6 +1204,8 @@ DEFAULT_CONFIG = {
         #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
         #              DELEGATES every real request to Hermes (any model / provider you have
         #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        #   <plugin>:<engine> — a live voice engine a Desktop plugin provides (same delegation to
+        #              Hermes; the plugin owns the transport). Falls back to chained when absent.
         "voice_chat_mode": "chained",
         "gpt_live": {
             "model": "gpt-live-1",

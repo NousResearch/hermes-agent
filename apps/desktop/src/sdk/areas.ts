@@ -27,6 +27,18 @@ export {
   type KanbanCardBadgeTone,
   type KanbanCardBoard
 } from '@/contrib/kanban-card-badges'
+/** A live (full-duplex) voice engine next to chained and GPT-Live: register a
+ *  `VOICE_ENGINE_AREA` data contribution whose `LiveVoiceEngine` owns the
+ *  transport and audio; core owns the picker, Settings ▸ Voice, the provider
+ *  sign-in, one call at a time, and delegation into normal Hermes turns. */
+export {
+  type LiveVoiceEngine,
+  type LiveVoiceEngineHistoryMessage,
+  type LiveVoiceEngineIO,
+  type LiveVoiceEngineSession,
+  type LiveVoiceEngineStatus,
+  VOICE_ENGINE_AREA
+} from '@/contrib/voice-engines'
 /** Draw the `MEDIA:` files your package's OWN tools produced, in place of the
  *  built-in player (ownership is checked against the backend's tool registry). */
 export {

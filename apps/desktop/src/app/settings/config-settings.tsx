@@ -65,6 +65,9 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { useVoiceChatModeChoices, VoiceEngineSettings } from './voice-engine-settings'
+
+const VOICE_CHAT_MODE_KEY = 'voice.voice_chat_mode'
 
 export function ConfigSettings({
   activeSectionId,
@@ -152,6 +155,7 @@ function ConfigSettingsInner({
   })
 
   const schema = schemaResponse?.fields ?? null
+  const voiceModeChoices = useVoiceChatModeChoices(config ? getNested(config, VOICE_CHAT_MODE_KEY) : undefined)
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
@@ -553,15 +557,26 @@ function ConfigSettingsInner({
                   enumOptions={
                     key === 'tts.elevenlabs.voice_id'
                       ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                      : enumOptionsFor(key, getNested(config, key), config)
+                      : key === VOICE_CHAT_MODE_KEY
+                        ? enumOptionsFor(key, getNested(config, key), config, voiceModeChoices.options)
+                        : enumOptionsFor(key, getNested(config, key), config)
                   }
                   onChange={value => updateConfig(setConfigField(config, key, value))}
-                  optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                  optionLabels={
+                    key === 'tts.elevenlabs.voice_id'
+                      ? elevenLabsVoiceLabels
+                      : key === VOICE_CHAT_MODE_KEY
+                        ? voiceModeChoices.labels
+                        : undefined
+                  }
                   schema={field}
                   schemaKey={key}
                   value={configFieldValue(config, key)}
                 />
               )}
+              {key === VOICE_CHAT_MODE_KEY ? (
+                <VoiceEngineSettings mode={getNested(config, key)} profile={scopeProfile} />
+              ) : null}
               {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
                 <ProviderConfigPanel
                   key={String(getNested(config, key))}

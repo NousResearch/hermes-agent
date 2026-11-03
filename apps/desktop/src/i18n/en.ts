@@ -475,7 +475,10 @@ export const en: Translations = {
       liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',
       liveDelegationFailed: 'Could not hand the request to Hermes',
-      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`,
+      extensionUnavailable: (engine, reason) => `${engine} is not available: ${reason}. Using speech-to-text instead.`,
+      extensionMissing: engine =>
+        `The voice engine ${engine} is not installed or is turned off. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -3333,6 +3336,20 @@ export const en: Translations = {
     voiceEngineChangeFailed: 'Could not change the voice chat engine',
     voiceEngineChainedShort: 'speech-to-text',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'Not available right now',
+    voiceEngineSignIn: provider => `Sign in with ${provider}`,
+    voiceEngineMissing: engine => `${engine} (not installed or turned off)`,
+    voiceEngineAccount: provider => `${provider} sign-in`,
+    voiceEngineSignedIn: provider => `Signed in with ${provider} for this profile.`,
+    voiceEngineNotSignedIn: provider => `Not signed in with ${provider}. This voice engine needs it.`,
+    voiceEngineSignInAction: 'Sign in',
+    voiceEngineSignOutAction: 'Sign out',
+    voiceEngineSignInCode: code => `Enter the code ${code} on the page that opened, then come back here.`,
+    voiceEngineSignInFailed: message => `Sign-in did not finish: ${message}`,
+    voiceEngineSignOutTitle: provider => `Sign out of ${provider}?`,
+    voiceEngineSignOutBody: provider =>
+      `This removes the ${provider} sign-in from this profile. Everything that uses it, not only this voice engine, stops working until you sign in again.`,
+    voiceEngineSignOutFailed: 'Could not sign out',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',

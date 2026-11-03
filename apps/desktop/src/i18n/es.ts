@@ -489,7 +489,11 @@ export const esOverrides = {
       liveError: 'Voz en vivo',
       liveDelegationFailed: 'No se pudo pasar la solicitud a Hermes',
       liveUnavailable: reason =>
-        `El chat de voz GPT-Live no está disponible: ${reason}. Se usará voz a texto en su lugar.`
+        `El chat de voz GPT-Live no está disponible: ${reason}. Se usará voz a texto en su lugar.`,
+      extensionUnavailable: (engine, reason) =>
+        `${engine} no está disponible: ${reason}. Se usará voz a texto en su lugar.`,
+      extensionMissing: engine =>
+        `El motor de voz ${engine} no está instalado o está desactivado. Se usará voz a texto en su lugar.`
     },
     native: {
       approvalTitle: 'Se necesita aprobación',
@@ -3759,6 +3763,20 @@ export const esOverrides = {
     voiceEngineChangeFailed: 'No se pudo cambiar el motor del chat de voz',
     voiceEngineChainedShort: 'voz a texto',
     voiceEngineLiveShort: 'GPT-Live',
+    voiceEngineUnavailable: 'No disponible ahora mismo',
+    voiceEngineSignIn: provider => `Iniciar sesión con ${provider}`,
+    voiceEngineMissing: engine => `${engine} (no instalado o desactivado)`,
+    voiceEngineAccount: provider => `Inicio de sesión de ${provider}`,
+    voiceEngineSignedIn: provider => `Sesión iniciada con ${provider} para este perfil.`,
+    voiceEngineNotSignedIn: provider => `No has iniciado sesión con ${provider}. Este motor de voz lo necesita.`,
+    voiceEngineSignInAction: 'Iniciar sesión',
+    voiceEngineSignOutAction: 'Cerrar sesión',
+    voiceEngineSignInCode: code => `Introduce el código ${code} en la página que se abrió y vuelve aquí.`,
+    voiceEngineSignInFailed: message => `El inicio de sesión no terminó: ${message}`,
+    voiceEngineSignOutTitle: provider => `¿Cerrar sesión de ${provider}?`,
+    voiceEngineSignOutBody: provider =>
+      `Esto elimina el inicio de sesión de ${provider} de este perfil. Todo lo que lo usa, no solo este motor de voz, dejará de funcionar hasta que vuelvas a iniciar sesión.`,
+    voiceEngineSignOutFailed: 'No se pudo cerrar la sesión',
     voiceDictation: 'Dictado por voz',
     speakReplies: 'Leer las respuestas en voz alta',
     stopSpeakingReplies: 'Dejar de leer las respuestas en voz alta',

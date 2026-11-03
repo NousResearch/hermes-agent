@@ -66,7 +66,7 @@ on:
         type: string
         default: ''
       bundle-arch:
-        description: 'Architecture of the bundled pair: arm64 (macos-15) or x64 (macos-15-intel).'
+        description: 'Architecture of the bundled pair: arm64 (blacksmith-6vcpu-macos-15) or x64 (macos-15-intel).'
         required: false
         type: string
         default: arm64
@@ -101,7 +101,7 @@ jobs:
       update-ref: ${{ inputs.update-ref }}
       tag-has-desktop: ${{ inputs.tag-has-desktop }}
       leg-id: ${{ inputs.leg-id }}
-      runner: macos-latest
+      runner: blacksmith-6vcpu-macos-latest
       timeout-minutes: ${{ inputs.timeout-minutes }}
 
   # ---- arm 2: the published dmg, then Playwright drives the app ------------
@@ -112,13 +112,13 @@ jobs:
     if: >-
       inputs.install-method == 'desktop-installer@latest' && inputs.tag-has-desktop
       && contains(fromJSON('["open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
-    runs-on: macos-latest
+    runs-on: blacksmith-12vcpu-macos-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
       # installer/updater talk to.
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 0
@@ -225,11 +225,12 @@ jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    # Blacksmith has no Intel macOS runners, so the x64 pair stays GitHub-hosted.
+    runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'blacksmith-6vcpu-macos-15' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
 

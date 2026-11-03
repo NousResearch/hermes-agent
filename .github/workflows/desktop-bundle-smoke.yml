@@ -81,7 +81,8 @@ jobs:
     name: macOS install and chat
     needs: validate
     if: inputs.platform == 'darwin'
-    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    # Blacksmith has no Intel macOS runners, so the x64 leg stays GitHub-hosted.
+    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'blacksmith-6vcpu-macos-15' }}
     timeout-minutes: 30
     # Also constrains the recording action's nested cache to read-only.
     cache-mode: read
@@ -245,10 +246,7 @@ jobs:
     name: Windows install and chat
     needs: validate
     if: inputs.platform == 'win32'
-    # GitHub-hosted for both arches: on blacksmith Windows runners the installed MSIX app exits
-    # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
-    # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
-    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'blacksmith-32vcpu-windows-2025' }}
     # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45

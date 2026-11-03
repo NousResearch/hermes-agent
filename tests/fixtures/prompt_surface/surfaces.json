@@ -267,24 +267,14 @@
   "telegram-interim.claude": {
     "prompt_tokens": {
       "context": 0,
-      "stable": 1475,
-      "volatile": 1814
+      "stable": 1369,
+      "volatile": 1269
     },
-    "tool_tokens": 13277,
+    "tool_tokens": 11242,
     "tools": [
-      "browser_back",
       "browser_cdp",
-      "browser_click",
-      "browser_console",
       "browser_dialog",
       "browser_exec",
-      "browser_get_images",
-      "browser_navigate",
-      "browser_press",
-      "browser_scroll",
-      "browser_snapshot",
-      "browser_type",
-      "browser_vision",
       "clarify",
       "delegate_task",
       "execute_code",

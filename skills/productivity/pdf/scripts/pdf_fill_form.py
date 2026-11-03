@@ -74,9 +74,12 @@ def main() -> int:
                     if info.get("/V") not in (None, "")}
         to_write.update(fill)
     for page in writer.pages:
+        # No ``flags``: a nonzero value REPLACES each field's /Ff (it does not
+        # OR in), which turned a combo into a list box and baked every option
+        # into the page instead of the selected one. The widgets are removed
+        # below, so nothing needs to be marked read-only.
         writer.update_page_form_field_values(
-            page, to_write, flags=1 if args.flatten else 0,
-            auto_regenerate=False, flatten=args.flatten)
+            page, to_write, auto_regenerate=False, flatten=args.flatten)
 
     root = writer._root_object
     flattened = args.flatten

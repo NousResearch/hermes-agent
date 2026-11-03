@@ -155,6 +155,20 @@ def test_form_fill_flatten_keeps_fields_left_out_of_the_json(form_pdf: Path, wor
     assert "KEEPME" in (PdfReader(str(flattened)).pages[0].extract_text() or "")
 
 
+def test_form_fill_flatten_bakes_only_the_selected_combo_option(form_pdf: Path, workdir: Path):
+    """--flatten must not overwrite a combo's /Ff: as a list box it bakes every option."""
+    values = workdir / "combo_values.json"
+    values.write_text(json.dumps({"size": "large"}), encoding="utf-8")
+    flattened = workdir / "combo_flat.pdf"
+    run("pdf_fill_form.py", str(form_pdf), "--fields-json", str(values),
+        "-o", str(flattened), "--flatten")
+
+    from pypdf import PdfReader
+    text = PdfReader(str(flattened)).pages[0].extract_text() or ""
+    assert "large" in text
+    assert "small" not in text  # the unselected option was drawn into the page
+
+
 def test_merge_split_rotate(report_pdf: Path, workdir: Path):
     merged = workdir / "merged.pdf"
     out = json.loads(run("pdf_merge.py", str(report_pdf), str(report_pdf),

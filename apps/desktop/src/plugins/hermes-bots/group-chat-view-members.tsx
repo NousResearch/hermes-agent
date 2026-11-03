@@ -85,9 +85,8 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
   }))
 }
 
-/** Persist the room-side member picker result.  Stored descriptors are the
- * source of truth for remote Bots; local metadata remains a compatibility
- * projection so existing roster surfaces continue to find the room. */
+/** Persist the room-side member picker result: each Bot's `groups[]` metadata
+ * (on its owning connection) and the room's stored descriptors together. */
 export async function setGroupChatMembers(group: string, selected: RosterRow[]) {
   if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
     throw new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`)
@@ -100,7 +99,11 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
   const meta = $botMeta.get()
   const previous = groupChatMemberBots(group, $lastRoster.get(), meta)
 
-  for (const bot of $lastRoster.get().filter(bot => !bot.remoteSource)) {
+  // Every row, remote ones included: member resolution seats any bot whose
+  // groups[] names the room, so a remote member whose list still names it would
+  // take its seat back. saveBotMeta writes a remote row through its own
+  // connection, as the per-Bot door does.
+  for (const bot of $lastRoster.get()) {
     const enabled = selectedKeys.has(botRosterKey(bot))
     const current = botGroups(botRosterMeta(bot, meta))
 

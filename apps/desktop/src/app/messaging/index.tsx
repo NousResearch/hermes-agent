@@ -837,7 +837,7 @@ function PlatformDetail({
 
       {platform.relay_fronted && (
         <section>
-          <RelayLinkSetup platform={platform} />
+          <RelayLinkSetup key={platform.id} platform={platform} />
         </section>
       )}
 

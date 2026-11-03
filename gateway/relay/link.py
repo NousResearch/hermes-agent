@@ -93,6 +93,25 @@ def _bearer_and_base() -> tuple[str, str]:
     return make_upgrade_token(gateway_id, secret), _connector_url(dial_url, "")
 
 
+# Connector HTTP status -> (slug, sentence the surfaces show). Anything else 4xx is a refusal; 5xx/408/429
+# mean "try again" (``connector_unavailable``).
+_HTTP_REFUSALS: dict[int, tuple[str, str]] = {
+    401: ("relay_not_authorized",
+          "Team Gateway no longer accepts this instance's credentials. Restart the gateway to reconnect it."),
+    403: ("platform_not_provisioned", "Team Gateway is not set up for this platform on this instance."),
+    409: ("instance_not_bound", "This instance is not bound to Team Gateway yet. Restart the gateway and try again."),
+}
+
+
+def _http_error(code: int, reason: str) -> RelayLinkError:
+    if code in _HTTP_REFUSALS:
+        slug, message = _HTTP_REFUSALS[code]
+        return RelayLinkError(slug, message, code)
+    if code >= 500 or code in (408, 429):
+        return RelayLinkError("connector_unavailable", "Team Gateway is not answering right now. Try again shortly.", code)
+    return RelayLinkError("connector_refused", reason or f"Team Gateway answered HTTP {code}.", code)
+
+
 def _post(path: str, body: dict) -> dict:
     from gateway.relay import _json_post
     from gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
@@ -103,8 +122,7 @@ def _post(path: str, body: dict) -> dict:
             payload = json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         reason = redact_excerpt(connector_reason(read_error_body(exc)), (token,))
-        raise RelayLinkError("connector_refused", reason or f"Team Gateway answered HTTP {exc.code}.",
-                             exc.code) from exc
+        raise _http_error(exc.code, reason) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise RelayLinkError("connector_unreachable", f"Could not reach Team Gateway: {exc}") from exc
     return payload if isinstance(payload, dict) else {}
@@ -144,7 +162,7 @@ def link_status() -> dict[str, Any]:
 
 def unlink(platform: str, platform_user_id: str) -> dict[str, Any]:
     _post("/manage/unlink", {"platform": platform, "platformUserId": platform_user_id})
-    return {"ok": True}
+    return {"unlinked": True}
 
 
 _ACTIONS: dict[str, Callable[[dict], dict[str, Any]]] = {

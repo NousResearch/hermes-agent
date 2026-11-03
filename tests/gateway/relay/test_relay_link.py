@@ -72,3 +72,7 @@ def test_link_code_is_minted_with_the_gateway_bearer_and_points_at_the_shared_bo
     # A platform the shared bot does not carry never reaches the connector.
     assert relay_link_verb({"action": "request", "platform": "slack"})["error"] == "platform_not_fronted"
     assert len(connector.seen) == 1
+    # A bearer the connector rejects is named as such, never shown as the connector's raw text.
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", "rotated-elsewhere")
+    refused = relay_link_verb({"action": "request", "platform": "telegram"})
+    assert refused["error"] == "relay_not_authorized" and refused["status"] == 401

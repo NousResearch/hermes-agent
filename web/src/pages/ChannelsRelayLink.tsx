@@ -9,6 +9,14 @@ import type { MessagingPlatform, RelayLinkCode, RelayLinkedAccount } from "@/lib
 import { errorMessage } from "@/lib/api-error";
 
 const POLL_MS = 3000;
+// Consecutive poll failures before the panel stops waiting and shows the error.
+const MAX_POLL_ERRORS = 5;
+
+/** A code that went inactive before it expired was used: the account may already have been linked. */
+function redeemedBeforeExpiry(link: RelayLinkCode): boolean {
+  const expiresAt = link.expires_at ? Date.parse(link.expires_at) : Number.NaN;
+  return !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+}
 
 function accountLabel(account: RelayLinkedAccount): string {
   const name = account.displayName || (account.handle ? `@${account.handle.replace(/^@/, "")}` : "");
@@ -61,9 +69,11 @@ export function RelayLinkPanel({
     if (!link) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
     const poll = async () => {
       try {
         const state = await api.getRelayLinkState(link.code);
+        failures = 0;
         if (cancelled) return;
         if (state.state === "pending") {
           timer = setTimeout(poll, POLL_MS);
@@ -76,13 +86,22 @@ export function RelayLinkPanel({
           return;
         }
         const after = await loadAccounts();
-        if (!cancelled && after && after.length > linkedBefore.current) {
+        if (cancelled || !after) return;
+        if (after.length > linkedBefore.current || redeemedBeforeExpiry(link)) {
           showToast(`${platform.name} account linked. Message the bot to talk to your agent.`, "success");
-        } else if (!cancelled) {
+        } else {
           setError("That code expired before it was used. Get a new code and try again.");
         }
-      } catch {
-        if (!cancelled) timer = setTimeout(poll, POLL_MS);
+      } catch (pollError) {
+        if (cancelled) return;
+        failures += 1;
+        if (failures >= MAX_POLL_ERRORS || !redeemedBeforeExpiry(link)) {
+          setLink(null);
+          setQrDataUrl("");
+          setError(errorMessage(pollError));
+          return;
+        }
+        timer = setTimeout(poll, POLL_MS);
       }
     };
     timer = setTimeout(poll, POLL_MS);

@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 router = APIRouter()
 
 # Connector answers that mean "the instance is not ready yet" rather than "this cannot work".
-_NOT_READY = frozenset({"relay_not_provisioned", "connector_unreachable"})
+_NOT_READY = frozenset({"relay_not_provisioned", "connector_unreachable", "connector_unavailable"})
 
 
 def _ask_gateway(params: dict[str, Any]) -> dict[str, Any]:
@@ -26,8 +26,10 @@ def _ask_gateway(params: dict[str, Any]) -> dict[str, Any]:
                                    timeout=CONTROL_TIMEOUT_S)
     if answer is None:
         raise HTTPException(status_code=503, detail={
-            "code": "gateway_not_running",
-            "message": "Start the gateway first: it holds the Team Gateway connection."})
+            # No answer covers a stopped gateway, one too old for the verb, and a timeout alike.
+            "code": "gateway_not_answering",
+            "message": "The gateway did not answer. Make sure it is running and up to date: it holds the "
+                       "Team Gateway connection."})
     if not answer.get("ok"):
         code = str(answer.get("error") or "connector_refused")
         raise HTTPException(status_code=503 if code in _NOT_READY else 409,

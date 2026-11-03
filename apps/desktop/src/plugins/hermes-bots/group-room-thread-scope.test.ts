@@ -32,10 +32,13 @@ it('keeps a member’s outcome from a thread that still works after the user pos
 })
 
 it('takes the round from the live task’s own thread, never the newest thread’s', () => {
-  expect(roomCycle(events, activity, 3, focusThread(events))).toEqual({ kind: 'working', round: 2, maxRounds: 3 })
+  expect(roomCycle(events, activity, 3, focusThread(events))).toEqual({ kind: 'working', round: 2, maxRounds: 3, members: ['c'] })
   // The thread being replied in wins when it has live work of its own.
   const both = [...activity, { member_id: 'a', status: 'running', thread_id: 'B', round_index: 0 }]
-  expect(roomCycle(events, both, 3, 'B')).toEqual({ kind: 'working', round: 1, maxRounds: 3 })
+  expect(roomCycle(events, both, 3, 'B')).toEqual({ kind: 'working', round: 1, maxRounds: 3, members: ['a'] })
+  // A focused thread with only queued work does not lend its round to another thread's running member.
+  const queuedFocus = [...activity, { member_id: 'a', status: 'queued', thread_id: 'B', round_index: 0 }]
+  expect(roomCycle(events, queuedFocus, 3, 'B')).toEqual({ kind: 'working', round: 2, maxRounds: 3, members: ['c'] })
 })
 
 it('reads a member the driver parked as unavailable, and never a room-level stall', () => {

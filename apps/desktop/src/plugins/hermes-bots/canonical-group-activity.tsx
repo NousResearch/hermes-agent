@@ -85,13 +85,16 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
   const busy = members.filter(member => isBusyStatus(statusOf(statuses, member)))
 
   if (cycle) {
-    // Names only: the chips and typing rows already carry each member's tool and time.
-    return <RoomCycleFooter cycle={cycle} labels={labels} working={busy.map(canonicalMemberName)} />
+    // Names only (the chips and typing rows carry each member's tool and time), and only the members of
+    // the thread whose round the strip shows.
+    const named = cycle.kind === 'working' ? busy.filter(member => cycle.members.includes(member.member_id)) : busy
+
+    return <RoomCycleFooter cycle={cycle} labels={labels} working={named.map(canonicalMemberName)} />
   }
 
   if (!busy.length && !driver?.working) {return null}
 
-  return <RoomCycleFooter cycle={{ kind: 'working', round: 0 }} labels={labels}
+  return <RoomCycleFooter cycle={{ kind: 'working', round: 0, members: [] }} labels={labels}
     text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking} working={[]} />
 }
 

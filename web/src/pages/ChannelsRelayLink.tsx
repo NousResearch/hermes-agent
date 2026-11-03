@@ -12,10 +12,9 @@ const POLL_MS = 3000;
 // Consecutive poll failures before the panel stops waiting and shows the error.
 const MAX_POLL_ERRORS = 5;
 
-/** A code that went inactive before it expired was used: the account may already have been linked. */
-function redeemedBeforeExpiry(link: RelayLinkCode): boolean {
+function hasExpired(link: RelayLinkCode): boolean {
   const expiresAt = link.expires_at ? Date.parse(link.expires_at) : Number.NaN;
-  return !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+  return Number.isFinite(expiresAt) && Date.now() >= expiresAt;
 }
 
 function accountLabel(account: RelayLinkedAccount): string {
@@ -29,6 +28,8 @@ function accountLabel(account: RelayLinkedAccount): string {
  * On such an instance a bot of the user's own is switched off at every gateway start, so the
  * working setup is linking their chat account to the shared bot: mint a one-time code here, send
  * `/link <code>` to the bot, and the relay routes that account's messages to this agent.
+ * A Portal-managed agent takes links only from the Portal (a code minted here would bind nothing),
+ * so there the panel lists the linked accounts and points to the Portal.
  */
 export function RelayLinkPanel({
   platform,
@@ -43,13 +44,16 @@ export function RelayLinkPanel({
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Accounts linked when the code was minted: a redeemed code shows up as one more.
-  const linkedBefore = useRef(0);
+  const [notice, setNotice] = useState("");
+  const [portalUrl, setPortalUrl] = useState<string | null>(null);
+  // Accounts linked when the code was minted: only an id not in this set proves a new link.
+  const linkedBefore = useRef<Set<string>>(new Set());
 
   const loadAccounts = useCallback(async () => {
     try {
       const res = await api.getRelayLinks();
       const row = res.platforms.find((p) => p.platform === platform.id);
+      setPortalUrl(res.managed_by === "portal" ? res.portal_url ?? null : null);
       setAccounts(row?.accounts ?? []);
       setBotUrl(row?.bot_url ?? null);
       setError("");
@@ -91,15 +95,20 @@ export function RelayLinkPanel({
         setLink(null);
         setQrDataUrl("");
         if (!after) return;
-        if (after.length > linkedBefore.current || redeemedBeforeExpiry(link)) {
+        // `inactive` alone means used, expired or unknown: only a new account id proves the link.
+        if (after.some((account) => !linkedBefore.current.has(account.platformUserId))) {
           showToast(`${platform.name} account linked. Message the bot to talk to your agent.`, "success");
-        } else {
+        } else if (hasExpired(link)) {
           setError("That code expired before it was used. Get a new code and try again.");
+        } else {
+          setNotice(
+            `The code is no longer active and no new account appeared. If your ${platform.name} account isn't listed, get a new code and try again.`,
+          );
         }
       } catch (pollError) {
         if (cancelled) return;
         failures += 1;
-        if (failures >= MAX_POLL_ERRORS || !redeemedBeforeExpiry(link)) {
+        if (failures >= MAX_POLL_ERRORS || hasExpired(link)) {
           setLink(null);
           setQrDataUrl("");
           setError(errorMessage(pollError));
@@ -118,9 +127,10 @@ export function RelayLinkPanel({
   const start = async () => {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const res = await api.requestRelayLink(platform.id);
-      linkedBefore.current = accounts?.length ?? 0;
+      linkedBefore.current = new Set((accounts ?? []).map((account) => account.platformUserId));
       setLink(res);
       const target = res.bot_url ?? botUrl;
       setQrDataUrl(
@@ -161,6 +171,7 @@ export function RelayLinkPanel({
         <span className="text-xs text-muted-foreground">
           {platform.name} reaches this agent through the shared Hermes bot. Link your {platform.name}{" "}
           account to it; no bot token needed.
+          {portalUrl && " This agent's accounts are linked from Nous Portal."}
         </span>
       </div>
 
@@ -169,15 +180,26 @@ export function RelayLinkPanel({
           {accounts.map((account) => (
             <li key={account.platformUserId} className="flex items-center justify-between gap-2 text-sm">
               <span className="truncate">{accountLabel(account)}</span>
-              <Button ghost size="sm" onClick={() => void unlink(account)}>
-                Unlink
-              </Button>
+              {!portalUrl && (
+                <Button ghost size="sm" onClick={() => void unlink(account)}>
+                  Unlink
+                </Button>
+              )}
             </li>
           ))}
         </ul>
       )}
 
-      {link ? (
+      {portalUrl ? (
+        <Button
+          size="sm"
+          className="w-fit uppercase"
+          onClick={() => window.open(portalUrl, "_blank", "noopener,noreferrer")}
+          prefix={<ExternalLink className="h-4 w-4" />}
+        >
+          Link accounts in Nous Portal
+        </Button>
+      ) : link ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
           {qrDataUrl && (
             <img
@@ -224,6 +246,7 @@ export function RelayLinkPanel({
         </Button>
       )}
 
+      {notice && <span className="text-xs text-muted-foreground">{notice}</span>}
       {error && <span className="text-xs text-destructive">{error}</span>}
     </div>
   );

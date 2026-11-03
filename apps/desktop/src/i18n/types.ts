@@ -2363,6 +2363,9 @@ export interface Translations extends NoticeTranslations {
       qrAlt: (platform: string) => string
       managed: string
       managedNote: (platform: string) => string
+      managedIntro: string
+      openPortal: string
+      noNewAccount: (platform: string) => string
     }
     telegramQr: {
       title: string

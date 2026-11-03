@@ -217,7 +217,10 @@ export const arCommandCenter = {
       refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
       qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
       managed: 'تتم إدارته عبر Team Gateway',
-      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`
+      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
+      managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
+      openPortal: 'اربط الحسابات في Nous Portal',
+      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
     },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',

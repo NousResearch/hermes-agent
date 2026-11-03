@@ -397,6 +397,9 @@ export interface RelayLinkedAccount {
 }
 
 export interface RelayLinksResponse {
+  /** "portal" when the Nous Portal access setting governs this agent: links are made there. */
+  managed_by?: 'connector' | 'portal'
+  portal_url?: string
   platforms: { accounts: RelayLinkedAccount[]; bot_url: null | string; platform: string }[]
 }
 

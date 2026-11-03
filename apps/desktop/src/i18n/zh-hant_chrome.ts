@@ -241,7 +241,10 @@ export const zhHantChrome = {
     statusDivider: {
       attention: '需要注意',
       working: '進行中',
-      idle: '閒置'
+      idle: '今天閒置',
+      idleRecent: '閒置 1–2 天',
+      idleDays: '閒置 3–6 天',
+      idleWeek: '閒置 7 天以上'
     }
   },
 

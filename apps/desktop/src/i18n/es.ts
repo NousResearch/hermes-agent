@@ -3724,7 +3724,10 @@ export const esOverrides = {
     statusDivider: {
       attention: 'Requiere atención',
       working: 'En progreso',
-      idle: 'Inactivo'
+      idle: 'Inactivo hoy',
+      idleRecent: 'Inactivo 1–2 días',
+      idleDays: 'Inactivo 3–6 días',
+      idleWeek: 'Inactivo 7+ días'
     },
     markAllRead: 'Marcar todo como leído'
   },

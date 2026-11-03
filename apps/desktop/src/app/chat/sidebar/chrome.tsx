@@ -123,17 +123,21 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
 export function SidebarDateDivider({
   action,
   className,
+  count,
   label,
   toggle,
   ...props
 }: React.ComponentProps<'div'> & {
   action?: React.ReactNode
+  /** Sessions under this divider; stays readable when the group is folded. */
+  count?: number
   label: string
   toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
 }) {
   const caption = (
     <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
       {label}
+      {count === undefined ? null : <span className="ml-1.5 font-medium tabular-nums opacity-70">{count}</span>}
     </span>
   )
 

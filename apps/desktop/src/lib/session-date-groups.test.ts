@@ -10,6 +10,8 @@ import {
   groupEntriesByRecency,
   groupEntriesByStatus,
   hideCollapsedGroupRows,
+  idleLane,
+  listGroupDefaultOpen,
   toSessionRows
 } from './session-date-groups'
 
@@ -275,10 +277,25 @@ describe('toSessionRows', () => {
 })
 
 describe('groupEntriesByStatus', () => {
-  const LABELS = { attention: 'Needs attention', idle: 'Idle', working: 'Working' }
+  const LABELS = {
+    attention: 'Needs attention',
+    idle: 'Idle today',
+    idleDays: 'Idle 3–6 days',
+    idleRecent: 'Idle 1–2 days',
+    idleWeek: 'Idle 7+ days',
+    working: 'Working'
+  }
 
-  const byStatus = (entries: SidebarSessionEntry[], states: Record<string, SessionDotState>) =>
-    groupEntriesByStatus(entries, e => states[e.session.id] ?? 'idle', LABELS)
+  // Lane membership by state is tested on sessions touched today; age has its
+  // own cases below.
+  const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo =>
+    makeSessionInfo({ id, last_active: at(2026, 5, 18, 10), message_count: 1, source: 'cli', title: id, ...overrides })
+
+  const byStatus = (entries: SidebarSessionEntry[], states: Record<string, SessionDotState>, nowMs = NOW) =>
+    groupEntriesByStatus(entries, e => states[e.session.id] ?? 'idle', LABELS, nowMs)
+
+  const daysAgo = (id: string, days: number, hour = 10) =>
+    entry(session(id, { last_active: at(2026, 5, 18 - days, hour) }))
 
   const layout = (rows: ReturnType<typeof byStatus>) =>
     rows.map(row => (row.kind === 'divider' ? row.key : row.entry.session.id))
@@ -311,7 +328,7 @@ describe('groupEntriesByStatus', () => {
       'draft',
       'idle'
     ])
-    expect(rows[0]).toMatchObject({ label: 'Needs attention' })
+    expect(rows[0]).toMatchObject({ count: 2, label: 'Needs attention' })
   })
 
   it('leads each lane with the louder state but otherwise keeps the incoming order', () => {
@@ -349,5 +366,80 @@ describe('groupEntriesByStatus', () => {
 
     expect(layout(rows)).toEqual(['status:attention', 'parent', 'child', 'status:idle', 'other'])
     expect(byStatus([], {})).toEqual([])
+  })
+
+  it('splits idle sessions by days untouched: today, 1–2, 3–6, 7+', () => {
+    const rows = byStatus(
+      [
+        daysAgo('d0', 0),
+        daysAgo('d1', 1),
+        daysAgo('d2', 2),
+        daysAgo('d3', 3),
+        daysAgo('d6', 6),
+        daysAgo('d7', 7),
+        daysAgo('d40', 40)
+      ],
+      {}
+    )
+
+    expect(layout(rows)).toEqual([
+      'status:idle',
+      'd0',
+      'status:idleRecent',
+      'd1',
+      'd2',
+      'status:idleDays',
+      'd3',
+      'd6',
+      'status:idleWeek',
+      'd7',
+      'd40'
+    ])
+    expect(rows.find(row => row.kind === 'divider' && row.key === 'status:idleWeek')).toMatchObject({
+      count: 2,
+      label: 'Idle 7+ days'
+    })
+  })
+
+  it('never ages a session that needs the user or is still running', () => {
+    const rows = byStatus([daysAgo('old-input', 30), daysAgo('old-unread', 9), daysAgo('old-run', 12)], {
+      'old-input': 'needs-input',
+      'old-run': 'background',
+      'old-unread': 'unread'
+    })
+
+    expect(layout(rows)).toEqual(['status:attention', 'old-input', 'old-unread', 'status:working', 'old-run'])
+  })
+
+  it('ages a branch cluster by its newest member and keeps it whole', () => {
+    const rows = byStatus([daysAgo('old-parent', 10), { ...daysAgo('fresh-branch', 0), branchStem: '└' }], {})
+
+    expect(layout(rows)).toEqual(['status:idle', 'old-parent', 'fresh-branch'])
+    expect(rows[0]).toMatchObject({ count: 1 })
+  })
+
+  it('moves sessions to the next lane at the 4 AM rollover, not midnight', () => {
+    const lateLastNight = daysAgo('late', 1, 23)
+    const beforeRollover = new Date(2026, 5, 18, 3, 30).getTime()
+    const afterRollover = new Date(2026, 5, 18, 4, 30).getTime()
+
+    expect(layout(byStatus([lateLastNight], {}, beforeRollover))).toEqual(['status:idle', 'late'])
+    expect(layout(byStatus([lateLastNight], {}, afterRollover))).toEqual(['status:idleRecent', 'late'])
+  })
+})
+
+describe('idleLane', () => {
+  it('treats a future timestamp as today and a missing one as the oldest lane', () => {
+    expect(idleLane(NOW + 3_600_000, NOW)).toBe('idle')
+    expect(idleLane(0, NOW)).toBe('idleWeek')
+  })
+})
+
+describe('listGroupDefaultOpen', () => {
+  it('folds only the 7+ day idle lane by default', () => {
+    expect(listGroupDefaultOpen('status:idleWeek')).toBe(false)
+    expect(
+      ['status:attention', 'status:working', 'status:idle', 'status:idleDays', 'today'].every(listGroupDefaultOpen)
+    ).toBe(true)
   })
 })

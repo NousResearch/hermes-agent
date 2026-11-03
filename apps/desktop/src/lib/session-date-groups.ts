@@ -1,7 +1,15 @@
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
-import { calendarBucket, HOUR, localeWeekStartDay, MINUTE, SECOND, type SessionBucket } from '@/lib/time'
 import {
-  SESSION_ATTENTION_GROUP_ORDER,
+  calendarBucket,
+  DAY,
+  HOUR,
+  localeWeekStartDay,
+  MINUTE,
+  nominalDayStart,
+  SECOND,
+  type SessionBucket
+} from '@/lib/time'
+import {
   type SessionAttentionGroup,
   sessionAttentionGroup,
   type SessionDotState,
@@ -15,7 +23,7 @@ import {
 export type SidebarListRow =
   | { bucket: SessionBucket; key: string; kind: 'divider' }
   | { entry: SidebarSessionEntry; kind: 'session' }
-  | { key: string; kind: 'divider'; label: string }
+  | { count?: number; key: string; kind: 'divider'; label: string }
 
 // The row's own age label reads from `last_active || started_at`; bucket off the
 // same value so a divider lines up with what the row actually shows.
@@ -160,42 +168,100 @@ export function groupEntriesByRecency(
   return rows
 }
 
-// Lanes by whose move it is — Needs attention, Working, Idle — under the same
-// dividers the date grouping uses. Inside a lane the louder state leads
+// Idle is split by how long nobody has touched the session, so last week's
+// leftovers stop competing with today's work. Only Idle ages: a session that
+// needs the user or is still running keeps its lane however old it is — age is
+// never evidence that work is finished. Days are nominal (4 AM rollover, same
+// as the date grouping); each lane holds ages >= its floor, oldest floor first.
+export type SessionIdleLane = 'idle' | 'idleDays' | 'idleRecent' | 'idleWeek'
+
+export type SessionStatusLane = Exclude<SessionAttentionGroup, 'idle'> | SessionIdleLane
+
+const IDLE_LANE_MIN_DAYS: readonly (readonly [SessionIdleLane, number])[] = [
+  ['idleWeek', 7],
+  ['idleDays', 3],
+  ['idleRecent', 1],
+  ['idle', 0]
+]
+
+export const SESSION_STATUS_LANE_ORDER: readonly SessionStatusLane[] = [
+  'attention',
+  'working',
+  'idle',
+  'idleRecent',
+  'idleDays',
+  'idleWeek'
+]
+
+// Lanes that start folded until the user opens them: the 7+ day tail is a
+// review pile, not something to scan every time the sidebar opens.
+const DEFAULT_CLOSED_LIST_GROUPS: ReadonlySet<string> = new Set(['status:idleWeek'])
+
+export const listGroupDefaultOpen = (key: string): boolean => !DEFAULT_CLOSED_LIST_GROUPS.has(key)
+
+/** Idle lane for a session last touched at `lastActiveMs`. A future timestamp
+ *  (clock skew) counts as today; a missing one (0) as the oldest lane. */
+export function idleLane(lastActiveMs: number, nowMs: number): SessionIdleLane {
+  const days = Math.round((nominalDayStart(nowMs) - nominalDayStart(lastActiveMs)) / DAY)
+
+  return IDLE_LANE_MIN_DAYS.find(([, min]) => days >= min)?.[0] ?? 'idle'
+}
+
+interface StatusCluster {
+  entries: SidebarSessionEntry[]
+  rank: number
+  state: SessionDotState
+}
+
+// A cluster is as fresh as its newest member, so a branch touched today keeps
+// an old parent out of the stale lanes.
+function clusterLane(cluster: StatusCluster, nowMs: number): SessionStatusLane {
+  const group = sessionAttentionGroup(cluster.state)
+
+  return group === 'idle' ? idleLane(Math.max(...cluster.entries.map(recencyMs)), nowMs) : group
+}
+
+// Lanes by whose move it is — Needs attention, Working, then Idle by age (today,
+// 1–2 days, 3–6 days, 7+ days) — under the same dividers the date grouping
+// uses, each with its session count. Inside a lane the louder state leads
 // (blocked prompt before unread, draft before idle); otherwise the incoming
 // order (the active sort key) is kept. Branch children ride with their parent,
 // as they do there, so a cluster moves as one unit.
 export function groupEntriesByStatus(
   entries: readonly SidebarSessionEntry[],
   stateOf: (entry: SidebarSessionEntry) => SessionDotState,
-  labels: Record<SessionAttentionGroup, string>
+  labels: Record<SessionStatusLane, string>,
+  nowMs = Date.now()
 ): SidebarListRow[] {
-  const lanes = new Map<SessionAttentionGroup, { rank: number; entries: SidebarSessionEntry[] }[]>(
-    SESSION_ATTENTION_GROUP_ORDER.map(group => [group, []])
-  )
-
-  let cluster: SidebarSessionEntry[] | null = null
+  const clusters: StatusCluster[] = []
 
   for (const entry of entries) {
-    if (!entry.branchStem || !cluster) {
+    const last = clusters.at(-1)
+
+    if (entry.branchStem && last) {
+      last.entries.push(entry)
+    } else {
       const state = stateOf(entry)
 
-      cluster = []
-      lanes.get(sessionAttentionGroup(state))!.push({ entries: cluster, rank: sessionStatusRank(state) })
+      clusters.push({ entries: [entry], rank: sessionStatusRank(state), state })
     }
-
-    cluster.push(entry)
   }
 
-  return SESSION_ATTENTION_GROUP_ORDER.flatMap(group => {
-    // Array.prototype.sort is stable, so equal ranks keep the sort key's order.
-    const lane = lanes
-      .get(group)!
-      .sort((a, b) => a.rank - b.rank)
-      .flatMap(c => c.entries)
+  const lanes = new Map<SessionStatusLane, StatusCluster[]>(SESSION_STATUS_LANE_ORDER.map(lane => [lane, []]))
 
-    return lane.length
-      ? [{ key: `status:${group}`, kind: 'divider' as const, label: labels[group] }, ...toSessionRows(lane)]
+  for (const cluster of clusters) {
+    lanes.get(clusterLane(cluster, nowMs))!.push(cluster)
+  }
+
+  return SESSION_STATUS_LANE_ORDER.flatMap(lane => {
+    // Array.prototype.sort is stable, so equal ranks keep the sort key's order.
+    const members = lanes.get(lane)!.sort((a, b) => a.rank - b.rank)
+
+    return members.length
+      ? [
+          { count: members.length, key: `status:${lane}`, kind: 'divider' as const, label: labels[lane] },
+          ...toSessionRows(members.flatMap(c => c.entries))
+        ]
       : []
   })
 }

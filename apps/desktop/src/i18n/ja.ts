@@ -2274,7 +2274,10 @@ export const jaOverrides = {
     statusDivider: {
       attention: '要対応',
       working: '実行中',
-      idle: 'アイドル'
+      idle: 'アイドル（今日）',
+      idleRecent: 'アイドル（1〜2日）',
+      idleDays: 'アイドル（3〜6日）',
+      idleWeek: 'アイドル（7日以上）'
     }
   },
 

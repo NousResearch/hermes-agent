@@ -2549,7 +2549,10 @@ export const ruOverrides = {
     statusDivider: {
       attention: 'Требует внимания',
       working: 'Работает',
-      idle: 'Бездействие'
+      idle: 'Бездействие сегодня',
+      idleRecent: 'Бездействие 1–2 дня',
+      idleDays: 'Бездействие 3–6 дней',
+      idleWeek: 'Бездействие 7+ дней'
     },
     markAllRead: 'Отметить все как прочитанные'
   },

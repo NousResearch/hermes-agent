@@ -3290,7 +3290,10 @@ export const en: Translations = {
     statusDivider: {
       attention: 'Needs attention',
       working: 'Working',
-      idle: 'Idle'
+      idle: 'Idle today',
+      idleRecent: 'Idle 1–2 days',
+      idleDays: 'Idle 3–6 days',
+      idleWeek: 'Idle 7+ days'
     },
     markAllRead: 'Mark all as read'
   },

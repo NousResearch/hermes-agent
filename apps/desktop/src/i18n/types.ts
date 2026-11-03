@@ -2877,6 +2877,9 @@ export interface Translations extends NoticeTranslations {
       attention: string
       working: string
       idle: string
+      idleRecent: string
+      idleDays: string
+      idleWeek: string
     }
     markAllRead: string
   }

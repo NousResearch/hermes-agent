@@ -3731,7 +3731,10 @@ export const deOverrides = {
     statusDivider: {
       attention: 'Handlungsbedarf',
       working: 'In Arbeit',
-      idle: 'Inaktiv'
+      idle: 'Heute inaktiv',
+      idleRecent: 'Inaktiv 1–2 Tage',
+      idleDays: 'Inaktiv 3–6 Tage',
+      idleWeek: 'Inaktiv 7+ Tage'
     },
     markAllRead: 'Alle als gelesen markieren'
   },

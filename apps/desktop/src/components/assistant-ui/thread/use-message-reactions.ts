@@ -6,6 +6,7 @@ import { type MouseEvent, useCallback } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { QUICK_REACTIONS, toggleMessageReaction } from '@/store/reactions'
@@ -144,7 +145,7 @@ export function useTapbackDoubleClick(
 
   const onDoubleClick = useCallback(
     (event: MouseEvent<HTMLElement>) => {
-      if (!isTapbackDoubleClick(event)) {
+      if (isTouchInteraction(event.nativeEvent) || !isTapbackDoubleClick(event)) {
         return
       }
 

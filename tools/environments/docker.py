@@ -25,7 +25,7 @@ from typing import Optional
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
 from tools.terminal_tool_config import (
-    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount,
+    _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -110,18 +110,15 @@ def _sanitize_label_value(value: str) -> str:
 
 
 # task_id -> host directory name; shared with every backend persisting per-task
-# state on the host (Singularity overlays) so the mapping is fixed in one place.
+# state on the host (the singularity plugin's overlays) so the mapping is fixed in one place.
 _sandbox_dir_name = sanitize_task_id_for_path
 
 
 def _get_active_profile_name() -> str:
-    """Active Hermes profile name, or ``"default"`` on any error. Resolved at container-create
-    time so a container stays tagged with its creator even if the process switches profiles."""
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "default"
-    except Exception:
-        return "default"
+    """Active Hermes profile name (the container key's own lookup), or ``"default"`` on error. Resolved
+    at container-create time so a container stays tagged with its creator even if the process switches
+    profiles."""
+    return home_profile_name()
 
 
 def _container_identity(shared_key: str = "") -> str:
@@ -339,7 +336,7 @@ _BASE_SECURITY_ARGS = [
 # Fork-bomb guard, applied only when the pids cgroup controller is available. The pids cgroup counts
 # THREADS, and a sandbox that hosts the Bot Screen runs a desktop in here: measured on
 # hermes-sandbox:desktop, the idle container is 2 tasks, Xvnc + Xfce + dbus 44, one Chromium with one
-# tab 212, plus the agent's own agent-browser Chromium with two tabs 488. The old 256 was hit in normal
+# tab 212, plus the agent's own Chromium with two tabs 488. The old 256 was hit in normal
 # use and every further `docker exec` (browser command, cua-driver, thumbnail, CDP forward) died with
 # runc's "procReady not received". 2048 leaves room for a working browser and is still three orders of
 # magnitude under the host's pid_max.
@@ -649,7 +646,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
-    _sudo_nopasswd_probe_supported = True
+    _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:

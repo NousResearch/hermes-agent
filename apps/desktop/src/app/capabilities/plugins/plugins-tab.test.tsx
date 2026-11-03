@@ -297,6 +297,31 @@ describe('PluginsTab', () => {
     })
   })
 
+  it('badges "Install here" with the catalog tier of the package it came from', async () => {
+    seedCatalog([{ ...weatherEntry, name: 'hermes-media-studio', tier: 'official' }])
+    $pluginRecords.set({
+      media: {
+        id: 'media',
+        name: 'Media Studio',
+        kind: 'disk',
+        status: 'loaded',
+        packageName: 'hermes-media-studio',
+        packageOrigin: {
+          catalogName: 'hermes-media-studio',
+          repo: 'https://github.com/NousResearch/hermes-media-studio.git',
+          sha: 'abc'
+        }
+      }
+    })
+
+    renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
+    screen.getByRole('button', { name: 'Install here' }).click()
+
+    await waitFor(() => {
+      expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'hermes-media-studio', tier: 'official' })
+    })
+  })
+
   it('disables "Install here" when the package has no known origin (hand-copied folder)', () => {
     $pluginRecords.set({
       media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
@@ -326,7 +351,7 @@ describe('PluginsTab', () => {
 
     await selectCatalogEntry(weatherEntry.name)
     expect($pluginInstallRequest.get()).toBeNull()
-    fireEvent.click(screen.getByRole('switch', { name: `Add ${weatherEntry.name}` }))
+    fireEvent.click(screen.getByRole('button', { name: `Install ${weatherEntry.name}` }))
 
     expect($pluginInstallRequest.get()).toMatchObject({
       catalogName: weatherEntry.name,
@@ -408,6 +433,34 @@ describe('PluginsTab', () => {
     $pluginDecisions.set({})
   })
 
+  it('shows a package switch Off while its desktop half is off, and one click turns both halves on', async () => {
+    publishPlugin(
+      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+    )
+    $agentPlugins.set([{ description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }])
+    requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+      params?.action === 'toggle'
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        : { plugins: [] }) as never)
+
+    renderPlugins({ profile: null })
+
+    const card = screen.getByRole('switch', { name: 'Meter' })
+    expect(card.getAttribute('aria-checked')).toBe('false')
+
+    card.click()
+
+    await waitFor(() => expect(card.getAttribute('aria-checked')).toBe('true'))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+    )
+    expect($pluginDecisions.get()['meter-ui']).toBe(true)
+    requestGateway.mockImplementation(async () => ({ plugins: [] }))
+    $pluginDecisions.set({})
+  })
+
   it('leaves a desktop half the user switched off alone when its agent half is turned on', async () => {
     $pluginDecisions.set({ 'meter-ui': false })
     publishPlugin(
@@ -471,7 +524,7 @@ describe('PluginsTab', () => {
     renderPlugins({ profile: null })
 
     await selectCatalogEntry(entry.name)
-    fireEvent.click(screen.getByRole('switch', { name: `Add ${entry.name}` }))
+    fireEvent.click(screen.getByRole('button', { name: `Install ${entry.name}` }))
 
     expect($pluginInstallRequest.get()).toMatchObject({
       catalogName: entry.name,

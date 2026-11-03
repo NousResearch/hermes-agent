@@ -28,7 +28,7 @@ _INPUT_FILES = (
     "scripts/bundles/desktop_prepare.py", "scripts/bundles/desktop_toolchain.py",
     "scripts/bundles/desktop_inputs.py", "scripts/bundles/native.py", "scripts/bundles/native_prepared.py",
     "scripts/bundles/native_build.py",
-    "scripts/build/node-deps.mjs", "scripts/build/icon_environment.py",
+    "scripts/build/node-deps.mjs", "scripts/build/electron-runtime.mjs", "scripts/build/icon_environment.py",
     "pm/native_build.py", "scripts/windows-build-deps.ps1",
     "apps/desktop/scripts/stage-native-deps.mjs", "apps/desktop/scripts/prepare-packaging-tools.mjs",
     "apps/desktop/scripts/build-command-screenshot-monitor.mjs",

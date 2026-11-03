@@ -364,6 +364,11 @@ async def _start_gateway_start_control_socket(runner):
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
+        # The Webapp's verbs answer from the socket's first moment ("starting" until the listener
+        # settles): a client polling a restarting gateway must never read "unknown verb" as a failure.
+        from gateway.webapp_listener import register_control_verbs
+        from hermes_constants import get_hermes_home
+        register_control_verbs(runner, get_hermes_home(), server=_control_server)
         if not await _control_server.start():
             _control_server = None
         else:
@@ -409,6 +414,8 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
         # back to the primary's routed adapters or fails closed — the job still FIRES.
         cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        # A secondary bot that dropped is still that profile's own: never borrow meanwhile.
+        cron_start_kwargs["profile_bot_platforms"] = getattr(runner, "_profile_bot_platforms", None)
         # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
         # name); naming it keeps the ticker from routing a secondary's cron through that bot
         # and lets a named multiplexer's own jobs reuse its live adapters.
@@ -574,49 +581,13 @@ def _browse_reconcile_reserve_wait_s() -> float:
     return BROWSE_RECONCILE_BUDGET_S + 2.0
 
 
-def _conflicting_homes(homes):
-    """The homes whose gateway.lock another holder has right now: each probed alone with its own open
-    file description and released at once (the all-or-nothing reserve does not say which failed).
-    A home freed meanwhile is simply not listed; the next reserve attempt takes it."""
-    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
-    conflicting = []
-    for home in homes:
-        probe = ProfileOwnership()
-        try:
-            probe.reserve([home])
-        except OwnershipConflict:
-            conflicting.append(home)
-        finally:
-            probe.close()
-    return conflicting
-
-
 def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
-    """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
-    published its lock record (flock taken, record unwritten). Only a positively identified holder
-    that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
-    from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
-    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    """Boot's all-or-nothing reserve of every served home, waiting out transient holders (a browse
+    reconcile, an unpublished record, a client's lock probe) for up to the browse window."""
+    from gateway.runtime_ownership import reserve_waiting_out_transient_holders
     if wait_s is None:
         wait_s = _browse_reconcile_reserve_wait_s()
-    deadline = time.monotonic() + wait_s
-    logged = False
-    while True:
-        try:
-            return ownership.reserve(homes)
-        except OwnershipConflict:
-            # Only the homes that actually conflict decide: a real owner on any of them refuses at
-            # once, even while another home is mid-browse (multiplexer boot, all-or-nothing).
-            conflicting = _conflicting_homes(homes)
-            holders = [h for h in conflicting
-                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
-            if not holders or len(holders) < len(conflicting) or time.monotonic() >= deadline:
-                raise
-            if not logged:
-                logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
-                            holders[0], wait_s)
-                logged = True
-            time.sleep(0.1)
+    return reserve_waiting_out_transient_holders(ownership, homes, wait_s=wait_s)
 
 
 def _start_gateway_reserve_profiles(profile_homes) -> bool:
@@ -750,6 +721,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
+    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()
 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
@@ -808,8 +781,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_startup import recover_left_core_at_gateway_start
         await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
 
-        runner = GatewayRunner(resolved_config)
-        from gateway.run_runtime import initialize_gateway_runtime
+        from gateway.run_runtime import initialize_gateway_runtime, pin_launch_store, unpin_launch_store
+        _launch_store_pin = await asyncio.to_thread(pin_launch_store)
+        try:
+            runner = GatewayRunner(resolved_config)
+        finally:
+            unpin_launch_store(_launch_store_pin)
         await initialize_gateway_runtime(runner)
         # Multiplex: swap the launch-home file handlers for per-profile routers so each profile's records
         # land in its own logs/. Must run after the runner resolved (possibly None) config and setup_logging.

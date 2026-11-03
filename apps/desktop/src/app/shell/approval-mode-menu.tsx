@@ -33,7 +33,10 @@ export function useApprovalModeStatusbarItem(
   profile: string,
   requestGateway: ApprovalModeRequester,
   gatewayState: string,
-  sessionYolo?: SessionYoloOptions
+  sessionYolo?: SessionYoloOptions,
+  // Identity of the route the profile is served on (the active socket): a
+  // move between gateways that serve the same profile name re-reads the mode.
+  routeIdentity?: unknown
 ): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.approvalMode
@@ -68,7 +71,7 @@ export function useApprovalModeStatusbarItem(
     }
 
     void syncApprovalModeForProfile(requestGateway, profile).catch(() => undefined)
-  }, [gatewayState, profile, requestGateway])
+  }, [gatewayState, profile, requestGateway, routeIdentity])
 
   // Global "off" already bypasses everything; the per-chat flag adds nothing
   // on top of it, so the trigger reads the mode and the row is inert.

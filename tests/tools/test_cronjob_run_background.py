@@ -12,6 +12,7 @@ Sync fallbacks preserved:
   - async delivery unsupported (one-shot runners, cron child sessions)
   - dispatch pool at capacity (claim already taken — must not strand it)
 """
+import asyncio
 import json
 import threading
 from unittest.mock import patch
@@ -250,6 +251,39 @@ class TestInFlightDedupe:
 
         assert res["success"] is False
         assert res["error"] == "worker owner exited"
+
+    def test_run_claimed_job_is_safe_inside_running_event_loop(self):
+        """Manual tool dispatch can run on an async host's event-loop thread."""
+        from tools.cronjob_tools import _run_claimed_job
+
+        def loop_sensitive_run(job, **_kwargs):
+            async def finish():
+                job["execution_id"] = "exec-loop-safe"
+                return True
+
+            coro = finish()
+            try:
+                return asyncio.run(coro)
+            except Exception:
+                coro.close()
+                raise
+
+        async def invoke():
+            with patch("cron.scheduler.run_one_job", side_effect=loop_sensitive_run), \
+                 patch("cron.executions.get_execution", return_value={
+                     "id": "exec-loop-safe",
+                     "status": "completed",
+                     "error": None,
+                 }), \
+                 patch("tools.cronjob_tools.get_job", return_value={
+                     "last_status": "ok",
+                     "last_error": None,
+                 }):
+                return _run_claimed_job(_job("job-bg-loop-safe"))
+
+        result = asyncio.run(invoke())
+
+        assert result["success"] is True
 
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job

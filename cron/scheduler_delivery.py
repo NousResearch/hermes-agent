@@ -1907,6 +1907,17 @@ def _deliver_result(
                                                 cleaned_delivery_content, diagnostic=for_failure)
             if local_error:
                 delivery_errors.append(local_error)
+            if media_files:
+                # The note takes text only (a local chat has no push transport, and it renders the
+                # delivered row as plain text, not ``renderMediaTags``), so the tag stripped above
+                # is gone here. Record the loss as every other lane does, or the run reports a
+                # clean ``delivered`` while the attachment is missing.
+                _note_target_error(
+                    job,
+                    f"{len(media_files)} media attachment(s) not delivered to local chat "
+                    f"{target['chat_id']} (a local chat cannot receive attachments; "
+                    "the transcript keeps the original reply)",
+                    delivery_errors)
             continue
 
         t = _prepare_target_delivery(

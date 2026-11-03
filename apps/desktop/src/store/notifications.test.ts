@@ -3,7 +3,14 @@ import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import {
+  $notifications,
+  clearNotifications,
+  isDiskFullErrorMessage,
+  notify,
+  notifyError,
+  scrubLocalPaths
+} from './notifications'
 import { $backendRestartRequest, $routeRequest } from './recovery-requests'
 
 beforeEach(() => {
@@ -225,4 +232,39 @@ test('a launch-credentials refusal says the key changed and offers a new chat', 
   clearNotifications()
   notifyError(new Error('launch_credentials_unavailable'), en.desktop.modelSwitchFailed)
   expect(lastMessage()).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+})
+
+test('a plain error toast clears itself, an error with an action stays', () => {
+  vi.useFakeTimers()
+
+  try {
+    notify({ kind: 'error', message: 'Plain failure' })
+    notify({ action: { label: 'Fix', onClick: () => undefined }, kind: 'error', message: 'Needs a click' })
+    expect($notifications.get()).toHaveLength(2)
+    vi.advanceTimersByTime(8_500)
+    expect($notifications.get().map(item => item.message)).toEqual(['Needs a click'])
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('the same error fired twice replaces itself instead of stacking', () => {
+  notify({ kind: 'error', message: 'Same thing', title: 'Oops' })
+  notify({ kind: 'error', message: 'Same thing', title: 'Oops' })
+  expect($notifications.get()).toHaveLength(1)
+})
+
+test('two toasts with the same words but different buttons stay separate', () => {
+  notify({ kind: 'error', message: 'Same thing', title: 'Oops' })
+  notify({ action: { label: 'Fix', onClick: () => undefined }, kind: 'error', message: 'Same thing', title: 'Oops' })
+  expect($notifications.get()).toHaveLength(2)
+})
+
+test('local paths are cut from the headline and kept under Details', () => {
+  notify({ kind: 'error', message: 'No key in ~/Code/stage/home/.env or /home/someone/x/config.yaml' })
+
+  const [toast] = $notifications.get()
+  expect(toast?.message).toBe('No key in …/.env or …/config.yaml')
+  expect(toast?.detail).toContain('~/Code/stage/home/.env')
+  expect(scrubLocalPaths('ratio 3/4, ~ 5 min')).toBe('ratio 3/4, ~ 5 min')
 })

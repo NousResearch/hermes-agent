@@ -59,12 +59,20 @@ const timers = new Map<string, number>()
 
 export const $notifications = atom<AppNotification[]>([])
 
-function defaultDuration(kind: NotificationKind) {
+// Errors and warnings that ask for a click (restart, sign in, open keys) stay
+// until answered; the rest are feedback and clear themselves. A plain error
+// used to stay forever, so a chain of them stayed on screen for as long as the
+// window did — nothing timed them out, only an explicit dismiss or a session
+// switch cleared them.
+const ERROR_DURATION_MS = 8_000
+const AMBIENT_DURATION_MS = 5_000
+
+function defaultDuration(kind: NotificationKind, action?: NotificationAction) {
   if (kind === 'error' || kind === 'warning') {
-    return 0
+    return action ? 0 : ERROR_DURATION_MS
   }
 
-  return 5_000
+  return AMBIENT_DURATION_MS
 }
 
 // Only interruptions worth a top-center toast: errors, warnings, and anything
@@ -80,6 +88,33 @@ function defaultPlacement(kind: NotificationKind, action?: NotificationAction): 
   }
 
   return 'bottom-right'
+}
+
+// A toast headline is read at a glance, so local file paths are cut down to
+// their last segment ("…/.env"); the untouched text moves into Details.
+const LOCAL_PATH_RE = /(?:~|\/home\/[^/\s'"`]+|\/Users\/[^/\s'"`]+|[A-Za-z]:\\Users\\[^\\\s'"`]+)(?:[/\\][^/\\\s'"`),;]+)+/g
+
+export function scrubLocalPaths(text: string): string {
+  return text.replace(LOCAL_PATH_RE, match => {
+    const parts = match.split(/[/\\]/).filter(Boolean)
+
+    return `…/${parts[parts.length - 1] ?? ''}`
+  })
+}
+
+// Longer than this and the full text is repeated under Details.
+const MESSAGE_CLAMP_CHARS = 160
+
+function tidyToastCopy(input: NotificationInput): Pick<NotificationInput, 'detail' | 'message' | 'title'> {
+  const rawMessage = input.message
+  const message = scrubLocalPaths(rawMessage)
+  const title = input.title === undefined ? undefined : scrubLocalPaths(input.title)
+  const changed = message !== rawMessage || title !== input.title
+  const long = rawMessage.length > MESSAGE_CLAMP_CHARS
+
+  const detail = input.detail ?? (changed || long ? [input.title, rawMessage].filter(Boolean).join('\n') : undefined)
+
+  return { detail, message, title }
 }
 
 function cleanErrorText(value: string) {
@@ -314,7 +349,23 @@ function showNotification(input: NotificationInput, errorCategory: ErrorToastCat
     recordFriction('error_toast', errorCategory)
   }
 
-  const id = input.id ?? `${Date.now()}-${notificationCounter++}`
+  const copy = tidyToastCopy(input)
+
+  // The same error fired twice in a row replaces itself instead of stacking a
+  // second copy. Two toasts whose buttons differ are not the same toast.
+  const repeat = input.id
+    ? undefined
+    : $notifications
+        .get()
+        .find(
+          item =>
+            item.kind === kind &&
+            item.title === copy.title &&
+            item.message === copy.message &&
+            item.action?.label === input.action?.label
+        )
+
+  const id = input.id ?? repeat?.id ?? `${Date.now()}-${notificationCounter++}`
 
   const notification: AppNotification = {
     id,
@@ -322,9 +373,9 @@ function showNotification(input: NotificationInput, errorCategory: ErrorToastCat
     icon: input.icon,
     accentColor: input.accentColor,
     meta: input.meta,
-    title: input.title,
-    message: input.message,
-    detail: input.detail,
+    title: copy.title,
+    message: copy.message,
+    detail: copy.detail,
     action: input.action,
     secondaryAction: input.secondaryAction,
     onDismiss: input.onDismiss,
@@ -338,7 +389,7 @@ function showNotification(input: NotificationInput, errorCategory: ErrorToastCat
   // Visual depth is capped by CardStack, not by discarding queued notifications.
   $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)])
 
-  const duration = input.durationMs ?? defaultDuration(kind)
+  const duration = input.durationMs ?? defaultDuration(kind, input.action)
 
   if (duration > 0) {
     timers.set(

@@ -1,0 +1,34 @@
+name: media-scout
+version: "0.2.0"
+repo: https://github.com/dakshagrawa/hermes-workflows
+sha: d28e82c3b63d2fb7da3c5ce29497521582a1ced6
+subdir: plugins/media-scout
+description: >-
+  Experimental, Linux-scoped social evidence bookkeeping for Instagram,
+  YouTube, Threads, TikTok, public Snapchat, X/Twitter, Reddit, Facebook,
+  Vimeo and Bluesky: trusted Discord admission, extraction claims, a bundled
+  skill and native Kanban reviewer handoff. Disclosure — stores profile-local
+  SQLite, original source text and evidence under plugin-data/media-scout;
+  source material may be private. Uses the native terminal tool for bounded
+  Hermes Kanban CLI commands and notification/wake subscriptions. Automatic
+  review, owned-artifact cleanup and thread naming are separate opt-ins.
+  Naming additionally requires gateway.platform_actions consent and performs
+  a native bot platform write; it is not a sandbox. Reviewer tasks retain a
+  compact evidence copy under native queue retention. No direct network/model
+  client, credential-store access, telemetry, daemon, self-updater or runtime
+  core override. Existing admitted tools acquire content; URL recognition is
+  not extraction qualification. Tested with real SDK/synthetic queue and naming
+  fixtures, not live Discord, source extraction or model delivery.
+maintainer: dakshagrawa
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/dakshagrawa/hermes-workflows/blob/d28e82c3b63d2fb7da3c5ce29497521582a1ced6/plugins/media-scout/README.md
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - media_scout
+  provides_hooks:
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

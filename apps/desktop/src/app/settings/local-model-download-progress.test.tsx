@@ -90,8 +90,36 @@ describe('LocalModelDownloadActions', () => {
   it('paused hides Resume when can_resume is not explicitly true', () => {
     renderActions(job({ status: 'paused' }))
 
-    expect(screen.getByText(/paused/i)).toBeTruthy()
+    // The parked state is labelled by the shared status line (downloadStatusText
+    // below), not by an extra control-row badge.
     expect(screen.queryByRole('button', { name: /resume/i })).toBeNull()
+  })
+
+  it('pausing turns the same button into Resume, and resuming turns it back — nothing else appears', () => {
+    const view = (current: LocalRuntimeJob) => (
+      <I18nProvider configClient={null}>
+        <LocalModelDownloadActions job={current} />
+      </I18nProvider>
+    )
+
+    const running = job({ can_cancel: true, can_pause: true })
+    const parked = job({ can_cancel: true, can_resume: true, status: 'paused' })
+    const labels = () => screen.getAllByRole('button').map(button => button.textContent?.trim())
+
+    const { rerender } = render(view(running))
+    const toggle = screen.getByRole('button', { name: /pause/i })
+    expect(labels()).toEqual(['Pause', 'Cancel'])
+
+    rerender(view(parked))
+    expect(screen.getByRole('button', { name: /resume/i })).toBe(toggle)
+    expect(labels()).toEqual(['Resume', 'Cancel'])
+    // No badge joins the row while parked: an extra element is what pushed the
+    // controls past a narrow browse tile's outline.
+    expect(toggle.parentElement?.childElementCount).toBe(2)
+
+    rerender(view(running))
+    expect(screen.getByRole('button', { name: /pause/i })).toBe(toggle)
+    expect(labels()).toEqual(['Pause', 'Cancel'])
   })
 
   it('a paused:false response is a benign race — truth is re-kicked, no false failure toast', async () => {

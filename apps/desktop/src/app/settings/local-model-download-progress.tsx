@@ -15,8 +15,6 @@ import {
 import { notifyError, readableError } from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
-import { Pill } from './primitives'
-
 interface ProgressBarProps {
   percent: number | undefined
   paused?: boolean
@@ -185,27 +183,24 @@ interface DownloadControlProps extends LocalModelDownloadProps {
 // backend's explicit verdict (can_pause, can_resume, can_cancel) — nothing is
 // gated client-side, so an older backend that never sends a flag shows no
 // control for it rather than a button that 404s.
+//
+// One layout for every state: [Pause ⇄ Resume] [Cancel]. Pausing flips the
+// first button in place instead of swapping in a different row — the parked
+// state is already labelled by the shared status line and the grey bar — so
+// the controls never grow past a narrow browse tile, and the row wraps inside
+// its container rather than spill out when a locale's labels run long.
 export function LocalModelDownloadActions({ job, owner }: DownloadControlProps): ReactElement | null {
-  const { t } = useI18n()
-  const copy = t.settings.localModels
   const paused = job.status === 'paused'
 
   const showPauseResume = paused ? job.can_resume === true : job.pause_requested === true || job.can_pause === true
   const showCancel = job.cancel_requested === true || job.can_cancel === true
 
-  if (!paused && (job.status !== 'running' || (!showPauseResume && !showCancel))) {
+  if ((!paused && job.status !== 'running') || (!showPauseResume && !showCancel)) {
     return null
   }
 
   return (
-    <div className="flex items-center justify-end gap-2">
-      {paused && (
-        <Pill tone="warn">
-          <Pause className="mr-1 size-3" />
-          {copy.downloadPausedLabel}
-        </Pill>
-      )}
-
+    <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
       {showPauseResume && <PauseResumeButton job={job} owner={owner} />}
 
       {showCancel && <CancelDownloadButton job={job} owner={owner} />}

@@ -1638,11 +1638,10 @@ def check_respawn_guard(
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
+    #    Exception: a handoff or native wake AFTER the newest PR comment
+    #    (operator reassign, changes_requested, review reopen, promote, unblock)
+    #    explicitly resumes work on THAT PR (#111910), not duplicate implementation.
+    #    A crash/reclaim is not a handoff; the worker that opened the PR stays guarded.
     pr_times = [t for t, c in _rows_since(conn, "task_comments", task_id, now - _RESPAWN_GUARD_PR_WINDOW,
                                           cols=", body", unreadable=now)  # duplicate-PR risk: fail closed
                 if _RESPAWN_GUARD_PR_URL_RE.search(_kb._lossy_text(c["body"]) or "")]
@@ -1650,7 +1649,8 @@ def check_respawn_guard(
         # Strictly after: a same-second tie stays guarded (fail closed).
         if any(_is_handoff_event(e["kind"], e["payload"]) for _, e in _rows_since(
                 conn, "task_events", task_id, max(pr_times),
-                "AND kind IN ('assigned', 'changes_requested', 'review_reopened')", cols=", kind, payload", strict=True)):
+                "AND kind IN ('assigned', 'changes_requested', 'review_reopened', "
+                "'promoted', 'promoted_manual', 'unblocked')", cols=", kind, payload", strict=True)):
             return None
         return "active_pr"
 

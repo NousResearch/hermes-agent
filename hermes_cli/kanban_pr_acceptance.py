@@ -157,7 +157,13 @@ def collect_acceptance(contract: str, published_pr: str | None,
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
             # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
             legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+            # ``filter=latest`` is per check suite, so two workflow runs at the same
+            # head can still return the cancelled attempt and its successful rerun.
+            # Branch protection judges the newest run for a context+app; older
+            # attempts must not poison it. Check-run IDs, like legacy status IDs,
+            # identify creation order for otherwise identical exact-head evidence.
+            selected = ([max(matching, key=lambda r: r["id"])] if matching else []) + (
+                [max(legacy, key=lambda s: s["id"])] if legacy else [])
             if not selected:
                 outcomes.append("missing")
                 receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})

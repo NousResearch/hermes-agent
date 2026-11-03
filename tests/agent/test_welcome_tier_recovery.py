@@ -295,6 +295,122 @@ class TestFreeTierCooldownCutoff:
         assert "refreshes in about 2 minutes" in result["final_response"]
         assert result["free_tier"]["kind"] == "rate_limited"
 
+    def test_an_exhausted_paid_cooldown_names_one_reset_without_wait_a_minute(self):
+        """#140737: the real terminal path must not contradict its appended reset line."""
+        from agent.turn_recovery import max_retries_exhausted_result
+
+        err = _plain_429(90)
+        route = "https://openrouter.ai/api/v1"
+        classified = classify_api_error(
+            err, provider="openrouter", base_url=route, model="m", api_key="sk-or-test")
+        agent = TestTerminalResultsCarryTheFreeTierBlock._terminal_agent()
+        agent.provider, agent.base_url, agent.model, agent.api_key = "openrouter", route, "m", "sk-or-test"
+        agent._extract_api_error_context = extract_api_error_context
+        result = max_retries_exhausted_result(
+            agent, err, classified, attempts=3, is_rate_limited=True, error_msg="429",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="openrouter", base_url=route, model="m")
+        copy = result["final_response"]
+        assert "reset time below" in copy
+        assert "Wait a minute" not in copy
+        assert copy.count("Limit resets at") == 1
+        assert result["failure_resets_at"] > 0
+
+    def test_copy_and_stamp_use_the_same_reset_source(self):
+        """A reset known only to the surface parser still suppresses contradictory retry copy."""
+        import time
+
+        from agent.turn_recovery import max_retries_exhausted_result
+
+        err = _gateway_error(429, {"error": {"message": "Rate limit exceeded"}})
+        route = "https://openrouter.ai/api/v1"
+        classified = classify_api_error(
+            err, provider="openrouter", base_url=route, model="m", api_key="sk-or-test")
+        agent = TestTerminalResultsCarryTheFreeTierBlock._terminal_agent()
+        agent.provider, agent.base_url, agent.model, agent.api_key = "openrouter", route, "m", "sk-or-test"
+        reset_at = time.time() + 90
+        agent._extract_api_error_context = lambda _: {"reset_at": reset_at}
+        result = max_retries_exhausted_result(
+            agent, err, classified, attempts=3, is_rate_limited=True, error_msg="429",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="openrouter", base_url=route, model="m")
+        copy = result["final_response"]
+        assert "Send /retry after the reset time below" in copy
+        assert "Wait a minute" not in copy
+        assert copy.count("Limit resets at") == 1
+
+    def test_classifier_only_reset_is_used_for_both_copy_and_stamp(self):
+        """A reset the classifier alone recognizes still produces one truthful reset line."""
+        from agent.turn_recovery import max_retries_exhausted_result
+
+        err = _gateway_error(429, {
+            "retry_after": 90,
+            "error": {"message": "Rate limit exceeded"},
+        })
+        route = "https://openrouter.ai/api/v1"
+        classified = classify_api_error(
+            err, provider="openrouter", base_url=route, model="m", api_key="sk-or-test")
+        assert classified.error_context.get("reset_at")
+        agent = TestTerminalResultsCarryTheFreeTierBlock._terminal_agent()
+        agent.provider, agent.base_url, agent.model, agent.api_key = "openrouter", route, "m", "sk-or-test"
+        agent._extract_api_error_context = extract_api_error_context
+        result = max_retries_exhausted_result(
+            agent, err, classified, attempts=3, is_rate_limited=True, error_msg="429",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="openrouter", base_url=route, model="m")
+        copy = result["final_response"]
+        assert "Send /retry after the reset time below" in copy
+        assert "Wait a minute" not in copy
+        assert copy.count("Limit resets at") == 1
+        assert result["failure_resets_at"] > 0
+
+    def test_a_non_limit_reason_with_a_reset_header_does_not_promise_a_reset_line(self):
+        """A 503 'overloaded' with a known reset never gets the appended line (the stamp only
+        fires for limit reasons), so the copy must not promise one."""
+        import time
+
+        from agent.turn_recovery import max_retries_exhausted_result
+
+        err = _gateway_error(503, {"error": {"message": "service is overloaded"}})
+        route = "https://openrouter.ai/api/v1"
+        classified = classify_api_error(
+            err, provider="openrouter", base_url=route, model="m", api_key="sk-or-test")
+        assert classified.reason.value == "overloaded"
+        agent = TestTerminalResultsCarryTheFreeTierBlock._terminal_agent()
+        agent.provider, agent.base_url, agent.model, agent.api_key = "openrouter", route, "m", "sk-or-test"
+        agent._extract_api_error_context = lambda _: {"reset_at": time.time() + 90}
+        result = max_retries_exhausted_result(
+            agent, err, classified, attempts=3, is_rate_limited=True, error_msg="503",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="openrouter", base_url=route, model="m")
+        copy = result["final_response"]
+        assert "reset time below" not in copy
+        assert "resets soon" not in copy
+        assert "it looks temporarily unavailable" in copy
+        assert "failure_resets_at" not in result
+
+    def test_an_exact_sixty_second_cooldown_keeps_the_band_on_the_real_path(self):
+        """#140737: sub-second drift between the reset's resolution and the copy must not
+        drop an exact one-minute cooldown out of the band the appended line rounds to."""
+        from agent.turn_recovery import max_retries_exhausted_result
+
+        err = _plain_429(60)
+        route = "https://openrouter.ai/api/v1"
+        classified = classify_api_error(
+            err, provider="openrouter", base_url=route, model="m", api_key="sk-or-test")
+        agent = TestTerminalResultsCarryTheFreeTierBlock._terminal_agent()
+        agent.provider, agent.base_url, agent.model, agent.api_key = "openrouter", route, "m", "sk-or-test"
+        agent._extract_api_error_context = extract_api_error_context
+        result = max_retries_exhausted_result(
+            agent, err, classified, attempts=3, is_rate_limited=True, error_msg="429",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="openrouter", base_url=route, model="m")
+        copy = result["final_response"]
+        assert "Send /retry after the reset time below" in copy
+        assert "Wait a minute" not in copy
+        assert copy.count("Limit resets at") == 1
+        assert result["failure_resets_at"] > 0
+
     def test_a_subagent_of_a_desktop_session_keeps_waiting(self):
         """The child runs in a copy of the parent's context, so it reads the parent's source."""
         from agent.turn_recovery import free_tier_cooldown_ends_turn

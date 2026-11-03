@@ -1,12 +1,14 @@
 name: scaleway-provider
 repo: https://github.com/reda-maizate/hermes-scaleway-provider
-sha: e453e6d273a480b784b21c209849458a86910d9b
-description: "Scaleway Generative APIs as a Hermes model provider (`--provider scaleway`, alias `scw`): European, OpenAI-compatible, pay-per-use, with a curated tool-calling model list led by deepseek-v4.1-flash-1017 (the default), the cheapest vision-capable aux model, and the live /v1/models catalog in the picker. The credential is SCW_SECRET_KEY, the same secret key the Scaleway CLI and SDKs use; because it is ambient, the provider is never auto-detected and turns on only when explicitly selected. Disclosure — model provider; prompts, tool schemas and SCW_SECRET_KEY go to api.scaleway.ai (or SCALEWAY_BASE_URL), plus a GET /v1/models catalog probe with the same key"
+sha: 60225b751a9e46d73a9ff7cb3bcf010058a02ac6
+subdir: scaleway-provider
+description: "Scaleway Generative APIs as a Hermes model provider (`--provider scaleway`, alias `scw`): European, OpenAI-compatible, pay-per-use, with a curated tool-calling model list led by deepseek-v4.1-flash-1017 (the default) that stands in when the live catalog probe fails, the cheapest vision-capable aux model, and real context windows and pricing through models.dev. The credential is SCW_SECRET_KEY, the same secret key the Scaleway CLI and SDKs use; because it is ambient, the provider is never auto-detected and turns on only when explicitly selected. Disclosure — model provider; prompts, tool schemas and SCW_SECRET_KEY go to api.scaleway.ai (or SCALEWAY_BASE_URL), plus a GET /v1/models catalog probe with the same key"
 maintainer: reda-maizate
 tier: community
 category: models
+requires_hermes: ">=0.22"
 docs_url: https://github.com/reda-maizate/hermes-scaleway-provider
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools: []

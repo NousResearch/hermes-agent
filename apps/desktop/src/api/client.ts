@@ -9,6 +9,7 @@ import {
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
+import { TimeoutError } from '@/lib/with-timeout'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
 
@@ -427,7 +428,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.readiness = readiness
 
     if (!readiness.settled) {
-      readiness.timer = setTimeout(() => this.settleReadiness(readiness, new Error('Hermes gateway protocol readiness timed out')), GATEWAY_READINESS_TIMEOUT_MS)
+      readiness.timer = setTimeout(() => this.settleReadiness(readiness, new TimeoutError('Hermes gateway protocol readiness timed out')), GATEWAY_READINESS_TIMEOUT_MS)
     }
 
     try {

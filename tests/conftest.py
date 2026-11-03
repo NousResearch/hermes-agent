@@ -21,8 +21,10 @@ test runner at ``scripts/run_tests.sh``.
 import asyncio
 import atexit
 import importlib
+import ipaddress
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -1436,6 +1438,24 @@ def _no_live_nous_services(request, monkeypatch):
         return real_getaddrinfo(host, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    """The SSRF guard (``tools.url_safety``) resolves every hostname to a public address, and an
+    address literal to itself. Only the guard's lookup is served: a client that really connects
+    still meets the fence, so nothing leaves the machine."""
+    from tools import url_safety
+
+    def resolve(hostname, port=None):
+        try:
+            address = str(ipaddress.ip_address(hostname))
+        except ValueError:
+            address = "93.184.216.34"
+        family = socket.AF_INET6 if ":" in address else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (address, port or 0))]
+
+    monkeypatch.setattr(url_safety, "_getaddrinfo", resolve)
 
 
 @pytest.fixture(autouse=True)

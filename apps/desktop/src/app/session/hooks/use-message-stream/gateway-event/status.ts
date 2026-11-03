@@ -7,7 +7,7 @@ import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorCode, isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearSettledClarifyRequest } from '@/store/clarify'
-import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
+import { reconcileSessionCompacting, recordCompactionTerminal, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -87,6 +87,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
+      recordCompactionTerminal(sessionId, { kind: payload.kind, text: coerceGatewayText(payload.text).trim() })
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
 
@@ -346,6 +347,9 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       clearAllPrompts(sessionId)
       clearSettledClarifyRequest(sessionId)
       clearActiveSessionTodos(sessionId)
+      // A late compute-host failure is followed by ready, not a success edge.
+      recordCompactionTerminal(sessionId, { kind: 'error', text: errorMessage })
+      takeCompressDeferred(sessionId)
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
     }

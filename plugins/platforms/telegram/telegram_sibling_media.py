@@ -177,7 +177,7 @@ class TelegramSiblingMediaMixin:
     def _sibling_wait_event(self, sibling_key: str) -> asyncio.Event:
         events = self.__dict__.setdefault("_sibling_media_done", {})
         event = events.get(sibling_key)
-        if event is None or event.is_set():
+        if event is None:
             event = asyncio.Event()
             events[sibling_key] = event
         return event

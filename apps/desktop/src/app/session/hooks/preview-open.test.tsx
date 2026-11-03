@@ -251,9 +251,7 @@ describe('preview routing', () => {
     it('owns a lineage tip without a runtime-state binding to the visible stored conversation', async () => {
       $activeSessionId.set('visible-stored-root')
       $selectedStoredSessionId.set('visible-stored-root')
-      setSessions([
-        { id: 'visible-stored-tip', _lineage_root_id: 'visible-stored-root' } as SessionInfo
-      ])
+      setSessions([{ id: 'visible-stored-tip', _lineage_root_id: 'visible-stored-root' } as SessionInfo])
       render(<Harness />)
 
       let unbind = () => {}
@@ -264,7 +262,9 @@ describe('preview routing', () => {
         const tab = $previewTabs.get()[0]!
         expect($visiblePreviewTabs.get().map(visible => visible.id)).toContain(tab.id)
         unbind = registerPreviewPageReader(tab.id, async () => ({
-          text: 'STORED_LINEAGE_PAGE', title: 'lineage', url: 'file:///tmp/lineage-without-runtime.html'
+          text: 'STORED_LINEAGE_PAGE',
+          title: 'lineage',
+          url: 'file:///tmp/lineage-without-runtime.html'
         }))
         const respond = vi.fn()
 
@@ -272,13 +272,22 @@ describe('preview routing', () => {
           activeSessionIdRef: { current: 'visible-stored-root' },
           sessionInterrupted: () => false,
           sessionStateByRuntimeIdRef: { current: new Map() },
-          updateSessionState: vi.fn(), upsertToolCall: vi.fn()
+          updateSessionState: vi.fn(),
+          upsertToolCall: vi.fn()
         } as ServerRequestContext['deps']
 
-        handleServerRequest({
-          id: 'stored-lineage-read', method: 'preview.read',
-          params: { session_id: 'visible-stored-tip' }, profile: 'default', respond, fail: vi.fn()
-        }, deps, 'visible-stored-root')
+        handleServerRequest(
+          {
+            id: 'stored-lineage-read',
+            method: 'preview.read',
+            params: { session_id: 'visible-stored-tip' },
+            profile: 'default',
+            respond,
+            fail: vi.fn()
+          },
+          deps,
+          'visible-stored-root'
+        )
         await waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
         expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ text: 'STORED_LINEAGE_PAGE' })
       } finally {
@@ -287,71 +296,93 @@ describe('preview routing', () => {
       }
     })
 
-    it.each(['owner', 'foreign'])('uses authoritative %s source rather than a conflicting runtime ledger', async source => {
-      const runtimeId = 'durable-source-runtime'
-      const storedId = 'durable-source-stored'
-      const owner = { connectionId: 'durable-source-A', profile: 'default' }
-      const foreign = { connectionId: 'stale-source-B', profile: 'default' }
-      const requestSource = source === 'owner' ? owner : foreign
-      $activeSessionId.set('unrelated-main')
-      $selectedStoredSessionId.set('unrelated-stored')
-      publishSessionState(runtimeId, createClientSessionState(storedId))
-      recordSessionEventScope({ ...foreign, session_id: runtimeId })
-      $sessionTiles.set([{ dir: 'right', runtimeId, storedSessionId: storedId, ownerRoute: owner }])
-      $layoutTree.set(group([`session-tile:${storedId}`], { active: `session-tile:${storedId}`, id: 'durable-group' }))
-      noteActiveTreeGroup('durable-group')
-      render(<Harness />)
+    it.each(['owner', 'foreign'])(
+      'uses authoritative %s source rather than a conflicting runtime ledger',
+      async source => {
+        const runtimeId = 'durable-source-runtime'
+        const storedId = 'durable-source-stored'
+        const owner = { connectionId: 'durable-source-A', profile: 'default' }
+        const foreign = { connectionId: 'stale-source-B', profile: 'default' }
+        const requestSource = source === 'owner' ? owner : foreign
+        $activeSessionId.set('unrelated-main')
+        $selectedStoredSessionId.set('unrelated-stored')
+        publishSessionState(runtimeId, createClientSessionState(storedId))
+        recordSessionEventScope({ ...foreign, session_id: runtimeId })
+        $sessionTiles.set([{ dir: 'right', runtimeId, storedSessionId: storedId, ownerRoute: owner }])
+        $layoutTree.set(
+          group([`session-tile:${storedId}`], { active: `session-tile:${storedId}`, id: 'durable-group' })
+        )
+        noteActiveTreeGroup('durable-group')
+        render(<Harness />)
 
-      let unbind = () => {}
+        let unbind = () => {}
 
-      try {
-        await act(async () => {
-          handleEvent({ ...requestSource, type: 'preview.open', session_id: runtimeId, payload: { url: '/tmp/durable.html' } })
-        })
+        try {
+          await act(async () => {
+            handleEvent({
+              ...requestSource,
+              type: 'preview.open',
+              session_id: runtimeId,
+              payload: { url: '/tmp/durable.html' }
+            })
+          })
 
-        if (source === 'owner') {
-          await waitFor(() => expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([storedId]))
-          const tab = $previewTabs.get()[0]!
-          expect($visiblePreviewTabs.get().map(visible => visible.id)).toContain(tab.id)
-          unbind = registerPreviewPageReader(tab.id, async () => ({
-            text: 'DURABLE_SOURCE_PAGE', title: 'durable', url: 'file:///tmp/durable.html'
-          }))
-        } else {
-          expect($previewTabs.get()).toHaveLength(0)
+          if (source === 'owner') {
+            await waitFor(() => expect($previewTabs.get().map(tab => tab.sessionId)).toEqual([storedId]))
+            const tab = $previewTabs.get()[0]!
+            expect($visiblePreviewTabs.get().map(visible => visible.id)).toContain(tab.id)
+            unbind = registerPreviewPageReader(tab.id, async () => ({
+              text: 'DURABLE_SOURCE_PAGE',
+              title: 'durable',
+              url: 'file:///tmp/durable.html'
+            }))
+          } else {
+            expect($previewTabs.get()).toHaveLength(0)
+          }
+
+          const respond = vi.fn()
+          const decline = vi.fn()
+
+          const deps = {
+            activeSessionIdRef: { current: 'unrelated-main' },
+            sessionInterrupted: () => false,
+            sessionStateByRuntimeIdRef: { current: new Map(Object.entries($sessionStates.get())) },
+            updateSessionState: vi.fn(),
+            upsertToolCall: vi.fn()
+          } as ServerRequestContext['deps']
+
+          handleServerRequest(
+            {
+              ...requestSource,
+              id: 'durable-source-read',
+              method: 'preview.read',
+              params: { session_id: runtimeId },
+              respond,
+              decline,
+              fail: vi.fn()
+            },
+            deps,
+            'unrelated-main'
+          )
+
+          if (source === 'owner') {
+            await waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+            expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ text: 'DURABLE_SOURCE_PAGE' })
+            expect(decline).not.toHaveBeenCalled()
+          } else {
+            expect(respond).not.toHaveBeenCalled()
+            expect(decline).toHaveBeenCalledTimes(1)
+          }
+        } finally {
+          unbind()
+          noteActiveTreeGroup(null)
+          $layoutTree.set(null)
+          $sessionTiles.set([])
+          dropSessionState(runtimeId)
+          $sessionStates.set({})
         }
-
-        const respond = vi.fn()
-        const decline = vi.fn()
-
-        const deps = {
-          activeSessionIdRef: { current: 'unrelated-main' },
-          sessionInterrupted: () => false,
-          sessionStateByRuntimeIdRef: { current: new Map(Object.entries($sessionStates.get())) },
-          updateSessionState: vi.fn(), upsertToolCall: vi.fn()
-        } as ServerRequestContext['deps']
-
-        handleServerRequest({
-          ...requestSource, id: 'durable-source-read', method: 'preview.read',
-          params: { session_id: runtimeId }, respond, decline, fail: vi.fn()
-        }, deps, 'unrelated-main')
-
-        if (source === 'owner') {
-          await waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
-          expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ text: 'DURABLE_SOURCE_PAGE' })
-          expect(decline).not.toHaveBeenCalled()
-        } else {
-          expect(respond).not.toHaveBeenCalled()
-          expect(decline).toHaveBeenCalledTimes(1)
-        }
-      } finally {
-        unbind()
-        noteActiveTreeGroup(null)
-        $layoutTree.set(null)
-        $sessionTiles.set([])
-        dropSessionState(runtimeId)
-        $sessionStates.set({})
       }
-    })
+    )
 
     it.each([
       ['main', 'profile'],

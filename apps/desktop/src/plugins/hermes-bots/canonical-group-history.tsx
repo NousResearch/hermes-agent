@@ -32,7 +32,13 @@ interface CanonicalGroupHistoryProps {
   avatarFor?: (name: string, size: number) => ReactNode
 }
 
-function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean) {
+/** The server stamps every `groups.send` from this Desktop as this principal, so it has no name of its own. */
+const isOwnDesktopMessage = (event: CanonicalGroupEvent) =>
+  event.kind === 'message.user' && event.actor?.kind === 'user' && event.actor.id === 'desktop' && !event.actor.display_name
+
+function eventAuthor(event: CanonicalGroupEvent, roster: Map<string, CanonicalRoomMember>, isMessage: boolean, you: string) {
+  if (isOwnDesktopMessage(event)) {return you}
+
   const memberId = isMessage
     ? event.actor?.kind === 'member' ? event.actor.id : undefined
     : event.payload.member_id
@@ -195,7 +201,7 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   const isMessage = MESSAGE_KINDS.has(event.kind)
 
   if (!notice && !isMessage) {return null}
-  const author = eventAuthor(event, roster, isMessage)
+  const author = eventAuthor(event, roster, isMessage, labels.you)
   const memberId = isMessage ? (event.actor?.kind === 'member' ? event.actor.id : undefined) : event.payload.member_id
   const member = roster.get(memberId ?? '')
 

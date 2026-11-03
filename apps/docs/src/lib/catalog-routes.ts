@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { buildPluginPageData, decodeCatalogParam, getAuthorPageData, loadCatalogSnapshot } from './plugin-pages.ts';
 import { authorPagePath, authorSeoDescription, pluginPagePath, pluginSeoDescription } from '../components/PluginCatalog/catalog.ts';
+import { pageOpenGraph } from './metadata-defaults.ts';
 import { canonicalUrl, localizedHref, type Locale } from './urls.ts';
 
 export function catalogAlternates(path: string, locale: Locale): Metadata['alternates'] {
@@ -27,11 +28,11 @@ export async function pluginPageMetadata(
     title: `${data.plugin.name} · Plugin Catalog`,
     description: pluginSeoDescription(data.plugin),
     alternates,
-    openGraph: {
+    openGraph: pageOpenGraph({
       type: 'website',
       url: canonicalUrl(localizedHref(pluginPagePath(data.plugin.name), locale)),
       images: data.plugin.image ? [data.plugin.image] : undefined,
-    },
+    }),
   };
 }
 

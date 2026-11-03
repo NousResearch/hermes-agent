@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { type IconComponent, Monitor, Package, Settings2, Wrench } from '@/lib/icons'
 import { $agentPlugins, isDesktopRelevantPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { $gatewayState } from '@/store/session'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -39,11 +40,19 @@ export interface PluginSearchEntry {
  */
 export function useSettingsSearchCatalog(enabled: boolean) {
   const { t } = useI18n()
-  const configQuery = useHermesConfigRecord()
+  // Shared settings "Applies to" scope: search the selected profile's config/
+  // schema/env store, not always the active one (null → active, the default
+  // path — matches every other config-backed settings page's own pattern,
+  // e.g. KeysSettings' useEnvCredentials(scopeProfile)). Without this, ⌘K
+  // silently searched the active profile even while the user had scoped
+  // Settings to another one, so a credential/field that only exists (or is
+  // only set) on the scoped profile was unfindable.
+  const scopeProfile = useStore($settingsScopeOverride)
+  const configQuery = useHermesConfigRecord(scopeProfile)
 
   const schemaQuery = useQuery({
-    queryKey: ['hermes-config-schema'],
-    queryFn: () => getHermesConfigSchema(),
+    queryKey: ['hermes-config-schema', scopeProfile],
+    queryFn: () => getHermesConfigSchema(scopeProfile),
     enabled,
     staleTime: 5 * 60 * 1000
   })
@@ -54,14 +63,30 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     isFetching: envVarsFetching,
     refetch: refetchEnvVars
   } = useQuery({
-    queryKey: ['desktop-settings-search-env-vars'],
-    queryFn: () => getEnvVars(),
+    queryKey: ['desktop-settings-search-env-vars', scopeProfile],
+    queryFn: () => getEnvVars(scopeProfile),
     enabled,
     staleTime: 5 * 60 * 1000
   })
 
+  // scopeProfile changes are already covered by the query keys above (a new
+  // key naturally refetches). This covers the OTHER staleness case: scope
+  // still following the active profile (scopeProfile === null, key
+  // unchanged) while the active profile itself switches underneath —
+  // config/schema use the app-wide base cache key in that case, so nothing
+  // else would tell them to refetch.
   const refreshCatalog = useCallback(() => {
+    void configQuery.refetch()
+    void schemaQuery.refetch()
     void refetchEnvVars()
+    // configQuery/schemaQuery are fresh objects every render, but their
+    // `refetch` re-asks the query client for that query's CURRENT key/state
+    // (not a value frozen at closure-capture time), so omitting them from
+    // deps doesn't risk refetching against a stale scope. Matches the
+    // pre-existing refetchEnvVars-only version of this callback, which
+    // useOnProfileSwitch's own contract already treats this way ("onSwitch
+    // identity is intentionally ignored").
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refetchEnvVars])
 
   useOnProfileSwitch(refreshCatalog)
@@ -77,9 +102,12 @@ export function useSettingsSearchCatalog(enabled: boolean) {
 
   useEffect(() => {
     if (enabled && gatewayState === 'open') {
-      void loadAgentPlugins(requestGateway)
+      // Same "Applies to" scope as config/schema/env above — an agent
+      // plugin can be installed/enabled on one profile only, so an unscoped
+      // load left it unfindable while Settings was scoped to that profile.
+      void loadAgentPlugins(requestGateway, scopeProfile)
     }
-  }, [enabled, gatewayState, requestGateway])
+  }, [enabled, gatewayState, requestGateway, scopeProfile])
 
   // Installed plugin rows (both halves) — they live on Capabilities → Plugins,
   // so each entry carries the `?plugin=` row selector for that page.

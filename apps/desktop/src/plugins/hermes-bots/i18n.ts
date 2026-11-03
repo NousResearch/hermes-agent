@@ -33,12 +33,14 @@ import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@
 import { useMemo } from 'react'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { bind, type Bound } from './i18n-bind'
 import { type BotsMessages } from './i18n-messages'
 import { getPluginCtx } from './shared'
 
 const en: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.en,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -481,6 +483,7 @@ const en: BotsMessages = {
 
 const ja: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.ja,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -927,6 +930,7 @@ const ja: BotsMessages = {
 
 const zh: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES.zh,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1356,6 +1360,7 @@ const zh: BotsMessages = {
 
 const zhHant: BotsMessages = {
   canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1789,12 +1794,12 @@ export const BOTS_LOCALES: PluginLocaleBundles = {
   ja,
   zh,
   'zh-hant': zhHant,
-  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
-  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
-  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
-  de: { canonical: CANONICAL_GROUP_LOCALES.de },
-  es: { canonical: CANONICAL_GROUP_LOCALES.es },
-  cs: { canonical: CANONICAL_GROUP_LOCALES.cs }
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ar },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es },
+  cs: { canonical: CANONICAL_GROUP_LOCALES.cs, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.cs }
 }
 
 export type BotsText = Bound<BotsMessages>

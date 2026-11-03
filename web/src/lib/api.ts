@@ -21,6 +21,20 @@ export type {
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
 import type {
+  MessagingPlatform,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
+} from "./api-messaging";
+export type {
+  MessagingPlatform,
+  MessagingPlatformEnvVar,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
+} from "./api-messaging";
+import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
   ManagedFileWriteResponse,
@@ -980,6 +994,18 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+  getRelayLinks: () => fetchJSON<RelayLinksResponse>("/api/messaging/relay"),
+  requestRelayLink: (platform: string) =>
+    fetchJSON<RelayLinkCode>(`/api/messaging/relay/${encodeURIComponent(platform)}/link`, {
+      method: "POST",
+    }),
+  getRelayLinkState: (code: string) =>
+    fetchJSON<RelayLinkCodeState>(`/api/messaging/relay/link/${encodeURIComponent(code)}`),
+  unlinkRelayAccount: (platform: string, platformUserId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+      { method: "DELETE" },
+    ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
@@ -1667,50 +1693,6 @@ export interface McpOAuthFlow {
   authorization_url: string | null;
   error: string | null;
   tools?: Array<{ name: string; description: string }>;
-}
-
-export interface MessagingPlatformEnvVar {
-  key: string;
-  required: boolean;
-  is_set: boolean;
-  redacted_value: string | null;
-  description: string;
-  prompt: string;
-  help: string;
-  url: string | null;
-  is_password: boolean;
-  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
-  is_list?: boolean;
-  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
-  value?: string | null;
-  advanced: boolean;
-}
-
-export interface MessagingPlatform {
-  id: string;
-  name: string;
-  description: string;
-  docs_url: string;
-  enabled: boolean;
-  configured: boolean;
-  gateway_running: boolean;
-  /**
-   * "connected" | "disabled" | "not_configured" | "pending_restart" |
-   * "gateway_stopped" | "startup_failed" | "disconnected" | "fatal" | string
-   */
-  state: string;
-  error_code: string | null;
-  error_message: string | null;
-  updated_at: string | null;
-  home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
-  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
-  ingress_url?: string | null;
-  whatsapp_setup?: {
-    mode?: string;
-    allowed_users_set?: boolean;
-    home_channel_set?: boolean;
-  } | null;
-  env_vars: MessagingPlatformEnvVar[];
 }
 
 export interface MessagingPlatformsResponse {

@@ -1321,6 +1321,31 @@ async def test_own_post_survives_a_restart(adapter, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_thread_on_an_own_post_with_only_embeds_is_answered(adapter, monkeypatch):
+    # A post of embeds alone has no text to quote; it is still this bot's post, so the thread
+    # joins and the session learns it opened on one, rather than "" (a transient miss) forever.
+    _ready(adapter, monkeypatch)
+    thread, parent = _thread_on_post(post_author=adapter._client.user, content="")
+
+    await adapter._dispatch_discord_message(_ask(thread))
+    await adapter._dispatch_discord_message(_ask(thread, content="and?", msg_id=778))
+
+    assert adapter.handle_message.await_count == 2
+    assert "> (a post with no text, for example embeds only)" in _starter_context(adapter)
+    parent.fetch_message.assert_awaited_once_with(555)
+
+
+def test_own_post_list_keeps_every_thread_the_joined_list_keeps(tmp_path, monkeypatch):
+    # Every own-post thread enters both lists at once, oldest evicted first. A smaller own-post
+    # list would drop a thread that stays joined, and a new session there (a second user, /new)
+    # would lose the post.
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    fresh = DiscordAdapter(PlatformConfig(enabled=True, token="t"))
+
+    assert fresh._own_post_threads._max_tracked == fresh._threads._max_tracked
+
+
+@pytest.mark.asyncio
 async def test_recovered_message_in_a_thread_on_own_post_is_answered(adapter, monkeypatch):
     # A question asked while the gateway was down is replayed through the recovery path.
     _ready(adapter, monkeypatch)

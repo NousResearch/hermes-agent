@@ -143,3 +143,33 @@ async def test_the_triggering_note_stays_outermost(expansion):
     event.message_id = "m1"
 
     assert strip_discord_triggering_note(event, seen).startswith(PLANTED)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/queue why?", "/steer why?"])  # no agent can steer: the queue fallback
+async def test_the_post_survives_the_busy_queue_and_steer_rebuilds(command):
+    # A busy session rebuilds the command as a fresh turn; that turn may be the one that opens
+    # the session (it runs after the busy one, but a /new can come between), so it keeps the post.
+    from gateway.platforms.event import MessageType
+    from gateway.run_busy import GatewayBusySessionMixin
+    rebuilt = []
+
+    class Runner(GatewayBusySessionMixin):
+        def _peek_session_state(self, key):
+            return None
+
+        def _delivery_adapter_for(self, source):
+            return object()
+
+        async def _queue_command_turn(self, key, event, queued, adapter, reply):
+            rebuilt.append(queued)
+            return True
+
+    event, source = _thread_event("u1", command)
+    event.message_type = MessageType.COMMAND
+    runner = Runner()
+    method = runner._busy_queue_command if command.startswith("/queue") else runner._busy_steer_command
+
+    await method(event, "agent:main:discord:thread:555", source)
+
+    assert [e.thread_starter_context for e in rebuilt] == [POST]

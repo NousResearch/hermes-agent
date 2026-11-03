@@ -122,6 +122,16 @@ def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, def
     assert served == standalone, f"{var}: served={served!r} standalone={standalone!r}"
 
 
+def test_served_secondary_without_own_post_threads_stays_off(monkeypatch):
+    """The default profile turns ``own_post_threads`` on; a served secondary whose ``.env`` and YAML
+    have no such key (Content beside Harry) reads the default, off, exactly as it does standalone."""
+    from plugins.platforms.discord import adapter as discord_adapter
+    monkeypatch.delenv("DISCORD_OWN_POST_THREADS", raising=False)
+    standalone, served = _served(monkeypatch, {"DISCORD_OWN_POST_THREADS": "true"}, {},
+                                 lambda: _discord(discord_adapter, "_discord_own_post_threads"))
+    assert (standalone, served) == (False, False)
+
+
 def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
     """A secondary whose SIGNAL_HTTP_URL/SIGNAL_ACCOUNT live only in its own .env must pass the startup
     gate served exactly as it does standalone; a secondary WITHOUT them must not borrow the default's."""

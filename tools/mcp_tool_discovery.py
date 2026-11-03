@@ -859,10 +859,14 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
         enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
+        # A server that connected and then parked (reconnects exhausted) records no connect error,
+        # but it is down all the same; never-tried servers stay "configured".
+        parked = server is not None and not live and server._park_reason is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
         # merely waiting to be spawned, and the error is the actionable part.
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
-                  else "failed" if name in connect_errors else "lazy" if name in lazy_tools else "configured")
+                  else "failed" if name in connect_errors or parked else "lazy" if name in lazy_tools
+                  else "configured")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
                  "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
@@ -871,7 +875,7 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
-        elif status == "failed":
+        elif status == "failed" and name in connect_errors:
             entry["error"] = connect_errors[name]
         elif status == "lazy":
             entry["tools"] = lazy_tools[name]

@@ -1,0 +1,39 @@
+manifest_version: 1
+
+name: coinmarketcap
+description: Real-time crypto market data, technical analysis, and on-chain metrics from CoinMarketCap.
+source: https://coinmarketcap.com/api/mcp/
+
+transport:
+  type: http
+  url: "https://mcp.coinmarketcap.com/mcp"
+  headers:
+    X-CMC-MCP-API-KEY: "${COINMARKETCAP_API_KEY}"
+
+auth:
+  type: api_key
+  env:
+    - name: COINMARKETCAP_API_KEY
+      prompt: "CoinMarketCap API key (free Basic key at pro.coinmarketcap.com)"
+      required: true
+      secret: true
+
+tools:
+  default_enabled:
+    - get_crypto_quotes_latest
+    - search_cryptos
+    - get_crypto_info
+    - get_crypto_technical_analysis
+    - get_crypto_marketcap_technical_analysis
+    - get_crypto_metrics
+    - get_global_metrics_latest
+    - get_global_crypto_derivatives_metrics
+    - trending_crypto_narratives
+    - get_upcoming_macro_events
+    - get_crypto_latest_news
+    - search_crypto_info
+
+post_install: |
+  CoinMarketCap market data is now available in Hermes.
+  Get a free API key at pro.coinmarketcap.com if you do not have one.
+  Start a new Hermes session to load the CMC tools.

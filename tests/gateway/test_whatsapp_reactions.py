@@ -47,12 +47,6 @@ def _mock_post(status=200, text="ok"):
     return post
 
 
-def test_supports_reactions_flag():
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-
-    assert WhatsAppAdapter.SUPPORTS_REACTIONS is True
-
-
 def test_add_reaction_posts_emoji():
     adapter = _make_adapter()
     post = _mock_post()

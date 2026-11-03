@@ -36,6 +36,7 @@ import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   addMentions,
   buildPollPayload,
+  buildReactionSend,
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
@@ -937,13 +938,11 @@ app.post('/react', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
   const { chatId, messageId, emoji } = req.body;
-  if (!chatId || !messageId || emoji === undefined) {
-    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
-  }
-  const target = messageStore.get(messageId);
-  if (!target) return res.status(404).json({ error: 'Referenced message not found in bridge cache' });
+  const { content, status, error } = buildReactionSend({ chatId, messageId, emoji, messageStore });
+  if (error) return res.status(status).json({ error });
   try {
-    const sent = await sock.sendMessage(chatId, { react: { text: emoji, key: target.key } });
+    // Through the send queue like every other send: overlapping sendMessage calls misroute (#33360).
+    const sent = await sendWithTimeout(chatId, content);
     trackSentMessageId(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {

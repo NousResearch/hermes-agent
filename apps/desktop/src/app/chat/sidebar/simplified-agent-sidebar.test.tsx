@@ -11,11 +11,11 @@ import { $onboardingDecided, $onboardingSurfaces } from '@/store/onboarding-pres
 import type * as ProfileModule from '@/store/profile'
 import {
   $activeGatewayProfile,
-  $newChatProfile,
   $profiles,
   $profileScope,
   $showAllProfiles,
-  ALL_PROFILES
+  ALL_PROFILES,
+  newSessionInProfile
 } from '@/store/profile'
 import {
   $cronSessions,
@@ -36,7 +36,8 @@ import { SimplifiedAgentSidebar } from './simplified-agent-sidebar'
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<typeof ProfileModule>()),
-  ensureGatewayProfile: vi.fn(async () => {})
+  ensureGatewayProfile: vi.fn(async () => {}),
+  newSessionInProfile: vi.fn()
 }))
 const navigate = vi.fn()
 const resume = vi.fn()
@@ -102,7 +103,7 @@ afterEach(() => {
   $sessions.set([])
   $fleetRoster.set(null)
 })
-it('keeps server-pinned chats reachable and resumes the exact session; New session uses the usual action', () => {
+it('keeps server-pinned chats reachable and resumes the exact session', () => {
   mount()
   expect(screen.getByText('Pinned plan')).toBeTruthy()
 
@@ -116,10 +117,7 @@ it('keeps server-pinned chats reachable and resumes the exact session; New sessi
   expect(screen.getAllByLabelText('Agents: default').length).toBeGreaterThan(0)
   fireEvent.click(screen.getByText('Regular chat'))
   expect(resume).toHaveBeenCalledWith('regular', expect.objectContaining({ profile: 'default' }))
-  $newChatProfile.set('research')
-  fireEvent.click(screen.getByRole('button', { name: /New session/i }))
-  expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ action: 'new-session', id: 'new-session' }))
-  expect($newChatProfile.get()).toBeNull()
+
 })
 it('opens the clicked agent settings, including agents with no chats', async () => {
   mount()
@@ -219,4 +217,11 @@ it('loads older messaging chats when recents are exhausted', async () => {
   mount({ onLoadMoreMessaging: loadMessaging })
   fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
   await waitFor(() => expect(loadMessaging).toHaveBeenCalledWith('telegram'))
+})
+
+it('starts a chat directly from an agent row without opening its settings', () => {
+  mount()
+  fireEvent.click(screen.getByRole('button', { name: 'New session in Research' }))
+  expect(newSessionInProfile).toHaveBeenCalledWith('research')
+  expect(screen.getByTestId('route').textContent).toBe('')
 })

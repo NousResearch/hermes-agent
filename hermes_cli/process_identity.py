@@ -76,6 +76,13 @@ def process_birth(proc) -> float:
     Raises ``psutil.Error`` like ``create_time()``.
     """
     import psutil
+    if getattr(psutil, "LINUX", False):
+        # Monotonic: /proc/<pid>/stat starttime. Immune to NTP steps, and identical in every
+        # process — which is what an owner<->worker identity comparison actually needs.
+        # (See _linux_starttime_seconds for why create_time() cannot serve.)
+        seconds = _linux_starttime_seconds(getattr(proc, "pid", 0) or 0)
+        if seconds is not None:
+            return seconds
     if getattr(psutil, "MACOS", False):
         platform_proc = getattr(proc, "_proc", None)
         if platform_proc is not None:
@@ -84,6 +91,74 @@ def process_birth(proc) -> float:
             except TypeError:  # a psutil without the monotonic read: fall back to the adjusted one
                 pass
     return float(proc.create_time())
+
+
+def _linux_starttime_seconds(pid: int) -> Optional[float]:
+    """/proc/<pid>/stat field 22 (starttime ticks) in seconds since boot, or None.
+
+    ``starttime`` is a pure tick count maintained by the kernel: every process reads the SAME
+    value for the same process, no matter how the wall clock moves. That is what process identity
+    needs. ``create_time()`` cannot serve: psutil computes it as ``boot_time + starttime/CLK_TCK``
+    and caches ``boot_time`` per process, so an owner that started hours ago and a worker that just
+    started disagree by however much the clock stepped in between.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read()
+        # ``comm`` (field 2) may contain spaces and parens: fields resume after the LAST ')'.
+        rest = data[data.rindex(b")") + 2:].split()
+        return float(rest[19]) / float(os.sysconf("SC_CLK_TCK"))  # field 22 == starttime
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+# Clock-step tolerance for process-birth identity.
+#
+# ``process_birth`` is ``boot_time + starttime/CLK_TCK`` on Linux and ``boot_time`` comes from the
+# WALL clock, so an NTP step moves it for every already-running process. A managed worker reports
+# its birth in ``hello`` and the owner re-derives it on every later ``worker.persist``; with exact
+# equality, one step invalidates the identity and the worker is refused with ``permission_denied``.
+# Measured 2026-11-03 on a host stepping every ~34 s: the two values differed by exactly 1.00 s and
+# 2.00 s, which killed every Kanban worker that lived long enough to call a tool (text-only cards
+# finished inside the window, which is why they appeared healthy).
+#
+# A step is bounded (NTP slews are sub-second; a step is seconds), while PID reuse inside the same
+# second is not something a birth comparison can be tightened into anyway — the pid+birth pair is
+# only ever accepted together with a live, same-owner process and an adoption digest.
+BIRTH_TOLERANCE_SECONDS = 5.0
+
+
+def _normalise_birth(value):
+    """Bring a recorded birth into the domain :func:`process_birth` returns.
+
+    Ledgers, execution rows and tickets written before 2026-11-03 hold a WALL-CLOCK epoch on Linux;
+    ``process_birth`` now returns seconds since boot. Converting the recorded value (rather than the
+    live one) keeps a live pre-fix process readable as "same incarnation" instead of looking like a
+    different one and getting swept.
+    """
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    import psutil
+
+    if getattr(psutil, "LINUX", False) and numeric > 1e9:
+        converted = _epoch_to_uptime_seconds(numeric)
+        if converted is not None:
+            return converted
+    return numeric
+
+
+def birth_matches(actual, expected, tolerance=BIRTH_TOLERANCE_SECONDS) -> bool:
+    """Same process incarnation, tolerating a wall-clock step between the two reads.
+
+    Legacy epoch records are normalised first, so a ledger written by a pre-fix build still matches.
+    """
+    actual = _normalise_birth(actual)
+    expected = _normalise_birth(expected)
+    if actual is None or expected is None:
+        return False
+    return abs(actual - expected) <= tolerance
 
 
 def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
@@ -206,8 +281,32 @@ def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
 
 
 def _same_incarnation(proc, create_time: Optional[float]) -> bool:
-    """Does the live ``proc`` match a recorded ``create_time`` (2 s tolerance; ``None`` matches)?"""
-    return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
+    """Does the live ``proc`` match a recorded ``create_time`` (2 s tolerance; ``None`` matches)?
+
+    Tolerates LEGACY ledger entries: before 2026-11-03 ``process_birth`` returned an epoch value on
+    Linux; it now returns a monotonic since-boot tick count. A recorded epoch value is converted to
+    the monotonic domain before comparing so a pre-existing entry does not read as "different
+    incarnation" and get swept while its process is still alive.
+    """
+    if create_time is None:
+        return True
+    return birth_matches(process_birth(proc), create_time, tolerance=2.0)
+
+
+def _epoch_to_uptime_seconds(epoch_seconds: float) -> Optional[float]:
+    """Map a wall-clock epoch to "seconds since boot", so a legacy ledger value stays comparable.
+
+    ``uptime`` is monotonic; ``time.time() - epoch`` is the age of the recorded process. Both are
+    measured now, so the result lands in the same monotonic domain as ``process_birth`` to within
+    the clock step that happened between the record and this call (absorbed by the tolerance).
+    """
+    try:
+        with open("/proc/uptime") as fh:
+            uptime = float(fh.read().split()[0])
+        age = time.time() - float(epoch_seconds)
+        return uptime - age
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
@@ -219,7 +318,7 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
     try:
         proc = psutil.Process(int(pid))
         if strict:
-            return (create_time is not None and process_birth(proc) == create_time
+            return (create_time is not None and birth_matches(process_birth(proc), create_time)
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must

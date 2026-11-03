@@ -25,8 +25,10 @@ def owner_reclaim_paused(conn, task_id):
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
-        from hermes_cli.process_identity import process_birth
-        return process_birth(psutil.Process(binding['pid'])) != binding['birth']
+        from hermes_cli.process_identity import birth_matches, process_birth
+        # Tolerance, not equality: an NTP step between binding and this check moves
+        # process_birth by seconds and would falsely discard a resumable run.
+        return not birth_matches(process_birth(psutil.Process(binding['pid'])), binding['birth'])
     except (OSError, ValueError, KeyError, sqlite3.Error):
         return True
     except psutil.Error:

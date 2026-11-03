@@ -210,12 +210,26 @@ def test_process_fingerprints_survive_a_clock_step_on_macos(stale_psutil_boot_re
 
 
 def test_process_birth_is_create_time_where_psutil_applies_no_reference():
-    """Linux and Windows read ``create_time()`` unchanged, so every stored fingerprint and ledger
-    row written before KB-6 still matches there; on macOS with no step psutil returns the kernel
-    start unchanged too (``adjust_proc_create_time`` ignores |drift| < 1 s)."""
+    """A fingerprint written before KB-6 must still match its live process.
+
+    Linux and Windows used to read ``create_time()`` unchanged, and macOS with no step returns the
+    kernel start unchanged (``adjust_proc_create_time`` ignores |drift| < 1 s). On Linux
+    ``process_birth`` is now the monotonic ``/proc/<pid>/stat`` starttime instead — ``create_time()``
+    is ``boot_time + starttime`` and ``boot_time`` comes from the wall clock, so one NTP step makes
+    an owner and a freshly started worker disagree about the same pid. Legacy rows still compare
+    equal because the recorded epoch is normalised before the comparison.
+    """
     from gateway.status import get_process_start_time
     from hermes_cli.process_identity import _pid_alive_matches, process_birth
     proc = psutil.Process()
-    assert process_birth(proc) == proc.create_time()
+    birth = process_birth(proc)
+    if psutil.LINUX:
+        with open("/proc/uptime") as fh:
+            uptime = float(fh.read().split()[0])
+        assert 0 < birth <= uptime + 1.0, (birth, uptime)
+        assert birth < proc.create_time() - 1e6  # monotonic ticks, not an epoch
+    else:
+        assert birth == proc.create_time()
+    # The pre-fix value (an epoch) must read as the same incarnation, not a different one.
     assert _pid_alive_matches(os.getpid(), proc.create_time(), strict=True) is True
     assert get_process_start_time(os.getpid()) is not None

@@ -293,8 +293,8 @@ class ManagedWorker:
             return
         try:
             proc = psutil.Process(self.worker[0])
-            from hermes_cli.process_identity import process_birth
-            if process_birth(proc) == self.worker[1]:
+            from hermes_cli.process_identity import birth_matches, process_birth
+            if birth_matches(process_birth(proc), self.worker[1]):
                 (proc.kill if kill else proc.terminate)()
         except psutil.Error:
             pass
@@ -340,6 +340,11 @@ class ManagedWorker:
             self.stderr_drain.join(timeout=5)  # EOF once the child is gone; the thread closes it
         elif self.process.stderr is not None:
             self.process.stderr.close()
+        # The worker is gone; the process groups it opened are not (they lead their own
+        # sessions, so _signal_group above cannot reach them). Reclaim its ledger: this is the
+        # only path that covers a worker the owner had to SIGKILL, which runs no exit handler.
+        from tools.worker_process_groups import reclaim_worker
+        reclaim_worker(self.process.pid, reason="owner closed worker")
 
 
 def interrupt_managed(authority, actor, ref, generation):
@@ -552,6 +557,11 @@ async def _spawn_registered_worker(authority, ref, row):
     generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
+        # The owner reclaims this worker's ledger by PID when the worker dies, so both sides must
+        # resolve the same directory (a routed profile would otherwise differ from the owner).
+        from tools.worker_process_groups import ledger_dir
+        env = dict(os.environ if env is None else env)
+        env.setdefault('HERMES_PROCESS_GROUPS_DIR', str(ledger_dir()))
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
         from gateway.session_managed_worker_log import worker_log_path

@@ -21,6 +21,7 @@ from gateway.session_contract import (
 from gateway.session_events import SessionEvents
 from gateway.session_pending_controls import PendingControls
 from gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
+from hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,
@@ -83,6 +84,14 @@ class LiveSession:
     # wins, so a slow read cannot land over a newer state (gateway/session_control_actions.publish).
     control_seq: int = 0
     control_published_seq: int = 0
+    # ``(execution stamp,)`` the last viewer close completed at: a drain alive then retires the closed
+    # conversation at its idle exit unless a turn claimed since (gateway/session_retirement.py).
+    closed_stamp: tuple | None = None
+    # A conversation retirement let go that an RPC brought back: its re-retirement check
+    # (``session_retirement.touch_restored``), pushed back by each authorize.
+    retire_timer: object = None
+    # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
+    detaching: int = 0
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -149,6 +158,12 @@ class SessionAuthority:
         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
+        # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
+        # it is deleted or retired again): their source and frozen policy stay on the local adapter.
+        self.retired_local = set()
+        # Every conversation ``session_retirement`` let go and not yet deleted -> its route: a delete or
+        # prune of one not in memory still evicts that route's cached agent.
+        self.retired_routes = {}
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -220,6 +235,8 @@ class SessionAuthority:
         if (source is not None and source.platform == Platform.LOCAL
                 and not same_owner(source.user_id, actor.subject) and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
+        from gateway.session_retirement import touch_restored
+        touch_restored(self, ref.session_id)  # a rename or a read brought a retired one back
 
     def _require_admission_open(self, *, queue_only=False):
         """``queue_only``: the caller only COMMITS a queued row (never claims or runs it). A restart's
@@ -404,7 +421,11 @@ class SessionAuthority:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
-                    await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
+                    try:
+                        await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    finally:
+                        live.detaching -= 1
                     if end_reason:
                         from gateway.session_viewer_close import close_viewer_session
                         await close_viewer_session(self, session_id, end_reason)
@@ -439,6 +460,8 @@ class SessionAuthority:
                                 controls=queued_controls(self, row), steering=row['outcome'] == STEERING)
 
     def _publish_pending(self, ref):
+        from gateway.session_retirement import restore_retired
+        restore_retired(self, ref.session_id)  # input committed after its conversation retired
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
@@ -458,6 +481,8 @@ class SessionAuthority:
         wake_bot_receipts(self, ref.session_id)
 
     def _schedule(self, ref):
+        from gateway.session_retirement import restore_retired
+        restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
         if live.task is None or live.task.done():
@@ -490,9 +515,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
 
-    async def admit_automation(self, adapter, event, identity, replaces=None):
+    async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity, replaces)
+        return await admit_automation(self, adapter, event, identity, replaces, fold)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -839,6 +864,8 @@ class SessionAuthority:
         # A paused drain (preclaim refusal on this head) ended its task; the successors
         # need a fresh drain that revalidates them on their own merits.
         self._schedule(ref)
+        # Last: telemetry must never stand between a cancelled row and its waiter/successor drain.
+        busy_row_settled(admission_id, outcome)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
         """Operator acknowledgement that an ``unknown`` turn will not finish; the paused FIFO behind
@@ -1301,6 +1328,8 @@ class SessionAuthority:
                 await settle_viewer_close(self, ref.session_id)  # a close that arrived mid-turn
                 if live.rescan:
                     continue
+                from gateway.session_retirement import retire_at_idle
+                retire_at_idle(self, ref, live)
                 return
             admission_id = row['admission_id']
             try:
@@ -1313,6 +1342,8 @@ class SessionAuthority:
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
                 # never left to fire after a later settled turn with a stale entry.
                 self.deferred_resets.pop(live.route, None)
+                from gateway.session_ingress import fire_post_delivery
+                await fire_post_delivery(self, admission_id)  # cancelled mid-turn: as an adapter task's finally
                 if isinstance(exc, ManagedExecutionUnknown):
                     return
                 raise
@@ -1390,13 +1421,16 @@ class SessionAuthority:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
                     drop_producer_turn(self, admission_id)
+                    from gateway.session_ingress import fire_post_delivery
+                    await fire_post_delivery(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
                 # Taken on every exit, so a turn that never settled leaves no reset for a later one.
                 reset = self.deferred_resets.pop(live.route, None)
             await self._run_deferred_reset(live.route, reset)
-            from gateway.session_ingress import deliver_settled
+            from gateway.session_ingress import deliver_settled, fire_post_delivery
             await deliver_settled(self, admission_id)
+            await fire_post_delivery(self, admission_id)
             await self._resolve_settled_waiter(admission_id, response)
 
     @staticmethod

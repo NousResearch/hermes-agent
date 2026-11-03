@@ -354,11 +354,13 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
+    _dashboard_public_origins,
     _desktop_loopback_auth_exempt,
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
     public_url_hosts,
+    public_url_origins,
     should_require_auth,
 )
 
@@ -557,20 +559,27 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _is_trusted_local_origin(origin: str) -> bool:
+    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    return is_trusted_local_origin(origin, app.state)
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+# CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
+# rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
+# read/modify config and secrets; any local port would let a page on another port read
+# index.html's session token.
 #
 # Registered AFTER all ``@app.middleware("http")`` decorators so it is the
 # *outermost* middleware (Starlette's onion: last-added runs first).
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
 # Authenticated-route self-test: one in-process request per minute against a
@@ -969,6 +978,8 @@ def _configure_auth_gate(
     own_url = getattr(app.state, "listener_public_url", None)
     app.state.trusted_public_hosts = (
         _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
+    app.state.trusted_public_origins = (  # its exact loopback origin: a proxy on another local port
+        _dashboard_public_origins() if own_url is None else public_url_origins(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
     if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):

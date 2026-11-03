@@ -95,6 +95,9 @@ matrix:
     - "!abc123:matrix.org"
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
+  peer_agent_ids:                 # Peer bots that must mention this bot to wake it
+    - "@other-agent:matrix.org"
+  peer_reply_budget_per_human_message: 2  # Peer-triggered calls opened by each authorized human message
   ignore_user_patterns:           # Bridge/appservice ghost users to ignore
     - "^@telegram_"
     - "^@whatsapp_"
@@ -132,6 +135,49 @@ Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@a
 :::note
 If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
 :::
+
+### Bounded multi-agent rooms
+
+For a shared room where ordinary human messages should reach multiple agents,
+but agents should not wake one another indefinitely, configure each profile
+with the other agents as peers:
+
+```yaml
+matrix:
+  require_mention: false
+  allowed_users:
+    - "@alice:matrix.org"
+    - "@ran:matrix.org"
+    - "@yomi:matrix.org"
+  peer_agent_ids:
+    - "@yomi:matrix.org"  # Ran's profile; Yomi lists Ran instead
+  peer_reply_budget_per_human_message: 2
+```
+
+With peer-agent gating enabled:
+
+- `peer_agent_ids` selects the peer policy; peers must also pass the receiver's
+  normal user authorization (listing a peer does not authorize it);
+- authorized non-peer messages open a new per-receiver, per-room round and reset the peer-event
+  allowance;
+- peer messages require a direct mention of the current bot even though ordinary
+  human messages do not;
+- each admitted peer event consumes one slot before downstream execution;
+  a later `NO_REPLY` does not refund it, and commands, later refusals or failures
+  can consume a slot without a provider call;
+- untagged peer messages and tagged peer messages after exhaustion are ignored
+  before model invocation; and
+- a gateway restart begins with no peer allowance until an authorized human
+  sends a new message.
+
+Hermes tells agents in Matrix shared rooms that they may return exactly
+`NO_REPLY` on unaddressed room messages when they have nothing useful, warm, or
+interesting to add. The gateway preserves that turn in context but sends no
+visible marker. Direct mentions, commands, replies to the bot and DMs require a
+visible response; thread follow-ups and replies with unclear intent retain the
+gateway's visible-response safeguard. With two profiles and a budget of `2` on
+each, up to four peer events can be admitted across both receivers before another
+authorized non-peer message replenishes their room allowances.
 
 ### Project Room Isolation
 

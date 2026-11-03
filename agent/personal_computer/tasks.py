@@ -154,7 +154,6 @@ class PersonalComputerTaskStore:
             connection.execute(
                 "ALTER TABLE personal_computer_tasks_migrating RENAME TO personal_computer_tasks"
             )
-            break
 
     def _initialize(self) -> None:
         with self._connect() as connection:

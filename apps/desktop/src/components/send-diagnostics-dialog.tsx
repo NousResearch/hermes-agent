@@ -135,7 +135,7 @@ export function DiagnosticsLinkRow({ result }: { result?: SendDiagnosticsResult 
 
   return (
     <div
-      className="flex items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) px-3 py-2"
+      className="flex min-w-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) px-3 py-2"
       data-selectable-text="true"
     >
       {result.viewUrl ? (

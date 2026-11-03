@@ -4,6 +4,7 @@
 // runs backend-side (diagnostics.share_nous collects that runtime's update.log
 // and hand-off log); the output shown here rides along as a client file.
 import { useStore } from '@nanostores/react'
+import { type SyntheticEvent, useRef } from 'react'
 
 import { DiagnosticsLinkRow } from '@/components/send-diagnostics-dialog'
 import { Button } from '@/components/ui/button'
@@ -25,6 +26,14 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
   const state = useStore($sendDiagnostics)
   const report = state?.inline ? state : null
   const logText = log.join('\n')
+  const logRef = useRef<HTMLPreElement>(null)
+
+  // The failing line is the last one: open the output scrolled to its tail.
+  const revealTail = (event: SyntheticEvent<HTMLDetailsElement>) => {
+    if (event.currentTarget.open && logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
+  }
 
   const startReport = () =>
     requestSendDiagnostics(`Desktop update failed: ${message}`, {
@@ -33,14 +42,15 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
     })
 
   return (
-    <div className="grid gap-3 text-left">
+    <div className="grid min-w-0 gap-3 text-left">
       {logText ? (
-        <details className="text-xs text-muted-foreground">
+        <details className="text-xs text-muted-foreground" onToggle={revealTail}>
           <summary className="cursor-pointer select-none text-center">{t.updates.technicalDetails}</summary>
           <div className="relative mt-2">
             <pre
               className="max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-border/70 bg-muted/35 px-3 py-2 pr-8 font-mono text-[0.6875rem] leading-4"
               data-selectable-text="true"
+              ref={logRef}
             >
               {logText}
             </pre>
@@ -55,9 +65,7 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
         </Button>
       ) : report.phase === 'consent' || report.phase === 'uploading' ? (
         <div className="grid gap-2 rounded-md border border-border/70 px-3 py-2">
-          <p className="max-h-28 overflow-auto text-[0.6875rem] leading-4 text-muted-foreground">
-            {copy.privacyNotice}
-          </p>
+          <p className="text-[0.6875rem] leading-4 text-muted-foreground">{copy.privacyNotice}</p>
           <div className="flex justify-end gap-2">
             <Button onClick={dismissSendDiagnostics} size="sm" variant="ghost">
               {copy.cancel}
@@ -83,8 +91,8 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
       ) : (
         <div className="grid gap-2">
           <p className="text-center text-xs font-medium">{copy.doneTitle}</p>
-          <DiagnosticsLinkRow result={report.result} />
           <p className="text-xs text-muted-foreground">{copy.doneDescription}</p>
+          <DiagnosticsLinkRow result={report.result} />
         </div>
       )}
     </div>

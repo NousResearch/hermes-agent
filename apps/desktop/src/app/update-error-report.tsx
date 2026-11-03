@@ -35,6 +35,11 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
     if (phase) {
       reportRef.current?.scrollIntoView?.({ block: 'nearest' })
     }
+
+    // A scrolling body narrows the output and re-wraps it: re-pin its tail.
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
   }, [phase])
 
   // The failing line is the last one: open the output scrolled to its tail.

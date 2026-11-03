@@ -433,6 +433,44 @@ def _prune_member_sources(settings: dict, installed: set[str]) -> bool:
     return True
 
 
+def _rename_virtual_member(document: dict, name: str) -> None:
+    """Give a virtual member its unique workspace *name*, its self-references included.
+
+    ``dependencies = ["myplugin[runtime]"]`` in a project named ``myplugin`` installs the
+    member's own ``runtime`` extra. Left on the declared name after the rename, uv reads it as
+    a different package: a lock failure when no index has that name, or someone else's
+    package installed in place of the extra when one does. Extras, specifiers and markers
+    stay as written; only the leading name changes.
+    """
+    import re
+
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    project = document.setdefault("project", {})
+    own = canonicalize_name(str(project.get("name", "")))
+    project["name"] = name
+    if not own:
+        return
+
+    def renamed(spec):
+        try:
+            if not isinstance(spec, str) or canonicalize_name(Requirement(spec).name) != own:
+                return spec
+        except InvalidRequirement:
+            return spec  # uv reports it; renaming cannot make it valid.
+        return re.sub(r"^\s*[A-Za-z0-9][A-Za-z0-9._-]*", name, spec, count=1)
+
+    if "dependencies" in project:
+        project["dependencies"] = [renamed(spec) for spec in project["dependencies"]]
+    for extra, specs in project.get("optional-dependencies", {}).items():
+        project["optional-dependencies"][extra] = [renamed(spec) for spec in specs]
+    for conflict in document.get("tool", {}).get("uv", {}).get("conflicts", []):
+        for item in conflict:
+            if isinstance(item, dict) and canonicalize_name(str(item.get("package", ""))) == own:
+                item["package"] = name
+
+
 def _runtime_member_metadata(document: dict, extras: Iterable[str],
                              target: Mapping[str, str] | None = None) -> bool:
     """Keep what this generation installs, not a plugin checkout's development environment.
@@ -503,10 +541,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
-        changed = _runtime_member_metadata(document, extras, target)
+        changed = False
         if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
             changed = True
+        if virtual:
+            # Before the extras pass, so its self-reference closure reads the names uv will see.
+            _rename_virtual_member(document, f"hermes-plugin-{key}")
+        changed = _runtime_member_metadata(document, extras, target) or changed
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:
@@ -519,8 +561,6 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
                     continue  # The referenced tree was copied with this member.
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
-        if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
         project = document.get("project")
         # uv rejects any [project] table whose version is neither set nor dynamic, at
         # parse time and for buildable members too, so a version-less member would abort

@@ -34,7 +34,7 @@ class ToolValidationVerdict:
     ones run."""
 
     action: str
-    result: Optional[Dict[str, Any]]
+    result: Optional[dict[str, Any]]
     mixed_invalid_batch: bool
 
 
@@ -53,7 +53,7 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
+def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
     This path never reaches finalize_turn, so persist here."""
@@ -70,7 +70,7 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
 
 
 def validate_tool_calls(
-    agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
+    agent: Any, assistant_message: Any, finish_reason: str, *, messages: list[dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,
 ) -> ToolValidationVerdict:
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
@@ -83,12 +83,19 @@ def validate_tool_calls(
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolValidationVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ToolValidationVerdict:
         return ToolValidationVerdict(action=action, result=result, mixed_invalid_batch=_mixed_invalid_batch)
 
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
-    # pre-API sanitizer keeps only the first call/result per id.
-    agent._uniquify_tool_call_ids(tool_calls)
+    # pre-API sanitizer keeps only the first call/result per id, and the desktop
+    # binds each tool card to its call id. Some providers name every call
+    # "call_0", so an id already used earlier in the session counts as taken.
+    taken = {
+        coalesce_tool_call_id(tc)
+        for msg in messages if msg.get("role") == "assistant"
+        for tc in msg.get("tool_calls") or ()
+    }
+    agent._uniquify_tool_call_ids(tool_calls, taken=taken)
     normalize_provider_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).

@@ -21,7 +21,7 @@ import pytest
 # Import the real response class first: the mock installer below fills
 # sys.modules with MagicMocks, which would mask an installed slack_sdk.
 try:
-    from slack_sdk.web.async_slack_response import (  # noqa: E402
+    from slack_sdk.web.async_slack_response import (
         AsyncSlackResponse as _AsyncSlackResponse,
     )
 except Exception:  # pragma: no cover - slack extra not installed
@@ -59,11 +59,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import (  # noqa: E402
+from plugins.platforms.slack.adapter import (
     SlackAdapter,
     _slack_response_payload,
     _standalone_send,

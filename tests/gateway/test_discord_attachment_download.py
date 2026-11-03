@@ -58,8 +58,9 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
-from gateway.platforms.event import MessageType  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter
+from gateway.platforms.event import MessageType
+from datetime import UTC
 
 
 # Minimal valid image / audio / PDF bytes so the cache_*_from_bytes
@@ -244,7 +245,7 @@ class TestHandleMessageUsesAuthenticatedRead:
             msg = SimpleNamespace(
                 id=1, content="", attachments=[att], mentions=[],
                 reference=None,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
                 channel=chan,
                 author=SimpleNamespace(id=42, display_name="U", name="U"),
             )

@@ -20,12 +20,23 @@
  *    Mode until previously-painted rows were carried forward.
  */
 
+import { queryClient } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, ROSTER_KEY, useRoster } from './data'
+import {
+  $botMeta,
+  $lastRoster,
+  annotateBotSource,
+  botMentionTag,
+  botSourceStatus,
+  cachedUnionRoster,
+  primeRoster,
+  ROSTER_KEY,
+  useRoster
+} from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -40,12 +51,12 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
-  const { useQuery } = await import('@tanstack/react-query')
+  const { QueryClient: Client, useQuery } = await import('@tanstack/react-query')
 
   return {
     atom,
     host: hostMock,
-    queryClient: { getQueryData: vi.fn(), invalidateQueries: vi.fn() },
+    queryClient: new Client({ defaultOptions: { queries: { retry: false } } }),
     useQuery,
     useValue: (store: { get: () => unknown }) => store.get()
   }
@@ -59,6 +70,7 @@ interface UnionAgent {
   connectionLabel?: string
   handle: string
   profile: string
+  reachable?: boolean
 }
 
 interface Union {
@@ -696,5 +708,75 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     expect(client.getQueryData(localKey)).toBeUndefined()
     expect(hostMock.request).not.toHaveBeenCalled()
     expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('a profile this gateway does not serve', () => {
+  it('stays listed and unavailable, also to the first selection the pane seats', async () => {
+    const sources = [{ connectionId: 'local', kind: 'local', reachable: true }]
+
+    const rows = await mergedRoster(
+      { profiles: [{ name: 'default' }, { name: 'research' }, { name: 'solo' }] },
+      {
+        agents: [
+          { connectionId: 'local', connectionKind: 'local', handle: 'hermes', profile: 'default' },
+          { connectionId: 'local', connectionKind: 'local', handle: 'research', profile: 'research' },
+          {
+            connectionId: 'local',
+            connectionKind: 'local',
+            handle: 'solo',
+            profile: 'solo',
+            reachable: false
+          }
+        ],
+        primaryConnectionId: 'local',
+        sources
+      }
+    )
+
+    expect(rows.map(row => row.name)).toEqual(['default', 'research', 'solo'])
+    expect(rows.find(row => row.name === 'research')?.sourceReachable).toBe(true)
+    expect(rows.find(row => row.name === 'solo')?.sourceReachable).toBe(false)
+
+    // The roster pane annotates each row again with the source snapshot before it seats the first
+    // available bot (roster-pane.tsx, reconcileRosterSelection). The source being up must not make
+    // the unserved row selectable there.
+    const selectable = (rows as RosterRow[])
+      .filter(row => botSourceStatus(annotateBotSource(row, sources)).available)
+      .map(row => row.name)
+
+    expect(selectable).toEqual(['default', 'research'])
+  })
+})
+
+describe('a launch that never opens the Bots pane', () => {
+  it('names a remote bot by what its backend reports, not a stale cached title', async () => {
+    queryClient.clear()
+    $botMeta.set({ 'vps::default': { title: 'Agent B' } })
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [{ display_name: 'Agent B', name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        { connectionId: 'local', connectionKind: 'local', handle: 'default', profile: 'default' },
+        {
+          connectionId: 'vps',
+          connectionKind: 'remote',
+          connectionLabel: 'VPS',
+          handle: 'default',
+          profile: 'default',
+          profileMetadata: { display_name: 'Agent A', title: 'Agent A' }
+        }
+      ],
+      primaryConnectionId: 'local'
+    })
+
+    await primeRoster()
+
+    const vps = cachedUnionRoster()?.profiles?.find(row => row.connectionId === 'vps')
+
+    expect(vps).toBeTruthy()
+    // The composer's @handle and group prompts read these; the pane never ran.
+    expect(botMentionTag(vps!)).toBe('agent-a')
+    expect($botMeta.get()['vps::default']?.title).toBe('Agent A')
   })
 })

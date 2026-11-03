@@ -291,7 +291,6 @@ def render_comment(
 
     info = by_severity.get("info", [])
     debug = by_severity.get("debug", [])
-    has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
 

@@ -29,7 +29,7 @@ def _is_context_engine_dir(path: Path) -> bool:
     return "register_context_engine" in source or "ContextEngine" in source
 
 
-def _iter_engine_dirs() -> List[Tuple[str, Path]]:
+def _iter_engine_dirs() -> list[tuple[str, Path]]:
     """``(name, path)`` for bundled then user engines; bundled wins on collisions."""
     dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_CONTEXT_ENGINE_PLUGINS_DIR)]
     seen = {name for name, _ in dirs}
@@ -40,7 +40,7 @@ def _iter_engine_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
-def discover_context_engines() -> List[Tuple[str, str, bool]]:
+def discover_context_engines() -> list[tuple[str, str, bool]]:
     """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
     return [(name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
@@ -57,7 +57,7 @@ def find_engine_dir(name: str) -> Optional[Path]:
     return user if user and user.is_dir() and _is_context_engine_dir(user) else None
 
 
-def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
+def load_context_engine(name: str) -> Optional[ContextEngine]:
     """Load a ContextEngine instance by name; None if not found or it fails to load."""
     engine_dir = find_engine_dir(name)
     if engine_dir is None:
@@ -68,12 +68,17 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
     )
 
 
-def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noqa: F821
+def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    from hermes_cli.plugin_isolation import user_plugin_host
+    host = None if is_bundled else user_plugin_host()
+    if host is not None:
+        return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
+                                  base_ref="agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

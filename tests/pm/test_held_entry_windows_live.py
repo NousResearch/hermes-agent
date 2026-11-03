@@ -1,10 +1,8 @@
-"""Live Windows hold on a replaced PM entry (#124807).
+"""Live Windows obstacles to removing a replaced PM entry.
 
-A running Hermes process keeps the replaced interpreter's DLLs mapped, so
-deleting the old entry fails with WinError 5 long after the new one is
-published. This maps a real DLL from inside the live entry, reinstalls over
-it, and requires the install to succeed and the tree to be reclaimed once
-the image is unmapped. No modelled hold: the failure comes from the OS.
+A running Hermes process keeps the replaced interpreter's DLLs mapped (#124807),
+and archives such as PortableGit ship read-only files; both make deleting the
+old entry fail with WinError 5. The OS produces each obstacle here, no model.
 """
 
 from __future__ import annotations
@@ -17,12 +15,12 @@ from pathlib import Path
 import pytest
 
 from pm.lock import Facts
-from tests.pm.test_pm_core import pm_env as pm_env  # noqa: F401 — fixture
-from tests.pm._fixtures import served as served  # noqa: F401 — fixture
+from tests.pm.test_pm_core import pm_env as pm_env  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+from tests.pm._fixtures import served as served  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.platforms("windows")
-def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):  # noqa: F811
+def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):
     from pm.cli import cmd_gc
     from pm.install import ensure
 
@@ -50,3 +48,23 @@ def test_mapped_dll_in_replaced_entry_does_not_fail_reinstall(pm_env):  # noqa: 
         kernel32.FreeLibrary(handle)
     cmd_gc(None)
     assert not list(runtime.glob(".reclaim-*"))
+
+
+@pytest.mark.platforms("windows")
+def test_read_only_file_in_replaced_entry_is_removed_on_reinstall(pm_env):
+    import os
+    import stat
+
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    entry = runtime / Facts(runtime / "facts.json").get("faketool")["entry"]
+    hosts = entry / "etc" / "hosts"
+    hosts.parent.mkdir()
+    hosts.write_bytes(b"127.0.0.1 localhost")
+    os.chmod(hosts, stat.S_IREAD)
+    (entry / "bin/faketool").unlink()
+    ensure("faketool", base_env={})
+    assert not (runtime / f".previous-{entry.name}").exists()
+    assert not list(runtime.glob(".reclaim-*")), "a read-only file must not strand the replaced tree"

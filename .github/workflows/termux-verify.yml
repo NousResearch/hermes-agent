@@ -6,17 +6,23 @@ on:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   pull_request:
     paths:
       - 'scripts/termux/**'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'tests/scripts/test_termux*'
       - '.github/workflows/termux-verify.yml'
   workflow_dispatch:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release:
         description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
         required: false
@@ -36,14 +42,13 @@ concurrency:
 jobs:
   contracts:
     name: Termux packaging contracts on Linux
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - name: Install the native linker test prerequisite
         run: |
@@ -67,14 +72,13 @@ jobs:
 
   tui:
     name: Prebuilt TUI checks
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:
@@ -97,7 +101,7 @@ jobs:
   r2-provisioned:
     name: Detect R2 credentials
     if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     timeout-minutes: 5
     outputs:
@@ -116,7 +120,7 @@ jobs:
     # A stable-release candidate run still fails loudly on missing R2: the
     # release must not pass on a skipped verification.
     if: needs.r2-provisioned.outputs.configured == 'true' || inputs.release == true
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     environment: release-signing
     timeout-minutes: 45
     env:
@@ -125,11 +129,10 @@ jobs:
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          # github.sha is the exact candidate commit on a stable tag-dispatched
-          # caller and the head SHA on every other event.
-          ref: ${{ github.sha }}
+          # A stable run passes the claim commit. Every other event tests its own head SHA.
+          ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-pm
         with:

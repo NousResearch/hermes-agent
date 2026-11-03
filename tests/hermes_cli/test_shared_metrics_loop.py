@@ -53,7 +53,10 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
     memory_tool("explode", store=store)  # unknown action
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
-        memory_tool(operations=[{"action": "add", "content": "a"}, {"action": "add", "content": "b"}], store=store)
+        # 2026-11-04: <=2-char alnum adds are refused as ritual probes at the content
+        # layer, so the fixtures are short real sentences instead of "a"/"b".
+        memory_tool(operations=[{"action": "add", "content": "alpha prefers tabs"},
+                                {"action": "add", "content": "beta prefers spaces"}], store=store)
     finally:
         reset_current_write_origin(token)
 

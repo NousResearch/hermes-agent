@@ -1070,12 +1070,14 @@ class TestPlaceholderLoopGuards:
         return store
 
     def test_overflow_cap_survives_interleaved_successful_probes(self, tight_store):
+        # 2026-11-04: tiny probe adds are now REFUSED at the content layer (invalid_args),
+        # so the probe no longer resets anything -- the overflow loop still hits TERMINAL.
         tight_store.add("memory", "A" * 150)
         outcomes = []
         for i in range(6):
             outcomes.append(tight_store.add("memory", "B" * 80))   # over budget every time
-            probe = tight_store.add("memory", f"z{i}")             # tiny probe used to reset the budget
-            assert probe["success"] is True
+            probe = tight_store.add("memory", f"z{i}")             # probe add now refused outright
+            assert probe["success"] is False
         assert all(r["success"] is False for r in outcomes)
         assert any(r.get("done") is True for r in outcomes), "loop must hit the TERMINAL stop"
 
@@ -1114,3 +1116,91 @@ class TestPlaceholderLoopGuards:
             {"action": "add", "content": "C" * 50},
         ])
         assert ok["success"] is True
+
+
+class TestOscillationAndCumulativeGuards:
+    """2026-11-03 22:04-22:12 incident (glm-5.3-flash, 96% full): real consolidation
+    progress interleaved with ritual failures reset the consecutive budget, add/remove
+    pairs were real state changes the no-progress cap ignored, and probe selectors
+    ('TEMP'/'F'/'占位5') returned actionable-shaped misses. Guards under test:
+    (1) success-immune cumulative per-turn failure total, (2) oscillation detector on
+    repeated post-write states, (3) counted probe old_text/content refusals."""
+
+    @pytest.fixture
+    def s(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=2000, user_char_limit=1000)
+        store.load_from_disk()
+        return store
+
+    def test_cumulative_total_survives_interleaved_real_progress(self, s):
+        # fail / REAL progress alternating: the consecutive cap never fires (each success
+        # resets it), but the 7th cumulative failure must TERMINAL the turn.
+        terminal = None
+        for i in range(10):
+            r = s.replace("memory", f"nonexistent target {i}", "x")  # zero-match failure
+            if r.get("done") is True:
+                terminal = r
+                break
+            ok = s.add("memory", f"extra real fact number {i} with a full declarative sentence")
+            assert ok["success"] is True
+        assert terminal is not None, "cumulative budget must terminate despite interleaved progress"
+        assert "successes do NOT reset" in terminal["error"]
+
+    def test_oscillating_add_remove_pair_terminates(self, s):
+        s.add("memory", "anchor entry for the oscillation test")
+        # The anchor add makes [anchor] itself a post-write state, so the remove's revert
+        # lands on a SEEN state: S_A, S1, S_A, S1, then S_A's 3rd visit fires on r4.
+        r1 = s.add("memory", "transient probe entry alpha")      # S1 (1st visit)
+        r2 = s.remove("memory", "transient probe entry alpha")   # S_A (2nd visit, still allowed)
+        r3 = s.add("memory", "transient probe entry alpha")      # S1 (2nd visit, still allowed)
+        assert all(r["success"] is True for r in (r1, r2, r3))
+        r4 = s.remove("memory", "transient probe entry alpha")   # S_A 3rd visit -> TERMINAL
+        assert r4["success"] is False and r4.get("done") is True
+        assert "oscillating" in r4["error"]
+
+    def test_state_history_and_totals_reset_at_turn_boundary(self, s):
+        s.add("memory", "anchor entry for the reset test")
+        s.add("memory", "transient probe entry alpha")
+        s.remove("memory", "transient probe entry alpha")
+        s.reset_consolidation_failures()
+        assert s._turn_failures_total == 0 and s._state_history == {}
+        # After reset the same pair runs once more without tripping the oscillation guard.
+        assert s.add("memory", "transient probe entry alpha")["success"] is True
+        assert s.remove("memory", "transient probe entry alpha")["success"] is True
+
+    def test_probe_old_text_refused_and_counted(self, s):
+        s.add("memory", "real entry about topic X")
+        r = s.remove("memory", "占位5")
+        assert r["success"] is False and r.get("done") is not True  # actionable refusal
+        assert "ritual probe" in r["error"]
+        r2 = s.remove("memory", "TEMP")
+        assert r2["success"] is False
+        assert s._turn_failures_total == 2, "probe refusals must count toward the budget"
+
+    def test_probe_selector_spam_hits_cumulative_terminal(self, s):
+        s.add("memory", "real entry about topic X")
+        terminal = None
+        for _ in range(10):
+            r = s.remove("memory", "占位5")
+            if r.get("done") is True:
+                terminal = r
+                break
+        assert terminal is not None and terminal.get("done") is True
+        assert s._turn_failures_total >= 4, "probe refusals must count toward the cumulative budget"
+
+    def test_real_short_entry_edits_still_pass(self, s):
+        # Long real facts that merely MENTION placeholders must not be refused.
+        ok = s.add("memory", "占位循环已修复，根因是成功重置了失败计数 (2026-11-03)")
+        assert ok["success"] is True
+        r = s.remove("memory", "占位循环已修复，根因是成功重置了失败计数 (2026-11-03)")
+        assert r["success"] is True
+
+    def test_batch_probe_ops_refused_with_candidates_on_ambiguous(self, s):
+        s.add("memory", "first entry mentioning the flux capacitor topic")
+        s.add("memory", "second entry about the flux capacitor design")
+        r = s.apply_batch("memory", [{"action": "remove", "old_text": "flux capacitor"}])
+        assert r["success"] is False
+        assert "Candidates:" in r["error"], r["error"]
+        r2 = s.apply_batch("memory", [{"action": "add", "content": "placeholder"}])
+        assert r2["success"] is False and "ritual probe" in r2["error"]

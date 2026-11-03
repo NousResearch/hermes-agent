@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
+import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -394,4 +395,60 @@ it('preserves manual agent expansion when selecting chats and only reveals a pin
   fireEvent.click(research)
   fireEvent.click(screen.getByText('Pinned plan'))
   expect(research.getAttribute('aria-expanded')).toBe('true')
+})
+
+it('shows loading rather than no matches while a search is pending', () => {
+  vi.spyOn(apiClient, 'hermesApi').mockImplementation(() => new Promise(() => {}))
+
+  try {
+    mount()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'not loaded yet' } })
+    expect(screen.getByText('Loading…', { selector: '[role=status]' }).getAttribute('role')).toBe('status')
+    expect(screen.queryByText(/No sessions match/)).toBeNull()
+  } finally {
+    vi.restoreAllMocks()
+  }
+})
+
+it('keeps a newly pinned search result visible after clearing search, before the list refreshes', async () => {
+  vi.spyOn(apiClient, 'hermesApi')
+    .mockResolvedValueOnce({ results: [] })
+    .mockResolvedValue({
+      results: [{ session_id: 'older', title: 'Older plan', snippet: 'older', session_started: 1 }]
+    })
+  let resolve!: (value: unknown) => void
+  vi.spyOn(sessionsApi, 'mutateSessionHttp').mockImplementation(
+    () =>
+      new Promise(done => {
+        resolve = done
+      })
+  )
+
+  try {
+    mount()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'older' } })
+    await screen.findByText('Older plan')
+
+    const research = screen
+      .getByRole('button', { name: /Agent settings: Research/ })
+      .closest('[role=group]') as HTMLElement
+
+    fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
+    expect(screen.getAllByText('Older plan')).toHaveLength(2)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+    expect(screen.getAllByText('Older plan')).toHaveLength(2)
+    await act(async () => {
+      resolve({ ok: true })
+    })
+    act(() =>
+      $sessions.set([
+        ...$sessions.get(),
+        makeSessionInfo({ id: 'older', title: 'Older plan', profile: 'research', pinned: true })
+      ])
+    )
+    expect(screen.getAllByText('Older plan')).toHaveLength(2)
+  } finally {
+    vi.restoreAllMocks()
+  }
 })

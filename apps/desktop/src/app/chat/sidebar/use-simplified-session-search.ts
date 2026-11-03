@@ -1,21 +1,22 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { $apiRequestScope, capabilityScoped, hermesApi } from '@/api/client'
+import { capabilityScoped, hermesApi } from '@/api/client'
 import type { SessionInfo, SessionSearchResponse } from '@/hermes'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $profiles } from '@/store/profile'
 
-import { searchResultToSession } from './index'
+import { searchResultToSession } from './search-result-to-session'
+import { useSimplifiedOwner } from './use-simplified-agents'
 
 /** Only v2 searches the union of agents; classic keeps its existing search contract. */
 export function useSimplifiedSessionSearch(query: string) {
   const profiles = useStore($profiles)
   const roster = useStore($fleetRoster)
-  const apiScope = useStore($apiRequestScope)
+  const owner = useSimplifiedOwner()
   const [state, setState] = useState({ rows: [] as SessionInfo[], pending: false, failed: false })
   const scopes = new Map<string, { connectionId?: string; profile: string }>()
-  const connectionId = apiScope.connectionId ?? roster?.primaryConnectionId ?? undefined
+  const connectionId = owner ?? undefined
 
   for (const p of profiles) {
     const scope = { connectionId, profile: p.name }

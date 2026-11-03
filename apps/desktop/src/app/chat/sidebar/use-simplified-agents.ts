@@ -19,14 +19,21 @@ export interface SimplifiedAgent {
   gateway: string
 }
 
+export function useSimplifiedOwner() {
+  const registry = useStore($connectionsRegistry)
+  const roster = useStore($fleetRoster)
+  const activeConnection = useStore($activeConnectionId)
+  const apiScope = useStore($apiRequestScope)
+
+  return apiScope.connectionId ?? roster?.primaryConnectionId ?? activeConnection ?? registry?.primary ?? null
+}
+
 export function useSimplifiedAgents(sessions: SessionInfo[]) {
   const { t } = useI18n()
   const profiles = useStore($profiles)
   const roster = useStore($fleetRoster)
   const registry = useStore($connectionsRegistry)
-  const activeConnection = useStore($activeConnectionId)
-  const apiScope = useStore($apiRequestScope)
-  const owner = apiScope.connectionId ?? roster?.primaryConnectionId ?? activeConnection ?? registry?.primary ?? null
+  const owner = useSimplifiedOwner()
 
   const agents = new Map<string, SimplifiedAgent>()
 

@@ -72,8 +72,16 @@ def routing_prompt(
     return "\n".join([
         f'[Discussion: "{room.name}"] You are @{lead.handle}, the lead of this room.', "",
         *context_lines, "Members:", *roster, "",
-        "The message (from the user):", f"  {discussion.payload['text']}", "",
+        "The message (from the user):", f"  {discussion.payload['text']}", *_attachment_lines(discussion), "",
         *_ROUTING_INSTRUCTIONS])
+
+
+def _attachment_lines(discussion: _ValidatedEvent) -> list[str]:
+    """Name and kind of each attached file: the lead routes on them (an attachment-only message has no text);
+    the files themselves reach only the member who takes the message."""
+    files = discussion.payload.get("attachments") or ()
+    return ["Attached files:", *(f"  - {' '.join(str(item.get('name') or 'file').split())} ({item.get('kind')}"
+                                 + (f", {item['mime']}" if item.get("mime") else "") + ")" for item in files)] if files else []
 
 
 def _first_assign_object(text: str) -> Mapping[str, Any] | None:

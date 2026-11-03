@@ -608,11 +608,18 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-    ``model_scoped`` keys build windows that cap only a model family, never the account."""
+    """Build windows from ``source[key][used_key]``.
+
+    ``used_key`` values are PERCENTAGES (0-100) on every provider that reaches this helper —
+    never 0-1 fractions. An earlier version scaled any value <= 1 by 100 to accommodate a
+    fraction shape; that heuristic silently turned Anthropic's ``seven_day.utilization`` of 1.0
+    ("1% of the weekly limit used") into 100% used. Do not reintroduce it.
+
+    ``model_scoped`` keys build windows that cap only a model family, never the account.
+    """
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -620,8 +627,6 @@ def _usage_windows(
         if used is None:
             continue
         used = float(used)
-        if fraction and used <= 1:
-            used *= 100
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
@@ -858,9 +863,14 @@ def _fetch_anthropic_account_usage(
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
+    # Anthropic's ``utilization`` is already a PERCENT (0-100), never a 0-1 fraction — it mirrors
+    # the ``limits[].percent`` field for the same window (live check 2026-11-03: five_hour 5.0 ->
+    # "5% used", seven_day 1.0 -> "1% used" on the Claude dashboard). The ``fraction`` heuristic
+    # therefore mis-scaled a window that reports exactly 1.0: "1% used" was multiplied by 100 and
+    # rendered as "100% used / 0% remaining". Do NOT pass fraction=True here.
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
-                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at",
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
@@ -871,7 +881,119 @@ def _fetch_anthropic_account_usage(
     return _snapshot("anthropic", "oauth_usage_api", windows, details)
 
 
-def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+def _fetch_minimax_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    """MiniMax M-Plan usage windows from ``/v1/token_plan/remains``.
+
+    This endpoint accepts the SAME OAuth bearer used for inference (scope
+    ``group_id profile model.completion``) — no admin API key is needed. The separate
+    ``/v1/account/balance`` endpoint is a different thing: it answers HTTP 403
+    ``token_type_mismatch`` ("api key is not an admin key") for an inference-scoped token.
+
+    Each ``model_remains`` entry is one model family (``general``, ``video``) with its own
+    5-hour and weekly window. ``current_*_remaining_percent`` is the PERCENT REMAINING (0-100),
+    so the used percent is ``100 - remaining``. Window bounds are epoch MILLISECONDS.
+    """
+    token = str(api_key or "").strip()
+    if not token:
+        try:
+            from hermes_cli.auth_minimax import resolve_minimax_oauth_runtime_credentials
+            token = str(resolve_minimax_oauth_runtime_credentials().get("api_key") or "").strip()
+        except Exception:
+            return None
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+    payload = _get_json("https://api.minimax.io/v1/token_plan/remains", headers, timeout=15.0)
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    for entry in payload.get("model_remains") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("model_name") or "model").strip() or "model"
+        for pct_key, reset_key, label in (
+            ("current_interval_remaining_percent", "end_time", f"5-hour ({name})"),
+            ("current_weekly_remaining_percent", "weekly_end_time", f"Weekly ({name})"),
+        ):
+            remaining = entry.get(pct_key)
+            if not _is_finite_num(remaining):
+                continue
+            reset_ms = entry.get(reset_key)
+            reset_at = _parse_dt(float(reset_ms) / 1000.0) if _is_finite_num(reset_ms) else None
+            windows.append(AccountUsageWindow(
+                label=label, used_percent=max(0.0, 100.0 - float(remaining)),
+                reset_at=reset_at, scope="account",
+            ))
+    return _snapshot("minimax-oauth", "token_plan_remains", windows, details, raw=payload)
+
+
+def _fetch_xai_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    """Grok / X Premium+ subscription credit usage from the Grok CLI chat proxy.
+
+    ``GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`` is the CLI's own
+    credits surface — the same one the Grok Build TUI's ``/usage`` reads. **Without the
+    ``format=credits`` query** the endpoint answers the METERED-API billing shape
+    (``monthlyLimit``/``used``/``onDemandCap``, all zero for a subscription account),
+    which says nothing about the weekly subscription pool.
+
+    Needs the CLI's identity header ``x-xai-token-auth: xai-grok-cli`` alongside the
+    bearer. ``config.creditUsagePercent`` is the PERCENT of the weekly pool USED and
+    ``config.currentPeriod.end`` is the reset. ``config.productUsage`` breaks the pool
+    down by product (GrokChat / GrokBuild / GrokImagine) as shares of the same pool.
+
+    The separate developer-platform prepaid balance lives on the xAI Management API
+    (``management-api.x.ai``), which needs a management key and does not apply to a
+    consumer subscription account — xAI answers that team as
+    ``team:personal-team-immutable``.
+    """
+    token = str(api_key or "").strip()
+    if not token:
+        try:
+            from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+            token = str(resolve_xai_oauth_runtime_credentials().get("api_key") or "").strip()
+        except Exception:
+            return None
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-xai-token-auth": "xai-grok-cli",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = _get_json(
+        "https://cli-chat-proxy.grok.com/v1/billing?format=credits", headers, timeout=20.0)
+    config = payload.get("config") or {}
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    used_percent = config.get("creditUsagePercent")
+    if _is_finite_num(used_percent):
+        period = config.get("currentPeriod") or {}
+        reset_at = _parse_dt(period.get("end")) or _parse_dt(config.get("billingPeriodEnd"))
+        label = "Weekly" if str(period.get("type") or "").endswith("WEEKLY") else "Credits"
+        windows.append(AccountUsageWindow(
+            label=label, used_percent=float(used_percent), reset_at=reset_at, scope="account",
+        ))
+    for product in config.get("productUsage") or []:
+        if not isinstance(product, dict):
+            continue
+        name = str(product.get("product") or "").strip()
+        share = product.get("usagePercent")
+        if name and _is_finite_num(share):
+            details.append(f"{name}: {float(share):g}% of the pool")
+    plan = None
+    try:
+        settings = _get_json("https://cli-chat-proxy.grok.com/v1/settings", headers, timeout=10.0)
+        plan = _title_case_slug(settings.get("subscription_tier_display"))
+    except Exception:
+        pass
+    return _snapshot("xai-oauth", "cli_proxy_credits", windows, details, plan=plan, raw=payload)
+
+
+def _fetch_openrouter_account_usage(base_url: Optional[str] = None, api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(requested="openrouter", explicit_base_url=base_url, explicit_api_key=api_key)
     token = str(runtime.get("api_key", "") or "").strip()
     if not token:
@@ -910,7 +1032,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
 
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "minimax-oauth": _fetch_minimax_account_usage,
+    "xai-oauth": _fetch_xai_account_usage,
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by

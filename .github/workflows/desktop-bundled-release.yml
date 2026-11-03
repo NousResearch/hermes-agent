@@ -875,7 +875,7 @@ jobs:
       matrix:
         target:
           - label: darwin-arm64
-            runner: blacksmith-12vcpu-macos-15
+            runner: macos-15
     env: &darwin-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -1173,7 +1173,6 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          # Blacksmith has no Intel macOS runners, so this leg stays GitHub-hosted.
           - label: darwin-x64
             runner: macos-15-intel
     env: *darwin-env

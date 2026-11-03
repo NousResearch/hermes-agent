@@ -27,8 +27,9 @@ register channels. The builder writes the legacy URL into `app-update.yml`;
 - Stable: `releases/darwin/stable/stable-mac.yml`
 - Canary: `releases/darwin/canary/canary-mac.yml`
 - Light: the same paths with `light/` between `darwin/` and the channel.
-- Artifacts: `releases/tag/TAG/FILENAME`, shared by download links and feeds.
-- Channel-build artifacts and native metadata: `releases/channel-builds/BUILD_ID/`.
+- Artifacts: `releases/tag/TAG/FILENAME` (TAG is the claim tag), shared by
+  download links and feeds. A channel build's packages live there too.
+- Channel-build feeds and build manifest: `releases/channel-builds/BUILD_ID/`.
 
 Retirement is a different operation from a native update: the old channel points
 to a qualified official destination, not to a differently named package in its
@@ -37,7 +38,8 @@ verify destination readiness before removing the preview application. Keeping
 the qualified receiver manifest immutable lets an offline preview migrate after
 the destination channel has advanced; the destination subsequently owns updates.
 
-The current workflow builds the bundled variant, on ARM64 and Intel runners.
+The current workflow builds the bundled variant on ARM64 runners, and on Intel
+runners only for a claim that adds the `macos-intel` lane.
 Light has separate client/feed routing but no release matrix leg in this change.
 
 `python -m scripts.releases.r2 finalize` requires one metadata file for each architecture,

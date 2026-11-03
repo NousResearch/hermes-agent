@@ -235,8 +235,8 @@ def test_canary_packages_upgrade_in_claim_stamp_order():
         target = f"{platform}/{arch}"
         row = stable._transition_row(target, left, right)
         assert row["transition"]["old"]["tag"] == PREVIOUS and row["transition"]["new"]["tag"] == CANARY
-        # Consecutive canaries share X.Y.Z; an equal or older stamp is no upgrade.
-        with pytest.raises(ValueError, match="increase"):
+        # Consecutive canaries share X.Y.Z; the same claim is the same build, an older stamp no upgrade.
+        with pytest.raises(ValueError, match="change the build"):
             stable._transition_row(target, left, {**left, "commit": COMMIT, "artifact": {**left["artifact"], "sha256": "3" * 64}})
         with pytest.raises(ValueError, match="increase"):
             stable._transition_row(target, {**right, "commit": "c" * 40}, {**left, "commit": COMMIT})
@@ -384,49 +384,20 @@ def _custody_run(*, default="main"):
     return run
 
 
-def test_the_canary_controller_custody_is_the_stable_pipeline_after_its_accepted_candidate():
+def test_the_canary_controller_custody_is_the_stable_pipeline():
     from hermes_cli.release_channels import ChannelError
     from scripts.releases import channel_releases
 
-    needs = {"admit": {"result": "success"}, "candidate-manifest": {"result": "success"},
-             "acceptance": {"result": "failure"}, **{arm: {"result": "success"} for arm in lane_set.UPGRADE_ARMS}}
-    # Without require-green, a red suite never blocks the canary's publication.
-    env = {**CONTROLLER_ENV, "RELEASE_TAG": CANARY, "RELEASE_TAG_OBJECT": TAG_OBJECT, "REQUIRE_GREEN": "false",
-           "RELEASE_COMMIT": COMMIT, "RELEASE_NEEDS": json.dumps(needs), "GITHUB_ACTIONS": "true"}
+    # Its needs are judged by the claim (stable.require_publication, from publish_release); this is
+    # the controller and tag custody every publication step re-checks.
+    env = {**CONTROLLER_ENV, "RELEASE_TAG": CANARY, "RELEASE_TAG_OBJECT": TAG_OBJECT,
+           "RELEASE_COMMIT": COMMIT, "GITHUB_ACTIONS": "true"}
     assert channel_releases.admit_transaction("canary-release", env, run=_custody_run()) == (CANARY, COMMIT)
-    # An upgrade arm that ran must pass even then; one skipped (no baseline, lane off) does not block.
-    skipped = {**needs, **{arm: {"result": "skipped"} for arm in stable.PACKAGED_BY}}
-    assert channel_releases.admit_transaction("canary-release", {**env, "RELEASE_NEEDS": json.dumps(skipped)},
-                                              run=_custody_run()) == (CANARY, COMMIT)
-    for result in ("failure", "cancelled", "missing"):
-        red = {**needs, "windows-packaged": {"result": result}} if result != "missing" else \
-            {name: row for name, row in needs.items() if name != "windows-packaged"}
-        with pytest.raises(ValueError, match=f"windows-packaged={result}"):
-            channel_releases.admit_transaction("canary-release", {**env, "RELEASE_NEEDS": json.dumps(red)},
-                                               run=_custody_run())
-    # With it (or without the flag at all: custody fails closed), acceptance must have passed.
-    for green in ({"REQUIRE_GREEN": "true"}, {"REQUIRE_GREEN": ""}):
-        with pytest.raises(ValueError, match="acceptance=failure"):
-            channel_releases.admit_transaction("canary-release", {**env, **green}, run=_custody_run())
-    green = {**env, "REQUIRE_GREEN": "true",
-             "RELEASE_NEEDS": json.dumps({**needs, "acceptance": {"result": "success"}})}
-    assert channel_releases.admit_transaction("canary-release", green, run=_custody_run()) == (CANARY, COMMIT)
-    failed = {**needs, "candidate-manifest": {"result": "failure"}}
-    with pytest.raises(ValueError, match="candidate-manifest=failure"):
-        channel_releases.admit_transaction("canary-release", {**env, "RELEASE_NEEDS": json.dumps(failed)},
-                                           run=_custody_run())
     # The controller ref of another branch is not the controller.
     with pytest.raises(ChannelError, match="existing release workflow"):
         channel_releases.admit_transaction("canary-release", env, run=_custody_run(default="develop"))
-    # Nor is any other workflow: the direct desktop-bundled-release dispatch once published canaries
-    # from its native legs alone, and must not even with every one of those legs green.
-    legacy_needs = {name: {"result": "success"} for name in (
-        "validate", "build-win32-x64", "build-win32-arm64", "build-darwin-arm64", "build-darwin-x64",
-        "build-linux-x64", "build-linux-arm64", "builds-table", "assemble-win32-bundle",
-        "smoke-darwin-arm64", "smoke-darwin-x64", "smoke-win32-arm64", "smoke-win32-x64",
-        "publish-win32-updater", "publish-darwin-updater")}
-    legacy = {**env, "RELEASE_NEEDS": json.dumps(legacy_needs),
-              "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace("stable-release", "desktop-bundled-release")}
+    # Nor is any other workflow: the direct desktop-bundled-release dispatch once published canaries.
+    legacy = {**env, "GITHUB_WORKFLOW_REF": env["GITHUB_WORKFLOW_REF"].replace("stable-release", "desktop-bundled-release")}
     with pytest.raises(ChannelError, match="existing release workflow"):
         channel_releases.admit_transaction("canary-release", legacy, run=_custody_run())
     # A stable tag can never ride the canary policy.

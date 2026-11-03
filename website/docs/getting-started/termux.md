@@ -19,7 +19,7 @@ Two APT channels are published under
 | Channel | APT suite | Contents |
 | --- | --- | --- |
 | `stable` | `hermes-stable` | Tagged `vMAJOR.MINOR.PATCH` releases that passed the stable release gate |
-| `canary` | `hermes-canary` | Prerelease builds from canary tags; versions carry `~canary.<timestamp>` |
+| `canary` | `hermes-canary` | Prerelease builds from canary tags that build Termux (the daily canary does not); versions carry `~canary.<timestamp>` |
 
 The steps below use `stable`. To follow prereleases, replace `stable` with
 `canary` and `hermes-stable` with `hermes-canary` in steps 2 and 4. Both

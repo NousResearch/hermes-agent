@@ -153,7 +153,8 @@ def cmd_build_commit(args) -> None:
         print(f"{kind.capitalize()} build {tag} of {commit}" + (f" for channel {channel}" if channel else ""))
         print(f"Lanes {lane_set.describe(lanes)}")
         print(f"Publishing to {target} waits for every suite." if args.require_green
-              else f"Publishing to {target} waits only for the built, smoked candidate; suites report.")
+              else f"Publishing to {target} waits only for the built, smoked candidate"
+                   + (" and every upgrade arm that ran" if channel else "") + "; other suites report.")
         print(f"Builds will be available at: {page}")
         print(f"Workflow command, running from {repository}@{branch}")
         print(f"    {shlex.join(command)}")

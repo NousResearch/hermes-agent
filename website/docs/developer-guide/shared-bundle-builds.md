@@ -286,18 +286,19 @@ acceptance and publication across distributions.
 
 The desktop release workflow downloads and installs each supported bundled
 format on a fresh native runner, then runs the same composer/provider/reply
-check as install-e2e. Windows universal assembly stages bytes before the smoke;
-its canary feed is published separately only after both native smoke matrices
-pass. macOS feed publication and stable candidate acceptance are likewise gated.
+check as install-e2e. Windows universal assembly stages bytes before the smoke.
+Every claim's candidate manifest records the smoke results, and every
+publication job requires that manifest, so no feed or channel head moves before
+the native smokes pass.
 See [install and chat acceptance](https://github.com/NousResearch/hermes-agent/blob/main/tests/install/README.md#post-build-artifact-smoke)
-for covered formats, checkpoint evidence and the Store/Linux/no-upload limits.
+for covered formats, checkpoint evidence and the Store/Linux limits.
 
 `scripts.releases.handoff fetch --public-base URL` downloads a staged artifact
-without R2 credentials. Supply either `--tag TAG --commit SHA` or
-`--commit-build SHA`, plus the producer `--name`, destination `--root`, and
-optional `--include` selectors. This uses the same receipt identity, path,
-size and SHA-256 checks as authenticated handoffs. Tagged and commit-only
-archives remain separate; the command does not resolve a mutable latest feed.
+without R2 credentials. Supply `--tag TAG --commit SHA` (the claim tag, whose
+archive holds the handoff, and its exact commit), plus the producer `--name`,
+destination `--root`, and optional `--include` selectors. This uses the same
+receipt identity, path, size and SHA-256 checks as authenticated handoffs; the
+command does not resolve a mutable latest feed.
 
 Public reads require HTTPS, except for loopback fixture servers. They reject
 URL credentials, unsafe paths and redirects. An incomplete or corrupt download

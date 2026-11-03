@@ -539,7 +539,8 @@ def cmd_canary(args) -> None:
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
     print(f"Lanes {lane_set.describe(lanes)}")
     print("Publication waits for every suite." if args.require_green
-          else "Publication waits only for the built, smoked candidate; suites report.")
+          else "Publication waits only for the built, smoked candidate and every upgrade arm that ran; "
+               "other suites report.")
     changelog = generate_changelog(
         commits, tag_name, version, prev_tag=since, first_release=False, no_changelog=args.no_changelog
     )
@@ -716,7 +717,8 @@ def main():
     parser.add_argument("--require-green", action=argparse.BooleanOptionalAction, default=True,
                         help="Hold publication until every suite passes (default). "
                              "--no-require-green still waits for suites to finish, but permits their failures "
-                             "when the candidate is built and smoked; stable releases always require green")
+                             "when the candidate is built and smoked and (canary and channel builds) every "
+                             "upgrade arm that ran passed; stable releases always require green")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Build an exact pushed commit through the Stable Release pipeline: "
                              "claims commit.<YYYYMMDDTHHMMSSZ>-v<version> on REV and dispatches it "
@@ -727,7 +729,7 @@ def main():
                              "--channel NAME to claim channel.<stamp>-v<version> instead: the same "
                              "pipeline (minus windows-store, upgrading the channel's head) then advances that R2 channel.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
-                        help="Bake a non-secret environment default into a commit desktop bundle. "
+                        help="Bake a non-secret environment default into a commit or channel build's desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")
     parser.add_argument("--bundle-unset", action="append", default=[], metavar="NAME",
                         help="Clear an inherited variable at desktop launch, even when set. "
@@ -737,13 +739,14 @@ def main():
                              "claim tags older than 90 days and channel claim tags older than 14 "
                              "days (never a channel head's; needs the R2 credentials)")
     parser.add_argument("--publish", action="store_true",
-                        help="Actually create the tag and GitHub release (otherwise dry run)")
+                        help="Actually push the claim tag (and a canary's draft prerelease) and dispatch "
+                             "its build; otherwise a dry run that creates nothing")
     parser.add_argument("--remote", type=str,
                         help="Git remote that receives the release push and the GitHub "
                              "release. Required with --publish when more than one remote "
                              "is configured; the single remote is used when only one exists.")
     parser.add_argument("--date", type=str,
-                        help="Override release date metadata (format: YYYY.M.D)")
+                        help="--canary: override the claim stamp (UTC, format: YYYYMMDDTHHMMSSZ)")
 
     parser.add_argument("--no-changelog", action="store_true",
                         help="Skip changelog")

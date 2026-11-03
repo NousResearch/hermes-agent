@@ -17,7 +17,6 @@ import hermes_cli.left_core_migration as lcm
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr(lcm, "_undelivered", {})
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     managed = tmp_path / "managed"
     managed.mkdir()

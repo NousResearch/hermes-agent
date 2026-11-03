@@ -1,0 +1,22 @@
+name: dsers
+title: DSers — Multi-platform Dropshipping
+repo: https://github.com/dsers/dsers-agent-plugin
+sha: 90a58c72a59cd944553a074b96c00e422a5d3622
+subdir: plugins/hermes
+maintainer: dsers
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/dsers/dsers-agent-plugin/blob/90a58c72a59cd944553a074b96c00e422a5d3622/plugins/hermes/README.md
+readme: true
+platforms: []
+description: "DSers multi-platform dropshipping connector for dropshippers: supplier discovery, product sourcing, store management, supplier mapping, order fulfillment, and shipment tracking. The DSers ecosystem includes AliExpress, Alibaba.com, 1688, DVAN, Shopify, WooCommerce, Wix, eBay, TikTok Shop, Amazon, Walmart, BigCommerce, Squarespace, Square, Ecwid, Magento, SHOPLINE, Jumpseller, Big Cartel, Cartpanda, Genstore, and LPQV; available operations depend on account and channel access. Disclosure — configuration-only portable MCP connector, with no bundled skills or native tools. Hermes v0.22.5 requires manual native OAuth connection setup. A DSers Advanced, Pro, or Enterprise subscription is required. Tool arguments and results are exchanged with ai.dsers.com; Hermes manages OAuth credentials. Remote tools include write operations, among them supplier-order placement that spends money through the user's DSers account, pricing changes and listing publication; the package and the documented native entry mark the server untrusted so Hermes asks before non-read-only calls, and the remote tool set can change independently of the pinned package. Removing the plugin alone leaves the native MCP connection."
+known_issues:
+  - "On Hermes v0.22.5, configure the native OAuth connection as documented in the README; installation and enablement alone do not complete setup."
+  - "Disabling or removing the plugin alone does not remove the native MCP connection or its cached credentials; the README documents full removal."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

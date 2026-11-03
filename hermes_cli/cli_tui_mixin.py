@@ -39,6 +39,8 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
+from hermes_cli import cli_enter_burst as _enter_burst
+from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
 from hermes_cli.cli_footer_split import FooterSplit
 from hermes_cli.cli_panel import _Panel
 from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
@@ -46,8 +48,6 @@ from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
-# Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
-_RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
 # Approval-choice identifiers (protocol tokens, never translated) → catalog keys for their labels.
@@ -1396,10 +1396,7 @@ class CLITuiMixin:
         redirect / interrupt queue / next-turn queue); idle → ``_pending_input``. Slash and bang
         commands always take the local-dispatch path (never steer/interrupt text to the model).
         """
-        from cli import (
-            _apply_backslash_line_continuation,
-            _is_backslash_line_continuation,
-            _looks_like_slash_command)
+        from cli import _apply_backslash_line_continuation, _is_backslash_line_continuation
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
@@ -1415,14 +1412,15 @@ class CLITuiMixin:
             buf.cursor_position = len(continued)
             event.app.invalidate()
             return
-        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
-        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
-        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
-        # Enter is a line break inside one message, not a submit (#10994).
-        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
-            buf.insert_text("\n")
-            return
-        text = raw_text.strip()
+        # Enter mid-burst: a pasted newline (#10994), or the end of a scripted `text`+Enter write.
+        from hermes_cli.cli_enter_burst import handle_burst_enter
+        if not handle_burst_enter(self, event, buf):
+            self._tui_submit_buffer(event, buf)
+
+    def _tui_submit_buffer(self, event, buf):
+        """Submit the composer: inline commands, busy routing or ``_pending_input``."""
+        from cli import _looks_like_slash_command
+        text = buf.text.strip()
         has_images = bool(self._attached_images)
         if not (text or has_images):
             return
@@ -1725,7 +1723,7 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
-        self._tui_last_text_change = time.monotonic()
+        self._tui_last_text_change = _enter_burst.note_text_change(self)
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
@@ -1817,6 +1815,7 @@ class CLITuiMixin:
 
     def _tui_init_run_state(self):
         """Reset the per-run REPL state (queues, modal states, voice state, config watcher)."""
+        from hermes_cli.config_backend import config_version_or_none
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
@@ -1835,9 +1834,8 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
-        from utils import file_signature
         _cfg_path = _get_config_path()
-        self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
+        self._config_sig: tuple | None = config_version_or_none(_cfg_path)
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 
@@ -2061,7 +2059,7 @@ class CLITuiMixin:
         # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
         # normalized to prompt_toolkit's c-x / a-x format via
         # ``normalize_voice_record_key_for_prompt_toolkit`` so the same config value binds identically in
-        # the TUI and CLI (Copilot round-9 review on #19835). ``super``/``win``/``windows`` configs silently
+        # the TUI and CLI (review round-9 on #19835). ``super``/``win``/``windows`` configs silently
         # fall back to the default here since prompt_toolkit has no super modifier — log a warning so users
         # notice the TUI/CLI split instead of a silent mismatch (round-11).
         _raw_key: object = "ctrl+b"
@@ -2086,7 +2084,7 @@ class CLITuiMixin:
             _voice_key = "c-b"
         # Cache the UI label here — same ``_raw_key`` that drives the prompt_toolkit binding below. Every
         # status / placeholder / recording-hint render reads this cached value so display can never drift
-        # from the live keybinding even if the user edits voice.record_key mid-session (Copilot round-13 on
+        # from the live keybinding even if the user edits voice.record_key mid-session (review round-13 on
         # #19835).
         self.set_voice_record_key_cache(_raw_key)
         return pt_key_to_sequence(_voice_key)

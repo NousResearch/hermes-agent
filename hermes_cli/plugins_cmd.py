@@ -95,6 +95,13 @@ class PluginOperationError(Exception):
             self.failure_class = failure_class
 
 
+class PluginSourceMoved(PluginOperationError):
+    """The source is no longer at the commit the install dialog reviewed. Clients answer it by reading
+    the source again (``plugins.manage`` error ``data.reason == "source_moved"``), never by resending."""
+
+    failure_class = "clone_failed"
+
+
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
 
@@ -490,7 +497,7 @@ def _plugin_selection_version() -> str:
 
 def _admit_and_save_plugin_sets(
     enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None,
-    plugin: Optional[str] = None,
+    plugin: Optional[str] = None, settled=(),
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
@@ -506,7 +513,7 @@ def _admit_and_save_plugin_sets(
     try:
         admit_plugin_set_change(
             enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config,
-            plugin=plugin,
+            plugin=plugin, settled=settled,
         )
     except DependencyConflict as exc:
         # `hermes pm install` cannot fix a conflict, so the retry hint below would mislead here.
@@ -570,10 +577,20 @@ def _activate_key(key: str, *, enable: bool, console=None) -> bool:
     enabled, disabled = _get_enabled_set(), _get_disabled_set()
     aliases = _plugin_aliases(key)
     target, other = (enabled, disabled) if enable else (disabled, enabled)
-    if key in target and not (aliases & other):
+    # A plugin an update disabled is retried by later updates; disabling it yourself stops that.
+    if key in target and not (aliases & other) and not (not enable and _disabled_by_update(key, aliases)):
         return False
     _set_plugin_enabled(key, enable=enable, aliases=aliases, console=console)
     return True
+
+
+def _disabled_by_update(key: str, aliases) -> bool:
+    """Whether an update disabled this plugin and will retry it (``pm.plugin_eviction`` records it)."""
+    from pm.plugins_state import RECORD
+    from pm.plugins_state import read_home_selection
+
+    record = ((read_home_selection(get_hermes_home()) or {}).get("plugins") or {}).get(RECORD)
+    return isinstance(record, dict) and bool({key, *aliases} & set(record))
 
 
 def _forget_plugin_config(aliases: set) -> dict[str, Any]:
@@ -633,7 +650,8 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
         _apply_activation(enabled, disabled, name, aliases, enable=enable)
         _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                                   expected_config=expected_config, plugin=name if enable else None)
+                                   expected_config=expected_config, plugin=name if enable else None,
+                                   settled=(name, *aliases))
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
@@ -871,11 +889,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
-    # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
+    # memory/, context_engine/, computer_use/, model-providers/ and config_backends/ load through dedicated
+    # paths, not the PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers", "config_backends"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

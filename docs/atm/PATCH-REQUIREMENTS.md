@@ -16,10 +16,23 @@ that the `hermes-atm` package (pip; source in atm-core `crates/hermes-atm`) call
 deliver agent-team-mail nudges into a profile's chat session. Everything else in the
 stack exists to support or test that seam.
 
-Current stack shape (3 commits + this doc commit):
-1. `feat: expose public gateway injection seam` — the API + hook exposure + tests
-2. `fix(gateway): notify visible internal-message notices` — notice delivery hardening
-3. `test(gateway): cover soft visible-notice failure`
+Current stack shape as of v0.22.5 (7 substantive commits + this doc's own commit = 8 above the base tag; replay ALL of them on every rebase):
+1. `feat: reseat public injection seam onto mixin-split run.py` — the API + hook exposure + tests
+2. `fix(gateway): P1 review fixes HGF-001..004 (injection seam)` — review-round hardening
+3. `style(tests): strip trailing whitespace (HGF-005)`
+4. `test(gateway): startup-emit stub absorbs upstream heartbeat-restore addition`
+5. `docs(atm): release-publishing model (vX-atm) + pipeline corrections`
+6. `docs(atm): HGF-003 verify commands for the v0.22.4 pyproject layout`
+7. `docs(readme): add Synaptic Canvas fork banner` — the README fork banner is a
+   STACK PATCH (Rand ruling 2026-10-23): ALL fork content rides the stack and is
+   replayed by the rebase; nothing lives main-only. (It was originally main-only
+   and got silently reverted by a whole-tree sync merge — PR #33 — which is the
+   incident that produced this rule.)
+
+Stack diffstat invariant: `git diff vX^{commit}..stack-tip` touches exactly
+**6 files** — the 5 seam/contract files plus `README.md` (banner). A sync
+candidate touching fewer files dropped a patch; more files grew the stack
+without a contract update.
 
 ## The contract (every item is load-bearing)
 

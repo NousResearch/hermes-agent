@@ -593,7 +593,11 @@ def test_our_own_pid_is_ours_only_at_our_exact_creation_time():
     me = pause_record.identity()
     assert me["ct"].startswith("ct:") and pause_record.identity_is_live(me)
     created = float(me["ct"][3:])
-    reused = {"pid": os.getpid(), "ct": f"ct:{created - 0.5:.3f}"}  # inside the cross-writer skew
+    # Half a second earlier is inside the cross-writer skew. When we started at exactly X.500 that
+    # lands on a whole second, which the macOS `ps -o lstart` rule rightly calls ours (1 run in 100
+    # on Linux's 10 ms clock), so step a further quarter second off it.
+    earlier = created - 0.5 if not (created - 0.5).is_integer() else created - 0.75
+    reused = {"pid": os.getpid(), "ct": f"ct:{earlier:.3f}"}
     assert not pause_record.identity_is_live(reused), "a killed update's record became ours by pid reuse"
 
 

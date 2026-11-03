@@ -1,4 +1,4 @@
-"""Verify Docker exports a runnable full Chromium executable.
+"""Verify the Docker image bakes a runnable full Chromium executable.
 
 The image must ship no separate headless-shell package or store entry.
 """
@@ -12,24 +12,32 @@ from tests.docker.conftest import docker_exec, docker_exec_sh, start_container
 def test_stage2_discovers_chromium_binary(
     built_image: str, container_name: str,
 ) -> None:
-    """Stage2 must export the baked full-browser path, not a shell or .so.
+    """The build bakes the full-browser path, not a shell or .so, and Hermes resolves it.
 
     Exercise it as the runtime user: an executable bit alone does not prove
     Chromium can load its shared libraries.
     """
     start_container(built_image, container_name)
 
-    # AGENT_BROWSER_EXECUTABLE_PATH must be set via s6 container_environment.
     r = docker_exec_sh(
         container_name,
-        "cat /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH",
+        "cat /etc/hermes/chromium-executable-path",
         timeout=10,
     )
-    assert r.returncode == 0, (
-        f"AGENT_BROWSER_EXECUTABLE_PATH not set by stage2 hook: {r.stderr}"
-    )
+    assert r.returncode == 0, f"no baked Chromium path: {r.stderr}"
     browser_path = r.stdout.strip()
-    assert browser_path, "AGENT_BROWSER_EXECUTABLE_PATH is empty"
+    assert browser_path, "/etc/hermes/chromium-executable-path is empty"
+
+    # Hermes's own resolver (the launcher's binary) lands on the same build.
+    r = docker_exec(
+        container_name,
+        "/opt/hermes/.venv/bin/python", "-c",
+        "from hermes_cli.browser_runtime import chromium_executable; "
+        "print(chromium_executable(allow_override=False))",
+        timeout=30,
+    )
+    assert r.returncode == 0, f"chromium_executable() failed: {r.stderr}"
+    assert r.stdout.strip() == browser_path, r.stdout
 
     # Must be a real file and executable.
     r = docker_exec_sh(

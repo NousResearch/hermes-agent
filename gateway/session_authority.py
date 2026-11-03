@@ -1033,6 +1033,7 @@ class SessionAuthority:
             # callback (an agent thread outliving a timed-out turn) never follows the completion.
             if self.executing.get(session_id) != generation:
                 return False
+            live.event_stream.note_progress(generation, event_type, payload)
             delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
             from gateway.session_api_turn import publish_api_event
             observed = publish_api_event(self, session_id, event_type, payload)

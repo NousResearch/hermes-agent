@@ -172,7 +172,7 @@ class TestWebExtractCacheAttribution:
             "https://example.com/second", "second page", "Second", format=None, provider="tavily"
         )
 
-    def test_redirected_page_caches_under_requested_source_url(self):
+    def test_redirected_page_caches_under_requested_source_url(self, public_dns):
         """Keenable/Firecrawl report the post-redirect address in ``url`` and the requested URL in
         ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target.
         The first requested page is omitted, so positional pairing would file the redirected page

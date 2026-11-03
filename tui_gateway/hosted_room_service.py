@@ -18,11 +18,13 @@ from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_links
 from gateway import hosted_rooms
+from gateway.hosted_room_context import room_context
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, PolicySnapshot
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_needs_dispatch_refresh)
 from tui_gateway import hosted_room_prepare_stall as prepare_stall
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from tui_gateway.hosted_room_member_activity import forget_task_progress, record_task_progress, task_progress
 from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
 from tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
@@ -48,6 +50,17 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
     """A pending action naming the exact attempt ``groups.retry``/``discard`` fence on."""
     return {"kind": kind, "member_id": task_member_id(task), "task_id": task["identity"].task_id,
             "execution_generation": task["execution_generation"]}
+
+
+def _member_activity(task: Mapping[str, Any]) -> dict[str, Any]:
+    identity = task["identity"]
+    # The thread and round let a client scope outcomes and the round strip to the discussion that owns the task.
+    row = {"member_id": task_member_id(task), "status": str(task["status"]), "thread_id": identity.thread_id}
+    if (round_index := discussion.turn_round(identity.turn_id)) is not None:
+        row["round_index"] = round_index
+    if task.get("started_at") is not None:
+        row["started_at"] = task["started_at"]
+    return {**row, **task_progress(identity.room_id, identity.task_id, int(task["execution_generation"]))}
 
 
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
@@ -135,7 +148,7 @@ class HostedRoomService:
             db_path=self.db_path, rooms=self.bindings, rpc=self.rpc,
             transport_resolver=self._resolve_member_transport, turn_lock=self._turn_lock,
             prepare_room=self._prepare_tracked, publish_terminal=self.publish_terminal,
-            pending_action=self._set_pending_action,
+            pending_action=self._set_pending_action, task_progress=record_task_progress,
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
@@ -483,9 +496,14 @@ class HostedRoomService:
                 self.db_path, room_id=binding.room_id, clock=self.runtime.clock)
             if next(iter(self._list_tasks(binding.room_id, _LIVE_STATUSES)), None) is not None:
                 return
+            # The snapshot holds one active discussion; its latest user message opened it.
+            source_seq = max(
+                (int(event["seq"]) for event in snapshot.events if event.get("kind") == "message.user"), default=None)
             decision = discussion.plan_next_task(
                 room, list(snapshot.events), local_profiles=self.room_profiles(room),
-                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits)
+                initial_watermarks=snapshot.watermarks, freeze_input_context=True, limits=self.discussion_limits,
+                room_context=None if source_seq is None else room_context(
+                    self.db_path, room_id=binding.room_id, before_seq=source_seq))
             if decision.status == "task" and decision.task is not None:
                 existing = driver.get_task_for_turn(self.db_path, decision.task.identity)
                 legacy_payload = dict(decision.task.payload)
@@ -527,7 +545,8 @@ class HostedRoomService:
             raise
         stalls.clear(binding.room_id)
 
-    def publish_terminal(self, binding: HostedRoomBinding, _task: Mapping[str, Any]) -> None:
+    def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
+        forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 
@@ -601,6 +620,9 @@ class HostedRoomService:
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
+        # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
+        forget_task_progress(room_id, task_id, int(task["execution_generation"]))
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
 
@@ -673,10 +695,9 @@ class HostedRoomService:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
-        # Who is answering right now: clients render per-member working indicators from it.
+        # Who is answering right now, since when, and (when this process runs the turn) in which tool.
         member_activity = [
-            {"member_id": task_member_id(task), "status": str(task["status"])}
-            for task in tasks if task["status"] in _LIVE_STATUSES]
+            _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]
         return {
             "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]
@@ -684,6 +705,7 @@ class HostedRoomService:
             "counts": dict(counts), "pending_actions": pending_actions,
             "member_activity": member_activity,
             "last_error": self._prepare_stalls.last_error(room_id),
+            "max_rounds": self.discussion_limits.max_rounds,
             "peer_routes": self._route_statuses(room_id)}
 
 

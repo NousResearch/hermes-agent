@@ -37,11 +37,12 @@ verify destination readiness before removing the preview application. Keeping
 the qualified receiver manifest immutable lets an offline preview migrate after
 the destination channel has advanced; the destination subsequently owns updates.
 
-The current workflow builds the bundled variant, on ARM64 and Intel runners.
-Light has separate client/feed routing but no release matrix leg in this change.
+The current workflow builds the bundled variant on ARM64 runners only; there is
+no Intel (x64) leg. Light has separate client/feed routing but no release matrix
+leg in this change.
 
-`python -m scripts.releases.r2 finalize` requires one metadata file for each architecture,
-named `arm64-CHANNEL-mac.yml` and `x64-CHANNEL-mac.yml`. It rejects wrong
+`python -m scripts.releases.r2 finalize` requires exactly one metadata file,
+named `arm64-CHANNEL-mac.yml`. It rejects wrong
 versions, variants, architectures, hashes and inconsistent legacy path fields.
 Each referenced ZIP/DMG is streamed back and checked against its SHA-512 and
 size. Publication checks the live version, conditionally replaces its ETag,

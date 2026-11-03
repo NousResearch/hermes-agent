@@ -46,14 +46,15 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import {
   botOnConnection,
+  connectionName,
+  groupCreationEngine,
   groupCreationSource,
   groupExecutionMode,
   groupNeedsDesktopCourier,
-  groupSelectionElsewhere,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
-import type { GroupCapabilityState } from './canonical-group-capabilities'
+import type { GroupCapabilityState, GroupCreationEngine } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
@@ -1254,6 +1255,85 @@ interface CreateGroupChatDialogProps {
   roster: RosterRow[]
 }
 
+/** Write a Desktop-driven room (every selection on a legacy gateway, or one
+ *  spanning connections) and return its unique name. Nothing is written once
+ *  `sourceCurrent` turns false. */
+function persistDesktopDrivenGroup(
+  base: string,
+  selected: RosterRow[],
+  allMeta: Record<string, BotMeta>,
+  image: null | string,
+  sourceCurrent: () => boolean,
+  unavailable: string
+): string {
+  // Creating a group is always a FRESH room. Without this, re-creating a
+  // group under an existing name (easy — the default name is just the
+  // member names) silently reopens the old room with its full log, which
+  // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
+  // both live rooms and any bot's current grouping, then mint a fresh
+  // roomId: member sessions are titled by that roomId, so a
+  // disbanded-and-recreated group with the SAME display name still gets
+  // new sessions instead of resuming the old room's by title.
+  const taken = new Set(liveGroupChatNames())
+
+  for (const meta of Object.values($botMeta.get() || {})) {
+    for (const existing of botGroups(meta)) {
+      taken.add(existing)
+    }
+  }
+
+  const groupName = uniqueGroupChatName(base, taken)
+  const roomId = mintGroupRoomId()
+
+  if (!sourceCurrent()) {
+    throw new Error(unavailable)
+  }
+
+  for (const bot of selected) {
+    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
+  }
+
+  // Persist every machine identity, including today's active source. That
+  // member becomes remote after a source switch and cannot rely on the new
+  // gateway's name-keyed bot metadata to remain seated in this room.
+  const roomMembers = durableGroupChatMembers(selected)
+  updateGroupChat(groupName, (room: GroupChatRoom) => {
+    room.members = roomMembers
+    room.roomId = roomId
+
+    if (image) {
+      room.image = image
+    }
+
+    return room
+  })
+
+  return groupName
+}
+
+interface GroupEngineNoteProps {
+  connectionId: null | string
+  engine: GroupCreationEngine | null
+  selected: RosterRow[]
+}
+
+/** Says, before creation, when a selection makes a Desktop-driven room or
+ *  cannot be created from this connection at all. */
+function GroupEngineNote({ connectionId, engine, selected }: GroupEngineNoteProps) {
+  const b = useBots()
+  const desktopDriven = engine === 'desktop' && groupNeedsDesktopCourier(selected, connectionId)
+
+  if (engine !== 'elsewhere' && !desktopDriven) {
+    return null
+  }
+
+  return (
+    <p className="text-xs text-(--ui-text-secondary)" data-group-engine={engine} role="note">
+      {engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
+    </p>
+  )
+}
+
 async function revalidateGroupCreationMode(
   route: CanonicalGroupRoute,
   capability: GroupCapabilityState | null,
@@ -1314,8 +1394,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   // A selection spanning connections cannot be owned by one gateway: the room
   // runs on this Desktop, which carries each member's turn home. A selection
   // wholly on ANOTHER connection can be owned by neither side from here.
-  const desktopDriven = groupNeedsDesktopCourier(selected, connectionId)
-  const elsewhere = groupSelectionElsewhere(selected, connectionId)
+  const engine = mode === 'canonical' || mode === 'legacy' ? groupCreationEngine(mode, selected, connectionId) : null
   const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
@@ -1325,7 +1404,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    (mode === 'canonical' || mode === 'legacy') && (mode === 'legacy' || !elsewhere)
+    engine !== null && engine !== 'elsewhere'
 
   const creating = useRef(false)
 
@@ -1352,15 +1431,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (currentMode === 'canonical' && groupSelectionElsewhere(selected, route.connectionId)) {
-      throw new Error(b.crossGateway.selectionElsewhere(selected[0].connectionLabel || selected[0].connectionId || ''))
+    const engine = groupCreationEngine(currentMode, selected, route.connectionId)
+
+    if (engine === 'elsewhere') {
+      throw new Error(b.crossGateway.selectionElsewhere(connectionName(selected[0])))
     }
 
-    if (currentMode === 'canonical' && !groupNeedsDesktopCourier(selected, route.connectionId)) {
-      if (!sourceCurrent()) {
-        throw new Error(b.canonical.driverUnavailable)
-      }
-
+    if (engine === 'gateway') {
       const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
@@ -1372,47 +1449,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    const roomId = mintGroupRoomId()
-
-    if (!sourceCurrent()) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
-
-    for (const bot of selected) {
-      void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, allMeta), groupName, true))
-    }
-
-    // Persist every machine identity, including today's active source. That
-    // member becomes remote after a source switch and cannot rely on the new
-    // gateway's name-keyed bot metadata to remain seated in this room.
-    const roomMembers = durableGroupChatMembers(selected)
-    updateGroupChat(groupName, (room: GroupChatRoom) => {
-      room.members = roomMembers
-      room.roomId = roomId
-
-      if (image) {
-        room.image = image
-      }
-
-      return room
-    })
+    const groupName = persistDesktopDrivenGroup(base, selected, allMeta, image, sourceCurrent, b.canonical.driverUnavailable)
     host.notify({
       kind: 'info',
       message: `“${groupName}” created with ${selected.length} bots`
@@ -1439,16 +1476,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
-        {elsewhere && mode === 'canonical' && (
-          <p className="text-xs text-(--ui-text-secondary)" role="note">
-            {b.crossGateway.selectionElsewhere(selected[0].connectionLabel || selected[0].connectionId || '')}
-          </p>
-        )}
-        {desktopDriven && mode !== 'unavailable' && (
-          <p className="text-xs text-(--ui-text-secondary)" data-group-engine="desktop" role="note">
-            {b.crossGateway.desktopDriven}
-          </p>
-        )}
+        <GroupEngineNote connectionId={connectionId} engine={engine} selected={selected} />
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

@@ -256,6 +256,8 @@ export const arChrome = {
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
       createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
+      hiddenFromSidebar: 'أُخفي من الشريط الجانبي',
+      undoHide: 'تراجع',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',
@@ -326,7 +328,6 @@ export const arChrome = {
       ownedByProfile: profile => `مملوكة للملف الشخصي ${profile}`,
       untitledChat: id => `محادثة ${id}`,
       handoffOrigin: platform => `قادمة من ${platform}`,
-      continuationOrigin: 'متابعة تلقائية — تم ضغط هذه المحادثة ومتابعتها',
       renamed: 'تمت إعادة التسمية',
       renameFailed: 'فشلت إعادة التسمية',
       renameTitle: 'إعادة تسمية الجلسة',
@@ -347,6 +348,7 @@ export const arChrome = {
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
     modelMenu: {
+      pickDeferred: (model: string) => `سيُطبَّق ${model} بدءًا من رسالتك التالية`,
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
@@ -361,6 +363,11 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'تشغيل محلي · مجاني وخاص',
+        text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,
+        action: 'إعداد'
+      },
       limited: 'محدود',
       limitedUntil: (time: string) => `محدود حتى ${time}`,
       limitedTip: (provider: string, time: null | string) =>
@@ -395,7 +402,9 @@ export const arChrome = {
       max: 'أقصى',
       sendsOnRoute: (level: string) => `يُرسل ${level} على هذا المسار`,
       updateFailed: 'فشل تحديث خيار النموذج',
-      fastFailed: 'فشل تحديث الوضع السريع'
+      fastFailed: 'فشل تحديث الوضع السريع',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'فشل تحديث Daybreak'
     },
     gatewayMenu: {
       gateway: 'البوابة',
@@ -467,6 +476,7 @@ export const arChrome = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `لا يمكن كتابة هذه الأسماء بأمان في ${shell}: ${paths}`,
     terminalReadOnly: 'مخرجات للقراءة فقط',
     terminalReadOnlyHelp:
       'للرد على المطالبات، أوقف الأمر الذي يعمل في الخلفية وشغّله في طرفية جديدة. تفتح الطرفية الجديدة صدفة منفصلة ولا تتصل بهذه العملية.',
@@ -507,6 +517,14 @@ export const arChrome = {
     loadingTree: 'جار تحميل الشجرة...',
     loadingFiles: 'جار تحميل الملفات...',
     terminalHide: 'إخفاء الطرفية',
+    terminalNewOn: 'طرفية جديدة على…',
+    terminalGatewayRemoved: 'بوابة محذوفة',
+    terminalGatewayRemovedBody:
+      'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
+    terminalGatewayNoShellBody:
+      'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
+    terminalDisconnectedBody:
+      'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {
@@ -555,7 +573,8 @@ export const arChrome = {
     saveApply: 'حفظ وتطبيق',
     notExpressible: 'هذا الترتيب متشابك — لا يمكن تمثيله كتقسيمات متداخلة بعد',
     zoneCount: count => `${count} مناطق`,
-    tabCount: count => `${count} تبويبات`
+    tabCount: count => `${count} تبويبات`,
+    tabActions: title => `إجراءات ${title}`
   },
   contextMenu: {
     link: {

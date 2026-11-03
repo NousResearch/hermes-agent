@@ -56,7 +56,7 @@ class GatewayVoiceMixin:
             adapter._voice_input_callback = functools.partial(
                 self._handle_voice_channel_input, adapter=adapter)
 
-    def _load_voice_modes(self) -> Dict[str, str]:
+    def _load_voice_modes(self) -> dict[str, str]:
         try:
             data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -208,6 +208,19 @@ class GatewayVoiceMixin:
             adapter._voice_input_callback = None
         return t("gateway.voice.channel_left")
 
+    def _voice_ack_guild_for(self, source: SessionSource) -> Optional[int]:
+        """Guild whose voice call is bound to *source*'s text channel on the bot that ANSWERS it.
+        Under multiplexing a secondary profile's call lives on its own adapter, never the default's
+        (#139345): reading ``self.adapters`` would miss its call or borrow the primary bot's."""
+        if source.platform != Platform.DISCORD:
+            return None
+        adapter = self._delivery_adapter_for(source)
+        bound = getattr(adapter, "_voice_text_channels", None)
+        if not (isinstance(bound, dict) and hasattr(adapter, "voice_mixer_active")):
+            return None
+        return next((gid for gid, channel in bound.items()
+                     if str(channel) == str(source.chat_id) and adapter.voice_mixer_active(gid)), None)
+
     def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None) -> None:
         """Adapter callback on voice-channel timeout: clear runner-side voice_mode state.
         ``adapter`` (bound at join) is that profile's bot, not always ``self.adapters[DISCORD]``."""
@@ -238,6 +251,14 @@ class GatewayVoiceMixin:
         return False
 
     @staticmethod
+    def _cached_user_display_name(client, user_id: int) -> Optional[str]:
+        """``get_member`` is cache-only; a speaker it misses may still be a cached user, whose display
+        name (global name or username, no server nickname) beats a bare id."""
+        get_user = getattr(client, "get_user", None)
+        name = getattr(get_user(int(user_id)) if callable(get_user) else None, "display_name", None)
+        return name if isinstance(name, str) and name else None
+
+    @staticmethod
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
         session), else a synthetic one."""
@@ -248,21 +269,32 @@ class GatewayVoiceMixin:
         member = guild.get_member(int(user_id)) if guild else None
         display_name = getattr(member, "display_name", None)
         user_name = display_name if isinstance(display_name, str) and display_name else None
+        channel = client.get_channel(int(text_ch_id)) if client else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             # get_member() is cache-only: on a miss the /voice join invoker keeps the name bound at
             # join, never another participant's.
             if user_name is None and source.user_id == str(user_id):
                 user_name = source.user_name
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
             source.user_id, source.user_name = str(user_id), user_name or str(user_id)
+            # The bound source is the `/voice join` message's; its id is not this turn's trigger
+            # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
+            source.message_id = None
         else:
-            source = SessionSource(
-                platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=user_name or str(user_id), chat_type="channel",
-                profile=getattr(adapter, "_owner_profile", None))
+            # A programmatic join binds no source: build the one a typed message in that channel carries
+            # (group, or thread under its parent, with the guild), else the turn keys another session.
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
+            thread_id = None
+            if channel is not None and callable(split := getattr(adapter, "_thread_id_and_chat_for_channel", None)):
+                thread_id, _ = split(channel)
+            parent_id = adapter._get_parent_channel_id(channel) if thread_id else None
+            source = adapter.build_source(
+                chat_id=str(text_ch_id), chat_type="thread" if thread_id else "group", user_id=str(user_id),
+                user_name=user_name or str(user_id), thread_id=thread_id, guild_id=str(guild_id),
+                parent_chat_id=parent_id)
         # The stored source is a join-time copy; a typed message reads the channel's current name and
         # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
-        channel = client.get_channel(int(text_ch_id)) if client else None
         if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
             if isinstance(current := labels(channel), tuple):
                 source.chat_name, source.chat_topic = current
@@ -286,7 +318,8 @@ class GatewayVoiceMixin:
         from gateway.session_identity import clear_identity
         clear_identity(source)
         if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
-            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            from gateway.parked_route_refusal import drop_rejected_route
+            drop_rejected_route(adapter, source)  # a parked target is refused in the voice text channel
             return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
@@ -349,6 +382,10 @@ class GatewayVoiceMixin:
         # attachment." — the peer sees the failure instead of the text reply the
         # agent already produced (#90103). Keep /voice scoped to human platforms.
         if getattr(event.source.platform, "value", None) == "a2a":
+            return False
+        # A local session's speech plays in its own client: LocalSessionAdapter has no audio delivery,
+        # so an owner-side synthesis would be a paid provider call nobody hears.
+        if event.source.platform == Platform.LOCAL:
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
@@ -415,7 +452,7 @@ class GatewayVoiceMixin:
                 with suppress(OSError):
                     os.unlink(p)
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
+    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: list[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)

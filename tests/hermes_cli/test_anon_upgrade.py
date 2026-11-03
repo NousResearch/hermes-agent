@@ -1,8 +1,8 @@
-"""``hermes auth upgrade``: the free tier signs into a Nous account, keeping its connectors.
+"""``hermes auth upgrade``: the plain device-code sign-in, then the free tier's apps move over.
 
-Driven through a fake portal covering the device-code endpoints plus the promotion intent/status
-surface, so the wire contract (both codes in the intent, status-driven outcome, token grant
-persisted over the guest singleton) is exercised rather than mocked away.
+Driven through a fake portal covering the device-code endpoints plus the free tier's claim
+endpoint, so the wire contract (device code, token grant persisted over the guest singleton, one
+claim authorized by the new account) is exercised rather than mocked away.
 """
 
 from __future__ import annotations
@@ -40,13 +40,17 @@ class FakePortal:
     def __init__(self):
         self.calls: list[tuple[str, str]] = []
         self.minted = 0
-        self.intent_bodies: list[dict] = []
-        self.status_bodies: list[dict] = []
+        self.claims: list[tuple[str, dict]] = []    # (authorization header, body) per claim call
         self.device_code = "dev-code-123"
         self.user_code = "ABCD-EFGH"
-        # Sequence of promotion-status payloads; the last one repeats.
-        self.status_sequence: list[dict] = [{"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}]
+        self.expires_in = 600
+        self.token_pending = False        # answer authorization_pending until flipped
+        self.token_error = ""             # an RFC 8628 error code the token endpoint answers with
+        self.on_token = None              # called when the token grant is issued
         self.token_grants = 0
+        self.token_polls = 0
+        self.claim_reply = {"status": "claimed", "account_email": EMAIL, "cohort_carried": False,
+                            "connectors": {"kind": "moved", "moved_toolkits": ["gmail"], "dropped_toolkits": []}}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -61,33 +65,31 @@ class FakePortal:
             return httpx.Response(200, json={"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
                                              "user_id": "nas_user:1", "org_id": "nas_org:1",
                                              "inference_base_url": WELCOME})
+        if path == "/api/anonymous/claim":
+            self.claims.append((request.headers.get("authorization", ""), json.loads(request.content)))
+            return httpx.Response(200, json=self.claim_reply)
         if path == "/api/oauth/device/code":
             return httpx.Response(200, json={
                 "device_code": self.device_code, "user_code": self.user_code,
                 "verification_uri": f"{PORTAL}/device",
                 "verification_uri_complete": f"{PORTAL}/device?user_code={self.user_code}",
-                "expires_in": 600, "interval": 5})
-        if path == "/api/anonymous/promotion-intent":
-            body = json.loads(request.content)
-            self.intent_bodies.append(body)
-            if not (body.get("user_code") and body.get("device_code")):
-                return httpx.Response(400, json={"error": "invalid_request"})
-            return httpx.Response(200, json={"claim_code": "clm_1", "claim_url": f"{PORTAL}/device",
-                                             "expires_in": 600, "interval": 0})
-        if path == "/api/anonymous/promotion-status":
-            body = json.loads(request.content)
-            self.status_bodies.append(body)
-            idx = min(len(self.status_bodies) - 1, len(self.status_sequence) - 1)
-            return httpx.Response(200, json=self.status_sequence[idx])
+                "expires_in": self.expires_in, "interval": 1})
         if path == "/api/oauth/token":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             if form.get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code":
                 return httpx.Response(400, json={"error": "unsupported_grant_type"})
             if form.get("device_code") != self.device_code:
                 return httpx.Response(400, json={"error": "invalid_grant"})
+            self.token_polls += 1
+            if self.token_error:
+                return httpx.Response(400, json={"error": self.token_error})
+            if self.token_pending:
+                return httpx.Response(400, json={"error": "authorization_pending"})
             self.token_grants += 1
+            if self.on_token is not None:
+                self.on_token()
             return httpx.Response(200, json={
-                "access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free"),
+                "access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free", email=EMAIL),
                 "refresh_token": REFRESH_TOKEN, "token_type": "Bearer", "expires_in": 900,
                 "scope": "inference:invoke", "inference_base_url": INFERENCE})
         return httpx.Response(500, json={"error": f"unexpected {path}"})
@@ -99,7 +101,6 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
     monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     from hermes_cli import auth_nous
@@ -129,38 +130,31 @@ def _args():
 
 
 class TestUpgrade:
-    def test_intent_carries_both_device_codes_from_the_code_request(self, portal):
-        anon_auth.ensure_portal_identity(explicit=True)
-        anon_auth.upgrade_guest(_args())
-        assert len(portal.intent_bodies) == 1
-        body = portal.intent_bodies[0]
-        assert body["user_code"] == portal.user_code
-        assert body["device_code"] == portal.device_code
-        assert body["token"].startswith("anon_")
+    def test_the_plain_device_login_runs_then_one_claim_moves_the_apps(self, portal):
+        guest = anon_auth.ensure_portal_identity(explicit=True)
+        assert anon_auth.upgrade_guest(_args()) == 0
         paths = [p for _, p in portal.calls]
-        assert paths.index("/api/oauth/device/code") < paths.index("/api/anonymous/promotion-intent")
-        assert paths.index("/api/anonymous/promotion-intent") < paths.index("/api/oauth/token")
+        assert not [p for p in paths if "promotion" in p]
+        assert paths.index("/api/oauth/device/code") < paths.index("/api/oauth/token") < paths.index("/api/anonymous/claim")
+        assert len(portal.claims) == 1
+        bearer, body = portal.claims[0]
+        assert body == {"token": guest["anon_token"]}
+        assert bearer.startswith("Bearer ") and bearer != f"Bearer {guest.get('access_token')}"
 
-    def test_declined_in_browser_prints_copy_and_leaves_auth_store_untouched(self, portal, capsys, tmp_path):
-        anon_auth.ensure_portal_identity(explicit=True)
-        before = _auth_file_path().read_bytes()
-        shared_before = _shared_store(tmp_path)
-        portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
-        code = anon_auth.upgrade_guest(_args())
-        out = capsys.readouterr().out
-        assert code == 1
-        assert anon_auth.UPGRADE_REASON_COPY["user_declined"] in out
-        assert portal.token_grants == 0
-        assert _auth_file_path().read_bytes() == before
-        assert _shared_store(tmp_path) == shared_before
+    def test_signs_in_with_no_free_tier_on_disk_and_sends_no_claim(self, portal, capsys):
+        assert anon_auth.upgrade_guest(_args()) == 0
+        assert f"Signed in as {EMAIL}." in capsys.readouterr().out
+        assert portal.claims == [] and portal.minted == 0
+        assert not anon_auth.is_guest_state(_load_auth_store()["providers"]["nous"])
 
-    def test_completed_promotion_signs_in_and_keeps_no_free_tier_fields(self, portal, capsys, tmp_path):
+    def test_completed_sign_in_keeps_no_free_tier_fields_and_prints_what_moved(self, portal, capsys, tmp_path):
         guest = anon_auth.ensure_portal_identity(explicit=True)
         assert _shared_store(tmp_path).get("anon_token") == guest["anon_token"]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 0
         assert f"Signed in as {EMAIL}." in out
+        assert f"Your apps moved to {EMAIL}: Gmail." in out
         lowered = out.lower()
         for banned in ("guest", "anonymous", "claim"):
             assert banned not in lowered, f"{banned!r} leaked into user-facing output:\n{out}"
@@ -174,6 +168,36 @@ class TestUpgrade:
         shared = _shared_store(tmp_path)
         assert shared.get("refresh_token") == REFRESH_TOKEN
         assert "anon_token" not in shared
+
+    def test_hermes_model_signs_a_connector_free_tier_in_instead_of_refusing(self, portal, monkeypatch, capsys):
+        from hermes_cli import model_setup_flows
+        from tests.hermes_cli.anon_portal import as_local_desktop_backend
+        as_local_desktop_backend(monkeypatch)
+        assert anon_auth.guest_without_free_tier(anon_auth.ensure_portal_identity(explicit=True))
+        logins = []
+        monkeypatch.setattr(model_setup_flows, "_run_login", lambda login_fn, *args: logins.append(args))
+
+        model_setup_flows._model_flow_nous({})
+
+        assert len(logins) == 1
+        assert anon_auth.UPGRADE_HINT not in capsys.readouterr().out
+
+    def test_the_terminal_device_login_prints_what_moved(self, portal, monkeypatch, capsys):
+        import argparse
+        from hermes_cli import auth_nous
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        anon_auth.ensure_portal_identity(explicit=True)
+        account = {"access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free", email=EMAIL),
+                   "refresh_token": REFRESH_TOKEN, "portal_base_url": PORTAL, "inference_base_url": INFERENCE,
+                   "client_id": "hermes-cli", "expires_in": 900}
+        monkeypatch.setattr(auth_nous, "_offer_shared_nous_import", lambda timeout: None)
+        monkeypatch.setattr(auth_nous, "_nous_device_code_login", lambda **kw: dict(account))
+        monkeypatch.setattr(auth_nous, "_pick_nous_model_after_login", lambda *a: None)
+
+        auth_nous._login_nous(argparse.Namespace(no_browser=True, timeout=15.0), PROVIDER_REGISTRY["nous"])
+
+        assert f"Your apps moved to {EMAIL}: Gmail." in capsys.readouterr().out
+        assert len(portal.claims) == 1
 
 
 FREE_PICK = "upstage/solar-pro4:free"

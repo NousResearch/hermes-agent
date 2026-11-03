@@ -15,12 +15,12 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import remove_tree, retry_held
+from pm.filesystem import native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, merge_tree, tree_digest
+from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
 
@@ -68,12 +68,15 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
-def _heal_exec_bit(binary: Path) -> bool:
-    """agent-browser entries staged before stage() set the exec bit sit at 0644 and fail every
+def _heal_exec_bit(binary: Path, *, heal: bool = True) -> bool:
+    """Store entries staged from archives that drop the exec bit sit at 0644 and fail every
     launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
-    an entry we cannot chmod (sealed store) is treated as not installed."""
+    an entry we cannot chmod (sealed store), or may not (``heal=False``), is treated as not
+    installed."""
     if os.name == "nt" or os.access(binary, os.X_OK):
         return True
+    if not heal:
+        return False
     try:
         binary.chmod(binary.stat().st_mode | 0o111)
     except OSError:
@@ -83,24 +86,25 @@ def _heal_exec_bit(binary: Path) -> bool:
 
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
-                        roots: tuple[Path, ...] | None = None):
-    """Prefer the current pin. An explicit read may retain a prior PM install."""
+                        roots: tuple[Path, ...] | None = None, heal: bool = True):
+    """Prefer the current pin. An explicit read may retain a prior PM install. ``heal=False``
+    keeps the lookup read-only (scripts/tool_store_pins.py asks it about a store it must not touch)."""
     search_roots = dict.fromkeys(roots if roots is not None else (paths.store_root(), paths.writable_store_root()))
     fallback = None
     for root in search_roots:
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
         fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, root):
+        if not fact or not facts.installed(package.name, None, store.root):
             continue
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
             continue
-        if binary is not None and target == current_target() and not _heal_exec_bit(binary):
+        if binary is not None and target == current_target() and not _heal_exec_bit(binary, heal=heal):
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue
-        if facts.installed(package.name, lockfile.version(package.name), root,
+        if facts.installed(package.name, lockfile.version(package.name), store.root,
                            _identity(lockfile, package.name, target)):
             return facts, store
         if (allow_outdated and fact.get("target") == target
@@ -128,7 +132,10 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     facts, store = location
     fact = facts.get(name)
     entry = store.entry(fact["entry"])
-    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
+    binary = package.binary(entry, target)
+    # Callers execute and compare these paths outside PM: the ordinary spelling, not the store's.
+    return InstalledPackage(Path(native(entry)), fact["version"],
+                            Path(native(binary)) if binary is not None else None)
 
 
 def uv_launcher(name: str) -> Path | None:
@@ -145,7 +152,7 @@ def uv_launcher(name: str) -> Path | None:
     facts, store = location
     binary = package.binary(store.entry(facts.get("uv")["entry"]), target)
     launcher = binary.with_name(name + binary.suffix) if binary is not None else None
-    return launcher if launcher is not None and launcher.is_file() else None
+    return Path(native(launcher)) if launcher is not None and launcher.is_file() else None
 
 
 def _identity(lockfile: Lockfile, name: str, target: str):
@@ -293,7 +300,7 @@ def _entry_verified(package: Package, fact: dict, store: Store, target: str) -> 
     """Explicit installs re-check realized bytes; startup keeps its cheap facts check."""
     entry = store.entry(fact["entry"])
     try:
-        return not package.verify(entry, target) and fact.get("digest") == tree_digest(entry)
+        return not package.verify(entry, target) and digest_matches(entry, fact.get("digest"))
     except OSError:
         return False
 
@@ -319,10 +326,24 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 @contextmanager
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
+    kept_live = False
     if entry.exists() or entry.is_symlink():
-        retry_held(lambda: entry.rename(previous_entry))
+        try:
+            retry_held(lambda: entry.rename(previous_entry))
+        except OSError as rename_error:
+            try:
+                matches_staged = (not package.verify(entry, target)
+                                  and tree_digest(entry) == tree_digest(staged))
+            except OSError:
+                raise rename_error
+            if not matches_staged:
+                raise
+            LOG.warning("%s entry is in use but already matches the staged bytes; keeping it live",
+                        package.name)
+            kept_live = True
     try:
-        store.publish(staged, entry.name)
+        if not kept_live:
+            store.publish(staged, entry.name)
         reason = package.verify(entry, target)
         if reason:
             raise InstallError(package.name, f"published entry failed verification: {reason}")
@@ -360,6 +381,33 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     return recorded == pin and not package.verify(entry, target)
 
 
+def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+    """An entry's env is derived from the package code, not its bytes: when the code changes it (a
+    variable renamed or retired), re-record it so stores installed earlier match what admission
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    env = package.env(entry, target)
+    if facts.env_for(package.name, store.root) != env:
+        facts.record(package.name, previous["version"], previous["entry"], env, store.root,
+                     target=previous.get("target"), artifacts=previous.get("artifacts"),
+                     digest=previous.get("digest"))
+
+
+def _refresh_found_env(package, location, target, operation) -> None:
+    """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
+    installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
+    its install lock (a sealed store's facts ship with the artifact)."""
+    facts, store = location
+    entry = store.entry(facts.get(package.name)["entry"])
+    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+            or store.root != Store(paths.writable_store_root()).root):
+        return
+    with nullcontext() if operation is not None else store.install_lock():
+        facts.reload()
+        previous = facts.get(package.name)
+        if previous and previous.get("entry") == entry.name:
+            _refresh_recorded_env(package, facts, store, entry, previous, target)
+
+
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
     source_facts, source_store = copy_from
     source = source_facts.get(package.name)
@@ -368,7 +416,7 @@ def _copy_verified_source(package, lockfile, copy_from, staged, version, target)
             or not _entry_verified(package, source, source_store, target)):
         raise InstallError(package.name, "bundled copy source failed verification")
     shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
-    if tree_digest(staged) != source["digest"]:
+    if not digest_matches(staged, source["digest"]):
         raise InstallError(package.name, "copied bytes do not match the bundled source")
 
 
@@ -426,6 +474,8 @@ def _install(
         _reclaim_set_aside(store)
         if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
+            if facts is not None:
+                _refresh_recorded_env(package, facts, store, entry, previous, target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -527,8 +577,9 @@ def ensure(
 
     ``verify`` re-hashes an already-recorded entry and repairs it when the
     bytes moved. A deliberate install keeps that check. Shell activation
-    passes ``False``. It trusts the recorded digest, the same check startup
-    uses, because hashing every tool tree costs seconds per shell.
+    and the source-build tail (moments after the install/update's own PM
+    step) pass ``False``. It trusts the recorded digest, the same check
+    startup uses, because hashing every tool tree costs seconds per call.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
     install to a UI, including ordered multi-archive labels.
@@ -553,15 +604,17 @@ def ensure(
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
             continue
-        if _installed_location(package, lockfile, target, verify=explicit and verify) is None:
+        location = _installed_location(package, lockfile, target, verify=explicit and verify)
+        if location is None:
             missing.append(package)
         else:
+            _refresh_found_env(package, location, target, _operation)
             checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
     if missing:
         store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
-        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
         for package in missing:
             # Publication may change entries; do not carry observations across it.
             checked.clear()
@@ -620,6 +673,13 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _extra_key(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _still_declared(package, recorded: list[str]) -> list[str]:
     """The recorded extras this tree still declares.
 
@@ -629,17 +689,22 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
     recorded spelling is what reaches uv.
     """
-    import re
     from pm.features import declared_extras
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
 
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
-    declared = {normalized(extra) for extra in declared_extras(root)}
-    return [extra for extra in recorded if normalized(extra) in declared]
+    declared = {_extra_key(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if _extra_key(extra) in declared]
+
+
+def _carried(package, recorded: list[str]) -> list[str]:
+    """The recorded extras a sync carries forward: still declared and not dropped by the user
+    (`hermes pm install --without NAME`). An explicit request still enables a declined extra."""
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    return [extra for extra in _still_declared(package, recorded) if _extra_key(extra) not in refused]
 
 
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
@@ -659,7 +724,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact["extras"])) | set(extras or []))
     stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
     return _runtime_state_matches(fact, stamp, project_root=root)
 
@@ -751,7 +816,7 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact.get("extras", shipped or []))) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 
@@ -781,9 +846,83 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
         raise
 
 
+def _refuse_declined(package, extras: Optional[list[str]], *, explicit: bool) -> None:
+    """A lazy install (first use of a feature) never re-adds an extra the user dropped."""
+    if not extras or explicit:
+        return
+    from pm.extras import declined_extras, declined_reasons, install_hint
+
+    refused = declined_extras(package.project_root())
+    dropped = [extra for extra in extras if _extra_key(extra) in refused]
+    if dropped:
+        reasons = declined_reasons(package.project_root())
+        why = "; ".join(f"an update left {extra!r} out because {reasons[_extra_key(extra)]}" for extra in dropped
+                        if _extra_key(extra) in reasons)
+        raise InstallError("venv", why or f"extras {dropped} were removed with `hermes pm install --without`",
+                           "run `" + "`, `".join(install_hint(extra) for extra in dropped) + "` to enable them again")
+
+
+def _without_new_declines(package, extras: Optional[list[str]], automatic) -> Optional[list[str]]:
+    """*extras* minus the *automatic* entries the user has declined, read under the dependency lock.
+
+    An automatic entry (configured-platform repair, the main-era venv carry, a container's shipped
+    baseline) was chosen before this sync took the lock, from a decline record a concurrent
+    `hermes pm install --without NAME` may since have changed; only the lock-held read counts.
+    """
+    if not extras or not automatic:
+        return extras
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    derived = {_extra_key(extra) for extra in automatic}
+    return [extra for extra in extras if _extra_key(extra) not in derived or _extra_key(extra) not in refused]
+
+
+def decline_extras(names: list[str]) -> None:
+    """Record ``hermes pm install --without NAME`` for extras, under the dependency lock: an
+    in-flight `--extra NAME` sync clears its decline before releasing it, so an unlocked write
+    landing mid-sync would be erased."""
+    if not names:
+        return
+    from pm.extras import record_declined_extras
+
+    with _venv_install_lock(patient=True):
+        record_declined_extras(add=names, project_root=paths.repo_root())
+
+
+def _sync_locked(extras, *, package, plugins, repair: bool, explicit: bool, shipped, frozen,
+                 evict_incompatible_plugins: bool) -> None:
+    """sync_venv's body under the held dependency lock."""
+    from pm import receipt
+    from pm.publication import StagedPlugin
+
+    change = _publication(plugins)
+    if isinstance(change, StagedPlugin) and not change.active:
+        _publish_inactive(change)
+    elif evict_incompatible_plugins:
+        from pm.plugin_eviction import sync_evicting
+
+        facts = Facts(paths.runtime_facts_path())
+        fact = facts.get("venv") or _facts().get("venv") or {}
+        sync_evicting(package, facts, fact, extras=extras, shipped=shipped, frozen=frozen, explicit=explicit)
+    else:
+        inputs = {"plugin_dirs": change.members} if change is not None else _member_inputs(plugins)
+        facts = Facts(paths.runtime_facts_path(), strict=repair)
+        fact = facts.get("venv") or _facts().get("venv") or {}
+        enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs=inputs,
+                                                   repair=repair, shipped=shipped, frozen=frozen)
+        current = not repair and _runtime_state_matches(fact, stamp)
+        if not current and not repair and not explicit and not lazy_installs_allowed():
+            raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
+        receipt.record_feature_list(enabled)
+        _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
+                          current=current, repair=repair, explicit=explicit)
+
+
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
               plugins: PluginInput | None = None, repair: bool = False,
-              evict_incompatible_plugins: bool = False) -> None:
+              evict_incompatible_plugins: bool = False, automatic: Optional[list[str]] = None,
+              carried: Optional[list[str]] = None) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -794,7 +933,12 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     source of plugin members (see pm.plugin_inputs); None discovers them from config.
     ``evict_incompatible_plugins`` is the update's contract: a discovered plugin that
     keeps the environment from building is disabled instead of failing the sync
-    (see pm.plugin_eviction).
+    (see pm.plugin_eviction). ``automatic`` names the entries of ``extras`` Hermes chose
+    on the user's behalf: one the user declined is left out, and none of them opts a
+    declined extra back in; every other requested extra does (``--extra NAME``).
+    ``carried`` names the automatic entries this sync carries over from a pre-PM venv:
+    one that keeps the environment from building is left out, recorded and reported
+    (see pm.carried_extras).
 
     Lazy installs OFF = the frozen feature set: when
     security.allow_lazy_installs is false AND the bundle's
@@ -817,33 +961,41 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
+        if carried and (repair or plugins is not None or not set(carried) <= set(extras or ())):
+            raise ValueError("carried extras belong to a feature sync of the discovered selection")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
-        from pm.publication import StagedPlugin
+        from functools import partial
+        sync = partial(_sync_locked, package=package, plugins=plugins, repair=repair, explicit=explicit,
+                       shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)
+        automatic = [*(automatic or ()), *(carried or ())]  # a carried extra is automatic too
         with _venv_install_lock(patient=explicit or repair):
+            extras = _without_new_declines(package, extras, automatic)
+            _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())
-            change = _publication(plugins)
-            if isinstance(change, StagedPlugin) and not change.active:
-                _publish_inactive(change)
-            elif evict_incompatible_plugins:
-                from pm.plugin_eviction import sync_evicting
+            try:
+                sync(extras)
+            except Exception as failure:
+                from pm.carried_extras import BUILD_VERDICTS, failing_carried, record_left_out, refuse_transient
 
-                facts = Facts(paths.runtime_facts_path())
-                fact = facts.get("venv") or _facts().get("venv") or {}
-                sync_evicting(package, facts, fact, extras=extras, shipped=shipped, frozen=frozen, explicit=explicit)
-            else:
-                inputs = {"plugin_dirs": change.members} if change is not None else _member_inputs(plugins)
-                facts = Facts(paths.runtime_facts_path(), strict=repair)
-                fact = facts.get("venv") or _facts().get("venv") or {}
-                enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs=inputs,
-                                                           repair=repair, shipped=shipped, frozen=frozen)
-                current = not repair and _runtime_state_matches(fact, stamp)
-                if not current and not repair and not explicit and not lazy_installs_allowed():
-                    raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-                receipt.record_feature_list(enabled)
-                _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
-                                  current=current, repair=repair, explicit=explicit)
+                if not carried or not extras or not isinstance(failure, BUILD_VERDICTS):
+                    raise
+                fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
+                failing = failing_carried(package, failure, extras=extras, carried=carried, fact=fact,
+                                          shipped=shipped, frozen=frozen, explicit=explicit)
+                refuse_transient(failing, failure)
+                extras = [extra for extra in extras if extra not in failing]
+                sync(extras)
+                record_left_out(package, failing)
+            derived = {_extra_key(extra) for extra in automatic}
+            opted_in = [extra for extra in extras or () if _extra_key(extra) not in derived]
+            if opted_in and explicit and not repair:
+                from pm.extras import record_declined_extras
+
+                # An explicit request is the opt-back-in. Cleared before the lock is released, or a
+                # sync queued behind this one still reads the decline and publishes without the extra.
+                record_declined_extras(remove=opted_in, project_root=package.project_root())
         outcome = "ok"
     except BaseException as exc:
         receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
@@ -865,7 +1017,6 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
-    store = _store()
     target = current_target()
     for name in lockfile.names():
         try:
@@ -896,9 +1047,30 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
+def _dependents_first(names: list[str]) -> list[str]:
+    """*names* with each package moved ahead of the packages it depends on.
+
+    A package that extends its dependency must win on PATH: node's own dir also holds node's
+    bundled npm and npx, so with node first every ``npm`` ran that copy, not the pinned npm.
+    Unrelated packages keep their order.
+    """
+    order = list(names)
+    for name in names:
+        try:
+            deps = {package.name for package in walk([name])} - {name}
+        except KeyError:
+            continue
+        positions = [order.index(dep) for dep in deps if dep in order]
+        if positions and min(positions) < order.index(name):
+            order.remove(name)
+            order.insert(min(positions), name)
+    return order
+
+
 def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
-    packages, deps-first, deduped. Includes optional packages that are
+    packages, each package ahead of its dependencies (``_dependents_first``),
+    deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
     though it's not in the root closure. A package whose dependency chain is
     not fully installed contributes nothing: store npm over a missing store
@@ -914,7 +1086,7 @@ def _store_path_dirs() -> list[str]:
         return locations[package.name]
 
     dirs: list[str] = []
-    for name in lockfile.names():
+    for name in _dependents_first(lockfile.names()):
         try:
             package = get_package(name)
             chain = walk([name])
@@ -936,8 +1108,8 @@ def _store_path_dirs() -> list[str]:
         if isinstance(path_dirs, str):
             path_dirs = [path_dirs]
         for directory in path_dirs:
-            if directory and directory not in dirs:
-                dirs.append(str(directory))
+            if directory and native(directory) not in dirs:
+                dirs.append(native(directory))
     return dirs
 
 

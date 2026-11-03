@@ -86,7 +86,6 @@ async def test_sentinel_placed_before_agent_setup():
     concurrent message sees the session as occupied."""
     runner = _make_runner()
     event = _make_event()
-    session_key = build_session_key(event.source)
 
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False

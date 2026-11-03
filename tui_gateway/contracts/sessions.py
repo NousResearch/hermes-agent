@@ -236,6 +236,9 @@ class SessionListRow(Result):
     message_count: int = 0
     live_message_count: int | None = None
     source: str = ""
+    # Durable lineage root of a compressed conversation (REST parity, #66663); None on
+    # rows that are not projected compression tips.
+    lineage_root_id: str | None = Field(default=None, alias="_lineage_root_id")
 
 
 class SessionListResult(Result):
@@ -275,6 +278,7 @@ class SessionActiveItem(Result):
     model: str
     preview: str
     session_key: str
+    source: str | None = None
     started_at: float
     status: LiveSessionStatus
     title: str
@@ -388,6 +392,8 @@ class SessionCloseParams(SessionParams):
 
 class SessionCloseResult(Result):
     closed: bool  # False when the runtime id was already gone
+    # Plugin ``on_session_finalize`` text for the user; shown out-of-band, never a model turn.
+    messages: list[str] = Field(default_factory=list)
 
 
 method("session.close", params=SessionCloseParams, result=SessionCloseResult,
@@ -500,6 +506,7 @@ class SessionUsageParams(SessionParams):
 
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
+    credits_usage_window: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
@@ -716,6 +723,10 @@ method("terminal.resize", params=TerminalResizeParams, result=TerminalResizeResu
 
 class SessionEventsSinceParams(SessionParams):
     last_seen: int | None = None
+    # Accepted and ignored. Legacy seqs are per process, and the client compares the answer's
+    # ``epoch`` with the process epoch from ``gateway.ready``. Clients that still send that
+    # process epoch here must replay; any other unknown key stays refused.
+    replay_epoch: str | None = None
 
 
 class SessionEventsSinceResult(Result):
@@ -772,3 +783,4 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+

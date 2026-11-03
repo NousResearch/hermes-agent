@@ -34,8 +34,10 @@ def checkout_contains(sha: str) -> bool:
         stamped = str(identity.get("sha") or "")
         return bool(stamped) and (stamped == sha or stamped.startswith(sha) or sha.startswith(stamped))
     try:
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+        from hermes_cli.update_custody import run_git
+
+        result = run_git(
+            ["git"], ["merge-base", "--is-ancestor", sha, "HEAD"],
             cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             # A SHA this checkout lacks is not contained; asking the promisor remote for it would
             # download that commit's entire history (on-demand fetches send no "have" lines).

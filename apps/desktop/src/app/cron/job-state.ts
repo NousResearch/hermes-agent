@@ -35,7 +35,9 @@ export function truncateText(value: string, max: number): string {
 export function jobTitle(job: CronJob): string {
   const pick = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
 
-  return pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
+  return (
+    pick(job.name) || truncateText(pick(job.prompt), 60) || truncateText(pick(job.script), 60) || job.id || 'Cron job'
+  )
 }
 
 // Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.

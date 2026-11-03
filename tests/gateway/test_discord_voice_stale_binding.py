@@ -6,7 +6,8 @@ rewrote the binding, and the old utterance became a turn in the new conversation
 skills and replies. The listen loop transcribes a poll batch serially, so a later utterance of the
 same batch must keep the binding of the batch, not one set during an earlier utterance's STT.
 Speech the receiver still buffers when the binding moves is dropped too: a poll or leave flush
-after the move must not stamp it with the new binding.
+after the move must not stamp it with the new binding. A programmatic ``join_voice_channel`` while
+already connected applies the requested binding the same way, rather than keeping the old one.
 """
 from __future__ import annotations
 
@@ -178,3 +179,37 @@ async def test_leave_after_a_rebind_does_not_flush_old_speech_into_the_new_chann
     _speak(receiver, 0.6)  # still speaking: the leave flush, not silence, emits it
     await _voice_join_from(adapter, join_from, tmp_path)
     assert await _transcribed_pcm(adapter, lambda: adapter.leave_voice_channel(_GUILD)) == (len(reaching), reaching)
+
+
+class _ConnectedVoiceClient:
+    def __init__(self, channel_id: int) -> None:
+        self.channel = SimpleNamespace(id=channel_id)
+        self.move_to = AsyncMock(side_effect=lambda channel: setattr(self, "channel", channel))
+
+    def is_connected(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("voice_channel,text_channel,source,bound_source,reaching", [
+    (900, 800, None, None, []),                                   # same voice channel, other text channel
+    (901, 800, None, None, []),                                   # move, other text channel
+    (901, 800, {"chat_id": "800"}, {"chat_id": "800"}, []),        # move with the new channel's source
+    (900, 700, None, {"chat_id": "700"}, [int(0.6 * _BYTES_PER_SECOND)]),  # same text channel keeps all
+], ids=["same-voice-channel", "move", "move-with-source", "same-text-channel"])
+async def test_a_programmatic_join_while_connected_applies_the_requested_binding(
+    voice_channel: int, text_channel: int, source: dict | None, bound_source: dict | None, reaching: list[int],
+) -> None:
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    adapter._voice_clients[_GUILD] = vc = _ConnectedVoiceClient(900)
+    adapter._voice_sources[_GUILD] = {"chat_id": "700"}
+    _speak(receiver, 0.6)
+    target = SimpleNamespace(id=voice_channel, guild=SimpleNamespace(id=_GUILD))
+    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
+        assert await adapter.join_voice_channel(target, text_channel_id=text_channel, source=source)
+    assert vc.move_to.await_count == (voice_channel != 900)
+    assert adapter._voice_text_channels[_GUILD] == text_channel
+    assert adapter._voice_sources.get(_GUILD) == bound_source
+    _fall_silent(receiver)
+    assert await _transcribed_pcm(adapter, lambda: _one_poll(adapter, receiver)) == (len(reaching), reaching)

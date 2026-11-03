@@ -93,7 +93,7 @@ class TestSanitizedEnvYieldsAWorkingHttpxClient:
         monkeypatch.setenv("no_proxy", _CLASH_NO_PROXY)
         normalize_proxy_env_vars()
         # Red on base: the unsanitized Clash env raises InvalidURL at construction.
-        client = httpx.Client()  # noqa: SIM115 - closed below
+        client = httpx.Client()
         try:
             assert any(
                 pattern.matches(httpx.URL("http://[::1]:8080/")) and transport is None

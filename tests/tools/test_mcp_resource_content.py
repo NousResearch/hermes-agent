@@ -31,7 +31,7 @@ def _embedded(resource):
 @pytest.fixture()
 def doc_cache(tmp_path, monkeypatch):
     """Point the document cache at a temp dir."""
-    import gateway.platforms.base as base
+    from gateway.platforms import base
 
     monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", tmp_path)
     monkeypatch.setenv("HERMES_DOCUMENT_CACHE_DIR", str(tmp_path))
@@ -116,7 +116,7 @@ class TestAudioBlock:
         assert _cache_mcp_audio_block(block) == ""
 
     def test_audio_block_cached_as_media(self, tmp_path, monkeypatch):
-        import gateway.platforms.base as base
+        from gateway.platforms import base
         from tools.mcp_tool_content import _cache_mcp_audio_block
 
         monkeypatch.setattr(base, "AUDIO_CACHE_DIR", tmp_path)

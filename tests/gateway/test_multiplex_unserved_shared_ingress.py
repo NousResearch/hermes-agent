@@ -36,7 +36,7 @@ def _install_secondary(monkeypatch, runner, stamps):
         yield
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
@@ -119,6 +119,6 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
         return 0
 
     runner._start_secondary_profile_adapters = secondaries
-    runner._unserved_shared_ingress_warnings = lambda: []
+    runner._unserved_shared_ingress_warnings = list
     assert await runner._start_secondary_profiles(0, []) == (False, 0)
     assert order == [("restore", tmp_path / "launch" / "state.db"), ("secondaries", None)]

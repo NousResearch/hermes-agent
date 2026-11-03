@@ -21,7 +21,7 @@ description: "通过关键词、作者、分类或 ID 搜索 arXiv 论文"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Research`, `Arxiv`, `Papers`, `Academic`, `Science`, `API` |
-| 相关 skill | [`ocr-and-documents`](/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) |
+| 相关 skill | [`pdf`](/user-guide/skills/bundled/productivity/productivity-pdf) |
 
 ## 参考：完整 SKILL.md
 

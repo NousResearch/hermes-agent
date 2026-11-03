@@ -66,8 +66,23 @@ export function useBusyInputMode({
           }
         })
         .catch(() => {
-          // A failed read must not strand busy Enter on an otherwise healthy socket.
-          if (!cancelled && attempts < 3) {retryTimer = setTimeout(load, 1000 * attempts)}
+          // A failed read must not strand busy Enter on an otherwise healthy socket: retry twice,
+          // then settle on `queue` instead of leaving the mode unknown. `null` makes
+          // `deriveBusySubmitState` refuse a steerable submit outright, so Enter would be
+          // swallowed with no feedback and the typed words would never leave the composer
+          // (reported 2026-10-20 as "发不出去"). Queueing is the safe side: it neither
+          // interrupts the running turn nor drops the text.
+          if (cancelled) {
+            return
+          }
+
+          if (attempts < 3) {
+            retryTimer = setTimeout(load, 1000 * attempts)
+
+            return
+          }
+
+          setLoaded({ owner, connection, sessionId, mode: 'queue' })
         })
     }
 
@@ -93,5 +108,8 @@ export function useBusyInputMode({
     return null
   }
 
-  return configured ?? (loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null)
+  const loadedMode =
+    loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null
+
+  return configured ?? loadedMode ?? null
 }

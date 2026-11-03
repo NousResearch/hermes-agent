@@ -107,3 +107,27 @@ it('uses only the current owner config and ignores a late response from the prev
   act(() => $busyInputConfig.set({ owner: 'foreign-owner', connection: $connection.get(), mode: 'interrupt' }))
   expect(hook.result.current).toBe('steer')
 })
+
+it('falls back to queue when the busy policy read keeps failing', async () => {
+  vi.useFakeTimers()
+  $gatewayState.set('open')
+  const request = vi.fn().mockRejectedValue(new Error('unavailable'))
+  const hook = renderHook(() =>
+    useBusyInputMode({ sessionId: 'runtime', storedSessionId: null, requestGateway: request })
+  )
+
+  try {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
+
+    // A null mode makes deriveBusySubmitState refuse a steerable submit outright, so Enter
+    // would be swallowed with no feedback and the typed words would never leave the composer.
+    // Queueing is the safe side: it neither interrupts the running turn nor drops the text.
+    expect(request).toHaveBeenCalledTimes(3)
+    expect(hook.result.current).toBe('queue')
+  } finally {
+    hook.unmount()
+    vi.useRealTimers()
+  }
+})

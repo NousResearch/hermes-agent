@@ -121,6 +121,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._configs = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
+        # Session -> its skills (``slug -> description``) from the owner's ``commands.catalog``, which binds
+        # the session's profile and workspace, so a trusted repo's project skills are among them.
+        self._skills = {}
         self._background = set()
 
     def on_connect(self, conn):
@@ -319,13 +322,52 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
         await asyncio.sleep(0)  # after the session reply: the editor routes updates by a known id
+        client = None
         try:
             await self._conn.session_update(session_id=editor_id, update=available_commands_update())
-            await self._project_usage(session_id, editor_id,
-                                      await (await self._client()).rpc("session.stats", session_id=session_id))
+            client = await self._client()
+            await self._project_usage(session_id, editor_id, await client.rpc("session.stats", session_id=session_id))
         except Exception:
             # Boundary: a detached editor or a refused read is not the attach's failure.
             logger.debug("ACP post-attach notices for %s not delivered", session_id, exc_info=True)
+        # Then the session's skills, as the CLI and TUI offer them: the scan can take a moment, so the
+        # built-ins are already in the menu. Same connection: a background read never reconnects.
+        try:
+            skills = await self._skill_commands(session_id, client) if client is not None else None
+            if skills:
+                await self._conn.session_update(session_id=editor_id, update=available_commands_update(skills))
+        except Exception:
+            logger.debug("ACP skill commands for %s not advertised", session_id, exc_info=True)
+
+    async def _skill_commands(self, session_id, client=None):
+        """The session's skills (``slug -> description``), read once from the owner's ``commands.catalog``."""
+        if session_id not in self._skills:
+            from acp_adapter.gateway_session_meta import skill_commands
+            client = client or await self._client()
+            self._skills[session_id] = skill_commands(await client.rpc("commands.catalog", session_id=session_id))
+        return self._skills[session_id]
+
+    async def _expand_skill(self, session_id, text):
+        """The owner's expansion of a typed ``/skill args``, or None to send ``text`` as it is.
+
+        ``command.dispatch`` builds the same message as the CLI's ``/skill`` ("The user has invoked the ...
+        skill", then its content), for the session's profile and workspace. Only a slug the session's catalog
+        lists as a skill is dispatched: dispatch also runs quick and plugin commands, which a typed word must
+        not start. Any failure keeps today's behaviour, the text going to the model as typed."""
+        parts = text.strip().split(None, 1)
+        slug = parts[0][1:].lower().replace("_", "-") if parts and parts[0].startswith("/") else ""
+        if not slug or "/" in slug:
+            return None
+        try:
+            if slug not in await self._skill_commands(session_id):
+                return None
+            reply = await (await self._client()).rpc(
+                "command.dispatch", session_id=session_id, name=slug, arg=parts[1].strip() if len(parts) > 1 else "")
+        except Exception:
+            logger.info("ACP /%s not expanded as a skill; sent as typed", slug, exc_info=True)
+            return None
+        message = reply.get("message") if isinstance(reply, dict) and reply.get("type") in ("skill", "send") else None
+        return message if isinstance(message, str) and message.strip() else None
 
     async def _attach_info(self, client, session_id):
         """``session.info`` for a session to attach. A thread main's in-process server wrote has no
@@ -752,7 +794,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Run a slash command's local half: ``(answered, text to submit)``; answered ends the prompt."""
         command = _slash_command(text)
         if command is None:
-            return False, text
+            # A registered command always wins; a skill's slash is expanded like the CLI's.
+            expanded = await self._expand_skill(session_id, text)
+            return False, expanded if expanded is not None else text
         from acp_adapter.gateway_commands import CommandRefused, run_command
         parts = text.strip().split(None, 1)
         try:

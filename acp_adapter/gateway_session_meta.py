@@ -43,11 +43,30 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
 }
 
 
-def available_commands_update() -> AvailableCommandsUpdate:
-    return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=[
-        AvailableCommand(name=name, description=description,
-                         input=UnstructuredCommandInput(hint=hint) if hint else None)
-        for name, (description, hint) in COMMANDS.items()])
+# The most skills one command list advertises, so a large library cannot flood the editor's menu.
+MAX_SKILL_COMMANDS = 250
+
+
+def available_commands_update(skills: dict[str, str] | None = None) -> AvailableCommandsUpdate:
+    """The built-in commands, then the session's skills (``slug -> description``, from the owner's
+    ``commands.catalog``). A skill never takes a built-in's name; ``prompt`` expands the rest."""
+    commands = [AvailableCommand(name=name, description=description,
+                                 input=UnstructuredCommandInput(hint=hint) if hint else None)
+                for name, (description, hint) in COMMANDS.items()]
+    extra = [(slug, description) for slug, description in (skills or {}).items() if slug not in COMMANDS]
+    commands += [AvailableCommand(name=slug, description=f"Skill: {description}"[:200],
+                                  input=UnstructuredCommandInput(hint="what to do with this skill"))
+                 for slug, description in extra[:MAX_SKILL_COMMANDS]]
+    return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=commands)
+
+
+def skill_commands(catalog: dict) -> dict[str, str]:
+    """``slug -> description`` for each skill a ``commands.catalog`` reply lists (``skills`` keys are
+    ``/slug``; their descriptions are the matching ``pairs`` rows)."""
+    keys = catalog.get("skills") or {}
+    described = {row[0]: row[1] for row in (catalog.get("pairs") or [])
+                 if isinstance(row, (list, tuple)) and len(row) >= 2 and row[0] in keys}
+    return {key.lstrip("/").lower(): str(described.get(key) or "Skill") for key in keys if key.lstrip("/")}
 
 
 def help_text() -> str:

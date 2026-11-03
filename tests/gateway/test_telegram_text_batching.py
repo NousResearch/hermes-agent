@@ -14,6 +14,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
+from tests.waiting import async_wait_until
 
 
 def _make_adapter():
@@ -75,6 +76,19 @@ def _make_event(
             user_id=user_id,
         ),
     )
+
+
+def _arm_hold_probe(adapter):
+    """Set an event when the text flush enters the claimed-download wait."""
+    entered = asyncio.Event()
+    original = adapter._wait_for_sibling_media
+
+    async def _probed(key):
+        entered.set()
+        await original(key)
+
+    adapter._wait_for_sibling_media = _probed
+    return entered
 
 
 class TestTextBatching:
@@ -628,19 +642,22 @@ class TestSiblingMediaAbsorb:
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+        holding = _arm_hold_probe(adapter)
         comment = _make_event("Додай у календар")
         media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
         adapter._enqueue_text_event(comment)
         adapter._mark_sibling_absorb_eligibility(media)
         adapter._begin_media_inflight(adapter._sibling_media_key(comment))
 
-        await asyncio.sleep(0.08)
+        await asyncio.wait_for(holding.wait(), timeout=2)
         adapter.handle_message.assert_not_called()
 
         await adapter._dispatch_media_event(media)
         adapter._end_media_inflight(adapter._sibling_media_key(comment))
 
-        await asyncio.sleep(0.2)
+        await async_wait_until(
+            lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="merged turn",
+        )
         adapter.handle_message.assert_called_once()
         dispatched = adapter.handle_message.call_args[0][0]
         assert "Додай у календар" in dispatched.text
@@ -648,12 +665,14 @@ class TestSiblingMediaAbsorb:
 
     @pytest.mark.asyncio
     async def test_short_text_still_flushes_when_no_sibling_media(self):
-        """A lone short message flushes at the normal text delay."""
+        """A lone short message flushes at the normal text delay, even with the 20s cap set."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
         adapter._enqueue_text_event(_make_event("ok"))
-        await asyncio.sleep(0.12)
+        await async_wait_until(
+            lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="lone text flush",
+        )
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "ok"
 
@@ -662,7 +681,7 @@ class TestSiblingMediaAbsorb:
         """A later short text must not sit behind a download that cannot absorb it."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
         original = _make_event("first")
         media = _make_event("caption", message_type=MessageType.VIDEO)
         sibling_key = adapter._sibling_media_key(original)
@@ -673,10 +692,90 @@ class TestSiblingMediaAbsorb:
 
         replacement = _make_event("second")
         adapter._enqueue_text_event(replacement)
-        await asyncio.sleep(0.25)
+        await async_wait_until(
+            lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="replacement flush",
+        )
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "second"
         adapter._end_media_inflight(sibling_key)
+
+    def test_absorb_keeps_addressed_reply_and_quote(self):
+        """An addressed comment must not become an unaddressed media event."""
+        adapter = _make_adapter()
+        comment = _make_event("look at this")
+        comment.reply_expected = True
+        comment.reply_to_message_id = "42"
+        comment.reply_to_text = "earlier"
+        comment.reply_to_author_id = "9"
+        comment.reply_to_author_name = "Ann"
+        comment.reply_to_is_own_message = True
+        media = _make_event("forwarded", message_type=MessageType.VIDEO)
+        media.reply_expected = False
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        assert adapter._absorb_pending_text_into_media_event(media) is True
+        assert media.reply_expected is True
+        assert media.reply_to_message_id == "42"
+        assert media.reply_to_text == "earlier"
+        assert media.reply_to_author_id == "9"
+        assert media.reply_to_author_name == "Ann"
+        assert media.reply_to_is_own_message is True
+
+    def test_absorb_does_not_clobber_media_reply_quote(self):
+        adapter = _make_adapter()
+        comment = _make_event("look")
+        comment.reply_expected = True
+        comment.reply_to_message_id = "42"
+        comment.reply_to_text = "comment quote"
+        media = _make_event("forwarded", message_type=MessageType.VIDEO)
+        media.reply_expected = False
+        media.reply_to_message_id = "7"
+        media.reply_to_text = "media quote"
+        adapter._pending_text_batches[adapter._text_batch_key(comment)] = comment
+        adapter._mark_sibling_absorb_eligibility(media)
+
+        assert adapter._absorb_pending_text_into_media_event(media) is True
+        assert media.reply_expected is True
+        assert media.reply_to_message_id == "7"
+        assert media.reply_to_text == "media quote"
+
+    @pytest.mark.asyncio
+    async def test_media_after_text_flush_is_a_separate_turn(self):
+        """Media that arrives after the text flush must not absorb that turn."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.05
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
+        adapter._enqueue_text_event(_make_event("already sent"))
+        await async_wait_until(
+            lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="text flush",
+        )
+        media = _make_event("caption", message_type=MessageType.VIDEO)
+        adapter._mark_sibling_absorb_eligibility(media)
+        assert adapter._absorb_pending_text_into_media_event(media) is False
+        await adapter._dispatch_media_event(media)
+        assert adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_claimed_download_past_cap_flushes_text_alone(self):
+        """A claimed download that outlives the cap must not keep the comment."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.02
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0.15
+        comment = _make_event("held")
+        media = _make_event("caption", message_type=MessageType.VIDEO)
+        sibling_key = adapter._sibling_media_key(comment)
+        adapter._enqueue_text_event(comment)
+        adapter._mark_sibling_absorb_eligibility(media)
+        adapter._begin_media_inflight(sibling_key)
+        try:
+            await async_wait_until(
+                lambda: getattr(adapter.handle_message, "called", False), timeout=1, what="flush after cap",
+            )
+            assert adapter.handle_message.call_args[0][0].text == "held"
+            assert adapter._absorb_pending_text_into_media_event(media) is False
+        finally:
+            adapter._end_media_inflight(sibling_key)
 
     def test_observe_attribution_same_sender_still_pairs(self):
         """Group-observe strips source.user_id; pairing falls back to raw_message.from_user."""
@@ -723,8 +822,9 @@ class TestSiblingMediaAbsorb:
         adapter.handle_message = AsyncMock()
         adapter._is_user_authorized_from_message = lambda _msg: True
         adapter._should_process_message = lambda _msg, is_command=False: True
-        adapter._text_batch_delay_seconds = 0.05
+        adapter._text_batch_delay_seconds = 0.4
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
+        holding = _arm_hold_probe(adapter)
 
         comment = _make_event("Додай у календар", chat_id="12345", user_id="1")
         adapter._enqueue_text_event(comment)
@@ -774,7 +874,7 @@ class TestSiblingMediaAbsorb:
             ):
                 media_task = asyncio.create_task(adapter._handle_media_message(update, MagicMock()))
                 await asyncio.wait_for(entered.wait(), timeout=2)
-                await asyncio.sleep(0.12)
+                await asyncio.wait_for(holding.wait(), timeout=2)
                 adapter.handle_message.assert_not_called()
                 released.set()
                 await asyncio.wait_for(media_task, timeout=2)

@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import faulthandler
-import inspect
 import logging
 import os
 import signal
@@ -28,6 +27,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
+from gateway.run_turn_review import complete_direct_call_review
 from hermes_cli.observability.shared_metrics_busy import note_running_chat_owner
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
@@ -1986,17 +1986,4 @@ class GatewayStartupMixin:
                 raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
             delivery_succeeded = True
         finally:
-            review_delivery_complete = getattr(
-                synthetic_event, "_gateway_review_delivery_complete", None
-            )
-            if callable(review_delivery_complete):
-                with suppress(Exception):
-                    delattr(synthetic_event, "_gateway_review_delivery_complete")
-                try:
-                    callback_result = review_delivery_complete(
-                        delivery_succeeded=delivery_succeeded
-                    )
-                    if inspect.isawaitable(callback_result):
-                        await callback_result
-                except Exception:
-                    logger.exception("Handoff review-delivery completion failed")
+            await complete_direct_call_review(synthetic_event, delivery_succeeded=delivery_succeeded)

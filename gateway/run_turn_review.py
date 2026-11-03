@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import threading
 from contextlib import suppress
@@ -332,6 +333,24 @@ def carry_direct_call_ingress(dispatched: Any, event: Any) -> None:
         dispatched, "_gateway_review_completes_on_event", False
     ):
         event._gateway_review_completes_on_event = True
+
+
+async def complete_direct_call_review(event: Any, *, delivery_succeeded: bool) -> None:
+    """A direct-call ingress (the CLI handoff's synthetic turn) owns its turn's review completion
+    itself (``carry_direct_call_ingress``): once its reply went out, or failed to, complete the
+    completion parked on *event* with that outcome. A sync or awaitable completion; a failure is
+    logged, never raised into the caller's ``finally``."""
+    completion = getattr(event, "_gateway_review_delivery_complete", None)
+    if not callable(completion):
+        return
+    with suppress(Exception):
+        delattr(event, "_gateway_review_delivery_complete")
+    try:
+        result = completion(delivery_succeeded=delivery_succeeded)
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        logger.exception("Handoff review-delivery completion failed")
 
 
 def rehome_turn_completion(dispatched: Any, event: Any) -> None:

@@ -1052,8 +1052,12 @@ def restore_policy(data):
                                             f'{policy.platform} is not a known surface pair')
         if not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute():
             raise _policy_refused('cwd', 'the stored working directory is missing or not absolute')
-        if not isinstance(policy.model, str) or not policy.model.strip():
-            raise _policy_refused('model', 'the stored policy names no model')
+        # model=None is what our own writers persist when the model cannot be resolved (session_local
+        # ``or None``, session_kanban's raw resolution); the launch path resolves an empty policy model
+        # from the profile's config (session_hosted_rpc falls back to _resolve_gateway_model; #35381
+        # made the runtime recover it). Refusing it here stranded the session forever (#148540).
+        if policy.model is not None and not isinstance(policy.model, str):
+            raise _policy_refused('model', 'the stored model is not a string')
         if not isinstance(policy.toolsets, (list, tuple)) or any(
                 not isinstance(name, str) for name in policy.toolsets):
             raise _policy_refused('toolsets', 'the stored toolsets are not a list of names')

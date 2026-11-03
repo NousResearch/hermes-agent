@@ -13,13 +13,13 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
+from agent.skill_utils import EXCLUDED_SKILL_DIRS
 from hermes_constants import get_hermes_home
 
-_SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
 
 
@@ -73,8 +73,8 @@ def _to_int_ts(value: Any) -> Optional[int]:
         try:
             return int(float(s))
         except ValueError:
-            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
-            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp())
+            parsed = datetime.fromisoformat(s)
+            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).timestamp())
     except Exception:
         return None
 
@@ -92,7 +92,7 @@ def build_skill_nodes(skill_roots: list[tuple[str, Path]]) -> dict[str, SkillNod
         is_external_skill_path = None  # type: ignore[assignment]
     for source, root in skill_roots:
         for skill_md in root.rglob("SKILL.md") if root.exists() else ():
-            if _SKIP_PARTS.intersection(skill_md.parts):
+            if EXCLUDED_SKILL_DIRS.intersection(skill_md.relative_to(root).parts):
                 continue
             try:
                 text = skill_md.read_text(encoding="utf-8-sig")[:4000]

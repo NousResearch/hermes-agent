@@ -20,9 +20,9 @@ import pytest
 def _keyless_environment(monkeypatch):
     for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
         monkeypatch.delenv(key, raising=False)
-    # The key ladder inherits the main config's key on a host match; the placeholder
+    # The key ladder inherits the main config's key on a same-origin match; the placeholder
     # assertions below need that rung empty.
-    with patch("agent.auxiliary_client._read_main_api_key_if_same_host", return_value=None):
+    with patch("agent.auxiliary_client._read_main_api_key_if_same_origin", return_value=None):
         yield
 
 
@@ -44,7 +44,7 @@ def _client_attr(client, attr: str) -> str:
         ("", "", "no-key-required"),
         ("test-key-123", "", "test-key-123"),
         # SECURITY: a keyless local-server lane must not borrow OPENAI_API_KEY (or the main
-        # key on a host match) — that would send an OpenAI secret to the lane's base_url.
+        # key on a same-origin match) — that would send an OpenAI secret to the lane's base_url.
         ("", "sk-USER-OPENAI-SECRET", "no-key-required"),
     ],
 )
@@ -57,7 +57,7 @@ def test_ollama_lane_with_bare_local_host_resolves_custom_client_under_v1(
 
     if env_openai_key:
         monkeypatch.setenv("OPENAI_API_KEY", env_openai_key)
-        monkeypatch.setattr(ac, "_read_main_api_key_if_same_host", lambda _base: "sk-MAIN-SECRET")
+        monkeypatch.setattr(ac, "_read_main_api_key_if_same_origin", lambda _base: "sk-MAIN-SECRET")
     lane = {"provider": "ollama", "model": "qwen3.8:27b", "base_url": "http://127.0.0.1:11434", "api_key": api_key}
     monkeypatch.setattr(ac, "_get_auxiliary_task_config", lambda task: dict(lane) if task == "title_generation" else {})
     provider, model, base_url, key, _mode = ac._resolve_task_provider_model("title_generation")

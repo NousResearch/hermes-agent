@@ -58,7 +58,7 @@ def _spawn_holders(machine: Machine) -> list[int]:
 
 def _stop_holders(pids: list[int]) -> None:
     for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
     wait_until(lambda: not any(psutil.pid_exists(p) for p in pids), 60, "venv holders to exit")
 
 

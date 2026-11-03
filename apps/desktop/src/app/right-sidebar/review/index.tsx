@@ -6,9 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tip } from '@/components/ui/tooltip'
-import type { HermesReviewScope } from '@/global'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
@@ -40,6 +38,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { PaneEmptyState, RightSidebarSectionHeader } from '../index'
 
 import { ReviewFileTree } from './file-tree'
+import { ReviewScopeRow } from './scope-row'
 import { ReviewShipBar } from './ship-bar'
 
 // Compact header/diff action buttons — micro hit targets packed tight, matching
@@ -65,6 +64,8 @@ export function ReviewPane() {
 
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
+  // A repo (or a load that may reveal one) gets the header + scope chrome.
+  const showChrome = loading || isRepo
   // `{ path: null }` → revert all; `{ path: '…' }` → revert one file.
   const revertingAll = revertTarget?.path == null
   // Delay the skeletons so fast loads (most project switches) just blank → content
@@ -82,27 +83,13 @@ export function ReviewPane() {
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      {(loading || isRepo) && (
+      {showChrome && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
             {/* Pure self-naming label — redundant under a zone tab that already
                 says "review", so the zone header hides it (styles.css). */}
             <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
-          <SegmentedControl<HermesReviewScope>
-            className="mr-1"
-            onChange={id => {
-              $reviewScope.set(id)
-              clearReviewSelection()
-              void refreshReview()
-            }}
-            options={[
-              { id: 'uncommitted', label: c.scopeUncommitted },
-              { id: 'branch', label: c.scopeBranch },
-              { id: 'lastTurn', label: c.scopeLastTurn }
-            ]}
-            value={scope}
-          />
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button
               aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
@@ -156,7 +143,9 @@ export function ReviewPane() {
         </RightSidebarSectionHeader>
       )}
 
-      {loading || isRepo ? (
+      {showChrome && <ReviewScopeRow />}
+
+      {showChrome ? (
         hasFiles ? (
           <ReviewFileTree />
         ) : showTreeSkeleton ? (

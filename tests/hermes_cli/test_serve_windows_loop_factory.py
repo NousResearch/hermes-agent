@@ -30,7 +30,6 @@ def _capture_runner(monkeypatch):
     def _fake_runner(main, **kwargs):
         captured.update(kwargs)
         main.close()
-        return None
 
     monkeypatch.setattr("uvicorn._compat.asyncio_run", _fake_runner)
     return captured

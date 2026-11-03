@@ -63,6 +63,23 @@ export const pickersEn = {
         noMatches: 'no providers match',
         hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close'
       },
+      // Window plans (Nous subscription with included usage): the per-model word, section titles and limit
+      // notes. Same words as the desktop picker (`modelPicker`).
+      plan: {
+        levels: { free: 'Free', top_tier: 'Large' },
+        sectionRecommended: 'Recommended',
+        sectionOther: 'Other models',
+        largeFootnote: 'Large models also use your monthly large-model limit.',
+        // {0} = a duration like `3h` or `2d 4h`.
+        resetsIn: (duration: string) => `resets in ${duration}`,
+        // {0} = a limit name from `limitNames` ("weekly"). English capitalises it.
+        limitReached: (name: string) => `${name.charAt(0).toUpperCase()}${name.slice(1)} limit reached`,
+        limitNames: { day: 'daily', month: 'monthly', top_tier: 'monthly large-model', week: 'weekly' },
+        limitThenCredits: 'paid models now use your credits (pay as you go)',
+        limitThenCreditsLarge: 'Large models now use your credits (pay as you go)',
+        limitThenWait: 'only Free models until then',
+        limitThenWaitLarge: 'Large models paused until then'
+      },
       persist: {
         // {0} = one of `scopeGlobal` / `scopeSession`.
         label: (scope: string) => `persist: ${scope}`,
@@ -110,7 +127,8 @@ export const pickersEn = {
       },
       errors: {
         couldNotLoadResumable: 'could not load resumable sessions',
-        alreadyClosed: 'session was already closed'
+        alreadyClosed: 'session was already closed',
+        notAttached: 'this view is not attached to that session — nothing was closed'
       },
       row: {
         new: 'new',

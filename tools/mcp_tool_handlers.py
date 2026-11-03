@@ -18,10 +18,11 @@ from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
-    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
+    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
-from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_tool_errors import (
+    _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -29,7 +30,7 @@ _MISSING = object()
 declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
-    "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
+    "MCP server '{s}' requires re-authentication.{detail} Run `hermes mcp login {s}` (or delete the tokens file under "
     "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
@@ -56,30 +57,153 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
-def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
-    else a ``tool_error``. Fail-closed: approval-system errors block."""
+def _trust_approval_key(server_name: str, tool_name: str) -> str:
+    """Approval key a session/always answer to the trust gate is kept under: one (server, tool) pair,
+    so allowing one write tool never covers the server's others. Session entries are per chat;
+    always entries land in the active profile's ``command_allowlist``."""
+    return f"mcp:{server_name}/{tool_name}"
+
+
+def _trust_granted(server_name: str, tool_name: str) -> bool:
+    """A remembered Session/Always answer, or YOLO / ``approvals.mode: off`` for the calling session.
+    Covers only the trust prompt: the spend limit is a budget, not an approval, and still asks."""
+    from tools.approval import is_approval_bypass_active, is_approved
+    from tools.approval_context import get_current_session_key
+    return is_approval_bypass_active() or is_approved(get_current_session_key(),
+                                                      _trust_approval_key(server_name, tool_name))
+
+
+# Keeps the whole trust-gate card inside Discord's 2,000-character message cap (the tightest button
+# surface), so the truncation marker is never cut off by the adapter's own fit.
+_TRUST_GATE_ARGUMENTS_MAX_CHARS = 1_200
+_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
+
+
+def _is_secret_argument_name(key: Any) -> bool:
+    from agent.redact import SECRET_HEADER_NAME_LIST, is_secret_field_name
+    return is_secret_field_name(key) or (isinstance(key, str) and key.casefold() in SECRET_HEADER_NAME_LIST)
+
+
+def _mask_secret_fields(value: Any) -> Any:
+    """Mask every value under a credential-named field (``db_password``, ``client_secret``) or API-key
+    header name (``x-api-key``), whatever its type: the text redactor below only catches the
+    ``key: value`` and token shapes it knows."""
+    if isinstance(value, dict):
+        return {k: "***" if v not in (None, "") and _is_secret_argument_name(k) else _mask_secret_fields(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_secret_fields(v) for v in value]
+    return value
+
+
+def _format_trust_gate_arguments(args: dict) -> str:
+    """Redacted, bounded JSON of the call's arguments for the approval card. Plain text, no
+    fence: every surface already renders the prompt inside a code block."""
+    import unicodedata
+    from agent.redact import redact_sensitive_text
+
+    rendered = json.dumps(_mask_secret_fields(args), ensure_ascii=False, indent=2, default=str)
+    # Scan and redact only a window well past the cap: a multi-megabyte payload (a file write) would
+    # otherwise hold the prompt back for seconds.
+    window = 4 * _TRUST_GATE_ARGUMENTS_MAX_CHARS
+    cut, rendered = len(rendered) > window, rendered[:window]
+    # Bidi overrides, invisible format characters and the C1/DEL controls JSON leaves raw could make the
+    # card show something other than what the server receives; render them as escapes.
+    rendered = "".join(ch.encode("unicode_escape").decode()
+                       if ch != "\n" and unicodedata.category(ch) in ("Cc", "Cf") else ch for ch in rendered)
+    # force: the approval prompt is a display boundary even with security.redact_secrets off. The CLI
+    # prints it as-is. Redact before truncating so a cut cannot split a secret past its pattern.
+    rendered = redact_sensitive_text(rendered, force=True)
+    if cut or len(rendered) > _TRUST_GATE_ARGUMENTS_MAX_CHARS:
+        keep = _TRUST_GATE_ARGUMENTS_MAX_CHARS - len(_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER)
+        rendered = rendered[:keep].rstrip() + _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER
+    return rendered
+
+
+def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
+                      args: Optional[dict] = None) -> Optional[str]:
+    """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
+    limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
+    block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
+    caller can refund it when the call never reaches the server."""
     from tools.mcp_tool_scope import _server_key
-    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier).
-    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
-    if trust != _core._TRUST_UNTRUSTED or _tool_is_read_only(server_name, tool_name):
+    from tools import mcp_tool_costs as _costs
+    # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
+    key = _server_key(server_name)
+    trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
+    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
+             and not _trust_granted(server_name, tool_name))
+    charge = None
+    if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
+        from tools.approval_context import get_current_session_key
+        charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
+    if charge is None:
+        return _ask_for_call(server_name, tool_name, None, booked, args=args) if gated else None
+    if not gated and charge.reserve_within_limit()[0]:
+        if booked is not None:
+            booked.append(charge)
         return None
+    with charge.asking():  # re-read under the slot: a call that asked first may have booked meanwhile
+        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args)
+
+
+def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
+                  gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
+    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
+    spent, over = 0.0, False
+    if charge is not None:
+        if gated:
+            spent = charge.spent()
+            over = charge.over_limit(spent)
+        else:
+            reserved, spent = charge.reserve_within_limit()
+            if reserved:
+                if booked is not None:
+                    booked.append(charge)
+                return None
+            over = True
+    extra = charge.lines(spent) if charge is not None else []
+    if gated:
+        head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."
+        tail = "This tool is write-capable (no readOnlyHint=true annotation) and may modify external state."
+        # The limit notice leads, and the arguments trail: a prompt cut to a platform's cap keeps the notice.
+        message = " ".join([head, *(["This call goes past the chat's spend limit."] if over else []), *extra, tail])
+        if args:
+            message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
+        # Over the limit the answer covers this call only: a remembered trust grant must not
+        # pre-approve the next over-limit call.
+        remember_key = None if over else _trust_approval_key(server_name, tool_name)
+        scope = "once" if over else "once, for this session, or always"
+        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
+                       f"Approve to run '{tool_name}' {scope}, or deny to block it.")
+        title = f"MCP server '{server_name}' is asking"
+    else:
+        message = " ".join([f"MCP tool '{tool_name}' on server '{server_name}' would take this chat past its "
+                            f"spend limit.", *extra])
+        description = (f"Server '{server_name}' declares a spend limit per chat. Approve to run '{tool_name}' "
+                       f"once (every further paid call in this chat asks again), or deny to block it.")
+        title = f"MCP server '{server_name}' spend limit"
+        remember_key = None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
-        answer = request_elicitation_consent(
-            f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run. This tool is write-capable "
-            f"(no readOnlyHint=true annotation) and may modify external state.",
-            f"Server '{server_name}' is configured 'trust: untrusted'. "
-            f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}", title=f"MCP server '{server_name}' is asking")
+        answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}", title=title,
+                                            remember_key=remember_key)
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
+        if over and charge is not None:
+            return tool_error(charge.refusal(spent))
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "
                           f"system was unavailable (fail-closed).")
     if answer == "accept":
+        if charge is not None:
+            charge.book()
+            if booked is not None:
+                booked.append(charge)
         return None
-    logger.info("MCP trust gate: user %s '%s' on untrusted server '%s'",
-                "cancelled" if answer == "cancel" else "denied", tool_name, server_name)
+    logger.info("MCP trust gate: user %s '%s' on %s server '%s'", "cancelled" if answer == "cancel" else "denied",
+                tool_name, "untrusted" if gated else "spend-limited", server_name)
+    if over and charge is not None:
+        return tool_error(charge.refusal(spent))
     return tool_error(f"The user did not approve running write-capable MCP tool '{tool_name}' on untrusted server "
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
@@ -210,7 +334,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         result = _retry_once(server_name, retry_call, op_description, "auth recovery")
         if result is not None:
             return result
-    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
+    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name, detail=_auth_error_detail(exc)),
+                   needs_reauth=True, server=server_name)
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
@@ -345,7 +470,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
-        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"))
+        return tool_error(_mcp_call_failed_message(exc))
 
 
 @asynccontextmanager
@@ -377,7 +502,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -391,7 +516,10 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
+    # ``notifications/progress``; without one the server must stay silent.
+    extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -437,13 +565,16 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
+def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
-    (kimi-code#3227). Returns ``(text, usable_parts)`` — the count of REAL rendered blocks
-    (whitespace-only text and drop notices excluded) that the structuredContent arbitration uses."""
-    parts: List[str] = []
+    (kimi-code#3227). Returns ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL
+    rendered blocks (whitespace-only text and drop notices excluded) for the structuredContent
+    arbitration; ``image_paths`` are the files THIS call's image blocks were cached to — never
+    parsed back out of the text, where a server-written ``MEDIA:`` line could name any local file."""
+    parts: list[str] = []
     usable_parts = 0
+    image_paths: list[str] = []
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
     # cache those via the gateway's image-cache helper so they flow through Hermes' MEDIA: tag convention
     # and out to messaging adapters that render images natively. Without this, image blocks were silently
@@ -456,7 +587,10 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
             if block.text.strip():
                 usable_parts += 1
             continue
-        rendered = _cache_mcp_image_block(block) or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
+        image = _cache_mcp_image_block(block)
+        if image.startswith("MEDIA:"):
+            image_paths.append(image[len("MEDIA:"):])
+        rendered = image or _cache_mcp_audio_block(block) or _render_mcp_resource_block(block, server_name)
         if rendered:
             parts.append(rendered)
             usable_parts += 1
@@ -470,7 +604,7 @@ def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
             # believing the tool returned less than it did, with no way to recover.
             parts.append(_render_mcp_dropped_block_notice(block, block_type))
     # Hard-cap pathological payloads; ordinary large results pass to spillover.
-    return _truncate_mcp_text_result("\n".join(parts)), usable_parts
+    return _truncate_mcp_text_result("\n".join(parts)), usable_parts, image_paths
 
 
 def _capped_structured_content(result):
@@ -514,8 +648,9 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str) -> str:
-    """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
+    """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
+    call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
     would reach the model twice (kimi-code#3234). Any other usable text — a status line, a prose
@@ -527,7 +662,9 @@ def _render_call_tool_result(result, server_name: str) -> str:
     (structuredContent-only servers); ``_meta`` minus reserved keys is always surfaced."""
     if mcp_field(result, "is_error", "isError", False):
         return tool_error(_sanitize_error(_truncate_mcp_text_result(_error_result_text(result) or "MCP tool returned an error")))
-    text_result, usable_parts = _render_content_blocks(result, server_name)
+    text_result, usable_parts, cached_images = _render_content_blocks(result, server_name)
+    if image_paths is not None:
+        image_paths.extend(cached_images)
     structured = _capped_structured_content(result)
     meta = _strip_reserved_meta_keys(mcp_field(result, "meta", "meta"))
     # A str here is the over-cap truncation stand-in (wire structuredContent is always an object): next to
@@ -537,7 +674,7 @@ def _render_call_tool_result(result, server_name: str) -> str:
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
-    payload: Dict[str, Any] = {"result": text_result} if text_result else {}
+    payload: dict[str, Any] = {"result": text_result} if text_result else {}
     # Cap structuredContent too — a malicious server could flood context via a multi-MB JSON payload
     # (#56059). When the serialized form exceeds the hard cap, replace it with the truncated string (head +
     # tail preserved) so it degrades gracefully instead of flooding downstream.
@@ -552,41 +689,61 @@ def _render_call_tool_result(result, server_name: str) -> str:
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
-    """Sync registry handler (``handler(args_dict, **kwargs) -> str``) calling an MCP tool via the background loop."""
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *, native_images: bool = False):
+    """Sync handler (``handler(args_dict, **kwargs)``) calling an MCP tool via the background loop. Always a JSON
+    string, except with ``native_images`` (the registry handler the agent loop dispatches): a result carrying
+    images then becomes the ``_multimodal`` envelope when the active route takes images in tool results.
+    Direct callers (plugins' ``ctx.call_mcp``) keep the string contract and the ``MEDIA:`` paths."""
     op = f"tools/call {tool_name}"
 
-    def _handler(args: dict, **kwargs) -> str:
+    def _handler(args: dict, **kwargs) -> Any:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
-        error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
+        booked: list = []  # a costed call's charge; refunded when the call never reaches the server
+        error = _trust_gate_check(server_name, tool_name, booked, args)
         if error is not None:
             return error
-        server, error = _acquire_call_server(server_name, tool_timeout)
+        server, error = None, _check_circuit_breaker(server_name)
+        if error is None:
+            server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
+            for charge in booked:
+                charge.refund()
             return error
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
+        image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
+        # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
+        from agent.tool_progress_relay import current_tool_progress
+        report = current_tool_progress()
+
+        async def _on_progress(progress, total, message):
+            if report is not None:
+                report(progress, total, message)
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(
+                        server, server_name, tool_name, args, _on_progress if report is not None else None)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
+            image_paths.clear()
+            return _render_call_tool_result(result, server_name, image_paths)
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
-        return _dispatch(
+        text = _dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
+        # Off the MCP loop on purpose: image prep is CPU work (bounded vision pool) that must not stall other servers' I/O.
+        return _mcp_result_with_native_images(text, image_paths) if native_images and not _result_is_error(text) else text
     return _handler
 
 
@@ -640,7 +797,7 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
 
 
 def _render_read_resource(result, server_name: str) -> dict:
-    parts: List[str] = []
+    parts: list[str] = []
     for block in getattr(result, "contents", []):
         if getattr(block, "text", None) is not None:
             parts.append(strip_unicode_tags(block.text))

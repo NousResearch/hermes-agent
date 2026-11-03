@@ -64,18 +64,18 @@ def record_nous_rate_limit(
 ) -> None:
     """Record that Nous Portal is rate-limited in the shared state file.
 
-    Reset time comes from headers, then ``error_context["reset_at"]`` (body
-    parsing), then ``default_cooldown``.
+    Reset time comes from ``error_context["reset_at"]`` (the 429 body's own wait), then headers, then
+    ``default_cooldown``. The body wins: a welcome-tier refusal says when to retry (410 s), while the
+    hourly bucket's reset header is that window's end (about an hour) even with requests left in it.
     """
     now = time.time()
     reset_at = None
-    header_seconds = _parse_reset_seconds(headers)
-    if header_seconds is not None:
-        reset_at = now + header_seconds
-    if reset_at is None and isinstance(error_context, dict):
+    if isinstance(error_context, dict):
         ctx_reset = error_context.get("reset_at")
         if isinstance(ctx_reset, (int, float)) and ctx_reset > now:
             reset_at = float(ctx_reset)
+    if reset_at is None and (header_seconds := _parse_reset_seconds(headers)) is not None:
+        reset_at = now + header_seconds
     if reset_at is None:
         reset_at = now + default_cooldown
 
@@ -150,6 +150,24 @@ def is_long_welcome_rate_limit(error_context: Any) -> bool:
     if not isinstance(refusal, dict) or refusal.get("reason") != "rate_limited":
         return False
     return _safe_float(refusal.get("retry_after"), 0.0) >= WELCOME_LONG_WAIT_SECONDS
+
+
+def welcome_refusal_from_headers(
+    headers: Optional[Mapping[str, str]], *, body_wait: Optional[float] = None,
+) -> dict[str, Any]:
+    """A free-tier 429 that carried no structured ``reason``, read from its headers (else the wait
+    its body named) into the ``parse_welcome_refusal`` shape. Long wait or an empty bucket =
+    ``rate_limited``; a short or unexplained one = ``at_capacity``. A missing wait stays 0 so the
+    breaker never trips on a guess."""
+    buckets = _parse_buckets_from_headers(headers).values()
+    # Only an empty bucket's reset is a wait; a healthy bucket's reset is just its window end.
+    exhausted_wait = max((reset for remaining, reset in buckets
+                          if remaining is not None and remaining <= 0 and (reset or 0) > 0), default=None)
+    wait = (exhausted_wait or parse_retry_after_seconds(lower_headers(headers).get("retry-after"))
+            or body_wait or 0.0)
+    empty = any(remaining is not None and remaining <= 0 for remaining, _reset in buckets)
+    reason = "rate_limited" if wait >= WELCOME_LONG_WAIT_SECONDS or empty else "at_capacity"
+    return {"reason": reason, "retry_after": max(0, int(wait)), "alternates": [], "upgrade_url": ""}
 
 
 def _parse_buckets_from_headers(

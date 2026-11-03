@@ -7,6 +7,8 @@ import { buildDesktopBackendEnv } from '../backend-env'
 import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
 
+import { updateProxyEnv } from './system-proxy-env'
+
 import type { UpdaterStatusWire } from './index'
 
 export interface SourceUpdate extends UpdaterStatusWire {}
@@ -18,6 +20,8 @@ export interface SourceUpdateProbe {
   hermesHome: string
   branch?: string
   channel?: 'main' | 'stable' | 'canary'
+  /** Persist this install's channel first (the About selector); the check then reports it. */
+  setChannel?: 'main' | 'stable'
   force?: boolean
   cachePath?: string
   branchConfigPath?: string
@@ -25,9 +29,45 @@ export interface SourceUpdateProbe {
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 
-export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
+/** The two channels a source checkout can select from Settings. */
+export function sourceChannelName(name: unknown): 'main' | 'stable' {
+  if (name !== 'stable' && name !== 'main') {
+    throw new Error('The update channel must be stable or main.')
+  }
+
+  return name
+}
+
+/** The probe's optional arguments, in the order source_check parses them. */
+function probeFlags(probe: SourceUpdateProbe): string[] {
+  const flags: [string, string | undefined][] = [
+    ['--branch', probe.branch],
+    ['--channel', probe.channel],
+    ['--set-channel', probe.setChannel],
+    ['--cache-path', probe.cachePath],
+    ['--branch-config-path', probe.branchConfigPath]
+  ]
+
+  return [
+    ...flags.flatMap(([flag, value]): string[] => (value ? [flag, value] : [])),
+    ...(probe.force ? ['--force'] : [])
+  ]
+}
+
+/**
+ * Every update child's env: this process's env plus the system proxy when none
+ * is set (#123387). The proxy env overrides process.env, so its extended
+ * NO_PROXY is the one the children read (buildDesktopBackendEnv, spread after
+ * it, sets only PYTHON* and PATH); it is empty whenever the user set a proxy.
+ */
+export async function sourceUpdateEnvironment(
+  updateRoot: string,
+  hermesHome: string,
+  note?: (message: string) => void
+): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ...(await updateProxyEnv(process.env, note, updateRoot)),
     ...buildDesktopBackendEnv(),
     HERMES_HOME: hermesHome,
     HERMES_INSTALL_ROOT: updateRoot
@@ -71,11 +111,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
     probe.hermesHome,
     '--git',
     probe.git,
-    ...(probe.branch ? ['--branch', probe.branch] : []),
-    ...(probe.channel ? ['--channel', probe.channel] : []),
-    ...(probe.force ? ['--force'] : []),
-    ...(probe.cachePath ? ['--cache-path', probe.cachePath] : []),
-    ...(probe.branchConfigPath ? ['--branch-config-path', probe.branchConfigPath] : [])
+    ...probeFlags(probe)
   ]
 
   const command: string = (managed ? launcher : probe.python)!
@@ -94,7 +130,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
       : args,
     hiddenWindowsChildOptions({
       cwd: probe.updateRoot,
-      env: sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
+      env: await sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
       encoding: 'utf8',
       timeout: 360000,
       maxBuffer: 1024 * 1024,

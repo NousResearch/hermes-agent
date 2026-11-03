@@ -1,0 +1,51 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mj41
+description: >
+  Real-time copper pricing (COMEX spot, scrap, industrial), blockchain
+  investigation, and AI news wire. 11 tools spanning ZJ Industries copper
+  oracles on Base L2, Richard Tracy wallet forensics, and The First Signal
+  news platform.
+source: https://github.com/mj41Fantastican/mj41-mcp
+
+# npx-based stdio server — no clone or local install needed.
+transport:
+  type: stdio
+  command: "npx"
+  args:
+    - "-y"
+    - "mj41-mcp@1.2.1"
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - get_copper_price
+    - get_all_copper_prices
+    - get_oracle_status
+    - get_eth_price
+    - get_latest_news
+    - get_news_by_beat
+    - get_story
+    - investigate_wallet
+    - submit_story_idea
+    - about_mj41
+
+post_install: |
+  All tools work immediately with no API keys or configuration.
+
+  Copper oracles read live on-chain data from Base mainnet:
+    - Class A: COMEX spot copper (auto-updated every 15 min during market hours)
+    - Class B: Scrap copper (COMEX-derived, dual-discount bands)
+    - Class C: Industrial copper (ZJ Industries pricing)
+
+  Richard Tracy investigates any Ethereum/Base wallet address and returns
+  a full forensic case report.
+
+  The First Signal delivers AI-generated news across 16 beats with full
+  article retrieval.
+
+  More info: https://github.com/mj41Fantastican/mj41-mcp

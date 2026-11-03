@@ -418,8 +418,7 @@ DEFAULT_CONFIG = {
         # Seconds a local Chromium launch may take to open its DevTools port; a launch always waits
         # at least 120 s (a cold first start unpacks the profile).
         "command_timeout": 30,
-        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
-        "headed": False,
+        "headed": False,  # visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
         "allow_private_urls": False,  # legacy security.allow_private_urls; local/sidecar Chromium ignore it
         # Local browser engine. "auto" = Chromium; "lightpanda" = `lightpanda serve` per session
         # (faster navigation, no screenshots); "chrome" is read as "auto". Ignored while a cloud
@@ -435,6 +434,7 @@ DEFAULT_CONFIG = {
         # Cloud provider: LAN/localhost URLs open in a local Chromium (ignores allow_private_urls; False refuses)
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "cdp_close_agent_tabs": True,  # shared browser (cdp_url, real/persistent profile): close agent-opened tabs
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
         # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The

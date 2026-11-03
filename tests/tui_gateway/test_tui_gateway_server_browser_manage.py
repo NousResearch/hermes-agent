@@ -689,3 +689,21 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     assert _live_cdp() == "" and os.environ["BROWSER_CDP_URL"] == "http://operator:9222"
     # Two cleanups: once before the override is dropped, once after, matching connect.
     assert cleanup_count["n"] == 2
+
+
+def test_exit_browser_cleanup_skips_a_process_that_never_used_a_browser():
+    """No ``tools.browser_session`` loaded: no browser can need closing, so the exit hook at the standalone
+    stdio entry's exit (dev harnesses) and the standalone dashboard does not import the browser modules (about
+    a second of imports on every exit)."""
+    from tui_gateway.methods_browser import _cleanup_browsers_before_exit
+    with patch.dict(sys.modules):
+        for name in ("tools.browser_session", "tools.browser_session_lifecycle"):
+            sys.modules.pop(name, None)
+        _cleanup_browsers_before_exit()
+        assert "tools.browser_session_lifecycle" not in sys.modules
+    calls: list[str] = []
+    fake = types.SimpleNamespace(cleanup_all_browsers=lambda: calls.append("ALL"))
+    with patch.dict(sys.modules, {"tools.browser_session": types.ModuleType("tools.browser_session"),
+                                  "tools.browser_session_lifecycle": fake}):
+        _cleanup_browsers_before_exit()
+    assert calls == ["ALL"]

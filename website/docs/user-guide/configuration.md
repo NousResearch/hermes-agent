@@ -2946,6 +2946,7 @@ browser:
   # Optional CDP override — when set, the browser tools attach to your own
   # Chromium-family browser (as /browser connect does) instead of launching one.
   cdp_url: ""
+  cdp_close_agent_tabs: true     # Close the tabs browser_exec opened on a shared browser when its session ends
   use_real_profile: false        # Browse on a managed copy of your real browser profile (opt-in)
   # Dialog supervisor — how native JS dialogs (alert / confirm / prompt / beforeunload) are handled
   dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept

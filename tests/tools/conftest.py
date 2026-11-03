@@ -8,6 +8,7 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -45,6 +46,22 @@ def _no_chromium_download():
         return
     with patch.object(launcher, "_maybe_autoinstall_chromium", lambda: False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_harness_state(monkeypatch, tmp_path):
+    """Routes and daemons a test records stay in that test, and the harness home is a scratch dir: the
+    exit cleanup pass never reads a real harness log or dials a browser on the developer's machine.
+    Nothing is imported here; state of browser modules a test loaded is cleared after it."""
+    def clear():
+        if bs := sys.modules.get("tools.browser_session"):
+            bs._owned_routes.clear()
+        if cli := sys.modules.get("tools.browser_use_cli"):
+            cli._driven_daemons.clear()
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "bh"))
+    clear()
+    yield
+    clear()
 
 
 @pytest.fixture(autouse=True)

@@ -46,7 +46,15 @@ _session_last_activity: dict[str, float] = {}
 # OWNING profile's scope (#86402).
 _session_owner_homes: dict[str, str] = {}
 _cleanup_failures: dict[str, int] = {}  # consecutive janitor failures (#100738)
+# Route key -> browser_session_owned_tabs.OwnedRoute: the tabs browser_exec opened on a shared browser and
+# the unnamed route's own harness daemon, closed / stopped when the route is cleaned up.
+_owned_routes: dict[str, Any] = {}
+# Route key -> browser_session_owned_tabs.Call (browser_exec calls running on it), and the keys a teardown
+# holds. A call and a turn-end or janitor teardown never run on one key at once.
+_calls_in_flight: dict[str, Any] = {}
+_teardowns: set[str] = set()
 _cleanup_lock = threading.Lock()  # protects every dict above
+_teardown_released = threading.Condition(_cleanup_lock)  # notified when a teardown lets a key go
 _cleanup_thread: Optional[threading.Thread] = None
 _cleanup_running = False
 _cleanup_done = False
@@ -316,7 +324,8 @@ def _reuse_or_evict(cache_key: str) -> Optional[dict[str, Any]]:
     if not _lifecycle.session_has_expired(existing) and not _backend_dead(existing):
         return existing
     logger.info("Replacing expired or dead browser session for %s", cache_key)
-    _lifecycle.cleanup_single_session(cache_key)
+    # The backend is gone or expired: released even under a running browser_exec, or the rebuild would leak it.
+    _lifecycle.cleanup_single_session(cache_key, include_in_flight=True)
     _lifecycle.update_session_activity(cache_key)  # teardown dropped the entry; track the replacement
     with _cleanup_lock:
         replacement = _active_sessions.get(cache_key)  # another thread may already have rebuilt it

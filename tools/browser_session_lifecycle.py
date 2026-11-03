@@ -6,6 +6,9 @@ cloud → ``provider.close_session``; Lightpanda → ``stop_lightpanda``; launch
 (a shared persistent profile only once no other session uses it); sandbox → SIGTERM inside the sandbox
 once no other session uses it;
 real profile → shared per profile home, terminated at exit / on that profile's consent-off; CDP override → nothing (the user's browser).
+On any shared browser, the tabs browser_exec opened for the key are closed first, and (except at turn end) an
+unnamed route's own harness daemon stopped (``browser_session_owned_tabs.teardown``, which also keeps turn-end
+and janitor teardown off a running call).
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
@@ -93,14 +96,21 @@ def _session_owner_scope(cache_key: str):
 
 
 def _forget_session_tracking(cache_key: str, *, activity: bool = True, session: bool = False) -> None:
+    """Untrack ``cache_key``. A route still holding tabs it opened on a shared browser (a close was refused
+    or the browser was unreachable) or its own harness daemon stays scheduled instead, under the same owner home; with ``activity``
+    its activity is re-touched, so the janitor retries the close after another inactivity timeout."""
     bs = _bs()
     with bs._cleanup_lock:
         if session:
             bs._active_sessions.pop(cache_key, None)
+        bs._cleanup_failures.pop(cache_key, None)
+        if cache_key in bs._owned_routes:
+            if activity:
+                bs._session_last_activity[cache_key] = time.time()
+            return
         if activity:
             bs._session_last_activity.pop(cache_key, None)
         bs._session_owner_homes.pop(cache_key, None)
-        bs._cleanup_failures.pop(cache_key, None)
 
 
 # ── Teardown ─────────────────────────────────────────────────────────────────────────────────────────
@@ -144,11 +154,13 @@ def release_session_backend(cache_key: str, session_info: dict[str, Any]) -> Non
         stop_browser(launcher_key)
 
 
-def cleanup_single_session(cache_key: str) -> None:
-    """Tear down one session by its exact key."""
+def _release_session(cache_key: str, *, recorded_only: bool = False) -> None:
+    """Release one session by its exact key; the caller holds its claim (``owned_tabs.teardown``).
+    ``recorded_only`` (turn end): a route with no session record keeps its CDP supervisor."""
     from tools.browser_session_cdp import stop_cdp_supervisor
-    stop_cdp_supervisor(cache_key)  # close our WebSocket BEFORE the backend tears the endpoint down
     bs = _bs()
+    if not (recorded_only and cache_key not in bs._active_sessions):
+        stop_cdp_supervisor(cache_key)  # close our WebSocket BEFORE the backend tears the endpoint down
     with bs._cleanup_lock:
         session_info = bs._active_sessions.pop(cache_key, None)
     _forget_session_tracking(cache_key)
@@ -157,31 +169,49 @@ def cleanup_single_session(cache_key: str) -> None:
         logger.debug("Closed browser session %s", cache_key)
 
 
+def cleanup_single_session(cache_key: str, *, include_in_flight: bool = False) -> None:
+    """Tear down one session by its exact key: its tabs on a shared browser, its own harness daemon, its
+    CDP supervisor and backend, with or without a session record. A key a browser_exec call holds is left
+    alone (it stays scheduled), unless ``include_in_flight`` (a dead backend being replaced under the call)."""
+    from tools.browser_session_owned_tabs import teardown
+    teardown([cache_key], _release_session, include_in_flight=include_in_flight)
+
+
+def _route_keys(match: Callable[[str, str], bool]) -> list[str]:
+    """Session keys, then route keys holding tabs or their own harness daemon on a shared browser
+    (``_owned_routes``; they may have no session record), whose ``match(key, home_key)`` holds."""
+    bs = _bs()
+    with bs._cleanup_lock:
+        records = [*((k, info.get("home_key")) for k, info in bs._active_sessions.items()),
+                   *((k, route.home_key) for k, route in bs._owned_routes.items())]
+        return list(dict.fromkeys(key for key, home in records if match(key, home)))
+
+
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """Close the sessions serving ``task_id``: its exact key, its hybrid ``::local`` sidecar, and the
     served-profile-tagged keys browser_exec builds for it (``<task>@<home>``). Per-turn cleanup calls this
-    with the bare task id."""
+    with the bare task id; an unnamed route's own harness daemon outlives the turn (the janitor, a profile
+    switch, a backend swap or exit stops it), only the tabs the calls opened close."""
+    from tools.browser_session_owned_tabs import teardown
     task = task_id or "default"
     bs = _bs()
-    with bs._cleanup_lock:
-        if bs.is_local_sidecar_key(task):
-            keys = [task] if task in bs._active_sessions else []
-        else:
-            keys = [key for key in bs._active_sessions if key == task or bs.owner_task_id(key) == task]
-    for key in keys:
-        cleanup_single_session(key)
+    if bs.is_local_sidecar_key(task):
+        keys = _route_keys(lambda key, _home: key == task)
+    else:
+        keys = _route_keys(lambda key, _home: key == task or bs.owner_task_id(key) == task)
+    teardown(keys, lambda key: _release_session(key, recorded_only=True), stop_daemons=False)
     if not keys:
         _forget_session_tracking(task)
 
 
 def cleanup_profile_browsers(home_key: str) -> None:
     """Close one profile home's sessions, CDP supervisors and harness daemons, and drop its cached config
-    (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay."""
-    bs = _bs()
-    with bs._cleanup_lock:
-        keys = [key for key, info in bs._active_sessions.items() if info.get("home_key") == home_key]
-    for key in keys:
-        cleanup_single_session(key)
+    (``/browser connect`` on a multiplexed gateway). Other profiles' browsers stay. The agent's tabs close
+    on the endpoint they were opened on (the OLD one) and their records go, so the reap after the new
+    endpoint is published dials nothing. A call still running on this profile loses what it drives (its
+    daemon, supervisor and backend)."""
+    from tools.browser_session_owned_tabs import teardown
+    teardown(_route_keys(lambda _key, home: home == home_key), _release_session, include_in_flight=True)
 
     def _stop_supervisors():
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
@@ -196,20 +226,19 @@ def cleanup_profile_browsers(home_key: str) -> None:
     reset_caches(home_key)
 
 
-def _cleanup_in_owner_scope(cache_key: str) -> None:
+def _release_in_owner_scope(cache_key: str) -> None:
     with _session_owner_scope(cache_key):
-        cleanup_single_session(cache_key)
+        _best_effort(f"browser cleanup for {cache_key}", lambda: _release_session(cache_key))
 
 
 def cleanup_all_browsers() -> None:
-    """Close every session (gateway shutdown), stop every browser this process launched, reset caches. Each
-    session is closed under its owning profile, as the janitor does: a cloud session belongs to that profile's
-    provider and credentials."""
-    bs = _bs()
-    with bs._cleanup_lock:
-        keys = list(bs._active_sessions)
-    for key in keys:
-        _best_effort(f"browser cleanup for {key}", lambda key=key: _cleanup_in_owner_scope(key))
+    """Close every session (exit, CLI ``/browser connect|disconnect``), stop every browser this process
+    launched, reset caches. Each session is closed under its owning profile, as the janitor does: a cloud
+    session belongs to that profile's provider and credentials. Running browser_exec calls are not spared
+    (their daemons, supervisors and backends stop). The tab records go after this pass whatever closed, so
+    a later pass dials nothing; a route daemon whose stop failed stays recorded and is retried."""
+    from tools.browser_session_owned_tabs import teardown
+    teardown(_route_keys(lambda _key, _home: True), _release_in_owner_scope, include_in_flight=True)
 
     def _stop_supervisors():
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
@@ -249,6 +278,7 @@ def emergency_cleanup_all_sessions() -> None:
         bs._session_last_activity.clear()
         bs._session_owner_homes.clear()
         bs._cleanup_failures.clear()
+        bs._owned_routes.clear()
     _best_effort("Orphan reap on exit", reap_orphaned_browser_sessions)
 
 
@@ -278,6 +308,11 @@ def _human_holds_shared_browser(cache_key: str) -> bool:
     bs = _bs()
     with bs._cleanup_lock:
         session_info = bs._active_sessions.get(cache_key)
+        route = bs._owned_routes.get(cache_key)
+    # A browser on the Bot Desktop display (local or lightpanda engine, e.g. the real profile, which has no session
+    # record): browser_exec fences it as local, so the human's lease applies here too.
+    if route is not None and route.bot_desktop:
+        session_info = {"features": {"local": True}}
     return bool(session_info) and bs.human_holds_shared_browser(session_info)
 
 
@@ -298,7 +333,7 @@ def _cleanup_one_inactive(cache_key: str, elapsed: int) -> None:
     logger.info("Cleaning up inactive session %s (inactive for %ss)", cache_key, elapsed)
     try:
         with _session_owner_scope(cache_key):
-            cleanup_single_session(cache_key)
+            _release_session(cache_key)
         _forget_session_tracking(cache_key)
     except Exception as e:  # health: allow BLE001 -- counted; force-reaped after MAX_INACTIVITY_CLEANUP_FAILURES
         with bs._cleanup_lock:
@@ -320,15 +355,21 @@ def cleanup_inactive_sessions() -> None:
     profile's scope. A human holding the Bot Desktop lease counts as activity."""
     bs = _bs()
     now = time.time()
+    cutoff = now - bs.BROWSER_SESSION_INACTIVITY_TIMEOUT
     with bs._cleanup_lock:
-        idle = [(key, int(now - last)) for key, last in bs._session_last_activity.items()
-                if now - last > bs.BROWSER_SESSION_INACTIVITY_TIMEOUT]
+        idle = [(key, int(now - last)) for key, last in bs._session_last_activity.items() if last < cutoff]
+    due = {}
     for key, elapsed in idle:
         with _session_owner_scope(key):
             if _human_holds_shared_browser(key):
                 update_session_activity(key)
                 continue
-        _cleanup_one_inactive(key, elapsed)
+        due[key] = elapsed
+    from tools.browser_session_owned_tabs import teardown
+    # One batch: each endpoint is asked for its targets once for every idle route. A route a browser_exec call longer
+    # than the timeout is still driving is skipped (and re-touched), and so is one a call used after the
+    # snapshot above (re-checked under the claim).
+    teardown(due, lambda key: _cleanup_one_inactive(key, due[key]), idle_before=cutoff)
 
 
 def _janitor() -> None:

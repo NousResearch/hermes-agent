@@ -76,7 +76,7 @@ def test_reaping_one_profile_leaves_the_other_profiles_browser_and_supervisor(pr
     def close(task_id):
         closed.append(task_id)
         sessions.pop(task_id, None)
-    monkeypatch.setattr(lifecycle, "cleanup_single_session", close)
+    monkeypatch.setattr(lifecycle, "_release_session", close)
     stopped = []
     sup = lambda name: types.SimpleNamespace(stop=lambda: stopped.append(name))
     monkeypatch.setattr(SUPERVISOR_REGISTRY, "_by_task", {"ta": sup("ta"), "vault-a": sup("vault-a"), "tb": sup("tb")})

@@ -56,7 +56,7 @@ interface Running {
 
 /** What a Start in flight is doing: the backend's step, `preparing` until it names one (or on a
  *  backend too old to), `restarting` once the pane waits for the restarted gateway. */
-type StartStage = 'preparing' | WebAccessStartProgress['step']
+type StartStage = WebAccessStartProgress['step']
 
 /** The gateway serves the configured web app: it applied this config, not an earlier one's port. */
 function servesConfig(status: WebAccessStatus): boolean {

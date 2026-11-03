@@ -40,6 +40,7 @@ logger = logging.getLogger("gateway.run")
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
 _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
+_ROUTED_WARNED: set = set()  # routed silence lookups log each conflicting (platform, key) once
 
 
 class GatewayConfigLoadersMixin:
@@ -121,11 +122,9 @@ class GatewayConfigLoadersMixin:
         A matching ``channel_overrides`` entry that sets ``allow_silence`` decides; otherwise a
         platform-level ``allow_silence`` covers the platform's shared chats (never DMs).
         """
-        from gateway.config import GatewayConfig, PlatformConfig
-        from gateway.config_loader import (
-            _apply_managed_extra, merge_platform_sections, platform_section, snapshot_authored_extra)
+        from gateway.config import GatewayConfig
+        from gateway.config_loader import bridge_platform_layers, merge_platform_sections
         from gateway.run import _get_channel_override, _load_gateway_config
-        from hermes_cli.managed_scope import apply_managed_overlay
         from gateway.session_identity import identity_of
         config = getattr(self, "config", None)
         identity = identity_of(source)
@@ -136,25 +135,13 @@ class GatewayConfigLoadersMixin:
         try:
             if config is None or routed:
                 raw = _load_gateway_config(self._resolve_profile_home_for_source(source) / "config.yaml")
-                # The loader's own two steps: merge every nested platform block, then the overrides of
-                # the block platform_section picks (a top-level ``<platform>:`` block first) win.
-                # ``GatewayConfig.from_dict(raw)`` alone reads only the nested ``platforms`` form.
-                name, gateway_section = str(source.platform.value), raw.get("gateway")
-                merged = merge_platform_sections(raw, gateway_section, {}).get(name) or {}
-                overrides, extra = merged.get("channel_overrides"), PlatformConfig.from_dict(merged).extra
-                section, toplevel = platform_section(raw, name, (
-                    gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
-                if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
-                    overrides = section["channel_overrides"]
-                # As the loader: a root block's keys win, then the authored ``platforms.<p>.extra``
-                # minus administrator-pinned keys (managed ``extra`` values restored).
-                authored = snapshot_authored_extra({name: merged})
-                _apply_managed_extra(authored, apply_managed_overlay({}), {})
-                root = PlatformConfig.from_dict(section).extra if toplevel else {}
-                extra = {**extra, **root, **authored[name]}
-                config = GatewayConfig.from_dict({"platforms": {name: {
-                    "channel_overrides": overrides if isinstance(overrides, dict) else {},
-                    "allow_silence": extra.get("allow_silence")}}})
+                # The loader's own env-free platform steps; ``GatewayConfig.from_dict(raw)`` alone
+                # reads only the nested ``platforms`` form.
+                gw_data: dict = {}
+                platforms = merge_platform_sections(raw, raw.get("gateway"), gw_data)
+                bridge_platform_layers(raw, gw_data, platforms, [source.platform], warned=_ROUTED_WARNED)
+                config = GatewayConfig.from_dict({"platforms": {
+                    source.platform.value: platforms.get(source.platform.value) or {}}})
             override = _get_channel_override(
                 config, source.platform, source.chat_id,
                 thread_id=source.thread_id, parent_id=source.parent_chat_id)

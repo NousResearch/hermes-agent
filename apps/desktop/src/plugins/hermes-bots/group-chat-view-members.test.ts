@@ -193,3 +193,31 @@ describe('setGroupMembership (per-Bot Manage groups)', () => {
     expect(seatedNames(room)).toEqual(['programmer', 'reviewer'])
   })
 })
+
+describe('a room that spans machines', () => {
+  const remote: RosterRow = {
+    connectionId: 'remote-1',
+    connectionKind: 'remote',
+    name: 'scout',
+    remoteSource: true,
+    route: { connectionId: 'remote-1', mode: 'remote', profile: 'scout', targetProfile: 'scout' },
+    sourceScoped: true
+  }
+
+  it('stays Desktop-driven after its last remote member is removed; a local-only edit never marks one', async () => {
+    const room = await loadRoom()
+    seedCore(room, { members: room.membership.durableGroupChatMembers([programmer, reviewer, remote]) })
+    room.data.$lastRoster.set([programmer, planner, reviewer, remote])
+
+    await room.members.setGroupChatMembers('Core', [programmer, reviewer])
+
+    expect(room.chat.$groupChats.get().Core.members?.map(member => member.name)).toEqual(['programmer', 'reviewer'])
+    expect(room.chat.$groupChats.get().Core.engine).toBe('desktop')
+
+    const local = await loadRoom()
+    seedCore(local)
+    await local.members.setGroupMembership(reviewer, 'Core', false)
+
+    expect(local.chat.$groupChats.get().Core.engine).toBeUndefined()
+  })
+})

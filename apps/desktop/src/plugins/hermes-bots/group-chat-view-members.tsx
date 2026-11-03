@@ -23,6 +23,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useState } from 'react'
 
+import { groupNeedsDesktopCourier } from './canonical-group-capabilities'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, saveBotMeta } from './data'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -64,9 +65,15 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
   // Watermarks are `<thread>::<memberKey>` (group-round-members); the member
   // key may itself carry a `::`, so split at the first one only.
   const watermarkMember = (key: string) => (key.includes('::') ? key.slice(key.indexOf('::') + 2) : key)
+  // A room that spans machines on either side of this edit is Desktop-driven
+  // for good: dropping its last remote member must not hand it to a gateway
+  // (older records carry no engine field until their first edit).
+  const connectionId = host.state.connectionId.get()
+  const desktopDriven = groupNeedsDesktopCourier(previous, connectionId) || groupNeedsDesktopCourier(seated, connectionId)
 
   updateGroupChat(group, (room: GroupChatRoom) => ({
     ...room,
+    ...(desktopDriven ? { engine: 'desktop' as const } : {}),
     members: durableGroupChatMembers(seated),
     heldMessages: without(room.heldMessages, key => key),
     holds: without(room.holds, key => key),

@@ -12,6 +12,7 @@
 import { atom, host, randomUuid } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { stickyGroupEngine } from './group-engine'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -59,6 +60,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  engine?: 'desktop'
   holdDetection?: boolean
   image?: null | string
   log: GroupMessage[]
@@ -354,6 +356,7 @@ export function groupChatSyncSnapshot(
           }
         : {}),
       log,
+      ...stickyGroupEngine(room),
       holdDetection: room.holdDetection !== false,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
@@ -594,6 +597,8 @@ export function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       holdDetection,
+      // Set once at creation and never cleared, so either side's mark holds.
+      ...stickyGroupEngine(localRoom, remoteRoom),
       members,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
@@ -834,6 +839,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       externalCursors:
         existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
       members: [...members.values()],
+      ...stickyGroupEngine(existing, projected),
       ...(projectedRoomId || existing.roomId
         ? {
             roomId: existing.roomId || projectedRoomId

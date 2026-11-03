@@ -159,6 +159,12 @@ export function groupNeedsDesktopCourier(members: RosterRow[], connectionId: nul
   return new Set(members.map(bot => memberConnection(bot, connectionId))).size > 1
 }
 
+/** True when this Desktop drives the room recorded as `room`: the engine it
+ *  was created with, else (older records) whether `members` span connections. */
+export function groupDrivenByDesktop(room: { engine?: 'desktop' } | undefined, members: RosterRow[], connectionId: null | string): boolean {
+  return room?.engine === 'desktop' || groupNeedsDesktopCourier(members, connectionId)
+}
+
 /** True when every bot in `selection` lives on ONE connection other than
  *  `connectionId`. The gateway here cannot own that room and no Desktop courier
  *  is needed between machines, so creation from here is refused: the user adds a

@@ -40,7 +40,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupExecutionMode, groupNeedsDesktopCourier } from './canonical-group-capabilities'
+import { groupCreationSource, groupDrivenByDesktop, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import {
@@ -589,13 +589,15 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const record: GroupChatRoom | undefined = useValue($groupChats)[props.group]
   const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
 
-  // Members on another machine: no gateway here can own the room, so this Desktop drives it.
-  if (canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && groupNeedsDesktopCourier(props.members, connectionId)) {
+  // Created across machines: no gateway here can own the room, so this Desktop
+  // drives it, even after a membership edit leaves every bot on one machine.
+  if (canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && groupDrivenByDesktop(record, props.members, connectionId)) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 

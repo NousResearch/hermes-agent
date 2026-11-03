@@ -28,6 +28,7 @@ import socket
 import sqlite3
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -1262,6 +1263,12 @@ def pytest_configure(config):
         "dispatcher's memory guard to 'no data' — only for tests that "
         "exercise the guard itself with their own patched samples.",
     )
+    config.addinivalue_line(
+        "markers",
+        "allow_network: let the test (and the module-scoped fixtures it sets up) "
+        "reach real hosts through the external network fence — only for PM "
+        "toolchain and wheel downloads; everything else is served by fixtures.",
+    )
     # NOTE: platforms("linux") / platforms("macos") / platforms("windows") are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the
     # project's public marker vocabulary (``pytest --markers``, and the CI
@@ -1401,43 +1408,69 @@ def _audio_playback_guard(request, monkeypatch):
     yield
 
 
-# ── Live Nous services fence ─────────────────────────────────────────────────
-# A test home starts with no Nous identity, so any path that ends in a hosted
-# connector action (connect, rename, status, the tool's first call) mints a REAL
-# guest on the production Portal: up to GUEST_MINT_TIMEOUT_SECONDS per test,
-# red whenever the Portal is slow, and a new guest identity on production on
-# every CI run. The same holds for billing, plan limits, the dashboard OAuth
-# provider and every other client built on a Nous URL. Refusing the name lookup
-# covers all of them at once (httpx, urllib, aiohttp and asyncio all resolve
-# through socket.getaddrinfo), and fails exactly like an offline host, which is
-# the path production already handles. Tests of these clients stub the
-# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), so
-# they never reach the lookup. Live canaries opt in with ``@pytest.mark.live``.
-_NOUS_SERVICE_DOMAINS = ("nousresearch.com", "staging-nousresearch.com")
+# ── External network fence ───────────────────────────────────────────────────
+# Unit tests run against fixtures, never a live service. A lookup of any host off this
+# machine is refused the way an offline host refuses it, which is the path production
+# already handles. Every Python client (httpx, urllib, requests, aiohttp, asyncio)
+# resolves through socket.getaddrinfo, so the whole class closes in one place.
+#
+# The Nous domains were the first instance: a test home has no Nous identity, so a hosted
+# connector action minted a REAL guest on the production Portal on every CI run. Every
+# other host behaved the same way: building an agent fetched OpenRouter, models.dev and
+# model-catalog metadata live, a stand-in agent's title request went to openrouter.ai, and
+# verdicts followed whatever those services (or a filtering DNS resolver) answered that day.
+#
+# Serve what a test needs from a fixture instead: a server on 127.0.0.1, a stubbed
+# transport (tests/hermes_cli/anon_portal.py routes httpx at a fake Portal), a seeded
+# cache, or a patched resolver seam (``tools.url_safety._getaddrinfo`` for the SSRF
+# guards). Address literals resolve without a lookup and stay allowed. Live canaries opt
+# in with ``@pytest.mark.live``, the PM tests that download real toolchains and wheels on
+# purpose with ``@pytest.mark.allow_network``. Processes a test spawns are outside the fence.
+#
+# Installed for the whole process at import, not per test: a background thread a test
+# started (inventory refresh, memory sync, a metadata probe) outlives the test, and a
+# per-test patch left it the gap between one test's teardown and the next one's setup.
+_LOCAL_HOST_NAMES = frozenset({"", "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
+                               socket.gethostname().lower()})
+_REAL_GETADDRINFO = socket.getaddrinfo
+_NETWORK_ALLOWED = threading.Event()
 
 
-def _is_nous_service_host(host) -> bool:
+def _is_external_host(host) -> bool:
     name = (host.decode() if isinstance(host, bytes) else str(host or "")).lower().rstrip(".")
-    return any(name == domain or name.endswith("." + domain) for domain in _NOUS_SERVICE_DOMAINS)
+    if name in _LOCAL_HOST_NAMES or name.endswith(".localhost"):
+        return False
+    try:
+        ipaddress.ip_address(name.strip("[]").split("%", 1)[0])
+    except ValueError:
+        return True
+    return False
 
 
-@pytest.fixture(autouse=True)
-def _no_live_nous_services(request, monkeypatch):
-    if request.node.get_closest_marker("live"):
-        return
-    import socket
+def _fenced_getaddrinfo(host, *args, **kwargs):
+    if _is_external_host(host) and not _NETWORK_ALLOWED.is_set():
+        raise socket.gaierror(
+            socket.EAI_NONAME,
+            f"test fence: {host!r} is off this machine; serve it from a fixture (local server, "
+            "stubbed transport, seeded cache) or mark the test live")
+    return _REAL_GETADDRINFO(host, *args, **kwargs)
 
-    real_getaddrinfo = socket.getaddrinfo
 
-    def fenced_getaddrinfo(host, *args, **kwargs):
-        if _is_nous_service_host(host):
-            raise socket.gaierror(
-                socket.EAI_NONAME,
-                f"test fence: {host!r} is a live Nous service; stub the HTTP layer "
-                "(tests/hermes_cli/anon_portal.py) or mark the test live")
-        return real_getaddrinfo(host, *args, **kwargs)
+socket.getaddrinfo = _fenced_getaddrinfo
 
-    monkeypatch.setattr(socket, "getaddrinfo", fenced_getaddrinfo)
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Open the fence for ``live`` canaries and ``allow_network`` tests (PM toolchain and wheel
+    downloads, which run real installs on purpose). The whole protocol is wrapped, so a
+    module-scoped fixture the test sets up downloads under the same opening."""
+    if item.get_closest_marker("live") is None and item.get_closest_marker("allow_network") is None:
+        return (yield)
+    _NETWORK_ALLOWED.set()
+    try:
+        return (yield)
+    finally:
+        _NETWORK_ALLOWED.clear()
 
 
 @pytest.fixture

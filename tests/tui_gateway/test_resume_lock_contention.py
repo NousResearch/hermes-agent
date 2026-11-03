@@ -98,34 +98,36 @@ def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(
     monkeypatch.setattr(server, "_sessions", {"busy": busy, "idle": idle})
     monkeypatch.setattr(server, "_pending_ws_reaps", {})
     results = {}
+    started = []
     holder.acquire()  # the long holder: a turn or compression that keeps its lock
     try:
         busy_thread = threading.Thread(
             target=lambda: results.update(busy=_resume(path, "busy", busy)), daemon=True
         )
         busy_thread.start()
-        # Start the idle resume only once the busy one has provably reached contention: it attempted the
-        # history_lock we hold, or it holds the resume lock, or it already finished (nothing left to stall).
+        started.append(busy_thread)
+        # Start the idle resume only once this busy resume has provably reached contention (it attempted the
+        # history_lock we hold) or finished. The global resume lock is not evidence: another test's worker
+        # may own it.
         wait_until(
-            lambda: (
-                busy_entered.is_set()
-                or server._session_resume_lock.locked()
-                or not busy_thread.is_alive()
-            ),
-            what="busy resume reached history_lock, held the resume lock, or finished",
+            lambda: busy_entered.is_set() or not busy_thread.is_alive(),
+            what="busy resume reached history_lock or finished",
         )
         idle_thread = threading.Thread(
             target=lambda: results.update(idle=_resume(path, "idle", idle)), daemon=True
         )
         idle_thread.start()
+        started.append(idle_thread)
         idle_thread.join(timeout=3)
         assert not idle_thread.is_alive(), (
             "resume of an idle chat stalled behind another chat's history_lock"
         )
         assert "result" in results["idle"]
     finally:
-        busy["history_lock"].release()
-    busy_thread.join(timeout=3)
+        # Join every worker even on failure, so none outlives monkeypatch teardown and leaks into the next case.
+        holder.release()
+        for thread in started:
+            thread.join(timeout=3)
     assert not busy_thread.is_alive()
     assert "result" in results["busy"]
 

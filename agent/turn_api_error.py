@@ -150,6 +150,8 @@ def handle_api_error(
         return _verdict("continue")
 
     retry_count += 1
+    from agent.turn_timing import progress_turn_timing
+    progress_turn_timing(agent, "rework", iteration=api_call_count)
     elapsed_time = time.time() - api_start_time
     # Liveness/watchdog label only (never shown in chat), so the classifier's
     # "not retryable" verdict is named on the logged attempt line below instead.

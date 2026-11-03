@@ -37,9 +37,11 @@ Stages
    ("step-sequence" / "when X, do Y") REFUSEs to ``skills/`` regardless of
    caller (keys on content, NOT caller).
 5  Grammar / threat check — imperative regex + ``_scan_memory_content``.
-6  Stale-entry refusal — whole-entry EXACT match via ``_find_unique_match``;
-   fail-closed on drift (``anchor_drift`` receipt).  Searched against the
-   TARGET's entries (``_entries_for(target)``), not the anchor's.
+6  Stale-entry refusal — whole-entry EXACT match via the gate-local advisory
+   matcher (``_advisory_unique_match``); fail-closed on drift
+   (``anchor_drift`` receipt).  Searched against the TARGET's entries
+   (``_entries_for(target)``), not the anchor's.  Advisory only: the store's
+   locked match inside ``_mutate`` stays the commit authority.
 7  Post-write read-back — after the store write, re-read the target and assert
    ``old_text`` is gone from it (writer path: :func:`verify_post_write`).
 
@@ -65,9 +67,9 @@ from hermes_constants import get_hermes_home, get_scratch_dir
 from tools.memory_tool_store import (
     ENTRY_DELIMITER,
     FAILURE_CLASS,
-    _find_unique_match,
     _scan_memory_content,
     _stale_entry_message,
+    _substring_matches,
 )
 
 import logging
@@ -427,17 +429,37 @@ def _stage5_grammar_threat(content: str) -> Optional[GateRefusal]:
     return None
 
 
+def _advisory_unique_match(entries: list[str], old_text: str) -> tuple[Optional[int], bool]:
+    """Gate-local advisory match: mirrors the store's ``_find_unique_match``
+    semantics (whole-entry EXACT first, else typography-folded substring;
+    distinct matches → ambiguous) on top of the store's pure helpers.
+
+    Deliberately NOT the store's installed matcher: Stage 6's refusal is
+    advisory, and the identity a write COMMITS must come from the store's
+    locked match inside ``_mutate`` (the contract
+    tests/agent/test_memory_write_bridge.py pins).  Sharing the store's
+    matcher here would trip that contract without adding safety — the store
+    re-matches under its lock regardless of what the gate concluded.
+    """
+    exact = [i for i, e in enumerate(entries) if e == old_text]
+    matches = exact or _substring_matches(entries, old_text)
+    if len({entries[i] for i in matches}) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
+
+
 def _stage6_stale_entry(entries: list[str], old_text: str) -> Optional[GateRefusal]:
     """Stage 6 — stale-entry refusal.
 
-    Uses the store's installed ``_find_unique_match`` (whole-entry EXACT match
-    takes priority) against the TARGET's entries.  If ``old_text`` does not
-    uniquely select an entry (or selects nothing → stale), refuse with
-    ``anchor_drift``.  Fail-closed: drift → REFUSE, never silently overwrite.
+    Advisory prewrite check via the gate-local ``_advisory_unique_match``
+    (whole-entry EXACT match takes priority) against the TARGET's entries.  If
+    ``old_text`` does not uniquely select an entry (or selects nothing →
+    stale), refuse with ``anchor_drift``.  Fail-closed: drift → REFUSE, never
+    silently overwrite.  The store's locked match stays the commit authority.
     """
     if not old_text:
         return None  # nothing to anchor against (e.g. an ``add`` action)
-    idx, ambiguous = _find_unique_match(entries, old_text)
+    idx, ambiguous = _advisory_unique_match(entries, old_text)
     if ambiguous:
         return GateRefusal(
             action="REFUSE",
@@ -639,13 +661,13 @@ def verify_post_write(store, target: str, action: str, old_text: Optional[str],
     pass a lost or concurrently reverted write.
 
     ``content`` is the new text the write carried (``new_text`` for patch,
-    ``new_content`` for replace, ``None`` for remove).  A landed patch/replace
-    may legitimately leave ``old_text`` present when the new text contains the
-    old span (a span extension, or a rewrite that keeps the locating phrase) —
-    that is not a failed write.  The read-back flags only when ``old_text``
-    survives AND the new text does not explain it (``old_text not in content``);
-    for ``remove``, ``content`` is ``None`` and the check collapses to the
-    original eradication assertion.
+    ``new_content`` for replace, ``None`` for remove).  For patch/replace the
+    attestation is POSITIVE — the new text must be present on disk: an
+    absence-of-old check ghosts on siblings that independently contain the
+    old span (and on span extensions that legitimately keep it).  For remove
+    the attestation is whole-entry eradication: an exact-entry twin of
+    ``old_text`` must be gone; the text surviving as a substring of a sibling
+    entry is not a failed remove.
     """
     if action not in ("replace", "patch", "remove") or not old_text:
         return None
@@ -655,12 +677,28 @@ def verify_post_write(store, target: str, action: str, old_text: Optional[str],
         _logger.warning("verify_post_write: read-back raised on %s; pass-through by design",
                          target, exc_info=True)
         return None
-    if any(old_text in e and old_text not in (content or "") for e in entries):
+    if action == "remove":
+        # Whole-entry eradication: an exact-entry twin must be gone. The text
+        # surviving as a SUBSTRING of a sibling entry is not a failed remove
+        # ("Prefers tea" vs "Prefers tea with milk" — the store's exact-match
+        # priority removed the right entry; the sibling is untouched).
+        landed = not any(e == old_text for e in entries)
+        rationale = "read-back failed: old_text still present after the write"
+    elif content:
+        # patch/replace: POSITIVE attestation — the new text must be present on
+        # disk. Absence-of-old ghosts on siblings that independently contain
+        # the span; presence-of-new is the landed proof.
+        landed = any(content in e for e in entries)
+        rationale = "read-back failed: new content not present after the write"
+    else:
+        landed = True  # nothing new to attest
+        rationale = ""
+    if not landed:
         FAILURE_CLASS.set("readback_failed")
         _append_change_log_line({
             "timestamp": _now_iso(),
             "action": "REFUSE",
-            "rationale": "read-back failed: old_text still present after the write",
+            "rationale": rationale,
             "reroute_target": None,
             "failure_class": "readback_failed",
             "target": target,

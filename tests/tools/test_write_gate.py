@@ -397,8 +397,8 @@ class TestPostWriteReadbackEradication:
         store.load_from_disk()
         old_entry = "The deploy target is Fly.io with manual approval."
         store.add("memory", old_entry)
-        result = store.replace("memory", old_entry,
-                               "The deploy target is Fly.io with automated canary.")
+        new_entry = "The deploy target is Fly.io with automated canary."
+        result = store.replace("memory", old_entry, new_entry)
         assert result["success"] is True
 
         # External rollback: the file on disk reverts to the pre-write content
@@ -406,7 +406,7 @@ class TestPostWriteReadbackEradication:
         path = store._path_for("memory")
         path.write_text(old_entry + "\n", encoding="utf-8")
 
-        result = verify_post_write(store, "memory", "replace", old_entry)
+        result = verify_post_write(store, "memory", "replace", old_entry, content=new_entry)
         assert result is not None, "read-back must refuse when disk still holds old_text"
         parsed = json.loads(result)
         assert parsed["failure_class"] == "readback_failed"

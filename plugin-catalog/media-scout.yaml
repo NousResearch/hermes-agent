@@ -1,0 +1,30 @@
+name: media-scout
+version: "0.1.0"
+repo: https://github.com/dakshagrawa/hermes-workflows
+sha: d444ad9e5508e40750164fd2ecf946aa558f81bd
+subdir: plugins/media-scout
+description: >-
+  Experimental, Linux-scoped media evidence bookkeeping with trusted Discord
+  admission receipts, extraction claims, a bundled workflow skill and native
+  Kanban reviewer handoff. Disclosure — writes profile-local SQLite, source
+  receipts and evidence under plugin-data/media-scout; source text and evidence
+  can be private. Uses the native terminal tool for bounded Hermes Kanban CLI
+  commands and native notification/wake subscriptions; automatic review and
+  owned-artifact cleanup are separate opt-ins. Reviewer tasks carry a compact
+  evidence copy with native queue retention. No direct network or model client,
+  credentials, telemetry, custom daemon, self-updater or runtime core override.
+  Existing admitted tools perform actual media extraction. Qualified with real
+  SDK/synthetic queue fixtures, not a real Discord/provider/media deployment.
+maintainer: dakshagrawa
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/dakshagrawa/hermes-workflows/blob/d444ad9e5508e40750164fd2ecf946aa558f81bd/plugins/media-scout/README.md
+platforms: [linux]
+capabilities:
+  provides_tools:
+    - media_scout
+  provides_hooks:
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

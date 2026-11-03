@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- CJK dense-rate calibration for #104806: the net growth is the docstring/comment lines recording the measured 0.6/char rationale at this existing estimator; the code change is one expression, so a sibling split of the estimate_* block is its own PR
 """Model metadata, context lengths, and token estimation utilities.
 
 Pure utility functions with no AIAgent dependency. Used by ContextCompressor

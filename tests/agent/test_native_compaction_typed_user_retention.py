@@ -59,7 +59,8 @@ def _text(text):
     "current,budget,expected",
     [
         (_user(_text("abcd"), _text("efghijkl"), _text("trailing")), 2, ("abcd", "efgh")),
-        (_user(_text("你好世界")), 2, ("你好",)),
+        # CJK costs ceil(0.6/char) (#104806): three chars fit budget 2, four do not.
+        (_user(_text("你好世界")), 2, ("你好世",)),
         (_user(_text("CURRENT" * 20), _IMAGE), 2, None),
         # Content-less item measured only via output_text.
         ({"type": "message", "role": "user", "output_text": "CURRENT" * 20}, 2, None),

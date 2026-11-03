@@ -632,7 +632,12 @@ _FORK_PRELOAD = (
     "pydantic", "httpx", "urllib3", "rich", "ruamel.yaml",
 )
 _fork_server: "_ForkServer | None" = None  # set by main() when enabled
-_fork_start_lock = threading.Lock()  # Process.start() is not thread-safe
+# Process.start() is not thread-safe, and it also polls every live child
+# (multiprocessing.process._cleanup). A child's exit status is 8 bytes the fork
+# server writes once: if that poll and the owning thread's join() read it at the
+# same time, the loser reads EOF and multiprocessing reports exit status 255.
+# Starting children and reading their statuses both hold this lock.
+_fork_lock = threading.Lock()
 
 
 class _ForkServer:
@@ -661,6 +666,17 @@ def _start_fork_server(repo_root: Path) -> _ForkServer:
     return _ForkServer(ctx, [str(repo_root), *base], str(Path(pytest.__file__).with_name("__main__.py")))
 
 
+def _forked_exit_status(proc, timeout: float | None) -> int | None:
+    """Wait for a fork-server child, then read its status under _fork_lock (None on timeout)."""
+    from multiprocessing.connection import wait
+
+    if not wait([proc.sentinel], timeout):
+        return None
+    with _fork_lock:
+        proc.join()
+        return proc.exitcode
+
+
 class _ForkedPytest:
     """The subprocess.Popen surface _run_one_file_once uses, for a fork-server child."""
 
@@ -674,16 +690,16 @@ class _ForkedPytest:
             args=(str(file), list(pytest_args), str(repo_root), env, self._out,
                   server.sys_path, server.argv0),
         )
-        with _fork_start_lock:
+        with _fork_lock:
             self._proc.start()
         self.pid = self._proc.pid
         self.returncode: int | None = None
 
     def communicate(self, timeout: float | None = None) -> tuple[str, None]:
-        self._proc.join(timeout)
-        if self._proc.exitcode is None:
+        rc = _forked_exit_status(self._proc, timeout)
+        if rc is None:
             raise subprocess.TimeoutExpired(str(self._out), timeout or 0)
-        self.returncode = self._proc.exitcode
+        self.returncode = rc
         try:
             with open(self._out, encoding="utf-8", errors="replace") as fh:
                 return fh.read(), None

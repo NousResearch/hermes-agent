@@ -140,6 +140,13 @@ export function cursorDown(n = 1): string {
   return n === 0 ? '' : csi(n, 'B')
 }
 
+/** Move cursor to the first column of the nth following line (CSI n E) */
+export function cursorNextLine(n = 1): string {
+  return n === 0 ? '' : csi(n, 'E')
+}
+
+export const MAIN_SCREEN_CURSOR_RESTORE = cursorNextLine(999)
+
 /** Move cursor forward n columns (CSI n C) */
 export function cursorForward(n = 1): string {
   return n === 0 ? '' : csi(n, 'C')

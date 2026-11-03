@@ -19,6 +19,9 @@ import {
   SidebarRowShell
 } from '../chrome'
 
+import { projectOwnerRoute } from './gateway-project-rows'
+import type { SidebarProjectTree } from './workspace-groups'
+
 // Branch/worktree labels routinely share a long prefix (`bb/coding-context-…`),
 // so plain end-truncation (`truncate`) hides exactly the suffix that tells two
 // lanes apart — both render as "bb/coding-context…". Keep the tail pinned and
@@ -215,7 +218,11 @@ export function WorkspaceContextMenu({
 // inside it. Naming is explicit — no auto-generated `hermes/work-<ts>` trees.
 // The base branch defaults to the remote default (origin/HEAD); the user can
 // pick any local or remote-tracking branch via a filterable combobox.
-export function StartWorkButton({ repoPath }: { repoPath: string }) {
+export function StartWorkButton({
+  project
+}: {
+  project: Pick<SidebarProjectTree, 'connectionId' | 'path' | 'profile'>
+}) {
   const { t } = useI18n()
   const p = t.sidebar.projects
 
@@ -226,7 +233,8 @@ export function StartWorkButton({ repoPath }: { repoPath: string }) {
         className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/section:opacity-100 focus-visible:opacity-100"
         // Publish the intent. The one WorktreeDialog in the sidebar renders it.
         // This button pins its own repo, so it targets this section.
-        onClick={() => void openWorktreeDialog({ repoPath })}
+        // Another gateway's project: the worktree is cut on that machine.
+        onClick={() => void openWorktreeDialog({ owner: projectOwnerRoute(project), repoPath: project.path ?? '' })}
         type="button"
       >
         <Codicon name="git-branch" size="0.75rem" />

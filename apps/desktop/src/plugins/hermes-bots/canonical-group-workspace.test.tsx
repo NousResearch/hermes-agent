@@ -502,14 +502,15 @@ it.each([
   expect(screen.getByRole('button', { name: /disband/i })).toBeTruthy()
 })
 
-it('hides Rename and Disband, and ignores pasted files, on a gateway that does not list their methods', async () => {
-  const methods = ['groups.capabilities', 'groups.state', 'groups.log', 'groups.send', 'groups.stop']
-  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? { driver: true, methods } : roomReads()(method) ?? {})
+it('hides unadvertised header actions while working and ignores pasted files', async () => {
+  const methods = ['groups.capabilities', 'groups.state', 'groups.log', 'groups.send']
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? { driver: true, methods }
+    : method === 'groups.state' ? { room: { name: 'Room' }, driver_status: { working: true } } : roomReads()(method) ?? {})
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'bare' }} />)
-  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.capabilities')).toBe(true))
   await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.capabilities')).toBe(true))
   const box = screen.getByRole('textbox')
   await waitFor(() => expect((box as HTMLTextAreaElement).disabled).toBe(false))
+  expect(screen.queryByRole('button', { name: 'Stop the group' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull()
   expect(screen.queryByRole('button', { name: /disband/i })).toBeNull()
   fireEvent.paste(box, { clipboardData: { files: [new File(['a'], 'a.png', { type: 'image/png' })], types: ['Files'] } })

@@ -637,7 +637,7 @@ interface GatePlan {
 /** What a room with no gateway binding shows: on a classic connection its classic workspace, as on
  *  main; on a gateway connection (or while that is unknown) what happened, why, what to do, and what
  *  happens to its earlier messages. Only a classic room whose Bots can form a gateway group here is
- *  offered Start new group; a gateway connection never runs a classic room. */
+ *  offered Start new group. Workspace routing decides which rooms reach this gate. */
 function groupGatePlan({ mode, unavailable, lookup, props, route, canonical, open }: {
   mode: GroupExecutionMode | 'checking'
   unavailable: GateUnavailable

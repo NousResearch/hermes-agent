@@ -1050,3 +1050,67 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+# =========================================================================
+# Placeholder-probe loop guards (2026-10-08 / 2026-11-03 incidents)
+# =========================================================================
+
+class TestPlaceholderLoopGuards:
+    """Overflow failures reset by interleaved successful probe adds never tripped the
+    consecutive cap, so add->overflow->add "z1"->success->... ran for hundreds of calls.
+    The cumulative per-target overflow counter must terminate that loop, and no-progress
+    successes (duplicate add) must not reset the failure budget."""
+
+    @pytest.fixture
+    def tight_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=200, user_char_limit=100)
+        store.load_from_disk()
+        return store
+
+    def test_overflow_cap_survives_interleaved_successful_probes(self, tight_store):
+        tight_store.add("memory", "A" * 150)
+        outcomes = []
+        for i in range(6):
+            outcomes.append(tight_store.add("memory", "B" * 80))   # over budget every time
+            probe = tight_store.add("memory", f"z{i}")             # tiny probe used to reset the budget
+            assert probe["success"] is True
+        assert all(r["success"] is False for r in outcomes)
+        assert any(r.get("done") is True for r in outcomes), "loop must hit the TERMINAL stop"
+
+    def test_terminal_overflow_tells_model_to_stop_probing(self, tight_store):
+        tight_store.add("memory", "A" * 150)
+        last = None
+        for _ in range(5):
+            last = tight_store.add("memory", "B" * 80)
+        assert last is not None and last.get("done") is True
+        assert "placeholder" in last["error"]
+
+    def test_duplicate_adds_stop_after_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=2000, user_char_limit=1000)
+        store.load_from_disk()
+        store.add("memory", "fact X")
+        assert store.add("memory", "fact X")["success"] is True
+        assert store.add("memory", "fact X")["success"] is True
+        third = store.add("memory", "fact X")
+        assert third["success"] is False and third.get("done") is True
+
+    def test_turn_reset_clears_overflow_budget(self, tight_store):
+        tight_store.add("memory", "A" * 150)
+        for _ in range(2):
+            tight_store.add("memory", "B" * 80)
+        tight_store.reset_consolidation_failures()
+        r = tight_store.add("memory", "C" * 80)
+        assert r["success"] is False and r.get("done") is not True
+
+    def test_consolidating_batch_still_works_after_overflow(self, tight_store):
+        tight_store.add("memory", "A" * 150)
+        failed = tight_store.add("memory", "B" * 80)
+        assert failed["success"] is False
+        ok = tight_store.apply_batch("memory", [
+            {"action": "remove", "old_text": "A" * 150},
+            {"action": "add", "content": "C" * 50},
+        ])
+        assert ok["success"] is True

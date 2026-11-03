@@ -184,6 +184,17 @@ class MemoryStore:
     # to budget exhaustion and suppress the user's reply.
     # See #42405.
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
+    # Over-budget failures per target per turn, CUMULATIVE — successes do NOT reset it.
+    # The placeholder-probe loop (add the real fact -> overflow; add a tiny "z1" probe ->
+    # success resets the consecutive budget; repeat) rode those probe successes for
+    # hundreds of calls (2026-10-08 incident; recurs on local models that ignore prose
+    # rules). Four over-budget attempts in one turn means the model is not consolidating.
+    _MAX_OVERFLOW_FAILURES_PER_TURN = 3
+    # Consecutive SUCCESS responses that changed nothing (duplicate add, no-op write)
+    # before a TERMINAL stop. The 2026-11-03 incident replayed a success-shaped no-op
+    # 100+ times off the success signal alone; the runtime identical-call gate only
+    # catches byte-identical repeats, so the store keeps its own counter.
+    _MAX_NO_PROGRESS_SUCCESSES_PER_TURN = 2
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
@@ -193,6 +204,8 @@ class MemoryStore:
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
+        self._overflow_failures: dict[str, int] = {}  # per-target over-budget failures, cumulative
+        self._no_progress_successes = 0  # consecutive success responses that changed nothing
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).
@@ -202,8 +215,10 @@ class MemoryStore:
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
         self._consolidation_failures = 0
+        self._overflow_failures = {}
+        self._no_progress_successes = 0
 
-    def _consolidation_failure(self, response: dict[str, Any]) -> dict[str, Any]:
+    def _consolidation_failure(self, response: dict[str, Any], target: Optional[str] = None) -> dict[str, Any]:
         """Count a consolidation failure: under the per-turn cap return ``response``
         (it says how to retry); past it a TERMINAL result so the model stops looping.
 
@@ -211,6 +226,20 @@ class MemoryStore:
         looping memory calls and proceeds to answer the user — a failed memory side effect must never block
         the turn's reply (#42405).
         """
+        if target is not None and FAILURE_CLASS.get() == "over_budget":
+            # Cumulative and success-immune: interleaved tiny "probe" adds succeed and used to
+            # reset the consecutive budget below, so that cap never tripped and the loop ran
+            # for hundreds of calls. Counting over-budget failures per target regardless of
+            # interleaved successes bounds the placeholder loop at the store layer.
+            self._overflow_failures[target] = self._overflow_failures.get(target, 0) + 1
+            if self._overflow_failures[target] > self._MAX_OVERFLOW_FAILURES_PER_TURN:
+                FAILURE_CLASS.set("retry_cap")
+                return {"success": False, "done": True, "error": (
+                    f"Writes to '{target}' exceeded the char limit {self._overflow_failures[target]} times "
+                    "this turn. Stop calling memory — never add short placeholder or probe entries to test "
+                    "the limit or 'make room': they pollute memory and burn context. Save the fact in a "
+                    "later turn as ONE 'operations' batch that removes stale entries AND adds it together, "
+                    "or leave memory unchanged and continue with your reply to the user.")}
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
             return response
@@ -324,7 +353,8 @@ class MemoryStore:
     def _failure_with_entries(self, target: str, message: str) -> dict[str, Any]:
         """Over-budget consolidation failure carrying the live entries so the model can consolidate."""
         return self._consolidation_failure(
-            _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)))
+            _error(message, "over_budget", current_entries=self._entries_for(target), usage=self._usage(target)),
+            target)
 
     def _add_overflow(self, target: str, content: str, limit: int) -> dict[str, Any]:
         """A lone add over budget, legacy or one-item batch: the model has not consolidated yet,
@@ -334,7 +364,8 @@ class MemoryStore:
             f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
             f"would exceed the limit by {over:,} chars. Retry as ONE 'operations' batch that "
             f"removes or shortens (patch) stale entries from current_entries below to free at least "
-            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result."))
+            f"{over:,} chars AND adds this entry — the limit is checked only on the batch result. "
+            "Never add a short placeholder or probe entry to 'make room' or to test the limit."))
 
     def _batch_failure(self, target: str, message: str, failure_class: str,
                        closest_entries: Optional[list[str]] = None) -> dict[str, Any]:
@@ -345,7 +376,7 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message + " No operations were applied (batch is all-or-nothing).", failure_class,
                    usage=self._usage(target),
-                   **({"closest_entries": closest_entries} if closest_entries else {})))
+                   **({"closest_entries": closest_entries} if closest_entries else {})), target)
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
@@ -392,7 +423,7 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1], **extra_fields)
+            return self._success_response(target, result[1], progressed=result[0] != before, **extra_fields)
 
     def add(self, target: str, content: str) -> dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -404,7 +435,8 @@ class MemoryStore:
 
         def _add(entries, limit):
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(target, "Entry already exists (no duplicate added).",
+                                              progressed=False)
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._add_overflow(target, content, limit)
             return entries + [content], "Entry added."
@@ -625,7 +657,8 @@ class MemoryStore:
                     return self._add_overflow(target, (ops[0].get("content") or ops[0].get("new_text") or "").strip(), limit)
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
-                    f"removes or shortening patches of other stale entries to the same batch, then retry."),
+                    f"removes or shortening patches of other stale entries to the same batch, then retry. "
+                    "Never add a short placeholder or probe entry to 'make room' or to test the limit."),
                     "over_budget")
             if not commit:
                 return {"success": True, "matched_entries": matched}
@@ -651,15 +684,32 @@ class MemoryStore:
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str | None = None, **extra) -> dict[str, Any]:
+    def _success_response(self, target: str, message: str | None = None, *,
+                          progressed: bool = True, **extra) -> dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
-        "find more to fix" and re-issue the same ops. A successful write resets the
-        per-turn failure budget. ``**extra`` mirrors ``_error``'s convention — e.g. the
+        "find more to fix" and re-issue the same ops. A successful write that CHANGED the
+        entries resets the per-turn failure budget; one that changed nothing (duplicate
+        add, no-op write) does not — it counts toward a small no-progress cap instead,
+        because a success-shaped no-op is exactly what the 2026-11-03 replay loop rode.
+        ``**extra`` mirrors ``_error``'s convention — e.g. the
         full text a replace overwrote (#117952), deliberately visible despite the
         no-entries rule: silent data loss is the failure this field exists to prevent."""
-        # A successful write means the consolidation loop made progress, so the per-turn failure budget
-        # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
-        self._consolidation_failures = 0
+        if progressed:
+            # A real state change means the consolidation loop made progress, so the per-turn failure budget
+            # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
+            self._consolidation_failures = 0
+            self._no_progress_successes = 0
+        else:
+            self._no_progress_successes += 1
+            if self._no_progress_successes > self._MAX_NO_PROGRESS_SUCCESSES_PER_TURN:
+                FAILURE_CLASS.set("retry_cap")
+                return {"success": False, "done": True, "target": target,
+                        "error": (
+                            f"{self._no_progress_successes} memory writes in a row changed nothing — the entry "
+                            "already exists or the write is a no-op. Stop calling memory; for a DIFFERENT update "
+                            "change the content, otherwise move on and reply to the user."),
+                        "usage": self._usage_pct(target, self._char_count(target)),
+                        "entry_count": len(self._entries_for(target))}
         return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
                 "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),

@@ -202,6 +202,30 @@ class TestTextToSpeechToolWithPiper:
         assert data["success"] is False
         assert "piper-tts" in data["error"]
 
+    def test_zero_chunks_returns_no_output_error_without_wave_crash(self, tmp_path, monkeypatch):
+        class _ZeroChunkPiperVoice(_StubPiperVoice):
+            def synthesize_wav(self, text, wav_file, syn_config=None):
+                # Piper's synthesize_wav only sets wave header fields on the first chunk;
+                # zero chunks leave nchannels unset when wave.open.__exit__ closes the file.
+                _StubPiperVoice.calls.append((text, getattr(self, "model_path", ""), syn_config))
+
+        model = tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx"
+        model.write_bytes(b"model")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+
+        monkeypatch.setattr(tts_tool, "_import_piper", lambda: _ZeroChunkPiperVoice)
+        cfg = {"provider": "piper", "piper": {"voice": str(model)}}
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+
+        out_file = tmp_path / "empty.mp3"
+        result = text_to_speech_tool(text="...", output_path=str(out_file))
+        data = json.loads(result)
+
+        assert data["success"] is False, data
+        assert "produced no output" in data["error"]
+        assert not out_file.exists()
+        assert not out_file.with_suffix(".wav").exists()
+
 
 # ---------------------------------------------------------------------------
 # check_tts_requirements

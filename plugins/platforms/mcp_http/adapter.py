@@ -463,6 +463,10 @@ class McpHttpAdapter(BasePlatformAdapter):
             self._set_fatal_error("build_failed", f"MCP HTTP build failed: {exc}", retryable=True)
             return False
 
+        # Plugin-registered native handlers (``ctx.register_platform_handler``), wired
+        # before the server thread starts so no request can race the wiring.
+        self._wire_plugin_handlers(app)
+
         self._thread = threading.Thread(target=self._run_uvicorn, args=(app,), name="mcp-http", daemon=True)
         self._thread.start()
         for _ in range(100):

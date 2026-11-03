@@ -223,10 +223,6 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   private deliverNormalized(event: GatewayEvent, handler: (event: GatewayEvent) => void): void {
-    if (event.type === 'gateway.ready' && (event.payload as { session_authority?: unknown } | undefined)?.session_authority === true) {
-      this.canonical = true
-    }
-
     const key = JSON.stringify([event.session_id, event.replay_epoch])
     // While an owner probe for this (session, epoch) runs, its frames wait and deliver in order.
     const parked = this.canonical && event.session_id ? this.parkedFrames.get(key) : undefined
@@ -430,13 +426,35 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return params
   }
 
+  // A public dial learns its wire from gateway.ready; a request made before then waits for it,
+  // inside its own deadline and abort signal.
+  private async awaitProtocolReady(deadline: number, signal?: AbortSignal): Promise<void> {
+    remainingRequestBudget(deadline, signal)
+    const stops: Array<() => void> = []
+
+    const exits = new Promise<never>((_, reject) => {
+      if (signal) {
+        const onAbort = () => reject(signal.reason)
+        signal.addEventListener('abort', onAbort, { once: true })
+        stops.push(() => signal.removeEventListener('abort', onAbort))
+      }
+
+      if (deadline !== Number.POSITIVE_INFINITY) {
+        const timer = setTimeout(() => reject(new Error('Hermes gateway request timed out')), Math.max(0, deadline - Date.now()))
+        stops.push(() => clearTimeout(timer))
+      }
+    })
+
+    try { await Promise.race([this.protocolReady, exits]) } finally { for (const stop of stops) { stop() } }
+  }
+
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     const generation = this.connectionGeneration
-    await this.protocolReady
+    const deadline = requestDeadline(timeoutMs)
+    await this.awaitProtocolReady(deadline, signal)
     this.requireConnectionGeneration(generation)
 
-    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
-    const deadline = requestDeadline(timeoutMs)
+    if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), remainingRequestBudget(deadline, signal), signal) }
     // A truncating submit (edit / regenerate / restore) is the owner's rewind, then the submit.
     const rewind = method === 'prompt.submit' ? splitRewindSubmit(params) : null
 
@@ -580,6 +598,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
         console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
       socketFactory: openGatewaySocket
+    })
+    // The wire follows the peer's explicit advertisement, read once per frame before any
+    // subscriber runs; a native dial is canonical by provenance.
+    super.on('gateway.ready', event => {
+      if (!this.nativeDial) { this.canonical = event.payload?.session_authority === true }
     })
     this.onEvent(event => {
       if (!this.canonical) { return }

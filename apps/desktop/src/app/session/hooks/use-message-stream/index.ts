@@ -20,7 +20,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
-  toolCallOwnerMessageId,
+  toolEventOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -635,12 +635,16 @@ export function useMessageStream({
           // a running-phase event only re-arms a sealed-no-result part on a
           // still-in-flight owner — a settled prior turn's sealed part is
           // history, so a new turn reusing the id seeds its own row instead
-          // of clobbering the prior turn's command. With no turn live the event
-          // can only be a late or repeated frame of a call already on screen.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload, state.turnLive ? phase : 'complete'),
+          // of clobbering the prior turn's command. With no turn live, a start
+          // carrying a sealed row's exact arguments is a late copy of that call.
+          eventTarget: state => toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive),
           // A copy of a call this turn already finished (re-delivered start or
-          // completion) would otherwise draw that call a second time.
-          skip: state => isRedeliveredToolEvent(state.messages, payload, phase)
+          // completion) would otherwise draw that call a second time. A queued
+          // prompt row is the next turn's only while this turn has a response.
+          skip: state =>
+            isRedeliveredToolEvent(state.messages, payload, phase, {
+              queuedIsNextTurn: Boolean(state.streamId || state.sawAssistantPayload || state.interimBoundaryPending)
+            })
         },
         occurredAt
       )

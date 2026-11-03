@@ -112,6 +112,52 @@ describe('a re-delivered event for a call this turn already finished', () => {
     expect(rows()).toHaveLength(1)
   })
 
+  it('draws a new turn its own row once its queued prompt has started', () => {
+    dispatch('none')
+    event('message.complete', 106, { text: TEXT })
+    act(() => {
+      const state = stream.state(SID)
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `user-queued-${SID}`, parts: [{ text: 'next', type: 'text' }], role: 'user', timestamp: 107 }
+        ]
+      })
+    })
+    // The queued prompt's turn starts before history replaces its projected row.
+    event('message.start', 110)
+    start(111)
+    complete(112)
+
+    const found = rows()
+    expect(found).toHaveLength(2)
+    expect(found[1]).toMatchObject({ completedAt: 112, timestamp: 111 })
+  })
+
+  it("draws a todo read once when its start arrives again after the completion's snapshot", () => {
+    const todos = [{ content: 'ship it', id: '1', status: 'pending' }]
+    event('message.start', 160)
+    event('tool.start', 161, { args: { action: 'read' }, name: 'todo_list', tool_id: 'call_todo' })
+    event('tool.complete', 162, {
+      args: { action: 'read' },
+      name: 'todo_list',
+      result: '{}',
+      todos,
+      tool_id: 'call_todo'
+    })
+    event('tool.start', 163, { args: { action: 'read' }, name: 'todo_list', tool_id: 'call_todo' })
+    event('tool.complete', 164, {
+      args: { action: 'read' },
+      name: 'todo_list',
+      result: '{}',
+      todos,
+      tool_id: 'call_todo'
+    })
+
+    expect(rows('call_todo')).toHaveLength(1)
+  })
+
   it("routes a completion's copy to the current call, not an older turn's sealed row", () => {
     event('message.start', 600)
     event('tool.start', 601, { args: { command: 'echo A' }, name: 'terminal', tool_id: 'call_lost' })

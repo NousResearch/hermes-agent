@@ -224,6 +224,37 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(stream.state(SID).streamId).toBeNull()
   })
 
+  it("keeps a new call off the previous turn's row when its message.start was missed", () => {
+    event('message.start', 860)
+    event('tool.start', 861, { args: { command: 'echo old' }, name: 'terminal', tool_id: 'call_missed_start' })
+    event('message.complete', 862, { text: 'first turn done' })
+
+    // An optimistic send; its message.start is lost in a connection gap, so no turn is live.
+    act(() => {
+      const state = stream.state(SID)
+
+      stream.states.set(SID, {
+        ...state,
+        awaitingResponse: true,
+        busy: true,
+        messages: [
+          ...state.messages,
+          { id: 'user-next', role: 'user', parts: [{ type: 'text', text: 'again' }], timestamp: 863 }
+        ],
+        turnLive: false
+      })
+    })
+
+    event('tool.start', 864, { args: { command: 'echo new' }, name: 'terminal', tool_id: 'call_missed_start' })
+    event('tool.complete', 865, { name: 'terminal', result: 'new output', tool_id: 'call_missed_start' })
+
+    const rows = toolRows('call_missed_start')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo old' } })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    expect(rows[1].part).toMatchObject({ args: { command: 'echo new' }, result: 'new output' })
+  })
+
   it('keeps the sealed tool row but ignores progress arriving after Stop', () => {
     event('message.start', 1000)
     event('tool.start', 1001, { args: { command: 'echo interrupted' }, name: 'terminal', tool_id: 'call_stopped' })

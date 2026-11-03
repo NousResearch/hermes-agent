@@ -37,6 +37,7 @@ export {
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
   toolCallOwnerMessageId,
+  toolEventOwnerMessageId,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'

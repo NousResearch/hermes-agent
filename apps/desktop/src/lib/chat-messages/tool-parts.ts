@@ -496,8 +496,51 @@ export function toolCallOwnerMessageId(
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
-// Keys `toolArgs` folds into a row's args from the event itself, not the call.
-const EVENT_ARG_KEYS = new Set(['context', 'preview', TOOL_LABELS_ARG])
+// Keys `toolArgs` folds into a row's args from the event itself, not the call:
+// `todos` is the snapshot a todo tool's completion carries beside its args.
+const EVENT_ARG_KEYS = new Set(['context', 'preview', 'todos', TOOL_LABELS_ARG])
+
+/** True when an event carries exactly the arguments the row was called with. */
+function sameCallArgs(partArgs: unknown, payload: GatewayEventPayload | undefined): boolean {
+  const args = liveToolArgs(payload)
+  const argKeys = Object.keys(args)
+  const stored = parseMaybeJsonObject(partArgs)
+  const storedKeys = Object.keys(stored).filter(key => Object.hasOwn(args, key) || !EVENT_ARG_KEYS.has(key))
+
+  return storedKeys.length === argKeys.length && argKeys.every(key => sameJson(args[key], stored[key]))
+}
+
+/**
+ * The message a tool event should update.
+ *
+ * While a turn is live, a running event only re-arms a sealed row whose own
+ * message is still in flight (`toolCallOwnerMessageId`). With no turn live, a
+ * running event is usually a late copy of a call already on screen, so it
+ * takes the late-completion rule, but only when it carries exactly that
+ * row's arguments. A start whose `message.start` was missed also arrives
+ * with no turn live, and must not take over an older turn's row.
+ */
+export function toolEventOwnerMessageId(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined,
+  phase: 'running' | 'complete',
+  turnLive: boolean
+): string | null {
+  if (turnLive || phase === 'complete') {
+    return toolCallOwnerMessageId(messages, payload, phase)
+  }
+
+  const settledId = toolCallOwnerMessageId(messages, payload, 'complete')
+  const stableId = toolId(payload)
+
+  const settledPart = messages
+    .find(message => message.id === settledId)
+    ?.parts.find(part => part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result'))
+
+  return settledPart?.type === 'tool-call' && sameCallArgs(settledPart.args, payload)
+    ? settledId
+    : toolCallOwnerMessageId(messages, payload, phase)
+}
 
 /**
  * True when a tool event is another copy of a call this turn already finished.
@@ -512,9 +555,10 @@ const EVENT_ARG_KEYS = new Set(['context', 'preview', TOOL_LABELS_ARG])
  * provider's constant id (llama.cpp names every call alike). A copy also
  * matches the finished part's content: a start carries exactly the same
  * arguments (the same keys, ignoring the ones the event itself adds), a
- * completion the same result. The search stops at the newest user message,
- * except a projected queued prompt, which belongs to the next turn; a later
- * turn that reuses an id with the same arguments still gets its own row.
+ * completion the same result. The search stops at the newest user message;
+ * a projected queued prompt is passed over only while it still belongs to the
+ * next turn (`queuedIsNextTurn`, the rule `completeAssistantMessage` uses). A
+ * later turn that reuses an id with the same arguments gets its own row.
  *
  * Content can't tell one case apart: an older constant-id backend running the
  * same command twice in one turn. Its second call is hidden while it runs,
@@ -524,7 +568,8 @@ const EVENT_ARG_KEYS = new Set(['context', 'preview', TOOL_LABELS_ARG])
 export function isRedeliveredToolEvent(
   messages: ChatMessage[],
   payload: GatewayEventPayload | undefined,
-  phase: 'running' | 'complete'
+  phase: 'running' | 'complete',
+  { queuedIsNextTurn = false }: { queuedIsNextTurn?: boolean } = {}
 ): boolean {
   const stableId = toolId(payload)
 
@@ -535,24 +580,19 @@ export function isRedeliveredToolEvent(
   // A call still waiting on this event wins only when it is newer than the
   // finished match: an older turn's sealed row must not take the copy.
   const ownerId = toolCallOwnerMessageId(messages, payload, phase)
-  const args = liveToolArgs(payload)
-  const argKeys = Object.keys(args)
 
-  const repeats = (part: Extract<ChatMessagePart, { type: 'tool-call' }>) => {
-    if (phase === 'complete') {
-      return payload?.result !== undefined && sameJson(payload.result, part.result)
-    }
-
-    const partArgs = parseMaybeJsonObject(part.args)
-    const partKeys = Object.keys(partArgs).filter(key => Object.hasOwn(args, key) || !EVENT_ARG_KEYS.has(key))
-
-    return partKeys.length === argKeys.length && argKeys.every(key => sameJson(args[key], partArgs[key]))
-  }
+  const repeats = (part: Extract<ChatMessagePart, { type: 'tool-call' }>) =>
+    phase === 'complete'
+      ? payload?.result !== undefined && sameJson(payload.result, part.result)
+      : sameCallArgs(part.args, payload)
 
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
 
-    if (message.id === ownerId || (message.role === 'user' && !message.id.startsWith('user-queued-'))) {
+    if (
+      message.id === ownerId ||
+      (message.role === 'user' && !(queuedIsNextTurn && message.id.startsWith('user-queued-')))
+    ) {
       return false
     }
 

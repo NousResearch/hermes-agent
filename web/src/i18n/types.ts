@@ -374,6 +374,52 @@ export interface Translations {
     config: string;
   };
 
+  /** Optional while existing locales adopt the MCP-page strings. */
+  mcpUi?: {
+    loadServersFailed: string;
+    loadCatalogFailed: string;
+    invalidServer: string;
+    addedOAuth: string;
+    added: string;
+    addFailed: string;
+    toolCount: string;
+    failed: string;
+    testFailed: string;
+    oauthComplete: string;
+    signInFailed: string;
+    restartNote: string;
+    updateFailed: string;
+    deleted: string;
+    removeFailed: string;
+    installingBackground: string;
+    installed: string;
+    installFailed: string;
+    required: string;
+    addServer: string;
+    removeServer: string;
+    removeNamed: string;
+    removeDescription: string;
+    close: string;
+    name: string;
+    transport: string;
+    url: string;
+    authentication: string;
+    none: string;
+    bearerToken: string;
+    tokenPlaceholder: string;
+    tokenHint: string;
+    oauthHint: string;
+    command: string;
+    args: string;
+    environment: string;
+    adding: string;
+    add: string;
+    installNamed: string;
+    installRequires: string;
+    installing: string;
+    install: string;
+  };
+
   // ── Files page ──
   /** Optional while existing locales adopt the files-page strings. */
   files?: {

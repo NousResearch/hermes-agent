@@ -29,6 +29,8 @@ import {
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -51,6 +53,8 @@ export default function McpPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
+  const { t } = useI18n();
+  const mcpUi = t.mcpUi ?? en.mcpUi!;
 
   // Add server modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -99,8 +103,8 @@ export default function McpPage() {
     return api
       .getMcpServers()
       .then((res) => setServers(res.servers))
-      .catch((e) => showToast(`Could not load MCP servers: ${errorMessage(e)}`, "error"));
-  }, [showToast]);
+      .catch((e) => showToast(mcpUi.loadServersFailed.replace("{error}", errorMessage(e)), "error"));
+  }, [mcpUi.loadServersFailed, showToast]);
 
   const loadCatalog = useCallback(() => {
     return api
@@ -109,8 +113,8 @@ export default function McpPage() {
         setCatalog(res.entries);
         setDiagnostics(res.diagnostics);
       })
-      .catch((e) => showToast(`Could not load the MCP catalog: ${errorMessage(e)}`, "error"));
-  }, [showToast]);
+      .catch((e) => showToast(mcpUi.loadCatalogFailed.replace("{error}", errorMessage(e)), "error"));
+  }, [mcpUi.loadCatalogFailed, showToast]);
 
   useEffect(() => {
     Promise.all([loadServers(), loadCatalog()]).finally(() =>
@@ -133,7 +137,7 @@ export default function McpPage() {
       });
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : mcpUi.invalidServer,
         "error",
       );
       return;
@@ -144,8 +148,8 @@ export default function McpPage() {
       await api.addMcpServer(body);
       showToast(
         transport === "http" && httpAuth === "oauth"
-          ? "Added — authenticate with OAuth"
-          : "Add ✓",
+          ? mcpUi.addedOAuth
+          : mcpUi.added,
         "success",
       );
       setName("");
@@ -159,7 +163,7 @@ export default function McpPage() {
       setCreateModalOpen(false);
       loadServers();
     } catch (e) {
-      showToast(`Could not add MCP server: ${errorMessage(e)}`, "error");
+      showToast(mcpUi.addFailed.replace("{error}", errorMessage(e)), "error");
     } finally {
       setCreating(false);
     }

@@ -1,12 +1,5 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import {
-  DEFAULT_REASONING_EFFORT,
-  planBlocks,
-  sectionAt,
-  splitRecommended,
-  usageLevel,
-  usageTag
-} from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, splitRecommended, usageLevel, usageTag } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -44,6 +37,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
+import { availabilityRank, contextLabel } from '@/lib/model-availability'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
@@ -818,7 +812,7 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
-                  <ProviderStatusChip className="ml-auto mr-0.5" provider={group.provider} />
+                  <ProviderStatusChip alwaysShowUsage className="ml-auto mr-0.5" provider={group.provider} />
                 </DropdownMenuItem>
                 {/* Window plans past an allowance: one line saying what happens next (pay as you go
                     or wait for the reset) instead of a note on every row. */}
@@ -1172,6 +1166,12 @@ function ModelFamilyRow({
             </Badge>
           ) : null}
         </span>
+        <span
+          className="shrink-0 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+          title="Maximum conversation capacity in tokens; not remaining account allowance"
+        >
+          {contextLabel(caps?.context_window)}
+        </span>
         <ModelResetBadge time={limit.reset} />
         {loadProgress ? (
           <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
@@ -1374,6 +1374,11 @@ function groupModels(
       allFamilies = recommendedFirst(provider, [{ fastId: null, id: current.model }, ...allFamilies])
     }
 
+    // Stable availability partition; retain curated quality/recommendation order within each tier.
+    allFamilies = recommendedFirst(provider, allFamilies).sort(
+      (a, b) => availabilityRank(provider, a.id) - availabilityRank(provider, b.id)
+    )
+
     if (allFamilies.length === 0) {
       continue
     }
@@ -1420,7 +1425,12 @@ function groupModels(
 
   // Stable, logical group order: alphabetical by provider name. (The backend
   // floats the current provider first, which would reshuffle on every switch.)
-  groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
+  groups.sort(
+    (a, b) =>
+      Math.min(...a.families.map(f => availabilityRank(a.provider, f.id))) -
+        Math.min(...b.families.map(f => availabilityRank(b.provider, f.id))) ||
+      a.provider.name.localeCompare(b.provider.name)
+  )
 
   return groups
 }
@@ -1451,7 +1461,10 @@ function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number):
 // current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
 // first pick's "Recommended" heading.
 function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
-  const split = splitRecommended(provider, families.map(family => family.id))
+  const split = splitRecommended(
+    provider,
+    families.map(family => family.id)
+  )
 
   if (!split) {
     return families

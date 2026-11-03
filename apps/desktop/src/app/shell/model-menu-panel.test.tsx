@@ -85,6 +85,19 @@ function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void)
 }
 
 describe('ModelMenuPanel MoA presets', () => {
+  it('renders catalog context capacities without inventing unknown capacities', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          ...DEEPSEEK_PROVIDER,
+          capabilities: { 'deepseek-v4-pro': { fast: false, reasoning: true, context_window: 1_000_000 } }
+        }
+      ]
+    })
+    const { content } = renderPanel()
+    expect(await content.findByText('1M context')).toBeTruthy()
+    expect(content.getAllByText('Context unknown').length).toBeGreaterThan(0)
+  })
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {
     const { content, onSelectModel } = renderPanel()
 

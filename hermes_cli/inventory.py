@@ -569,20 +569,38 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             fast = resolve_fast_mode_overrides(
                 model, provider=slug, base_url=row.get("api_url")) is not None
             entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
-            if fast and model_supports_ultrafast(model) and ultrafast_offered(
-                    model, provider=slug, base_url=row.get("api_url")):
-                entry["ultrafast"] = True
-
-            if reasoning and read_reasoning_catalog is not None:
+            detail: Optional[dict[str, Any]] = None
+            if read_reasoning_catalog is not None:
                 try:
                     detail = read_reasoning_catalog(model)
                 except Exception:
                     detail = None
-                if detail and not detail.get("supports_reasoning"):
+            # Capacity: the serving aggregator's own catalog (Nous Portal / OpenRouter) wins —
+            # models.dev does not index Nous, so it can never label those models. models.dev is
+            # the fallback (cache-only: never advertise the capabilities fallback as capacity).
+            try:
+                context = None
+                if detail:
+                    cl = detail.get("context_length")
+                    if isinstance(cl, int) and not isinstance(cl, bool) and cl > 0:
+                        context = cl
+                if context is None:
+                    from agent.models_dev import lookup_models_dev_context
+                    context = lookup_models_dev_context(slug, model, allow_network=False, config=metadata_config)
+                if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+                    entry["context_window"] = context
+            except Exception:
+                pass  # Unknown capacity must not prevent selecting a model.
+            if fast and model_supports_ultrafast(model) and ultrafast_offered(
+                    model, provider=slug, base_url=row.get("api_url")):
+                entry["ultrafast"] = True
+
+            if reasoning and detail:
+                if not detail.get("supports_reasoning"):
                     # Aggregator catalog beats models.dev for a route it serves: no reasoning param
                     # means no reasoning controls, so no disable to describe either.
                     entry["reasoning"] = False
-                elif detail:
+                else:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
 
             caps[model] = entry

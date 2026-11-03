@@ -614,7 +614,7 @@ def _extract_context(entry: dict[str, Any]) -> Optional[int]:
     return _extract_limit(entry, "context")
 
 
-def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False) -> Optional[int]:
+def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool = False, config: Optional[dict[str, Any]] = None) -> Optional[int]:
     """Context window in tokens for provider+model, or None if not found. An EXPLICIT ``model_overrides``
     entry wins over the catalog; ``_default`` fills the gap only when the catalog has no answer (the
     self-unblock path for wrong/missing context in models.dev). Catalog entries with context=0 are
@@ -622,15 +622,15 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
     See #84482.
     """
-    override_ctx = _override_context_window(provider, model)
+    override_ctx = _override_context_window(provider, model, config=config)
     if override_ctx is not None:
         return override_ctx
     declared_ctx = _override_int(_provider_model_capabilities(provider, model), "context_window")
     if declared_ctx is not None:
         return declared_ctx
-    models = _get_provider_models(provider, allow_network=allow_network)
+    models = _get_provider_models(provider, allow_network=allow_network, config=config)
     catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
-    return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
+    return catalog_ctx if catalog_ctx is not None else _default_override_context(provider, config=config)
 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
@@ -753,18 +753,18 @@ def _override_int(override: dict[str, Any], key: str) -> Optional[int]:
     return None
 
 
-def _override_context_window(provider: str, model: str) -> Optional[int]:
+def _override_context_window(provider: str, model: str, *, config: Optional[dict[str, Any]] = None) -> Optional[int]:
     """EXPLICITLY overridden context_window, or None. Explicit-only on purpose: this runs early in the
     resolution chain (agent/model_metadata.py, before custom_providers and live probes) where a
     ``_default`` must not preempt more specific sources; fill-gap defaults apply in ``lookup_models_dev_context``."""
-    ov = _explicit_model_override(provider, model)
+    ov = _explicit_model_override(provider, model, config=config)
     return _override_int(ov, "context_window") if ov is not None else None
 
 
 # Catalog miss — a _default override may fill the gap (#84482).
-def _default_override_context(provider: str) -> Optional[int]:
+def _default_override_context(provider: str, *, config: Optional[dict[str, Any]] = None) -> Optional[int]:
     """Fill-gap context from a ``_default`` override, for catalog misses."""
-    default = _default_model_override(provider)
+    default = _default_model_override(provider, config=config)
     return _override_int(default, "context_window") if default is not None else None
 
 

@@ -136,7 +136,15 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
     for item in items:
         mid = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
         if mid:
-            caps_by_id[mid] = parse_openrouter_reasoning_capabilities(item)
+            caps = parse_openrouter_reasoning_capabilities(item)
+            # The same catalog entry advertises capacity; mirror it so pickers can label context
+            # windows without a models.dev lookup (Nous is not indexed there). Only dict entries —
+            # a None (reasoning unknown) stays None so the tri-state contract is untouched.
+            if isinstance(caps, dict):
+                ctx = item.get("context_length")
+                if isinstance(ctx, (int, float)) and not isinstance(ctx, bool) and ctx > 0:
+                    caps["context_length"] = int(ctx)
+            caps_by_id[mid] = caps
     if not caps_by_id:
         return None
     _save_reasoning_caps_disk(url, caps_by_id)

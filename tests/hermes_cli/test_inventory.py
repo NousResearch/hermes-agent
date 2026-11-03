@@ -791,7 +791,7 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     small_row = small_payload["providers"][0]
     large_row = large_payload["providers"][0]
     assert small_row["capabilities"] == {
-        model: {"fast": False, "reasoning": model.startswith("openai/")}
+        model: {"fast": False, "reasoning": model.startswith("openai/"), "context_window": 200000}
         for model in models[:3]
     }
     # #120217: ``providers.lab`` is a user-defined row, so its models: list is an explicit

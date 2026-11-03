@@ -475,6 +475,7 @@ class ModelCapabilities(Result):
     ultrafast: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    context_window: int | None = None
 
 
 class ProviderLimit(Result):

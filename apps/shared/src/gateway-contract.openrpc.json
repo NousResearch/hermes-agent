@@ -23893,6 +23893,18 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Window"
           }
         },
         "required": [

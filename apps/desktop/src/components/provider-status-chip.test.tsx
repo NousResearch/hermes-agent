@@ -34,6 +34,24 @@ const view = (row: ModelOptionProvider) => (
 
 afterEach(() => vi.useRealTimers())
 
+it('shows healthy account allowance when comparison mode is requested', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(NOW)
+  render(
+    <I18nProvider configClient={null} initialLocale="en">
+      <ProviderStatusChip
+        alwaysShowUsage
+        provider={{
+          slug: 'test',
+          name: 'Test',
+          models: ['m'],
+          usage: { windows: [{ label: 'Session', used_percent: 25, resets_at: iso(30) }] }
+        }}
+      />
+    </I18nProvider>
+  )
+  expect(screen.getByText(/75% left/)).toBeTruthy()
+})
+
 it('keeps a mixed pool usable and exposes each account rather than a provider-wide empty gauge', async () => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW)
   const accounts = Array.from({ length: 10 }, (_, i) => account(i, i === 0))

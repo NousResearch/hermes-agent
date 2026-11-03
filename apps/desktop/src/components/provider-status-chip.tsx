@@ -108,7 +108,7 @@ function PoolUsageTip({ accounts, copy }: { accounts: PoolAccountView[]; copy: M
   )
 }
 
-function useChipState(provider: ModelOptionProvider): ChipState | null {
+function useChipState(provider: ModelOptionProvider, alwaysShowUsage = false): ChipState | null {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const pool = poolChipState(provider, copy)
@@ -133,7 +133,7 @@ function useChipState(provider: ModelOptionProvider): ChipState | null {
   const windows = usageWindows(provider)
   const tightest = windows?.[0]
 
-  if (!windows || !tightest || tightest.remaining > USAGE_NOTICE_PERCENT) {
+  if (!windows || !tightest || (!alwaysShowUsage && tightest.remaining > USAGE_NOTICE_PERCENT)) {
     return null
   }
 
@@ -156,12 +156,14 @@ function useChipState(provider: ModelOptionProvider): ChipState | null {
  *  A pooled percentage would mistake one exhausted subscription for an exhausted provider. */
 export function ProviderStatusChip({
   className,
-  provider
+  provider,
+  alwaysShowUsage = false
 }: {
   className?: string
   provider: ModelOptionProvider
+  alwaysShowUsage?: boolean
 }): null | ReactElement {
-  const state = useChipState(provider)
+  const state = useChipState(provider, alwaysShowUsage)
 
   if (!state) {
     return null

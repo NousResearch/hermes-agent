@@ -378,6 +378,14 @@ _MEMORY_ROUTING_BLOCK = (
     "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
     "session won't look. If the tool schema lists only one "
     "target, that store is the only one enabled — use it and skip the other.\n\n"
+    # Without a grounding rule the reviewer saved trait guesses and one-off requests as standing
+    # facts. Store-neutral on purpose: scoped to USER.md only, the same guess moved to MEMORY.md.
+    "Save only facts GROUNDED in this conversation — a user message or tool result you can point "
+    "to. Never infer the user's traits, skill level, role, mood or preferences from topic, tone or "
+    "tools used, and never turn a one-off request into a standing preference (in either store) "
+    "unless the user marked it general ('always', 'from now on', 'remember') or stated a standing "
+    "like/dislike ('I hate X', 'stop doing Y'). If unsure, leave it "
+    "out — a wrong fact misleads every future session.\n\n"
 )
 
 _MEMORY_REVIEW_PROMPT = (
@@ -472,7 +480,9 @@ _SKILL_REVIEW_PROMPT = (
     "new learning, PATCH that one first (re-load it with skill_view during this review — see "
     "Read-before-write below). It is the skill that was in play, so it's the right one to extend — "
     "whoever wrote it: hand-written, installed, bundled, and pinned skills are all yours to "
-    "improve.\n"
+    "improve. The one exception is a skill the user LOCKED (`hermes curator lock`): skill_manage "
+    "refuses it — do not retry and do not recreate it under another name; put the suggested "
+    "change in your summary instead.\n"
     "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). If no loaded skill fits but "
     "an existing class-level skill does, patch it. Add a subsection, a pitfall, or broaden a "
     "trigger.\n"

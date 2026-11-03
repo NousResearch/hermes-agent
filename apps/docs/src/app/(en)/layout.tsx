@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { SiteRoot, siteMetadata } from '@/components/site-root';
+import { SiteRoot } from '@/components/site-root';
+import { siteMetadata } from '@/lib/metadata-defaults';
 
 export const metadata = siteMetadata('en');
 export default function Layout({ children }: { children: ReactNode }) {

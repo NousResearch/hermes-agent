@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-const ENV_KEYS = ['COLORTERM', 'FORCE_COLOR', 'HERMES_TUI_TRUECOLOR', 'NO_COLOR', 'TERM', 'TERM_PROGRAM'] as const
+const ENV_KEYS = ['COLORTERM', 'FORCE_COLOR', 'HERMES_TUI_TRUECOLOR', 'NO_COLOR', 'TERM', 'TERM_PROGRAM', 'WT_SESSION'] as const
 let importId = 0
 
 async function withCleanEnv(setup: () => void, body: () => Promise<void>) {
@@ -119,6 +119,52 @@ describe('forceTruecolor', () => {
         await import('../lib/forceTruecolor.js?t=optout-' + importId++)
         expect(process.env.COLORTERM).toBeUndefined()
         expect(process.env.FORCE_COLOR).toBeUndefined()
+      }
+    )
+  })
+
+  it('auto-enables truecolor for Windows Terminal when TERM already advertises 256 colors', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.WT_SESSION = '1'
+        process.env.TERM = 'xterm-256color'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=windows-terminal-' + importId++)
+        expect(mod.shouldForceTruecolor({ WT_SESSION: '1', TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
+        expect(process.env.COLORTERM).toBe('truecolor')
+        expect(process.env.FORCE_COLOR).toBe('3')
+      }
+    )
+  })
+
+  it('does not auto-enable truecolor for Windows Terminal when TERM lacks 256-color support', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.WT_SESSION = '1'
+        process.env.TERM = 'vt100'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=windows-terminal-vt100-' + importId++)
+        expect(mod.shouldForceTruecolor(process.env)).toBe(false)
+        expect(process.env.COLORTERM).toBeUndefined()
+        expect(process.env.FORCE_COLOR).toBeUndefined()
+      }
+    )
+  })
+
+  it('does not override an existing FORCE_COLOR setting on Windows Terminal auto-detect', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.WT_SESSION = '1'
+        process.env.TERM = 'xterm-256color'
+        process.env.FORCE_COLOR = '2'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=windows-terminal-force-color-' + importId++)
+        expect(mod.shouldForceTruecolor(process.env)).toBe(false)
+        expect(process.env.COLORTERM).toBeUndefined()
+        expect(process.env.FORCE_COLOR).toBe('2')
       }
     )
   })

@@ -14,19 +14,6 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
-category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
-Models), with search, tier filters (Official / Verified / Community), capability chips, and
-copyable install commands for every entry.
-
-Every entry also has its own page at `/docs/plugins/<name>` (click a card):
-the full description and any disclosure, the pinned commit, tools, hooks and
-environment variables, the Desktop install button and CLI command, optional
-screenshots and the README from the reviewed commit, plus a **More by this
-author** shelf. Authors have a page at `/docs/plugins/by/<maintainer>` listing
-everything they maintain in the catalog. Both are generated at build time from
-the same catalog files, so a merged PR is the only way a page changes.
-
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
 normal plugin under the hood; the catalog just adds discovery and a review
@@ -269,5 +256,4 @@ code or Desktop UI at runtime.
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
-- [Plugin Catalog page](/plugins) — the browsable catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

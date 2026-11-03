@@ -189,14 +189,14 @@ maintainer: OwnerName
 tier: community             # official | verified | community (default community);
                             # official and verified are set by Nous maintainers only
 category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
-                            # (default desktop) — the shelf the entry sits on at /docs/plugins
+                            # (default desktop) — used by catalog clients for grouping
 requires_hermes: ">=0.19"   # optional; enforced at install and update (also declare it in plugin.yaml)
 docs_url: ""                # optional
 version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
-screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
+screenshots: []             # optional, up to 6 https images on a GitHub host; displayed by catalog clients
+readme: true                # optional, default true; include the README at the PINNED SHA
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 title: ""                   # optional human name on cards ("NVIDIA App"); default = name
 onboarding: false           # optional; offered on the Desktop onboarding card (official or verified entries only)
@@ -223,14 +223,11 @@ so the Desktop catalog and the docs site never fetch from third-party hosts;
 pin the raw URL to the entry's commit and the picture is as immutable as the
 code.
 
-Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
-and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
-from these files at docs build time. `screenshots:` fills the page's gallery;
-the build fetches the README (from `subdir` if set, else the repo root) **at the
-pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
-through an allowlist (raw HTML dropped, links and images resolved against the
-pinned tree). The page therefore shows the README the reviewer read, and it
-changes only when a reviewed re-pin lands.
+Catalog clients can display `screenshots` and the README (from `subdir` if set,
+else the repo root) **at the pinned sha**. README rendering supports GitHub and
+GitLab repositories, is on by default, and accepts `readme: false` to opt out.
+Raw HTML is dropped, and links and images resolve against the pinned tree, so
+the displayed README is the one the reviewer read.
 
 ## removed.yaml — the blocklist
 

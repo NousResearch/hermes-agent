@@ -62,9 +62,8 @@ for word, and a test fails the build if the two drift apart.
    declines. Rule 3 and rule 9 problems are declines rather than bug-fix
    requests: the plugin has to change its design before it can be listed.
 
-Your plugin's page at `/docs/plugins/<name>` is built from the same file. The
-README at the pinned commit renders there by default, and `screenshots:` fills
-the gallery. There is no separate listing to maintain.
+Catalog clients use this same metadata, including `screenshots` and the README
+at the pinned commit. There is no separate listing to maintain.
 
 ## Admission rules
 

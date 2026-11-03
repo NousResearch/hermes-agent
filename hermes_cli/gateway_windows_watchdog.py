@@ -553,7 +553,7 @@ def write_launcher() -> Path:
     from hermes_cli import gateway_windows as gw
     path = launcher_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = gw._build_gateway_vbs_script(*gw._launcher_settings(), command=["-m", _MODULE, "--once"], wait=True)
+    script = gw._build_gateway_vbs_script(*gw._launcher_settings(), module=_MODULE, args=["--once"], wait=True)
     gw._atomic_write(path, script, path.with_name(path.name + ".tmp"), encoding="utf-16")
     return path
 

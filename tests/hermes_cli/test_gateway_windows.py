@@ -403,6 +403,79 @@ def test_gateway_vbs_script_defers_gateway_ownership_to_runtime(
     assert "gateway run" in content
 
 
+def _managed_checkout(monkeypatch, tmp_path, *, publish_suffix=".exe"):
+    """A PM-managed checkout under a Japanese, space-containing account path: the store interpreter
+    is recorded, and publishing writes ``.hermes/bin/hermes<suffix>`` (``None``: publication fails)."""
+    from hermes_cli import _launchers
+
+    account = tmp_path / "齋藤 厚作リープアローズ"
+    root = account / "hermes-agent"
+    store_python = account / "tools" / "python-3.14.7+20260901-win32-x64" / "python.exe"
+    store_python.parent.mkdir(parents=True)
+    store_python.write_text("", encoding="utf-8")
+    launcher = root / ".hermes" / "bin" / f"hermes{publish_suffix or ''}"
+
+    def publish():
+        if publish_suffix:
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", root)
+    monkeypatch.setattr(gateway, "_prepare_service_launcher", publish)
+    monkeypatch.setattr(
+        _launchers, "resolve_store_python",
+        lambda repo_root, publication=False: store_python if Path(repo_root) == root else None,
+    )
+    monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: account / "AppData" / "Local" / "hermes")
+    return store_python, launcher
+
+
+def _vbs_run_command_line(content: str) -> str:
+    """The CreateProcess command line the generated ``sh.Run`` executes (VBScript literal decoded)."""
+    (line,) = [ln for ln in content.split("\r\n") if ln.startswith("sh.Run ")]
+    literal = line[len("sh.Run "):].rsplit(", 0, ", 1)[0]
+    assert literal.startswith('"') and literal.endswith('"')
+    return literal[1:-1].replace('""', '"')
+
+
+@pytest.mark.parametrize("suffix", [".exe", ".cmd"])
+def test_gateway_vbs_runs_the_managed_launcher_for_the_store_interpreter(monkeypatch, tmp_path, suffix):
+    """The bare store interpreter has only the checkout on sys.path, so a launcher handing it a module
+    dies on the first dependency import (``ruamel``); the managed install's launcher leases them."""
+    store_python, launcher = _managed_checkout(monkeypatch, tmp_path, publish_suffix=suffix)
+
+    content = gateway_windows._build_gateway_vbs_script(
+        str(store_python), str(tmp_path), str(tmp_path), "--profile work",
+    )
+
+    command_line = _vbs_run_command_line(content)
+    assert command_line == subprocess.list2cmdline([str(launcher), "--profile", "work", "gateway", "run"])
+    assert command_line.startswith(f'"{launcher}" ')  # the space-containing Japanese path stays one argument
+    assert str(store_python) not in content
+    assert ", 0, False" in content
+
+
+def test_gateway_vbs_refuses_a_store_interpreter_without_a_published_launcher(monkeypatch, tmp_path):
+    store_python, _launcher = _managed_checkout(monkeypatch, tmp_path, publish_suffix=None)
+
+    with pytest.raises(RuntimeError, match="launcher"):
+        gateway_windows._build_gateway_vbs_script(str(store_python), str(tmp_path), str(tmp_path), "")
+
+
+def test_gateway_vbs_keeps_an_external_interpreter_on_its_own_module_command(monkeypatch, tmp_path):
+    """A venv/externally owned interpreter keeps the ``python -m hermes_cli.main`` contract even when
+    the checkout also records a store interpreter."""
+    _managed_checkout(monkeypatch, tmp_path)
+    venv_python = r"C:\venv\Scripts\python.exe"
+
+    content = gateway_windows._build_gateway_vbs_script(venv_python, str(tmp_path), str(tmp_path), "")
+
+    assert _vbs_run_command_line(content) == subprocess.list2cmdline(
+        [venv_python, "-m", "hermes_cli.main", "gateway", "run"]
+    )
+    assert ".hermes" not in content
+
+
 def test_generated_vbs_launchers_are_utf16_with_bom(monkeypatch, tmp_path):
     """WSH must read non-ASCII Windows account paths as Unicode, independent of the ANSI codepage."""
     service_dir = tmp_path / "gateway-service"

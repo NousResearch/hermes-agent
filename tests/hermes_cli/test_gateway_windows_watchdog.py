@@ -702,6 +702,45 @@ class TaskTest(_TaskEnv):
         self.assertNotIn("gateway run", text)
         self.assertIn(str(launcher), self.schtasks.created_xml["Hermes_Watchdog_alice"])
 
+    def test_launcher_runs_the_watchdog_through_the_managed_launcher_for_the_store_interpreter(self):
+        """The bare store interpreter cannot import the watchdog's dependencies (``ruamel``): a managed
+        install's launcher must be ``.hermes/bin/hermes --run-module <watchdog> --once``."""
+        import subprocess
+
+        from hermes_cli import _launchers, gateway
+
+        account = self.home / "齋藤 厚作リープアローズ"
+        root = account / "hermes-agent"
+        store_python = account / "tools" / "python-3.14.7+20260901-win32-x64" / "python.exe"
+        store_python.parent.mkdir(parents=True)
+        store_python.write_text("", encoding="utf-8")
+        launcher = root / ".hermes" / "bin" / "hermes.exe"
+
+        def publish():
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("", encoding="utf-8")
+
+        for target, name, value in (
+            (gateway, "PROJECT_ROOT", root),
+            (gateway, "_prepare_service_launcher", publish),
+            (_launchers, "resolve_store_python",
+             lambda repo_root, publication=False: store_python if Path(repo_root) == root else None),
+            (gateway_windows, "_launcher_settings",
+             lambda home=None: (str(store_python), str(self.home), str(self.home), "--profile alice")),
+        ):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        text = watchdog.write_launcher().read_text(encoding="utf-16")
+
+        (run_line,) = [line for line in text.split("\r\n") if line.startswith("sh.Run ")]
+        literal, wait = run_line[len("sh.Run "):].rsplit(", 0, ", 1)
+        self.assertEqual(wait, "True")
+        self.assertEqual(literal[1:-1].replace('""', '"'), subprocess.list2cmdline(
+            [str(launcher), "--run-module", "hermes_cli.gateway_windows_watchdog", "--once"]))
+        self.assertNotIn(str(store_python), text)
+
     def test_uninstall_deletes_only_a_registered_task_and_removes_the_launcher(self):
         self.assertEqual(watchdog.uninstall_task(), [])
         self.assertFalse([c for c in self.schtasks.calls if c[0] == "/Delete"])

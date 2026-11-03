@@ -346,13 +346,40 @@ def _stable_gateway_working_dir(project_root: Path) -> str:
 
 # ── Script rendering
 
+def _gateway_run_args(profile_arg: str) -> list[str]:
+    """``[--profile X] gateway run`` — the ``hermes_cli.main`` arguments every launcher renders."""
+    return [*profile_arg.split(), "gateway", "run"] if profile_arg else ["gateway", "run"]
+
+
 def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
     """``python -m hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
-    argv = [python_exe, "-m", "hermes_cli.main"]
-    if profile_arg:
-        argv.extend(profile_arg.split())
-    argv.extend(["gateway", "run"])
-    return argv
+    return [python_exe, "-m", "hermes_cli.main", *_gateway_run_args(profile_arg)]
+
+
+def _managed_launcher_argv(python_exe: str, module: str, args: list[str]) -> list[str] | None:
+    """``.hermes\\bin\\hermes[.exe|.cmd] [--run-module <module>] <args>`` when ``python_exe`` is this
+    checkout's PM store interpreter; None for a venv/externally owned one (it keeps ``-m``).
+
+    The bare store interpreter sees only the checkout on ``sys.path``: a module that does not import
+    ``hermes_bootstrap`` first (the hang watchdog) dies on its first dependency import (``ruamel``).
+    The published launcher leases the installation's dependencies before running any module."""
+    from hermes_cli import gateway as gw
+    from hermes_cli._launchers import installation_command, resolve_store_python
+
+    store_python = resolve_store_python(gw.PROJECT_ROOT)
+    if store_python is None or os.path.normcase(str(Path(python_exe).resolve())) != os.path.normcase(
+        str(store_python.resolve())
+    ):
+        return None
+    gw._prepare_service_launcher()
+    head, *rest = installation_command(gw.PROJECT_ROOT, args, module=module)
+    # sh.Run / CreateProcess append only ``.exe``; pick the published file in PATHEXT order. The ``.cmd``
+    # (minted only when distlib is missing) puts cmd.exe back in the chain, still better than an
+    # interpreter that cannot import its dependencies.
+    for candidate in (Path(head + ".exe"), Path(head + ".cmd")):
+        if candidate.is_file():
+            return [_preserve_hermes_home_path(candidate), *rest]
+    raise RuntimeError(f"the managed installation launcher {head}.exe is not published")
 
 
 def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
@@ -399,11 +426,12 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
 
 def _build_gateway_vbs_script(
     python_path: str, working_dir: str, hermes_home: str, profile_arg: str, *,
-    command: list[str] | None = None, wait: bool = False,
+    module: str = "hermes_cli.main", args: list[str] | None = None, wait: bool = False,
 ) -> str:
-    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated). ``command`` replaces the
-    arguments after the interpreter (the watchdog launcher) and ``wait`` keeps wscript alive until
-    python exits, so the task's ``IgnoreNew`` policy sees the run.
+    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated). ``module``/``args`` replace
+    ``hermes_cli.main [--profile X] gateway run`` (the watchdog launcher) and ``wait`` keeps wscript
+    alive until python exits, so the task's ``IgnoreNew`` policy sees the run. A managed install runs
+    them through its dependency-aware launcher (``_managed_launcher_argv``).
 
     Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
     groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
@@ -421,7 +449,8 @@ def _build_gateway_vbs_script(
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    argv = [python_exe_path, *command] if command else _gateway_run_argv(python_exe_path, profile_arg)
+    args = _gateway_run_args(profile_arg) if args is None else args
+    argv = _managed_launcher_argv(python_exe_path, module, args) or [python_exe_path, "-m", module, *args]
     command_line = subprocess.list2cmdline(argv)
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string

@@ -509,7 +509,7 @@ it('limits agent previews, keeps the active chat, and reveals an older pinned ch
   expect(within(agent).getByText('Recent 8')).toBeTruthy()
   fireEvent.click(within(agent).getByRole('button', { name: 'Show 2 more in research' }))
   expect(within(agent).getAllByText(/^Recent /)).toHaveLength(9)
-  fireEvent.click(within(agent).getByRole('button', { name: 'Collapse', exact: true }))
+  fireEvent.click(within(agent).getByRole('button', { name: 'Collapse' }))
   expect(within(agent).getByText('Recent 7')).toBeTruthy()
   expect(within(agent).getByText('Recent 8')).toBeTruthy()
   fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Recent' } })

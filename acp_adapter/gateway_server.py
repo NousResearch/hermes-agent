@@ -110,6 +110,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._message_ids = {}
         # OpenBot drops message updates outside a prompt; retain late review notices until the next one.
         self._review_summaries = {}
+        self._review_notice_extension = False
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
         self._form_elicitation = False
@@ -142,6 +143,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
         from acp_adapter.auth import build_auth_methods
+        capabilities = kwargs.get("client_capabilities")
+        meta = getattr(capabilities, "field_meta", None) or {}
+        self._review_notice_extension = meta.get("com.nousresearch/backgroundReview") is True
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
@@ -972,6 +976,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind == "review.summary":
             text = _text(payload)
             if text.strip():
+                if self._review_notice_extension and self._conn:
+                    try:
+                        await self._conn.ext_notification(
+                            "com.nousresearch/backgroundReview", {"sessionId": editor_id, "text": text})
+                        return
+                    except Exception:
+                        logger.warning("Could not send background review extension for session %s", sid, exc_info=True)
                 self._review_summaries.setdefault(sid, []).append(text)
                 if any(held == sid and turn not in self._terminals and turn not in self._settling
                        for held, turn in self._inflight):

@@ -209,6 +209,11 @@ export function parseBackendScopeKey(key: string): { connectionId: null | string
   return { connectionId: match[1], profile: match[2] }
 }
 
+/** Recover the profile name when a pool scope key reaches a local-start boundary. */
+export function profileNameFromScope(value: unknown): string {
+  return parseBackendScopeKey(String(value ?? '')).profile
+}
+
 /** All pool keys owned by a connection share this prefix (used to stop them on remove). */
 export function backendScopePrefix(connectionId: string): string {
   return `conn:${String(connectionId).trim()}::`

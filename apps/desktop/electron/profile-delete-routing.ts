@@ -186,15 +186,20 @@ export function assertLocalProfileCanStart(
   gate: ProfileDeletionGate,
   profileDirectoryExists: (profile: string) => boolean
 ): void {
-  const key = String(profile ?? '')
-    .trim()
-    .toLowerCase()
+  const key = profileNameFromScopeKey(profile).toLowerCase()
 
   gate.assertCanStart(key)
 
   if (key && key !== 'default' && !profileDirectoryExists(key)) {
     throw new Error(`Profile "${key}" no longer exists.`)
   }
+}
+
+function profileNameFromScopeKey(profile: unknown): string {
+  const value = String(profile ?? '').trim()
+  const match = /^conn:(.+?)::(.+)$/.exec(value)
+
+  return match ? match[2] : (value || 'default')
 }
 
 /**

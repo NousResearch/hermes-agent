@@ -1505,9 +1505,9 @@ def _(rid, params: dict) -> dict:
     # Explicit url/command wins. Otherwise a desktop catalog id is resolved
     # before the CLI preset registry — that registry raises, and the wrapper
     # turns the raise into 5024 before the 4063 check below can run.
-    catalog = _tools_mod("hermes_cli.mcp_catalog")
-    entry = None
+    catalog, entry = None, None
     if preset and not (server_config.get("url") or server_config.get("command")):
+        catalog = _tools_mod("hermes_cli.mcp_catalog")
         entry = catalog.get_entry(preset)
         if entry is not None:
             for key, value in catalog._build_server_config(entry, install_dir=None).items():

@@ -12,7 +12,9 @@ def test_generic_mcp_paths_run_without_the_catalog_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli.mcp_catalog", None)
 
     from tools.connectors.mcp import _configured_names
-    from tui_gateway.mcp_rpc_helpers import record_mcp_add
+    from tui_gateway import server
 
     assert _configured_names() == ["mine"]
-    record_mcp_add(None, {"url": "https://mcp.example.test/mcp"}, True)
+    resp = server._methods["mcp.servers.add"](1, {"name": "added", "config": {"url": "https://add.example.test/mcp"}})
+    assert "error" not in resp, resp.get("error")
+    assert load_config()["mcp_servers"]["added"]["url"] == "https://add.example.test/mcp"

@@ -23,7 +23,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useState } from 'react'
 
-import { groupNeedsDesktopCourier } from './canonical-group-capabilities'
+import { groupNeedsDesktopCourier, seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, saveBotMeta } from './data'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
@@ -148,15 +148,19 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
   const liveRoster: RosterRow[] = useValue($lastRoster)
 
+  const { connectionId, mode, seatable } = useGroupCapability(open)
+
+  // Add candidates are the rows New Group Chat would seat (the same predicate,
+  // so a row whose route disagrees with its connection is never offered).
   // Current members always stay listed, even when their source is offline
   // (ghost rows) — otherwise an offline remote member would silently drop
   // out of the room on the next Save.
   const roster = useMemo(() => {
-    const rows = liveRoster.filter(bot => !bot.ghost)
+    const rows = seatableGroupBots(liveRoster, { connectionId, mode, seatable })
     const seen = new Set(rows.map(botRosterKey))
 
     return [...rows, ...members.filter(member => !seen.has(botRosterKey(member)))]
-  }, [liveRoster, members])
+  }, [connectionId, liveRoster, members, mode, seatable])
 
   const [selected, setSelected] = useState(() => new Set(members.map(botRosterKey)))
   const atCap = selected.size >= GROUP_CHAT_MAX_MEMBERS

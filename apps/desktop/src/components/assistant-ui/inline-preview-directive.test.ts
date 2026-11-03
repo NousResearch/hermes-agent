@@ -5,6 +5,7 @@ import {
   directiveFrameHeight,
   evaluateIntent,
   frameSizeFromMessage,
+  groupWidgetIntentTarget,
   INTENT_THROTTLE_MS,
   intentAckMessage,
   intentScript,
@@ -25,6 +26,19 @@ describe('directiveFrameHeight', () => {
     expect(directiveFrameHeight('50')).toBe(120)
     expect(directiveFrameHeight('480')).toBe(480)
     expect(directiveFrameHeight('99999')).toBe(1200)
+  })
+})
+
+describe('groupWidgetIntentTarget', () => {
+  it('uses the rendering group and thread, never the active chat', () => {
+    const owner = document.createElement('div')
+    const frame = document.createElement('iframe')
+    owner.dataset.groupChatName = 'Planning'
+    owner.dataset.groupChatThread = 'thread-42'
+    owner.append(frame)
+
+    expect(groupWidgetIntentTarget(frame)).toEqual({ group: 'Planning', thread: 'thread-42' })
+    expect(groupWidgetIntentTarget(document.createElement('iframe'))).toBeNull()
   })
 })
 
@@ -227,9 +241,10 @@ describe('intentScript', () => {
 
     new Function('parent', 'addEventListener', 'window', body)(parent, addEventListener, win)
 
+    const click = (target: unknown) => listeners.click?.forEach(fn => fn({ target }))
     const reply = (data: unknown, source: unknown = parent) => listeners.message?.forEach(fn => fn({ data, source }))
 
-    return { posted, reply, send: win.hermes!.send, win }
+    return { click, posted, reply, send: win.hermes!.send, win }
   }
 
   it('posts the full prompt, never a truncated one', () => {
@@ -276,5 +291,23 @@ describe('intentScript', () => {
     await expect(send('   ')).resolves.toEqual({ error: 'invalid', ok: false })
     expect(posted).toHaveLength(0)
     expect(win.hermes?.maxLength).toBe(MAX_INTENT_LENGTH)
+  })
+
+  it('marks a declarative button when its prompt is not delivered', async () => {
+    const { click, posted, reply } = mountFrame()
+    const setAttribute = vi.fn()
+
+    const button = {
+      closest: () => button,
+      getAttribute: () => 'approve the plan',
+      setAttribute
+    }
+
+    click(button)
+    reply(intentAckMessage('tok', posted[0].id as number, { error: 'undelivered', ok: false }))
+    await Promise.resolve()
+
+    expect(setAttribute).toHaveBeenCalledWith('data-hermes-send-state', 'failed')
+    expect(setAttribute).toHaveBeenCalledWith('title', 'Widget action was not delivered')
   })
 })

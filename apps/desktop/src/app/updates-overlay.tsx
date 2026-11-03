@@ -34,7 +34,6 @@ import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
 import { fetchUpdateNoteItems, updateNotesSource, updateNotesUrl, updateReleaseTag } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
-import { $sendDiagnostics, dismissSendDiagnostics } from '@/store/send-diagnostics'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -211,20 +210,12 @@ export function UpdatesOverlay() {
 
   const phase = overlayPhase(apply)
 
-  // The error box's inline report belongs to the failure it was opened for.
-  const dropInlineReport = () => {
-    if ($sendDiagnostics.get()?.inline) {
-      dismissSendDiagnostics()
-    }
-  }
-
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
       return
     }
 
     setUpdateOverlayOpen(next)
-    dropInlineReport()
 
     if (
       !next &&
@@ -235,7 +226,6 @@ export function UpdatesOverlay() {
   }
 
   const handleInstall = () => {
-    dropInlineReport()
     void install()
   }
 
@@ -268,6 +258,8 @@ export function UpdatesOverlay() {
 
         {phase === 'error' ? (
           <ErrorView
+            // One report per failure: switching target remounts the box.
+            key={target}
             log={apply.log.map(entry => entry.message)}
             message={apply.message}
             onDismiss={() => handleClose(false)}

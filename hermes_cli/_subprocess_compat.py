@@ -870,6 +870,11 @@ def bounded_probe_run(
         _close_job(job)
         kill_and_drain(proc, 1)
         return None
+    except BaseException:
+        # Ctrl-C must release the probe tree before the caller recovers the paused gateways.
+        _close_job(job)
+        kill_and_drain(proc, 1)
+        raise
     # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
     _close_job(job)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)

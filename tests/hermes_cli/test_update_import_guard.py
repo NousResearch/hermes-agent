@@ -194,24 +194,18 @@ def test_import_guard_rejects_malformed_health_payload(monkeypatch, tmp_path):
         return Result()
 
     monkeypatch.setattr(secrets, "token_hex", lambda _length: "fixed")
-    monkeypatch.setattr(update_cmd_validation.subprocess, "run", malformed)
+    monkeypatch.setattr(update_cmd_validation, "bounded_probe_run", malformed)
 
     ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
 
     assert ok is False
     assert module == "critical-module probe"
 
-def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
+def test_import_guard_timeout_is_unverified(monkeypatch, tmp_path):
+    monkeypatch.setattr(update_cmd_validation, "bounded_probe_run", lambda *_a, **_kw: None)
 
-    def timeout(*_args, **_kwargs):
-        raise update_cmd_validation.subprocess.TimeoutExpired("python", 120)
-
-    monkeypatch.setattr(update_cmd_validation.subprocess, "run", timeout)
-
-    ok, module, _error = update_cmd._validate_critical_modules_import(tmp_path)
-
-    assert ok is False
-    assert module == "critical-module probe"
+    assert update_cmd._critical_module_import_failures(tmp_path) is None
+    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys):
     class Result:
@@ -272,7 +266,7 @@ def test_import_guard_uses_the_selected_runtime_command(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(update_cmd_validation, "runtime_command", fake_runtime_command)
-    monkeypatch.setattr(update_cmd_validation.subprocess, "run", fake_run)
+    monkeypatch.setattr(update_cmd_validation, "bounded_probe_run", fake_run)
     update_cmd._validate_critical_modules_import(tmp_path)
 
     assert seen["command"][:3] == ["/pm/python", "-I", "-c"]

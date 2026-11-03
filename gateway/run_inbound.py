@@ -1491,7 +1491,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Send each transcript back as ``🎙️ "…"`` (best-effort; failures are logged, never raised)."""
         for tx in transcripts:
             try:
-                await adapter.send(source.chat_id, t("gateway.voice.transcript_echo_short", text=tx), metadata=metadata)
+                await adapter.send(source.chat_id, self._format_stt_echo(tx), metadata=metadata)
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
@@ -1742,6 +1742,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         if not self._pending_event_audio_paths(event):
             return (event.text or "").strip()
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
+        source = getattr(event, "source", None)
+        if successful_transcripts and source is not None:
+            await self._echo_pending_stt_transcripts_once(
+                event,
+                self._delivery_adapter_for(source),
+                source,
+                successful_transcripts,
+                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                log_context="Clarify transcript",
+            )
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 
     def _consume_pending_native_image_paths(self, session_key: str) -> list[str]:

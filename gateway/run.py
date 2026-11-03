@@ -4348,10 +4348,10 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
-def _housekeeping_curator() -> None:
+def _housekeeping_curator(idle_fence=None) -> None:
     """The idle poll: the curator (gated by curator.interval_hours), then plugin idle tasks (their own intervals)."""
     from hermes_cli.plugins_idle_tasks import run_idle_jobs
-    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+    run_idle_jobs(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg), fence=idle_fence)
 
 
 def _housekeeping_plugin_update_check() -> None:
@@ -4488,6 +4488,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from hermes_cli.plugins_idle_tasks import IdleTaskFence
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4511,9 +4512,8 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state, Nous login
-        # and state.db.
-        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        # Per served profile: each has its own skills tree, curator state, Nous login and state.db.
+        (60, "Curator tick", profile_scoped_chore(runner, lambda: _housekeeping_curator(idle_fence))),
         (60, "state.db maintenance tick", profile_scoped_chore(
             runner,
             # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
@@ -4540,14 +4540,14 @@ def _start_gateway_housekeeping(
             served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
-    tick_count = 0
+    tick_count, idle_fence = 0, IdleTaskFence(stop_event)
     while not stop_event.is_set():
         tick_count += 1
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
         wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
-    logger.info("Gateway housekeeping stopped")
+    logger.info("Gateway housekeeping stopped (idle-task runs settled: %s)", idle_fence.close())
 
 
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):

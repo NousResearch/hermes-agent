@@ -818,6 +818,12 @@ The contract a task's `fn` is written against:
   plugin's data so the next run picks up where this one stopped.
 * Keep a run idempotent: a run cut off by a restart leaves no record and runs again later from the
   start, so running the same batch twice must do no harm.
+* When gateway housekeeping stops (gateway shutdown, or the multiplexer restarting in the same
+  process), no new run starts and the gateway waits a few seconds for a run in flight, then stops
+  without it. Plugin code cannot be stopped and `fn` gets no stop signal, so a run still going goes
+  on in the background; when it ends it records nothing (the task's state stays as it was before
+  the run, so the task runs again later) and releases its claim. Hermes guarantees only that no
+  run starts and no task state is written after the stop; keep a run short.
 * No second run of a task starts while one is in flight. A claim whose process has died (a crash
   or a kill) is taken over at the next poll; a claim whose owner cannot be checked (one written on
   another machine) counts as abandoned after an hour. An exception is caught, logged and recorded as

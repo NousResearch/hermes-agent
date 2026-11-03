@@ -22,7 +22,7 @@ from typing import Callable, Iterable
 from hermes_constants import get_hermes_home
 from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
-    ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
+    ProcessHandle, _LiveOutputPreview, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
 from tools.environments.base_session_env import (
     _SHELL_ENV_NAME_RE, _SNAP_TMP_SUFFIX, _cwd_marker, _pipe_marker, _snapshot_bootstrap_script, _split_cwd_marker,
@@ -508,7 +508,8 @@ class BaseEnvironment(ABC):
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        live_preview: _LiveOutputPreview | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
@@ -575,6 +576,8 @@ class BaseEnvironment(ABC):
                     # The flag tells Hermes' own deadline apart from a command's own ``exit 124``.
                     return {**self._finalize_wait_result(output, rendered, 124), "hermes_timed_out": True}
                 touch_activity_if_due(_activity_state, "terminal command running")
+                if live_preview is not None:
+                    live_preview.tick(output)
                 trace.heartbeat()
                 time.sleep(_poll_sleep)
                 if _poll_sleep < 0.2:
@@ -714,6 +717,13 @@ class BaseEnvironment(ABC):
         # The activity callback is thread-local and the wait runs on the
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
+        # Same for the dispatched call's tool.progress relay (a contextvar): only the foreground
+        # terminal tool (bounded_capture) previews live output; internal reads stay silent.
+        from agent.tool_progress_relay import current_tool_progress
+        report = current_tool_progress() if bounded_capture else None
+        wait_extras: dict = {} if yield_handler is None else {"yield_handler": yield_handler}
+        if report is not None:
+            wait_extras["live_preview"] = _LiveOutputPreview(report, command)
         proc_holder: list = []
         output_holder: list = []
 
@@ -736,7 +746,7 @@ class BaseEnvironment(ABC):
                 return self._wait_for_process(
                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
                     watch_interrupt_tid=parent_tid, output=output,
-                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+                    **wait_extras)
             finally:
                 with _live_foreground_cond:
                     _live_foreground.pop(id(spawned), None)

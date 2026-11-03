@@ -138,6 +138,22 @@ class _BoundedOutputCollector:
                     self._tail[0] = first[excess:]
                     self._tail_chars -= excess
 
+    def last_line(self, max_chars: int = 200) -> str:
+        """The newest non-blank output line (``\\r`` progress redraws count as lines), at most
+        ``max_chars`` long; reads only the last few KiB of the retained tail."""
+        with self._lock:
+            parts, size = [], 0
+            for chunk in reversed(self._tail or self._head):
+                parts.append(chunk)
+                size += len(chunk)
+                if size >= 4096:
+                    break
+        text = "".join(reversed(parts))[-4096:]
+        for line in reversed(text.replace("\r", "\n").split("\n")):
+            if line.strip():
+                return line.strip()[:max_chars]
+        return ""
+
     def render(self, *, suffix: str = "") -> str:
         """Render within ``max_chars``, preserving a required status suffix."""
         with self._lock:
@@ -204,6 +220,33 @@ def _finalize_wait_result(collector: _BoundedOutputCollector, rendered: str, ret
         result["output_total_chars"] = collector.total_chars
         result["full_output_path"] = spill
     return result
+
+
+class _LiveOutputPreview:
+    """Publishes a running foreground command's newest output line as ``tool.progress`` (shown
+    beside the timer on the running tool row) so a long build or test run does not look stalled.
+    Polled from the wait loop; reads the collector at most every ``_INTERVAL_S`` and only when
+    output grew. The line is ANSI-stripped and redacted like the final result."""
+
+    _INTERVAL_S = 0.6  # above the relay's 500 ms throttle, so the newest line is never dropped
+
+    def __init__(self, report: Callable, command: str):
+        self._report = report
+        self._command = command
+        self._seen = 0
+        self._next = 0.0
+
+    def tick(self, output: _BoundedOutputCollector) -> None:
+        now = time.monotonic()
+        if now < self._next or output.total_chars == self._seen:
+            return
+        self._next = now + self._INTERVAL_S
+        self._seen = output.total_chars
+        from agent.redact import redact_terminal_output
+        from tools.ansi_strip import strip_ansi
+        line = output.last_line()
+        if line := redact_terminal_output(strip_ansi(line), self._command).strip():
+            self._report(0.0, None, line)
 
 
 # --- Stdin / spawn helpers ---

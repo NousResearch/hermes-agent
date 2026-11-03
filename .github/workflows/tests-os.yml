@@ -111,6 +111,17 @@ jobs:
         with:
           ref: ${{ inputs.commit }}
 
+      - name: Warm PowerShell's module analysis cache
+        # Cold, every powershell.exe launch costs ~22s on arm64 analysing the installed
+        # modules: windows-deps.ps1 (twice, here and inside setup-pm's source builds)
+        # and every PowerShell child a test spawns (run_tests.sh forwards
+        # PSModuleAnalysisCachePath). Warm it once, first. Started from cmd: a
+        # PowerShell step's own shell would pay the cold analysis too.
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: cmd
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\ci\warm_powershell_module_cache.ps1
+
       # No arm64 wheels for some of the extras below: PM builds them from sdist.
       - name: Set up native ARM64 build dependencies
         if: runner.os == 'Windows' && runner.arch == 'ARM64'
@@ -127,15 +138,6 @@ jobs:
           extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
-
-      - name: Warm PowerShell's module analysis cache
-        # Every PowerShell child a test spawns reads this cache (run_tests.sh forwards
-        # PSModuleAnalysisCachePath); cold, each launch costs ~22s on arm64. Started
-        # from cmd: a PowerShell step's own shell would pay the cold analysis too.
-        if: runner.os == 'Windows'
-        timeout-minutes: 3
-        shell: cmd
-        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts\ci\warm_powershell_module_cache.ps1
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other

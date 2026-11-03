@@ -5,7 +5,7 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react'
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
-import { roomHandoffs, type RoomLogEvent } from './group-room-status'
+import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-status'
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
 
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
@@ -165,7 +165,13 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
 export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
-  const handoffs = roomHandoffs(events as RoomLogEvent[], members)
+  const handoffsAfter = new Map<number, RoomHandoff[]>()
+
+  for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
+    const after = handoffsAfter.get(handoff.afterSeq)
+
+    if (after) {after.push(handoff)} else {handoffsAfter.set(handoff.afterSeq, [handoff])}
+  }
 
   const nameOf = (id: string) => { const member = roster.get(id);
 
@@ -183,7 +189,7 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
 
   return <>{events.map(event => <Fragment key={event.seq}>
     <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />
-    {handoffs.filter(handoff => handoff.afterSeq === event.seq).map(handoff =>
+    {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>
 }

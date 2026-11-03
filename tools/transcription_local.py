@@ -295,6 +295,18 @@ def _join_confident_segments(segments: Any, local_cfg: dict[str, Any]) -> str:
     return " ".join(kept).strip()
 
 
+DEFAULT_LOCAL_COMMAND_TIMEOUT_SECONDS = 300
+
+
+def _local_command_timeout() -> float:
+    """``stt.local.command_timeout`` seconds for the local STT command (default 300). CPU whisper
+    on a long voice note can need more; invalid or non-positive values keep the default."""
+    from tools.transcription_tools import _load_stt_config
+    local_cfg = _load_stt_config().get("local") or {}
+    value = _config_number(local_cfg, "command_timeout", DEFAULT_LOCAL_COMMAND_TIMEOUT_SECONDS)
+    return value if value > 0 else DEFAULT_LOCAL_COMMAND_TIMEOUT_SECONDS
+
+
 def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
@@ -325,7 +337,8 @@ def _transcribe_local_command(
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).
             from tools.environments.local import hermes_subprocess_env
-            _run_quiet(shlex.split(command), timeout=300, env=hermes_subprocess_env(inherit_credentials=False))
+            _run_quiet(shlex.split(command), timeout=_local_command_timeout(),
+                       env=hermes_subprocess_env(inherit_credentials=False))
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")

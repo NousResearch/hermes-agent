@@ -73,8 +73,6 @@ def relay_channel_view() -> tuple[frozenset[str], bool]:
     The second half mirrors ``config_env._relay``: only the ``GATEWAY_RELAY_URL`` env stamp without
     ``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS`` makes the relay exclusive. Reads this process's env, which
     on a hosted instance is the container stamp every process shares."""
-    import os
-
     from gateway.relay import relay_fronted_platforms, relay_url
     from utils import is_truthy_value
 
@@ -153,11 +151,11 @@ def _get(path: str) -> dict:
 
 
 def portal_agents_url() -> str:
-    from hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
+    """The Portal this instance signs in to (operator override, stored login, then default)."""
+    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.auth_nous import _nous_portal_base_url
 
-    base = (os.environ.get("HERMES_PORTAL_BASE_URL") or os.environ.get("NOUS_PORTAL_BASE_URL")
-            or DEFAULT_NOUS_PORTAL_URL)
-    return f"{base.rstrip('/')}/agents"
+    return f"{_nous_portal_base_url(get_provider_auth_state('nous') or {})}/agents"
 
 
 def managed_by() -> str:
@@ -171,6 +169,14 @@ def managed_by() -> str:
             return "connector"
         raise
     return "portal" if payload.get("managedBy") == "portal" else "connector"
+
+
+def _managed_by_for_listing() -> str:
+    # The list must not disappear when only this question fails: minting re-asks and refuses.
+    try:
+        return managed_by()
+    except RelayLinkError:
+        return "unknown"
 
 
 def request_link(platform: str) -> dict[str, Any]:
@@ -206,7 +212,7 @@ def link_status() -> dict[str, Any]:
     payload = _post("/manage/link-status", {"platforms": platforms}) if platforms else {}
     accounts = {row.get("platform"): row.get("accounts") or []
                 for row in payload.get("statuses") or [] if isinstance(row, dict)}
-    return {"managed_by": managed_by() if platforms else "connector", "portal_url": portal_agents_url(),
+    return {"managed_by": _managed_by_for_listing() if platforms else "connector", "portal_url": portal_agents_url(),
             "platforms": [{"platform": p, "bot_url": shared_bot_url(p), "accounts": accounts.get(p, [])}
                           for p in platforms]}
 

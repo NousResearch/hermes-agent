@@ -129,8 +129,11 @@ export function RelayLinkPanel({
     setError("");
     setNotice("");
     try {
+      // Snapshot what is linked right now: a failed earlier load must not make every account "new".
+      const before = await loadAccounts();
+      if (!before) return;
       const res = await api.requestRelayLink(platform.id);
-      linkedBefore.current = new Set((accounts ?? []).map((account) => account.platformUserId));
+      linkedBefore.current = new Set(before.map((account) => account.platformUserId));
       setLink(res);
       const target = res.bot_url ?? botUrl;
       setQrDataUrl(
@@ -169,9 +172,9 @@ export function RelayLinkPanel({
       <div className="flex items-center gap-2 flex-wrap">
         <Badge tone="secondary">Team Gateway</Badge>
         <span className="text-xs text-muted-foreground">
-          {platform.name} reaches this agent through the shared Hermes bot. Link your {platform.name}{" "}
-          account to it; no bot token needed.
-          {portalUrl && " This agent's accounts are linked from Nous Portal."}
+          {portalUrl
+            ? `${platform.name} reaches this agent through the shared Hermes bot. This agent's accounts are linked from Nous Portal.`
+            : `${platform.name} reaches this agent through the shared Hermes bot. Link your ${platform.name} account to it; no bot token needed.`}
         </span>
       </div>
 

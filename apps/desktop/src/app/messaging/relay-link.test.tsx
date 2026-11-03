@@ -77,7 +77,7 @@ test('a Portal-managed agent is sent to the Portal: no code is minted and nothin
 
   expect(await screen.findByRole('button', { name: /Link accounts in Nous Portal/ })).toBeTruthy()
   expect(screen.getByText('Ada')).toBeTruthy()
-  expect(screen.queryByRole('button', { name: /^Link Telegram|Unlink/ })).toBeNull()
+  expect(screen.queryByRole('button', { name: /Link (another )?Telegram|Unlink/ })).toBeNull()
 })
 
 test('a code that goes inactive with no new account is never reported as linked', async () => {

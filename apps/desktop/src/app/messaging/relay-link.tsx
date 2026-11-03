@@ -198,8 +198,15 @@ export function RelayLinkSetup({
     setNotice('')
 
     try {
+      // Snapshot what is linked right now: a failed earlier load must not make every account "new".
+      const before = await loadAccounts()
+
+      if (!before) {
+        return
+      }
+
       const result = await requestRelayLink(platform.id, scopeProfile)
-      linkedBefore.current = new Set((accounts ?? []).map(account => account.platformUserId))
+      linkedBefore.current = new Set(before.map(account => account.platformUserId))
       setLink(result)
       const target = result.bot_url ?? botUrl
       setQrDataUrl(target ? await renderQr(target) : '')
@@ -246,8 +253,7 @@ export function RelayLinkSetup({
             <Badge variant="success">{r.badge}</Badge>
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {r.intro(platform.name)}
-            {portalUrl && ` ${r.managedIntro}`}
+            {portalUrl ? r.managedIntro : r.intro(platform.name)}
           </p>
         </div>
         {portalUrl && (

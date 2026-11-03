@@ -769,13 +769,16 @@ class TestCheckWebApiKey:
         toolset must serve zero tools (xai can never be dispatched to), and it
         must light up once a real web key joins."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
+        # This scenario has no keyless extraction route; keep real provider probes consistent
+        # with the class's mocked registry fallbacks.
+        (tmp_path / "config.yaml").write_text('{"web": {"keyless_fallback": false}}', encoding="utf-8")
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(k, raising=False)
         from tools.registry import invalidate_check_fn_cache
         import model_tools
 
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={"keyless_fallback": False}):
             invalidate_check_fn_cache()
             names = {d["function"]["name"]
                      for d in model_tools.get_tool_definitions(enabled_toolsets=["web"])}

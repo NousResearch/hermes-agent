@@ -24,7 +24,7 @@ from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
-    _strict_selection_error, _validate_extract_urls,
+    _strict_selection_error, _validate_extract_urls, check_web_extract_available,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,9 +104,7 @@ def _backend_supports_capability(backend: str, capability: str) -> bool:
     """Consult registered capability declarations, with a pre-discovery built-in fallback."""
     provider = _registered_web_provider(backend)
     if provider is not None:
-        capable = _probe(provider, f"supports_{capability}")
-        if capable is not None:
-            return capable
+        return bool(_probe(provider, f"supports_{capability}"))
     return capability != "extract" or backend not in _SEARCH_ONLY_WEB_BACKENDS
 
 
@@ -115,7 +113,8 @@ def _get_backend(capability: Optional[str] = None) -> str:
     fallback — so a broken selection surfaces the vendor's honest error rather than silently rerouting.
     The managed ``use_gateway`` selection also resolves to firecrawl with no ladder. Autodetect runs
     whenever no SHARED web selection was ever stored: per-capability keys (``web.search_backend``,
-    ``web.extract_backend``) name only their own capability and never reroute the other (#113017)."""
+    ``web.extract_backend``) name only their own capability and never reroute the other (#113017).
+    Autodetect filters candidates by the requested capability; explicit selections remain strict."""
     configured = _configured_backend()
     if configured:
         # "nous" (managed subscription) is serviced by firecrawl, routed through the managed Tool Gateway.
@@ -494,7 +493,7 @@ _WEB_CHECK_SKIP = frozenset({"xai"})
 
 
 def check_web_api_key() -> bool:
-    """``check_fn`` gate for web_search / web_extract: is any web backend available?
+    """Aggregate web availability and ``web_search`` gate; extraction has its own capability gate.
 
     A plugin-registered provider reporting ``is_available()`` must light the tools up even with no
     built-in credentials; resolution funnels through :func:`_is_backend_available`.
@@ -531,7 +530,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web: returns titles, URLs and snippets (5 by default). Read pages with web_extract. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web: returns titles, URLs and snippets (5 by default). The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -585,6 +584,6 @@ registry.register(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
+    check_fn=check_web_extract_available, requires_env=_web_requires_env(), is_async=True, emoji="📄",
     max_result_size_chars=100_000,
 )

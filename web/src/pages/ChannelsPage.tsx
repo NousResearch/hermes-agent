@@ -37,6 +37,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { AllowlistInput } from "@/components/AllowlistInput";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 
@@ -141,6 +142,7 @@ export default function ChannelsPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
+  const { profile: scopedProfile } = useProfileScope();
 
   // Config modal state
   const [editing, setEditing] = useState<MessagingPlatform | null>(null);
@@ -305,6 +307,11 @@ export default function ChannelsPage() {
         size="sm"
         onClick={handleRestart}
         disabled={restarting}
+        title={
+          scopedProfile
+            ? `Restarts the gateway for profile "${scopedProfile}"`
+            : undefined
+        }
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
         {restarting ? "Restarting…" : "Restart gateway"}
@@ -312,7 +319,7 @@ export default function ChannelsPage() {
     );
     return () => setEnd(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, restarting]);
+  }, [setEnd, restarting, scopedProfile]);
 
   const configured = useMemo(
     () => platforms.filter((p) => p.configured).length,
@@ -339,6 +346,7 @@ export default function ChannelsPage() {
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
                 Changes are saved. Restart the gateway for them to take effect.
+                {scopedProfile && ` This restarts the gateway for profile "${scopedProfile}".`}
               </span>
             </div>
             <Button

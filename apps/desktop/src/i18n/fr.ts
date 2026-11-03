@@ -717,7 +717,7 @@ export const frOverrides = {
       advancedOutput: 'Limites de sortie',
       advancedDelegation: 'Sous-agents',
       advancedDesktop: 'Desktop et démarrage',
-      gatewayConnection: 'Cette fenêtre',
+      gatewayConnection: 'Gateway principal',
       gatewayDevices: 'Connexions enregistrées',
       gatewayManagedUpdates: 'Mises à jour à distance',
       gatewayManagedUpdatesUnavailable:
@@ -1622,7 +1622,7 @@ export const frOverrides = {
       intro:
         'Enregistrez tous les emplacements où vivent vos agents : cet appareil, les gateways distantes de votre réseau et les instances Hermes Cloud. Ils sont tous conservés ici.',
       stagedNote:
-        "Les conversations et la liste des agents suivent la source choisie ; le backend de fenêtre géré par l'application reste sélectionné dans Paramètres → Gateway.",
+        'Chaque gateway reste connectée. Les profils, conversations, messageries et tâches cron restent sur leur gateway, et Sessions peut toutes les afficher à la fois.',
       launchModeTitle: 'Au démarrage, revenir aux sessions de la dernière gateway utilisée',
       launchModeDesc: "Si cette option est désactivée, les sessions s'ouvrent sur la gateway principale.",
       searchPlaceholder: 'Rechercher des gateways…',
@@ -2463,6 +2463,12 @@ export const frOverrides = {
     changesApplyNewSessions: "Les modifications s'appliquent aux nouvelles sessions.",
     skillUpdated: 'Skill mis à jour',
     edit: 'Modifier',
+    lock: 'Verrouiller',
+    locked: 'Verrouillé',
+    lockHint:
+      'L’agent ne peut pas modifier ce skill tant qu’il est verrouillé. Vous pouvez toujours le modifier vous-même.',
+    unlockedHint:
+      'Verrouillez-le pour que l’agent ne puisse pas modifier ce skill. Vous pouvez toujours le modifier vous-même.',
     archive: 'Archiver',
     skillArchivedTitle: 'Skill archivé',
     skillArchivedMessage: 'Restaurable via hermes curator restore.',
@@ -3237,14 +3243,10 @@ export const frOverrides = {
       gateway: gateway => `Profils sur ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · inaccessible`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Basculer vers ${name} sur ${gateway}`,
+      switchTo: (name, gateway) => `Ouvrir ${name} sur ${gateway}`,
       deleteOn: gateway => ` sur ${gateway}`,
       localDevice: 'Cet appareil (backend local — installe Hermes s’il manque, sinon ouvre une nouvelle session)',
-      switchDeviceTitle: 'Basculer vers cet appareil ?',
-      switchDeviceDesc:
-        'Cela ouvre une nouvelle session sur cet ordinateur. La conversation en cours reste sur l’autre gateway.',
-      switchDeviceConfirm: 'Basculer',
-      installDeviceTitle: 'Basculer vers cet appareil ?',
+      installDeviceTitle: 'Installer Hermes sur cet appareil ?',
       installDeviceDesc:
         'Hermes sera installé localement, puis une nouvelle session s’ouvrira sur cet ordinateur. Rien n’est installé tant que vous ne confirmez pas.',
       installDeviceConfirm: 'Installer localement',
@@ -3693,7 +3695,6 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
-      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',
@@ -4511,7 +4512,9 @@ export const frOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envoie ${level} sur cette route`,
       updateFailed: "Échec de la mise à jour de l'option du modèle",
-      fastFailed: 'Échec de la mise à jour du mode rapide'
+      fastFailed: 'Échec de la mise à jour du mode rapide',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Échec de la mise à jour de Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4685,6 +4688,14 @@ export const frOverrides = {
     terminalNew: 'Nouveau terminal',
     terminalCloseOthers: 'Fermer les autres',
     terminalCloseAll: 'Tout fermer',
+    terminalNewOn: 'Nouveau terminal sur…',
+    terminalGatewayRemoved: 'Passerelle supprimée',
+    terminalGatewayRemovedBody:
+      'La passerelle sur laquelle ce terminal tournait a été supprimée ; il ne peut pas être rouvert. Fermez cet onglet.',
+    terminalGatewayNoShellBody:
+      'Cette passerelle n’offre pas d’accès shell ; ce terminal ne peut pas être rouvert. Fermez cet onglet.',
+    terminalDisconnectedBody:
+      'Terminal déconnecté. Appuyez sur Entrée pour démarrer un nouveau shell ; l’historique est conservé.',
     addToChat: 'Ajouter à la conversation'
   },
   preview: {

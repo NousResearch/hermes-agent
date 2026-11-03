@@ -429,7 +429,10 @@ def _refresh_credentials_after_401(
         and not _retry.nous_auth_retry_attempted
     ):
         _retry.nous_auth_retry_attempted = True
-        if agent._try_refresh_nous_client_credentials(force=True):
+        from agent.credential_auth_recovery import nous_pool_refreshed_this_turn
+        # The pool already spent this episode's one forced refresh (and its backoff retries):
+        # a second force here would redeem the rotating grant again for a server-side 401.
+        if not nous_pool_refreshed_this_turn(agent) and agent._try_refresh_nous_client_credentials(force=True):
             agent._buffer_vprint("🔐 Nous agent key refreshed after 401. Retrying request...")
             return True
         _print_nous_401_diagnostics(agent, api_error)
@@ -1258,7 +1261,7 @@ def max_retries_exhausted_result(
         # text carries the plain what-happened + next step itself.
         _reset_at = classified.error_context.get("reset_at")
         _final_response = exhausted_copy(
-            classified.reason.value, label=provider_label_for(provider), attempts=attempts,
+            classified.reason.value, label=provider_label_for(provider), attempts=attempts, error=api_error,
             summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
             backup_clause=backup_provider_clause(agent),
         )

@@ -32,7 +32,7 @@ export function SimplifiedPinnedSessions(props: ComponentProps<typeof Simplified
         />
       </RowButton>
       {pinsOpen && (
-        <FadeScroll className="min-h-0" maxHeight="none">
+        <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none">
           <SimplifiedSessionList {...props} showAgent />
         </FadeScroll>
       )}

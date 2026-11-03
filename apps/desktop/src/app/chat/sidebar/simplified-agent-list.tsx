@@ -85,7 +85,7 @@ export function SimplifiedAgentList({
       <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1">
         {t.simplifiedAgents.agents}
       </SidebarPanelLabel>
-      <FadeScroll className="min-h-0" maxHeight="none">
+      <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none">
         {gateways.map(connectionId => {
           const group = sorted.filter(agent => agent.connectionId === connectionId)
           const gatewayId = JSON.stringify(['gateway', connectionId])

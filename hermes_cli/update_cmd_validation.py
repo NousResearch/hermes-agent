@@ -1,6 +1,7 @@
 """Source import-integrity checks for update and stash restoration."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from hermes_cli._launchers import runtime_command
@@ -47,10 +48,12 @@ def _critical_module_import_failures(
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         f"sys.stdout.write('\\n{marker}' + json.dumps(failures))\n")
+    env = dict(os.environ)
+    env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     try:
         result = subprocess.run(
             runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=120, check=False)
+            encoding="utf-8", errors="replace", timeout=120, check=False, env=env)
     except subprocess.TimeoutExpired:
         return _probe_failure("TimeoutExpired", "timed out before reporting import health")
     except (OSError, subprocess.SubprocessError):

@@ -30,6 +30,9 @@ function inlineKeyLooksValid(value) {
 // verdict, so the same request is repeated while the notarization budget lasts.
 const LOST_CONTACT = /NSURLErrorDomain\s+Code=-(?:1001|1003|1004|1005|1006|1009)\b/
 const CONTACT_DELAYS = [15000, 30000, 60000, 120000]
+// Stapling starts after Apple has accepted the app. A runner that still cannot reach Apple's
+// ticket service after this long is not worth holding for the rest of the notarization budget.
+const STAPLE_CONTACT_WINDOW = 45 * 60 * 1000
 
 function contactDelay(attempt) {
   return CONTACT_DELAYS[Math.min(attempt, CONTACT_DELAYS.length - 1)]
@@ -124,6 +127,7 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
 
   // Accepted tickets can take time to reach Apple's CloudKit lookup service.
   const delays = [15000, 30000, 60000, 120000, 120000]
+  const stapleDeadline = Math.min(deadline, now() + STAPLE_CONTACT_WINDOW)
   let ticketRetries = 0
   let contactRetries = 0
   for (let attempt = 1; ; attempt++) {
@@ -134,15 +138,16 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
       return
     } catch (error) {
       const output = commandOutput(error)
-      const missingTicket = error.code === 65 && /CloudKit query[^\n]*Record not found/i.test(output)
-      if (missingTicket && ticketRetries < delays.length) {
+      if (error.code === 65 && /CloudKit query[^\n]*Record not found/i.test(output)) {
+        if (ticketRetries === delays.length) throw error
         const delay = delays[ticketRetries++]
         log(`[notarize] accepted ticket not available. Retrying in ${delay / 1000}s.`)
         await sleep(delay)
         continue
       }
+      if (!LOST_CONTACT.test(output)) throw error
       const delay = contactDelay(contactRetries++)
-      if (!LOST_CONTACT.test(output) || now() + delay >= deadline) throw error
+      if (now() + delay >= stapleDeadline) throw error
       log(`[notarize] lost contact with Apple while stapling ${id}. Retrying in ${delay / 1000}s.`)
       await sleep(delay)
     }

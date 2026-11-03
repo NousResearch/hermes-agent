@@ -293,32 +293,40 @@ test('lost contact with Apple keeps resuming the same submission within the nota
   } finally { f.cleanup() }
 })
 
-test('connection failures that outlast the notarization budget still fail the build', async () => {
-  const f = fixture()
-  try {
-    let elapsed = 0
-    let staples = 0
-    const run = async (command, args) => {
-      if (command === 'ditto') writeFileSync(args.at(-1), 'archive fixture')
-      if (args[0] === 'notarytool') return { stdout: JSON.stringify({ id: submissionId, status: 'Accepted' }) }
-      if (args[0] === 'stapler') {
-        staples += 1
-        throw Object.assign(new Error(connectionLost), { code: 68 })
+test('connection failures that outlast the staple window still fail the build', async () => {
+  // Apple has accepted the app by now, so a lost connection while stapling gets 45 minutes, or
+  // what is left of the notarization budget when that is shorter.
+  const stapleWindow = 45 * 60 * 1000
+  for (const [acceptedAt, limit] of [[0, stapleWindow], [budget - 10 * 60 * 1000, 10 * 60 * 1000]]) {
+    const f = fixture()
+    try {
+      let elapsed = 0
+      let staples = 0
+      const run = async (command, args) => {
+        if (command === 'ditto') writeFileSync(args.at(-1), 'archive fixture')
+        if (args[0] === 'notarytool') {
+          elapsed = acceptedAt
+          return { stdout: JSON.stringify({ id: submissionId, status: 'Accepted' }) }
+        }
+        if (args[0] === 'stapler') {
+          staples += 1
+          throw Object.assign(new Error(connectionLost), { code: 68 })
+        }
+        return { stdout: '', stderr: '' }
       }
-      return { stdout: '', stderr: '' }
-    }
-    const sleep = vi.fn(async ms => { elapsed += ms })
-    const failure = await notarize(f.context, {
-      run, sleep, log: vi.fn(), env: f.environments[0], now: () => elapsed,
-    }).catch(error => error)
-    expect(failure).toBeInstanceOf(Error)
-    expect(failure.message).toContain('The network connection was lost')
-    const slept = sleep.mock.calls.reduce((sum, [ms]) => sum + ms, 0)
-    expect(staples).toBe(sleep.mock.calls.length + 1)
-    // An outage gets longer than a ticket that has not propagated yet (six attempts).
-    expect(staples).toBeGreaterThan(6)
-    expect(slept).toBeLessThan(budget)
-    expect(slept + sleep.mock.calls.at(-1)[0]).toBeGreaterThanOrEqual(budget)
-    expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
-  } finally { f.cleanup() }
+      const sleep = vi.fn(async ms => { elapsed += ms })
+      const failure = await notarize(f.context, {
+        run, sleep, log: vi.fn(), env: f.environments[0], now: () => elapsed,
+      }).catch(error => error)
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure.message).toContain('The network connection was lost')
+      const slept = sleep.mock.calls.reduce((sum, [ms]) => sum + ms, 0)
+      expect(staples).toBe(sleep.mock.calls.length + 1)
+      // An outage gets longer than a ticket that has not propagated yet (six attempts).
+      expect(staples).toBeGreaterThan(6)
+      expect(slept).toBeLessThan(limit)
+      expect(slept + sleep.mock.calls.at(-1)[0]).toBeGreaterThanOrEqual(limit)
+      expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
+    } finally { f.cleanup() }
+  }
 })

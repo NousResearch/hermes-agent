@@ -3296,6 +3296,7 @@ delegation:
   #       sort: throughput
   max_concurrent_children: 10               # Parallel children per batch and concurrent background units (floor 1, no ceiling).
   prefix_stagger_seconds: 0                 # Prompt-cache warm-up for batches: siblings start when the first child's response starts streaming; N (max 60) only caps that wait, it is not a fixed stagger. 0 = off.
+  max_task_echo_chars: 200                  # Goal/context chars echoed back in background receipts and completions (one line + "..."); 0 = verbatim.
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (floor 1, no ceiling). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, every child is a leaf regardless of max_spawn_depth.

@@ -90,24 +90,9 @@ def _locked_extras(root: Path) -> set[str]:
 
 def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
     """Extras this relock introduced that the default [all] closure does not reach."""
-    import re
-    import tomllib
+    from pm.extras import droppable_extras
 
-    with (root / "pyproject.toml").open("rb") as f:
-        project = tomllib.load(f)["project"]
-    extras = project.get("optional-dependencies", {})
-    self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
-    covered, pending = set(), ["all"]
-    while pending:
-        extra = pending.pop()
-        if extra in covered:
-            continue
-        covered.add(extra)
-        for requirement in extras.get(extra, ()):
-            match = self_ref.match(requirement)
-            if match:
-                pending.extend(part.strip() for part in match.group(1).split(","))
-    return sorted(set(extras) - before - covered)
+    return sorted(set(droppable_extras(root)) - before)
 
 
 @reuse_index_responses()

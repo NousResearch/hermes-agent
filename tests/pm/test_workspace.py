@@ -240,6 +240,29 @@ def test_plugin_extras_named_only_for_another_platform_do_not_constrain_the_lock
     assert locked["base-dep"] == "1.0" and "chosen-dep" in locked
 
 
+def test_base_self_reference_gated_on_a_selected_extra_keeps_its_extra(layout):
+    """``plugin[feature]; extra == 'runtime'`` in the base dependencies installs ``feature``
+    whenever ``runtime`` is installed, so its pins must stay in the snapshot."""
+    import tomllib
+
+    from packaging.markers import default_environment
+
+    tmp, _, plugin, _ = layout
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text().replace(
+        'dependencies=["member-dep==1.0"]',
+        'dependencies=["member-dep==1.0", "plugin-member[feature]; extra == \'runtime\'", '
+        '"plugin-member[deep]; extra == \'feature\'"]') +
+        '\n[project.optional-dependencies]\nruntime=[]\n'
+        'feature=["chosen-dep==1.0"]\ndeep=["other-dep==1.0"]\ndev=["base-dep==2.0"]\n'
+        '[build-system]\nrequires=[]\nbuild-backend="local_backend"\n')
+    member = ws._workspace_member(plugin, tmp / "buildable", identity=plugin, extras=["runtime"],
+                                  target=dict(default_environment()))
+    optional = tomllib.loads((member / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    # ``deep`` is gated on ``feature``, which only the first reference brings in.
+    assert optional == {"runtime": [], "feature": ["chosen-dep==1.0"], "deep": ["other-dep==1.0"]}
+
+
 def test_classify_network_failure_stays_generic():
     from pm.workspace import ResolutionConflict, classify_uv_failure
 

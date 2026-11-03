@@ -12,13 +12,16 @@ import {
   chatMessageText,
   completeOpenTimelineParts,
   type GatewayEventPayload,
+  hasUnresolvedToolCall,
+  isRedeliveredToolEvent,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
+  queuedPromptAwaitsNextTurn,
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
-  toolCallOwnerMessageId,
+  toolEventOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -33,6 +36,7 @@ import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { registerStreamDeltaFlush } from '@/store/stream-delta-flush'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
 import { broadcastTranscriptChanged } from '@/store/transcript-sync'
@@ -47,9 +51,10 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { extendInterruptedReply } from './interrupted-reply'
+import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -168,6 +173,9 @@ export function useMessageStream({
         // that crosses an interim/settle boundary must attach to the bubble
         // that still owns the call, wherever that bubble now sits.
         eventTarget?: (state: ClientSessionState) => string | null
+        // True when the event is a copy of something already applied, so
+        // the state stays exactly as it is.
+        skip?: (state: ClientSessionState) => boolean
       } = {},
       occurredAt = Date.now() / 1000
     ) => {
@@ -177,7 +185,7 @@ export function useMessageStream({
           // cancelled turn so they don't keep growing the (now finalized)
           // assistant bubble or, worse, seed a brand-new bubble that
           // appears to belong to the next user message.
-          if (state.interrupted) {
+          if (state.interrupted || opts.skip?.(state)) {
             return state
           }
 
@@ -205,15 +213,23 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            nextMessages = prev.map(m => {
+              if (m.id !== streamId) {
+                return m
+              }
+
+              const patched = { ...m, parts: transform(m.parts, m) }
+
+              // A bubble a steer sealed stays pending only while its own tools run.
+              return {
+                ...patched,
+                pending: patchesSealedBubble
+                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
+                  : opts.pending
+                    ? opts.pending(m)
+                    : true
+              }
+            })
           }
 
           if (patchesSealedBubble) {
@@ -290,6 +306,9 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  // Per session: how far the live turn's stamped reply has been applied, so a
+  // re-sent delta or seal upserts instead of painting a second copy.
+  const segmentCursorsRef = useRef<Map<string, SegmentCursor>>(new Map())
   // Last session we applied a session.info cwd for — lets us tell an agent
   // relocating the SAME session (follow it) from a session switch (don't yank).
   const lastCwdInfoSessionRef = useRef<null | string>(null)
@@ -473,6 +492,9 @@ export function useMessageStream({
     [flushQueuedDeltas]
   )
 
+  // A steer seals the live bubble from outside this hook; it flushes our buffer first.
+  useEffect(() => registerStreamDeltaFlush(sessionId => flushQueuedDeltas(sessionId)), [flushQueuedDeltas])
+
   // Page Visibility does not report every Windows/Linux focus transition.
   // Flush queued deltas on both signals so returning to a chat cannot leave a
   // completed chunk waiting for the next throttled timer.
@@ -503,9 +525,15 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string, occurredAt?: number) => {
+    (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => {
       if (!delta) {
         return
+      }
+
+      if (stamp) {
+        const admitted = admitSegmentDelta(segmentCursorsRef.current.get(sessionId), stamp, delta)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+        delta = admitted.text
       }
 
       queueDelta(sessionId, 'assistant', delta, occurredAt)
@@ -604,8 +632,23 @@ export function useMessageStream({
           // lookup a completion seeds a new bubble with a duplicate row while
           // the sealed one keeps reading "Result unavailable", and a running
           // event for the same id seeds a second live row with its own timer
-          // under the user's message (#113035). Both phases route by id.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
+          // under the user's message (#113035). Both phases route by id, but
+          // a running-phase event only re-arms a sealed-no-result part on a
+          // still-in-flight owner — a settled prior turn's sealed part is
+          // history, so a new turn reusing the id seeds its own row instead
+          // of clobbering the prior turn's command. With no turn live, a start
+          // carrying a sealed row's exact arguments is a late copy of that call.
+          eventTarget: state =>
+            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId),
+          // A copy of a call this turn already finished (re-delivered start or
+          // completion) would otherwise draw that call a second time. A queued
+          // prompt row is passed over only until its own turn starts; from then
+          // on it is that turn's boundary.
+          skip: state =>
+            isRedeliveredToolEvent(state.messages, payload, phase, {
+              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages),
+              turnAnchorId: state.turnAnchorId
+            })
         },
         occurredAt
       )
@@ -614,7 +657,17 @@ export function useMessageStream({
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000, stamp?: null | SegmentStamp) => {
+      if (stamp) {
+        const admitted = admitSegmentSeal(segmentCursorsRef.current.get(sessionId), stamp)
+        segmentCursorsRef.current.set(sessionId, admitted.cursor)
+
+        // A copy of a seal this turn already applied: its bubble is on screen.
+        if (!admitted.fresh) {
+          return
+        }
+      }
+
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
@@ -743,8 +796,10 @@ export function useMessageStream({
         if (state.interrupted) {
           return {
             ...state,
-            messages:
+            messages: bindStoppedTurnReceipt(
               status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
+              persistedTurn
+            ),
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -1037,6 +1092,11 @@ export function useMessageStream({
         // degraded websocket leaves its tool row spinning forever. The turn is
         // provably done here — nothing can still be running — so seal any
         // tool-call parts that never saw their completion event.
+        // A bubble a steer sealed while its tool ran stays pending for that tool's
+        // result; the turn is over now, so a lost tool.complete must not keep it spinning.
+        nextMessages = nextMessages.map(message =>
+          message.pending && message.interim ? { ...message, pending: false } : message
+        )
         nextMessages = bindReceiptUserRows(sealOpenToolParts(nextMessages), persistedTurn)
 
         const hasInlineError = nextMessages.some(

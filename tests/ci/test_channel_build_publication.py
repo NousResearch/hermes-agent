@@ -58,6 +58,8 @@ def staged_channel(tmp_path, r2_server, request, monkeypatch):
     name = request["identity"]["artifactNamePascal"]
     for platform in ("darwin", "win32"):
         for arch in ("arm64", "x64"):
+            if (platform, arch) == ("darwin", "x64"):
+                continue  # no Intel macOS leg
             native = "macos" if platform == "darwin" else "windows"
             metadata = {"platform": native, "arch": arch, "commit": request["commit"], "request": request,
                         "identity": request["identity"]["appId" if platform == "darwin" else "msixAppIdWithOrg"],
@@ -105,7 +107,7 @@ def test_channel_handoff_binds_full_request_and_feed_bytes(tmp_path, r2_server, 
     needs = {name: {"result": "success"} for name in channel_publish.REQUIRED_JOBS}
     manifest, feeds = channel_publish.assemble(request, fetched, needs=needs)
     assert {(p["platform"], p["arch"]) for p in manifest["packages"]} == {
-        (platform, arch) for platform in ("darwin", "win32") for arch in ("arm64", "x64")}
+        ("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
     xml = ET.parse(next(p for p in feeds if p.suffix == ".appinstaller")).getroot()
     assert xml.find("{*}UpdateSettings") is None
     assert xml.find("{*}MainBundle").get("Name") == request["identity"]["msixAppIdWithOrg"]
@@ -287,7 +289,7 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
         env["GITHUB_ACTIONS"] = "true"
         # A production sentinel makes accidental writes outside scope observable.
         r2_server.store["releases/channels/stable.json"] = (b"production sentinel", '"production"')
-    artifact_key = prefix + request["identity"]["artifactNamePascal"] + "-0.0.7-mac-x64.zip"
+    artifact_key = prefix + request["identity"]["artifactNamePascal"] + "-0.0.7-mac-arm64.zip"
     saved = r2_server.store[artifact_key]
     r2_server.store[artifact_key] = (b"damaged artifact", '"damaged"')
     result = run_shell(tmp_path, r2_server, script, env, cwd=tmp_path / "clone")

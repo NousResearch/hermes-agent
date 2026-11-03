@@ -24,9 +24,10 @@ SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
 CANARY_TAG = "v0.28.0+canary.20260818T101010Z"
-PLATFORMS = ("darwin", "win32")
-ARCHES = ("arm64", "x64")
-NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform in PLATFORMS for arch in ARCHES)
+# Native build targets per platform. Intel macOS (darwin-x64) is not built.
+PLATFORM_ARCHES = {"darwin": ("arm64",), "win32": ("arm64", "x64")}
+PLATFORMS = tuple(PLATFORM_ARCHES)
+NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform, arches in PLATFORM_ARCHES.items() for arch in arches)
 # The release branch may write the shared dependency cache; commit and channel
 # builds run unreviewed inputs and may only read it.
 _MODE_BY_CACHE = {"write": "release", "read": "commit"}
@@ -108,7 +109,7 @@ def updater_publishers(jobs: dict) -> dict[str, str]:
     smokes = smoke_callers(jobs)
     publishers = {}
     for platform in PLATFORMS:
-        own = {smokes[f"{platform}-{arch}"] for arch in ARCHES}
+        own = {smokes[f"{platform}-{arch}"] for arch in PLATFORM_ARCHES[platform]}
         publishers[platform] = _only(
             [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own],
             f"{platform} updater publisher")

@@ -22,6 +22,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
+from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def _get_flush_dir():
     flush_dir = get_hermes_home() / "pending_messages"
     from hermes_constants import assert_named_profile_home_live
     assert_named_profile_home_live(flush_dir)
-    flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_user_dir(flush_dir, parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
         os.chmod(flush_dir, 0o700)
     return flush_dir

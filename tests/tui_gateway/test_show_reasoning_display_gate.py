@@ -126,6 +126,20 @@ def test_tool_progress_off_keeps_only_essential_tool_rows(monkeypatch):
     assert failed[0][2]["result"]["error"] == "disk full"
 
 
+def test_tool_progress_off_does_not_surface_a_refused_skill_write(monkeypatch):
+    """Answer-only mode forwards failures the user must see; a skill write the agent re-plans is not one."""
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "tools-off-skill", show_reasoning=True, tool_progress="off")
+
+    refused = json.dumps({"success": False, "error": "SKILL.md content is 100,193 characters (limit: 100,000)."})
+    server._on_tool_complete("tools-off-skill", "tool-skill", "skill_manage", {"operations": []}, refused)
+
+    assert _lifecycle(events, "tool-skill") == []
+    broken = json.dumps({"success": False, "error": "batch aborted, ROLLBACK FAILED for 'demo' (EACCES)"})
+    server._on_tool_complete("tools-off-skill", "tool-broken", "skill_manage", {"operations": []}, broken)
+    assert _lifecycle(events, "tool-broken") == ["tool.complete"]
+
+
 def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
     for sid, show_reasoning, tool_progress, expected in (
         ("child-reasoning-off", False, "all", ["tool.start", "tool.complete"]),

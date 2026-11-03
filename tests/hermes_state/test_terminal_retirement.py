@@ -333,7 +333,7 @@ def test_retirement_drops_the_turn_user_row_copy(tmp_path):
 
 def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_path, monkeypatch):
     """Deletion tombstones keep byte-exact retry replies for the 7-day horizon, then the maintenance
-    prune pass reclaims every row they hold (B2-06)."""
+    prune pass reclaims every row they hold but the deletion fence itself (B2-06)."""
     import time
     import hermes_state_mutation_retirement as retirement
     now = time.time()
@@ -365,7 +365,8 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
         assert len(rows_naming('old', old_id)) == 4
         db.prune_sessions(older_than_days=90)
         assert len(rows_naming('young', young_id)) == 4
-        assert rows_naming('old', old_id) == [], 'tombstones past the horizon were not reclaimed'
+        assert rows_naming('old', old_id) == [retirement.RETIRED_PREFIX + 'old'], \
+            'tombstones past the horizon were not reclaimed (the deletion fence stays)'
         with pytest.raises(rt.RuntimeStoreError, match='not_found'):
             rt.admit_session_input(db, epoch=epoch, **old)
         replay = rt.admit_session_input(db, epoch=epoch, **young)

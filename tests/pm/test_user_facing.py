@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 import pm.install
 import pm.user_facing
 from pm.user_facing import user_facing_path
@@ -30,13 +32,15 @@ def test_user_tools_come_before_hermes_and_python_stops_at_the_store_stub(tmp_pa
     assert user_facing_path(path) == path
 
 
-def test_a_sealed_windows_payload_swaps_packaged_tools_for_writable_copies(tmp_path, monkeypatch):
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("legacy_digest", [False, True])
+def test_a_sealed_windows_payload_swaps_packaged_tools_for_writable_copies(tmp_path, monkeypatch, legacy_digest):
     """cmd.exe cannot start an exe inside WindowsApps; a verified copy outside it can."""
     from pm import paths, registry
     from pm.filesystem import native
     from pm.lock import Facts, Lockfile
     from pm.packages import Nodejs, Python
-    from pm.store import current_target, tree_digest
+    from pm.store import _tree_digest, current_target, tree_digest
     from pm.user_facing import copies
 
     shipped, writable = tmp_path / "payload" / "tools", tmp_path / "home" / "tools"
@@ -54,15 +58,17 @@ def test_a_sealed_windows_payload_swaps_packaged_tools_for_writable_copies(tmp_p
         binary = package.binary(entry, target)
         binary.parent.mkdir(parents=True)
         binary.write_bytes(b"pinned " + package.name.encode())
+        (entry / "desktop.ini").write_text("[.ShellClassInfo]\n", encoding="utf-8")
+        recorded = _tree_digest(entry, skip_metadata=False) if legacy_digest else tree_digest(entry)
         facts.record(package.name, "test", entry.name, package.env(entry, target), shipped,
-                     target=target, artifacts=[digest], digest=tree_digest(entry))
+                     target=target, artifacts=[digest], digest=recorded)
         bins[package.name] = {root: str(package.binary(root / entry.name, target).parent)
                               for root in (shipped, writable)}
     lock.save()
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
     monkeypatch.setattr(paths, "store_root", lambda: shipped)
     monkeypatch.setattr(paths, "writable_store_root", lambda: writable)
-    monkeypatch.setattr(pm.user_facing, "applies", lambda: True)
+    (shipped.parent / "manifest.json").write_text("{}", encoding="utf-8")
     path = os.pathsep.join([bins["python"][shipped], bins["node"][shipped], "/usr/bin"])
 
     # Lazy installs off: PM makes no copy, so the packaged dirs stay as the fallback.

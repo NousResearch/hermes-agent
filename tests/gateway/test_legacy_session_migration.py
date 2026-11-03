@@ -1,4 +1,5 @@
 """Pre-authority rows never grant ownership to the first remote claimant."""
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,7 +77,8 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     finally:
         db.release_compression_lock(ref.session_id, 'fixture')
     snapshot = await authority.attach(native, ref)
-    assert [m['content'] for m in snapshot.history] == ['COMPRESSED', 'RETAINED']
+    assert [m['content'] for m in snapshot.history if not m.get('archived')] == ['COMPRESSED', 'RETAINED']
+    assert [m['content'] for m in snapshot.history if m.get('archived')] == ['OLD_QUESTION', 'OLD_ANSWER']
     assert resolve_titled_session(authority, native, 'old-cli') == ref
     assert local_receipt(db, ref.session_id)['policy'] == receipt['policy']
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
@@ -180,7 +182,8 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
 async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     """main's Desktop stored its chats with ``source='desktop'``. After the upgrade the native owner
     adopts them by id like ``gui`` history, including the ones stamped with the signed-in Nous
-    account. Any other identity still needs its own authority."""
+    account. A served remote backend's login stamp (``hermes serve`` basic auth) adopts for that same
+    login only. Any other identity still needs its own authority."""
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -191,7 +194,8 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
-    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account')):
+    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account'),
+                         ('old-desktop-remote', 'basic:hermes')):
         db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
         db.append_message(sid, role='user', content=sid.upper())
         db.end_session(sid, 'session_switch')
@@ -209,6 +213,18 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
     assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
     assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
+    # A served remote backend stamped its basic-auth login on the row at creation (#139818). Hermes
+    # is single-user and sign-in is owner-only, so that login is the machine owner: the owner's own
+    # native ticket (native Desktop, the TUI) adopts it once its serve is gone (gateway.owner_identity).
+    caps = ['session:create', 'session:read', 'session:submit', 'session:control', 'session:approve',
+            'session:respond']
+    from gateway.owner_identity import host_owner_subject
+    owner = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': host_owner_subject(),
+        'profile_id': str(tmp_path), 'instance_id': 'first', 'capabilities': caps})
+    remote = await owner.dispatch({'id': 5, 'method': 'session.resume',
+                                   'params': {'session_id': 'old-desktop-remote'}})
+    assert remote.get('result', {}).get('session_id') == 'old-desktop-remote', remote
+    assert [m['content'] for m in remote['result']['messages']] == ['OLD-DESKTOP-REMOTE']
     # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.
     for sid, source, user_id in (('old-desktop-foreign', 'desktop', 'telegram:42'),
                                  ('old-cli-account', 'cli', 'nous:account')):

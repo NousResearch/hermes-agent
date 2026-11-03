@@ -155,6 +155,7 @@ export class GatewayClient extends EventEmitter {
   isCanonical = false
   private creationContract?: CreationContract
   private describedSkin?: Record<string, unknown>
+  private runtimeCapabilities: string[] = []
   private describeFlight?: Promise<void>
   private attachHold: AttachHold | null = null
   // The last session.create whose outcome is in doubt (see createCanonical).
@@ -237,6 +238,7 @@ export class GatewayClient extends EventEmitter {
    * failure (B2-21): drop the socket onto the backoff path, which redials and re-describes. */
   private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
     this.describeFlight = undefined
+    this.runtimeCapabilities = []
     void this.describeRuntime().then(() => {
       // The owner's resolved profile skin (`runtime.describe.skin`, main's `gateway.ready.skin`)
       // unless the listener's own ready already carried one.
@@ -507,11 +509,18 @@ export class GatewayClient extends EventEmitter {
 
   hydrateSharedPrompts(snapshot: unknown) {
     if (!this.isCanonical) { return }
-    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>>;
+      open_requests?: Array<{ id: string; method: string; params?: Record<string, unknown> }> | null }
 
     for (const prompt of result.prompts ?? []) {
       this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
         payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+
+    // The channel delivered these before the reply resolved, and the caller's reset has since cleared
+    // them (a batch clarify form): deliver again under the same id, before held frames are released.
+    for (const req of result.open_requests ?? []) {
+      this.channel.deliverRequest(req.id, req.method, req.params ?? {}, true)
     }
   }
 
@@ -745,6 +754,7 @@ export class GatewayClient extends EventEmitter {
       // Each explicit connection negotiates its wire from the listener's ready frame.
       this.isCanonical = false
       this.creationContract = undefined
+      this.runtimeCapabilities = []
       this.startAttachedGateway(attachUrl)
 
       return
@@ -852,13 +862,22 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
+  /** Only an owner advertising `clarify-batch-v1` knows `clarify_batch`: an older owner's
+   * closed submit params would refuse every prompt carrying it. */
+  get clarifyBatch(): boolean {
+    return this.isCanonical && this.runtimeCapabilities.includes('clarify-batch-v1')
+  }
+
   /** The owner's session.create contract. A failed read is not cached: the next
    * session.create asks again instead of reporting an outdated gateway forever. */
   private describeRuntime(): Promise<void> {
     if (!this.describeFlight) {
-      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
+      const flight: Promise<void> = this.requestOverWebSocket<{ capabilities?: unknown; session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
         description => {
           this.creationContract = description.session_create
+          this.runtimeCapabilities = Array.isArray(description.capabilities)
+            ? description.capabilities.filter((c): c is string => typeof c === 'string')
+            : []
           this.describedSkin = description.skin && typeof description.skin === 'object' ? description.skin : undefined
         },
         error => {

@@ -768,6 +768,25 @@ export interface Translations {
     managingProfile?: string;
   };
 
+  /** Optional while existing locales adopt the Skills-page controls. */
+  skillsUi?: {
+    browseHub: string;
+    learnSkill: string;
+    newSkill: string;
+    configure: string;
+    editNamed: string;
+    learnDescription: string;
+    localSource: string;
+    localSourcePlaceholder: string;
+    url: string;
+    urlPlaceholder: string;
+    additionalSource: string;
+    additionalSourcePlaceholder: string;
+    cancel: string;
+    learnIt: string;
+    saved: string;
+  };
+
   // ── Config page ──
   config: {
     configPath: string;

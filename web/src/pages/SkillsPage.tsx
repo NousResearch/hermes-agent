@@ -147,6 +147,7 @@ export default function SkillsPage() {
   const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const skillsUi = t.skillsUi ?? en.skillsUi!;
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
@@ -259,7 +260,7 @@ export default function SkillsPage() {
   }, []);
   const handleEditorSaved = useCallback(
     (skillName: string) => {
-      showToast(`${skillName} saved ✓`, "success");
+      showToast(skillsUi.saved.replace("{name}", skillName), "success");
       // Reload the list so a newly created skill (or an edited description)
       // shows up immediately.
       api
@@ -267,7 +268,7 @@ export default function SkillsPage() {
         .then(setSkills)
         .catch(() => {});
     },
-    [selectedProfile, showToast],
+    [selectedProfile, showToast, skillsUi.saved],
   );
 
   /* ---- Derived data ---- */
@@ -435,7 +436,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={skillsUi.browseHub}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -518,6 +519,7 @@ export default function SkillsPage() {
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
+                        editLabel={skillsUi.editNamed.replace("{name}", skill.name)}
                       />
                     ))}
                   </div>
@@ -550,7 +552,7 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {skillsUi.learnSkill}
                     </Button>
                     <Button
                       size="sm"
@@ -558,7 +560,7 @@ export default function SkillsPage() {
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
-                      New skill
+                      {skillsUi.newSkill}
                     </Button>
                   </div>
                 </div>
@@ -574,10 +576,10 @@ export default function SkillsPage() {
                     {skills.length === 0 && (
                       <div className="flex flex-wrap justify-center gap-2">
                         <Button size="sm" onClick={() => setView("hub")}>
-                          {t.skills.browseHub ?? en.skills.browseHub}
+                          {skillsUi.browseHub}
                         </Button>
                         <Button size="sm" outlined onClick={openCreateEditor}>
-                          {t.skills.createSkill ?? en.skills.createSkill}
+                          {skillsUi.newSkill}
                         </Button>
                       </div>
                     )}
@@ -592,6 +594,7 @@ export default function SkillsPage() {
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
+                        editLabel={skillsUi.editNamed.replace("{name}", skill.name)}
                       />
                     ))}
                   </div>
@@ -670,7 +673,7 @@ export default function SkillsPage() {
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
-                                  Configure
+                                  {skillsUi.configure}
                                 </Button>
                               </div>
                             </div>
@@ -705,42 +708,39 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{skillsUi.learnSkill}</DialogTitle>
             <DialogDescription>
-              Point Hermes at anything and it will distill a reusable skill —
-              following the house authoring standards. Fill in any combination
-              below; the agent gathers the sources and writes the skill in chat.
+              {skillsUi.learnDescription}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Local file or directory
+                {skillsUi.localSource}
               </label>
               <Input
-                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                placeholder={skillsUi.localSourcePlaceholder}
                 value={learnDir}
                 onChange={(e) => setLearnDir(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                URL
+                {skillsUi.url}
               </label>
               <Input
-                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                placeholder={skillsUi.urlPlaceholder}
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Anything else — describe the workflow, paste notes, or say
-                "what we just did"
+                {skillsUi.additionalSource}
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="e.g. how I file an expense report: open the portal, …"
+                placeholder={skillsUi.additionalSourcePlaceholder}
                 value={learnText}
                 onChange={(e) => setLearnText(e.target.value)}
               />
@@ -748,14 +748,14 @@ export default function SkillsPage() {
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
-              Cancel
+              {skillsUi.cancel}
             </Button>
             <Button
               onClick={submitLearn}
               prefix={<Sparkles />}
               disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
             >
-              Learn it
+              {skillsUi.learnIt}
             </Button>
           </div>
         </DialogContent>
@@ -771,6 +771,7 @@ function SkillRow({
   onToggle,
   onEdit,
   noDescriptionLabel,
+  editLabel,
 }: SkillRowProps) {
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
@@ -799,8 +800,8 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
-        aria-label={`Edit ${skill.name}`}
+        title={editLabel}
+        aria-label={editLabel}
         onClick={onEdit}
       >
         <Pencil />
@@ -834,6 +835,7 @@ interface PanelItemProps {
 }
 
 interface SkillRowProps {
+  editLabel: string;
   noDescriptionLabel: string;
   onToggle: () => void;
   onEdit: () => void;

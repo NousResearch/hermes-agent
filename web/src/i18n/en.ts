@@ -760,6 +760,25 @@ export const en: Translations = {
       "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
+  skillsUi: {
+    browseHub: "Browse hub",
+    learnSkill: "Learn a skill",
+    newSkill: "New skill",
+    configure: "Configure",
+    editNamed: "Edit {name}",
+    learnDescription:
+      "Point Hermes at anything and it will distill a reusable skill — following the house authoring standards. Fill in any combination below; the agent gathers the sources and writes the skill in chat.",
+    localSource: "Local file or directory",
+    localSourcePlaceholder: "~/projects/some-sdk  (read with read_file / search_files)",
+    url: "URL",
+    urlPlaceholder: "https://docs.example.com/api  (fetched with web_extract)",
+    additionalSource: 'Anything else — describe the workflow, paste notes, or say "what we just did"',
+    additionalSourcePlaceholder: "e.g. how I file an expense report: open the portal, …",
+    cancel: "Cancel",
+    learnIt: "Learn it",
+    saved: "{name} saved ✓",
+  },
+
   config: {
     configPath: "~/.hermes/config.yaml",
     filters: "Filters",

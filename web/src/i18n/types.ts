@@ -822,6 +822,72 @@ export interface Translations {
     activeSetHint?: string;
   };
 
+  /** Optional while existing locales adopt the profile-builder flow. */
+  profileBuilderUi?: {
+    steps: {
+      identity: string;
+      model: string;
+      skills: string;
+      mcp: string;
+      review: string;
+    };
+    invalidName: string;
+    newProfile: string;
+    profileName: string;
+    nameRule: string;
+    descriptionOptional: string;
+    descriptionPlaceholder: string;
+    modelHint: string;
+    filterModels: string;
+    loadingModels: string;
+    useDefault: string;
+    fullBundle: string;
+    keepSkillsHint: string;
+    filterSkills: string;
+    loadingSkills: string;
+    addFromHub: string;
+    searchHub: string;
+    searching: string;
+    add: string;
+    removeNamed: string;
+    mcpServers: string;
+    mcpHint: string;
+    configured: string;
+    addServer: string;
+    serverName: string;
+    serverNamePlaceholder: string;
+    transport: string;
+    authentication: string;
+    none: string;
+    bearerToken: string;
+    tokenPlaceholder: string;
+    tokenHint: string;
+    oauthHint: string;
+    command: string;
+    arguments: string;
+    environment: string;
+    remove: string;
+    reviewLabels: {
+      name: string;
+      description: string;
+      model: string;
+      skills: string;
+      hubSkills: string;
+      mcpServers: string;
+    };
+    defaultSetLater: string;
+    fullBundleSummary: string;
+    keptSkills: string;
+    noMcpServers: string;
+    back: string;
+    next: string;
+    createProfile: string;
+    creating: string;
+    created: string;
+    createdInstalling: string;
+    createFailed: string;
+  };
+
   // ── Skills page ──
   skills: {
     title: string;

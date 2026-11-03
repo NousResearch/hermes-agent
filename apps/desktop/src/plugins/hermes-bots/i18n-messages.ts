@@ -132,6 +132,12 @@ export type BotsMessages = {
     newSectionEllipsis: string
     removeFromSection: string
     deleted: (name: string, count: number) => string
+    deletedInto: (name: string, count: number, parent: string) => string
+    newSubsection: string
+    /** Screen-reader description of a folder heading's drag handle and its keyboard equivalents. */
+    dragHint: string
+    moveInto: string
+    topLevel: string
     undo: string
   }
   /** Creating, editing and removing a bot. */

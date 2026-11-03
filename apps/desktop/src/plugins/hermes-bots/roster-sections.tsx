@@ -228,6 +228,8 @@ interface RosterSectionHeaderProps {
   action?: ReactNode
   collapsed: boolean
   count: number
+  /** Id of an element describing the heading (e.g. how to reorder it). */
+  describedBy?: string
   gatewayKind?: string
   icon?: string
   label: string
@@ -241,6 +243,7 @@ export function RosterSectionHeader({
   action,
   collapsed,
   count,
+  describedBy,
   gatewayKind,
   icon,
   label,
@@ -251,6 +254,7 @@ export function RosterSectionHeader({
 }: RosterSectionHeaderProps) {
   const button = (
     <RowButton
+      aria-describedby={describedBy}
       aria-expanded={!collapsed}
       className={cn(
         'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',

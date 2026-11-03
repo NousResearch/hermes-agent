@@ -167,10 +167,19 @@ const en: BotsMessages = {
     moveTo: 'Move to section',
     newSectionEllipsis: 'New section…',
     removeFromSection: 'Remove from section',
+    // `count` is every bot, group chat and subsection the delete moved out.
     deleted: (name, count) =>
       count === 0
         ? `Deleted “${name}”`
-        : `Deleted “${name}” — ${count} ${count === 1 ? 'bot' : 'bots'} moved to Unassigned`,
+        : `Deleted “${name}” — ${count} ${count === 1 ? 'item' : 'items'} moved out of it`,
+    deletedInto: (name, count, parent) =>
+      count === 0
+        ? `Deleted “${name}”`
+        : `Deleted “${name}” — ${count} ${count === 1 ? 'item' : 'items'} moved to “${parent}”`,
+    dragHint: 'Drag to reorder folders, or use Move up, Move down and Move section into in this folder’s menu',
+    newSubsection: 'New subsection…',
+    moveInto: 'Move section into',
+    topLevel: 'Top level',
     undo: 'Undo'
   },
   bot: {
@@ -611,9 +620,15 @@ const ja: BotsMessages = {
     newSectionEllipsis: '新しいセクション…',
     removeFromSection: 'セクションから外す',
     deleted: (name, count) =>
+      count === 0 ? `「${name}」を削除しました` : `「${name}」を削除しました — ${count} 件の項目を外に移動しました`,
+    deletedInto: (name, count, parent) =>
       count === 0
         ? `「${name}」を削除しました`
-        : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
+        : `「${name}」を削除しました — ${count} 件の項目を「${parent}」に移動しました`,
+    dragHint: 'ドラッグでフォルダーを並べ替えるか、このフォルダーのメニューの「上へ移動」「下へ移動」「セクションの移動先」を使います',
+    newSubsection: '新しいサブセクション…',
+    moveInto: 'セクションの移動先',
+    topLevel: '最上位',
     undo: '元に戻す'
   },
   bot: {
@@ -1049,7 +1064,13 @@ const zh: BotsMessages = {
     moveTo: '移动到分区',
     newSectionEllipsis: '新建分区…',
     removeFromSection: '移出分区',
-    deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`),
+    deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 项已移出`),
+    deletedInto: (name, count, parent) =>
+      count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 项已移至“${parent}”`,
+    dragHint: '拖动以重新排序文件夹，或使用此文件夹菜单中的“上移”“下移”和“将分区移至”',
+    newSubsection: '新建子分区…',
+    moveInto: '将分区移至',
+    topLevel: '顶层',
     undo: '撤销'
   },
   bot: {
@@ -1478,7 +1499,13 @@ const zhHant: BotsMessages = {
     moveTo: '移動到分區',
     newSectionEllipsis: '新增分區…',
     removeFromSection: '移出分區',
-    deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`),
+    deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 項已移出`),
+    deletedInto: (name, count, parent) =>
+      count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 項已移至「${parent}」`,
+    dragHint: '拖曳以重新排序資料夾，或使用此資料夾選單中的「上移」「下移」和「將分區移至」',
+    newSubsection: '新增子分區…',
+    moveInto: '將分區移至',
+    topLevel: '最上層',
     undo: '復原'
   },
   bot: {

@@ -15,6 +15,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
   Dialog,
   DialogContent,
@@ -25,17 +28,20 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   Input,
   isSubmitEnter,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
-import { type DragEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type DragEvent, type ReactNode, useEffect, useId, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
 import { RosterSectionHeader } from './roster-sections'
-import { $draggingBot, BOT_DRAG_MIME } from './user-sections'
+import { $draggingBot, BOT_DRAG_MIME, SECTION_DRAG_PREFIX } from './user-sections'
 
 // ── name dialog ──────────────────────────────────────────────────────────────
 
@@ -114,6 +120,12 @@ export function SectionNameDialog({ initialName, mode, onOpenChange, onSubmit, o
 
 // ── heading ──────────────────────────────────────────────────────────────────
 
+/** A folder this section can move under, labelled with its full path. */
+export interface SectionParentOption {
+  id: null | string
+  label: string
+}
+
 interface UserSectionHeaderProps {
   canMoveDown: boolean
   canMoveUp: boolean
@@ -124,8 +136,14 @@ interface UserSectionHeaderProps {
   name: string
   onDelete: () => void
   onMove: (delta: number) => void
+  onMoveInto: (parentId: null | string) => void
+  onNewSubsection: () => void
   onRename: () => void
   onToggle: () => void
+  /** Where "Move into" may put this section: never itself or a descendant.
+   *  The current parent is listed but disabled. */
+  parentId: null | string
+  parentOptions: SectionParentOption[]
 }
 
 export function UserSectionHeader({
@@ -137,11 +155,16 @@ export function UserSectionHeader({
   name,
   onDelete,
   onMove,
+  onMoveInto,
+  onNewSubsection,
   onRename,
-  onToggle
+  onToggle,
+  parentId,
+  parentOptions
 }: UserSectionHeaderProps) {
   const b = useBots()
   const { t } = useI18n()
+  const dragHintId = useId()
 
   // Unassigned has no record to rename, reorder or delete — it is whatever is
   // left over — so it gets the plain heading rather than a menu of disabled
@@ -164,8 +187,16 @@ export function UserSectionHeader({
   const items = [
     { icon: 'edit', label: b.sections.rename, onSelect: onRename },
     { disabled: !canMoveUp, icon: 'arrow-up', label: b.sections.moveUp, onSelect: () => onMove(-1) },
-    { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) }
+    { disabled: !canMoveDown, icon: 'arrow-down', label: b.sections.moveDown, onSelect: () => onMove(1) },
+    { icon: 'new-folder', label: b.sections.newSubsection, onSelect: onNewSubsection }
   ]
+
+  // Nesting goes through a menu, not only drag, so it works from the keyboard.
+  const destinations = parentOptions.map(option => ({
+    ...option,
+    disabled: option.id === parentId,
+    onSelect: () => onMoveInto(option.id)
+  }))
 
   const action = (
     <DropdownMenu>
@@ -185,6 +216,19 @@ export function UserSectionHeader({
             {item.label}
           </DropdownMenuItem>
         ))}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Codicon className="mr-1.5" name="folder" />
+            {b.sections.moveInto}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {destinations.map(item => (
+              <DropdownMenuItem disabled={item.disabled} key={item.id ?? ''} onSelect={item.onSelect}>
+                {item.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onDelete} variant="destructive">
           <Codicon className="mr-1.5" name="trash" />
@@ -197,17 +241,35 @@ export function UserSectionHeader({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div data-section-id={id} data-slot="bots-section-heading">
+        {/* The heading is the drag handle for sorting folders; Move up/down
+            and Move section into are the keyboard path to the same result. */}
+        <div
+          data-section-id={id}
+          data-slot="bots-section-heading"
+          draggable
+          onDragEnd={() => $draggingBot.set(null)}
+          onDragStart={event => {
+            const key = `${SECTION_DRAG_PREFIX}${id}`
+
+            event.dataTransfer.setData(BOT_DRAG_MIME, key)
+            event.dataTransfer.effectAllowed = 'move'
+            $draggingBot.set(key)
+          }}
+        >
           <RosterSectionHeader
             action={action}
             collapsed={collapsed}
             count={count}
+            describedBy={dragHintId}
             icon="folder"
             label={name}
             onDoubleClick={onRename}
             onToggle={onToggle}
             tip={b.sections.headingTip}
           />
+          <span className="sr-only" id={dragHintId}>
+            {b.sections.dragHint}
+          </span>
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -216,6 +278,16 @@ export function UserSectionHeader({
             {item.label}
           </ContextMenuItem>
         ))}
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{b.sections.moveInto}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {destinations.map(item => (
+              <ContextMenuItem disabled={item.disabled} key={item.id ?? ''} onSelect={item.onSelect}>
+                {item.label}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={onDelete} variant="destructive">
           {t.common.delete}
@@ -255,19 +327,23 @@ interface SectionDropZoneProps {
    *  target, and the OS shows the no-drop cursor instead of a highlight that
    *  promises a move that would change nothing. */
   isSource: boolean
-  /** Drawn inside a gateway bucket: indented under a hairline rail so the
-   *  two heading levels read as parent and child. */
-  nested?: boolean
+  /** Indent levels: one for a block drawn inside a gateway bucket, plus one
+   *  per parent folder. Drawn under a hairline rail so the heading levels
+   *  read as parent and child. */
+  indent?: number
   onDropBot: (rosterKey: string) => void
 }
 
 /** A section block as a drop target: the whole block (heading + rows, or the
  *  empty placeholder) lights up while a bot is over it. */
-export function SectionDropZone({ children, isSource, nested, onDropBot }: SectionDropZoneProps) {
+export function SectionDropZone({ children, indent = 0, isSource, onDropBot }: SectionDropZoneProps) {
   const dragging = useValue($draggingBot)
   const [over, setOver] = useState(false)
   const armed = Boolean(dragging) && !isSource
   const lit = armed && over
+  // A folder in flight lands BEFORE the block it is dropped on, so mark the
+  // insertion edge rather than lighting the block as a container.
+  const sorting = Boolean(dragging?.startsWith(SECTION_DRAG_PREFIX))
 
   // Escape cancels the gesture: the in-flight key is cleared (see the
   // keydown hook in the roster pane), so every zone disarms at once and a
@@ -285,11 +361,12 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
     <div
       className={cn(
         'relative min-w-0 rounded-md transition-[background-color,box-shadow] duration-100',
-        nested && 'ml-2.5 border-l border-(--ui-stroke-tertiary) pl-1',
+        indent > 0 && 'border-l border-(--ui-stroke-tertiary) pl-1',
         // While a drag is live, every valid target gets a faint outline so the
         // user can see where a drop is allowed before hovering one.
         armed && 'ring-1 ring-inset ring-(--ui-stroke-secondary)',
-        lit && 'bg-(--ui-accent)/10 ring-(--ui-accent)'
+        lit && !sorting && 'bg-(--ui-accent)/10 ring-(--ui-accent)',
+        lit && sorting && 'shadow-[inset_0_2px_0_var(--ui-accent)]'
       )}
       data-drop-over={lit ? 'true' : undefined}
       data-slot="bots-section"
@@ -338,6 +415,7 @@ export function SectionDropZone({ children, isSource, nested, onDropBot }: Secti
         event.preventDefault()
         onDropBot(key)
       }}
+      style={indent > 0 ? { marginLeft: `${0.625 * indent}rem` } : undefined}
     >
       {children}
     </div>

@@ -84,6 +84,7 @@ import {
   $draggingBot,
   BOT_DRAG_MIME,
   botSectionId,
+  botSectionPath,
   groupChatSectionId,
   groupDragKey,
   moveBotsToSection,
@@ -471,7 +472,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 onSelect={() => void moveBotsToSection([bot], section.id)}
               >
                 <Codicon className="mr-1.5" name="folder" />
-                {section.name}
+                {botSectionPath(section.id, sections)}
               </ContextMenuItem>
             ))}
             {sections.length ? <ContextMenuSeparator /> : null}
@@ -654,7 +655,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband, 
                 onSelect={() => moveGroupChatsToSection([group], section.id)}
               >
                 <Codicon className="mr-1.5" name="folder" />
-                {section.name}
+                {botSectionPath(section.id, sections)}
               </ContextMenuItem>
             ))}
             {sections.length ? <ContextMenuSeparator /> : null}

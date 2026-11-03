@@ -137,10 +137,11 @@ jobs:
         # step saves it; run_tests.sh forwards PSModuleAnalysisCachePath to the tests.
         # Takes ~1s when an earlier PowerShell step already warmed it.
         if: runner.os == 'Windows'
-        # A PowerShell step's own shell does not save the analysis, and starting one
-        # cold costs the same 22s again; a powershell.exe started from cmd saves it.
+        # PowerShell writes the cache from a background timer a few seconds after the
+        # analysis, so a process that exits right after its first cmdlet (every test's
+        # child) never saves it. When the analysis ran here, stay up long enough to save.
         shell: cmd
-        run: powershell.exe -NoProfile -NonInteractive -Command "Get-ChildItem . | Out-Null"
+        run: powershell.exe -NoProfile -NonInteractive -Command "$t = Measure-Command { Get-ChildItem . | Out-Null }; if ($t.TotalSeconds -gt 5) { Start-Sleep -Seconds 15 }; Write-Host ('analysis {0:N1}s' -f $t.TotalSeconds)"
 
       - name: EXPERIMENT measure a PowerShell child launch (do not merge)
         if: runner.os == 'Windows'

@@ -429,3 +429,234 @@ def test_stamped_frames_reach_the_transport_in_seq_order_under_concurrency(monke
         server._sessions.pop(sid, None)
 
     assert written == [1, 2]
+
+
+class _FrameRecorder:
+    """Transport stand-in that keeps every frame it is asked to write."""
+
+    def __init__(self):
+        self.frames = []
+
+    def write(self, obj):
+        self.frames.append(obj)
+        return True
+
+    def seqs(self):
+        return [frame["params"].get("seq") for frame in self.frames]
+
+
+def _event(sid, mark):
+    return {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {"type": "tool.start", "session_id": sid, "payload": {"mark": mark}},
+    }
+
+
+def test_concurrent_emitters_for_one_session_reach_the_wire_in_seq_order():
+    """The two-writer race at the width a tool-heavy turn reaches: eight parallel callbacks
+    emitting for one session still leave exactly 1..N on the wire, never an inversion."""
+    from tui_gateway import server
+
+    sid = "seq-order-wide"
+    rec = _FrameRecorder()
+    server._sessions[sid] = {"transport": rec}
+    writers = 8
+    start = threading.Barrier(writers)
+
+    def emit(mark: int):
+        start.wait(10.0)
+        server.write_json(_event(sid, mark))
+
+    threads = [threading.Thread(target=emit, args=(mark,)) for mark in range(writers)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(15.0)
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert rec.seqs() == list(range(1, writers + 1))
+
+
+def test_a_parked_session_does_not_hold_up_another_session(monkeypatch):
+    """The lock is per session: a frame parked inside its stamp→enqueue window must not
+    delay a different session's frame, and each session numbers its own seq from 1."""
+    from tui_gateway import server
+    from tui_gateway import hosted_room_member_activity as room
+
+    slow, fast = "parked-session", "free-session"
+    slow_rec, fast_rec = _FrameRecorder(), _FrameRecorder()
+    server._sessions[slow] = {"transport": slow_rec}
+    server._sessions[fast] = {"transport": fast_rec}
+    parked = threading.Event()
+    release = threading.Event()
+    fast_written = threading.Event()
+
+    real_project = room.project_room_member_activity
+
+    def park_the_slow_session(obj, sessions):
+        if ((obj.get("params") or {}).get("session_id")) == slow:
+            parked.set()
+            release.wait(5.0)
+        real_project(obj, sessions)
+
+    monkeypatch.setattr(room, "project_room_member_activity", park_the_slow_session)
+
+    slow_thread = threading.Thread(target=lambda: server.write_json(_event(slow, "slow")))
+    fast_thread = threading.Thread(target=lambda: (server.write_json(_event(fast, "fast")), fast_written.set()))
+    try:
+        slow_thread.start()
+        assert parked.wait(5.0)
+        fast_thread.start()
+        # Explicit handshake: the free session's frame lands while the parked one is
+        # still inside its window, so nothing global is serializing the two.
+        assert fast_written.wait(2.0)
+        assert fast_rec.seqs() == [1]
+        assert slow_rec.frames == []
+        release.set()
+        slow_thread.join(10.0)
+    finally:
+        release.set()
+        slow_thread.join(10.0)
+        fast_thread.join(10.0)
+        server._sessions.pop(slow, None)
+        server._sessions.pop(fast, None)
+
+    assert slow_rec.seqs() == [1]
+
+
+def test_a_late_frame_after_teardown_reuses_the_sessions_existing_lock():
+    """forget_session frees the replay ring, never the lock: a frame stamped after teardown
+    must take the same lock object the draining writer used, not a fresh second one."""
+    from tui_gateway import server
+
+    sid = "closed-then-late"
+    rec = _FrameRecorder()
+    server._sessions[sid] = {"transport": rec}
+    known = set(event_replay._emit_locks)
+    lock = event_replay.emit_frame_lock(sid)
+    try:
+        server.write_json(_event(sid, "before"))
+        event_replay.forget_session(sid)
+        assert event_replay.emit_frame_lock(sid) is lock
+        assert set(event_replay._emit_locks) - known == {sid}
+        server.write_json(_event(sid, "late"))
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert rec.seqs() == [1, 2]  # numbering survives the teardown
+    assert events_since(sid, 0) == []  # the ring stays freed
+    assert event_replay.is_truncated(sid, 1)  # a client behind the drop must refetch
+
+
+def test_server_client_requests_are_not_stamped_and_do_not_take_the_session_lock():
+    """Server→client requests carry no seq, so they keep the pre-fix path: no stamp and no
+    wait on the emit lock — a request must pass a writer that is mid-window."""
+    from tui_gateway import server
+
+    sid = "request-path"
+    rec = _FrameRecorder()
+    server._sessions[sid] = {"transport": rec}
+    request = {
+        "jsonrpc": "2.0",
+        "id": "srv-req-1",
+        "method": "approval",
+        "params": {"session_id": sid, "prompt": "ok?"},
+    }
+    written = threading.Event()
+
+    def emit_request():
+        server.write_json(request)
+        written.set()
+
+    thread = threading.Thread(target=emit_request)
+    try:
+        with event_replay.emit_frame_lock(sid):
+            thread.start()
+            assert written.wait(2.0)
+            assert rec.frames == [request]
+            assert "seq" not in request["params"]
+    finally:
+        if thread.ident is not None:
+            thread.join(5.0)
+        server._sessions.pop(sid, None)
+
+
+def test_the_connector_lifecycle_emitter_and_write_json_share_the_session_lock(monkeypatch):
+    """Both stamp→enqueue entry points take the same per-session lock.
+
+    The connector emitter is exercised through ``server._emit_tool_lifecycle`` — the copy
+    ``method_ctx.bind_module`` rebinds against server.py's globals, which is the one the
+    tool callbacks call; the split module's own copy cannot resolve ``_sessions_lock`` bare.
+    Connector frame parked mid-window, then a write_json frame for the same session: the
+    direct path must not overtake it, or the pair leaves in seq order 2, 1.
+    """
+    from tui_gateway import server
+    from tui_gateway import hosted_room_member_activity as room
+
+    sid = "two-entry-points"
+    rec = _FrameRecorder()
+    server._sessions[sid] = {"transport": rec}
+    connector_stamped = threading.Event()
+    second_landed = threading.Event()
+
+    real_project = room.project_room_member_activity
+
+    def project_with_the_connector_frame_parked(obj, sessions):
+        payload = (obj.get("params") or {}).get("payload") or {}
+        if payload.get("tool_id") == "call-connector":
+            connector_stamped.set()
+            # Parked inside the connector path's stamp→enqueue window: unfixed, the
+            # direct write lands now; fixed, the session lock holds it until this returns.
+            second_landed.wait(3.0)
+        real_project(obj, sessions)
+
+    monkeypatch.setattr(room, "project_room_member_activity", project_with_the_connector_frame_parked)
+
+    def emit_connector():
+        server._emit_tool_lifecycle(
+            "tool.start", sid, "manage_connections", {},
+            {"tool_id": "call-connector", "name": "manage_connections"},
+        )
+
+    def emit_direct():
+        server.write_json(_event(sid, "direct"))
+        second_landed.set()
+
+    connector = threading.Thread(target=emit_connector)
+    direct = threading.Thread(target=emit_direct)
+    try:
+        connector.start()
+        assert connector_stamped.wait(5.0)
+        direct.start()
+        connector.join(10.0)
+        direct.join(10.0)
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert rec.seqs() == [1, 2]
+
+
+def test_a_session_less_global_event_mints_no_session_lock(monkeypatch):
+    """A global frame (no session_id) gets no seq and no ring entry, so it must not take
+    a stamp lock — and must not leave a lock entry behind, whatever key it would have used."""
+    from tui_gateway import server
+
+    rec = _FrameRecorder()
+    monkeypatch.setattr(server, "_stdio_transport", rec)
+    global_frame = {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {"type": "skin.changed", "payload": {}},
+    }
+    known = set(event_replay._emit_locks)
+
+    server.write_json(global_frame)
+
+    assert rec.frames == [global_frame]
+    assert "seq" not in global_frame["params"]
+    assert set(event_replay._emit_locks) == known
+

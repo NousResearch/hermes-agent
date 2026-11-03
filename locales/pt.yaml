@@ -772,6 +772,16 @@ gateway:
     target_subagents: "execução e seu(s) subagente(s) ativo(s)"
     target_run: "execução"
     queued: "⏩ Redirecionamento enfileirado na {target} atual — chega após a próxima chamada de ferramenta: '{preview}'"
+  fyi:
+    usage: "uso: /fyi <contexto>"
+    usage_idle: "uso: /fyi <contexto>  (nenhum agente ativo; enviando como mensagem normal)"
+    queued_starting: "O agente ainda está iniciando — /fyi enfileirado para o próximo turno."
+    queued_no_agent: "nenhum agente ativo — /fyi enfileirado para o próximo turno."
+    failed: "⚠️ falha no fyi: {error}"
+    rejected_empty: "fyi rejeitado (conteúdo vazio)."
+    queued: "💡 fyi enviado para o {target} atual — apenas contexto, o agente continua trabalhando: '{preview}'"
+
+
   suggestions:
     failed: "Falha no comando de sugestões: {error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "Injetar uma mensagem após a próxima chamada de ferramenta (sem interromper)"
         arg_prompt: "Texto a injetar no próximo resultado de ferramenta do agente"
+      fyi:
+        description: "Compartilhar contexto adicional com o agente em execução (sem interromper, sem redirecionar)"
+        arg_context: "Contexto para o trabalho em andamento do agente"
+
+
       plan:
         description: "Escrever um plano de implementação em markdown (sem execução)"
         arg_task: "O que planejar. Deixe vazio para inferir da conversa."
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ Redirecionamento enfileirado — chega após a próxima chamada de ferramenta: {preview}"
     rejected_empty: "Redirecionamento rejeitado (conteúdo vazio)."
     no_agent_queued: "Nenhum agente em execução; enfileirado como próximo turno: {preview}"
+  fyi:
+    usage: "uso: /fyi <contexto>"
+    failed: "falha no fyi: {error}"
+    queued: "💡 fyi enfileirado — apenas contexto, o agente continua trabalhando: {preview}"
+    rejected_empty: "fyi rejeitado (conteúdo vazio)."
+    no_agent_queued: "nenhum agente ativo; enfileirado como próximo turno: {preview}"
+
+
   title:
     session_id: "ID da sessão: {session_id}"
     current: "Título: {title}"

@@ -146,6 +146,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", busy_handler="queue"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                aliases=("s",), args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
+    CommandDef("fyi", "Share additional context with the running agent — no interrupt, no redirect; it keeps working", "Session",
+               args_hint="<context>", busy_policy="dispatch", busy_handler="fyi"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | -- <text> | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
@@ -454,7 +456,7 @@ for _cmd in COMMAND_REGISTRY:
 HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     "Context": ("compress", "compact", "context", "ctx", "status"),
     "Background & Automation": (
-        "bg", "btw", "agents", "tasks", "queue", "q", "steer", "s", "goal", "subgoal", "heartbeat", "hb",
+        "bg", "btw", "agents", "tasks", "queue", "q", "steer", "s", "fyi", "goal", "subgoal", "heartbeat", "hb",
         "refine", "loop", "proactive", "moa", "journey", "learning", "memory-graph")}
 
 # All names + aliases the gateway dispatches. Config-gated commands are

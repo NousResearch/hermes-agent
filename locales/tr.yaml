@@ -772,6 +772,16 @@ gateway:
     target_subagents: "çalıştırma ve aktif alt ajan(lar)ı"
     target_run: "çalıştırma"
     queued: "⏩ Yönlendirme geçerli {target} için sıraya alındı — bir sonraki araç çağrısından sonra ulaşır: '{preview}'"
+  fyi:
+    usage: "kullanım: /fyi <bağlam>"
+    usage_idle: "kullanım: /fyi <bağlam>  (çalışan ajan yok — normal mesaj olarak gönderiliyor)"
+    queued_starting: "Ajan hâlâ başlıyor — /fyi sonraki tur için sıraya alındı."
+    queued_no_agent: "aktif ajan yok — /fyi sonraki tur için sıraya alındı."
+    failed: "⚠️ fyi hatası: {error}"
+    rejected_empty: "fyi reddedildi (boş yük)."
+    queued: "💡 fyi mevcut {target} içine gönderildi — yalnızca bağlam, ajan çalışmaya devam ediyor: '{preview}'"
+
+
   suggestions:
     failed: "Öneriler komutu başarısız oldu: {error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "Bir sonraki araç çağrısından sonra mesaj ekle (kesintisiz)"
         arg_prompt: "Ajanın bir sonraki araç sonucuna eklenecek metin"
+      fyi:
+        description: "Çalışan ajanla ek bağlam paylaş (kesme yok, yönlendirme yok)"
+        arg_context: "Ajanın sürmekte olan işi için bağlam"
+
+
       plan:
         description: "Markdown uygulama planı yaz (çalıştırma yok)"
         arg_task: "Ne planlanacağı. Konuşmadan çıkarılması için boş bırakın."
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ Yönlendirme sıraya alındı — sonraki araç çağrısından sonra ulaşır: {preview}"
     rejected_empty: "Yönlendirme reddedildi (boş içerik)."
     no_agent_queued: "Çalışan ajan yok; sonraki tur olarak sıraya alındı: {preview}"
+  fyi:
+    usage: "kullanım: /fyi <bağlam>"
+    failed: "fyi hatası: {error}"
+    queued: "💡 fyi sıraya alındı — yalnızca bağlam, ajan çalışmaya devam ediyor: {preview}"
+    rejected_empty: "fyi reddedildi (boş yük)."
+    no_agent_queued: "ajan çalışmıyor; sonraki tur olarak sıraya alındı: {preview}"
+
+
   title:
     session_id: "Oturum kimliği: {session_id}"
     current: "Başlık: {title}"

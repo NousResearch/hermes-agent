@@ -772,6 +772,16 @@ gateway:
     target_subagents: "rith agus a fho-ghníomhaire(í) gníomhach(a)"
     target_run: "rith"
     queued: "⏩ Stiúradh curtha i scuaine isteach sa {target} reatha — sroichfidh sé tar éis an chéad ghlao uirlise eile: '{preview}'"
+  fyi:
+    usage: "úsáid: /fyi <comhthéacs>"
+    usage_idle: "úsáid: /fyi <comhthéacs>  (níl aon ghníomhaire ag rith — seolfar é mar ghnáththeachtaireacht)"
+    queued_starting: "Tá an gníomhaire fós ag tosú — /fyi i scuaine don chéad seal eile."
+    queued_no_agent: "níl aon ghníomhaire gníomhach — /fyi i scuaine don chéad seal eile."
+    failed: "⚠️ theip ar fyi: {error}"
+    rejected_empty: "fyi diúltaithe (uilleann folamh)."
+    queued: "💡 fyi seolta isteach sa {target} reatha — comhthéacs amháin, leanfidh an gníomhaire ag obair: '{preview}'"
+
+
   suggestions:
     failed: "Theip ar an ordú moltaí: {error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "Instealladh teachtaireacht tar éis an chéad ghlao uirlise eile (gan bhriseadh isteach)"
         arg_prompt: "Téacs le hinstealladh isteach sa chéad toradh uirlise eile ón ngníomhaire"
+      fyi:
+        description: "Roinn comhthéacs breise leis an ngníomhaire atá ag rith (gan cur isteach, gan atreorú)"
+        arg_context: "Comhthéacs d'oibriú reatha an ghníomhaire"
+
+
       plan:
         description: "Scríobh plean cur i bhfeidhm i markdown (gan rith)"
         arg_task: "Cad atá le pleanáil. Fág folamh chun é a thuiscint ón gcomhrá."
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ Stiúradh i scuaine — tagann sé tar éis an chéad ghlao uirlise eile: {preview}"
     rejected_empty: "Diúltaíodh don stiúradh (pálasta folamh)."
     no_agent_queued: "Níl aon ghníomhaire ag rith; curtha i scuaine mar an chéad seal eile: {preview}"
+  fyi:
+    usage: "úsáid: /fyi <comhthéacs>"
+    failed: "theip ar fyi: {error}"
+    queued: "💡 fyi i scuaine — comhthéacs amháin, leanfidh an gníomhaire ag obair: {preview}"
+    rejected_empty: "fyi diúltaithe (uilleann folamh)."
+    no_agent_queued: "níl aon ghníomhaire ag rith; curtha i scuaine mar an chéad seal eile: {preview}"
+
+
   title:
     session_id: "ID Seisiúin: {session_id}"
     current: "Teideal: {title}"

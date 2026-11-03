@@ -784,6 +784,15 @@ gateway:
     target_run: "run"
     queued: "⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
+  fyi:
+    usage: "Usage: /fyi <context>"
+    usage_idle: "Usage: /fyi <context>  (no agent is running; sending as a normal message)"
+    queued_starting: "Agent still starting — /fyi queued for the next turn."
+    queued_no_agent: "No active agent — /fyi queued for the next turn."
+    failed: "⚠️ FYI failed: {error}"
+    rejected_empty: "FYI rejected (empty payload)."
+    queued: "💡 FYI sent into current {target} — context only; the agent keeps working: '{preview}'"
+
   suggestions:
     failed: "Suggestions command failed: {error}"
 
@@ -1148,6 +1157,9 @@ platform:
       steer:
         description: "Inject a message after the next tool call (no interrupt)"
         arg_prompt: "Text to inject into the agent's next tool result"
+      fyi:
+        description: "Share additional context with the running agent (no interrupt, no redirect)"
+        arg_context: "Context for the agent's work in progress"
       plan:
         description: "Write a markdown implementation plan (no execution)"
         arg_task: "What to plan. Leave empty to infer from the conversation."
@@ -2529,6 +2541,12 @@ cli:
     failed: "Steer failed: {error}"
     queued: "⏩ Steer queued — arrives after the next tool call: {preview}"
     rejected_empty: "Steer rejected (empty payload)."
+    no_agent_queued: "No agent running; queued as next turn: {preview}"
+  fyi:
+    usage: "Usage: /fyi <context>"
+    failed: "FYI failed: {error}"
+    queued: "💡 FYI queued — context only, the agent keeps working: {preview}"
+    rejected_empty: "FYI rejected (empty payload)."
     no_agent_queued: "No agent running; queued as next turn: {preview}"
   title:
     session_id: "Session ID: {session_id}"

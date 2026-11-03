@@ -772,6 +772,16 @@ gateway:
     target_subagents: "运行及其活跃的子代理"
     target_run: "运行"
     queued: "⏩ 引导已排入当前{target}——将在下一次工具调用后送达：'{preview}'"
+  fyi:
+    usage: "用法：/fyi <context>"
+    usage_idle: "用法：/fyi <context>（没有代理在运行；将作为普通消息发送）"
+    queued_starting: "代理仍在启动 — /fyi 已排队到下一回合。"
+    queued_no_agent: "没有活动的代理 — /fyi 已排队到下一回合。"
+    failed: "⚠️ fyi 失败：{error}"
+    rejected_empty: "fyi 被拒绝（内容为空）。"
+    queued: "💡 fyi 已发送到当前{target} — 仅作参考的上下文，代理会继续工作：'{preview}'"
+
+
   suggestions:
     failed: "建议命令执行失败：{error}"
   blueprint:
@@ -1098,6 +1108,11 @@ platform:
       steer:
         description: "在下一次工具调用后注入一条消息（不中断）"
         arg_prompt: "要注入到代理下一个工具结果中的文本"
+      fyi:
+        description: "与正在运行的代理分享额外上下文（不打断、不改变方向）"
+        arg_context: "提供给代理当前工作的上下文"
+
+
       plan:
         description: "编写 Markdown 实施计划（不执行）"
         arg_task: "要规划的内容。留空则根据对话推断。"
@@ -2430,6 +2445,14 @@ cli:
     queued: "⏩ 引导已排队——将在下一次工具调用后送达：{preview}"
     rejected_empty: "引导已拒绝（内容为空）。"
     no_agent_queued: "没有正在运行的代理；已排为下一回合：{preview}"
+  fyi:
+    usage: "用法：/fyi <context>"
+    failed: "fyi 失败：{error}"
+    queued: "💡 fyi 已排队 — 仅作参考的上下文，代理会继续工作：{preview}"
+    rejected_empty: "fyi 被拒绝（内容为空）。"
+    no_agent_queued: "没有代理在运行；已排队为下一回合：{preview}"
+
+
   title:
     session_id: "会话 ID：{session_id}"
     current: "标题：{title}"

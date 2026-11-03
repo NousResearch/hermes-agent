@@ -490,3 +490,77 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
         assert store.has_recent_decline("telegram", "67890") is False
         with _patch("gateway.pairing.time.time", return_value=time.time() + pairing_mod.DECLINE_DEDUPE_SECONDS + 1):
             assert store.has_recent_decline("telegram", "12345") is False
+
+
+def test_platform_config_allow_from_ignores_unauthorized_dm(monkeypatch):
+    """When allow_from is configured in platform extra config, unauthorized DMs default to ignore."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"allow_from": ["15551234567"]},
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WHATSAPP)
+    assert behavior == "ignore"
+
+
+def test_platform_config_allowed_users_ignores_unauthorized_dm(monkeypatch):
+    """When allowed_users is configured in platform extra config, unauthorized DMs default to ignore."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"allowed_users": ["15551234567"]},
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WHATSAPP)
+    assert behavior == "ignore"
+
+
+def test_explicit_dm_policy_pairing_overrides_allowlist(monkeypatch):
+    """When operator explicitly sets dm_policy='pairing' in extra, honor opt-in even with an allowlist."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"allow_from": ["15551234567"], "dm_policy": "pairing"},
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WHATSAPP)
+    assert behavior == "pair"
+
+
+def test_adapter_default_dm_policy_does_not_override_config_allowlist(monkeypatch):
+    """An adapter's default _dm_policy='pairing' must not defeat a configured allowlist."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"allow_from": ["15551234567"]},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    adapter._dm_policy = "pairing"
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.WHATSAPP)
+    assert behavior == "ignore"
+

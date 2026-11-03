@@ -215,8 +215,9 @@ app.add_middleware(AuthBodyLimitMiddleware)
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router
+from hermes_cli.web_server_routers import adopt_router as _adopt_router
 
-app.include_router(_memory_oauth_router)
+_adopt_router(app, _memory_oauth_router)
 
 # Session token for sensitive endpoints. Resolution lives in the
 # web_server_session_token sibling; it dies with the process and is injected
@@ -813,42 +814,42 @@ import hermes_cli.web_routers.uploads as _upload_routes
 from fastapi import Depends as _Depends
 from hermes_cli.web_server_surface import route_on as _route_on
 
-app.include_router(_files_routes.router)
+_adopt_router(app, _files_routes.router)
 # The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
 app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
 app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_on("desktop_plugins"))])
-app.include_router(_git_routes.router)
-app.include_router(_local_models_routes.router)
-app.include_router(_status_routes.router)
-app.include_router(_actions_routes.router)
-app.include_router(_audio_routes.router)
-app.include_router(_display_routes.router)
-app.include_router(_actions_routes.status_router)
-app.include_router(_sessions_routes.list_router)
-app.include_router(_profiles_routes.sessions_router)
-app.include_router(_sessions_routes.search_router)
-app.include_router(_memory_providers_routes.router)
-app.include_router(_config_env_routes.config_router)
-app.include_router(_models_routes.router)
-app.include_router(_config_env_routes.router)
-app.include_router(_messaging_routes.router)
-app.include_router(_oauth_routes.router)
-app.include_router(_sessions_routes.manage_router)
-app.include_router(_status_routes.logs_router)
-app.include_router(_cron_routes.router)
-app.include_router(_mcp_routes.router)
-app.include_router(_ops_routes.router)
-app.include_router(_skills_routes.hub_router)
-app.include_router(_profiles_routes.router)
-app.include_router(_skills_routes.router)
-app.include_router(_tools_routes.router)
-app.include_router(_analytics_routes.router)
-app.include_router(_chat_ws_routes.router)
-app.include_router(_chat_workspaces_routes.router)
-app.include_router(_dashboard_ui_routes.router)
-app.include_router(_webapp_routes.router)
-app.include_router(_shared_metrics_routes.router)
-app.include_router(_delegation_routes.router)
+_adopt_router(app, _git_routes.router)
+_adopt_router(app, _local_models_routes.router)
+_adopt_router(app, _status_routes.router)
+_adopt_router(app, _actions_routes.router)
+_adopt_router(app, _audio_routes.router)
+_adopt_router(app, _display_routes.router)
+_adopt_router(app, _actions_routes.status_router)
+_adopt_router(app, _sessions_routes.list_router)
+_adopt_router(app, _profiles_routes.sessions_router)
+_adopt_router(app, _sessions_routes.search_router)
+_adopt_router(app, _memory_providers_routes.router)
+_adopt_router(app, _config_env_routes.config_router)
+_adopt_router(app, _models_routes.router)
+_adopt_router(app, _config_env_routes.router)
+_adopt_router(app, _messaging_routes.router)
+_adopt_router(app, _oauth_routes.router)
+_adopt_router(app, _sessions_routes.manage_router)
+_adopt_router(app, _status_routes.logs_router)
+_adopt_router(app, _cron_routes.router)
+_adopt_router(app, _mcp_routes.router)
+_adopt_router(app, _ops_routes.router)
+_adopt_router(app, _skills_routes.hub_router)
+_adopt_router(app, _profiles_routes.router)
+_adopt_router(app, _skills_routes.router)
+_adopt_router(app, _tools_routes.router)
+_adopt_router(app, _analytics_routes.router)
+_adopt_router(app, _chat_ws_routes.router)
+_adopt_router(app, _chat_workspaces_routes.router)
+_adopt_router(app, _dashboard_ui_routes.router)
+_adopt_router(app, _webapp_routes.router)
+_adopt_router(app, _shared_metrics_routes.router)
+_adopt_router(app, _delegation_routes.router)
 app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
 app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_on("ui_preferences"))])
 
@@ -858,7 +859,7 @@ app.include_router(_ui_preferences_routes.router, dependencies=[_Depends(_route_
 _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
 
-app.include_router(_dashboard_auth_router)
+_adopt_router(app, _dashboard_auth_router)
 mount_spa(app)
 
 

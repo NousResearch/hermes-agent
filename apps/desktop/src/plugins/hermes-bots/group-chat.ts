@@ -931,6 +931,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // name-keyed identity — same field updateGroupChat's inline map
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      ...stickyGroupEngine(room),
       image: room.image || null,
       rosterOrder: room.rosterOrder,
       pinned: room.pinned,
@@ -1648,6 +1649,8 @@ export function updateGroupChat(
         members: Array.isArray(room.members) ? room.members : [],
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+        // A Desktop-driven room stays one across reloads (plugin.tsx hydration).
+        ...stickyGroupEngine(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
         rosterOrder: room.rosterOrder,

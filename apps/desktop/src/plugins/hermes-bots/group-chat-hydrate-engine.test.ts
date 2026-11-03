@@ -1,12 +1,14 @@
 /**
  * A Desktop-driven room's engine (`engine: 'desktop'`, set when the room was
- * created across machines) survives a window reload: plugin hydration rebuilds
- * each stored room field by field, and a dropped field would hand the room back
- * to the membership check after the next membership edit.
+ * created across machines) survives a window reload: the room writer stores it
+ * and plugin hydration rebuilds each stored room field by field, so a field
+ * dropped on either side hands the room back to the membership check after the
+ * next membership edit.
  */
 
 import { describe, expect, it, vi } from 'vitest'
 
+import type * as GroupChatModule from './group-chat'
 import type * as I18nModule from './i18n'
 import type { RosterRow } from './types'
 
@@ -107,10 +109,19 @@ vi.mock('./i18n', async importOriginal => {
 const plugin = (await import('./plugin')).default
 const { $groupChats } = await import('./group-chat')
 
-const stored = {
-  Mixed: { engine: 'desktop', log: [], members: [{ name: 'alpha' }], roomId: 'r1' },
-  Plain: { log: [], members: [{ name: 'beta' }], roomId: 'r2' }
-}
+// The stored map comes from the real writer, not a hand-built seed: a field the
+// writer drops is one hydration never sees.
+const stored = await (async () => {
+  const writes = new Map<string, unknown>()
+  const writer = await vi.importActual<typeof GroupChatModule>('./group-chat')
+  const { setPluginCtx } = await import('./shared')
+  setPluginCtx({ storage: { get: async () => null, set: async (key: string, value: unknown) => void writes.set(key, value) } } as never)
+
+  writer.updateGroupChat('Mixed', room => ({ ...room, engine: 'desktop', members: [{ name: 'alpha' }], roomId: 'r1' }), { sync: false })
+  writer.updateGroupChat('Plain', room => ({ ...room, members: [{ name: 'beta' }], roomId: 'r2' }), { sync: false })
+
+  return writes.get('group-chats')
+})()
 
 describe('group-chat hydration', () => {
   it("keeps a stored room's Desktop engine and adds none to a room without one", async () => {

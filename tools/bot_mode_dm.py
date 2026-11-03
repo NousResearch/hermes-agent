@@ -168,15 +168,17 @@ def ensure_message_agent_tool(agent: Any) -> bool:
 
 
 def _resolve_local_name(target: str, roster: list[str], root: Path | None = None) -> Optional[str]:
-    """Map a target to a local profile FOLDER id: 'hermes' → 'default'; an exact folder id
+    """Map a target to a local profile FOLDER id: 'hermes' → 'default' unless a real 'hermes'
+    profile holds that handle (``_profile_for_handle``); an exact folder id
     (case-insensitive); else — when ``root`` is given — a friendly name or its Desktop @-slug
     (profile.yaml ``display_name`` / Bot Mode title: 'Scribe', '@scribe', 'Dr. Foo' → 'foo').
     Ambiguous friendly names resolve to None so a DM never lands on the wrong bot (#100671)."""
     want = target.strip().lower()
     if not want:
         return None
-    if want == "hermes":
-        return "default" if "default" in roster else None
+    from tools.bot_mode_probe import _profile_for_handle
+
+    want = _profile_for_handle(want, roster)
     exact = next((name for name in roster if name.lower() == want), None)
     if exact is not None or root is None:
         return exact
@@ -224,7 +226,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     roster_homes = dict(_roster(root))
     roster = list(roster_homes)
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    teammates = [_handle(n, roster) for n in roster if n != me]
 
     def _roster_err(msg: str) -> str:
         return _err(msg, roster=teammates, peers=peers)
@@ -240,10 +242,10 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if not raw_target:
         return _roster_err("target is required.")
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
-    content = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)))} (@{_handle(me)}): " + body
+    content = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), roster)} (@{_handle(me, roster)}): " + body
     delivery = dict(task_id=task_id, agent=agent)
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
-    author = {"id": f"bot:{me}", "name": _handle(me), "is_bot": True}
+    author = {"id": f"bot:{me}", "name": _handle(me, roster), "is_bot": True}
 
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
@@ -271,7 +273,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        # The sender's own relay folder, as below: the default's would relay a named bot's DM as the default.
+        relayed = _try_relay_delivery(Path(home), raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
@@ -293,7 +296,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                            "(roles are listed in your system prompt).")
     # Local teammates are admitted through the profile authority; the argv only names the
     # profile for the runner's lock/home lookups and is never executed.
-    return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved)}",
+    return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved, roster)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
 
@@ -304,7 +307,7 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
     to drain; a background waiter is spawned immediately so the relayed reply wakes
     the sender through the standard completion-notification path."""
     try:
-        from tools.bot_mode_probe import _handle, local_taken_forms
+        from tools.bot_mode_probe import _handle, _hermes_root, _roster, local_taken_forms
         from tools.bot_relay import (
             EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
             resolve_remote_target, waiter_command,
@@ -320,7 +323,8 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
                               if want in _target_aliases(r))
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
-            envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))
+            envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me,
+                                       sender_handle=_handle(me, [n for n, _d in _roster(_hermes_root(root))]))
         except EnvelopeRefusedError as exc:
             # Fail fast: target definitively offline — nothing was queued.
             # Structured refusal so the agent can distinguish it from a resolution error ('runtime_offline'
@@ -366,7 +370,6 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     """Delete orphaned DM payload files older than *max_age_hours*; returns count.
     Same contract as the other ``cleanup_*_cache`` helpers (hourly gateway housekeeping);
     legacy temp-root locations from versions predating the dedicated directory are swept too."""
-    cutoff = (time.time() if now is None else now) - max_age_hours * 3600
     temp_root = Path(tempfile.gettempdir())
     locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
     with contextlib.suppress(OSError):
@@ -376,9 +379,9 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
         # their runner on purpose — a retry replays the same delivery id from them — so the
         # orphans of runners that never settled are swept here too.
         locations.append((dm_dir, "*.live.json"))
-    from tools.bot_relay import unlink_files_older_than
+    from utils import unlink_files_older_than
 
-    return sum(unlink_files_older_than(d, pattern, cutoff) for d, pattern in locations)
+    return sum(unlink_files_older_than(d, pattern, max_age_hours * 3600, now=now) for d, pattern in locations)
 
 
 def _unlink_dm_file(path: str) -> None:

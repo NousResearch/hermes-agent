@@ -24,6 +24,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   return {
     ...sdk,
     gatewayActivationEpoch: () => 1,
+    useGatewayActivationEpoch: () => 1,
     host: {
       ...sdk.host, requestProfile: request, notify, openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),

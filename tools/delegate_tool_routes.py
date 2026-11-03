@@ -265,36 +265,32 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
             f"Use none or one of: {', '.join(VALID_REASONING_EFFORTS)}.")
 
 
-def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any],
-                      saved: str) -> str:
-    """Why a task carrying parameters the session's backend does not declare is refused. The schema follows
-    config.yaml for the whole session (cached prompt), so after a ``/delegation`` switch the model can still send
-    the previous backend's parameters; dropping them would run the task on this backend's default route.
-    ``/new`` starts on the saved backend (``saved``), so the fix persists the session's pick first or names it."""
+def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
+    """Why a task carrying parameters the session's backend does not declare is refused (a model inventing them, or
+    a session whose tools came from another build than its backend); dropping them would run the task on this
+    backend's default route. ``/delegation <backend> --now`` or ``/new`` rebuilds the tools and the backend together."""
     from agent.delegation_registry import _registry
     active = provider.name
     listed = ", ".join(f"'{name}'" for name in names)
     owners = sorted({other.name for other in _registry.list_providers() if other.name != active
                      and set(names) & set(_declared_parameters(other, config))})
-    head = f"Task {index}: this session's delegation backend is '{active}', which does not take {listed}"
-    if saved == active:
-        fix = f"start a new session with /new for delegate_task choices that match '{active}'"
-    else:
-        fix = (f"run `/delegation {active} --global` then `/new` for a session whose delegate_task choices match "
-               f"'{active}', or `/delegation {saved}` to switch this session back to the saved backend")
+    head = f"Task {index}: the delegation backend is '{active}', which does not take {listed}"
+    fix = (f"run `/delegation {active} --now` to rebuild this session's delegate_task for '{active}', "
+           f"or start a new session with /new")
     if owners:
         quoted = ", ".join(f"'{owner}'" for owner in owners)
-        return f"{head} (declared by {quoted}), so this task was not started. {fix[0].upper()}{fix[1:]}."
+        return (f"{head} (declared by {quoted}), so this task was not started. This session's delegate_task was "
+                f"built for another backend: {fix}.")
     return (f"{head}, and no installed delegation backend does, so this task was not started. Resend it without "
             f"{listed}; if this session's delegate_task tool offers {listed}, {fix}.")
 
 
 def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]], index: int,
-               task: Mapping[str, Any], config: Mapping[str, Any], saved: str) -> dict[str, Any]:
+               task: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, Any]:
     undeclared = sorted(name for name, value in task.items()
                         if value is not None and name not in declared and name not in RESERVED_TASK_PARAMETERS)
     if undeclared:
-        raise DelegationRouteError(_undeclared_error(provider, index, undeclared, config, saved))
+        raise DelegationRouteError(_undeclared_error(provider, index, undeclared, config))
     params = {name: task[name] for name in declared if task.get(name) is not None}
     for name, value in params.items():
         error = _param_error(index, name, value, declared[name])
@@ -312,14 +308,13 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
 
 def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, Any], parent_agent: Any,
                         ) -> tuple[list[TaskRoute], Optional[str]]:
-    """One :class:`TaskRoute` per task from the session's backend (its ``/delegation`` override, else
-    ``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another
-    backend). A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected.
-    Identical routes resolve credentials once per call (the default backend resolves exactly once)."""
-    from agent.delegation_backends import session_delegation_config
-    from agent.delegation_registry import configured_backend
-    saved = configured_backend(config)
-    config = session_delegation_config(config, parent_agent)
+    """One :class:`TaskRoute` per task from the backend the session's ``delegate_task`` was built from (else
+    ``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another backend).
+    A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected. Identical routes
+    resolve credentials once per call (the default backend resolves exactly once)."""
+    from agent.delegation_backends import pinned_backend
+    if pinned := pinned_backend(parent_agent):
+        config = {**config, "backend": pinned}
     try:
         provider = _active_provider(config)
     except DelegationRouteError as exc:
@@ -329,7 +324,7 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
     routes: list[TaskRoute] = []
     for i, task in enumerate(task_list):
         try:
-            route = _route_one(provider, declared, i, task, config, saved)
+            route = _route_one(provider, declared, i, task, config)
             _check_backend_effort(i, route, config)
             routes.append(_route_to_task_route(route, parent_agent, cache, config, provider.name))
         except ValueError as exc:  # DelegationRouteError, the credential resolver's and the tier check's refusals

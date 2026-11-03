@@ -105,3 +105,23 @@ def test_parallel_calls_do_not_share_parser_or_emitter_state():
     with pytest.raises(yaml.YAMLError):
         yaml.safe_dump(object())
     assert yaml.safe_load(yaml.safe_dump({"healthy": True})) == {"healthy": True}
+
+
+@pytest.mark.parametrize("opening", [
+    "a:   # note\n",
+    "a:   # note\n  # more\n",
+    "a:\n  # describe the entries\n",
+    "a:\n\n",
+    "top:\n  a:   # note\n",
+], ids=["key-comment", "key-comment-and-line", "comment-line", "blank-line", "nested"])
+def test_roundtrip_dump_keeps_items_after_an_empty_mapping_apart(opening):
+    """Stock ruamel leaves ``no_newline`` set after an empty ``{}`` that opens a commented block
+    list, so a no-op save fused the next two items: ``[{}, False, 1]`` reloaded as
+    ``[{}, 'false - 1']`` with no error anywhere."""
+    indent = "    " if opening.startswith("top") else "  "
+    original = f"{opening}{indent}- {{}}\n{indent}- false\n{indent}- 1\nz: 2\n"
+    editor = yaml.roundtrip_yaml()
+    stream = io.StringIO()
+    editor.dump(editor.load(original), stream)
+    assert stream.getvalue() == original
+    assert yaml.safe_load(stream.getvalue()) == yaml.safe_load(original)

@@ -1264,7 +1264,8 @@ function persistDesktopDrivenGroup(
   allMeta: Record<string, BotMeta>,
   image: null | string,
   sourceCurrent: () => boolean,
-  unavailable: string
+  unavailable: string,
+  connectionId: null | string
 ): string {
   // Creating a group is always a FRESH room. Without this, re-creating a
   // group under an existing name (easy — the default name is just the
@@ -1300,6 +1301,11 @@ function persistDesktopDrivenGroup(
   updateGroupChat(groupName, (room: GroupChatRoom) => {
     room.members = roomMembers
     room.roomId = roomId
+
+    // Recorded once: later membership edits must not re-decide who drives it.
+    if (groupNeedsDesktopCourier(selected, connectionId)) {
+      room.engine = 'desktop'
+    }
 
     if (image) {
       room.image = image
@@ -1449,7 +1455,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       return
     }
 
-    const groupName = persistDesktopDrivenGroup(base, selected, allMeta, image, sourceCurrent, b.canonical.driverUnavailable)
+    const groupName = persistDesktopDrivenGroup(base, selected, allMeta, image, sourceCurrent, b.canonical.driverUnavailable, route.connectionId)
     host.notify({
       kind: 'info',
       message: `“${groupName}” created with ${selected.length} bots`

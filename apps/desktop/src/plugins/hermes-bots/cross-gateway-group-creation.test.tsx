@@ -8,7 +8,13 @@ import { $canonicalGroupBindings } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { $botMeta } from './data'
-import { $groupChats, $groupChatWorkspace } from './group-chat'
+import {
+  $groupChats,
+  $groupChatWorkspace,
+  groupChatSyncSnapshot,
+  mergeGroupChatSyncSnapshots,
+  mergeRemoteGroupChatSnapshotIntoRooms
+} from './group-chat'
 import type * as GroupChatModule from './group-chat'
 import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
@@ -156,4 +162,29 @@ it('a room whose members span connections opens in the Desktop-driven view on a 
   expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
   expect(request.mock.calls.filter(call => call[1] === 'groups.list')).toHaveLength(0)
+})
+
+it('a room created across connections stays Desktop-driven after its remote member is removed', async () => {
+  const { onCreated, view } = await pick([alpha, beta, remote], ['alpha', 'beta', 'remote'])
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create Group (3)' })) })
+  view.unmount()
+  const [[group]] = onCreated.mock.calls
+
+  expect($groupChats.get()[group].engine).toBe('desktop')
+
+  // Manage groups removed the remote bot: every remaining member is on this connection.
+  await act(async () => { render(<GroupChatWorkspace group={group} members={[alpha, beta]} />) })
+
+  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  expect(screen.getAllByRole('textbox').length).toBeGreaterThan(0)
+  expect(request.mock.calls.filter(call => call[1] === 'groups.list')).toHaveLength(0)
+})
+
+it("a room's Desktop engine rides room sync, so another Desktop keeps driving it too", () => {
+  const room = { engine: 'desktop' as const, log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'm1', text: 'hi' }], members: [alpha, beta], roomId: 'r1', watermarks: {} }
+  const published = groupChatSyncSnapshot({ Mixed: room })
+  const merged = mergeGroupChatSyncSnapshots({ version: 3, rooms: {} }, published)
+
+  expect(Object.values(merged.rooms)[0].engine).toBe('desktop')
+  expect(mergeRemoteGroupChatSnapshotIntoRooms(merged, {}).Mixed.engine).toBe('desktop')
 })

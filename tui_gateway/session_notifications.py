@@ -889,7 +889,7 @@ def _hud_surface_note(session: dict) -> str:
         from tools.tool_search_catalog import TOOL_CALL_NAME
         if TOOL_CALL_NAME in direct:
             # Tool search defers the desktop tools by default: they stay callable through the
-            # tool_call bridge, so the HUD note must count them and name the bridge (main 312f6bc2fd6).
+            # invoke_tool bridge, so the HUD note must count them and name the bridge (main 312f6bc2fd6).
             from agent.prompt_builder import hud_surface_note
             from agent.tool_executor import _tool_search_scoped_names
             return hud_surface_note(direct, _tool_search_scoped_names(agent))

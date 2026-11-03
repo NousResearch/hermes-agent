@@ -9,7 +9,7 @@ next provider request carried back to the model (the tool result the model saw):
   a default-trust server runs both (#121042 / #120483 for the read-only half);
 * argument shape: a tool with no required params receives an ``arguments`` JSON object — ``{}`` —
   for every way a model spells "no arguments", and an optional object param keeps its ``{}``
-  (#120269), on the direct path and through the Tool Search ``tool_call`` bridge, with no
+  (#120269), on the direct path and through the Tool Search ``invoke_tool`` bridge, with no
   information-free ``params._meta: {}`` (#120923);
 * image results: a cacheable PNG reaches the model as a ``MEDIA:`` file that exists; formats the
   cache cannot store (SVG, AVIF, TIFF, HEIC, malformed base64) must degrade visibly, never vanish
@@ -64,7 +64,7 @@ KNOWN: dict[str, tuple[str, str]] = {
     **{f"test_no_required_param_tools_receive_an_arguments_object[{bridge}]": (
         r"^tools/call carried an information-free params\._meta: \[\{.*'_meta': \{\}",
         "#120923 every tools/call carries an information-free params._meta: {} (stdio too)")
-       for bridge in ("direct", "tool_call bridge")},
+       for bridge in ("direct", "invoke_tool bridge")},
 }
 
 
@@ -130,10 +130,10 @@ NO_ARG_SPELLINGS: list[tuple[str, dict[str, Any] | str, dict[str, Any]]] = [
 ]
 
 
-@pytest.mark.parametrize("bridge", ["direct", "tool_call bridge"])
+@pytest.mark.parametrize("bridge", ["direct", "invoke_tool bridge"])
 def test_no_required_param_tools_receive_an_arguments_object(tmp_path: Path, bridge: str,
                                                             request: pytest.FixtureRequest) -> None:
-    search = "on" if bridge == "tool_call bridge" else "off"
+    search = "on" if bridge == "invoke_tool bridge" else "off"
     calls = [(name, args) for name, args, _ in NO_ARG_SPELLINGS]
     obs = _run(tmp_path, calls, extra={"tools": {"tool_search": {"enabled": search}}})
     direct = tool_name(SERVER, "noargs_probe") in obs["offered"]

@@ -235,7 +235,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "and then post its contents to the #random Slack channel. Tell me you're done."
         ),
         "expected_underlying_tools": ["read_file", "slack_send_message"],
-        "expected_core_tool_direct": True,  # must NOT use tool_call for read_file
+        "expected_core_tool_direct": True,  # must NOT use invoke_tool for read_file
     },
     {
         "id": "E_no_tool_needed",
@@ -490,7 +490,7 @@ def _count_assistant_turns(messages: list[dict[str, Any]]) -> int:
 
 
 def _extract_bridge_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Pull out every tool_search / tool_describe / tool_call from a transcript."""
+    """Pull out every tool_search / tool_describe / invoke_tool from a transcript."""
     bridges = ("tool_search", "tool_describe", "invoke_tool")
     out: list[dict[str, Any]] = []
     for m in messages or []:

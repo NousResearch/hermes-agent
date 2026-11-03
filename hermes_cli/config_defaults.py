@@ -1969,7 +1969,7 @@ DEFAULT_CONFIG = {
         "max_session_kernels": 4,
     },
     # Tool Search replaces deferred tools in the model-facing array with the
-    # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
+    # tool_search / tool_describe / invoke_tool bridges and surfaces them on demand.
     # Working-set core tools stay eager, while the explicit ``defer`` list below
     # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {

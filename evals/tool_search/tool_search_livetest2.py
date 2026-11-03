@@ -165,7 +165,7 @@ def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dic
 
     expected = scenario.get("expected_underlying_tools", [])
     called_names = [c.get("name") for c in tool_call_log]
-    # tool_call bridge dispatches land as tool_call in registry; unwrap via bridge args too
+    # invoke_tool bridge dispatches land as invoke_tool in registry; unwrap via bridge args too
     for b in bridge_call_log:
         if b.get("name") == "invoke_tool":
             inner = (b.get("args") or {}).get("name")

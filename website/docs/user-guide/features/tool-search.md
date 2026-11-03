@@ -35,7 +35,7 @@ place of the deferred ones:
 ```
 tool_search(queries, limit?)   search the deferred-tool catalog (one or more queries)
 tool_describe(names)           load the full schemas for one or more tools
-tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
+invoke_tool(calls)             invoke deferred tools; `calls` is an array of {name, arguments}
 ```
 
 `calls` takes one entry per invocation; a single call is an array of one.
@@ -59,8 +59,8 @@ Model: tool_search(["create a github issue", "send a slack message"])
 Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
   → { tools: { mcp_github_create_issue: { parameters: { ... } },
                mcp_slack_post_message: { parameters: { ... } } } }
-Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
-                             arguments: { title: "...", body: "..." } }] })
+Model: invoke_tool({ calls: [{ name: "mcp_github_create_issue",
+                               arguments: { title: "...", body: "..." } }] })
   → { ok: true, issue_number: 42 }
 ```
 
@@ -74,12 +74,13 @@ miss is not mistaken for a missing capability.
 `tool_describe` resolves every requested name in one call; unknown names
 are reported in `not_found` without failing the rest of the batch.
 
-When the model invokes `tool_call`, Hermes **unwraps the bridge** and
+When the model invokes `invoke_tool`, Hermes **unwraps the bridge** and
 dispatches the underlying tool exactly as if the model had called it
 directly. Pre-tool-call hooks, guardrails, approval prompts, and
 post-tool-call hooks all run against the real tool name — not against
-`tool_call`. The activity feed in the CLI and gateway also unwraps so you
-see the underlying tool, not the bridge.
+`invoke_tool`. The activity feed in the CLI and gateway also unwraps so you
+see the underlying tool, not the bridge. Sessions recorded before the bridge
+was renamed from `tool_call` still display correctly.
 
 ## When does it activate?
 
@@ -167,7 +168,7 @@ caps the group as a whole and a connector tool that answers the query is
 never pushed out by local tools that share one word with it. The gateway
 call is bounded at 30 seconds; a slow or dark gateway degrades to local
 results only. `tool_describe` fetches connector schemas from the gateway,
-and `tool_call` sends each connector entry in a batch as its own gateway
+and `invoke_tool` sends each connector entry in a batch as its own gateway
 request, in input order (a tool name the gateway does not know under its
 conventional slug is retried once under the literal slug, so an entry can
 cost two requests). If a connector ever shipped both `GMAIL_X` and a literal
@@ -226,10 +227,10 @@ disconnect audit. An unavailable Portal does not fall back to direct gateway
 account management. Tool discovery, execution, and connection-status watching
 continue through the gateway; the model tool cannot disconnect an account.
 
-`tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
+`invoke_tool` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
 is dispatched as its own gateway request, one after another; local deferred
-tools stay one entry per `tool_call`. A multi-entry batch that names a local
+tools stay one entry per `invoke_tool`. A multi-entry batch that names a local
 tool is rejected with a correction that restates the valid shape using the
 caller's own first entry, and a `calls` value emitted as a JSON string is
 parsed like the array form. Approvals settle per entry before
@@ -264,7 +265,7 @@ to any progressive-disclosure design, not specific to this implementation:
   prefix.
 - **No provider-native validation for deferred schemas.** `tool_describe`
   lets the model read a deferred tool's schema, but the provider still sees
-  only the generic `tool_call.arguments` object. Hermes therefore coerces and
+  only the generic `invoke_tool.arguments` object. Hermes therefore coerces and
   validates the underlying arguments locally before dispatch; the concrete
   tool or MCP server remains responsible for schemas Hermes cannot safely
   validate, such as malformed schemas or external references.
@@ -301,7 +302,7 @@ to any progressive-disclosure design, not specific to this implementation:
   short queries like "list issues" keep full recall, and an exact
   tool-name query always matches.
 - **Parallel execution unwraps the bridge.** The batch planner decides
-  concurrency on the *underlying* tool of a `tool_call`, not on the
+  concurrency on the *underlying* tool of an `invoke_tool`, not on the
   literal bridge name — so an MCP server opted in via
   `supports_parallel_tool_calls: true` keeps its concurrency when its
   tools are called through the bridge, and `tool_search` /
@@ -311,7 +312,7 @@ to any progressive-disclosure design, not specific to this implementation:
   the class of bug where a stored catalog drifts out of sync with the
   live tool registry.
 - **The catalog is scoped to the session's toolsets.** `tool_search`,
-  `tool_describe`, and `tool_call` only ever see and invoke tools the
+  `tool_describe`, and `invoke_tool` only ever see and invoke tools the
   session was actually granted. A subagent, kanban worker, or gateway
   session restricted to a subset of toolsets cannot use the bridge to
   discover or call a tool outside that subset — the deferred catalog is

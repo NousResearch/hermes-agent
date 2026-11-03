@@ -714,7 +714,7 @@ def _emit_post_tool_call_hook(
 def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                           enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]],
                           ids: Optional[_CallIds] = None):
-    """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
+    """Handle a Tool Search bridge call (tool_search / tool_describe / invoke_tool).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
     finished catalog read or error; ``(None, (name, args))`` when a validated

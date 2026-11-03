@@ -82,7 +82,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "mcp_servers config — always use this tool. After a skip or a timeout, do not re-ask on "
         "your own: continue without the app or ask in chat. A later request from the USER for that "
         "same app is not a re-ask — run it. A connected server's tools are named in the result and are "
-        "callable at once through tool_describe/tool_call. Where no card exists an MCP target runs at once and the result says what "
+        "callable at once through tool_describe/invoke_tool. Where no card exists an MCP target runs at once and the result says what "
         "happened, with a link for the user to open when one is needed. This tool can NOT "
         "disconnect, delete, or revoke an account — that is deliberately user-only. When asked, say so and direct the user to the "
         "Nous Portal (their org's Connectors page) or the desktop app."

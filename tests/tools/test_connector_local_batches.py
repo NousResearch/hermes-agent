@@ -97,7 +97,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
 
 
 def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
-    """Direct call: the dispatcher's own local-entry guard (unreachable via tool_call, which
+    """Direct call: the dispatcher's own local-entry guard (unreachable via invoke_tool, which
     partitions first) must reject with the echoed retry shape before any entry runs."""
     import model_tools
     from tools.connectors.dispatch import dispatch_connector_batch

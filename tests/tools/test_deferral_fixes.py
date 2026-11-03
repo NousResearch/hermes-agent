@@ -8,7 +8,7 @@ the behavior keep the tests.
 
 The bugs, as reproduced before the fix:
 
-1. ``_plan_tool_batch_segments`` classified the literal name ``tool_call``
+1. ``_plan_tool_batch_segments`` classified the literal name ``invoke_tool``
    as a sequential barrier, so a server opted in via
    ``supports_parallel_tool_calls: true`` silently lost all concurrency
    the moment the bridge activated (every deferred call arrives wrapped).
@@ -40,7 +40,7 @@ def _tc(name, arguments="{}", call_id=None):
 
 
 def _bridge_tc(underlying, arguments=None, call_id=None):
-    """A tool_call bridge invocation as the model emits it."""
+    """An invoke_tool bridge invocation as the model emits it."""
     return _tc(
         "invoke_tool",
         json.dumps({"name": underlying, "arguments": arguments or {}}),

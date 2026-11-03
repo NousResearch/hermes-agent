@@ -1400,7 +1400,7 @@ def test_sanitize_stubs_interrupted_first_occurrence_keeps_replay_pair():
 
 
 def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
-    """A tool_search-bridged result must go on the wire as ``tool_call``.
+    """A tool_search-bridged result must go on the wire as ``invoke_tool``.
 
     The executor labels the result with the unwrapped internal tool name for
     dispatch/hooks/logging; Gemini sees that as a functionResponse whose name

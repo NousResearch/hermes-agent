@@ -21,8 +21,8 @@ from tools.tool_search_catalog import (
     TOOL_CALL_NAMES,
 )
 
-# The old bridge name as a word, but not the model's own <tool_call> tag.
-_OLD_BRIDGE_WORD = re.compile(r"(?<![<\w/.])tool_call(?![\w>])")
+# The old bridge name as a word, but not the model's own <tool_call> / </tool_call> tag.
+_OLD_BRIDGE_WORD = re.compile(r"(?<![\w.<])(?<!</)tool_call(?![\w>])")
 _REPO = Path(__file__).resolve().parents[2]
 
 
@@ -40,10 +40,12 @@ def test_bridge_names_are_not_tool_call_delimiter_tags():
 def test_model_facing_bridge_text_never_names_the_old_bridge():
     from agent.onboarding_text import _CONNECTORS
     from model_tools import _VAULT_NO_PASSWORD_NOTE
+    from tools.connectors.mcp import NO_CARD_NOTE, NOTE
+    from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA
     from tools.tool_search import bridge_tool_schemas
     from tools.tool_search_validation import normalize_tool_call_entries
 
-    texts = [_CONNECTORS, _VAULT_NO_PASSWORD_NOTE]
+    texts = [_CONNECTORS, _VAULT_NO_PASSWORD_NOTE, NOTE, NO_CARD_NOTE, json.dumps(MANAGE_CONNECTIONS_SCHEMA)]
     for schema in bridge_tool_schemas(deferred_count=3, connections_granted=True):
         texts.append(json.dumps(schema))
     for bad in ({}, {"calls": "not json"}, {"calls": []}, {"calls": [1]}, {"calls": [{"arguments": {}}]},
@@ -53,6 +55,17 @@ def test_model_facing_bridge_text_never_names_the_old_bridge():
         texts.append(error)
     for text in texts:
         assert not _OLD_BRIDGE_WORD.search(text), text
+
+
+def test_prompt_surface_snapshot_never_names_the_old_bridge():
+    """Every system prompt and tool schema a stock install sends, as committed in the snapshot."""
+    snapshot = _REPO / "tests" / "fixtures" / "prompt_surface"
+    files = sorted((snapshot / "prompts").glob("*.txt")) + sorted((snapshot / "tools").glob("*.json"))
+    assert files
+    for path in files:
+        match = _OLD_BRIDGE_WORD.search(path.read_text(encoding="utf-8-sig"))
+        assert not match, f"{path.name}: {match.string[max(0, match.start() - 60):match.end() + 20]!r}"
+    assert not (snapshot / "tools" / "tool_call.json").exists()
 
 
 @pytest.mark.parametrize("bridge", sorted(TOOL_CALL_NAMES))

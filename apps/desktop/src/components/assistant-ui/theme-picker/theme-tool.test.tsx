@@ -90,7 +90,7 @@ describe('ThemeTool', () => {
     await waitFor(() => expect($accentOverride.get()).toBeNull())
   })
 
-  it('draws the layout card for a call made through the tool_call bridge', () => {
+  it('draws the layout card for a call made through the invoke_tool bridge', () => {
     const respond = park('layout')
 
     renderRow({

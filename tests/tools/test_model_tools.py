@@ -484,7 +484,7 @@ class TestDisabledToolsetsPostureToolset:
 # =========================================================================
 
 class TestBridgeDispatch:
-    """handle_function_call routes tool_search/tool_describe inline, unwraps tool_call,
+    """handle_function_call routes tool_search/tool_describe inline, unwraps invoke_tool,
     and refuses tool_call targets outside the session-scoped deferrable catalog."""
 
 

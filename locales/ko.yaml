@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "현재 모델"
     with_details: "{lead}\n세부 정보: {details}"
     agent_init_failed: "Hermes가 모델 연결을 시작하지 못했어요: {error}. 메시지는 전송되지 않았어요. `hermes doctor`로 설정을 점검하거나 /model로 다른 제공자를 선택하세요."
+    agent_init_refused: "게이트웨이가 세션 시작을 거부했어요: {error}. 메시지는 전송되지 않았어요."
   gateway:
     starting: "Hermes 게이트웨이(메시징 플랫폼)를 시작하는 중..."
   gateway_status:

@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "die huidige model"
     with_details: "{lead}\nBesonderhede: {details}"
     agent_init_failed: "Hermes kon nie die modelverbinding begin nie: {error}. Jou boodskap is nie gestuur nie. Voer `hermes doctor` uit om die opstelling na te gaan, of /model om 'n ander verskaffer te kies."
+    agent_init_refused: "Die gateway het geweier om die sessie te begin: {error}. Jou boodskap is nie gestuur nie."
   gateway:
     starting: "Begin Hermes Gateway (boodskapplatforms)..."
   gateway_status:

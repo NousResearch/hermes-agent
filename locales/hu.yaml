@@ -3210,6 +3210,7 @@ cli:
     the_current_model: "a jelenlegi modell"
     with_details: "{lead}\nRészletek: {details}"
     agent_init_failed: "A Hermes nem tudta felépíteni a modellkapcsolatot: {error}. Az üzeneted nem ment el. Ellenőrizd a beállítást a `hermes doctor` paranccsal, vagy válassz másik szolgáltatót a /model paranccsal."
+    agent_init_refused: "Az átjáró megtagadta a munkamenet elindítását: {error}. Az üzeneted nem ment el."
   gateway:
     starting: "Hermes átjáró indítása (üzenetküldő platformok)..."
   gateway_status:

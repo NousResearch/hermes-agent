@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "текущая модель"
     with_details: "{lead}\nПодробности: {details}"
     agent_init_failed: "Hermes не удалось установить соединение с моделью: {error}. Ваше сообщение не отправлено. Выполните `hermes doctor` для проверки настройки или /model, чтобы выбрать другого провайдера."
+    agent_init_refused: "Шлюз отказал в запуске сессии: {error}. Ваше сообщение не отправлено."
   gateway:
     starting: "Запуск шлюза Hermes (платформы обмена сообщениями)..."
   gateway_status:

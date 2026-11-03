@@ -93,10 +93,14 @@ def chat_error_response(
 def agent_init_failure_message(error: BaseException) -> str:
     """Copy for a failed AIAgent build on first message: the user's turn was dropped.
 
-    A gateway that cannot be reached keeps its whole first line: its discovery detail is already
-    bounded (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary
-    limit would cut mid-path."""
-    from hermes_cli.gateway_client import GatewayUnavailableError
+    A ``GatewayRPCError`` is a refusal the owner sent on the wire (``hermes_cli.gateway_client``),
+    never a provider failure, so it gets the refusal copy (#145286): the provider-connection copy
+    would send the user to repair a model connection that was never dialed. A gateway that cannot
+    be reached keeps its whole first line: its discovery detail is already bounded
+    (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary limit
+    would cut mid-path."""
+    from hermes_cli.gateway_client import GatewayRPCError, GatewayUnavailableError
 
     limit = None if isinstance(error, GatewayUnavailableError) else _SUMMARY_LIMIT
-    return t("cli.error.agent_init_failed", error=_short(refusal_text(error), limit) or type(error).__name__)
+    key = "cli.error.agent_init_refused" if isinstance(error, GatewayRPCError) else "cli.error.agent_init_failed"
+    return t(key, error=_short(refusal_text(error), limit) or type(error).__name__)

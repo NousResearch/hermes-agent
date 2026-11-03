@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "النموذج الحالي"
     with_details: "{lead}\nالتفاصيل: {details}"
     agent_init_failed: "تعذّر على Hermes بدء الاتصال بالنموذج: {error}. لم تُرسل رسالتك. شغّل `hermes doctor` لفحص الإعداد، أو /model لاختيار مزوّد آخر."
+    agent_init_refused: "رفضت البوابة بدء الجلسة: {error}. لم تُرسل رسالتك."
   gateway:
     starting: "جارٍ تشغيل بوّابة Hermes (منصات المراسلة)..."
   gateway_status:

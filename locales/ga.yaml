@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "an tsamhail reatha"
     with_details: "{lead}\nSonraí: {details}"
     agent_init_failed: "Níorbh fhéidir le Hermes an ceangal leis an tsamhail a thosú: {error}. Níor seoladh do theachtaireacht. Rith `hermes doctor` chun an socrú a sheiceáil, nó /model chun soláthraí eile a roghnú."
+    agent_init_refused: "Dhiúltaigh an geata an seisiún a thosú: {error}. Níor seoladh do theachtaireacht."
   gateway:
     starting: "Ag tosú Hermes Gateway (ardáin teachtaireachtaí)..."
   gateway_status:

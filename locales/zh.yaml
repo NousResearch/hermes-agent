@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "当前模型"
     with_details: "{lead}\n详情：{details}"
     agent_init_failed: "Hermes 无法建立模型连接：{error}。你的消息未发送。运行 `hermes doctor` 检查配置，或用 /model 选择其他提供方。"
+    agent_init_refused: "网关拒绝了会话启动：{error}。你的消息未发送。"
   gateway:
     starting: "正在启动 Hermes 网关（消息平台）..."
   gateway_status:

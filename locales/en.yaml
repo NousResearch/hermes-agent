@@ -3294,6 +3294,7 @@ cli:
     the_current_model: "the current model"
     with_details: "{lead}\nDetails: {details}"
     agent_init_failed: "Hermes couldn't start the model connection: {error}. Your message was not sent. Run `hermes doctor` to check the setup, or /model to pick a different provider."
+    agent_init_refused: "The gateway refused to start the session: {error}. Your message was not sent."
   gateway:
     starting: "Starting Hermes Gateway (messaging platforms)..."
   gateway_status:

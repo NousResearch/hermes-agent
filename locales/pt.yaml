@@ -3193,6 +3193,7 @@ cli:
     the_current_model: "o modelo atual"
     with_details: "{lead}\nDetalhes: {details}"
     agent_init_failed: "O Hermes não conseguiu iniciar a conexão com o modelo: {error}. Sua mensagem não foi enviada. Execute `hermes doctor` para verificar a configuração ou /model para escolher outro fornecedor."
+    agent_init_refused: "O gateway recusou iniciar a sessão: {error}. Sua mensagem não foi enviada."
   gateway:
     starting: "Iniciando o Hermes Gateway (plataformas de mensagens)..."
   gateway_status:

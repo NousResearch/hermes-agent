@@ -3502,6 +3502,7 @@ cli:
       {lead}
       Détails : {details}
     agent_init_failed: "Hermes n'a pas pu établir la connexion au modèle : {error}. Votre message n'a pas été envoyé. Exécutez `hermes doctor` pour vérifier l'installation, ou /model pour choisir un autre fournisseur."
+    agent_init_refused: "Le gateway a refusé de démarrer la session : {error}. Votre message n'a pas été envoyé."
   gateway:
     starting: "Démarrage du Hermes Gateway (plateformes de messagerie)..."
   gateway_status:

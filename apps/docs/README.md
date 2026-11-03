@@ -74,6 +74,24 @@ npm run typecheck
 CI also lints diagrams with `ascii-guard`. Use Mermaid fences or plain lists and
 tables instead of ASCII box diagrams.
 
+## Search verification
+
+The modal and full-page search (`/docs/search/` and `/docs/zh-Hans/search/`)
+share locale filters and query the existing Algolia index. Keep both the docs
+version tag and `default` tag in the OR-group so catalog landing pages remain
+searchable. OpenSearch descriptors and discovery links are generated per locale.
+
+The deployed-site monitor reads `search-config.json`, opens API result URLs,
+drives the modal, and checks both full search pages. From the repository root,
+with Playwright and its Chromium installed in the named directory:
+
+```sh
+DOCS_URL=http://127.0.0.1:3031/docs PLAYWRIGHT_DIR=/path/to/playwright \
+  node apps/docs/scripts/check-live-search.mjs
+```
+
+This is a read-only check against the existing index; it does not crawl or update it.
+
 ## Publishing and compatibility
 
 `next.config.mjs` targets a static export in `out/`. The existing repository
@@ -88,15 +106,18 @@ npm run build
 node scripts/validate-output.mjs
 ```
 
-Postbuild emits the bilingual sitemap and legacy redirect pages. Redirects keep
-query strings, fragments and the current origin, so they also work in a local
-static preview. Their hashed script is covered by the existing `_next/static`
-asset-retention policy.
+Postbuild emits the bilingual sitemap, OpenSearch descriptors and legacy redirect
+pages. Redirects keep query strings, fragments and the current origin, so they
+also work in a local static preview. Their hashed script is covered by the existing
+`_next/static` asset-retention policy. The legacy `/docs/zh-Hans/api/`, `/docs/zh-Hans/oauth/`,
+`/docs/zh-Hans/llms.txt` and `/docs/zh-Hans/llms-full.txt` endpoints retain
+byte-identical copies of their canonical, unlocalized artifacts.
 
 The read-only validator checks source-derived routes and locale fallbacks, catalog
 pages, HTML/RSC files, redirect/sitemap recipes, published JSON and copied public
-and Next assets. Missing or malformed artifacts fail CI rather than passing as
-empty development fallbacks. The production skills-index health check remains
+and Next assets, including the localized compatibility copies. Missing or
+malformed artifacts fail both CI and deployment before staging, rather than
+passing as empty development fallbacks. The production skills-index health check remains
 owned by the deployment workflow; the output validator does not crawl registries.
 
 Passing these checks is not a production-cutover approval. Legacy URL/anchor and

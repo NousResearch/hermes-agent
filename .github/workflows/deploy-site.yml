@@ -190,6 +190,10 @@ jobs:
           # step above re-exports HERMES_PYTHON to a tools-only environment.
           HERMES_PYTHON: ${{ steps.pm.outputs.python-path }}
 
+      - name: Validate exported docs before staging
+        run: node scripts/validate-output.mjs
+        working-directory: apps/docs
+
       - name: Stage deployment
         run: |
           mkdir -p _site/docs

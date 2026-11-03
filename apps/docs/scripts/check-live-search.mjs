@@ -4,9 +4,9 @@
 // Search broke in production twice with a green build: once when the Algolia
 // search key was deleted, once when Vercel access controls got in the way.
 // Neither shows up in CI because CI never talks to the deployed site, so this
-// script does: it reads the Algolia credentials out of the bundle the site is
-// actually serving, queries Algolia with the site's Origin, opens the top
-// hits, and then drives the real search modal in a headless browser.
+// script does: it reads the Algolia credentials out of the search-config.json
+// the site is actually serving, queries Algolia with the site's Origin, opens
+// the top hits, and then drives the real search modal in a headless browser.
 //
 // Usage: node apps/docs/scripts/check-live-search.mjs [--no-browser]
 //   DOCS_URL       site to probe (default https://hermes-agent.nousresearch.com/docs)
@@ -19,21 +19,12 @@ import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import { QUERIES, UA, checkAlgolia, checkHitPagesOpen, readDeployedConfig } from './live-search-probe.mjs';
+
 const DOCS_URL = (process.env.DOCS_URL || 'https://hermes-agent.nousresearch.com/docs').replace(/\/$/, '');
-const ORIGIN = new URL(DOCS_URL).origin;
-// Terms that must always match many pages; one per major area of the docs.
-const QUERIES = ['telegram', 'install', 'skills'];
-const MIN_HITS = 5;
-// Every request (body included) gets a deadline, and the whole probe gets one,
-// so a slow-drip server fails the check with time left to retry and alert
-// instead of running into the job's timeout.
-const REQUEST_TIMEOUT_MS = 20_000;
+// The whole probe gets one deadline, so a slow-drip server fails the check
+// with time left to retry and alert instead of running into the job's timeout.
 const PROBE_DEADLINE_MS = 240_000;
-const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 hermes-docs-search-monitor';
-// Vercel keeps one cache entry per exact Accept-Encoding string, so a request
-// without Chrome's value reads a different copy of the page than visitors do
-// (after a deploy it got a 404 for a bundle every browser still loaded).
-const ACCEPT_ENCODING = 'gzip, deflate, br, zstd';
 
 const failures = [];
 const fail = (msg) => {
@@ -42,105 +33,6 @@ const fail = (msg) => {
   if (process.env.GITHUB_ACTIONS) console.log(`::error title=Docs search::${msg.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`);
 };
 const ok = (msg) => console.log(`ok   ${msg}`);
-
-async function get(url, headers = {}) {
-  const res = await fetch(url, {
-    headers: { 'user-agent': UA, 'accept-encoding': ACCEPT_ENCODING, ...headers },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  return { res, body: await res.text() };
-}
-
-// Vercel's firewall/challenge and password protection answer 403/401/429
-// with an HTML page of their own; name that instead of "bad status".
-function blockedBy(res) {
-  if (res.headers.get('x-vercel-mitigated')) return `Vercel firewall (${res.headers.get('x-vercel-mitigated')})`;
-  if (res.status === 401) return 'auth wall (401)';
-  if (res.status === 403 || res.status === 429) return `HTTP ${res.status}`;
-  return null;
-}
-
-async function readDeployedConfig() {
-  const { res, body } = await get(`${DOCS_URL}/`);
-  const block = blockedBy(res);
-  if (block || !res.ok) {
-    fail(`docs page ${DOCS_URL}/ is not reachable for visitors: ${block || `HTTP ${res.status}`}`);
-    return null;
-  }
-  const bundle = body.match(/src="([^"]*\/main\.[0-9a-f]+\.js)"/)?.[1];
-  if (!bundle) {
-    fail('docs page has no main.<hash>.js bundle; cannot read the deployed search config');
-    return null;
-  }
-  const { res: jsRes, body: js } = await get(new URL(bundle, ORIGIN).href);
-  if (!jsRes.ok) {
-    // The page loads no JS at all, so search and every other client feature
-    // are dead; usually cached HTML naming a bundle a later deploy removed.
-    fail(
-      `docs page (cached ${res.headers.get('age') ?? '?'}s) loads ${bundle}, which returns HTTP ${jsRes.status}; ` +
-        'the page cannot run any JavaScript (a deploy likely dropped an asset that cached pages still reference)',
-    );
-    return null;
-  }
-  // Theme code destructures `algolia:{...}` too; take the block that carries
-  // all three fields, each read on its own so key order and quoting in the
-  // compiled config do not matter.
-  const field = (cfg, name) => cfg.match(new RegExp(`["']?${name}["']?\\s*:\\s*(["'])([^"']+)\\1`))?.[2];
-  const [appId, apiKey, indexName] =
-    js
-      .split('algolia:{')
-      .slice(1)
-      .map((cfg) => ['appId', 'apiKey', 'indexName'].map((name) => field(cfg.slice(0, 2000), name)))
-      .find((fields) => fields.every(Boolean)) || [];
-  if (!appId) {
-    fail(`deployed bundle ${bundle} has no complete Algolia config; search is not configured on the live site`);
-    return null;
-  }
-  ok(`deployed config: app ${appId}, index "${indexName}" (from ${bundle})`);
-  return { appId, apiKey, indexName };
-}
-
-async function checkAlgolia({ appId, apiKey, indexName }) {
-  const res = await fetch(`https://${appId}-dsn.algolia.net/1/indexes/*/queries`, {
-    method: 'POST',
-    headers: {
-      'x-algolia-application-id': appId,
-      'x-algolia-api-key': apiKey,
-      origin: ORIGIN,
-      referer: `${DOCS_URL}/`,
-      'content-type': 'application/json',
-    },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    body: JSON.stringify({
-      requests: QUERIES.map((query) => ({ indexName, query, hitsPerPage: 3, attributesToRetrieve: ['url'] })),
-    }),
-  });
-  const body = await res.text();
-  if (!res.ok) {
-    // 403 "Invalid Application-ID or API key" is the deleted-key outage.
-    fail(`Algolia rejected the deployed search key: HTTP ${res.status} ${body.slice(0, 200)}`);
-    return [];
-  }
-  const urls = [];
-  for (const [i, result] of JSON.parse(body).results.entries()) {
-    const hosts = result.hits.map((h) => new URL(h.url).origin);
-    if (result.nbHits < MIN_HITS) fail(`query "${QUERIES[i]}" returned ${result.nbHits} hits (< ${MIN_HITS}); index looks empty`);
-    else if (!hosts.every((h) => h === ORIGIN)) fail(`query "${QUERIES[i]}" hits point off-site: ${hosts.join(', ')}`);
-    else ok(`query "${QUERIES[i]}": ${result.nbHits} hits`);
-    if (result.hits[0]) urls.push(result.hits[0].url);
-  }
-  return urls;
-}
-
-async function checkHitPagesOpen(urls) {
-  for (const url of urls) {
-    const { res } = await get(url);
-    const block = blockedBy(res);
-    if (block || !res.ok) fail(`search result ${url} does not open: ${block || `HTTP ${res.status}`}`);
-    else ok(`result opens: ${url}`);
-  }
-}
 
 async function checkBrowser() {
   const require = createRequire(path.join(process.env.PLAYWRIGHT_DIR || process.cwd(), 'noop.js'));
@@ -156,7 +48,16 @@ async function checkBrowser() {
       if (r.url().includes('algolia')) algoliaErrors.push(`${r.failure()?.errorText} ${r.url().split('?')[0]}`);
     });
     await page.goto(`${DOCS_URL}/`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await page.locator('.DocSearch-Button').first().click({ timeout: 20_000 });
+    // Fumadocs renders the search trigger itself (the Docusaurus
+    // .DocSearch-Button is gone from the export). The full navbar trigger is
+    // the visible one; the compact [data-search] icons are the fallback for
+    // layouts that only render those.
+    try {
+      await page.locator('[data-search-full]').first().click({ timeout: 20_000 });
+    } catch {
+      await page.locator('[data-search]').first().click({ timeout: 20_000 });
+    }
+    // The open dialog is still @docsearch/react's DocSearchModal.
     await page.locator('.DocSearch-Input').fill(QUERIES[0], { timeout: 10_000 });
     try {
       await page.locator('.DocSearch-Hit').first().waitFor({ timeout: 15_000 });
@@ -166,14 +67,47 @@ async function checkBrowser() {
       return;
     }
     ok(`browser: search modal lists ${await page.locator('.DocSearch-Hit').count()} results for "${QUERIES[0]}"`);
+    for (const [locale, prefix, query] of [['en', '', 'skills hub'], ['zh-Hans', '/zh-Hans', '安装']]) {
+      const response = await page.goto(`${DOCS_URL}${prefix}/search/?q=${encodeURIComponent(query)}`, {
+        waitUntil: 'domcontentloaded', timeout: 30_000,
+      });
+      if (!response?.ok()) {
+        fail(`full search page ${locale} returned HTTP ${response?.status() ?? 'no response'}`);
+        continue;
+      }
+      try {
+        const input = page.locator('#docs-search-input');
+        await input.waitFor({ timeout: 15_000 });
+        const results = page.locator('form[role="search"]').locator('..').locator('ul > li > a');
+        await results.first().waitFor({ timeout: 15_000 });
+        if (await input.inputValue() !== query) throw new Error('the URL query did not reach the input');
+        if (locale === 'en') {
+          const skills = new URL(`${DOCS_URL}/skills/`).pathname;
+          await results.locator(`xpath=self::a[@href="${skills}" or @href="${skills.slice(0, -1)}"]`).first().waitFor({ timeout: 10_000 });
+        }
+        ok(`browser: ${locale} full search lists ${await results.count()} results for "${query}"`);
+      } catch (error) {
+        fail(`full search page ${locale} failed: ${error.message.split('\n')[0]}`);
+      }
+    }
   } finally {
     await browser.close();
   }
 }
 
 async function probe() {
-  const config = await readDeployedConfig();
-  if (config) await checkHitPagesOpen(await checkAlgolia(config));
+  const found = await readDeployedConfig(DOCS_URL);
+  if (found.error) {
+    fail(found.error);
+  } else {
+    ok(found.note);
+    const { failures: algoliaFailures, notes, hitUrls } = await checkAlgolia(found.config, { docsUrl: DOCS_URL });
+    for (const note of notes) ok(note);
+    for (const failure of algoliaFailures) fail(failure);
+    const opened = await checkHitPagesOpen(hitUrls);
+    for (const note of opened.notes) ok(note);
+    for (const failure of opened.failures) fail(failure);
+  }
   if (!process.argv.includes('--no-browser')) {
     await checkBrowser().catch((e) => fail(`browser check crashed: ${e.message.split('\n')[0]}`));
   }

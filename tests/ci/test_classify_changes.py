@@ -137,9 +137,21 @@ CASES = {
     ),
     # A docs app file the Python suite cannot read stays site-only.
     "docs app config → site": (["apps/docs/next.config.mjs"], _lanes(site=True)),
-    # The legacy compatibility copy (the raw URL released clients fetch) still
-    # deploys the site and touches no Python contract by itself.
-    "legacy model catalog copy → site": (["website/static/api/model-catalog.json"], _lanes(site=True)),
+    # Both published model catalogs are pinned byte-for-byte by the Python
+    # consumer contract, so either copy changing must run that suite.
+    "legacy model catalog copy → python + site": (
+        ["website/static/api/model-catalog.json"], _lanes(python=True, site=True),
+    ),
+    "canonical model catalog copy → python + site": (
+        ["apps/docs/public/api/model-catalog.json"], _lanes(python=True, site=True),
+    ),
+    "other catalog feeds → site only": (
+        ["apps/docs/public/api/plugins.json"], _lanes(site=True),
+    ),
+    "model catalog path lookalikes → site only": (
+        ["apps/docs/public/api/model-catalog.json.map", "website/static/api/model-catalog.json.map"],
+        _lanes(site=True),
+    ),
     # uv lock --check re-resolves against PyPI, so it must stay off for any
     # diff that can't desync the lockfile — a registry blip on a docs PR
     # otherwise shows up as a blocking "uv.lock out of sync" red X.

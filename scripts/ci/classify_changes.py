@@ -145,6 +145,9 @@ _PY_RELEVANT_SITE = (
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test
 # that can catch the drift, so these force the Python lane too.
 _PY_RELEVANT_CONTRACT_FILES = {
+    # The published catalog and released-client raw URL must remain identical.
+    "apps/docs/public/api/model-catalog.json",
+    "website/static/api/model-catalog.json",
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",

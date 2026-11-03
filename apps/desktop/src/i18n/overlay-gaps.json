@@ -1076,6 +1076,8 @@
   "settings.appearance.appActionsLeft": ["ar"],
   "settings.appearance.appActionsRight": ["ar"],
   "settings.appearance.appActionsTitle": ["ar"],
+  "settings.appearance.botTabsDesc": ["ar"],
+  "settings.appearance.botTabsTitle": ["ar"],
   "settings.appearance.chatFontDesc": ["ar"],
   "settings.appearance.chatFontPlaceholder": ["ar"],
   "settings.appearance.chatFontPreview": ["ar"],

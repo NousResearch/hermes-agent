@@ -980,6 +980,9 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      botTabsTitle: "Show only the selected bot's tabs",
+      botTabsDesc:
+        "In Bot Mode, other bots' tabs and session tabs leave the tab strip but stay open, and come back when you select their bot.",
       appActionsTitle: 'App Actions',
       appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
       appActionsLeft: 'Left',

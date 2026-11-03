@@ -1011,6 +1011,9 @@ export const esOverrides = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Siempre',
       tabStripNever: 'Nunca',
+      botTabsTitle: 'Mostrar solo las pestañas del bot seleccionado',
+      botTabsDesc:
+        'En el modo Bot, la barra de pestañas muestra solo las pestañas del bot seleccionado. Las demás siguen abiertas y vuelven al seleccionar su bot.',
       appActionsTitle: 'Acciones de la app',
       appActionsDesc:
         'Dónde se colocan Configuración, Diseño y HUD en la barra de título. A la derecha deja espacio para pestañas a la izquierda.',

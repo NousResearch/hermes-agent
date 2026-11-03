@@ -29,7 +29,8 @@ import {
   isPaneVisible,
   moveTreePane,
   noteActiveTreeGroup,
-  revealTreePane
+  revealTreePane,
+  workspaceStripTabs
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -2659,8 +2660,9 @@ export function closeSessionTile(storedSessionId: string) {
 export function closeAllOpenSessionTiles(paneId: string): void {
   const tree = $layoutTree.get()
   // Copy the live group list. closeSessionTile can rewrite the layout
-  // tree; iterating the original array would skip every other pane.
-  const panes = [...((tree ? findGroupOfPane(tree, paneId) : null)?.panes ?? [])]
+  // tree; iterating the original array would skip every other pane. Only the
+  // tabs the strip shows: another bot's scoped-out tabs stay open.
+  const panes = workspaceStripTabs((tree ? findGroupOfPane(tree, paneId) : null) ?? { panes: [] })
 
   for (const id of panes) {
     if (id.startsWith(TILE_PANE_PREFIX)) {

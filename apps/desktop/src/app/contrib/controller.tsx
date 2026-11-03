@@ -530,7 +530,14 @@ const syncWorkspaceTitle = () => {
       tabDrag: workspaceTabDrag,
       tabActions: workspaceTabActions,
       tabWrap: wrapWorkspaceTab,
-      uncloseable: true
+      uncloseable: true,
+      // Main has no tile to carry a scope: it is a bot's tab while it shows a
+      // chat last opened as that bot's (`$botChatScopes`), else Sessions.
+      workspaceOwner: () => {
+        const scope = selected ? $botChatScopes.get()[selected] : undefined
+
+        return scope?.workspaceMode === 'bots' && scope.workspaceOwnerKey ? scope.workspaceOwnerKey : null
+      }
     },
     render: renderWorkspacePane
   })

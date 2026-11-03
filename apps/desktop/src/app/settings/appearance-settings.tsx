@@ -34,7 +34,13 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
-import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import {
+  $botTabsFollowSelectedBot,
+  $tabStripDefault,
+  setBotTabsFollowSelectedBot,
+  setTabStripDefault,
+  type TabStripDefault
+} from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -423,6 +429,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const interfaceMode = useStore($interfaceMode)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
+  const botTabsFollowSelectedBot = useStore($botTabsFollowSelectedBot)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
   const chatTextScale = useStore($chatTextScale)
@@ -763,6 +770,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={a.tabStripDesc}
               id={settingElementId(ids.tabStrip)}
               title={a.tabStripTitle}
+            />
+          )}
+
+          {show('window-layout') && (
+            <ToggleRow
+              checked={botTabsFollowSelectedBot}
+              description={a.botTabsDesc}
+              id={settingElementId(ids.botTabs)}
+              label={a.botTabsTitle}
+              onChange={setBotTabsFollowSelectedBot}
             />
           )}
 

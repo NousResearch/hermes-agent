@@ -1008,6 +1008,9 @@ export const deOverrides = {
       tabStripAuto: 'Automatisch',
       tabStripAlways: 'Immer',
       tabStripNever: 'Nie',
+      botTabsTitle: 'Nur Tabs des ausgewählten Bots anzeigen',
+      botTabsDesc:
+        'Im Bot-Modus zeigt die Tableiste nur die Tabs des ausgewählten Bots. Andere Tabs bleiben geöffnet und erscheinen wieder, wenn du ihren Bot auswählst.',
       appActionsTitle: 'App-Aktionen',
       appActionsDesc:
         'Wo Einstellungen, Layout und HUD in der Titelleiste sitzen. Rechts lässt Platz für Tabs auf der linken Seite.',

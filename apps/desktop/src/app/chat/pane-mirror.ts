@@ -67,6 +67,8 @@ export interface PaneMirror<T> {
   /** Override the tile's TAB drag (session drop language: stack/split/link).
    *  Returns whether it took the drag (see PaneChrome.tabDrag). */
   tabDrag?: (key: string, event: ReactPointerEvent<HTMLElement>, onTap: () => void) => boolean
+  /** Whose Bot Mode tab this tile is (see PaneChrome.workspaceOwner). */
+  workspaceOwner?: (key: string) => null | string
   /** Wired as the pane's closer (tab Close). */
   close: (key: string) => void
   /** A tile that leaves the source but should keep its live body: its pane
@@ -103,7 +105,8 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
       : undefined,
     tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
     tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
-    tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
+    tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined,
+    workspaceOwner: cfg.workspaceOwner ? () => cfg.workspaceOwner!(key) : undefined
   })
 
   const dispose = (key: string) => {

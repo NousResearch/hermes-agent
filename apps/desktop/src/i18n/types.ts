@@ -800,6 +800,8 @@ export interface Translations extends NoticeTranslations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      botTabsTitle: string
+      botTabsDesc: string
       appActionsTitle: string
       appActionsDesc: string
       appActionsLeft: string

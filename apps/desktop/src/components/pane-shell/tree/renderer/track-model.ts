@@ -136,6 +136,10 @@ interface PaneChrome extends PaneSizing {
    *  this and the readers resolve it at menu-open / drag-start time. Absent,
    *  they fall back to `title`. */
   tabTitleText?: () => string
+  /** Whose tab this is in Bot Mode: a bot's opaque owner key, or `null` for a
+   *  Sessions tab. Absent = not a workspace tab (never scoped). Read only by
+   *  the opt-in per-bot strip (`workspaceStripPanes`) — never for rendering. */
+  workspaceOwner?: () => null | string
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome

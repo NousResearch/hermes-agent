@@ -44,6 +44,24 @@ def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
 
 
 @pytest.mark.platforms("windows")
+def test_registered_task_launchers_reads_each_hermes_task_action(monkeypatch):
+    """The install probe's view of the Scheduled Tasks: the launcher each ``Hermes_Gateway*`` task
+    starts, as the task XML this module writes names it, and a pre-``wscript`` task's ``.cmd``."""
+    launcher = r"C:\Users\Ann Lee\custom hermes\gateway-service\Hermes_Gateway_work.vbs"
+    legacy = r"C:\Users\ann\h2\gateway-service\Hermes_Gateway.cmd"
+    current = gateway_windows._build_scheduled_task_xml("Hermes_Gateway_work", Path(launcher), "PC\\ann")
+    older = current.replace("<Command>wscript.exe</Command>", f"<Command>{legacy}</Command>").replace(
+        f'//B //Nologo "{launcher}"', "")
+    listing = ('\r\n"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","N/A","Ready"\r\n'
+               '"\\Hermes_Gateway_work","N/A","Ready"\r\n"\\Hermes_Gateway","N/A","Running"\r\n')
+    xml = {"Hermes_Gateway_work": current, "Hermes_Gateway": older}
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks",
+                        lambda args, timeout=None: (0, listing if "/FO" in args else xml[args[2]], ""))
+
+    assert gateway_windows.registered_task_launchers() == [launcher, legacy]
+
+
+@pytest.mark.platforms("windows")
 def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     """Real schtasks.exe on a real task whose argument carries a non-ASCII (ANSI-representable)
     character, queried from a UTF-8-mode interpreter: the template/live comparison in
@@ -474,6 +492,23 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
 
 
+def test_reconcile_rewrites_an_older_startup_entry_as_utf16(monkeypatch, tmp_path):
+    """wscript.exe reads a BOM-less .vbs in the ANSI code page: an older UTF-8 Startup entry chaining a
+    non-ASCII path quits silently at logon (FileExists on the garbled target is false). The update
+    reconcile rewrites it as UTF-16 with a BOM."""
+    import codecs
+    startup, script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "Usuário 方舟")
+    (startup / "Hermes_Gateway_alice.cmd").unlink()
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    assert gateway_windows.reconcile_autostart_launchers() == ([], [])
+    raw = (startup / "Hermes_Gateway_alice.vbs").read_bytes()
+    assert raw.startswith(codecs.BOM_UTF16_LE)
+    assert raw.decode("utf-16") == gateway_windows._build_startup_launcher(script)
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.vbs"]
+
+
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
     """#80569: no task, legacy .cmd locked. The .vbs gets written but the .cmd survives, so both fire
     at logon; reconcile must warn instead of reporting a migration, and doctor --fix must not count it."""
@@ -842,3 +877,11 @@ def test_wizard_install_service_asks_once_and_never_starts_after_windows_install
 
     assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
     assert starts == []
+
+
+def test_decode_schtasks_output_honours_a_utf16_bom():
+    """A genuine UTF-16 write (BOM) decodes as UTF-16, never as a code page; a malformed one falls
+    back like any other bytes instead of raising past callers that catch only timeout/OS errors."""
+    text = "Herm\u00e9s"
+    assert gateway_windows._decode_schtasks_output(text.encode("utf-16")) == text
+    assert gateway_windows._decode_schtasks_output(b"\xff\xfe<\x00?")

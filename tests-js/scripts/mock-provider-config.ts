@@ -14,6 +14,7 @@ const configSchema = z.object({
   auxiliary: z.object({ title_generation: section.optional() }).passthrough().optional(),
   approvals: section.optional(),
   display: section.optional(),
+  onboarding: section.optional(),
 }).passthrough()
 
 //: Entry name this writer owns in ``custom_providers``; reconfiguring replaces
@@ -71,6 +72,10 @@ export function writeMockProviderConfig(
     ],
     auxiliary: { ...config.auxiliary, title_generation: { ...config.auxiliary?.title_generation, enabled: false } },
     approvals: { ...config.approvals, mode: 'off' },
+    // A fresh desktop install opens the first-run onboarding chat, which takes the
+    // first message the smoke sends; these journeys test install and update, so
+    // the root config records onboarding as done.
+    onboarding: { ...config.onboarding, run: false },
     ...extra,
   }
 

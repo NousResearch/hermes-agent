@@ -29,7 +29,8 @@ from tools.approval_context import (
     get_current_session_key,
 )
 from tools.approval_detection import (
-    _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
+    _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
+    detect_hardline_command,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -52,6 +53,9 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
+# ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
+_launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
@@ -207,6 +211,16 @@ def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
     return False
 
 
+def observe_gateway_settle(session_key: str, request_id: str, observer) -> bool:
+    """Observe a pending approval without replacing its existing settle hook."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.observers.append(observer)
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
@@ -290,6 +304,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
@@ -323,7 +338,10 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return True
+    from gateway.session_finite import unattended_turn
+    return unattended_turn()
 
 
 def _permanent_set() -> set:
@@ -335,17 +353,30 @@ def _permanent_set() -> set:
     """
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        return _permanent_approved
-    home_key = hermes_home_key()
-    approved = _permanent_approved_by_home.get(home_key)
-    if approved is None:
-        try:
-            approved = _read_permanent_allowlist()
-        except Exception as e:
-            logger.warning("Failed to load permanent allowlist: %s", e)
-            approved = set()
-        _permanent_approved_by_home[home_key] = approved
+        approved, key = _permanent_approved, ""
+    else:
+        key = hermes_home_key()
+        approved = _permanent_approved_by_home.setdefault(key, set())
+    _sync_permanent_from_disk(approved, key)
     return approved
+
+
+def _sync_permanent_from_disk(approved: set, key: str) -> None:
+    """Apply hand edits to ``command_allowlist`` made since the last sync. The gateway daemon
+    outlives any one session, so an entry the operator removed must stop being honoured now, not
+    at restart. Only the on-disk delta is applied: approvals this process made but could not save
+    survive. The config read is cached on the file signature. Callers hold ``_lock``."""
+    try:
+        on_disk = _read_permanent_allowlist()
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e, exc_info=True)
+        return
+    baseline = _permanent_baseline_by_home.get(key, set())
+    if on_disk == baseline:
+        return
+    approved.difference_update(baseline - on_disk)
+    approved.update(on_disk - baseline)
+    _permanent_baseline_by_home[key] = on_disk
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -386,9 +417,12 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         approve_session(session_key, key)
         if choice == "always":
             approve_permanent(key)
+            # Pass only this process's grants, taken against the baseline of the same snapshot. A
+            # check that syncs a hand removal before the save runs advances the baseline, so a
+            # removed entry left in a full snapshot would pass for a new grant and be written back.
             with _lock:
-                snapshot = set(_permanent_set())
-            save_permanent_allowlist(snapshot)
+                grants = _permanent_set() - _permanent_baseline_by_home.get(_baseline_key(), set())
+            save_permanent_allowlist(grants)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
@@ -454,7 +488,7 @@ def save_permanent_allowlist(patterns: set):
     resurrected the ones removed. The result written is ``what is on disk now``
     plus ``what this process approved since its own baseline``; revoked entries are
     also dropped from the governing permanent set so ``is_approved()`` stops
-    honouring them. Nothing re-reads the file on the approval hot path.
+    honouring them (``_sync_permanent_from_disk`` does the same on every check).
 
     ``patterns`` may only ADD: an entry left out of it is not removed, because the
     on-disk list wins for anything this process did not approve itself. Remove
@@ -632,6 +666,22 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
+def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
+    """``(pattern_keys, description)`` still needing consent, or None. The first match plus every
+    content-level rule (credential upload, invisible Unicode) each need their own approval, so an
+    approved pipe-to-shell cannot wave through the credential upload in the same command; overlapping
+    verb rules keep the first key only. ``approved(key)`` is the session or permanent check."""
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous:
+        return None
+    findings = [(pattern_key, description)]
+    findings += [(key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+    pending = [(key, text) for key, text in findings if not approved(key)]
+    if not pending:
+        return None
+    return [key for key, _ in pending], "; ".join(text for _, text in pending)
+
+
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     if ctx.mode() != "deny":
@@ -642,11 +692,12 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if is_dangerous and not _is_permanently_approved(pattern_key):
+    pending = _unapproved_findings(command, _is_permanently_approved)
+    if pending is not None:
+        keys, description = pending
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
-            result.update(pattern_key=pattern_key, description=description)
+            result.update(pattern_key=keys[0], description=description)
         return result
     return None
 
@@ -780,7 +831,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     owner override reduces every surface to once/deny and persists nothing. ``pending_body`` is a thunk, built only once a human is
     actually asked, so a smart APPROVE never pays for redacting a large script.
     """
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_approval_display
 
     smart_denied = False
     if smart:
@@ -812,8 +863,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
-            allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -829,8 +880,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if is_gateway or is_ask:
         # Redacted copies for user-visible rendering only (the gateway paints them into Discord/Slack); the raw
         # command still executes after approval and persistence keys off pattern_key.
-        display_command = redact_sensitive_text(command)
-        display_description = redact_sensitive_text(description)
+        display_command = redact_approval_display(command)
+        display_description = redact_approval_display(description)
         notify_cb = _gateway_notify_cb(session_key)
         if notify_cb is not None:
             # Smart DENY overrides are one-operation decisions, so the UI must not offer a
@@ -883,8 +934,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.
     prompt_command, prompt_description = command, description
     if spec.redact_cli:
-        prompt_command = redact_sensitive_text(command)
-        prompt_description = redact_sensitive_text(description)
+        prompt_command = redact_approval_display(command)
+        prompt_description = redact_approval_display(description)
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
@@ -948,6 +999,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
+    pattern_keys: list[str] | None = None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -958,7 +1010,8 @@ def _run_approval_gate(
     context without an ask bridge BLOCKS instead of auto-approving, so a plugin-flagged action
     never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
-    an explicit ``*_deny_message`` (the file-tool write gates word their own).
+    an explicit ``*_deny_message`` (the file-tool write gates word their own). ``pattern_keys``
+    (default ``[pattern_key]``) are what a session/always answer persists.
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
@@ -1010,7 +1063,7 @@ def _run_approval_gate(
 
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
-        pattern_keys=[pattern_key], session_key=session_key,
+        pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
     )
 
@@ -1020,7 +1073,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in ("modal", "daytona", "vercel_sandbox"):
         return True
     # Plugin backends declare the same classification through the provider ABI (#94400);
     # fail-soft to False so an unknown or raising backend — or a raising registry
@@ -1084,11 +1137,14 @@ def check_dangerous_command(command: str, env_type: str,
         return _approved()
     if _command_matches_permanent_allowlist(command):
         return _approved()
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if not is_dangerous:
+    session_key = get_current_session_key()
+    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    if pending is None:
         return _approved()
+    keys, description = pending
     return _run_approval_gate(
-        pattern_key=pattern_key, description=description, display_target=command, approval_callback=approval_callback,
+        pattern_key=keys[0], pattern_keys=keys, description=description, display_target=command,
+        approval_callback=approval_callback,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
@@ -1159,13 +1215,15 @@ def check_all_command_guards(command: str, env_type: str,
                 return result
         return _approved()
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     session_key = get_current_session_key()
-    if not is_dangerous or is_approved(session_key, pattern_key):
+    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    if pending is None:
         return _approved()
+    keys, description = pending
+    # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(
         _COMMAND_GATE, command=command, description=description,
-        pattern_key=pattern_key, pattern_keys=[pattern_key],
+        pattern_key=keys[0], pattern_keys=keys,
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
     )
@@ -1175,6 +1233,19 @@ _EXECUTE_CODE_DESCRIPTION = (
     "execute_code script execution. The script can spawn subprocesses or "
     "mutate files without passing through terminal command approval; approval is one-shot for this run."
 )
+
+
+def _is_local_viewer_turn() -> bool:
+    """A local session's turn its viewer submitted, with that viewer there to answer: its frozen launch policy is
+    local-interactive, the admission is the viewer's own prompt (not a plugin injection or another producer
+    admission) and a viewer holding ``session:approve`` is attached now, it is not a delegate_task child (sync or
+    async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
+    session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
+    key, none registered) apart; it does not show anyone is attached."""
+    from agent.delegation_context import is_delegated_child_process_context
+    return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
+            and not is_delegated_child_process_context()
+            and _gateway_notify_cb(get_current_session_key()) is not None)
 
 
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
@@ -1222,7 +1293,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
-    if not is_gateway and not is_ask:
+    # A gateway-run local CLI/TUI/Desktop session's own turns keep that interactive-CLI rule: the script's terminal()
+    # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
+    # gate (cron/-q resolved above; messaging/API unchanged).
+    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
 
     session_key = get_current_session_key()
@@ -1237,13 +1311,13 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # Smart mode: an APPROVE only suppresses the redundant whole-script prompt; the per-call terminal() guards still
     # run independently. The gateway renders the pending payload to Discord/Slack, so the script body is redacted for
     # display; the raw code is what gets assessed and run.
-    from agent.redact import redact_sensitive_text
+    from agent.redact import redact_approval_display
     return _human_decision(
         _EXECUTE_CODE_GATE, command=command, description=description, pattern_key=pattern_key,
         pattern_keys=[pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
         smart=approval_mode == "smart",
-        pending_body=lambda: f"**Code:**\n```python\n{redact_sensitive_text(code)}\n```",
+        pending_body=lambda: f"**Code:**\n```python\n{redact_approval_display(code)}\n```",
     )
 
 

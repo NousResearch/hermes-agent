@@ -30,10 +30,15 @@ import copy
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from utils import mtime_is_racy
+
 # Each keyed by resolved profile path. One entry per profile the roster has painted; a removed
 # profile leaves one stale entry, so a memo is dropped whole once it grows past any plausible fleet.
 _SESSION_CACHE: dict[str, tuple[tuple, dict]] = {}
 _UI_META_CACHE: dict[str, tuple[tuple, dict]] = {}
+# The canonical gateway's rows also depend on who reads them (its owner filter): keyed by
+# (profile path, reader).
+_READER_SESSION_CACHE: dict[tuple, tuple[tuple, dict]] = {}
 _MAX_ENTRIES = 512
 
 _STORE_FILES = ("state.db", "state.db-wal")
@@ -65,13 +70,17 @@ def _cached(cache: dict, key: str, signature: Optional[tuple], compute: Callable
 def store_signature(profile_path: str | Path) -> Optional[tuple]:
     """``(name, mtime_ns, size)`` per session-store file, or None when the profile has no store.
 
-    The pair the change watcher already trusts for ``sessions.changed``.
+    The pair the change watcher already trusts for ``sessions.changed``. None too while a file's
+    mtime is fresh enough that a same-tick, same-size WAL rewrite could still hide behind it.
     """
     base = Path(profile_path)
     parts = [p for p in (_file_parts(base / name) for name in _STORE_FILES) if p is not None]
     # Our own read-only open creates an EMPTY -wal sidecar on a store that never had one; it
     # carries no frames, so it must not read as "the store moved" on the very next poll.
-    return tuple(p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)) or None
+    parts = [p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)]
+    if any(mtime_is_racy(p[1]) for p in parts):
+        return None
+    return tuple(parts) or None
 
 
 def profile_yaml_signature(profile_dir: str | Path) -> Optional[tuple]:
@@ -82,6 +91,13 @@ def profile_yaml_signature(profile_dir: str | Path) -> Optional[tuple]:
 def cached_session_fields(profile_path: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
     """``compute()``'s fields, reused while the profile's session store has not moved."""
     return _cached(_SESSION_CACHE, str(profile_path), store_signature(profile_path), compute, dict)
+
+
+def cached_reader_session_fields(profile_path: str | Path, reader: tuple,
+                                 compute: Callable[[], dict]) -> dict[str, Any]:
+    """``cached_session_fields`` for fields that also depend on *reader*, a hashable principal key."""
+    return _cached(_READER_SESSION_CACHE, (str(profile_path), reader), store_signature(profile_path),
+                   compute, dict)
 
 
 def cached_ui_meta_fields(profile_dir: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
@@ -100,3 +116,5 @@ def invalidate(profile_path: str | Path | None = None) -> None:
             cache.clear()
         else:
             cache.pop(str(profile_path), None)
+    for key in [key for key in _READER_SESSION_CACHE if profile_path is None or key[0] == str(profile_path)]:
+        _READER_SESSION_CACHE.pop(key, None)

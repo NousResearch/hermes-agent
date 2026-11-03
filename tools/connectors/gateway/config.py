@@ -145,7 +145,7 @@ def ensure_guest_identity() -> Optional[str]:
     from hermes_cli.auth_constants import AuthError
 
     try:
-        if ensure_portal_identity(explicit=True, for_connectors=True) is not None:
+        if ensure_portal_identity(explicit=True) is not None:
             return None
     except AuthError as exc:
         return _SETUP_FAILED + str(exc)

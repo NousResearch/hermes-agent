@@ -42,6 +42,7 @@ def test_status_policy(job, result, ordinary, excluded, release):
     ("desktop_updater", ("tests-os",)),
     ("e2e_desktop_update", ("e2e-desktop-update",)),
     ("remote_backends", ("remote-backends",)),
+    ("catalog", ("catalog-tests",)),
 ])
 @pytest.mark.parametrize("result", ["skipped", "absent", "success"])
 def test_selected_update_consumers_must_succeed(lane, jobs, result):

@@ -133,6 +133,7 @@ def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch,
             "row_ids": [row["_row_id"] for row in rows[-2:]],
             "final_assistant_row_id": rows[-1]["_row_id"],
             "complete": True,
+            "user_row_ids": [rows[-2]["_row_id"]],
         }
         # Compression can discard an already-streamed segment even while the old prefix survives.
         agent.context_compressor = SimpleNamespace(compression_count=1)
@@ -143,7 +144,8 @@ def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch,
         current[-1]["content"] = "not flushed"
         partial, _, _ = server._complete_turn_payload(session, st, None, 80)
         assert partial["persisted_turn"] == {
-            "user_row_id": rows[-2]["_row_id"], "row_ids": [rows[-2]["_row_id"]], "complete": False}
+            "user_row_id": rows[-2]["_row_id"], "row_ids": [rows[-2]["_row_id"]], "complete": False,
+            "user_row_ids": [rows[-2]["_row_id"]]}
         # No authoritative current-turn anchor: never infer from matching text or positions in old history.
         agent._persist_user_message_idx = None
         missing, _, _ = server._complete_turn_payload(session, st, None, 80)

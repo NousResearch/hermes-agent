@@ -18,7 +18,7 @@ from typing import Optional
 _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
     600: (
         # NVIDIA Nemotron behind hosted NIM: documented 60-180s upstream idle kill.
-        "nemotron-3-ultra", "nemotron-3-super",
+        "nemotron-3-ultra", "nemotron-3-super", "nemotron-3.5-super-vl",
         # DeepSeek R1 / V4 (reasoning_content streamed before final content).
         # ``deepseek-flash`` is the version-less canonical Flash id (2026-09 Flash refresh);
         # ``deepseek-v4-flash`` still aliases onto it server-side.

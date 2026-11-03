@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.session import SessionSource
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.transport import InboundHandler
@@ -46,6 +46,20 @@ _TEARDOWN_AWAIT_TIMEOUT_S = 1.0
 # teardown stay inside the runner's adapter-disconnect budget: blowing it cancels
 # teardown mid-drain and leaves callers blocked on _OUTBOUND_TIMEOUT_S.
 _DISCONNECT_DRAIN_GRACE_S = 5.0
+# Ops whose reader-exit settlement is "possibly delivered" rather than failed:
+# the connector may have posted the attachment or draft before the socket died, and its
+# consumers (send_message, cron) re-send or notify on a definite failure, which
+# would post it twice. Every other op keeps the definite connection-lost result.
+_AMBIGUOUS_ON_READER_EXIT_OPS = frozenset({"send_media", "draft"})
+
+
+class _PendingRequest(asyncio.Future):
+    """An outbound request's ack future that remembers the action op it carries,
+    so a reader exit can settle it by kind without a parallel map."""
+
+    def __init__(self, op: str, *, loop: asyncio.AbstractEventLoop) -> None:
+        super().__init__(loop=loop)
+        self.op = op
 # Private-use close code the connector sends when it rejects/revokes a gateway's
 # WS upgrade auth. Received AFTER a successful handshake it means the per-gateway
 # secret was revoked (opt-out / deprovision) — terminal, no reconnect.
@@ -144,31 +158,41 @@ def _normalize_slack_parent_command(text: str, message_type: MessageType) -> tup
     return normalized, normalized_type
 
 
-def _media_types_from_wire(raw: dict[str, Any]) -> list[str]:
-    """Per-attachment MIME types, parallel to ``media_urls``.
+def _per_url_from_wire(raw: dict[str, Any], key: str) -> list[str]:
+    """``media[].<key>`` per ``media_urls`` entry, resolved BY URL LOOKUP; ``""`` when unmatched.
 
     INVARIANT: always the same length as ``media_urls`` (padded with ``""``), or
-    empty when there are no urls — consumers index the two lists pairwise, so a
-    short list would shift later entries onto the wrong url. Resolved BY URL LOOKUP
-    into ``media[]``, never by position: the two wire fields are independent and may
-    disagree in order. A url with no match keeps ``""`` (message-level classification).
+    empty when there are no urls — consumers index the lists pairwise, so a
+    short list would shift later entries onto the wrong url. Never by position:
+    the two wire fields are independent and may disagree in order.
     """
     urls = raw.get("media_urls")
     if not isinstance(urls, list) or not urls:
         return []
     media = raw.get("media")
-    mime_by_url: dict[str, str] = {
-        m["url"]: m.get("mime") or ""
+    by_url: dict[str, str] = {
+        m["url"]: v if isinstance(v := m.get(key), str) else ""
         for m in (media if isinstance(media, list) else [])
         if isinstance(m, dict) and isinstance(m.get("url"), str) and m["url"]
     }
-    types = [mime_by_url.get(u, "") if isinstance(u, str) else "" for u in urls]
+    return [by_url.get(u, "") if isinstance(u, str) else "" for u in urls]
+
+
+def _media_types_from_wire(raw: dict[str, Any]) -> list[str]:
+    """Per-attachment MIME types, parallel to ``media_urls`` (see ``_per_url_from_wire``).
+    A url with no match keeps ``""`` (message-level classification)."""
+    types = _per_url_from_wire(raw, "mime")
     missing = sum(1 for t in types if not t)
-    if missing and mime_by_url:
+    if missing and isinstance(raw.get("media"), list) and raw["media"]:
         logger.debug(
             "relay inbound: %d/%d media_urls had no matching media[] mime", missing, len(types)
         )
     return types
+
+
+def _media_filenames_from_wire(raw: dict[str, Any]) -> list[str]:
+    """Per-attachment original filenames, parallel to ``media_urls``; ``""`` = not supplied."""
+    return [clean_attachment_filename(n) for n in _per_url_from_wire(raw, "filename")]
 
 
 def _event_from_wire(raw: dict[str, Any]) -> MessageEvent:
@@ -240,6 +264,9 @@ def _event_from_wire(raw: dict[str, Any]) -> MessageEvent:
         # Parallel to media_urls; run.py's per-attachment classifiers consult
         # media_types[i] FIRST (routes a relayed image/document/voice like native).
         media_types=_media_types_from_wire(raw),
+        # Original names (wire media[].filename); media_urls become random temp paths once
+        # localized, so this is the only place the user's filename survives.
+        media_filenames=_media_filenames_from_wire(raw),
         channel_context=_render_relay_context(raw.get("context")),
         # Structured interactive-prompt reply, verbatim off the wire; the adapter
         # consumes it to resolve pending approvals/confirms/clarifies.
@@ -365,6 +392,7 @@ class WebSocketRelayTransport:
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
+        self._inbound_acks: set[asyncio.Task[None]] = set()  # ACKs of off-reader admissions
         self._interrupt_inbound_handler: Any = None
         self._passthrough_handler: Any = None
         # `_descriptor` is the FIRST (primary-identity) descriptor; the map holds
@@ -520,6 +548,13 @@ class WebSocketRelayTransport:
                 settle(fut)
         self._pending.clear()
 
+    @staticmethod
+    def _settle_connection_lost(fut: asyncio.Future[dict[str, Any]]) -> None:
+        result: dict[str, Any] = {"success": False, "error": "relay transport connection lost"}
+        if getattr(fut, "op", None) in _AMBIGUOUS_ON_READER_EXIT_OPS:
+            result["ambiguous"] = True
+        fut.set_result(result)
+
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
             return self._descriptor
@@ -648,7 +683,9 @@ class WebSocketRelayTransport:
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
         request_id = uuid.uuid4().hex
-        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[dict[str, Any]] = _PendingRequest(
+            str(action.get("op") or ""), loop=asyncio.get_running_loop()
+        )
         self._pending[request_id] = fut
         frame: dict[str, Any] = {"type": "outbound", "requestId": request_id, "action": action}
         # Tag the egress platform with its MATCHING advertised botId only when a
@@ -770,14 +807,9 @@ class WebSocketRelayTransport:
                 self._ws = None
             # The reader is the ONLY thing that resolves pending futures; once it
             # exits every waiter would block the full outbound timeout. Fail them
-            # NOW with the dict shape callers expect (never an exception). The
-            # caller returns this only after its write succeeds; without an ACK
-            # delivery is unknown. A failed write still returns its own failure.
-            self._fail_pending(
-                lambda fut: fut.set_result({
-                    "success": False, "error": "relay transport connection lost", "ambiguous": True,
-                })
-            )
+            # NOW with the dict shape callers expect (never an exception); a
+            # send_media or draft one is marked ambiguous (_AMBIGUOUS_ON_READER_EXIT_OPS).
+            self._fail_pending(self._settle_connection_lost)
 
     def _dialer_running(self) -> bool:
         """True while the backoff supervisor or the fresh-token retry is live."""
@@ -939,12 +971,37 @@ class WebSocketRelayTransport:
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:
             return
-        await self._inbound(_event_from_wire(frame.get("event", {})))
+        from gateway.session_ingress_context import relay_callback
+        event = _event_from_wire(frame.get("event", {}))
+        try:
+            with relay_callback(self, event):
+                admitting = await self._inbound(event)
+        except Exception:
+            # A handler failure is not a socket failure: keep this reader, withhold the
+            # ACK so the connector redelivers the buffered frame later.
+            logger.exception("relay: inbound handler failed; frame left unacknowledged")
+            return
         # A replayed buffered delivery carries a bufferId; ack AFTER the handler
         # has taken it so the connector advances its cursor (no dup).
         buffer_id = frame.get("bufferId")
-        if buffer_id:
+        if admitting is not None:
+            # Admitted off this reader (plugin hooks may await a send only this reader answers).
+            admitting.add_done_callback(lambda done: self._ack_admitted(done, buffer_id))
+        elif buffer_id:
             await self._send_inbound_ack(str(buffer_id))
+
+    def _ack_admitted(self, admission: asyncio.Task, buffer_id: Optional[str]) -> None:
+        """ACK a frame once its off-reader admission committed (or was permanently refused); a
+        cancelled or failed one stays unacknowledged, as above, so the connector redelivers it."""
+        if admission.cancelled() or admission.exception() is not None:
+            if not admission.cancelled():
+                logger.error("relay: inbound handler failed; frame left unacknowledged",
+                             exc_info=admission.exception())
+            return
+        if buffer_id:
+            ack = asyncio.create_task(self._send_inbound_ack(str(buffer_id)))
+            self._inbound_acks.add(ack)
+            ack.add_done_callback(self._inbound_acks.discard)
 
     async def _on_going_idle_ack(self, frame: dict[str, Any]) -> None:
         if self._going_idle_ack is not None and not self._going_idle_ack.done():
@@ -963,8 +1020,12 @@ class WebSocketRelayTransport:
         # Edge-ACKed passthrough request riding the same WS (no public inbound
         # port needed); bufferId (§5.3) is passed through for ack.
         if self._passthrough_handler is not None:
+            from gateway.session_ingress_context import relay_callback
             fwd = _passthrough_from_wire(frame.get("forward", {}))
-            await self._passthrough_handler(fwd, frame.get("bufferId"))
+            # Same authenticated-reader proof as _on_inbound, bound to the forward; the
+            # adapter moves it onto the event it decodes from this forward.
+            with relay_callback(self, fwd):
+                await self._passthrough_handler(fwd, frame.get("bufferId"))
 
     _FRAME_HANDLERS = {
         "descriptor": _on_descriptor,

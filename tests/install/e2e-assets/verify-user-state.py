@@ -276,6 +276,27 @@ def _env_line_summary(path: str) -> dict:
     return {"lines": len(lines), "comments": comments, "blanks": blanks, "key_order": order}
 
 
+def _entry_record_unless_vanished(rel: str, abs_path: str) -> dict | None:
+    """Volatile entries are recorded by kind only, never read.
+
+    A SQLite sidecar can vanish between listdir and its digest (a live gateway closes the
+    connection), and a lock file's bytes are unreadable while its owner holds it (Windows
+    byte-range locks: Errno 13). Anything else vanishing still raises.
+    """
+    try:
+        if _volatile_sidecar(rel) and not _is_link(abs_path):
+            if not _lexists(abs_path):
+                return None
+            if os.path.isdir(abs_path):
+                return {"kind": "dir"}
+            return {"kind": "lock"} if abs_path.endswith(".lock") else {"kind": "file"}
+        return _entry_record(abs_path)
+    except FileNotFoundError:
+        if _volatile_sidecar(rel):
+            return None
+        raise
+
+
 def _entry_record(abs_path: str) -> dict:
     try:
         return _read_entry_record(abs_path)
@@ -374,7 +395,9 @@ def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
 
     for rel_root, profiles, judged in targets:
         for rel, abs_path, entry_judged in _walk_root(home, rel_root, profiles=profiles, judged=judged):
-            (entries if entry_judged else advisory)[rel] = _entry_record(abs_path)
+            record = _entry_record_unless_vanished(rel, abs_path)
+            if record is not None:
+                (entries if entry_judged else advisory)[rel] = record
 
     # Profiles may live somewhere else entirely (a test harness override).
     if profiles_dir and os.path.abspath(profiles_dir) != os.path.join(home, PROFILES_DIR):
@@ -390,7 +413,9 @@ def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
                             override_abs, name, profiles=True, judged=True):
                         if sub_rel == name:
                             continue
-                        (entries if sub_judged else advisory)[f"{PROFILES_DIR}/{sub_rel}"] = _entry_record(sub_abs)
+                        record = _entry_record_unless_vanished(sub_rel, sub_abs)
+                        if record is not None:
+                            (entries if sub_judged else advisory)[f"{PROFILES_DIR}/{sub_rel}"] = record
 
     return {
         "schema": SCHEMA_VERSION,
@@ -419,9 +444,12 @@ def _modification_allowed(rel: str) -> bool:
     The cron ticker stamps its own liveness on a schedule of its own, inside the
     verified window or not: they are never user state. On a cold home they show up
     as ordinary additions (tolerated); once the ticker exists, the same file moves.
+    gateway_state.json is the running gateway's own record (pid, start time,
+    code_sha): the first chat turn starts the gateway and the update restarts it,
+    so its bytes must move. It stays judged -- losing it still fails.
     """
     name = rel.rsplit("/", 1)[-1]
-    if name in ("config.yaml", "state.db") or name.endswith(".db"):
+    if name in ("config.yaml", "state.db") or name.endswith(".db") or rel == "gateway_state.json":
         return True
     parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
     is_cron = parent == "cron" or parent.endswith("/cron")
@@ -435,8 +463,11 @@ def _volatile_sidecar(rel: str) -> bool:
     live sees them; they disappear when it closes, and the report then says the
     upgrade DELETED user state (observed: cron/executions.db-shm and -wal). The
     database itself stays judged -- state.db by row counts -- so real loss still fails.
+    Lock files (``*.lock``, ``.lock``) are the same kind of hardware: the running gateway
+    holds its own (and, serving every profile, each profile's gateway.lock).
     """
-    return rel.endswith(("-wal", "-shm", "-journal"))
+    name = rel.rsplit("/", 1)[-1]
+    return rel.endswith(("-wal", "-shm", "-journal")) or name.endswith(".lock")
 
 
 def _rows_shrank(rel: str, before: dict, after: dict) -> bool:
@@ -538,7 +569,7 @@ def _render(report: dict) -> str:
             continue
         lines.append(f"  tolerated (config rewrite) {rel}")
     for rel in report.get("tolerated_deleted", []):
-        lines.append(f"  tolerated (sqlite sidecar) {rel}")
+        lines.append(f"  tolerated (sidecar or lock) {rel}")
     advisory = report["advisory"]
     for label, key in (("advisory deleted", "deleted"), ("advisory modified", "modified")):
         for rel in advisory[key]:

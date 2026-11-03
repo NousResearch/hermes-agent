@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -332,10 +333,6 @@ _APPROVAL_LABEL_KEYS = {
 }
 
 
-def _truncate(text: str, limit: int) -> str:
-    return text[:limit] + "..." if len(text) > limit else text
-
-
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
@@ -375,6 +372,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
+        # prompt id → (command preview, reason) for the resolved card; button data carries only the id,
+        # because a copy per button can push a long non-ASCII command past Teams' ~28 KB card cap.
+        self._approval_previews: dict[str, tuple[str, str]] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -476,7 +476,7 @@ class TeamsAdapter(BasePlatformAdapter):
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
         redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from gateway.platforms.base import _ssrf_redirect_guard, _read_httpx_body_with_limit
+        from gateway.platforms.base import ssrf_redirect_guard, _read_httpx_body_with_limit
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
@@ -486,7 +486,7 @@ class TeamsAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[teams] Could not acquire Bot Framework token for attachment: %s", e)
         async with create_ssrf_safe_async_client(
-            timeout=timeout, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}) as client:
+            timeout=timeout, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}) as client:
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
                 # Never buffer .content — a lying Content-Length must not OOM the gateway.
@@ -649,10 +649,13 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
+        # Cards from an older build carry cmd/desc in the button data instead.
+        cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
         if not has_blocking_approval(session_key):
-            return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
+            body = _approval_body(cmd, desc)
+            return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
         resolve_gateway_approval(session_key, choice)
-        body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
+        body = _approval_body(cmd, desc)
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
 
@@ -678,6 +681,7 @@ class TeamsAdapter(BasePlatformAdapter):
         return None
 
     _EA_CMD_BUDGET = 2000
+    _EA_PREVIEWS_KEPT = 256
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
     _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
 
@@ -685,15 +689,20 @@ class TeamsAdapter(BasePlatformAdapter):
         """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        # The resolved card shows the prompt's own command preview, looked up by id on click.
+        cmd = self._truncate_preview(prompt.command, self._EA_CMD_BUDGET)
+        prompt_id = uuid.uuid4().hex
+        self._approval_previews[prompt_id] = (cmd, prompt.description)
+        if len(self._approval_previews) > self._EA_PREVIEWS_KEPT:
+            self._approval_previews.pop(next(iter(self._approval_previews)))
+        btn_data_base = {"session_key": prompt.session_key, "prompt_id": prompt_id}
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}
             actions.append(ExecuteAction(
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
-        body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        body = _approval_body(cmd, prompt.description, always=True)
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
@@ -839,6 +848,8 @@ def _install_hint() -> str:
 def register(ctx) -> None:
     ctx.register_platform(
         name="teams", label="Microsoft Teams", adapter_factory=lambda cfg: TeamsAdapter(cfg),
+        dashboard_description="Connect Hermes to Microsoft Teams chats via the Bot Framework.",
+        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
         check_fn=check_requirements,  # PASSIVE probe — never installs
         ensure_deps_fn=check_teams_requirements,  # ACTIVE lazy-installer, run by create_adapter()
         validate_config=validate_config, is_connected=is_connected,

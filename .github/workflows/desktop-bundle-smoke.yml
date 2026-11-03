@@ -64,7 +64,7 @@ permissions:
 jobs:
   validate:
     name: Require a supported native smoke target
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     env:
       TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}
@@ -103,7 +103,7 @@ jobs:
         shell: bash
         run: printf 'SMOKE_ROOT=%s/bundle-smoke\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
@@ -245,6 +245,9 @@ jobs:
     name: Windows install and chat
     needs: validate
     if: inputs.platform == 'win32'
+    # GitHub-hosted for both arches: on blacksmith Windows runners the installed MSIX app exits
+    # before Playwright attaches (every x64 smoke there failed; the same commit's arm64 MSIX on a
+    # GitHub-hosted runner chats), as the install/update GUI legs did (f1b290e7734).
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
     # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.

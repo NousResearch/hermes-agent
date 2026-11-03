@@ -83,6 +83,22 @@ export function ClarifyToolPending({
   // so a later edit on the card stands.
   const [seenLocks, setSeenLocks] = useState<Record<string, null | string>>({})
 
+  // A canonical gateway answers a batch one card at a time through the SAME
+  // mounted tool row: a new live request is a new card, so the previous card's
+  // submit latch, staged picks and seen locks must not carry over (that left
+  // question 2 disabled behind question 1's spinner).
+  const [cardRequestId, setCardRequestId] = useState(request?.requestId)
+
+  if (request?.requestId !== cardRequestId) {
+    setCardRequestId(request?.requestId)
+
+    if (request?.requestId) {
+      setSubmitting(false)
+      setStaged({})
+      setSeenLocks({})
+    }
+  }
+
   useEffect(() => {
     const lockedAnswers = request?.lockedAnswers
 
@@ -118,8 +134,9 @@ export function ClarifyToolPending({
         }
 
         const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
-        next[question.qid] =
-          matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
+        // Words that name no choice (typed in the composer) go to the free-text field as words, not JSON.
+        const draft = replayedAnswers.filter(value => !options.some(choice => bareChoice(choice) === value)).join(', ')
+        next[question.qid] = { choices: matchedChoices, draft }
       }
 
       return next

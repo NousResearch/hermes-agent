@@ -36,7 +36,7 @@ function request(sequence: number = 65536, token: string = 'ab12cd34ef56ab78'): 
       windowsExecutableName: 'hermes-no-registry-needed',
       msixAppIdWithOrg: `NousResearch.HermesChannel${token}`
     },
-    bundleEnv: { HERMES_GUEST_ONBOARDING: '1' },
+    bundleEnv: { HERMES_PREVIEW_FULL_CONNECTORS: '1' },
     publicBase: 'https://builds.example.test'
   }
 }
@@ -379,6 +379,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'apps/desktop/scripts/before-build.mjs',
       'apps/desktop/scripts/mac-icon.cjs',
       'apps/desktop/scripts/mac-sign.mjs',
+      'apps/desktop/scripts/mac-sign-cache.mjs',
       'apps/desktop/scripts/payload-digests.mjs',
       'apps/desktop/scripts/utils.mjs',
       'scripts/msix-shared.mjs',

@@ -64,9 +64,7 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     )
 
     payload = jsonlib.dumps({"description": "writes Python codebases"})
-    with _patch_aux_client(payload), patch(
-        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
-    ):
+    with _patch_aux_client(payload):
         outcome = describer.describe_profile("myprof")
 
     assert outcome.ok, outcome.reason
@@ -95,7 +93,7 @@ def test_describer_refuses_json_shaped_reply_that_does_not_parse(registered_prof
     it must be refused and leave profile.yaml untouched -- including behind an uppercase fence."""
     profiles_mod.write_profile_meta(registered_profile, description="previous", description_auto=True)
     before = (registered_profile / "profile.yaml").read_bytes()
-    with _patch_aux_client(raw), patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+    with _patch_aux_client(raw):
         outcome = describer.describe_profile("myprof", overwrite=True)
     assert outcome.ok is False
     assert (registered_profile / "profile.yaml").read_bytes() == before
@@ -103,8 +101,7 @@ def test_describer_refuses_json_shaped_reply_that_does_not_parse(registered_prof
 
 def test_describer_still_accepts_plain_prose_fallback(registered_profile):
     """A reply that never looked like JSON keeps the lenient one-paragraph prose fallback."""
-    with _patch_aux_client("Writes and debugs Python codebases.\n\nSecond paragraph is dropped."), \
-         patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+    with _patch_aux_client("Writes and debugs Python codebases.\n\nSecond paragraph is dropped."):
         outcome = describer.describe_profile("myprof")
     assert outcome.ok, outcome.reason
     assert outcome.description == "Writes and debugs Python codebases."

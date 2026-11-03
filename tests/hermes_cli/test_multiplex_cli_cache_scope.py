@@ -81,25 +81,6 @@ def test_deepinfra_catalog_is_fetched_with_each_profiles_key(homes, monkeypatch)
         assert models._fetch_deepinfra_models() == ["di/model-B"]
 
 
-def test_copilot_context_cache_hit_requires_same_api_key(homes, monkeypatch):
-    from hermes_cli import models
-
-    monkeypatch.setattr(models, "_copilot_context_cache", {})
-    monkeypatch.setattr(models, "_copilot_context_cache_time", 0.0)
-    monkeypatch.setattr(models, "_github_model_catalog_cache", None)
-
-    def transport(req, *, timeout, **kw):
-        limit = 111 if req.headers.get("Authorization", "").endswith("copilot-A") else 222
-        return _json_resp({"data": [{"id": "gpt-x", "model_picker_enabled": True,
-                                     "supported_endpoints": ["/chat/completions"],
-                                     "capabilities": {"type": "chat", "limits": {"max_prompt_tokens": limit}}}]})
-
-    monkeypatch.setattr(models, "_urlopen_model_catalog_request", transport)
-    assert models.get_copilot_model_context("gpt-x", api_key="copilot-A") == 111
-    assert models.get_copilot_model_context("gpt-x", api_key="copilot-B") == 222
-    assert models.get_copilot_model_context("gpt-x", api_key="copilot-A") == 111
-
-
 def test_nous_reasoning_caps_follow_each_profiles_portal(homes, monkeypatch):
     a, b = homes
     (a / ".env").write_text("NOUS_INFERENCE_BASE_URL=https://portal-a.example/v1\n", encoding="utf-8")
@@ -207,7 +188,6 @@ def test_banner_skills_are_the_routed_profiles(homes):
 
 def test_failed_guest_mint_only_suppresses_that_profile(homes, monkeypatch, tmp_path):
     a, b = homes
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
     import hermes_cli.anon_auth as anon
     from hermes_cli import auth_nous

@@ -602,6 +602,8 @@ class _RecordingTransport:
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append({"method": method, "url": url, "json": json})
+        if url.endswith("/schemas"):  # the file-input lookup on a schema-cache miss
+            return _FakeResponse({"schemas": {}})
         call = (json or {}).get("call") or {}
         return _FakeResponse(
             {"result": {"connector": call.get("connector"), "tool": call.get("tool"), "data": "ok"}})
@@ -618,7 +620,7 @@ def _recording_client_factory(transport):
 
 
 def _sent_tools(transport):
-    return [request["json"]["call"] for request in transport.requests]
+    return [request["json"]["call"] for request in transport.requests if request["url"].endswith("/execute")]
 
 
 def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):
@@ -637,7 +639,7 @@ def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(mo
         {"connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
          "arguments": {"to": "x@example.com", "body": "[REDACTED]"}},
     ]
-    assert "sk-secret" not in json.dumps(transport.requests[0]["json"])
+    assert "sk-secret" not in json.dumps([request["json"] for request in transport.requests])
     assert out["results"][0]["response"] == "ok"  # correlation survives the rewrite
 
 

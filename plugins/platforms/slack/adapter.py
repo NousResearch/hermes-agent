@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- platform-tables refactor: core's PLATFORM_HINTS/_PLATFORM_DEFAULTS rows for this platform moved onto its register() call (hint text lives in adapter_hint.py); the growth is only those kwargs
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
@@ -43,27 +44,34 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
+from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator
+from plugins.platforms.slack.adapter_config_readers import (
+    _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
-    is_host_excluded_by_no_proxy, resolve_proxy_url, safe_url_for_log, _ssrf_redirect_guard,
+    is_host_excluded_by_no_proxy, resolve_proxy_url, ssrf_redirect_guard,
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
-try:  # sibling module; support both package and flat plugin-dir import
+try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .adapter_slash_lane import SlashHandoffLanes
+    from .adapter_slash_payload import slash_command_text, slash_thread_id
+    from .adapter_reactions_context import slack_reactions_marker
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from adapter_slash_lane import SlashHandoffLanes  # type: ignore
+    from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
+    from adapter_reactions_context import slack_reactions_marker  # type: ignore
 
 
 logger = logging.getLogger(__name__)
 
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
-from hermes_cli.version_info import get_version_info
-
-_HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{get_version_info().base_version}"
+from hermes_cli.version_info import hermes_user_agent
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
@@ -982,27 +990,6 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
-def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
-    """Method factory: ``self._extra_or_env_flag(key, env_var, strip=strip)``."""
-
-    def getter(self) -> bool:
-        return self._extra_or_env_flag(key, env_var, strip=strip)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
-
-
-def _extra_or_env_channel_set_getter(
-    key: str, env_var: str, *, coerce_scalar: bool = False) -> Callable[..., set]:
-    """Method factory: ``self._extra_or_env_channel_set(key, env_var, coerce_scalar=...)``."""
-
-    def getter(self) -> set:
-        return self._extra_or_env_channel_set(key, env_var, coerce_scalar=coerce_scalar)
-
-    getter.__name__ = f"_slack_{key}"
-    return getter
-
-
 class SlackAdapter(BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
@@ -1119,6 +1106,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: dict[tuple[str, ...], dict[str, Any]] = {}
+        self._slash_lanes = SlashHandoffLanes()  # arrival order of one session's slashes
         # Native streaming state per _stream_key: {"ts", "draft_id", "sent", "started", "base"}.
         # ``sent`` is the raw pre-mrkdwn text of the whole segment; the API is append-only so
         # deltas diff against it. ``base`` is where this Slack message starts inside ``sent``
@@ -1748,7 +1736,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
-        client = AsyncWebClient(token=token, user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX)
+        client = AsyncWebClient(token=token, user_agent_prefix=hermes_user_agent("HermesAgent"))
         _apply_slack_proxy(client, proxy_url)
         return client
 
@@ -3023,7 +3011,7 @@ class SlackAdapter(BasePlatformAdapter):
         file_uploads: list[dict[str, Any]] = []
         initial_comment_parts: list[str] = []
         async with client_factory(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]}
         ) as http_client:
             for image_url, alt_text in chunk:
                 if alt_text:
@@ -4155,20 +4143,21 @@ class SlackAdapter(BasePlatformAdapter):
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         return getattr(runner, "_is_user_authorized", None)
 
-    def _early_reject_unauthorized(self, user_id: str, channel_id: str, is_dm: bool) -> bool:
+    def _early_reject_unauthorized(
+            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
-        introspection. Unknown (None) is NOT a rejection."""
+        introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
-                chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name=""
-            )
+                chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
+                thread_id=thread_id)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4616,9 +4605,9 @@ class SlackAdapter(BasePlatformAdapter):
         is_one_to_one_dm = channel_type == "im"
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm):
-            return
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
+        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+            return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
         # See #52387.
@@ -4668,6 +4657,7 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
+                channel_thread_followup=is_thread_reply and not is_dm,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
@@ -4732,10 +4722,7 @@ class SlackAdapter(BasePlatformAdapter):
             reply_expected=reply_expected,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
-            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
-            metadata={
-                "slack_team_id": team_id, "slack_channel_id": channel_id,
-                "slack_thread_ts": thread_ts})
+            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
 
     def _note_attachment_failure(
         self, notices: list[str], detail: Optional[str], fallback_msg: str, *fallback_args: Any,
@@ -5076,11 +5063,15 @@ class SlackAdapter(BasePlatformAdapter):
         provider = next((p for p in providers if p["slug"] == provider_slug), None)
         pname = provider.get("name", provider_slug) if provider else provider_slug
         models = (provider or {}).get("models", [])[:100]
+        from hermes_cli.model_picker_usage import picker_row_suffix
         options = []
         for idx, model_id in enumerate(models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
+            # Window plans: "Large" / "Free" rides on the option; others unchanged.
+            suffix = picker_row_suffix(provider, model_id)
+            text = f"{short[:75 - len(suffix) - 3]} · {suffix}" if suffix else short[:75]
             options.append({
-                "text": {"type": "plain_text", "text": short[:75], "emoji": True},
+                "text": {"type": "plain_text", "text": text, "emoji": True},
                 "value": str(idx),
             })
         total = (provider or {}).get("total_models", len(models))
@@ -5089,7 +5080,8 @@ class SlackAdapter(BasePlatformAdapter):
             if total > len(models)
             else ""
         )
-        section_text = t("platform.slack.picker.model_header", provider=pname, extra=extra)
+        plan_line = f"⚠️ {provider['plan_line']}\n" if provider and provider.get("plan_line") else ""
+        section_text = plan_line + t("platform.slack.picker.model_header", provider=pname, extra=extra)
         elements = [
             {
                 "type": "static_select",
@@ -5644,7 +5636,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not count:
             decision_text = t("platform.shared.approval_expired")
         await self._finalize_interactive_message(
-            channel_id, msg_ts, self._section_text(message), decision_text,
+            channel_id, msg_ts, self._section_text(message).replace(self._ea_deadline_line(), ""), decision_text,
             "Command approval request", "approval", team_id or None)
 
     async def _update_clarify_message(
@@ -5906,6 +5898,10 @@ class SlackAdapter(BasePlatformAdapter):
                 parent_text = msg_text
                 if skip_for_delta:
                     continue
+            # Reactions are context-only: parent_text drives mention wake checks.
+            reactions = slack_reactions_marker(msg)
+            if reactions:
+                msg_text = f"{msg_text} {reactions}"
             context_parts.append(
                 await self._thread_context_line(msg, msg_text, is_parent, team_id, channel_id))
         content = ""
@@ -6065,8 +6061,8 @@ class SlackAdapter(BasePlatformAdapter):
         team_id = command.get("team_id", "")
         if team_id and channel_id:
             self._remember_channel_team(channel_id, team_id)
-        text = self._slash_command_text(command)
-        thread_id = self._slash_thread_id(command)
+        text = slash_command_text(command)
+        thread_id = slash_thread_id(command)
         if self._slash_channel_gated(channel_id):
             logger.debug("[Slack] Ignoring slash command in ignored/non-allowed channel: %s", channel_id)
             return
@@ -6076,59 +6072,53 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",
                 channel_id, user_id)
             return
+        # A sender the gateway rejects must not cost Slack lookups first (the message path's rule).
+        # In a channel the runner only drops them; in a DM it answers per unauthorized_dm_behavior
+        # (pairing code or decline), so it still gets the event, without names.
+        rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_id)
+        if rejected and not is_dm:
+            return
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
-            source=source, raw_message=command)
-        # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-        # events only: free-form "/hermes <question>" replies must stay public.
-        response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
-            self._stash_slash_context(team_id, channel_id, user_id, response_url)
-        # ContextVar lets send() match the right response_url under
-        # concurrent slashes from multiple users.
-        _slash_user_id_token = _slash_user_id.set(user_id or None)
+            source=source, raw_message=command,
+            channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            # Bound skills load only when a session starts; "/hermes <question>" can start one.
+            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
+        # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
+        # must carry the same names as a message here or the next message flips them. A command
+        # that interrupts, unblocks or pauses work starts no turn of its own, and a slow
+        # users.info must not hold /stop or /pause back while the worker keeps running.
+        from hermes_cli.commands import resolve_command
+        cmd = resolve_command(event.get_command() or "")
+        controls_running_turn = cmd is not None and (
+            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
+        lane = ahead = handed_off = None
+        if not rejected and not controls_running_turn:
+            lane = self._event_session_key(event)  # slot taken before any lookup is awaited
+            ahead, handed_off = self._slash_lanes.reserve(lane)
+        # ContextVar lets send() match the right response_url under concurrent slashes.
+        slash_user_token = _slash_user_id.set(user_id or None)
         try:
+            if lane is not None:
+                source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+                source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+                if ahead is not None:
+                    await asyncio.wait((ahead,))
+            # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
+            # events only: free-form "/hermes <question>" replies must stay public.
+            response_url = command.get("response_url", "")
+            if response_url and user_id and channel_id and text.startswith("/"):
+                self._stash_slash_context(team_id, channel_id, user_id, response_url)
+            # The slot opens once handle_message returns: the gateway may suspend before queueing.
             await self.handle_message(event)
         finally:
-            _slash_user_id.reset(_slash_user_id_token)
-
-    @staticmethod
-    def _slash_command_text(command: dict) -> str:
-        """Gateway message text for a slash payload. Native slashes keep Slack's raw argument
-        payload verbatim (internal/trailing spacing). ``/hermes`` (or a missing ``command``) maps
-        ``<subcommand> [args]`` via the registry, else free-form text is a regular question."""
-        slash_name = (command.get("command") or "").lstrip("/").strip()
-        raw_text = str(command.get("text") or "")
-        if slash_name not in {"hermes", ""}:
-            return f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
-        legacy_text = raw_text.strip()
-        from hermes_cli.commands_platforms import slack_subcommand_map
-        subcommand_map = slack_subcommand_map()
-        subcommand_map["compact"] = "/compress"
-        first_word = legacy_text.split()[0] if legacy_text.split() else ""
-        if first_word in subcommand_map:
-            rest = legacy_text[len(first_word) :].strip()
-            mapped = subcommand_map[first_word]
-            return f"{mapped} {rest}".strip() if rest else mapped
-        return legacy_text or "/help"
-
-    @staticmethod
-    def _slash_thread_id(command: dict) -> Optional[str]:
-        """Thread anchor for a slash payload so session-scoped commands (``/model``)
-        hit the same thread session. Shape varies by surface: top-level or nested
-        ``message``/``container``; ``thread_ts`` preferred over ``message_ts``."""
-        nested = (command.get(k) for k in ("message", "container"))
-        candidates = [command] + [n for n in nested if isinstance(n, dict)]
-        for ts_key in ("thread_ts", "message_ts"):
-            for payload in candidates:
-                value = payload.get(ts_key)
-                if value:
-                    return str(value)
-        return None
+            _slash_user_id.reset(slash_user_token)
+            self._slash_lanes.release(lane, ahead, handed_off)
 
     def _stash_slash_context(
         self, team_id: str, channel_id: str, user_id: str, response_url: str) -> None:
@@ -6301,7 +6291,7 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:
@@ -6378,7 +6368,10 @@ class SlackAdapter(BasePlatformAdapter):
     # Opt-in flags (``config.extra[key]`` else ``SLACK_*`` env). strict_mention: every thread
     # message needs an explicit @-mention (no auto-triggers); ignore_other_user_mentions: silent
     # when the *leading* token @-mentions someone else; thread_require_mention: thread replies
-    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored.
+    # need an @-mention even in free-response channels; disable_dms: incoming DMs are ignored;
+    # thread_followup_silence: a bare silence marker may stand on unaddressed channel-thread replies.
+    _slack_thread_followup_silence = _extra_or_env_flag_getter(
+        "thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE")
     _slack_strict_mention = _extra_or_env_flag_getter("strict_mention", "SLACK_STRICT_MENTION")
     _slack_ignore_other_user_mentions = _extra_or_env_flag_getter(
         "ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS")
@@ -6399,17 +6392,20 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_reply_expected(
         self, routing_text: str, bot_uid: Optional[str], *, channel_id: str, addressed: bool,
-        opens_own_session: bool) -> Optional[bool]:
+        opens_own_session: bool, channel_thread_followup: bool = False) -> Optional[bool]:
         """``MessageEvent.reply_expected`` for an admitted message. False (a bare silence marker may
         stand) only when it opens by @mentioning someone else, or is an unaddressed message that a
         free-response channel admitted as the start of its own session (a new top-level thread).
         A plain follow-up in a conversation the bot is part of (a thread, or a flat
         ``reply_in_thread: false`` channel) is None: it is usually meant for the bot, so the
-        gateway keeps its visible fallback (#110952)."""
+        gateway keeps its visible fallback (#110952). With ``thread_followup_silence`` on, an
+        unaddressed reply in a non-DM Slack thread (``channel_thread_followup``) is False instead."""
         self_uids = {u for u in (bot_uid, self._bot_user_id) if u}
         if addressed or self._slack_message_mentions_self(routing_text, self_uids):
             return True
         if self._slack_message_addressed_to_other_user(routing_text, self_uids):
+            return False
+        if channel_thread_followup and self._slack_thread_followup_silence():
             return False
         return False if opens_own_session and self._slack_is_free_channel(channel_id) else None
 
@@ -6893,6 +6889,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "SLACK_REQUIRE_MENTION", "lower"), ("strict_mention", "SLACK_STRICT_MENTION", "lower"),
     ("ignore_other_user_mentions", "SLACK_IGNORE_OTHER_USER_MENTIONS", "lower"),
     ("thread_require_mention", "SLACK_THREAD_REQUIRE_MENTION", "lower"), ("allow_bots", "SLACK_ALLOW_BOTS", "lower"),
+    ("thread_followup_silence", "SLACK_THREAD_FOLLOWUP_SILENCE", "lower"),
     ("reactions", "SLACK_REACTIONS", "lower"), ("disable_dms", "SLACK_DISABLE_DMS", "lower"),
     ("free_response_channels", "SLACK_FREE_RESPONSE_CHANNELS", "csv"),
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
@@ -6907,15 +6904,19 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     return _apply_yaml_bridge(slack_cfg, _YAML_BRIDGE)
 
 
-
 _is_connected = _env_is_connected("SLACK_BOT_TOKEN")
-
 
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .adapter_hint import PLATFORM_HINT
+    from .send_targets import SEND_ENTRY_KWARGS
+    from .dashboard_card import DASHBOARD_CARD
+    from . import gateway_env  # env -> GatewayConfig bridge (gateway.config_env)
     ctx.register_platform(
+        **SEND_ENTRY_KWARGS,  # send_message target syntax + routing
         name="slack",
+        **DASHBOARD_CARD,
         label="Slack",
         adapter_factory=SlackAdapter,
         check_fn=slack_deps_present,
@@ -6924,15 +6925,12 @@ def register(ctx) -> None:
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
         install_hint="Run `hermes setup` to install Slack support.",
         setup_fn=interactive_setup,
-        # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
         # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,
-        allowed_users_env="SLACK_ALLOWED_USERS",
-        allow_all_env="SLACK_ALLOW_ALL_USERS",
         cron_deliver_env_var="SLACK_HOME_CHANNEL",
         # Out-of-process cron delivery; without it deliver=slack cron jobs fail with
         # "No live adapter" when cron runs apart from the gateway.
@@ -6940,4 +6938,11 @@ def register(ctx) -> None:
         # Slack allows 40,000 chars; leave margin.
         max_message_length=39000,
         emoji="💼",
-        allow_update_command=True)
+        allow_update_command=True,
+        platform_hint=PLATFORM_HINT,
+        display_tier="medium",
+        # Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
+        display_overrides={"tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
+        env_overrides=gateway_env.ENV_OVERRIDES,
+        env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
+    )

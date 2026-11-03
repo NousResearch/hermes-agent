@@ -287,14 +287,6 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            free_tier_active = await self._run_in_executor_with_context(free_tier_route)
-            if free_tier_active:
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
@@ -610,7 +602,14 @@ class GatewayStatusCommandsMixin:
         # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
         # a balance. Fail-open: never break /usage.
         from agent.account_usage import nous_credits_lines
-        credits_lines = await _quiet(lambda: asyncio.to_thread(nous_credits_lines, markdown=True), [])
+        credits_state = getattr(agent, "_credits_state", None) if agent else None
+        credits_lines = await _quiet(
+            lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
+            [],
+        )
+        # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
+        from agent.plan_limits import portal_wording
+        credits_lines = [portal_wording(line) for line in credits_lines]
 
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.

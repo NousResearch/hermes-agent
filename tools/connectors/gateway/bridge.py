@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from tools.connectors.gateway.config import connectors_available, guest_identity_pending
 from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+from tools.connectors.gateway.files import FileInputError, model_parameters, save_outputs, stage_inputs
 from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
 from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
 from tools.managed_gateway_identity import CallRef
@@ -120,7 +121,7 @@ def connector_describe(
                 continue
             tools[composed] = {
                 "description": str(schema.get("description") or ""),
-                "parameters": schema.get("input_schema") or {},
+                "parameters": model_parameters(composed, schema.get("input_schema") or {}),
             }
         return ConnectorLeg(payload={"tools": tools})
     except GatewayUnavailable:
@@ -138,6 +139,7 @@ def run_remote(
     availability: Optional[Callable[[], bool]],
     client_factory: Optional[Callable[[], Any]],
     turn_id: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     try:
         available = (availability or connectors_available)()
@@ -158,15 +160,10 @@ def run_remote(
         )
         for plan in planned
     ]
-    from tools.connectors.gateway.client import return_to_args
-
     try:
         client = client_factory() if client_factory else _default_client_factory(
             CallRef(turn_id=turn_id, tool_call_id=dispatch_id))
-        # A CONNECTION_REQUIRED link minted by this call is the user's next click, so the call names
-        # the surface that browser should come back to.
-        remote_results = client.execute(wire_planned, **return_to_args())
-        entries = splice_remote_results(planned, remote_results)
+        entries = splice_remote_results(planned, _execute_with_files(client, wire_planned, task_id))
     except ToolGatewayError as exc:
         logger.warning(
             "Connector execute for dispatch %s failed (%s): %s",
@@ -204,8 +201,8 @@ def run_remote(
 
     # Retry confirmed misses once without disturbing successful sibling slots.
     try:
-        fallback_results = client.execute(fallback_planned, **return_to_args())
-        fallback_entries = splice_remote_results(fallback_planned, fallback_results)
+        fallback_entries = splice_remote_results(
+            fallback_planned, _execute_with_files(client, fallback_planned, task_id))
     except ToolGatewayError as exc:
         logger.warning(
             "Connector execute fallback for dispatch %s failed (%s): %s",
@@ -229,3 +226,27 @@ def run_remote(
         entries[slot] = fallback_entry
     return entries
 
+
+
+def _execute_with_files(client: Any, planned: Sequence[Any], task_id: Optional[str]) -> list[dict[str, Any]]:
+    """Execute ``planned`` with every file input staged first and every returned file saved.
+
+    A call whose file input is refused or fails to stage gets that error as its result and is never
+    executed; its siblings still run."""
+    from tools.connectors.gateway.client import return_to_args
+
+    results: list[Optional[dict[str, Any]]] = [None] * len(planned)
+    runnable: list[tuple[int, Any]] = []
+    for slot, plan in enumerate(planned):
+        try:
+            runnable.append((slot, stage_inputs(client, plan, task_id=task_id)))
+        except FileInputError as exc:
+            logger.warning("Connector %s file input refused (%s): %s", plan.name, exc.code, exc)
+            results[slot] = exc.result()
+    if runnable:
+        # A CONNECTION_REQUIRED link minted by this call is the user's next click, so the call names
+        # the surface that browser should come back to.
+        remote = client.execute([plan for _, plan in runnable], **return_to_args())
+        for (slot, _), result in zip(runnable, remote or ()):
+            results[slot] = save_outputs(client, result)
+    return results

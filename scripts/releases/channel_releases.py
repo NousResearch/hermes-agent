@@ -14,7 +14,7 @@ from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
 )
 from scripts.bundles.channel_artifacts import assemble
-from scripts.releases import handoff, optional_platforms, r2, stable
+from scripts.releases import handoff, lanes as lane_set, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.progress import log
 from scripts.releases.versioning import parse_attempt_ref
@@ -54,10 +54,9 @@ def product_identity(tag: str, run=subprocess.check_output) -> dict:
     return validate_identity(identity)
 
 
-# Stable builds these native legs only when the claim opts in; the other legs
-# are in every bundle release.
-OPTIONAL_NATIVE_LEGS = {p.handoff: tuple(p.target.split("/")) for p in optional_platforms.PLATFORMS
-                        if p.handoff in NATIVE_LEGS}
+# The macos-intel lane is not part of lanes.CHANNEL_DESKTOP: its leg is in a release only when the
+# claim built it. The other legs are in every release that advances the channel.
+OPTIONAL_NATIVE_LEGS = {"darwin-x64": ("macos", "x64")}
 
 
 def native_legs(accepted: dict | None) -> tuple[str, ...]:
@@ -169,9 +168,8 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
     default = ""
     if policy == "stable-release":
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
-        claim_tag = env.get("RELEASE_CLAIM_TAG", "")
         expected = {
-            f"{repository}/.github/workflows/stable-release.yml@refs/tags/{claim_tag}",
+            f"{repository}/.github/workflows/stable-release.yml@refs/heads/{default}",
             f"{repository}/.github/workflows/stable-release-publication.yml@refs/heads/{default}",
         }
         if (env.get("GITHUB_EVENT_NAME") not in {"workflow_dispatch", "workflow_run", "schedule"}
@@ -221,7 +219,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
 
 
 def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str,
-                    release_epoch: int, *, skip_tests: bool) -> dict:
+                    release_epoch: int, *, lanes: frozenset[str]) -> dict:
     """Read the accepted candidate from the attempt-scoped release archive."""
     from hermes_cli.release_channels import decode_json, require_sha256
 
@@ -234,7 +232,7 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
     stable.validate_candidates(candidate, payload_tag, commit, publisher.public_base, release_epoch,
                                archive=tag)
-    stable.require_smokes_match_claim(candidate, skip_tests=skip_tests)
+    stable.require_smokes_match_claim(candidate, lanes)
     return candidate
 
 
@@ -390,11 +388,12 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
             raise ChannelError("Protected R2 identity differs from the existing product")
     final_claim = stable.final_context({**env, "RELEASE_TAG": payload_tag})[2] \
         if policy == "stable-release" else None
-    if final_claim is not None and final_claim["skip_bundles"]:
-        raise ChannelError("A release that skipped bundles has no native bytes to advance a protected head")
+    if final_claim is not None and not lane_set.advances_desktop(final_claim["lanes"]):
+        raise ChannelError("A release that did not build every desktop package the channel serves "
+                           "cannot advance a protected head")
     release_epoch = final_claim["claim_epoch"] if final_claim is not None else None
     accepted = accepted_stable(publisher, env, tag, commit, release_epoch,
-                               skip_tests=final_claim["skip_tests"]) \
+                               lanes=final_claim["lanes"]) \
         if final_claim is not None else None
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
@@ -427,7 +426,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
             if release_epoch is None:
                 raise ChannelError("Stable release epoch is unavailable")
             return accepted_stable(publisher, env, tag, commit, release_epoch,
-                                   skip_tests=final_claim["skip_tests"]) == accepted
+                                   lanes=final_claim["lanes"]) == accepted
         return True
 
     source_version = payload_tag[1:].split("+", 1)[0]
@@ -463,7 +462,10 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     publisher.verify_build = qualified
     if accepted is not None:
         log("Writing releases/stable/release-candidates.json and promoting the stable feeds")
-        publisher._write("releases/stable/release-candidates.json", accepted)
+        # The head already names the previous release after the first bundled one: replace it
+        # under its current ETag, since a create-only write refuses an existing object.
+        head = publisher.store.get("releases/stable/release-candidates.json")
+        publisher._write("releases/stable/release-candidates.json", accepted, head[1] if head else None)
         if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
             raise ChannelError("Stable candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)

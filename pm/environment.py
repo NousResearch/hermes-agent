@@ -6,9 +6,9 @@ staged toolchain directly without recursing through the worker it is building.
 from __future__ import annotations
 
 import codecs
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import io
 import os
 from pathlib import Path
@@ -60,6 +60,22 @@ UNDATED_INDEX_HINT = ("the package index did not report upload times, which lock
                       "dependencies needs for its 3-day release-age check. Use https://pypi.org/simple "
                       "or a mirror that serves upload times (pip.conf index-url / UV_INDEX_URL), then retry.")
 
+# uv's own English diagnostic. A localized Windows tail (os error 1224) rides
+# along, but the marker that means "packages may be installed, only the
+# optional compile step failed" is this line. #124268
+_BYTECODE_COMPILE_MARKER = "failed to bytecode-compile"
+# Streamed uv output keeps only the last 2000 characters. Resolver markers are
+# stitched back if a later verbose flood evicts them; the bytecode marker has
+# to ride the same path or repair/bootstrap never sees the retry signal, and so
+# does the build marker: a failed native build's traceback runs far past 2000
+# characters, and without it the failure reads as a fetch error, not a verdict.
+_STREAM_TAIL_MARKERS = _RESOLVER_MARKERS + (_BYTECODE_COMPILE_MARKER, *_BUILD_MARKERS)
+
+# Retries after purging corrupt cached packages. Each round must name a package
+# not purged before, so this bounds a cache with several damaged entries, never
+# a loop on one broken wheel.
+_CACHE_RECOVERY_ROUNDS = 3
+
 
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
@@ -67,6 +83,20 @@ class ResolutionConflict(InstallError):
 
 class BuildFailure(InstallError):
     """A package's build backend ran and failed."""
+
+
+def _is_bytecode_compile_failure(result: subprocess.CompletedProcess) -> bool:
+    """True when uv failed in the optional bytecode-compile step, not the install.
+
+    ``--compile-bytecode`` exists so the first user-facing import does not pay
+    compile cost (#100461). It is not required for a usable environment. Windows
+    real-time AV can lock uv's temporary compile script (os error 1224) after
+    the packages are already on disk (#124268).
+    """
+    if not result.returncode:
+        return False
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return _BYTECODE_COMPILE_MARKER in text
 
 
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
@@ -83,7 +113,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
     if any(marker in lowered for marker in _BUILD_MARKERS):
-        return BuildFailure("venv", cause)
+        from pm.build_compilers import missing_compiler_remedy
+
+        return BuildFailure("venv", cause, missing_compiler_remedy(output))
     return InstallError("venv", cause)
 
 
@@ -185,7 +217,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                 # evicts it. Scan across read boundaries, never retain the full log.
                 if not conflict:
                     lowered = (tail + text).lower()
-                    conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
+                    conflict = next((marker for marker in _STREAM_TAIL_MARKERS if marker in lowered), "")
                 tail = (tail + text)[-2000:]
                 output.write(text)
                 output.flush()
@@ -237,10 +269,12 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
-    if sys.platform == "darwin" and python.resolve() == pinned_python.resolve():
-        # PBS's AR still names its deleted build directory. Its CC is already
-        # clang; only the archiver needs a default, and only for our interpreter.
-        build_env.setdefault("AR", "/usr/bin/ar")
+    if python.resolve() == pinned_python.resolve():
+        # Only our interpreter: a separately selected one (e.g. Nix) keeps its own sysconfig.
+        from pm.build_compilers import pinned_build_defaults
+
+        for key, value in pinned_build_defaults(python, build_env).items():
+            build_env.setdefault(key, value)
     return PythonEnvironment(
         uv=uv, python=python,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
@@ -249,7 +283,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
 
 
 @contextmanager
-def _fresh_build(environment: PythonEnvironment, *, sealed: bool) -> Iterator[None]:
+def _fresh_build(environment: PythonEnvironment, *, sealed: bool, lock: Path | None = None) -> Iterator[None]:
     """Own only the output claimed by this build, including failed validation."""
     out = environment.destination
     # A concurrent creator wins intact: never enter cleanup before mkdir succeeds.
@@ -257,7 +291,7 @@ def _fresh_build(environment: PythonEnvironment, *, sealed: bool) -> Iterator[No
     try:
         environment.create()
         yield
-        environment.check()
+        environment.check(lock)
         if sealed:
             prune_site_pth(out)
     except BaseException:
@@ -302,6 +336,12 @@ class PythonEnvironment:
         # or the venv it writes would record the extended-length one in pyvenv.cfg.
         env.update(UV_PYTHON=native(self.python), UV_PROJECT_ENVIRONMENT=native(self.destination),
                    UV_CACHE_DIR=native(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # CMake 4 removed compatibility with cmake_minimum_required(VERSION < 3.5),
+        # so an sdist carrying an old minimum dies at CONFIGURE time: python-olm
+        # (mautrix[encryption], the matrix extra) vendors libolm declaring 3.4.
+        # Every source build uv drives inherits this env; older CMake ignores
+        # the variable, and a value the caller or user already set wins.
+        env.setdefault("CMAKE_POLICY_VERSION_MINIMUM", "3.5")
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [native(self.uv), *map(native, args)]
@@ -328,7 +368,12 @@ class PythonEnvironment:
                     except BaseException:
                         tail.close(False)
                         raise
-                    tail.close(result.returncode == 0)
+                    if "--compile-bytecode" in args and _is_bytecode_compile_failure(result):
+                        # Caller retries without the flag. A failure banner here
+                        # would report a recovered install as failed.
+                        tail.discard()
+                    else:
+                        tail.close(result.returncode == 0)
                     return result
                 return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
@@ -397,9 +442,110 @@ class PythonEnvironment:
             command += ["--extra", extra]
         for group in sorted(set(groups)):
             command += ["--group", group]
-        result = self._run(command, cwd=source, timeout=timeout)
+        result = self._with_cache_recovery(
+            "sync", lambda: self._sync_attempt(command, cwd=source, timeout=timeout))
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
+
+    def _sync_attempt(self, command: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+        result = self._run(command, cwd=cwd, timeout=timeout)
+        if _is_bytecode_compile_failure(result):
+            # Compile is an optimization. Retry once without the flag so a
+            # locked temp script cannot fail pm repair/bootstrap. Imports
+            # compile lazily on first use.
+            if self.output is not None:
+                self.output.write(
+                    "Bytecode compile failed; retrying the install without it. "
+                    "Modules will compile on first import.\n"
+                )
+            fallback = [arg for arg in command if arg != "--compile-bytecode"]
+            result = self._run(fallback, cwd=cwd, timeout=timeout)
+        return result
+
+    def _with_cache_recovery(self, stage: str, attempt: Callable[[], subprocess.CompletedProcess],
+                             ) -> subprocess.CompletedProcess:
+        """Run *attempt*; if a corrupt cached package failed it, purge it and retry.
+
+        An install interrupted by a machine stop can leave a cache entry whose
+        files are NUL bytes, and uv reuses it on every sync, so a plain retry
+        never helps. Only uv's install-step corruption shapes trigger this
+        (pm.uv_cache_health); every other failure returns untouched for the
+        caller to classify. Each purge also takes every entry that fails the
+        same validation, so one retry normally covers several damaged packages.
+        uv stops at the first broken entry, though, and a dangling pointer is
+        invisible to the scan, so a retry that trips over a DIFFERENT package
+        purges that one too. A package that fails again after its purge ends
+        the loop: the source itself is serving a broken wheel.
+        """
+        from pm.uv_cache_health import corrupt_cached_packages, failed_cached_packages
+
+        purged: set[str] = set()
+        result = attempt()
+        for _ in range(_CACHE_RECOVERY_ROUNDS):
+            if not result.returncode:
+                return result
+            failed = failed_cached_packages(f"{result.stderr or ''}\n{result.stdout or ''}")
+            if not failed or failed <= purged:
+                break
+            names = sorted((failed | corrupt_cached_packages(self.cache)) - purged)
+            if self.output is not None:
+                self.output.write(f"The cached copy of {', '.join(names)} is corrupt; "
+                                  "removing it from the uv cache and retrying the install.\n")
+            try:
+                self.purge_cached_packages(names)
+            except InstallError as exc:
+                # Keep the install failure that started this; the clean error alone hides it.
+                original = f"{result.stderr or ''}\n{result.stdout or ''}".strip()[-600:]
+                raise InstallError(exc.package, f"{exc.cause}; uv {stage} had failed with: {original}",
+                                   exc.remedy) from exc
+            purged.update(names)
+            result = attempt()
+        if not result.returncode or not purged:
+            return result
+        text = f"{result.stderr or ''}\n{result.stdout or ''}"
+        cache = native(self.cache)
+        still = failed_cached_packages(text)
+        if still:
+            remedy = ("the package source is serving a broken wheel; retry later or pin another version"
+                      if still <= purged else "run `hermes pm doctor --repair`, then retry")
+            raise InstallError(
+                "venv",
+                f"uv {stage} exited {result.returncode}: the cached copy of {', '.join(sorted(still))} is "
+                f"still invalid after removing {', '.join(sorted(purged))} from the uv cache at {cache}: "
+                f"{text.strip()[-600:]}",
+                remedy,
+            )
+        if self.offline:
+            raise InstallError(
+                "venv",
+                f"uv {stage} exited {result.returncode}: removed the corrupt cached copy of "
+                f"{', '.join(sorted(purged))} from {cache}, and offline mode cannot fetch it again: "
+                f"{text.strip()[-600:]}",
+                "retry with network access",
+            )
+        return result
+
+    def purge_cached_packages(self, names: Sequence[str]) -> None:
+        """Remove *names* from the uv cache.
+
+        ``uv cache clean`` waits for other uv processes holding the cache, so
+        another profile's sync never loses files it is reading. Archives it
+        leaves behind that still fail validation are then deleted
+        (pm.uv_cache_health.remove_corrupt_entries).
+        """
+        from pm.uv_cache_health import remove_corrupt_entries
+
+        cache = native(self.cache)
+        try:
+            result = replace(self, output=None)._run(["cache", "clean", *names],
+                                                     cwd=self.cache.parent, timeout=900)
+        except InstallError as exc:
+            raise InstallError("uv", f"could not clean the uv cache at {cache}: {exc.cause}",
+                               "stop other Hermes installs and retry") from exc
+        if result.returncode:
+            raise InstallError("uv", f"could not remove {', '.join(names)} from the uv cache at "
+                               f"{cache}: {(result.stderr or result.stdout)[-600:]}")
+        remove_corrupt_entries(self.cache, set(names))
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
                             timeout: int = 1800) -> None:
@@ -412,23 +558,38 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
 
-    def install_requirements(self, requirements: Sequence[str], *, wheelhouse: Path | None = None) -> None:
+    def install_requirements(self, requirements: Sequence[str], *, wheelhouse: Path | None = None,
+                             lock: Path | None = None) -> None:
         if not requirements:
             return
         # A file avoids command-line length limits and shell/marker quoting.
         with tempfile.TemporaryDirectory(prefix="pm-requirements-") as temporary:
             requirements_file = Path(temporary) / "requirements.txt"
             requirements_file.write_text("\n".join(requirements) + "\n", encoding="utf-8")
-            self._install_requirements_file(requirements_file, wheelhouse=wheelhouse)
+            self._install_requirements_file(requirements_file, wheelhouse=wheelhouse, lock=lock)
 
     def _install_requirements_file(self, requirements: Path, *, wheelhouse: Path | None = None,
-                                   timeout: int = 1800) -> None:
+                                   lock: Path | None = None, timeout: int = 1800) -> None:
+        """Install *requirements*; *lock* is the uv.lock they were exported from.
+
+        `uv pip install` re-resolves the export, so the lock's manifest overrides
+        must come back as `--overrides` or the graph the lock resolved is rejected.
+        """
         command = ["pip", "install", "--no-config", "--python", str(self.executable),
                    "--requirements", str(requirements)]
+        if lock is not None:
+            from pm.pip_check import override_requirements
+
+            overrides = override_requirements(lock)
+            if overrides:
+                overrides_file = requirements.with_name("overrides.txt")
+                overrides_file.write_text("\n".join(overrides) + "\n", encoding="utf-8")
+                command += ["--overrides", str(overrides_file)]
         if wheelhouse is not None:
             command += ["--no-index", "--only-binary", ":all:",
                         "--find-links", str(wheelhouse.absolute())]
-        result = self._run(command, cwd=requirements.parent, timeout=timeout)
+        result = self._with_cache_recovery(
+            "pip", lambda: self._run(command, cwd=requirements.parent, timeout=timeout))
         if result.returncode:
             raise classify_uv_failure("pip", result.returncode, result.stderr or result.stdout)
 
@@ -436,8 +597,9 @@ class PythonEnvironment:
         """Install rebuilt wheels whose hashes the bundle manifest owns, not uv.lock."""
         requirements = source / "requirements.txt"
         self.export_requirements(source, requirements, timeout=timeout)
-        self._install_requirements_file(requirements, wheelhouse=wheelhouse, timeout=timeout)
-        self.check()
+        self._install_requirements_file(requirements, wheelhouse=wheelhouse, lock=source / "uv.lock",
+                                        timeout=timeout)
+        self.check(source / "uv.lock")
 
     def prune_cache(self, *, ci: bool = False) -> None:
         command = ["cache", "prune", "--no-config"]
@@ -447,10 +609,23 @@ class PythonEnvironment:
         if result.returncode:
             raise InstallError("uv", f"cache pruning failed: {result.stderr[-600:]}")
 
-    def check(self) -> None:
-        result = self._run(
-            ["pip", "check", "--no-config", "--python", str(self.executable)],
+    def check(self, lock: Path | None = None) -> None:
+        """`uv pip check` the environment; *lock* is the uv.lock it was installed from.
+
+        Mismatches the lock's manifest overrides account for are expected (pm.pip_check).
+        The check is a quiet step, so it runs captured even for a streaming environment:
+        a streamed run keeps only the output's tail, which can drop the report's head.
+        """
+        result = replace(self, output=None)._run(
+            # Forced colour (FORCE_COLOR/CLICOLOR_FORCE) would wrap the report in ANSI pm.pip_check cannot read.
+            ["pip", "check", "--no-config", "--color", "never", "--python", str(self.executable)],
             cwd=self.destination.parent, timeout=60,
         )
-        if result.returncode:
+        if not result.returncode:
+            return
+        from pm.pip_check import unexpected_incompatibilities
+        unexpected = unexpected_incompatibilities(f"{result.stdout or ''}\n{result.stderr or ''}", lock)
+        if unexpected is None:
             raise InstallError("venv", f"dependency validation failed: {result.stderr[-600:]}")
+        if unexpected:
+            raise InstallError("venv", "dependency validation failed: " + "\n".join(unexpected)[-600:])

@@ -15,6 +15,7 @@ from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 _buzz_mod = load_plugin_adapter("buzz")
 
 BuzzAdapter = _buzz_mod.BuzzAdapter
+_MENTION_LOOKUP_CAP = _buzz_mod._MENTION_LOOKUP_CAP
 
 SELF_PUBKEY = "9fd5c7ba6d3ef224da78f541e0fcb9c50f72cc63edb19aae76ac6a0474dfa860"
 FIZZ_PUBKEY = "b" * 64
@@ -396,15 +397,25 @@ class TestLongerMemberNameMention:
         assert adapter._strip_mention("@Chip /whoami", ["Chip Sales"]) == "/whoami"
 
     @pytest.mark.asyncio
-    async def test_sender_p_tags_are_validated_and_capped(self, adapter):
+    async def test_name_lookups_are_bounded_per_event(self, adapter):
         cli = adapter._cli
         cli.responses[("channels", "members")] = [(0, "[]", "")]
         valid = [f"{i:02x}" * 32 for i in range(40)]
         junk = [f"junk-{i}" for i in range(10)]
-        await self._poll(adapter, "@Chip hola", p_tags=junk[:5] + valid + junk[5:], then_empty=True)
-        looked_up = [c[0][2:] for c in cli.calls if c[0][:2] == ["users", "get"] and c[0][3] != SENDER_PUBKEY]  # sender comes from the roster fallback
-        assert 0 < len(looked_up) <= 8
-        assert not any(j in a for a in looked_up for j in junk)
+        # No roster: the fallback re-reads recent traffic, which includes this very event.
+        await self._poll(adapter, "@Chip hola", p_tags=junk[:5] + valid + junk[5:])
+        looked_up = [c[0] for c in cli.calls if c[0][:2] == ["users", "get"] and c[0][3] != SENDER_PUBKEY]  # sender is resolved after the gate
+        assert 0 < len(looked_up) <= _MENTION_LOOKUP_CAP
+        assert not any(j in a for c in cli.calls for a in c[0] for j in junk)
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["[]", {"display_name": "Chip Sales"}])
+    async def test_malformed_profile_content_keeps_mention(self, adapter, content):
+        adapter._cli.responses[("users", "get")] = [
+            (0, json.dumps([{"pubkey": CHIP_SALES_PUBKEY, "display_name": "", "name": "", "content": content}]), "")
+        ]
+        await self._poll(adapter, "@Chip hola")
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
 
     @pytest.mark.asyncio

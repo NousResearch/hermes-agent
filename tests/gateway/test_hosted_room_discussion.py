@@ -55,6 +55,7 @@ def _append_user(
     event_id: str,
     text: str,
     thread_id: str = "thread-1",
+    epoch: int = 1,
 ) -> dict:
     return hosted_rooms.append_event(
         db,
@@ -63,7 +64,7 @@ def _append_user(
         kind="message.user",
         actor={"kind": "user", "id": "local-user"},
         authority_gateway_id=GATEWAY_ID,
-        authority_epoch=1,
+        authority_epoch=epoch,
         payload={"text": text, "thread_id": thread_id},
         now=time.time(),
     )
@@ -791,4 +792,52 @@ def test_malformed_log_and_task_reconstruction_fail_closed(
             events,
             malformed,
             local_profiles=LOCAL_PROFILES,
+        )
+
+
+def test_committed_history_from_an_earlier_authority_epoch_still_plans(room_db):
+    """A room that changes hands keeps its old log.
+
+    ``append_event`` already refuses anything but the exact current epoch, so a stored event
+    with an older epoch is committed history. Comparing the whole log to the CURRENT epoch
+    made every room that changed hands un-preparable: prepare failed three times and the room
+    stalled with "members could not be woken".
+    """
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="Report.")
+    _settle_next(room, db, text="First reply.")
+    room = hosted_rooms.claim_authority(
+        db,
+        room_id=ROOM_ID,
+        expected_gateway_id=GATEWAY_ID,
+        expected_epoch=1,
+        new_gateway_id=GATEWAY_ID,
+        event_id="claim-2",
+        now=time.time(),
+    )
+    assert room["authority_epoch"] == 2
+    _append_user(db, event_id="user-2", text="Second report.", epoch=2)
+
+    task = _next_task(room, db)
+    assert task.payload["target_member_id"] == MEMBERS[0]["member_id"]
+
+
+def test_replay_rejects_an_event_from_a_future_authority_epoch(room_db):
+    """Only a FUTURE epoch is impossible: no authority ever committed one."""
+    db, room = room_db
+    _append_user(db, event_id="user-1", text="Report.")
+    _settle_next(room, db, text="First reply.")
+    events = _events(db)
+    member_event = next(event for event in events if event["kind"] == "message.member")
+    forged = dict(
+        member_event,
+        seq=events[-1]["seq"] + 1,
+        event_id="forged",
+        authority_epoch=2,
+    )
+
+    with pytest.raises(discussion.DiscussionValidationError, match="authority epoch"):
+        discussion._validated_events(
+            [*events, forged],
+            room=discussion.validate_room(room, local_profiles=LOCAL_PROFILES),
         )

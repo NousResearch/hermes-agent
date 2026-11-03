@@ -480,8 +480,14 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
         (payload, Mapping, "event payload must be an object")):
         if not isinstance(value, expected):
             raise DiscussionValidationError(message)
-    if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
-        raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+    # An event committed under an older authority keeps that epoch forever, and ``append_event``
+    # already refused anything but the exact current epoch at write time — so a replay may see
+    # committed history from earlier spans, but never a FUTURE one. Comparing the whole log to
+    # today's epoch made every room that changed hands un-preparable (members could not be woken).
+    if kind in _EPOCH_STAMPED_KINDS:
+        epoch = raw.get("authority_epoch")
+        if type(epoch) is not int or not 1 <= epoch <= room.authority_epoch:
+            raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
     return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)

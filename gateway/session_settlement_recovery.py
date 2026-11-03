@@ -333,6 +333,12 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
         await fire_post_delivery(authority, admission_id)
         await authority._resolve_settled_waiter(admission_id, response)
         return True
+    except BaseException:
+        # A raise ahead of the step that releases the drain's review token (``publish_transfers``'
+        # pooled admission read in the cleanup above, ``deliver_settled``'s marker release) ends the
+        # drain before it; the token would stay live for the process lifetime. Released here instead.
+        _release_review_after_failure(authority, admission_id, committed=settled is not None and not discarded)
+        raise
     finally:
         # A resolution that raced this drain handed its collection here (``_resolved_unknown``):
         # honour it on every exit, settled or not.
@@ -341,6 +347,22 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
             authority._drain_owned_collection.discard(admission_id)
         if settled is not None or owed:
             release_media_after_delivery(authority, row)
+
+
+def _release_review_after_failure(authority, admission_id, *, committed):
+    """``settle_and_deliver`` raised ahead of the step that releases the drain's review token
+    (``release_unsettled_review`` in its cleanup, ``complete_settled_review`` in ``deliver_settled``).
+    The drain dies of that raise either way; without this every later automatic review on the session
+    is refused ``live_turn_active``. Both helpers are no-ops on an entry the seam already took, so a
+    raise after it releases nothing twice. Never fatal: the drain's own fault is what it dies of."""
+    from gateway.session_ingress_review import release_undelivered_review, release_unsettled_review
+    try:
+        if committed:
+            release_undelivered_review(authority, admission_id)
+        else:
+            release_unsettled_review(authority, admission_id)
+    except Exception:
+        logger.exception('Review release after the failed settlement of admission %s failed', admission_id)
 
 
 def hand_collection_to_drain(authority, admission_id):

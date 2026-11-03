@@ -193,6 +193,26 @@ def release_unsettled_review(authority, admission_id):
     _release(entry[0], _slugs().REASON_TURN_UNSETTLED)
 
 
+def release_undelivered_review(authority, admission_id):
+    """The drain's settlement raised after the terminal commit and ahead of its own completion
+    step (``settle_and_deliver``'s cleanup, or ``deliver_settled`` before ``complete_settled_review``):
+    nobody confirms a delivery, so the completion the drain held is released unconfirmed. One left
+    for a live waiter stays its own, with the drain's step now behind it (``_WAITER_ONLY``), so the
+    waiter's cancel releases it rather than waiting for a drain step that will not come."""
+    held = _held(authority)
+    entry = held.get(admission_id)
+    if entry is _WAITER_GONE:
+        held.pop(admission_id)
+        return
+    if entry is None or entry[1] is _WAITER_ONLY:
+        return
+    if entry[1] is _WAITER:
+        held[admission_id] = (entry[0], _WAITER_ONLY)
+        return
+    held.pop(admission_id)
+    _release(entry[0], _slugs().REASON_DELIVERY_UNCONFIRMED)
+
+
 def release_failed_review(event):
     """``execute_admission`` unwound before handing over: the handler raised."""
     completion = take_review_completion(event)

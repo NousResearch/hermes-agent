@@ -10,6 +10,11 @@ them (``_process_message_background``): an exception in the awaited adapter hook
 review token live (every later automatic review on the session would be refused
 ``live_turn_active``), and a review completion that raises never skips the adapter's outcome.
 
+The drain's own steps run ahead of those seams: ``settle_and_deliver``'s cleanup (a pooled
+admission read in ``publish_transfers``) and ``deliver_settled``'s marker release. A raise there
+ends the drain, and the token it holds is released all the same (unsettled, or unconfirmed once
+the outcome committed): the one failure the drain surfaces must not also pin the session.
+
 The harness of ``test_background_review_authority_ownership``: real GatewayRunner, adapter,
 SessionAuthority, drain and ``execute_admission`` over SQLite; only ``_hmwa_prepare_turn`` is a
 stand-in. A producer row is one ``mark_producer_admission`` marked, as ``_admitted`` marks a
@@ -17,6 +22,7 @@ delivery ``webhook_ingress._admit_native`` committed.
 """
 
 import asyncio
+import sqlite3
 import types
 
 import pytest
@@ -24,6 +30,7 @@ import pytest
 import gateway.session_authority as authority_module
 import gateway.session_ingress as ingress_module
 import gateway.session_ingress_review as review_module
+import gateway.session_queued_controls as queued_controls
 import gateway.session_settlement_recovery as recovery
 from agent import review_admission
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
@@ -392,6 +399,134 @@ async def test_an_unsettled_review_release_that_raises_does_not_skip_the_produce
         lambda: _completions(timeline, "one") == [ProcessingOutcome.FAILURE], timeout=10
     )
     assert authority.producer_turns == {}
+
+
+def _storage_read_fails_in_settlement_cleanup(monkeypatch):
+    """The real ``publish_transfers`` runs in ``settle_and_deliver``'s cleanup over a steer the
+    turn carried; its admission read raises as a pooled sqlite read does on a disk I/O error,
+    so the cleanup dies ahead of the unsettled seam, or of ``deliver_settled``."""
+    real = queued_controls.publish_transfers
+
+    def seeded(authority, ref, generation):
+        authority.steer_transfers[ref.session_id] = (generation, ["ghost-steer"])
+        return real(authority, ref, generation)
+
+    def exploding_read(_db, *, admission_id):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(queued_controls, "publish_transfers", seeded)
+    monkeypatch.setattr(queued_controls, "get_session_admission", exploding_read)
+
+
+def _released(caplog, slug):
+    return sum(
+        "released without delivery" in record.getMessage()
+        and slug in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def _drain_died_with_storage_error(authority, turns, text):
+    (live,) = authority.sessions.values()
+    await async_wait_until(lambda: live.task.done(), timeout=10)
+    # The fault is upstream's to surface: the drain still dies of it.
+    assert isinstance(live.task.exception(), sqlite3.OperationalError)
+    sid, profile_key = turns[text]
+    await async_wait_until(
+        lambda: review_admission.live_turn_block_reason(sid, None, profile_key) is None,
+        timeout=10,
+    )
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_a_storage_read_that_raises_in_the_unsettled_cleanup_still_releases_the_review(
+    tmp_path, monkeypatch, caplog
+):
+    """A raise in ``settle_and_deliver``'s cleanup ahead of the unsettled seam ends the drain
+    with the turn fenced ``unknown``; the token is released ``turn_unsettled`` all the same."""
+    monkeypatch.setattr(recovery, "settle_with_retry", _unsettled)
+    _storage_read_fails_in_settlement_cleanup(monkeypatch)
+    timeline, turns = [], {}
+    runner, authority = await _owner(tmp_path, monkeypatch)
+    _install_turn(runner, monkeypatch, timeline, turns)
+
+    with caplog.at_level("INFO"):
+        await _submit_local(authority, "lost")
+        await async_wait_until(
+            lambda: _statuses(authority) == {"lost": "unknown"}, timeout=20
+        )
+        sid = await _drain_died_with_storage_error(authority, turns, "lost")
+    assert ("spawn", sid) not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+    assert _released(caplog, review_admission.REASON_TURN_UNSETTLED) == 1, caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_storage_read_that_raises_in_the_settled_cleanup_still_releases_the_review(
+    tmp_path, monkeypatch, caplog
+):
+    """Settled order: the terminal outcome committed, then the same cleanup raise ends the drain
+    before ``deliver_settled`` could complete the drain's review. Nobody confirms a delivery,
+    so the completion is released ``delivery_unconfirmed`` and nothing spawns."""
+    _storage_read_fails_in_settlement_cleanup(monkeypatch)
+    timeline, turns = [], {}
+    runner, authority = await _owner(tmp_path, monkeypatch)
+    _install_turn(runner, monkeypatch, timeline, turns)
+
+    with caplog.at_level("INFO"):
+        await _submit_local(authority, "kept")
+        await async_wait_until(
+            lambda: _statuses(authority) == {"kept": "terminal"}, timeout=20
+        )
+        sid = await _drain_died_with_storage_error(authority, turns, "kept")
+    assert ("spawn", sid) not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+    assert (
+        _released(caplog, review_admission.REASON_DELIVERY_UNCONFIRMED) == 1
+    ), caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_marker_release_that_raises_inside_deliver_settled_still_releases_the_review(
+    tmp_path, monkeypatch, caplog
+):
+    """``deliver_settled`` releases the turn's durable marker after the send and ahead of its
+    own review completion: a storage fault there ends the drain with the reply sent, and the
+    completion the drain held is released ``delivery_unconfirmed`` rather than left live."""
+    inside, real_deliver_settled = [], ingress_module.deliver_settled
+    real_release = ingress_module._release_turn_marker
+
+    async def tracked_deliver_settled(authority, admission_id):
+        inside.append(admission_id)
+        try:
+            return await real_deliver_settled(authority, admission_id)
+        finally:
+            inside.pop()
+
+    async def exploding_release(authority, event):
+        if inside:
+            raise sqlite3.OperationalError("disk I/O error")
+        await real_release(authority, event)
+
+    monkeypatch.setattr(ingress_module, "deliver_settled", tracked_deliver_settled)
+    monkeypatch.setattr(ingress_module, "_release_turn_marker", exploding_release)
+    timeline, turns = [], {}
+    authority, ref, _row = await _queued_producer_row(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    with caplog.at_level("INFO"):
+        authority._schedule(ref)
+        await async_wait_until(
+            lambda: _statuses(authority) == {"one": "terminal"}, timeout=20
+        )
+        sid = await _drain_died_with_storage_error(authority, turns, "one")
+    assert [item for item in timeline if item[0] == "sent"]
+    assert ("spawn", sid) not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+    assert (
+        _released(caplog, review_admission.REASON_DELIVERY_UNCONFIRMED) == 1
+    ), caplog.text
 
 
 @pytest.mark.asyncio

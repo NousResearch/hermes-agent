@@ -387,8 +387,9 @@ default reply policy applies. Room IDs must match the chat ID exactly: a WhatsAp
 `<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
 
 With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
-hidden, so a healthy marker-only turn stays silent even where `allow_silence` is unset or `false`
-(see [Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)).
+hidden, so a healthy marker-only turn stays silent where `allow_silence` is unset (see
+[Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)). An
+explicit `allow_silence: false`, on the room or the platform, still keeps the notice there.
 
 The platform setting covers direct messages too. There, a question the model answers with only a
 marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
@@ -989,7 +990,8 @@ notifications, background/delegation diagnostics, and adapter-generated error
 notices. It also covers the silence-marker notice ("The model returned only a
 silence marker..."): where suppression is on for the chat's platform, a
 successful turn that ends on a bare `[SILENT]`/`NO_REPLY` stays silent, as if
-[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set. Failed,
+[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set, unless that
+room or platform sets `allow_silence: false`. Failed,
 partial, interrupted and empty results are presented as before. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.

@@ -138,9 +138,25 @@ async def test_routed_profile_uses_its_own_display_policy(
 
 
 @pytest.mark.asyncio
-async def test_suppression_wins_over_a_room_allow_silence_false(monkeypatch, tmp_path):
-    """allow_silence: false keeps the default reply rule, and that rule now honours suppression."""
-    _profile({**GLOBAL, "platforms": {"slack": {"channel_overrides": {CHANNEL_ID: {"allow_silence": False}}}}})
+@pytest.mark.parametrize("platform_block", [
+    {"channel_overrides": {CHANNEL_ID: {"allow_silence": False}}},
+    {"allow_silence": False},
+    {"allow_silence": True, "channel_overrides": {CHANNEL_ID: {"allow_silence": False}}},
+], ids=["room-false", "platform-false", "platform-true-room-false"])
+async def test_an_explicit_allow_silence_false_wins_over_suppression(monkeypatch, tmp_path, platform_block):
+    """allow_silence: false is the operator saying 'always show the notice here'; the global
+    suppression flag only decides where allow_silence is unset."""
+    _profile({**GLOBAL, "platforms": {"slack": platform_block}})
+    from gateway.config import load_gateway_config
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config = load_gateway_config()
+
+    assert await _live(runner, _event(_slack_source())) == _unexpected_silence_reply()
+
+
+@pytest.mark.asyncio
+async def test_suppression_silences_a_room_entry_that_leaves_allow_silence_unset(monkeypatch, tmp_path):
+    _profile({**GLOBAL, "platforms": {"slack": {"channel_overrides": {CHANNEL_ID: {"model": "openai/gpt-5-mini"}}}}})
     from gateway.config import load_gateway_config
     runner = _runner(monkeypatch, tmp_path)
     runner.config = load_gateway_config()

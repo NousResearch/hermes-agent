@@ -131,14 +131,16 @@ class GatewayConfigLoadersMixin:
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
         """Evaluate existing exemptions before consulting the optional room/platform permission.
 
-        Where warning notifications are hidden for the turn's platform, the unexpected-silence
-        notice is one of them: a healthy marker-only final then stays silent instead.
+        An explicit ``allow_silence`` (room or platform, true or false) decides. Only where it is
+        unset everywhere does the warning policy apply: with warning notifications hidden for the
+        turn's platform, the unexpected-silence notice is one of them, so a healthy marker-only
+        final stays silent instead.
         """
         from gateway.response_filters import silence_allowed
         if silence_allowed(display_kind, reply_expected):
             return True
         allow = self._room_allow_silence(source)
-        if allow is not True and self._silence_notice_suppressed(source):
+        if allow is None and self._silence_notice_suppressed(source):
             silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
             if silent:
                 logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",

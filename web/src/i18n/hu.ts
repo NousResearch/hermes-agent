@@ -192,6 +192,7 @@ export const hu: Translations = {
   analytics: {
     period: "Időszak:",
     totalTokens: "Összes token",
+    inclCacheRead: "gyorsítótárral együtt",
     totalSessions: "Összes munkamenet",
     apiCalls: "API-hívások",
     dailyTokenUsage: "Napi tokenhasználat",
@@ -203,6 +204,7 @@ export const hu: Translations = {
     edits: "Ügynök által kezelve",
     lastUsed: "Utoljára használva",
     input: "Bemenet",
+    cacheRead: "Gyorsítótár-olvasás",
     output: "Kimenet",
     total: "Összesen",
     noUsageData: "Nincs használati adat erre az időszakra",

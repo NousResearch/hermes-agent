@@ -23,6 +23,7 @@
     "fumadocs-core": "16.17.2",
     "fumadocs-mdx": "15.4.7",
     "fumadocs-ui": "16.17.2",
+    "github-slugger": "2.0.0",
     "mermaid": "11.17.2",
     "next": "16.4.3",
     "parse5": "7.3.0",

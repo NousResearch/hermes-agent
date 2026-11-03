@@ -25,7 +25,7 @@ import { sessionRowKey } from './simplified-session-identity'
 interface SimplifiedSessionListProps {
   sessions: SessionInfo[]
   activeSessionId: string | null
-  pinned?: boolean
+  pinnedIds: ReadonlySet<string>
   ambiguousIds: ReadonlySet<string>
   onResumeSession: (id: string, row?: SessionInfo) => void
   onDeleteSession: (id: string) => void
@@ -54,6 +54,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
 
   const renderRow = (row: SessionInfo) => {
     const title = sessionTitle(row)
+    const pinned = props.pinnedIds.has(sessionRowKey(row))
 
     const selected =
       row.id === props.activeSessionId &&
@@ -92,9 +93,9 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             onArchive={() => props.onArchiveSession(row.id)}
             onBranch={() => props.onBranchSession(row.id)}
             onDelete={() => props.onDeleteSession(row.id)}
-            onPin={() => props.onUpdate(row, 'pinned', !props.pinned)}
+            onPin={() => props.onUpdate(row, 'pinned', !pinned)}
             onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
-            pinned={props.pinned}
+            pinned={pinned}
             profile={row.profile}
             sessionId={row.id}
             title={title}

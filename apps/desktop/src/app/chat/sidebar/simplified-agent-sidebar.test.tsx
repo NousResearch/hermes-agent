@@ -3,6 +3,7 @@ import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import * as sessionsApi from '@/api/sessions'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
@@ -105,7 +106,10 @@ afterEach(() => {
 })
 it('keeps server-pinned chats reachable and resumes the exact session', () => {
   mount()
-  expect(screen.getByText('Pinned plan')).toBeTruthy()
+  expect(screen.getAllByText('Pinned plan')).toHaveLength(2)
+  const research = screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
+  fireEvent.click(within(research).getByText('Pinned plan'))
+  expect(resume).toHaveBeenCalledWith('pinned', expect.objectContaining({ profile: 'research' }))
 
   const agentGroup = screen
     .getByRole('button', { name: /Agent settings: default/ })
@@ -200,7 +204,7 @@ it('retains same-id chats across profiles and gateways, including pinned twins',
   mount()
 
   for (const title of ['Default twin', 'Research twin', 'Remote twin']) {
-    fireEvent.click(screen.getByText(title))
+    fireEvent.click(screen.getAllByText(title)[0])
   }
 
   expect(resume.mock.calls.map(([, row]) => [row.profile, row.connection_id])).toEqual([
@@ -224,4 +228,16 @@ it('starts a chat directly from an agent row without opening its settings', () =
   fireEvent.click(screen.getByRole('button', { name: 'New session in Research' }))
   expect(newSessionInProfile).toHaveBeenCalledWith('research')
   expect(screen.getByTestId('route').textContent).toBe('')
+})
+
+it('offers Unpin under the agent as well as in Pinned, keeping the owning profile', async () => {
+  const update = vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({})
+
+  try {
+    mount()
+    const research = screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
+    fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('pinned', 'PATCH', { pinned: false }, expect.objectContaining({ profile: 'research' })))
+  } finally { update.mockRestore() }
 })

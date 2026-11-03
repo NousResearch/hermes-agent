@@ -339,5 +339,5 @@ def resolve_httpx_verify(
     # the platform context directly so stale paths cannot break construction;
     # proxy environment handling remains enabled.
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
-        return _shared_context(None)
+        return platform_ssl_context()
     return _default_verify()

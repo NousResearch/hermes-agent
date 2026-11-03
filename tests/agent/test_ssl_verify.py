@@ -51,7 +51,7 @@ def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_pat
 
     bundle_ctx = ssl_verify.platform_ssl_context()
     assert bundle_ctx is ssl_verify.platform_ssl_context()
-    assert bundle_ctx is not platform
+    assert bundle_ctx is platform
     assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
     assert bundle_ctx is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
 

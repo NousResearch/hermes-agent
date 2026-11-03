@@ -150,7 +150,7 @@ export const StreamingMd = memo(function StreamingMd({ cols, compact, t, text }:
   return (
     <Box flexDirection="column">
       {state.blocks.map((block, i) => (
-        <Md cols={cols} compact={compact} key={i} t={t} text={block} />
+        <Md cols={cols} compact={compact} key={`block-${i}`} t={t} text={block} />
       ))}
 
       {tail ? <Md cols={cols} compact={compact} t={t} text={tail} /> : null}

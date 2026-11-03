@@ -82,7 +82,13 @@ def legacy_launch_params(row):
     their workspace only there. ``api_mode`` is no create field, so it is
     returned apart.
     """
-    params = {key: row[key] for key in ('cwd', 'model') if row.get(key)}
+    params = {key: row[key] for key in ('model',) if row.get(key)}
+    # Resume must not re-feed a stored cwd into the create-time check: a chat whose
+    # working folder is gone should fall back to the launch dir instead of being
+    # refused with invalid_params (#148238).
+    _cwd = row.get('cwd')
+    if _cwd and Path(_cwd).is_dir():
+        params['cwd'] = _cwd
     from hermes_state_sessions import _parse_model_config
     saved = _parse_model_config(row.get('model_config'))
     from hermes_state_gateway import SessionGatewayMixin

@@ -1554,17 +1554,23 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def _iter_dangerous_descriptions(command: str):
-    """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat."""
+def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
+    """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
+    *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
+    gateway-splice checks, which no content rule is."""
     if _command_parser_limit_exceeded(command):
-        yield _PARSER_LIMIT_DESCRIPTION
+        if only is None:
+            yield _PARSER_LIMIT_DESCRIPTION
         return
     if _is_verification_artifact_cleanup(command):
         return
+    patterns = DANGEROUS_PATTERNS_COMPILED if only is None else [
+        (pattern_re, description) for pattern_re, description in DANGEROUS_PATTERNS_COMPILED if description in only
+    ]
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
-        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+        for pattern_re, description in patterns:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
@@ -1574,6 +1580,8 @@ def _iter_dangerous_descriptions(command: str):
                     yield description
             elif pattern_re.search(command_lower):
                 yield description
+    if only is not None:
+        return
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         yield description
@@ -1593,4 +1601,4 @@ def detect_content_rule_keys(command: str) -> list[str]:
     """Pattern keys of every content-level rule (``_CONTENT_RULE_DESCRIPTIONS``) the command matches,
     wherever they fall in detection order. The approval gates require consent for these on top of
     the first match, so an approved pipe-to-shell cannot wave through a credential upload."""
-    return [d for d in dict.fromkeys(_iter_dangerous_descriptions(command)) if d in _CONTENT_RULE_DESCRIPTIONS]
+    return list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_CONTENT_RULE_DESCRIPTIONS)))

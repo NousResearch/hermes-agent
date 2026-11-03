@@ -9,6 +9,7 @@ the current lock still needs (unlike ``uv cache prune --ci``).
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
@@ -27,12 +28,32 @@ def lock_package_names(source_repo: Path) -> set[str]:
     return {_normalized(entry["name"]) for entry in data["package"]}
 
 
+def _drop_dangling_links(cache: Path) -> int:
+    """Delete wheel and sdist links whose ``archive-v0/`` bucket is gone.
+
+    URL, git and named-index entries sit a hash directory deeper than ``pypi``
+    and are not pruned by name, but their links point into buckets the prune
+    removed. A link with no target is never a cache hit, and a payload that
+    ships one fails ``publish_prepared``'s link check. ``os.walk`` lists a
+    dangling link among the files, so the walk never follows one.
+    """
+    dropped = 0
+    for family_dir in (*cache.glob("wheels-v*"), *cache.glob("sdists-v*")):
+        for directory, _dirs, files in os.walk(family_dir):
+            for name in files:
+                entry = Path(directory, name)
+                if entry.is_symlink() and not entry.exists():
+                    entry.unlink()
+                    dropped += 1
+    return dropped
+
+
 def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
     """Delete cache entries for dists the lock cannot resolve.
 
     Unidentifiable buckets (no dist-info) survive — pruning fails open for
-    unknown layouts, never for identifiable stale pins. Returns the pruned
-    entry count for the build log.
+    unknown layouts, never for identifiable stale pins. Links left without a
+    target go too. Returns the pruned entry count for the build log.
     """
     keep = lock_package_names(source_repo)
     dist_info = re.compile(r"([A-Za-z0-9_.]+?)-\d[^-]*\.dist-info")
@@ -61,4 +82,4 @@ def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
             if entry.is_dir() and _normalized(entry.name) not in keep:
                 shutil.rmtree(entry, ignore_errors=True)
                 pruned += 1
-    return pruned
+    return pruned + _drop_dangling_links(cache)

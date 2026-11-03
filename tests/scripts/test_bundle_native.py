@@ -410,6 +410,29 @@ def test_staged_cache_keeps_a_dotted_dist_the_lock_resolves(tmp_path):
     assert index.is_dir()
 
 
+@pytest.mark.platforms("posix")
+def test_prune_drops_a_url_wheel_link_whose_archive_it_pruned(tmp_path):
+    """A URL, git or named-index wheel sits a hash directory deeper than ``pypi``. Once the
+    prune deletes its bucket, the link must go too: a payload that ships a link with no target
+    fails ``publish_prepared``. A link the lock still resolves stays."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text('[[package]]\nname = "keep-me"\nversion = "1.0"\n', encoding="utf-8")
+    cache = tmp_path / "cache"
+    (cache / "archive-v0" / "gone" / "gone_dep-1.0.dist-info").mkdir(parents=True)
+    (cache / "archive-v0" / "kept" / "keep_me-1.0.dist-info").mkdir(parents=True)
+    url = cache / "wheels-v7" / "url" / "d87c3d39b3c6ef8c"
+    (url / "gone-dep").mkdir(parents=True)
+    (url / "keep-me").mkdir()
+    os.symlink("../../../../archive-v0/gone", url / "gone-dep" / "1.0-py3-none-any")
+    os.symlink("../../../../archive-v0/kept", url / "keep-me" / "1.0-py3-none-any")
+
+    native.prune_uv_cache_to_lock(cache, lock)
+
+    assert not (url / "gone-dep" / "1.0-py3-none-any").is_symlink(), "a dangling wheel link survived the prune"
+    assert (url / "keep-me" / "1.0-py3-none-any").resolve() == (cache / "archive-v0" / "kept").resolve()
+
+
 @pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
 def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
     cache = tmp_path / "cache"

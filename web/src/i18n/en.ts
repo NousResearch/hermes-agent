@@ -355,6 +355,12 @@ export const en: Translations = {
     moaSummary: "{count} references · {model}",
     notLoaded: "not loaded",
     setMainModel: "Set Main Model",
+    tokenAnalyticsHiddenBefore:
+      "Token & cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, …) and provider retries, so they diverge from your provider bill. Enable",
+    tokenAnalyticsHiddenAfter:
+      "to show the local debug estimate anyway.",
+    in: "in",
+    config: "Config",
   },
 
   files: {

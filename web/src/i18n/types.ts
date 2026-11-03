@@ -366,6 +366,10 @@ export interface Translations {
     moaSummary: string;
     notLoaded: string;
     setMainModel: string;
+    tokenAnalyticsHiddenBefore: string;
+    tokenAnalyticsHiddenAfter: string;
+    in: string;
+    config: string;
   };
 
   // ── Files page ──

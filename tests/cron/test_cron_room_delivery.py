@@ -81,6 +81,24 @@ def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_stor
     assert _posts(room_store) == []
 
 
+def test_named_profile_target_reaches_a_room_the_root_gateway_imported(room_store):
+    """The root gateway imported the standalone room (shared copy fenced, its own state.db owns it);
+    Room settings in the research view advertises room:<id>@research, which must post to that store."""
+    from gateway.hosted_rooms_gateway_import import import_standalone_rooms
+    root_store = hosted_rooms.default_db_path().with_name("state.db")
+    with closing(sqlite3.connect(root_store)) as conn, conn:  # the root gateway's SessionDB owner table
+        conn.execute("CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT)")
+    assert import_standalone_rooms(root_store) == 1
+    research = get_hermes_home() / "profiles" / "research"
+    research.mkdir(parents=True)
+    (research / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    assert delivery._deliver_result(_job(deliver=f"room:{ROOM_ID}@research"), "Digest ready") is None
+
+    assert [p["payload"]["text"] for p in _posts(root_store)] == ["Digest ready"]
+    assert _posts(room_store) == []
+
+
 def test_room_a_profile_gateway_took_over_names_the_profile_remedy(room_store):
     from gateway.hosted_room_replicas import demote_room
     state = hosted_rooms.room_state(room_store, room_id=ROOM_ID)

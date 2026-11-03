@@ -111,8 +111,9 @@ def first_round_members(
     room: DiscussionRoom, lead: DiscussionMember, events: Sequence[_ValidatedEvent], discussion_event_id: str,
     routing_task_id: str,
 ) -> tuple[DiscussionMember, ...] | None:
-    """Who the lead gave the message to; ``(lead,)`` when its routing turn ended without an assignment
-    (e.g. cancelled); None while the routing turn has not finished."""
+    """Who the lead gave the message to; ``(lead,)`` when its routing turn reached a terminal receipt
+    without an assignment (cancelled: discarded or superseded); None while the routing turn has not
+    finished (``turn.deferred`` is not terminal: it awaits Retry or Discard)."""
     if (event := assignment(events, discussion_event_id)) is not None:
         chosen = set(event.payload["member_ids"])
         return tuple(member for member in room.members if member.member_id in chosen)
@@ -138,8 +139,11 @@ def validate_assignment_event(kind: str, payload: Mapping[str, Any], actor: Mapp
 
 def assignment_effect(result: Any, *, task: DiscussionTaskPlan, room: DiscussionRoom, status: str) -> list[EventPlan]:
     """The ``room.assignment`` a finished routing turn publishes ahead of its terminal receipt. A settled
-    answer naming no member, or a failed routing turn, falls back to the lead alone; a cancelled or
-    deferred routing turn assigns nothing."""
+    answer naming no member, or a failed routing turn, records a fallback to the lead alone. A cancelled
+    (discarded or superseded) or deferred routing turn records no assignment; once it is terminal,
+    ``first_round_members`` still gives the message to the lead, because Discard gives up one attempt, never
+    the user's message (a discarded member turn in an everyone room leaves the rest of the round running).
+    Stop ends the whole round through the stop fence instead."""
     from gateway.hosted_room_discussion import EventPlan, _terminal_text
 
     if status not in {"settled", "failed"}:

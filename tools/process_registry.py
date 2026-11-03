@@ -2296,10 +2296,22 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
-        elif session.env_ref and session.pid:
+        elif session.env_ref and isinstance(session.pid, int) and session.pid > 0:
             # Signal the process group spawn_via_env created. Killing only the
             # wrapper PID orphans the command, which keeps running.
-            session.env_ref.execute(f"kill -TERM -- -{session.pid} 2>/dev/null", timeout=5)
+            grace = self._daemon_term_grace_seconds()
+            if grace:
+                # TERM-ignoring grandchildren can outlive the wrapper. Keep
+                # the escalation inside the same sandbox process group.
+                session.env_ref.execute(
+                    f"kill -TERM -- -{session.pid} 2>/dev/null; "
+                    f"sleep {grace:g}; "
+                    f"kill -0 -- -{session.pid} 2>/dev/null && "
+                    f"kill -KILL -- -{session.pid} 2>/dev/null || true",
+                    timeout=max(5, grace + 5),
+                )
+            else:
+                session.env_ref.execute(f"kill -TERM -- -{session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

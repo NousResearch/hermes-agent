@@ -1498,6 +1498,91 @@ class TestSandboxKillTree:
             registry._finished.pop(session.id, None)
 
 
+    def test_refuses_zero_sandbox_pid(self, registry):
+        """PID 0 is the calling process group; it is never a sandbox job."""
+        session = _make_session(sid="proc_zero_sandbox_pid")
+        session.pid_scope = "sandbox"
+        session.pid = 0
+        session.env_ref = MagicMock()
+        registry._running[session.id] = session
+
+        result = registry.kill_process(session.id)
+
+        assert result["status"] == "error"
+        session.env_ref.execute.assert_not_called()
+
+    @pytest.mark.parametrize("remove_pid_file", [False, True])
+    def test_kill_escalates_sigterm_ignoring_descendant(self, registry, tmp_path, monkeypatch, remove_pid_file):
+        """A TERM-ignoring grandchild from fork PR #41 must not survive kill."""
+        import psutil
+
+        class BashEnv:
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def execute(self, command, timeout=10, **_kw):
+                out = tmp_path / "exec.out"
+                with open(out, "w") as fh:
+                    rc = subprocess.run(
+                        ["bash", "-c", command], stdin=subprocess.DEVNULL,
+                        stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
+                    ).returncode
+                return {"output": out.read_text(), "returncode": rc}
+
+        def alive(pid):
+            try:
+                return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return False
+
+        marker = tmp_path / "term_ignoring_child.pid"
+        env = BashEnv()
+        with patch("tools.process_registry.threading.Thread", return_value=MagicMock()), \
+                patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(
+                env, f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(marker))}; wait"
+            )
+        child = None
+        try:
+            assert session.pid and session.pid > 0
+            assert _wait_until(lambda: marker.exists() and marker.read_text().strip())
+            child = int(marker.read_text().strip())
+            assert alive(child)
+
+            if remove_pid_file:
+                # The poller's PID file may vanish after spawn, during kill.
+                # Termination must rely on the recorded session PID instead.
+                original_execute = env.execute
+                pid_file = tmp_path / f"hermes_bg_{session.id}.pid"
+
+                def unlink_during_kill(command, **kwargs):
+                    if command.startswith("kill -TERM"):
+                        pid_file.unlink(missing_ok=True)
+                    return original_execute(command, **kwargs)
+
+                monkeypatch.setattr(env, "execute", unlink_during_kill)
+
+            with patch.object(ProcessRegistry, "_daemon_term_grace_seconds", return_value=0.2):
+                result = registry.kill_process(session.id)
+
+            assert result["status"] == "killed"
+            if remove_pid_file:
+                assert not (tmp_path / f"hermes_bg_{session.id}.pid").exists()
+            assert _wait_until(lambda: not alive(child)), (
+                "the TERM-ignoring descendant survived the sandbox group kill"
+            )
+        finally:
+            if session.pid and session.pid > 0:
+                try:
+                    env.execute(f"kill -KILL -- -{session.pid} 2>/dev/null || true")
+                except Exception:
+                    pass
+            if child and alive(child):
+                os.kill(child, signal.SIGKILL)
+            registry._running.pop(session.id, None)
+            registry._finished.pop(session.id, None)
+
+
 # =========================================================================
 # Tool handler
 # =========================================================================

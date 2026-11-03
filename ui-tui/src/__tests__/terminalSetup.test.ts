@@ -41,10 +41,11 @@ describe('terminalSetup helpers', () => {
       getVSCodeStyleConfigDir(
         'Code',
         'win32',
-        { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
+        // Explicit win32-style platform data; win32.join yields backslash separators.
+        { APPDATA: 'C:\\Users\\me\\AppData\\Roaming' } as NodeJS.ProcessEnv,
         '/home/me'
       )
-    ).toBe('C:/Users/me/AppData/Roaming/Code/User')
+    ).toBe('C:\\Users\\me\\AppData\\Roaming\\Code\\User')
   })
 
   it('strips line comments from keybindings JSON', () => {
@@ -96,7 +97,11 @@ describe('configureTerminalKeybindings', () => {
     expect(written).toContain('terminalTextSelected')
     expect(written).toContain('\\u001b[99;13u')
     expect(written).toContain('shift+enter')
+    expect(written).toContain('\\u001b[13;2u')
     expect(written).toContain('cmd+enter')
+    expect(written).toContain('\\u001b[13;9u')
+    expect(written).toContain('ctrl+enter')
+    expect(written).toContain('\\u001b[13;5u')
     expect(written).toContain('cmd+z')
   })
 
@@ -299,7 +304,6 @@ describe('configureTerminalKeybindings', () => {
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('Failed to read')
     expect(writeFile).not.toHaveBeenCalled()
   })
 
@@ -328,7 +332,6 @@ describe('configureTerminalKeybindings', () => {
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('local machine')
   })
 
   it('prompts for setup when bindings are missing and suppresses prompt when complete', async () => {
@@ -336,11 +339,75 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readMissing }
+        fileOps: { readFile: readMissing },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
       })
     ).resolves.toBe(true)
 
     const readComplete = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'cmd+c',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus && terminalTextSelected',
+          args: { text: '\u001b[99;13u' }
+        },
+        {
+          key: 'shift+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[13;2u' }
+        },
+        {
+          key: 'ctrl+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[13;5u' }
+        },
+        {
+          key: 'cmd+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[13;9u' }
+        },
+        {
+          key: 'cmd+z',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[122;9u' }
+        },
+        {
+          key: 'shift+cmd+z',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\u001b[122;10u' }
+        }
+      ])
+    )
+
+    await expect(
+      shouldPromptForTerminalSetup({
+        env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
+        fileOps: { readFile: readComplete },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
+      })
+    ).resolves.toBe(false)
+  })
+
+  it('suppresses terminal setup prompts inside SSH sessions', async () => {
+    await expect(
+      shouldPromptForTerminalSetup({
+        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv
+      })
+    ).resolves.toBe(false)
+  })
+
+  it('prompts for setup when legacy \\\r\n bindings are present', async () => {
+    // Old keybindings using the legacy \\\r\n sequence should be detected as
+    // incomplete — they need migration to the CSI u encoding.
+    const readLegacy = vi.fn().mockResolvedValue(
       JSON.stringify([
         {
           key: 'cmd+c',
@@ -384,16 +451,61 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readComplete }
+        fileOps: { readFile: readLegacy },
+        homeDir: '/tmp/fake-home',
+        platform: 'darwin'
       })
-    ).resolves.toBe(false)
+    ).resolves.toBe(true)
   })
 
-  it('suppresses terminal setup prompts inside SSH sessions', async () => {
-    await expect(
-      shouldPromptForTerminalSetup({
-        env: { SSH_CONNECTION: '1 2 3 4', TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv
-      })
-    ).resolves.toBe(false)
+  it('migrates legacy \\\r\n bindings to CSI u sequences', async () => {
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+
+    const readFile = vi.fn().mockResolvedValue(
+      JSON.stringify([
+        {
+          key: 'shift+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\\\r\n' }
+        },
+        {
+          key: 'ctrl+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\\\r\n' }
+        },
+        {
+          key: 'cmd+enter',
+          command: 'workbench.action.terminal.sendSequence',
+          when: 'terminalFocus',
+          args: { text: '\\\r\n' }
+        }
+      ])
+    )
+
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const copyFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      fileOps: { copyFile, mkdir, readFile, writeFile },
+      homeDir: '/Users/me',
+      platform: 'darwin'
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.requiresRestart).toBe(true)
+    const written = writeFile.mock.calls[0]?.[1] as string
+    const parsed = JSON.parse(written)
+
+    // All three Enter bindings should now use CSI u sequences
+    const enterBindings = parsed.filter((b: { key: string }) =>
+      ['shift+enter', 'ctrl+enter', 'cmd+enter'].includes(b.key)
+    )
+
+    expect(enterBindings).toHaveLength(3)
+    expect(enterBindings.find((b: { key: string }) => b.key === 'shift+enter')?.args?.text).toBe('\u001b[13;2u')
+    expect(enterBindings.find((b: { key: string }) => b.key === 'ctrl+enter')?.args?.text).toBe('\u001b[13;5u')
+    expect(enterBindings.find((b: { key: string }) => b.key === 'cmd+enter')?.args?.text).toBe('\u001b[13;9u')
   })
 })

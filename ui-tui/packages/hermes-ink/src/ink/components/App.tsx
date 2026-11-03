@@ -11,6 +11,7 @@ import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import instances from '../instances.js'
 import {
+  BURST_END_QUIET_MS,
   DECRPM_STATUS,
   INITIAL_STATE,
   type ParsedInput,
@@ -28,6 +29,7 @@ import {
   setTerminalBackgroundHex,
   setTerminalForegroundHex,
   setXtversionName,
+  skipKittyKeyboardProtocol,
   supportsExtendedKeys
 } from '../terminal.js'
 import {
@@ -123,6 +125,11 @@ type Props = {
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
   // terminal side. Optional so testing.tsx doesn't need to stub it.
   readonly onStdinResume?: () => void
+  // Called for DECSET 1004 terminal focus transitions. The renderer uses
+  // focus-in as a strong signal that the emulator may have coalesced hidden
+  // tab writes or lost physical cursor state, so it can force one clean
+  // repaint instead of trusting incremental damage from before the blur.
+  readonly onTerminalFocusChange?: (isFocused: boolean) => void
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
   // Enables IME composition at the input caret and lets screen readers /
@@ -174,6 +181,8 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null
+  // Check-phase hop between that timer firing and the flush; see flushIncomplete
+  incompleteFlushImmediate: NodeJS.Immediate | null = null
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50 // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500 // Longer timeout for paste operations
@@ -273,6 +282,11 @@ export default class App extends PureComponent<Props, State> {
       this.incompleteEscapeTimer = null
     }
 
+    if (this.incompleteFlushImmediate) {
+      clearImmediate(this.incompleteFlushImmediate)
+      this.incompleteFlushImmediate = null
+    }
+
     if (this.mouseWatchdogTimer) {
       clearInterval(this.mouseWatchdogTimer)
       this.mouseWatchdogTimer = null
@@ -328,9 +342,14 @@ export default class App extends PureComponent<Props, State> {
         // distinguishable from ctrl+<letter>. We write both the kitty stack
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
         // terminals honor whichever they implement (tmux only accepts the
-        // latter).
+        // latter). Ghostty gets only modifyOtherKeys — its kitty
+        // disambiguate mode strips Alt from Backspace (see
+        // skipKittyKeyboardProtocol).
         if (supportsExtendedKeys()) {
-          this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          if (!skipKittyKeyboardProtocol()) {
+            this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          }
+
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 
@@ -492,15 +511,35 @@ export default class App extends PureComponent<Props, State> {
       })
   }
 
-  // Helper to flush incomplete escape sequences
+  // Timer callback for incomplete escape sequences, unterminated pastes and a
+  // held CR. Node runs timers before the poll phase, so after an event-loop
+  // stall this fires while the next chunk still sits unread in the fd, where
+  // stdin.readableLength cannot see it; flushing here would submit a held CR
+  // ahead of the paste chunk that follows it. Decide in the check phase
+  // instead, after this turn's poll has read whatever was waiting: any read
+  // replaces keyParseState, which voids this flush (processInput re-arms the
+  // timer when the new state still needs one).
   flushIncomplete = (): void => {
-    // Clear the timer reference
     this.incompleteEscapeTimer = null
+    const state = this.keyParseState
 
+    if (this.incompleteFlushImmediate) {
+      clearImmediate(this.incompleteFlushImmediate)
+    }
+
+    this.incompleteFlushImmediate = setImmediate(() => {
+      this.incompleteFlushImmediate = null
+
+      if (this.keyParseState === state) {
+        this.flushIfIdle()
+      }
+    })
+  }
+  flushIfIdle = (): void => {
     // Only proceed if we have an incomplete escape sequence or an unterminated
     // bracketed paste. Missing paste-end markers otherwise leave every later
     // keystroke trapped in the paste buffer.
-    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE') {
+    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE' && !this.keyParseState.pendingReturn) {
       return
     }
 
@@ -513,10 +552,7 @@ export default class App extends PureComponent<Props, State> {
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
-      )
+      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.flushTimeout())
 
       return
     }
@@ -544,17 +580,22 @@ export default class App extends PureComponent<Props, State> {
     // If we have incomplete escape sequences or an unterminated paste, set a
     // timer to flush/reset them. Paste starts are complete CSI sequences, so
     // checking only `incomplete` would never arm the watchdog.
-    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE') {
+    // A held trailing CR (scripted `text` + Enter) is released by the same flush.
+    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE' || this.keyParseState.pendingReturn) {
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer)
       }
 
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
-      )
+      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.flushTimeout())
     }
+  }
+  flushTimeout = (): number => {
+    if (this.keyParseState.mode === 'IN_PASTE') {
+      return this.PASTE_TIMEOUT
+    }
+
+    return this.keyParseState.pendingReturn ? BURST_END_QUIET_MS : this.NORMAL_TIMEOUT
   }
   handleReadable = (): void => {
     // Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).
@@ -630,6 +671,7 @@ export default class App extends PureComponent<Props, State> {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
     setTerminalFocused(isFocused)
+    this.props.onTerminalFocusChange?.(isFocused)
   }
   handleSuspend = (): void => {
     if (!this.isRawModeSupported()) {

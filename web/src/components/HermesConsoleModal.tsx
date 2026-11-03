@@ -11,8 +11,14 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { api } from "@/lib/api";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
+import {
+  refitWhenTerminalFontLoads,
+  TERMINAL_FONT_FAMILY,
+} from "@/lib/terminal-font-refit";
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
+import { errorMessage } from "@/lib/api-error";
 
 type ConsoleFrame =
   | {
@@ -112,6 +118,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
   const hasReadyFrameRef = useRef(false);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
+  // Bumped by the Reconnect button; a dependency of the connect effect so the
+  // console redials the same /api/console socket without closing the modal.
+  const [connectNonce, setConnectNonce] = useState(0);
   const [consoleProfile, setConsoleProfile] = useState("current");
   const { profile } = useProfileScope();
   const { theme } = useTheme();
@@ -346,8 +355,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     const term = new XtermTerminal({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 13,
       lineHeight: 1.25,
       letterSpacing: 0,
@@ -389,6 +397,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
     const ro = new ResizeObserver(scheduleFit);
     ro.observe(host);
     scheduleFit();
+    const stopFontRefit = refitWhenTerminalFontLoads(term, fitTerminal);
 
     const dataDisposable = term.onData(handleInputData);
     setConnectionState("connecting");
@@ -423,22 +432,32 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         };
 
         ws.onclose = (ev) => {
+          if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+            return;
+          }
           wsRef.current = null;
           activeCommandRef.current = false;
           pendingCommandRef.current = null;
           if (cancelled) return;
           setConnectionState(ev.code === 1000 ? "closed" : "error");
-          const reason = ev.reason ? ` ${ev.reason}` : "";
+          // Close code and server reason are diagnostics, not user copy.
+          console.warn(`[console] websocket closed code=${ev.code}${ev.reason ? ` reason=${ev.reason}` : ""}`);
           const message =
             ev.code === 1006 && !hasReadyFrameRef.current
-              ? "Console connection failed before the server handshake. Check that this dashboard is connected to a backend with /api/console."
-              : `Console closed (${ev.code}).${reason}`;
+              ? "Console could not connect to the dashboard server. Check that `hermes dashboard` is running, then click Reconnect."
+              : ev.code === 1000
+                ? "Console closed."
+                : "Console disconnected from the dashboard server. Click Reconnect to try again.";
           writeLine(term, `\x1b[31m${message}\x1b[0m`);
         };
       } catch (err) {
         if (cancelled) return;
         setConnectionState("error");
-        writeLine(term, `\x1b[31mConsole unavailable: ${err}\x1b[0m`);
+        console.warn(`[console] connect failed: ${errorMessage(err)}`);
+        writeLine(
+          term,
+          "\x1b[31mConsole could not connect to the dashboard server. Check that `hermes dashboard` is running, then click Reconnect.\x1b[0m",
+        );
       }
     })();
 
@@ -447,6 +466,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       dataDisposable.dispose();
       ro.disconnect();
       if (resizeFrame) cancelAnimationFrame(resizeFrame);
+      stopFontRefit();
       wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
@@ -456,7 +476,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       activeCommandRef.current = false;
       hasReadyFrameRef.current = false;
     };
-  }, [handleFrame, handleInputData, open, profile, theme]);
+  }, [connectNonce, handleFrame, handleInputData, open, profile, theme]);
 
   useEffect(() => {
     if (!open) return;
@@ -508,6 +528,19 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge tone={statusTone}>{connectionState}</Badge>
               <span className="font-mono">{consoleProfile}</span>
+              {(connectionState === "closed" || connectionState === "error") && (
+                <Button
+                  size="sm"
+                  outlined
+                  onClick={() => {
+                    setConnectionState("connecting");
+                    setConnectNonce((n) => n + 1);
+                  }}
+                  aria-label="Reconnect console"
+                >
+                  Reconnect
+                </Button>
+              )}
             </div>
           </div>
           <Button

@@ -15,9 +15,7 @@ sidebar_position: 1
 | 提供商 | 配置方式 |
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
-| **OpenAI Codex** | `hermes model`（ChatGPT OAuth，使用 Codex 模型） |
-| **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
-| **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
+| **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
 | **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
 | **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
@@ -44,7 +42,7 @@ sidebar_position: 1
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
-官方 API key 路径请参见专属的 [Google Gemini 指南](/guides/google-gemini)。
+官方 API key 路径请参见专属的 [Google Gemini 指南](../guides/google-gemini.md)。
 
 :::tip 模型 key 别名
 在 `model:` 配置节中，可以使用 `default:` 或 `model:` 作为模型 ID 的键名。`model: { default: my-model }` 和 `model: { model: my-model }` 效果完全相同。
@@ -53,7 +51,7 @@ sidebar_position: 1
 
 ### Nous Portal
 
-[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](/user-guide/features/tool-gateway)（网页搜索、图像生成、TTS、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
+[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网页搜索、图像生成、TTS、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
 
 ```bash
 hermes setup --portal     # 全新安装——一条命令完成 OAuth + 提供商 + 网关配置
@@ -63,21 +61,36 @@ hermes portal info        # 随时查看登录状态和路由信息
 
 还没有订阅？前往 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 购买。
 
-**完整详情：** 参见专属的 [Nous Portal 集成页面](/integrations/nous-portal)（订阅内容、模型目录、故障排查）以及分步指南[使用 Nous Portal 运行 Hermes Agent](/guides/run-hermes-with-nous-portal)。
+**完整详情：** 参见专属的 [Nous Portal 集成页面](./nous-portal.md)（订阅内容、模型目录、故障排查）以及分步指南[使用 Nous Portal 运行 Hermes Agent](../guides/run-hermes-with-nous-portal.md)。
 
 
 :::info Codex 说明
 OpenAI Codex 提供商通过设备码（device code）认证——打开一个 URL 并输入验证码。Hermes 将生成的凭据存储在 `~/.hermes/auth.json` 的自有认证存储中，并在存在 `~/.codex/auth.json` 时可导入现有的 Codex CLI 凭据。无需安装 Codex CLI。
 
-如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Hermes 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `hermes auth add codex-oauth`（或 `hermes model` → OpenAI Codex）开始新的设备码登录；成功交换后隔离状态自动解除。
+如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Hermes 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `hermes auth add openai-codex`（或 `hermes model` → **ChatGPT or Codex Subscription**）开始新的设备码登录；成功交换后隔离状态自动解除。
+
+在 Python/OpenSSL 3.5+ 上，如果网络中间设备拒绝 X25519MLKEM768 等后量子密钥交换组，设备码登录可能报 `[SSL: UNEXPECTED_EOF_WHILE_READING]` 或 TLS 握手超时（此时 curl 仍可能正常）。Hermes 不会修改默认 TLS 策略。请在运行 `hermes model` 前将 `OPENSSL_CONF` 指向一个把 `Groups` 限制为经典曲线的配置文件，或用 TLS 1.2 进行诊断：
+
+```ini
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = x25519:secp256r1:secp384r1:x448
+```
 :::
 
 :::warning
-即使使用 Nous Portal、Codex 或自定义端点，某些工具（视觉、网页摘要、MoA）仍会使用单独的"辅助"模型。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将这些任务路由到你的**主聊天模型**——即你在 `hermes model` 中选择的同一模型。你可以单独覆盖每个任务，将其路由到更便宜/更快的模型（例如 OpenRouter 上的 Gemini Flash）——参见[辅助模型](/user-guide/configuration#auxiliary-models)。
+即使使用 Nous Portal、Codex 或自定义端点，某些工具（视觉、网页摘要、MoA）仍会使用单独的"辅助"模型。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将这些任务路由到你的**主聊天模型**——即你在 `hermes model` 中选择的同一模型。你可以单独覆盖每个任务，将其路由到更便宜/更快的模型（例如 OpenRouter 上的 Gemini Flash）——参见[辅助模型](../user-guide/configuration.md#auxiliary-models)。
 :::
 
 :::tip Nous Tool Gateway
-付费 Nous Portal 订阅者还可访问 **[Tool Gateway](/user-guide/features/tool-gateway)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
+付费 Nous Portal 订阅者还可访问 **[Tool Gateway](../user-guide/features/tool-gateway.md)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
 :::
 
 ### 模型管理的两个命令
@@ -132,70 +145,19 @@ model:
 `--provider claude` 和 `--provider claude-code` 也可作为 `--provider anthropic` 的简写。
 :::
 
-### GitHub Copilot
+### GitHub Copilot（labs 插件）
 
-Hermes 以一等提供商身份支持 GitHub Copilot，提供两种模式：
-
-**`copilot` — 直连 Copilot API**（推荐）。使用你的 GitHub Copilot 订阅，通过 Copilot API 访问 GPT-5.x、Claude、Gemini 等模型。
+GitHub Copilot 提供商（`copilot` 对应 Copilot API，`copilot-acp` 对应通过 ACP 驱动的 Copilot CLI）已不再内置于 Hermes，而是以 `github-copilot` **labs 插件**的形式发布——由 Nous Research 构建，但不提供支持：
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+hermes plugins install github-copilot
 ```
 
-**认证选项**（按以下顺序检查）：
+已在使用 `copilot` 或 `copilot-acp` 的 profile（主模型、回退、辅助任务、委托、MoA 或 cron）会在 `hermes update` 或下一次启动 agent 或网关时自动安装该插件。
 
-1. `COPILOT_GITHUB_TOKEN` 环境变量
-2. `GH_TOKEN` 环境变量
-3. `GITHUB_TOKEN` 环境变量
-4. `gh auth token` CLI 回退
+使用 `hermes auth add copilot`（设备码登录）登录，或设置 `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN`。插件不再读取 `gh` CLI 或 Copilot CLI 的登录信息：如果你此前依赖它们，请运行 `hermes auth add copilot`。
 
-如果未找到 token，`hermes model` 会提供 **OAuth 设备码登录**——与 Copilot CLI 和 opencode 使用的流程相同。
-
-:::warning Token 类型
-Copilot API **不**支持经典个人访问 token（`ghp_*`）。支持的 token 类型：
-
-| 类型 | 前缀 | 获取方式 |
-|------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → 使用 GitHub 登录 |
-| 细粒度 PAT | `github_pat_` | GitHub 设置 → 开发者设置 → 细粒度 token（需要 **Copilot Requests** 权限） |
-| GitHub App token | `ghu_` | 通过 GitHub App 安装获取 |
-
-如果你的 `gh auth token` 返回 `ghp_*` token，请使用 `hermes model` 通过 OAuth 认证。
-:::
-
-:::info Hermes 中的 Copilot 认证行为
-Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`）。
-
-收到 HTTP 401 时，Hermes 在回退前会执行一次性凭据恢复：
-
-1. 通过正常优先级链重新解析 token（`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`）
-2. 使用刷新后的请求头重建共享 OpenAI 客户端
-3. 重试请求一次
-
-部分旧版社区代理使用 `api.github.com/copilot_internal/v2/token` 交换流程。该端点对某些账户类型可能不可用（返回 404）。因此 Hermes 以直接 token 认证为主路径，依靠运行时凭据刷新 + 重试保证健壮性。
-:::
-
-**API 路由**：GPT-5+ 模型（`gpt-5-mini` 除外）自动使用 Responses API。其他所有模型（GPT-4o、Claude、Gemini 等）使用 Chat Completions。模型从 Copilot 实时目录自动检测。
-
-**`copilot-acp` — Copilot ACP 智能体后端**。将本地 Copilot CLI 作为子进程启动：
-
-```bash
-hermes chat --provider copilot-acp --model copilot-acp
-# 需要 PATH 中存在 GitHub Copilot CLI 且已完成 `copilot login`
-```
-
-**永久配置：**
-```yaml
-model:
-  provider: "copilot"
-  default: "gpt-5.4"
-```
-
-| 环境变量 | 说明 |
-|---------------------|-------------|
-| `COPILOT_GITHUB_TOKEN` | Copilot API 的 GitHub token（最高优先级） |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot CLI 二进制路径（默认：`copilot`） |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 ACP 参数（默认：`--acp --stdio`） |
+安装、模型和环境变量说明：[github-copilot 插件文档](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot)。
 
 ### 一等 API Key 提供商
 
@@ -350,7 +312,7 @@ bedrock:
 
 Bedrock 底层使用 **Converse API**——请求被转换为 Bedrock 的模型无关格式，因此同一配置适用于 Claude、Nova、DeepSeek 和 Llama 模型。仅在调用非默认区域端点时才需设置 `BEDROCK_BASE_URL`。
 
-参见 [AWS Bedrock 指南](/guides/aws-bedrock)，了解 IAM 配置、区域选择和跨区域推理的详细步骤。
+参见 [AWS Bedrock 指南](../guides/aws-bedrock.md)，了解 IAM 配置、区域选择和跨区域推理的详细步骤。
 
 ### Qwen Portal（OAuth）
 
@@ -419,7 +381,7 @@ model:
 支持的模型：`MiniMax-M2.7`（主模型）和 `MiniMax-M2.7-highspeed`（默认辅助模型）。OAuth 路径忽略 `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`。
 
 :::tip MiniMax OAuth 与 API key
-`minimax-oauth` 使用 MiniMax 面向消费者的 portal，通过 OAuth 登录——无需设置计费。`minimax` 和 `minimax-cn` 提供商使用 `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY`——用于程序化访问。完整流程参见 [MiniMax OAuth 指南](/guides/minimax-oauth)。
+`minimax-oauth` 使用 MiniMax 面向消费者的 portal，通过 OAuth 登录——无需设置计费。`minimax` 和 `minimax-cn` 提供商使用 `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY`——用于程序化访问。完整流程参见 [MiniMax OAuth 指南](../guides/minimax-oauth.md)。
 :::
 
 ### NVIDIA NIM
@@ -720,7 +682,7 @@ hermes model
 **工具调用：** 使用 `--tool-call-parser` 并选择适合你模型系列的解析器：`qwen`（Qwen 2.5）、`llama3`、`llama4`、`deepseekv3`、`mistral`、`glm`。没有此标志，工具调用将以纯文本返回。
 
 :::caution SGLang 默认最大输出 128 tokens
-如果响应看起来被截断，在请求中添加 `max_tokens` 或在服务器上设置 `--default-max-tokens`。SGLang 的默认值是每次响应仅 128 tokens（如果请求中未指定）。
+如果响应看起来被截断，在服务器上设置 `--default-max-tokens`。SGLang 的默认值是每次响应仅 128 tokens（如果请求中未指定）。
 :::
 
 ---
@@ -977,8 +939,8 @@ model:
 #### 响应在句子中间被截断
 
 **可能原因：**
-1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`，或在 config.yaml 中配置 `model.max_tokens`。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
-2. **上下文耗尽** — 模型填满了上下文窗口。增加 `model.context_length` 或在 Hermes 中启用[上下文压缩](/user-guide/configuration#context-compression)。
+1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`；Hermes 不再提供用户输出上限设置。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
+2. **上下文耗尽** — 模型填满了上下文窗口。增加 `model.context_length` 或在 Hermes 中启用[上下文压缩](../user-guide/configuration.md#context-compression)。
 
 ---
 
@@ -1075,10 +1037,10 @@ model:
 :::note 两个设置，容易混淆
 **`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Hermes 用它来决定何时压缩历史记录以及验证 API 请求。
 
-**`model.max_tokens`** 是**输出上限**——模型在*单次响应*中最多可生成的 token 数。与对话历史可以有多长无关。行业标准名称 `max_tokens` 是常见的混淆来源；Anthropic 的原生 API 已将其重命名为 `max_output_tokens` 以更清晰。
+**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。回复在流式输出中陷入重复循环时仍会被停止：循环（可见内容或推理内容）开始后约 130,000 个字符以内，Hermes 会关闭该流并以“Repetition Detected”提示结束本轮，因此没有输出上限的端点也不会让循环中的模型一直运行下去。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
 
 当自动检测获取的窗口大小不正确时，设置 `context_length`。
-仅当需要限制单次响应长度时，才设置 `model.max_tokens`。
+请删除旧的用户输出上限配置；内部任务预算与 MCP 采样安全预算保持不变。
 :::
 
 Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口：
@@ -1093,7 +1055,7 @@ Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口�
 8. **[models.dev](https://models.dev)** — 社区维护的注册表，包含 100+ 提供商 3800+ 模型的提供商特定上下文长度
 9. **回退默认值** — 广泛的模型系列模式（默认 128K）
 
-大多数配置开箱即用。该系统具有提供商感知能力——同一模型在不同服务商处可能有不同的上下文限制（例如 `claude-opus-4.6` 在 Anthropic 直连时为 1M，在 GitHub Copilot 上为 128K）。
+大多数配置开箱即用。该系统具有提供商感知能力——同一模型在不同服务商处可能有不同的上下文限制（例如 `claude-opus-4.6` 在 Anthropic 直连时为 1M，经部分转售商和聚合商访问时则更小）。
 
 要显式设置上下文长度，在模型配置中添加 `context_length`：
 
@@ -1378,7 +1340,7 @@ openrouter:
 - 设置为空字符串（或删除该行）让 OpenRouter 选择最强的可用编程模型——这是省略 plugins 块时的文档行为。
 - 在给定日期内，按分数选择是确定性的，但随着 Pareto 前沿移动（新模型、基准更新），实际选择的模型可能变化。
 - 参见 OpenRouter 的 [Pareto Router 文档](https://openrouter.ai/docs/guides/routing/routers/pareto-router) 了解完整路由器行为。
-- 要将 Pareto Code 路由器用于特定**辅助任务**（压缩、视觉等）而非主智能体，在该任务下设置 `extra_body.plugins`——参见[辅助模型 → OpenRouter 路由与辅助任务的 Pareto Code](/user-guide/configuration#openrouter-routing--pareto-code-for-auxiliary-tasks)。
+- 要将 Pareto Code 路由器用于特定**辅助任务**（压缩、视觉等）而非主智能体，在该任务下设置 `extra_body.plugins`——参见[辅助模型 → OpenRouter 路由与辅助任务的 Pareto Code](../user-guide/configuration.md#openrouter-routing--pareto-code-for-auxiliary-tasks)。
 
 ## 故障转移提供商
 
@@ -1404,15 +1366,15 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
-故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](/user-guide/features/fallback-providers)。
+故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。
 :::
 
 ---
 
 ## 另请参阅
 
-- [配置](/user-guide/configuration) — 通用配置（目录结构、配置优先级、终端后端、记忆、压缩等）
-- [环境变量](/reference/environment-variables) — 所有环境变量的完整参考
+- [配置](../user-guide/configuration.md) — 通用配置（目录结构、配置优先级、终端后端、记忆、压缩等）
+- [环境变量](../reference/environment-variables.md) — 所有环境变量的完整参考

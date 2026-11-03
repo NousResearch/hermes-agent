@@ -40,6 +40,8 @@ Cron 任务由 gateway 的后台 ticker 线程触发，该线程每 60 秒 tick 
 
 如果你期望任务自动触发，需要运行一个 gateway（前台运行用 `hermes gateway`，安装为服务用 `hermes gateway start`）。如需单次调试，可手动触发一次 tick：`hermes cron tick`。
 
+**桌面应用：** 桌面端的主后端自带 ticker，并且会 tick **本机每个 profile** 的 cron 存储——因此即使某个次要 profile 的后端处于休眠状态（桌面端会在约 10 分钟空闲后让 profile 后端休眠），该 profile 上的任务也会照常触发。你不需要保持某个 profile 打开来让它的定时任务运行。
+
 ### 检查 4：检查系统时钟和时区
 
 任务使用本地时区。若机器时钟有误或时区与预期不符，任务将在错误的时间触发。验证方法：
@@ -70,7 +72,7 @@ hermes cron list   # 将 next_run 时间与本地时间对比
 | `local` | 对 `~/.hermes/cron/output/` 有写权限 |
 | `origin` | 投递到创建该任务的聊天会话 |
 
-其他支持的平台包括 `mattermost`、`homeassistant`、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot` 和 `webhook`。你也可以使用 `platform:chat_id` 语法指定特定聊天（例如 `telegram:-1001234567890`）。
+其他支持的平台包括 `mattermost`、`homeassistant`（插件）、`dingtalk`、`feishu`、`wecom`、`weixin`、`bluebubbles`、`qqbot` 和 `webhook`。你也可以使用 `platform:chat_id` 语法指定特定聊天（例如 `telegram:-1001234567890`）。
 
 若投递失败，任务仍会执行——只是不会发送到任何地方。检查 `hermes cron list` 中的 `last_error` 字段（如有）。
 
@@ -222,4 +224,4 @@ hermes skills list                  # 确认已安装的 skill
 
 ---
 
-*完整的 cron 参考文档，请参阅 [用 Cron 自动化一切](/guides/automate-with-cron) 和 [定时任务（Cron）](/user-guide/features/cron)。*
+*完整的 cron 参考文档，请参阅 [用 Cron 自动化一切](./automate-with-cron.md) 和 [定时任务（Cron）](../user-guide/features/cron.md)。*

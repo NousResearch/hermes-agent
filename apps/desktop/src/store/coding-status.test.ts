@@ -10,6 +10,7 @@ import {
   refreshAllRepoStatuses,
   refreshRepoStatus,
   registerRepoStatusCwd,
+  repoChangeKindForPath,
   repoStatusForCwd
 } from './coding-status'
 import { $currentCwd, $selectedStoredSessionId } from './session'
@@ -253,5 +254,65 @@ describe('refreshRepoStatus', () => {
     expect(repoStatusForCwd('/main').get()).toEqual(sampleStatus)
 
     release?.()
+  })
+})
+
+describe('repoChangeKindForPath', () => {
+  it('does not notify a row when only another path changes', () => {
+    $currentCwd.set('/repo')
+    $repoStatusByCwd.set({ '/repo': { ...sampleStatus, files: [] } })
+    const row = repoChangeKindForPath('/repo/a.ts')
+    const listener = vi.fn()
+    const unsubscribe = row.subscribe(listener)
+
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'b.ts', untracked: true } as HermesRepoStatus['files'][number]]
+      }
+    })
+    expect(listener).toHaveBeenCalledTimes(1)
+
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'a.ts', untracked: true } as HermesRepoStatus['files'][number]]
+      }
+    })
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(listener.mock.calls.at(-1)?.[0]).toBe('added')
+
+    unsubscribe()
+  })
+
+  it('maps changes across multiple probed CWDs independently of active session ownership', () => {
+    $repoStatusByCwd.set({
+      '/repo-a': {
+        ...sampleStatus,
+        files: [{ path: 'src/file1.ts', untracked: false, conflicted: false } as HermesRepoStatus['files'][number]]
+      },
+      '/repo-b': {
+        ...otherStatus,
+        files: [{ path: 'src/file2.ts', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo-a/src/file1.ts').get()).toBe('modified')
+    expect(repoChangeKindForPath('/repo-b/src/file2.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo-a/src/clean.ts').get()).toBeUndefined()
+  })
+
+  it('inherits added kind for nested files inside untracked directories', () => {
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: 'brand_new_dir', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo/brand_new_dir').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/brand_new_dir/nested.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/brand_new_dir/deep/nested/sub.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo/other_dir/file.ts').get()).toBeUndefined()
   })
 })

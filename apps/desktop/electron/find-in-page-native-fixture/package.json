@@ -1,0 +1,6 @@
+{
+  "name": "find-in-page-native-fixture",
+  "private": true,
+  "type": "module",
+  "main": "../find-in-page-native.test.mjs"
+}

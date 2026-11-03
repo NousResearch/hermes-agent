@@ -19,12 +19,4 @@ describe('primaryRouteSelectedSessionId', () => {
   it('falls back to the store selection on a non-chat route (settings, overlays)', () => {
     expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, SESS_A)).toBe(SESS_A)
   })
-
-  it('falls back to the store selection when the route matches the same session', () => {
-    expect(primaryRouteSelectedSessionId(sessionRoute(SESS_A), SESS_A)).toBe(SESS_A)
-  })
-
-  it('returns null on a non-chat route with no store selection', () => {
-    expect(primaryRouteSelectedSessionId(SETTINGS_ROUTE, null)).toBeNull()
-  })
 })

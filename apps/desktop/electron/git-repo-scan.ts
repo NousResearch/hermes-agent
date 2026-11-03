@@ -15,11 +15,28 @@ export interface RepoScanOptions {
   maxDepth?: number
   enabled?: boolean
   excludePaths?: string[]
+  // Platform override for the darwin-only TCC media-dir skip (tests force
+  // 'darwin' on Linux CI; production omits it).
+  platform?: NodeJS.Platform
 }
 
 export interface RepoScanPathOptions {
   homeDir?: string
   platform?: NodeJS.Platform
+}
+
+// Avoid macOS TCC prompts when the default home scan reaches protected media
+// folders. Nested names and explicitly supplied media roots remain scannable.
+const MEDIA_ROOT_DIRS = new Set(['Movies', 'Music', 'Pictures', 'Public'])
+
+// These packages look like directories but are TCC-protected and cannot contain
+// user repositories, including when stored outside the default media folders.
+const LIBRARY_PACKAGE_SUFFIXES = ['.photoslibrary', '.musiclibrary', '.tvlibrary', '.aplibrary']
+
+function isLibraryPackage(name: string): boolean {
+  const lower = String(name).toLowerCase()
+
+  return LIBRARY_PACKAGE_SUFFIXES.some(suffix => lower.endsWith(suffix))
 }
 
 interface NormalizedScanPath {
@@ -88,18 +105,20 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 }
 
 /**
- * Scan roots for Git repositories. An empty root list preserves the historical
- * home-directory scan. Disabled discovery returns before resolving home or
- * reading the filesystem.
+ * Scan explicitly configured roots for Git repositories. An empty root list is
+ * intentionally a no-op: silently expanding it to the user's home directory
+ * traverses the whole home (and, on macOS, can reach TCC-protected locations)
+ * during ordinary Desktop startup (#53328). Disabled discovery returns before
+ * resolving home or reading the filesystem.
  */
 export async function scanGitRepos(roots: string[], options: RepoScanOptions = {}) {
-  if (options.enabled === false) {
+  if (options.enabled === false || !Array.isArray(roots) || roots.length === 0) {
     return []
   }
 
   const maxDepthValue = Number(options.maxDepth)
   const maxDepth = Number.isFinite(maxDepthValue) && maxDepthValue >= 0 ? maxDepthValue : DEFAULT_MAX_DEPTH
-  const pathOptions: RepoScanPathOptions = {}
+  const pathOptions: RepoScanPathOptions = options.platform ? { platform: options.platform } : {}
   const requestedRoots = Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()]
 
   const searchRoots = [
@@ -155,8 +174,24 @@ export async function scanGitRepos(roots: string[], options: RepoScanOptions = {
       return
     }
 
+    const skipTccProtectedPaths = (pathOptions.platform ?? process.platform) === 'darwin'
+
     const subdirs = entries
       .filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && !JUNK_DIRS.has(entry.name))
+      .filter(entry => {
+        if (!skipTccProtectedPaths) {
+          return true
+        }
+
+        // Depth-0 children of a scan root only: a nested dir named "Music"
+        // inside a project is fine, and an explicitly supplied media root
+        // arrives AS a root (never as a depth-0 child), so it still scans.
+        if (depth === 0 && MEDIA_ROOT_DIRS.has(entry.name)) {
+          return false
+        }
+
+        return !isLibraryPackage(entry.name)
+      })
       .map(entry => path.join(dir, entry.name))
 
     await mapLimit(subdirs, MAX_CONCURRENCY, subdir => walk(subdir, depth + 1))

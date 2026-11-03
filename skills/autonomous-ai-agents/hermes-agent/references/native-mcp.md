@@ -15,16 +15,14 @@ For ad-hoc, one-off MCP tool calls from the terminal without configuring anythin
 
 ## Prerequisites
 
-- **mcp Python package** -- optional dependency; install with `pip install mcp`. If not installed, MCP support is silently disabled.
+- **MCP Python dependencies** — included in the standard PM install through the `all` extra. Use PM to add the `mcp` extra.
 - **Node.js** -- required for `npx`-based MCP servers (most community servers)
 - **uv** -- required for `uvx`-based MCP servers (Python-based servers)
 
 Install the MCP SDK:
 
 ```bash
-pip install mcp
-# or, if using uv:
-uv pip install mcp
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 ## Quick Start
@@ -196,7 +194,7 @@ If an MCP tool call fails, any credential-like patterns in the error message are
 The `mcp` Python package is not installed. Install it:
 
 ```bash
-pip install mcp
+python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
 ### "No MCP servers configured"
@@ -213,10 +211,10 @@ Common causes:
 
 ### "MCP server 'X' requires HTTP transport but mcp.client.streamable_http is not available"
 
-Your `mcp` package version doesn't include HTTP client support. Upgrade:
+If the MCP dependencies are damaged, rebuild the recorded environment through PM:
 
 ```bash
-pip install --upgrade mcp
+hermes pm repair
 ```
 
 ### Tools not appearing
@@ -292,7 +290,7 @@ mcp_servers:
 
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 
   github:
     command: "npx"
@@ -328,10 +326,11 @@ mcp_servers:
       max_rpm: 10             # max requests per minute
       allowed_models: []      # model whitelist (empty = all)
       max_tool_rounds: 5      # tool loop limit (0 = disable)
+      expose_client_tools: false # advertise extended sampling.tools capability
       log_level: "info"       # audit verbosity
 ```
 
-Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
+Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Hermes does not advertise the extended `sampling.tools` client capability unless `expose_client_tools: true` is set, because some strict MCP servers reject unknown sampling sub-capabilities during initialization. Most servers only need normal sampling; enable `expose_client_tools` only for servers that explicitly support sampling tool callbacks. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
 
 Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 

@@ -224,6 +224,29 @@ class TestImageRejectionPhraseIsolation:
         for body in bodies:
             assert self._matches(body) is True, f"false negative on: {body}"
 
+    def test_openai_compat_list_content_typeerror_trips_recovery(self):
+        """OpenAI-compatible gateways can reject a list-typed ``content`` array with a
+        bare Python TypeError instead of a provider-shaped message. The body names no
+        image/vision wording, so without this phrase the turn never recovers."""
+        bodies = [
+            "Error during OpenAI-compatible API call #199: expected string or bytes-like object, got 'list'",
+            "invalid params: expected string or bytes-like object, got 'list'",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"false negative on: {body}"
+
+    def test_unrelated_typeerrors_do_not_trip(self):
+        """The phrase is keyed on the trailing quoted type, so TypeErrors about other
+        types must not be treated as image rejections."""
+        bodies = [
+            "expected string or bytes-like object, got 'int'",
+            "expected string or bytes-like object, got 'dict'",
+            "expected string or bytes-like object, got 'bytes'",
+            "expected string or bytes-like object, got list",
+        ]
+        for body in bodies:
+            assert self._matches(body) is False, f"false positive on: {body}"
+
 
 class TestStripImagesDropsStaleApiContent:
     """Generic helper contract: a rewritten row drops its ``api_content`` sidecar.

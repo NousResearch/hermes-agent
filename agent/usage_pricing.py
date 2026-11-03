@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
@@ -121,6 +121,50 @@ class PricingEntry:
     cache_read_cost_per_million_above: Optional[Decimal] = None
     cache_write_cost_per_million_above: Optional[Decimal] = None
 
+    def effective_cache_write_rate(
+        self, input_rate: Optional[Decimal]
+    ) -> Optional[Decimal]:
+        """The rate cache-write tokens are actually billed at.
+
+        Cache-write tokens are *prompt* tokens (see ``CanonicalUsage.prompt_tokens``,
+        which sums input + cache-read + cache-write) that the provider also wrote
+        into its prompt cache. Only some providers charge a premium for that write:
+        Anthropic bills it at 1.25x input, and every Anthropic entry in the pricing
+        snapshot sets ``cache_write_cost_per_million`` explicitly. Providers that do
+        *not* charge a write premium -- OpenAI, DeepSeek, Google, and every
+        OpenAI-compatible models API that omits a cache-write field -- publish no
+        such rate because the tokens are simply billed as ordinary input.
+
+        So a missing ``cache_write_cost_per_million`` means "no premium", not
+        "unpriceable": fall back to the input rate. Returns ``None`` only when the
+        input rate is unknown too, i.e. when the route is genuinely unpriceable.
+
+        ``input_rate`` is passed in rather than read from
+        ``self.input_cost_per_million`` so the fallback honours whole-request
+        context-tier selection: on an above-threshold request the caller has
+        already resolved ``input_cost_per_million_above``, and billing the cache
+        write at the base rate would under-charge it.
+
+        Deliberately asymmetric with cache-*read*, which must never fall back to
+        the input rate -- a cache read is discounted (often 10x), so substituting
+        the input rate would over-bill rather than fill a gap.
+        """
+        if self.cache_write_cost_per_million is not None:
+            return self.cache_write_cost_per_million
+        return input_rate
+
+
+#: Billable component classes a :class:`CostResult` can be decomposed into.
+#: ``request`` is the per-request flat fee some provider models APIs report
+#: (OpenRouter's ``pricing.request``); the rest are per-token classes.
+COST_COMPONENTS: tuple[str, ...] = (
+    "input",
+    "output",
+    "cache_read",
+    "cache_write",
+    "request",
+)
+
 
 @dataclass(frozen=True)
 class CostResult:
@@ -131,6 +175,22 @@ class CostResult:
     fetched_at: Optional[datetime] = None
     pricing_version: Optional[str] = None
     notes: tuple[str, ...] = ()
+    #: Per-class dollar breakdown of ``amount_usd``, keyed by
+    #: :data:`COST_COMPONENTS`. Only classes that actually contributed are
+    #: present. Empty when ``amount_usd`` is ``None`` (no priced total to
+    #: decompose). When non-empty the values sum exactly to ``amount_usd`` --
+    #: both are built from the same ``Decimal`` terms, so the invariant holds
+    #: without rounding drift. Rates are the ones actually billed, i.e. the
+    #: context-tier rate on an above-threshold request.
+    components: Dict[str, Decimal] = field(default_factory=dict)
+
+    def component(self, name: str) -> Decimal:
+        """Return the dollar amount billed for ``name``, or zero.
+
+        Convenience for consumers that want a total-preserving read of one
+        class without having to special-case absent keys.
+        """
+        return self.components.get(name, _ZERO)
 
 
 _UTC_NOW = lambda: datetime.now(UTC)
@@ -477,6 +537,32 @@ def _normalize_anthropic_model_name(model: str) -> str:
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
 
 
+# A release date appended to an ALREADY-VERSIONED new-scheme Anthropic id, e.g.
+# claude-haiku-4-5-20251001 → the dated alias of claude-haiku-4-5.
+#
+# The trailing "-N-N" version segment before the date is required, and that is
+# the whole point of the pattern: it distinguishes a date APPENDED to a
+# versioned name (strippable, the base entry is the same SKU) from an
+# OLD-scheme id whose date is an inseparable part of the name
+# (claude-3-5-haiku-20241022 — stripping would land on the non-existent
+# claude-3-5-haiku).  ``_normalize_bedrock_model_name`` already performs the
+# equivalent ``-\d{8}$`` strip for Bedrock inference-profile ids; this is the
+# same normalization for the direct Anthropic route, which lacked it.
+_ANTHROPIC_DATED_SUFFIX_RE = re.compile(r"^(claude-.*-\d+-\d+)-\d{8}$")
+
+
+def _strip_anthropic_release_date(name: str) -> Optional[str]:
+    """Strip a trailing -YYYYMMDD from a versioned new-scheme Anthropic id.
+
+    ``claude-haiku-4-5-20251001`` → ``claude-haiku-4-5``.  Returns None when
+    there is no such suffix to strip, including for old-scheme ids like
+    ``claude-3-5-haiku-20241022`` which lack the ``-N-N`` version tail before
+    the date and so are left intact for their own direct entry.
+    """
+    match = _ANTHROPIC_DATED_SUFFIX_RE.match(name)
+    return match.group(1) if match else None
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
@@ -484,7 +570,22 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
         return entry
     normalize = _MODEL_NORMALIZERS.get(route.provider)
     normalized = normalize(model) if normalize else model
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
+    if normalized != model:
+        entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+        if entry:
+            return entry
+    if route.provider == "anthropic":
+        # Last resort: strip a trailing -YYYYMMDD release date appended to an
+        # already-versioned id and retry on the base (claude-haiku-4-5-20251001
+        # → claude-haiku-4-5).  Runs AFTER the direct and dot-normalized
+        # lookups, so an id that has its own table entry — dated or not —
+        # always wins on its own key and this never overrides a real rate.
+        # Without it, the dated aliases Anthropic publishes (and that this repo
+        # ships in hermes_cli/models.py) record cost_usd NULL for every turn.
+        base = _strip_anthropic_release_date(normalized)
+        if base and base != normalized:
+            return _OFFICIAL_DOCS_PRICING.get((route.provider, base))
+    return None
 
 
 def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalUsage:
@@ -714,13 +815,27 @@ def estimate_usage_cost(
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
-    amount = _ZERO
-    for tokens, rate, rate_above, note in (
-        (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
-        (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
-        (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
-         ("cache-read pricing unavailable for route",)),
-        (usage.cache_write_tokens, entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above,
+    notes: list[str] = []
+    cache_write_rate, cache_write_rate_above = entry.cache_write_cost_per_million, entry.cache_write_cost_per_million_above
+    if cache_write_rate is None and not (above and cache_write_rate_above is not None):
+        # No cache-write premium published: the tokens bill as ordinary input at the
+        # (tier-resolved) input rate. Only unknown when that is unknown too.
+        input_rate = entry.input_cost_per_million
+        if above and entry.input_cost_per_million_above is not None:
+            input_rate = entry.input_cost_per_million_above
+        cache_write_rate = entry.effective_cache_write_rate(input_rate)
+        if cache_write_rate is not None and usage.cache_write_tokens:
+            notes.append("cache-write billed at the input rate (provider publishes no separate cache-write rate)")
+    # Built from the RESOLVED rates, so the breakdown reports what was actually
+    # billed: the context-tier rate on an above-threshold request and the
+    # cache-write fallback rate when the provider publishes no premium.
+    components: Dict[str, Decimal] = {}
+    for component, tokens, rate, rate_above, note in (
+        ("input", usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
+        ("output", usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
+        ("cache_read", usage.cache_read_tokens, entry.cache_read_cost_per_million,
+         entry.cache_read_cost_per_million_above, ("cache-read pricing unavailable for route",)),
+        ("cache_write", usage.cache_write_tokens, cache_write_rate, cache_write_rate_above,
          ("cache-write pricing unavailable for route",)),
     ):
         if above and rate_above is not None:
@@ -729,11 +844,13 @@ def estimate_usage_cost(
             if tokens:
                 return _unknown_cost(entry.source, *note)
             continue
-        amount += Decimal(tokens) * rate / _ONE_MILLION
+        if tokens:
+            components[component] = Decimal(tokens) * rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
-        amount += Decimal(usage.request_count) * entry.request_cost
+        components["request"] = Decimal(usage.request_count) * entry.request_cost
 
-    notes: list[str] = []
+    amount = sum(components.values(), _ZERO)
+
     status: CostStatus = "estimated"
     label = format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
@@ -747,6 +864,7 @@ def estimate_usage_cost(
     return CostResult(
         amount_usd=amount, status=status, source=entry.source, label=label,
         fetched_at=entry.fetched_at, pricing_version=entry.pricing_version, notes=tuple(notes),
+        components=components,
     )
 
 

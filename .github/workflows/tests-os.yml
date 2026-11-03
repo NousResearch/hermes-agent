@@ -127,6 +127,7 @@ jobs:
           extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
+          save-tools-cache: ${{ (github.event_name != 'pull_request' || github.head_ref == 'exp/ci-mtab') && 'true' || 'false' }}
 
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other

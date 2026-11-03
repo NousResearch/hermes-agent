@@ -1463,22 +1463,23 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return
         # Reclassify a leaked DM before gating so its first un-mentioned message both latches and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
+        longer_names = await self._longer_member_names(channel_id, event)
         is_dm = state["chat_type"] == "dm"
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
         reply_to_is_own = bool(reply_meta is not None and reply_meta[0] == self._self_pubkey)
         # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
         # unless require_mention is off. DMs always dispatch.
-        if not is_dm and self.require_mention and not self._is_addressed(event) and not reply_to_is_own:
+        if not is_dm and self.require_mention and not self._is_addressed(event, longer_names) and not reply_to_is_own:
             return
         # Adapter-level allow-list (gateway also applies it centrally); empty = no filter.
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
+            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content, longer_names):
                 await self.send_reaction(channel_id, event_id, "👀")
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
             return
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
-        dispatch_text = self._strip_mention(content)
+        dispatch_text = self._strip_mention(content, longer_names)
         # NIP-10 root scopes the session; remember it so our reply joins the SAME thread instead of nesting.
         thread_id = self._extract_thread_root(event)
         self._record_thread_root(event_id, event)
@@ -1542,9 +1543,27 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         self._channel_names.setdefault(channel_id, "DM")
         logger.info("Buzz: conversation %s reclassified as DM (message p-tagged to self)", channel_id)
 
-    def _is_mentioned(self, content: str) -> bool:
+    async def _longer_member_names(self, channel_id: str, event: dict) -> list[str]:
+        """Other members' display names that extend ours ("Chip Sales" for "Chip"): "@Chip Sales" addresses them, not us.
+        Lookups only run when the text has "@<our name>"; CLI failures yield [] (fail open, a real mention is never lost)."""
+        content, own = event.get("content"), (self._display_name or "").lower()
+        if not own or not isinstance(content, str) or f"@{own}" not in content.lower():
+            return []
+        pks = [str(t[1]).lower() for t in event.get("tags") or [] if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
+        names: dict[str, str] = {}
+        for pk in dict.fromkeys(pks + await self._channel_member_pubkeys(channel_id)):
+            if pk == self._self_pubkey:
+                continue
+            name = await self._profile_display_name(pk)
+            if len(name) > len(own) and name.lower().startswith(own):
+                names.setdefault(name.lower(), name)
+        return list(names.values())
+
+    def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""
         lowered = content.lower()
+        for name in sorted(longer_names, key=len, reverse=True):  # consume "@Chip Sales" so only a bare "@Chip" counts
+            lowered = re.sub(r"(?<![\w@])@" + re.escape(name.lower()) + r"(?!\w)", "\x00", lowered)
         patterns = []
         if self._self_pubkey and _HEX64_RE.fullmatch(self._self_pubkey):
             patterns.append(rf"(?<![0-9a-f]){re.escape(self._self_pubkey)}(?![0-9a-f])")
@@ -1554,14 +1573,16 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             patterns.append(rf"(?<![\w@])@{re.escape(self._display_name.lower())}" + r"(?=$|[\s,;.!?:)\]}])")
         return any(re.search(p, lowered) for p in patterns)
 
-    def _is_addressed(self, event: dict) -> bool:
+    def _is_addressed(self, event: dict, longer_names=()) -> bool:
         """True when a group event carries an explicit text or p-tag address."""
         content = event.get("content")
-        return isinstance(content, str) and (self._is_mentioned(content) or self._p_tagged_to_self(event))
+        return isinstance(content, str) and (self._is_mentioned(content, longer_names) or self._p_tagged_to_self(event))
 
-    def _strip_mention(self, content: str) -> str:
+    def _strip_mention(self, content: str, longer_names=()) -> str:
         """Strip a LEADING @mention of this agent so ``is_command()`` sees "/whoami"; mid-sentence mentions stay."""
         text = content.strip()
+        if any(re.match(rf"@{re.escape(n)}(?!\w)", text, re.IGNORECASE) for n in longer_names):
+            return text
         # Display names require '@'; npub/hex identities are unambiguous without it.
         candidates = []
         if self._display_name:

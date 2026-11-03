@@ -325,3 +325,72 @@ class TestSendRecovery:
         assert len(sends) == 2
         assert "--mention" not in sends[1][0]
         assert sends[1][1] == "just @\u200b-mention me"
+
+
+# ── inbound: @Name that starts a longer member name ───────────────────────
+
+CHIP_SALES_PUBKEY = "e" * 64
+SENDER_PUBKEY = "a" * 64
+
+
+class TestLongerMemberNameMention:
+
+    @pytest.fixture
+    def adapter(self):
+        a = _make_adapter()
+        a._display_name = "Chip"
+        a.set_authorization_check(lambda *_args: True)
+        a._dispatched = []
+
+        async def capture(**kwargs):
+            a._dispatched.append(kwargs)
+
+        a._dispatch_message = capture
+        a._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
+        cli = _wire(a, _ScriptedCli())
+        cli.script("channels", "members", _members(SELF_PUBKEY, CHIP_SALES_PUBKEY))
+        cli.script("users", "get", _profile(CHIP_SALES_PUBKEY, "Chip Sales"))
+        a._cli = cli
+        return a
+
+    async def _poll(self, adapter, content, p_tags=(), then_empty=False):
+        event = {
+            "id": "e1", "pubkey": SENDER_PUBKEY, "content": content, "created_at": 10, "kind": 9,
+            "tags": [["h", CHANNEL], *(["p", pk] for pk in p_tags)],
+        }
+        adapter._cli.script("messages", "get", [event])
+        if then_empty:  # roster fallback reads recent traffic after the poll consumed the event
+            adapter._cli.script("messages", "get", [])
+        await adapter._poll_channel(CHANNEL)
+
+    @pytest.mark.asyncio
+    async def test_longer_name_mention_does_not_wake_agent(self, adapter):
+        await self._poll(adapter, "@Chip Sales hola")
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_plain_mention_still_dispatches_and_strips(self, adapter):
+        await self._poll(adapter, "@Chip hola")
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_second_plain_mention_survives_longer_name(self, adapter):
+        await self._poll(adapter, "@Chip Sales y @Chip, hola")
+        assert len(adapter._dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_longer_name_from_p_tags_when_roster_empty(self, adapter):
+        cli = adapter._cli
+        cli.responses[("channels", "members")] = [(0, "[]", "")]
+        await self._poll(adapter, "@Chip Sales hola", p_tags=[CHIP_SALES_PUBKEY], then_empty=True)
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_no_lookups_without_self_name_in_text(self, adapter):
+        await self._poll(adapter, "hello everyone")
+        assert adapter._dispatched == []
+        assert {(c[0][0], c[0][1]) for c in adapter._cli.calls} <= {("messages", "get")}
+
+    def test_strip_mention_leaves_longer_name_alone(self, adapter):
+        assert adapter._strip_mention("@Chip Sales /whoami", ["Chip Sales"]) == "@Chip Sales /whoami"
+        assert adapter._strip_mention("@Chip /whoami", ["Chip Sales"]) == "/whoami"

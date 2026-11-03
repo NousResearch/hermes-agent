@@ -234,6 +234,47 @@ async def test_queued_followup_failure_completes_the_hook(monkeypatch, tmp_path)
     assert adapter.completed == [("queued-2", ProcessingOutcome.FAILURE)]
 
 
+class LoopTypingAdapter(HookRecordingAdapter):
+    """Discord-style typing: ``send_typing`` is a no-op while a refresh loop is live for the chat."""
+
+    def __init__(self):
+        super().__init__()
+        self.live: set = set()
+        self.typing: list = []
+
+    async def send_typing(self, chat_id, metadata=None) -> None:
+        if chat_id in self.live:
+            self.typing.append("noop")
+            return
+        self.live.add(chat_id)
+        self.typing.append("start")
+
+    async def stop_typing(self, chat_id) -> None:
+        self.live.discard(chat_id)
+        self.typing.append("stop")
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_restarts_a_live_typing_loop(monkeypatch, tmp_path):
+    """The first reply hid the indicator while the outer loop is still live; the follow-up must
+    stop that loop before restarting, or the restart is swallowed and the turn shows no typing."""
+    _TwoTurnAgent.calls = []
+    _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
+
+    adapter = LoopTypingAdapter()
+    adapter.live.add("4242")  # the outer typing loop from the first turn
+    runner = _make_runner(adapter)
+    adapter._pending_messages[SESSION_KEY] = MessageEvent(
+        text="the follow-up", message_type=MessageType.TEXT, source=_source(), message_id="queued-3")
+
+    result = await runner._run_agent(message="the first turn", context_prompt="", history=[],
+                                     source=_source(), session_id="sess-typing", session_key=SESSION_KEY)
+
+    assert result["final_response"] == "done-2"
+    assert adapter.typing[-2:] == ["stop", "start"]
+    assert "noop" not in adapter.typing
+
+
 @pytest.mark.asyncio
 async def test_synthetic_followup_is_not_acknowledged(monkeypatch, tmp_path):
     """Drains with no inbound platform message — /goal continuations, wake-ups,

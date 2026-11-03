@@ -1575,7 +1575,7 @@ export interface LocalRuntimeJob {
   kind: 'model-activate' | 'model-download' | 'quickstart' | 'runtime-install'
   target: string
   model_id: string | null
-  status: 'done' | 'error' | 'paused' | 'running'
+  status: 'cancelled' | 'done' | 'error' | 'paused' | 'running'
   phase: string
   detail: string
   total_bytes: number | null
@@ -1597,6 +1597,12 @@ export interface LocalRuntimeJob {
   /** The backend has accepted a pause request; the status flips when the
    * downloader actually parks. */
   pause_requested?: boolean
+  /** The download can be abandoned (running in a download phase, or paused).
+   * Absent on backends that predate cancel — no control is shown then. */
+  can_cancel?: boolean
+  /** A cancel was accepted; the job settles as `cancelled` once its transfer
+   * stops and its partial bytes are discarded. */
+  cancel_requested?: boolean
 }
 
 export interface ActionResponse {

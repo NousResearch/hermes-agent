@@ -286,6 +286,31 @@ class Download:
         """Request a stop between chunks; run() raises DownloadPaused."""
         self._paused.set()
 
+    def discard(self) -> list[str]:
+        """Remove the resumable partials of every source; return the URLs whose partials remain.
+
+        For a download its caller abandoned. Partials are shared machine-wide by URL, so a key whose
+        lock is held belongs to a transfer still running elsewhere and stays for its owner (and GC).
+        Call only after ``run`` has returned: this process's own handles must be closed first, or
+        Windows refuses the delete.
+        """
+        from pm.download_state import partial_lock
+
+        kept: list[str] = []
+        for source in self.sources:
+            for url in dict.fromkeys((source.url, *source.fallbacks)):
+                key = self._key(url)
+                with partial_lock(self.partials_dir, key, wait=False) as acquired:
+                    if not acquired:
+                        kept.append(url)
+                        continue
+                    try:
+                        for suffix in (".part", ".ranges"):
+                            (self.partials_dir / f"{key}{suffix}").unlink(missing_ok=True)
+                    except OSError:  # e.g. a scanner holding the file on Windows; GC retries later
+                        kept.append(url)
+        return kept
+
     def run(self, progress: Optional[ProgressFn] = None) -> list[Path]:
         """Fetch every source; return the moved destination paths."""
         if self._owns_pause_event:

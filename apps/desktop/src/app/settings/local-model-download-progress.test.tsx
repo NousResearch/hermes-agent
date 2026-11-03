@@ -6,6 +6,7 @@ import type * as Notifications from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 vi.mock('@/hermes', () => ({
+  cancelLocalDownload: vi.fn(),
   pauseLocalDownload: vi.fn(),
   resumeLocalDownload: vi.fn()
 }))
@@ -19,7 +20,7 @@ vi.mock('@/store/local-runtime-jobs', (): object => ({
   watchLocalRuntimeJobs: vi.fn()
 }))
 
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { cancelLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 
 import {
   downloadStatusText,
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(pauseLocalDownload).mockResolvedValue({ ok: true, paused: true })
   vi.mocked(resumeLocalDownload).mockResolvedValue({ ok: true, resumed: true })
+  vi.mocked(cancelLocalDownload).mockResolvedValue({ ok: true, cancelled: true })
 })
 
 afterEach(() => {
@@ -148,6 +150,74 @@ describe('LocalModelDownloadActions', () => {
     renderActions(job({ can_pause: true, status: 'done' }))
 
     expect(screen.queryByRole('button', { name: /pause|resume/i })).toBeNull()
+  })
+})
+
+describe('LocalModelDownloadActions — cancel (#146469)', () => {
+  const cancelTrigger = () => screen.queryByRole('button', { name: /^cancel$/i })
+
+  it('a paused download offers a way out, not only Resume', () => {
+    renderActions(job({ can_cancel: true, can_resume: true, status: 'paused' }))
+
+    expect(screen.getByRole('button', { name: /resume/i })).toBeTruthy()
+    expect(cancelTrigger()).toBeTruthy()
+  })
+
+  it('a running download can be cancelled even where it cannot be paused', () => {
+    renderActions(job({ can_cancel: true, can_pause: false }))
+
+    expect(cancelTrigger()).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull()
+  })
+
+  it('no can_cancel from the backend means no control (an older backend has no cancel route)', () => {
+    renderActions(job({ can_pause: true }))
+    expect(cancelTrigger()).toBeNull()
+    cleanup()
+
+    renderActions(job({ can_resume: true, status: 'paused' }))
+    expect(cancelTrigger()).toBeNull()
+  })
+
+  it('cancelling asks first, and only the confirmation discards the download', async () => {
+    const { watchLocalRuntimeJobs } = await import('@/store/local-runtime-jobs')
+
+    renderActions(job({ can_cancel: true, status: 'paused' }))
+    fireEvent.click(cancelTrigger() as HTMLElement)
+
+    expect(cancelLocalDownload).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: /cancel download/i }))
+
+    await waitFor(() => expect(cancelLocalDownload).toHaveBeenCalledWith('j1', undefined))
+    await waitFor(() => expect(watchLocalRuntimeJobs).toHaveBeenCalled())
+  })
+
+  it('backing out of the confirmation keeps the download', async () => {
+    renderActions(job({ can_cancel: true, status: 'paused' }))
+    fireEvent.click(cancelTrigger() as HTMLElement)
+    fireEvent.click(await screen.findByRole('button', { name: /keep download/i }))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cancel download/i })).toBeNull())
+    expect(cancelLocalDownload).not.toHaveBeenCalled()
+  })
+
+  it('a failed cancel stays in the dialog with the reason, never a silent success', async () => {
+    vi.mocked(cancelLocalDownload).mockRejectedValue(new Error('backend unreachable'))
+
+    renderActions(job({ can_cancel: true, status: 'paused' }))
+    fireEvent.click(cancelTrigger() as HTMLElement)
+    fireEvent.click(await screen.findByRole('button', { name: /cancel download/i }))
+
+    expect(await screen.findByText(/backend unreachable/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /cancel download/i })).toBeTruthy()
+  })
+
+  it('a pending cancel renders disabled and hides pause/resume', () => {
+    renderActions(job({ cancel_requested: true, can_cancel: false, can_pause: false }))
+
+    const pending = cancelTrigger() as HTMLButtonElement
+    expect(pending.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull()
   })
 })
 

@@ -1,9 +1,10 @@
 import { type ReactElement, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { pauseLocalDownload, resumeLocalDownload } from '@/hermes'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { cancelLocalDownload, pauseLocalDownload, resumeLocalDownload } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { Loader2, Pause, Play } from '@/lib/icons'
+import { Loader2, Pause, Play, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
   isCurrentLocalModelsOwner,
@@ -11,7 +12,7 @@ import {
   localModelsRequestScope,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
-import { notifyError } from '@/store/notifications'
+import { notifyError, readableError } from '@/store/notifications'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { Pill } from './primitives'
@@ -176,15 +177,49 @@ export function LocalModelDownloadProgress({ job }: LocalModelDownloadProps) {
   )
 }
 
-export function LocalModelDownloadActions({
-  job,
-  owner
-}: LocalModelDownloadProps & { owner?: LocalModelsOwner }): ReactElement | null {
+interface DownloadControlProps extends LocalModelDownloadProps {
+  owner?: LocalModelsOwner
+}
+
+// Pause / resume / cancel for one download job. Every control is the
+// backend's explicit verdict (can_pause, can_resume, can_cancel) — nothing is
+// gated client-side, so an older backend that never sends a flag shows no
+// control for it rather than a button that 404s.
+export function LocalModelDownloadActions({ job, owner }: DownloadControlProps): ReactElement | null {
+  const { t } = useI18n()
+  const copy = t.settings.localModels
+  const paused = job.status === 'paused'
+
+  const showPauseResume = paused ? job.can_resume === true : job.pause_requested === true || job.can_pause === true
+  const showCancel = job.cancel_requested === true || job.can_cancel === true
+
+  if (!paused && (job.status !== 'running' || (!showPauseResume && !showCancel))) {
+    return null
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {paused && (
+        <Pill tone="warn">
+          <Pause className="mr-1 size-3" />
+          {copy.downloadPausedLabel}
+        </Pill>
+      )}
+
+      {showPauseResume && <PauseResumeButton job={job} owner={owner} />}
+
+      {showCancel && <CancelDownloadButton job={job} owner={owner} />}
+    </div>
+  )
+}
+
+function PauseResumeButton({ job, owner }: DownloadControlProps): ReactElement {
   const { t } = useI18n()
   const copy = t.settings.localModels
   const [busy, setBusy] = useState<boolean>(false)
+  const kind: 'pause' | 'resume' = job.status === 'paused' ? 'resume' : 'pause'
 
-  const send = async (kind: 'pause' | 'resume'): Promise<void> => {
+  const send = async (): Promise<void> => {
     setBusy(true)
 
     try {
@@ -211,37 +246,8 @@ export function LocalModelDownloadActions({
     }
   }
 
-  if (job.status === 'paused') {
-    return (
-      <div className="flex items-center justify-end gap-2">
-        <Pill tone="warn">
-          <Pause className="mr-1 size-3" />
-          {copy.downloadPausedLabel}
-        </Pill>
-
-        {job.can_resume === true && (
-          <Button
-            className={cn(busy && '[&_svg]:animate-spin')}
-            disabled={busy}
-            onClick={() => void send('resume')}
-            size="sm"
-            variant="outline"
-          >
-            {busy ? <Loader2 /> : <Play />}
-            {copy.downloadResumeAction}
-          </Button>
-        )}
-      </div>
-    )
-  }
-
-  // No gate invented client-side: can_pause is the backend's explicit
-  // verdict; pause_requested keeps the control visible but disabled so a
-  // pending request never reads as "gone".
-  if (job.status !== 'running' || (!job.pause_requested && job.can_pause !== true)) {
-    return null
-  }
-
+  // pause_requested keeps the control visible but disabled so a pending
+  // request never reads as "gone".
   if (job.pause_requested) {
     return (
       <Button className={cn('[&_svg]:animate-spin')} disabled size="sm" variant="outline">
@@ -255,12 +261,61 @@ export function LocalModelDownloadActions({
     <Button
       className={cn(busy && '[&_svg]:animate-spin')}
       disabled={busy}
-      onClick={() => void send('pause')}
+      onClick={() => void send()}
       size="sm"
       variant="outline"
     >
-      {busy ? <Loader2 /> : <Pause />}
-      {copy.downloadPauseAction}
+      {busy ? <Loader2 /> : kind === 'pause' ? <Pause /> : <Play />}
+      {kind === 'pause' ? copy.downloadPauseAction : copy.downloadResumeAction}
     </Button>
+  )
+}
+
+// Cancel discards progress that can be tens of gigabytes, so it always asks
+// first. A failure keeps the dialog open with the reason inline; a
+// cancelled:false answer is the benign race where the job settled first —
+// the refresh shows whatever it became.
+function CancelDownloadButton({ job, owner }: DownloadControlProps): ReactElement {
+  const { t } = useI18n()
+  const copy = t.settings.localModels
+  const [confirming, setConfirming] = useState<boolean>(false)
+
+  const cancel = async (): Promise<void> => {
+    try {
+      await cancelLocalDownload(job.job_id, owner ? localModelsRequestScope(owner) : undefined)
+    } catch (err) {
+      throw new Error(readableError(err, copy.downloadCancelFailed(job.target)).message)
+    }
+
+    watchLocalRuntimeJobs(owner)
+  }
+
+  if (job.cancel_requested) {
+    return (
+      <Button className={cn('[&_svg]:animate-spin')} disabled size="sm" variant="ghost">
+        <Loader2 />
+        {copy.downloadCancelAction}
+      </Button>
+    )
+  }
+
+  return (
+    <>
+      <Button onClick={() => setConfirming(true)} size="sm" variant="ghost">
+        <X />
+        {copy.downloadCancelAction}
+      </Button>
+
+      <ConfirmDialog
+        cancelLabel={copy.downloadCancelKeep}
+        confirmLabel={copy.downloadCancelConfirm}
+        description={copy.downloadCancelBody(job.target)}
+        destructive
+        onClose={() => setConfirming(false)}
+        onConfirm={cancel}
+        open={confirming}
+        title={copy.downloadCancelTitle}
+      />
+    </>
   )
 }

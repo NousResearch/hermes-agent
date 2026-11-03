@@ -54,6 +54,9 @@ _QUICKSTART_LOCK = threading.Lock()
 _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 _DOWNLOAD_PHASES = frozenset({"starting", "installing-runtime", "downloading-runtime", "downloading"})
+# Jobs whose download the user can abandon: catalog and Hugging Face model downloads, and quickstart.
+# A runtime install is not: a half-installed engine is repaired by finishing it, not by discarding it.
+_CANCELLABLE_KINDS = frozenset({"model-download", "quickstart"})
 # Trailing window the transfer rate averages over. Long enough that a bursty
 # tick (a chunk flush, a mirror switch) doesn't spike the estimate, short
 # enough that the number tracks what the link is doing NOW.
@@ -134,7 +137,7 @@ def _job(kind: str, target: str, model_id: str | None = None) -> dict[str, Any]:
     job = {
         "job_id": uuid.uuid4().hex[:12], "kind": kind, "target": target,
         "model_id": model_id,       # catalog id for downloads; None otherwise
-        "status": "running",        # running | paused | done | error
+        "status": "running",        # running | paused | done | error | cancelled
         "phase": "starting",        # human-readable step name
         "detail": "", "total_bytes": None, "done_bytes": 0, "started_at": time.time(), "error": None,
     }
@@ -185,14 +188,26 @@ def _record_rate(job: dict[str, Any], done: int) -> None:
         job["eta_seconds"] = eta
 
 
+def _control_flags(job: dict[str, Any], running: dict[str, Any]) -> dict[str, bool]:
+    """Which controls the job offers right now. The desktop renders these verbatim (no client-side gate),
+    so an older backend that never sends ``can_cancel`` simply shows no Cancel button."""
+    status, in_download = job["status"], job["phase"] in _DOWNLOAD_PHASES
+    pause, cancel = running.get("pause"), running.get("cancel_event")
+    cancelling = bool(cancel is not None and cancel.is_set() and status in ("running", "paused"))
+    pausing = bool(pause is not None and pause.is_set() and status == "running")
+    return {
+        "pause_requested": pausing and not cancelling,
+        "cancel_requested": cancelling,
+        "can_pause": bool(pause is not None and status == "running" and in_download and not pausing),
+        "can_resume": status == "paused" and "resume" in running and not cancelling,
+        "can_cancel": bool(cancel is not None and job["kind"] in _CANCELLABLE_KINDS and not cancelling
+                           and (status == "paused" or (status == "running" and in_download))),
+    }
+
+
 def _job_view(job: dict[str, Any]) -> dict[str, Any]:
     out = dict(job)
-    running = _RUNNING.get(job["job_id"], {})
-    pause = running.get("pause")
-    out["pause_requested"] = bool(pause is not None and pause.is_set() and out["status"] == "running")
-    out["can_pause"] = bool(pause is not None and out["status"] == "running"
-                            and out["phase"] in _DOWNLOAD_PHASES and not out["pause_requested"])
-    out["can_resume"] = out["status"] == "paused" and "resume" in running
+    out.update(_control_flags(job, _RUNNING.get(job["job_id"], {})))
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
     # A rate and ETA describe a transfer in motion; a parked or settled job
@@ -225,9 +240,32 @@ def _finish(job: dict[str, Any], detail: str) -> None:
 def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail_msg: str | None = None,
                on_exit: Callable[[], None] | None = None, download_label: str | None = None,
                resumable: bool = False) -> None:
-    """One worker per job. Pauses retain ownership; terminal outcomes release it."""
+    """One worker per job. Pauses retain ownership; terminal outcomes (done, error, cancelled) release it.
+
+    ``guard`` is held for as long as anyone acts on the job — a worker running it, or a cancel cleaning
+    up after a parked one — so a resume can never restart a job that is being torn down.
+    """
     guard = threading.Lock()
     pause = threading.Event()
+    cancel = threading.Event()
+
+    def _settle(status: str) -> None:
+        """Release what the job holds and publish ``status``. The caller owns ``guard``; this releases it.
+        A cancel's cleanup runs here, after the transfer has returned, so none of its files is still open
+        (Windows refuses to delete an open file)."""
+        try:
+            if status == "cancelled":
+                _quiet(lambda: _discard_job_downloads(job), None, warn="cancelled download cleanup failed: %r")
+            if status != "paused" and on_exit is not None:
+                on_exit()
+        finally:
+            with _JOBS_LOCK:
+                if status != "paused":
+                    _RUNNING.pop(job["job_id"], None)
+                if status == "cancelled":
+                    job["detail"] = "Download cancelled"
+                job["status"] = status
+                guard.release()
 
     def _run():
         status = "done"
@@ -237,28 +275,45 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
                 _finish(job, f"{download_label} ready")
                 _refresh_runtime("post-download runtime refresh skipped")
         except DownloadPaused:
-            status = "paused"
+            status = "cancelled" if cancel.is_set() else "paused"
         except Exception as exc:
-            if fail_msg:
-                logger.warning(fail_msg, exc)
-            status = "error"
-            job["error"] = str(exc)
+            if cancel.is_set():  # the user already abandoned it: a failure on the way out is moot
+                status = "cancelled"
+            else:
+                if fail_msg:
+                    logger.warning(fail_msg, exc)
+                status = "error"
+                job["error"] = str(exc)
         finally:
-            try:
-                if status != "paused" and on_exit is not None:
-                    on_exit()
-            finally:
-                with _JOBS_LOCK:
-                    if status != "paused":
-                        _RUNNING.pop(job["job_id"], None)
-                    job["status"] = status
-                    guard.release()
+            _settle(status)
+        if status == "paused" and cancel.is_set():
+            _cancel_parked()  # the cancel landed while this worker was already parking
+
+    def _cancel_parked() -> bool:
+        guard.acquire()  # held at most briefly: a racing resume sees ``cancel`` and lets go
+        with _JOBS_LOCK:
+            if job["status"] != "paused":
+                guard.release()
+                return job["status"] == "cancelled"
+        _settle("cancelled")
+        return True
+
+    def cancel_job() -> bool:
+        with _JOBS_LOCK:
+            # Checked under the lock _step takes, so a job cannot slip out of its download phase
+            # between this check and the pause that stops it.
+            if not _job_view(job)["can_cancel"]:
+                return False
+            parked = job["status"] == "paused"
+            cancel.set()
+            pause.set()  # a running transfer stops at its next chunk; _run then settles it as cancelled
+        return _cancel_parked() if parked else True
 
     def start(*, initial: bool = False) -> bool:
         if not guard.acquire(blocking=False):
             return False
         with _JOBS_LOCK:
-            if not initial and job["status"] != "paused":
+            if not initial and (job["status"] != "paused" or cancel.is_set()):
                 guard.release()
                 return False
             pause.clear()
@@ -281,7 +336,7 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
         return True
 
     if resumable:
-        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause}
+        _RUNNING[job["job_id"]] = {"resume": start, "pause": pause, "cancel": cancel_job, "cancel_event": cancel}
     start(initial=True)
 
 
@@ -445,9 +500,35 @@ def _missing_drafts(engine_tag: str) -> list:
     return plan
 
 
+def _remember_plan(job: dict[str, Any], plan: list) -> None:
+    """Record what a cancel must undo: each row's URL, and whether its file predates this job. First sight
+    wins, so a resumed job does not mistake the files it already published for pre-existing ones."""
+    running = _RUNNING.get(job["job_id"])
+    if running is None:
+        return
+    rows = running.setdefault("plan", {})
+    for url, dest, _ in plan:
+        rows.setdefault(Path(dest), (url, Path(dest).exists()))
+
+
+def _discard_job_downloads(job: dict[str, Any]) -> None:
+    """Undo a cancelled job's transfer: its resumable partials and every file it published. Files that
+    were on disk before the job (a shared mmproj, an already-complete split part) stay."""
+    rows: dict[Path, tuple[str, bool]] = _RUNNING.get(job["job_id"], {}).get("plan", {})
+    if not rows:
+        return
+    kept = Download([Source(url, dest) for dest, (url, _) in rows.items()]).discard()
+    if kept:
+        logger.info("cancelled download left %d partial(s) for their owner or GC", len(kept))
+    for dest, (_, existed) in rows.items():
+        if not existed:
+            _quiet(lambda d=dest: d.unlink(missing_ok=True), None, warn="cancelled download file kept: %r")
+
+
 def _run_download_plan(job: dict[str, Any], plan: list, label: str, entry=None) -> None:
     """The downloader counts completed files and every part of this plan. A catalog entry's draft
     downloads last and only speeds generation up, so a draft that fails costs the model nothing."""
+    _remember_plan(job, plan)
     draft = bootstrap.assets_dir() / entry.draft.local_name if entry is not None and entry.draft else None
     required = [row for row in plan if row[1] != draft]
     _step(job, "downloading", f"Downloading {label}")
@@ -792,6 +873,17 @@ async def local_models_download_resume(body: JobIdBody):
     return {"ok": True, "resumed": bool(resume and resume())}
 
 
+@router.post("/api/local-models/download/cancel")
+def local_models_download_cancel(body: JobIdBody):
+    """Abandon a model or quickstart download, running or paused: its partial bytes and any file it already
+    published are removed and the job settles as ``cancelled``. A running job answers at once and settles
+    when its transfer stops; a paused one is cleaned up on this request (file I/O, hence a sync def)."""
+    if body.job_id not in _JOBS:
+        raise HTTPException(status_code=404, detail="unknown download job")
+    cancel = _RUNNING.get(body.job_id, {}).get("cancel")
+    return {"ok": True, "cancelled": bool(cancel and cancel())}
+
+
 @router.delete("/api/local-models/models/{model_id}")
 async def local_models_delete(model_id: str):
     """Remove every split part plus private assets, then bounce the router off the request thread (deleting
@@ -982,7 +1074,7 @@ async def local_models_jobs():
     with _JOBS_LOCK:
         jobs = sorted(_JOBS.values(), key=lambda job: -job["started_at"])
         active = [job for job in jobs if job["status"] in ("running", "paused")]
-        recent = [job for job in jobs if job["status"] in ("done", "error")][:20]
+        recent = [job for job in jobs if job["status"] in ("done", "error", "cancelled")][:20]
         return {"jobs": [_job_view(job) for job in [*active, *recent]]}
 
 

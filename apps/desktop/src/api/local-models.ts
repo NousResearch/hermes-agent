@@ -120,6 +120,22 @@ export function resumeLocalDownload(
   })
 }
 
+// Abandon a model or quickstart download, running or paused: the backend
+// discards its partial bytes and any file it already published, and the job
+// settles as `cancelled`. Offered only when the job view says `can_cancel`, so
+// an older backend without this route never sees the call.
+export function cancelLocalDownload(
+  jobId: string,
+  scope?: LocalModelsScope
+): Promise<{ ok: boolean; cancelled: boolean }> {
+  return hermesApi<{ ok: boolean; cancelled: boolean }>({
+    ...(scope ?? profileScoped()),
+    body: { job_id: jobId },
+    method: 'POST',
+    path: '/api/local-models/download/cancel'
+  })
+}
+
 export function activateLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ job_id: string }> {
   return hermesApi<{ job_id: string }>({
     ...(scope ?? profileScoped()),

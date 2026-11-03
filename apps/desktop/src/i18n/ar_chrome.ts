@@ -402,7 +402,9 @@ export const arChrome = {
       max: 'أقصى',
       sendsOnRoute: (level: string) => `يُرسل ${level} على هذا المسار`,
       updateFailed: 'فشل تحديث خيار النموذج',
-      fastFailed: 'فشل تحديث الوضع السريع'
+      fastFailed: 'فشل تحديث الوضع السريع',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'فشل تحديث Daybreak'
     },
     gatewayMenu: {
       gateway: 'البوابة',
@@ -515,6 +517,14 @@ export const arChrome = {
     loadingTree: 'جار تحميل الشجرة...',
     loadingFiles: 'جار تحميل الملفات...',
     terminalHide: 'إخفاء الطرفية',
+    terminalNewOn: 'طرفية جديدة على…',
+    terminalGatewayRemoved: 'بوابة محذوفة',
+    terminalGatewayRemovedBody:
+      'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
+    terminalGatewayNoShellBody:
+      'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
+    terminalDisconnectedBody:
+      'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {

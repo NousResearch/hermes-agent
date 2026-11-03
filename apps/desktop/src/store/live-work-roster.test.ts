@@ -49,6 +49,30 @@ describe('backend roster feeds rows no mounted tile speaks for', () => {
     expect($backgroundRunningSessionIds.get()).toContain('old-pane')
   })
 
+  it('a newer read from the source covering a row ends a running entry its hidden pane stopped updating', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    reconcileBackgroundProcesses('pane', [{ command: 'sleep', session_id: 'p1', status: 'running' }])
+    $subagentsBySession.set({ pane: [child('running', 1_000)] })
+    expect($backgroundRunningSessionIds.get()).toContain('pane')
+    expect($delegatingSessionIds.get()).toContain('pane')
+
+    setLiveWorkRosterSource('ambient', [], 2_000, ['pane'])
+
+    expect($backgroundRunningSessionIds.get()).not.toContain('pane')
+    expect($delegatingSessionIds.get()).not.toContain('pane')
+  })
+
+  it('a read from a source that does not cover the row never ends its running entry', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    reconcileBackgroundProcesses('pane', [{ command: 'sleep', session_id: 'p1', status: 'running' }])
+
+    setLiveWorkRosterSource('other-profile', [], 2_000, ['someone-else'])
+
+    expect($backgroundRunningSessionIds.get()).toContain('pane')
+  })
+
   it('never stamps a local dismissal as a fresher backend snapshot than the roster read', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000)

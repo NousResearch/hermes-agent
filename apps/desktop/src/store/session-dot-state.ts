@@ -28,7 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
-import { $liveWorkRoster, noteEventFed, rosterLiveIds } from './live-work-roster'
+import { $liveWorkRoster, noteEventFed, rosterLiveIds, rosterSaysIdle } from './live-work-roster'
 import { $pausedQueueSessionIds } from './owner-queue-reconcile'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
@@ -62,9 +62,10 @@ export const $delegatingSessionIds = computed(
       }
 
       const aliases = lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)
-      noteEventFed(eventFedAt, aliases, Math.max(...items.map(item => item.updatedAt || 0)))
+      const heardAt = Math.max(...items.map(item => item.updatedAt || 0))
+      noteEventFed(eventFedAt, aliases, heardAt)
 
-      if (activeSubagentCount(items) > 0) {
+      if (activeSubagentCount(items) > 0 && !rosterSaysIdle(roster, 'subagents', aliases, heardAt)) {
         for (const alias of aliases) {
           ids.add(alias)
         }

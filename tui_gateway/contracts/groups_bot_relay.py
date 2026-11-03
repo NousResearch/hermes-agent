@@ -7,6 +7,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -215,10 +217,18 @@ class PeerRouteStatus(Result):
 
 
 class RoomMemberActivity(Result):
-    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``."""
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and
+    ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running;
+    ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running
+    the turn."""
 
     member_id: str
     status: str
+    thread_id: str | None = None
+    round_index: int | None = None
+    started_at: float | None = None
+    tool: str | None = None
+    progress_at: float | None = None
 
 
 class RoomDriverStatus(Result):
@@ -236,12 +246,25 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     last_error: str | None = None
+    max_rounds: int | None = None
     peer_routes: list[PeerRouteStatus]
+
+
+class RoomContext(Result):
+    """``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn
+    prompt carries (inside the user-role message)."""
+
+    purpose: str
+    notes: str
+    #: ``everyone`` (every member answers an unaddressed message) or ``lead`` (the lead assigns it).
+    routing: Literal["everyone", "lead"] = "everyone"
+    lead_member_id: str = ""
 
 
 class GroupsStateResult(Result):
     room: Room
     driver_status: RoomDriverStatus | None = None
+    context: RoomContext | None = None
 
 
 method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
@@ -278,6 +301,24 @@ class GroupsRenameResult(Result):
 
 method("groups.rename", params=GroupsRenameParams, result=GroupsRenameResult,
        doc="Rename one hosted room atomically with its replay event.")
+
+
+class GroupsContextParams(RoomParams):
+    event_id: str
+    purpose: str
+    notes: str
+    #: Omitted routing fields keep the room's current routing.
+    routing: Literal["everyone", "lead"] | None = None
+    lead_member_id: str | None = None
+
+
+class GroupsContextResult(Result):
+    context: RoomContext
+    event: RoomEvent
+
+
+method("groups.context", params=GroupsContextParams, result=GroupsContextResult,
+       doc="Set one hosted room's purpose and shared notes; members see them from the next message.")
 
 
 class GroupsLogParams(RoomParams):

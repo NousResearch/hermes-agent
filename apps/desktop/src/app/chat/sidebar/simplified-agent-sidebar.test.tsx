@@ -107,7 +107,11 @@ afterEach(() => {
 it('keeps server-pinned chats reachable and resumes the exact session', () => {
   mount()
   expect(screen.getAllByText('Pinned plan')).toHaveLength(2)
-  const research = screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
+
+  const research = screen
+    .getByRole('button', { name: /Agent settings: Research/ })
+    .closest('[role=group]') as HTMLElement
+
   fireEvent.click(within(research).getByText('Pinned plan'))
   expect(resume).toHaveBeenCalledWith('pinned', expect.objectContaining({ profile: 'research' }))
 
@@ -118,10 +122,10 @@ it('keeps server-pinned chats reachable and resumes the exact session', () => {
   expect(within(agentGroup).getByText('Regular chat')).toBeTruthy()
   expect(within(agentGroup).queryByText('Pinned plan')).toBeNull()
   expect(screen.queryByText('Chats', { exact: true })).toBeNull()
-  expect(screen.getAllByLabelText('Agents: default').length).toBeGreaterThan(0)
+  expect(within(agentGroup).queryByLabelText('Agents: default')).toBeNull()
+  expect(screen.getByLabelText('Agents: research')).toBeTruthy()
   fireEvent.click(screen.getByText('Regular chat'))
   expect(resume).toHaveBeenCalledWith('regular', expect.objectContaining({ profile: 'default' }))
-
 })
 it('opens the clicked agent settings, including agents with no chats', async () => {
   mount()
@@ -235,9 +239,66 @@ it('offers Unpin under the agent as well as in Pinned, keeping the owning profil
 
   try {
     mount()
-    const research = screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
+
+    const research = screen
+      .getByRole('button', { name: /Agent settings: Research/ })
+      .closest('[role=group]') as HTMLElement
+
     fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
-    await waitFor(() => expect(update).toHaveBeenCalledWith('pinned', 'PATCH', { pinned: false }, expect.objectContaining({ profile: 'research' })))
-  } finally { update.mockRestore() }
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        'pinned',
+        'PATCH',
+        { pinned: false },
+        expect.objectContaining({ profile: 'research' })
+      )
+    )
+  } finally {
+    update.mockRestore()
+  }
+})
+
+it('shows last activity under agents, keeps profile labels on pins, and refreshes age while idle', () => {
+  vi.useFakeTimers()
+  const now = new Date('2026-11-03T12:00:00Z').getTime()
+  vi.setSystemTime(now)
+
+  try {
+    $sessions.set([
+      makeSessionInfo({
+        id: 'recent',
+        title: 'Recent work',
+        profile: 'research',
+        pinned: true,
+        started_at: now / 1000 - 3 * 86400,
+        last_active: now / 1000 - 5 * 3600
+      }),
+      makeSessionInfo({
+        id: 'older',
+        title: 'Older work',
+        profile: 'research',
+        started_at: now / 1000 - 86400,
+        last_active: 0
+      })
+    ])
+    mount()
+
+    const research = screen
+      .getByRole('button', { name: /Agent settings: Research/ })
+      .closest('[role=group]') as HTMLElement
+
+    expect(within(research).getByText('5h')).toBeTruthy()
+    expect(within(research).getByText('1d')).toBeTruthy()
+    expect(within(research).queryByLabelText('Agents: research')).toBeNull()
+    expect(screen.getByLabelText('Agents: research')).toBeTruthy()
+    expect(research.querySelector('time')?.getAttribute('datetime')).toBe('2026-11-03T07:00:00.000Z')
+    act(() => {
+      vi.advanceTimersByTime(3600000)
+    })
+    expect(within(research).getByText('6h')).toBeTruthy()
+  } finally {
+    cleanup()
+    vi.useRealTimers()
+  }
 })

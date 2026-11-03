@@ -45,7 +45,7 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
-    # Lone text must not wait on a download. Tests that need the cap set it.
+    # Cap stays 0 unless a test is covering a claimed download.
     adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
     adapter._active_sessions = {}
     adapter._pending_messages = {}
@@ -648,7 +648,7 @@ class TestSiblingMediaAbsorb:
 
     @pytest.mark.asyncio
     async def test_short_text_still_flushes_when_no_sibling_media(self):
-        """A lone short message flushes at the normal delay, with no extra grace."""
+        """A lone short message flushes at the normal text delay."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0

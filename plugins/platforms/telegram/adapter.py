@@ -557,10 +557,10 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
     _TEXT_BATCH_SHORT_DELAY_S = 0.24
     # Forward-with-comment is two updates: a short TEXT comment, then media.
     # The text handler returns before its flush sleep, so media from the same
-    # poll starts and claims the pending comment during the normal 180ms delay.
-    # Do not add a blind grace on top of that: a lone short text must flush at
-    # the normal delay. If that same-sender download already claimed this batch,
-    # wait up to this long for it to absorb the comment instead of flushing.
+    # poll can claim the pending comment during the normal text delay. A lone
+    # short text flushes at that delay. If a same-sender download has claimed
+    # this batch, the flush waits up to this long for the comment to be merged
+    # into the media event.
     _TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
 
     @staticmethod
@@ -647,10 +647,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._text_batch_split_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", self._TEXT_BATCH_DEFAULT_SPLIT_DELAY_S,
             min_value=self._text_batch_delay_seconds, max_value=self._TEXT_BATCH_MAX_SPLIT_DELAY_S)
-        # Session+sender → in-flight _handle_media_message count. Text flush
-        # waits on this so a comment is merged into the sibling media event
-        # instead of starting a turn without the attachment.
-        # (_pending_text_batches lives on BasePlatformAdapter now.)
+        # Session+sender → in-flight media-handler count. A text flush waits
+        # on a claimed download so the comment and the attachment share one turn.
         self._media_inflight: dict[str, int] = {}
         self._media_inflight_generation = 0
         self._drop_delayed_deliveries = False
@@ -6713,10 +6711,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             raise
 
     async def _wait_for_sibling_media(self, key: str) -> None:
-        """Wait only for a download that already claimed this text batch.
+        """Wait for the download that claimed this text batch, up to the cap.
 
-        A lone short text returns immediately and flushes at the normal delay.
-        Media that has not started yet is not waited for.
+        If this batch was not claimed, return and let the normal text delay flush it.
         """
         inflight_cap = float(getattr(self, "_TEXT_MEDIA_INFLIGHT_CAP_S", 0) or 0)
         pending = self._pending_text_batches.get(key)
@@ -7020,12 +7017,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         return False
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming media messages, downloading images to local cache.
+        """Download media, and merge a pending same-sender comment into that event.
 
-        If this event has a source, snapshot a pending same-sender comment and
-        mark the download in flight before the first await. A text flush then
-        waits only for that claimed download. Events without a source (test
-        stubs, incomplete builds) skip pairing and follow the normal media path.
+        When the event has a source, snapshot the pending comment and mark the
+        download in flight before the first await. The text flush then waits
+        for that claimed download and one turn sees both.
         """
         msg = update.message
         if not msg:

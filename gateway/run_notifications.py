@@ -203,6 +203,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         owner_session_id: str = ""  # owning session the pre-flight proved for the completion's pin
         proven_session_id: str = ""  # session the pre-flight proved delivery reaches (a compression tip included)
         defer: bool = False  # unadmitted retry: settle without spending a delivery attempt
+        previous_session_id: str = ""  # the ended pin a rotated route's completion was retargeted away from
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -1222,6 +1223,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # drops an honest durable disposition.
         verdict, claim.owner_session_id, claim.proven_session_id = await self._classify_completion_owner(
             parent_session_id, str(evt.get("session_key") or ""))
+        if verdict == "deliver" and evt_type == "async_delegation":
+            successor = await self._rotated_route_successor(claim.owner_session_id, str(evt.get("session_key") or ""))
+            if successor:
+                claim.previous_session_id = claim.owner_session_id
+                claim.owner_session_id = claim.proven_session_id = successor
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
@@ -1324,6 +1330,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if self._completion_identity_seen(identity, claim=True):
                     return None
                 identity_claimed = True
+            if claim.previous_session_id:
+                ids = [str(e.get("delegation_id") or "") for e in (evt, *(sibling for sibling, _ in sibling_claims))]
+                synth_text = f"[Previous session's delegation result \u2014 {', '.join(i for i in ids if i)}]\n{synth_text}"
             if claim.owner_session_id:
                 # Admission settles the durable claim, so the resolver starts from the owner proven here.
                 evt = {**evt, "parent_session_id": claim.owner_session_id,

@@ -125,7 +125,7 @@ it('opens the clicked agent settings, including agents with no chats', async () 
   mount()
   fireEvent.click(screen.getByRole('button', { name: /Agent settings: Research/ }))
   await waitFor(() => expect($settingsScopeProfile.get()).toBe('research'))
-  expect(screen.getByTestId('route').textContent).toBe('?tab=config:model')
+  await waitFor(() => expect(screen.getByTestId('route').textContent).toBe('?tab=config:model'))
 })
 it('offers the mode once after onboarding and persists both yes and no without changing the classic browse preference', () => {
   $agentSidebarChoice.set(null)

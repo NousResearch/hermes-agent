@@ -86,6 +86,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             {row.profile || 'default'}
           </span>
         </RowButton>
+        {/* shortcut: legacy actions accept bare IDs; restore menus for twins when those actions accept owners. */}
         {!props.ambiguousIds.has(row.id) && (
           <SessionActionsMenu
             onArchive={() => props.onArchiveSession(row.id)}

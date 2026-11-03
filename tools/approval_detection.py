@@ -4,6 +4,7 @@ Pure command classification for :mod:`tools.approval` — no approval state, con
 prompting live here.
 """
 
+import bisect
 import functools
 import logging
 import os
@@ -1570,35 +1571,65 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def _upload_flag_owned_by_curl_or_wget(command: str, flag_start: int) -> bool:
-    """True when a curl/wget word precedes the upload flag at *flag_start* in the same simple command.
-    ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter and upload
-    nothing; curl run as an argument (``xargs curl``, ``ssh host curl``) still owns its flags."""
+def _upload_flag_owner_index(command: str) -> list[tuple[int, int, int | None, list[int], list[int]]]:
+    """Parse each simple command once: its bounds, where its first word that may run curl/wget starts,
+    and its word bounds. Built once per detection variant, so a long command full of ``cut -d`` flags
+    costs one walk instead of one walk per flag."""
+    index = []
     for start, _, _ in _iter_shell_command_word_spans(command):
-        if not start <= flag_start < start + len(_shell_command_segment(command, start)):
-            continue
-        pos = start
-        while pos < flag_start:
+        end = start + len(_shell_command_segment(command, start))
+        owner, word_starts, word_ends, pos = None, [], [], start
+        while pos < end:
             word_start, pos, word = _read_shell_word(command, pos)
             if word_start == pos:
                 break
-            if word_start < flag_start < pos:
-                # The flag sits inside a quoted word that ``eval``, ``ssh host`` or ``sh -c`` may
-                # re-parse as a command, so curl may own it.
-                return True
-            if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in ("curl", "wget"):
-                return True
-            if _word_is_unresolved_expansion(word):
-                # ``$CURL -d …`` / ``"$(which curl)" -T …``: the word may expand to curl, so the
-                # flag cannot be ruled out as an upload.
-                return True
+            word_starts.append(word_start)
+            word_ends.append(pos)
+            if owner is None and _word_may_run_curl_or_wget(word):
+                owner = word_start
+        index.append((start, end, owner, word_starts, word_ends))
+    return index
+
+
+def _upload_flag_owned_by_curl_or_wget(index, flag_start: int) -> bool:
+    """True when a word that may run curl/wget precedes the upload flag at *flag_start* in the same
+    simple command. ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter
+    and upload nothing; curl run as an argument (``xargs curl``, ``ssh host curl``) still owns its flags."""
+    for start, end, owner, word_starts, word_ends in index:
+        if not start <= flag_start < end:
+            continue
+        if owner is not None and owner < flag_start:
+            return True
+        word = bisect.bisect_left(word_starts, flag_start) - 1
+        if word >= 0 and word_ends[word] > flag_start:
+            # The flag sits inside a quoted word that ``eval``, ``ssh host`` or ``sh -c`` may
+            # re-parse as a command, so curl may own it.
+            return True
     return False
 
 
-def _word_is_unresolved_expansion(word: str) -> bool:
-    """True when a shell word begins with a parameter expansion, command substitution or backtick
-    (after any opening quotes): what it runs is unknown without executing the shell."""
-    return word.lstrip("'\"").startswith(("$", "`"))
+def _credential_upload_owned_by_curl_or_wget(pattern_re, command: str) -> bool:
+    """True when any credential-upload match in *command* is an upload flag curl/wget may own."""
+    index = None
+    for match in pattern_re.finditer(command):
+        if index is None:
+            index = _upload_flag_owner_index(command)
+        if _upload_flag_owned_by_curl_or_wget(index, match.start()):
+            return True
+    return False
+
+
+def _word_may_run_curl_or_wget(word: str) -> bool:
+    """True when a shell word names curl/wget (``/usr/bin/curl``, ``curl.exe``, ``C:\\tools\\wget.exe``)
+    or holds an expansion that may produce such a name (``$CURL``, ``c${suffix}``, ``/usr/bin/$CURL``,
+    ``"$(which curl)"``): what an expansion runs is unknown without executing the shell. Option words
+    and ``NAME=value`` assignments are never a command name."""
+    for spelling in (_deobfuscate_shell_word_for_detection(word), word.strip("'\"")):
+        name = re.split(r"[\\/]", spelling)[-1].lower()
+        if name.removesuffix(".exe") in ("curl", "wget"):
+            return True
+    return (("$" in word or "`" in word) and not word.startswith("-")
+            and not _ENV_ASSIGNMENT_RE.fullmatch(word))
 
 
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
@@ -1625,9 +1656,10 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     )
                 if pattern_re.search(masked_lower):
                     yield description
-            elif any(description != _CREDENTIAL_UPLOAD_DESCRIPTION
-                     or _upload_flag_owned_by_curl_or_wget(command_lower, match.start())
-                     for match in pattern_re.finditer(command_lower)):
+            elif description != _CREDENTIAL_UPLOAD_DESCRIPTION:
+                if pattern_re.search(command_lower):
+                    yield description
+            elif _credential_upload_owned_by_curl_or_wget(pattern_re, command_lower):
                 yield description
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.

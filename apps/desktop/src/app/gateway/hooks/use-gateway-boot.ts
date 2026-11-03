@@ -36,7 +36,7 @@ import {
   setDesktopBootStep
 } from '@/store/boot'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
-import { primaryWireConnectionId, recordConnectionWire } from '@/store/connection-wire'
+import { primaryWireSource, recordConnectionWire } from '@/store/connection-wire'
 import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
 import {
   $gateway,
@@ -1218,7 +1218,7 @@ export function useGatewayBoot({
     const offEvent = gateway.onEvent(event => {
       // The composer reads the wire per owner connection; the primary's own route names it.
       if (event.type === 'gateway.ready') {
-        recordConnectionWire(primaryWireConnectionId($primaryGatewayRoute.get(), $connection.get()?.connectionId), gateway.sessionWire)
+        recordConnectionWire(primaryWireSource($primaryGatewayRoute.get(), $connection.get()), gateway.sessionWire)
       }
 
       const connectionId = activeGatewayConnectionId()

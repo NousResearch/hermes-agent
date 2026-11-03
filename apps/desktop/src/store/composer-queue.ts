@@ -17,7 +17,7 @@ export function serverOwnsComposerQueue(sessionId: string | null | undefined): b
   const owner = knownOwnerForSession(sessionId)
   const route = owner && typeof owner === 'object' ? owner : null
   const connection = $connection.get()
-  const wire = connectionWire(route ? route.connectionId : connection?.connectionId)
+  const wire = connectionWire(route ?? connection)
 
   if (wire) { return wire === 'canonical' }
 

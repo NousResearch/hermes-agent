@@ -11,6 +11,7 @@ QQ Bot 适配器使用[官方 QQ Bot API](https://bot.q.qq.com/wiki/develop/api-
 
 - 通过持久 **WebSocket** 连接至 QQ Gateway（网关）接收消息
 - 通过 **REST API** 发送文本和 Markdown 回复
+- 在私聊（C2C）和群组中发送原生图片、语音、视频及文件附件
 - 下载并处理图片、语音消息及文件附件
 - 使用腾讯内置 ASR 或可配置的 STT（语音转文字）提供商转写语音消息
 
@@ -96,6 +97,23 @@ platforms:
    - **智谱/GLM（zai）**：默认提供商，使用 `glm-asr` 模型
    - **OpenAI Whisper**：设置 `QQ_STT_BASE_URL` 和 `QQ_STT_MODEL`
    - 任何兼容 OpenAI 的 STT 端点
+
+## 发送媒体和文件
+
+QQ Bot 支持在私聊（C2C）和群组中发送原生图片、语音、视频及文件。频道（Guild）不使用此原生上传路径。
+
+Hermes 根据媒体来源选择上传方式，而不是根据文件大小：
+
+| 来源 | 上传路径 | 说明 |
+|---|---|---|
+| HTTP(S) URL | 使用 `url` 调用 `POST /v2/users/{id}/files`（私聊）或 `POST /v2/groups/{id}/files`（群组） | QQ 直接获取已托管的媒体。 |
+| 本地文件路径 | 分块上传：`upload_prepare`、向 COS 逐块 `PUT`、`upload_part_finish`，最后携带 `upload_id` 调用 `/files` | 所有本地文件都使用此流程，包括小文件。选择此路径没有文件大小门槛。 |
+
+任一上传流程返回 `file_info` 后，Hermes 会将其用于发送原生媒体消息。
+
+如果 QQ 在本地文件上传的准备阶段返回每日累计上传配额错误（`biz_code=40093002`），Hermes 会返回不可重试的发送错误，例如 `QQ daily upload limit exceeded for 'file' (...)`。请次日再试，不要反复重新发送该文件。
+
+上传仍受 QQ 的媒体限制约束。如果 QQ 因文件过大而拒绝上传，请发送较小的文件，或改为分享已托管文件的链接。
 
 ## 故障排查
 

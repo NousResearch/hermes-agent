@@ -157,9 +157,10 @@ class HermesProviderMixin:
     async def _hermes_accept_origin_issued_metadata(self, response):
         """Accept an authorization server's metadata document whose ``issuer`` differs from the advertised
         identifier only in a shape the SDK's exact-string check (RFC 8414 §3.3) refuses: a path-scoped
-        server naming its origin (see ``metadata_issued_by_origin``, Strava #116233), or a server whose
-        issuer spelling differs by trailing slashes (see ``issuer_matches_modulo_trailing_slash``,
-        Otter.ai #132233).
+        server naming its origin (see ``metadata_issued_by_origin``, Strava #116233), or a root issuer
+        spelled with the trailing slash on one side only (Otter.ai advertises ``https://otter.ai/`` and its
+        document names ``https://otter.ai``, #132233), which the SDK's own ``issuers_match`` treats as
+        one server but applies only on the legacy no-PRM path.
 
         The SDK validates inside its Step 2 loop right after reading the response, so the document is
         installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
@@ -184,17 +185,16 @@ class HermesProviderMixin:
             metadata = OAuthMetadata.model_validate_json(await response.aread())
         except ValidationError:
             return response
-        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
-            if not issuer_matches_modulo_trailing_slash(metadata, self.context.auth_server_url):
-                return response
-            self._hermes_logger.info(
-                "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s differs from the "
-                "advertised server %s only by trailing slashes", response.url, metadata.issuer,
-                self.context.auth_server_url)
+        from mcp.client.auth.utils import issuers_match
+        advertised, issuer = self.context.auth_server_url, str(metadata.issuer)
+        if metadata_issued_by_origin(metadata, advertised, response):
+            relation = "is the origin of"
+        elif advertised and issuer != advertised and issuers_match(issuer, advertised):
+            relation = "differs only by the root trailing slash from"
         else:
-            self._hermes_logger.info(
-                "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
-                "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+            return response
+        self._hermes_logger.info("MCP OAuth: accepting authorization-server metadata from %s whose issuer %s %s "
+                                 "the advertised server %s", response.url, issuer, relation, advertised)
         self.context.oauth_metadata = metadata
         return type(response)(204, request=response.request)
 
@@ -557,24 +557,6 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
-
-
-def issuer_matches_modulo_trailing_slash(metadata: Any, auth_server_url: str | None) -> bool:
-    """Whether *metadata*'s ``issuer`` and the advertised *auth_server_url* differ only by trailing slashes.
-
-    RFC 8414 §3.3 compares issuers as exact strings, but the advertised identifier and the document keep
-    their own spellings of the same server: ``str(AnyHttpUrl)`` of a host-only URL appends the root-path
-    slash pydantic adds, while the document (``url_preserve_empty_path``) keeps the operator's spelling,
-    which for a plain-origin issuer has none — so Otter.ai's slash-less ``https://otter.ai`` document is
-    rejected against the SDK's ``https://otter.ai/`` expected value (#132233). Compare both sides
-    root-slash-normalized, the same convention ``_metadata_issuer``, the refresh-token issuer binding and
-    the device flow's ``_device_metadata`` already apply. Stripping trailing slashes cannot cross the
-    issuer check's boundary: scheme, host, port and every path segment must still match character for
-    character, so any other difference (another origin, port, or path) still fails the SDK's exact-string
-    check."""
-    if not auth_server_url or not getattr(metadata, "issuer", None):
-        return False
-    return str(auth_server_url).rstrip("/") == str(metadata.issuer).rstrip("/")
 
 
 def google_offline_access_params(context: Any) -> dict[str, str]:

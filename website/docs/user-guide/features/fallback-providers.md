@@ -138,7 +138,7 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-When every backup also fails, the reply says so and points at `hermes fallback list`.
+When every backup also fails, the reply says so and points at `hermes fallback list`. A reply cut by `agent.stream_max_lifetime` names that setting instead, because the cap cuts a backup the same way.
 
 The same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `hermes chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
 

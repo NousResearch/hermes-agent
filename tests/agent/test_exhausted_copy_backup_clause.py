@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.error_classifier import classify_api_error
+from agent.stream_max_lifetime import StreamLifetimeExceeded
 from agent.turn_api_call import nous_rate_limit_guard
 from agent.turn_failure_copy import exhausted_copy
 from agent.turn_recovery import max_retries_exhausted_result
@@ -51,8 +52,8 @@ def _agent(**state):
     return agent
 
 
-def _exhausted(agent, *, reset=False):
-    error = Exception("upstream unavailable")
+def _exhausted(agent, *, reset=False, error=None):
+    error = error or Exception("upstream unavailable")
     classified = classify_api_error(error, provider=agent.provider, model=agent.model)
     if reset:
         from agent.error_classifier import FailoverReason
@@ -95,6 +96,14 @@ def test_unwalked_chain_drops_advice_and_preserves_reset_window(monkeypatch):
     assert "fallback list" not in text
     assert "/model.\n\nProvider said:" in text
     assert "  " not in text
+
+
+def test_stream_cap_names_the_setting_instead_of_the_backups():
+    """agent.stream_max_lifetime cuts every provider alike, so the reply names it, not the backups."""
+    text = _exhausted(_agent(_fallback_chain=[{"provider": "openrouter", "model": "b"}], _fallback_index=1),
+                      error=StreamLifetimeExceeded(elapsed=900, cap=900))
+    assert "agent.stream_max_lifetime (900s) cut it, on all 3 attempts" in text
+    assert "fallback" not in text
 
 
 def test_empty_chain_preserves_add_backup_advice():

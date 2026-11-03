@@ -52,7 +52,7 @@ import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
-import { remarkTranscriptDirectives } from '@/lib/transcript-directives'
+import { remarkTranscriptDirectives, TRANSCRIPT_DIRECTIVE_ELEMENT } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
@@ -61,7 +61,7 @@ import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { ToolMediaSlot } from './tool-media-slot'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+import { TranscriptDirectiveLeaf, TranscriptDirectiveText, useResolvedParagraph } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -113,6 +113,15 @@ function useCodePlugin(): CodePlugin | null {
 }
 
 const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscriptDirectives, remarkSoftBreaks]
+
+// The element remarkTranscriptDirectives lifts each directive into. Sanitize
+// would unwrap an unknown tag back to its text, so allow it, with only the
+// attribute it carries.
+const ALLOWED_TAGS = { [TRANSCRIPT_DIRECTIVE_ELEMENT]: ['source'] }
+
+// MarkdownParagraph draws the claimed directives as cards; everywhere else a
+// lifted directive renders as its text.
+const DIRECTIVE_COMPONENTS: StreamdownTextComponents = { [TRANSCRIPT_DIRECTIVE_ELEMENT]: TranscriptDirectiveText }
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -549,10 +558,10 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 }
 
 /**
- * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
- * exactly one `::name{...}` directive claimed by a plugin renders as that
- * plugin's transcript component instead (`transcript.directives` area). The
- * claim check subscribes to the registry, so hot-loading a plugin upgrades
+ * Paragraph override. Almost always a plain `<p>` — but every `::name{...}`
+ * directive in it that a plugin claimed (`transcript.directives` area) renders
+ * as that plugin's component, between the prose runs around it. The claim
+ * check subscribes to the registry, so hot-loading a plugin upgrades
  * already-rendered directives in place; unclaimed directives stay prose.
  */
 function MarkdownParagraph({
@@ -562,8 +571,7 @@ function MarkdownParagraph({
   streaming,
   ...props
 }: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
-  const plain = paragraphPlainText(children)
-  const resolved = useResolvedParagraph(scratchpad ? null : plain)
+  const resolved = useResolvedParagraph(children, !scratchpad)
   // A plugin's tool media renderer draws block content (a card, a viewer), which
   // a <p> cannot hold; a paragraph delivering a MEDIA: file becomes a <div> then.
   const blockMedia = useContributions(TOOL_MEDIA_RENDERER_AREA).length > 0 && holdsMediaLink(children)
@@ -582,7 +590,7 @@ function MarkdownParagraph({
             <TranscriptDirectiveLeaf key={index} streaming={streaming} text={segment.source} />
           ) : (
             <p className={paragraphClass} key={index} {...props}>
-              {segment.text.trim()}
+              {segment.children}
             </p>
           )
         )}
@@ -652,8 +660,9 @@ function MarkdownTextSurface({
   const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
   const components = useMemo(
-    () =>
-      ({
+    (): StreamdownTextComponents => ({
+      ...DIRECTIVE_COMPONENTS,
+      ...({
         h1: ({ className, ...props }: ComponentProps<'h1'>) => (
           <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
         ),
@@ -765,7 +774,8 @@ function MarkdownTextSurface({
             />
           )
         }
-      }) as StreamdownTextComponents,
+      } as StreamdownTextComponents)
+    }),
     [boxDir, decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
@@ -797,6 +807,7 @@ function MarkdownTextSurface({
       label="markdown-render"
     >
       <StreamdownTextPrimitive
+        allowedTags={ALLOWED_TAGS}
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
         containerProps={surfaceContainerProps}

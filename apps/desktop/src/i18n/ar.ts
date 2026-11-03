@@ -82,8 +82,7 @@ export const arOverrides = {
       receiptNone: 'لم يتم ربط تطبيقات جديدة',
       receiptTimedOut: 'أُغلقت بعد 10 دقائق',
       finishInBrowser: 'أكمل في المتصفح',
-      signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'
-    }
+      signInFailed: 'تعذّر الاتصال. انقر لإعادة المحاولة'    }
   },
   sharedMetrics: arCommon.sharedMetrics,
   firstRun: arFirstRun,
@@ -130,6 +129,9 @@ export const arOverrides = {
   modelVisibility: arSettings.modelVisibility,
   shell: arChrome.shell,
   rightSidebar: arChrome.rightSidebar,
+  pen: {
+    openFailed: 'تعذّر فتح اللوحة'
+  },
   preview: arArtifacts.preview,
   interfaceMode: arSettings.interfaceMode,
   zones: arChrome.zones,
@@ -145,8 +147,7 @@ export const arOverrides = {
       heading: 'واصل مع Hermes',
       body: 'أنت تستخدم الحصة المجانية. إذا واصلت استخدام Hermes فستبدأ بمواجهة حدود الاستخدام. سجّل الدخول بحساب Nous مجاني للحصول على حصة أكبر.',
       signIn: 'تسجيل الدخول',
-      notNow: 'ليس الآن'
-    }
+      notNow: 'ليس الآن'    }
   }
 } satisfies TranslationOverrides
 

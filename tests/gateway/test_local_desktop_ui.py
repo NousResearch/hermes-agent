@@ -20,6 +20,7 @@ _ANSWERS = {
     "terminal.read": {"value": "tick 1\ntick 2"},
     "window.read": {"value": json.dumps({"app": "Finder"})},
     "preview.act": {"value": json.dumps({"success": True, "acted": "clicked a"})},
+    "pen.tool": {"value": json.dumps({"tools": ["execute", "get_app_state"]})},
     "tour": {"value": json.dumps({"success": True})},
     "theme.apply": {"value": json.dumps({"applied": {"accent": "violet"}})},
     "theme.pick": {"picked": {"accent": "violet"}},
@@ -94,6 +95,17 @@ def test_gui_reads_are_server_requests_to_the_session_viewers(window):
     assert json.loads(window.agent.drive_preview_callback({"action": "click"}))["success"] is True
     terminal = next(f for f in window.requests if f["method"] == "terminal.read")
     assert terminal["params"] == {"session_id": "canon", "start": 0, "count": 2}
+
+
+def test_pen_canvas_runs_in_the_session_viewers_editor(window):
+    local_viewer_events.wire(window.turn, window.agent)
+    assert json.loads(window.agent.pen_canvas_callback("open", {"name": "Login"})) == {
+        "tools": ["execute", "get_app_state"]}
+    frame = next(f for f in window.requests if f["method"] == "pen.tool")
+    assert frame["params"] == {"session_id": "canon", "action": "open", "args": {"name": "Login"}}
+    # ``import`` waits on the editor's own ten-minute budget; everything else on the short one.
+    assert json.loads(window.agent.pen_canvas_callback("import", None))
+    assert window.requests[-1]["params"]["args"] == {}
 
 
 def test_set_theme_applies_and_picks(window):

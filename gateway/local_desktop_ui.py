@@ -7,9 +7,9 @@ _wire_desktop_sinks`` and ``tui_gateway/agent_callbacks.py::_agent_cbs``):
   ``close_terminal`` and the other window events reach the renderer as ``event`` frames;
 * the GUI callbacks (``read_preview_callback``, ``drive_preview_callback``,
   ``read_terminal_callback``, ``read_window_below_callback``, ``theme_callback``, ``tour_callback``,
-  ``setup_beat_callback``), answered by the renderer through ``preview.read`` / ``preview.act`` /
-  ``terminal.read`` / ``window.read`` / ``theme.apply`` / ``theme.pick`` / ``tour`` /
-  ``setup_beat`` server requests;
+  ``setup_beat_callback``, ``pen_canvas_callback``), answered by the renderer through ``preview.read`` /
+  ``preview.act`` / ``terminal.read`` / ``window.read`` / ``theme.apply`` / ``theme.pick`` / ``tour`` /
+  ``setup_beat`` / ``pen.tool`` server requests;
 * the process-registry sinks (``on_output`` / ``on_close``) that stream a background process into
   its read-only terminal tab (``agent.terminal.output``) and let ``close_terminal`` drop the tab
   (``terminal.close``).
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Agent attributes ``wire`` installs for one local-viewer turn (restored by ``local_viewer_events``).
 CALLBACK_ATTRS = ("read_terminal_callback", "read_preview_callback", "drive_preview_callback",
                   "read_window_below_callback", "theme_callback", "tour_callback", "setup_beat_callback",
-                  "connection_callback")
+                  "connection_callback", "pen_canvas_callback")
 
 # main: tui_gateway/agent_callbacks.py ``_read_block`` budgets and tui_gateway/server.py's preview.act ladder.
 _TERMINAL_READ_TIMEOUT_S = 30
@@ -58,6 +58,10 @@ _THEME_TIMEOUT_S = 15
 _THEME_PICK_TIMEOUT_S = 300
 _THEME_UNANSWERED = {"success": False, "error": "No Hermes Desktop window answered the theme request."}
 _TOUR_TIMEOUT_S = 45
+# pen_canvas: a design render can outlive a short wait; ``import`` gets the editor's own ten-minute
+# budget for a large page (IMPORT_TIMEOUT_MS in apps/desktop/electron/pen/web-bridge.ts).
+_PEN_TOOL_TIMEOUT_S = 120
+_PEN_IMPORT_TIMEOUT_S = 600
 _TOUR_PROBE_TIMEOUT_S = 10
 _TOUR_BRIDGE_UNAVAILABLE = json.dumps({
     "success": False,
@@ -274,6 +278,9 @@ def wire(turn, agent):
     agent.theme_callback = lambda payload: _theme(turn, agent, dict(payload or {}))
     agent.tour_callback = lambda payload: _tour(turn, agent, dict(payload or {}))
     agent.setup_beat_callback = lambda payload: _setup_beat(turn, agent, dict(payload or {}))
+    agent.pen_canvas_callback = lambda action, args: _ask(
+        turn, agent, "pen.tool", {"action": action, "args": dict(args or {})},
+        _PEN_IMPORT_TIMEOUT_S if action == "import" else _PEN_TOOL_TIMEOUT_S)
     # Fire-and-forget: the tool thread waits on its own operation; the card answers by op_id.
     agent.connection_callback = lambda payload: publish("connection.request", dict(payload)) and None
     return key, publish

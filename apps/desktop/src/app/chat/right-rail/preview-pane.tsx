@@ -3,7 +3,7 @@
 import './preview-mind'
 
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, PointerEvent as ReactPointerEvent } from 'react'
+import type { ComponentProps, PointerEvent as ReactPointerEvent, RefObject } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
@@ -33,6 +33,13 @@ import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import {
+  $penImport,
+  hoverPenImportPath,
+  importFromPreviewStrip,
+  selectPenImportPath,
+  togglePenImportPick
+} from '@/store/pen-import'
 import {
   $browserPages,
   $previewServerRestart,
@@ -75,6 +82,7 @@ import { previewConsoleState } from './preview-console-store'
 import { usePreviewDriveChannels } from './preview-drive-channels'
 import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './preview-file'
 import { usePreviewGuestOffscreen } from './preview-guest-offscreen'
+import { registerPreviewImport } from './preview-import'
 import { type PreviewInputEvent } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
@@ -107,6 +115,64 @@ type PreviewWebview = HTMLElement &
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
  *  the guest has been removed. Optional chaining does not help — the method
  *  exists, it just refuses. */
+/** "Open in browser" only where the page can't pop out into an in-app Browser window. */
+function externalOpener(url: string): (() => void) | undefined {
+  return !isBrowserWindow() && !canOpenBrowserWindow() ? () => void window.hermesDesktop?.openExternal(url) : undefined
+}
+
+interface PenImportInputs {
+  isRemoteHtml: boolean
+  isWebPreview: boolean
+  liveUrlRef: RefObject<string>
+  loading: boolean
+  tabId: string | undefined
+  webviewRef: RefObject<PreviewWebview | null>
+}
+
+/**
+ * Import-to-canvas for this pane. Publishes the IMPORT handle for a web tab —
+ * who the <webview> guest is and what it shows — so pen.dev's capturer (in
+ * main) can be pointed at it, by the strip's control and by the agent's
+ * pen_canvas(action='import'); returns the strip's props (none without pen).
+ */
+function usePenImport({ isRemoteHtml, isWebPreview, liveUrlRef, loading, tabId, webviewRef }: PenImportInputs) {
+  const penImport = useStore($penImport)
+  const loadingRef = useRef(loading)
+  const importTabId = isWebPreview && !isRemoteHtml ? tabId : undefined
+
+  loadingRef.current = loading
+
+  useEffect(() => {
+    if (!importTabId) {
+      return
+    }
+
+    return registerPreviewImport(importTabId, {
+      guestId: () => {
+        try {
+          return webviewRef.current?.getWebContentsId?.()
+        } catch {
+          return undefined
+        }
+      },
+      loading: () => loadingRef.current,
+      page: () => guestPage(webviewRef.current, liveUrlRef.current)
+    })
+  }, [importTabId, liveUrlRef, webviewRef])
+
+  if (!tabId || !window.hermesDesktop?.pen) {
+    return {}
+  }
+
+  return {
+    importState: penImport?.tabId === tabId ? penImport : undefined,
+    onImport: (mode: 'page' | 'selection') => void importFromPreviewStrip(tabId, mode),
+    onImportHoverPath: (index: null | number) => hoverPenImportPath(tabId, index),
+    onImportSelectPath: (index: number) => selectPenImportPath(tabId, index),
+    onToggleImport: () => void togglePenImportPick(tabId)
+  }
+}
+
 function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
   try {
     return {
@@ -888,6 +954,8 @@ export function PreviewPane({
     })
   }, [tabId, usesWebview])
 
+  const penImportProps = usePenImport({ isRemoteHtml, isWebPreview, liveUrlRef, loading, tabId, webviewRef })
+
   usePreviewDriveChannels(webviewRef, tabId, usesWebview)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -1508,11 +1576,7 @@ export function PreviewPane({
             onFlushComments={() => void flushComments()}
             onForward={goForward}
             onNavigate={navigateTo}
-            onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
-            }
+            onOpenExternal={externalOpener(currentUrl)}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
@@ -1524,6 +1588,7 @@ export function PreviewPane({
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
             url={currentUrl}
+            {...penImportProps}
           />
         )}
 

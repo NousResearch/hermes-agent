@@ -4673,6 +4673,7 @@
                 "manage_connections",
                 "memory",
                 "patch",
+                "pen_canvas",
                 "process_manage",
                 "react_to_message",
                 "read_file",

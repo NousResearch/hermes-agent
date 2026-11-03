@@ -143,8 +143,8 @@ events made with the default `GITHUB_TOKEN`. `workflow_dispatch` and
 
 `blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
 `32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`macos-15-intel`, `windows-latest-32-core` and `windows-latest-32-arm-core`
-are GitHub-hosted. Some publish jobs run on `ubuntu-latest` on purpose:
+`windows-latest-32-core` and `windows-latest-32-arm-core` are GitHub-hosted.
+No workflow runs on Intel macOS. Some publish jobs run on `ubuntu-latest` on purpose:
 `docker buildx imagetools` cannot commit manifest lists to Docker Hub from
 Blacksmith.
 
@@ -304,7 +304,7 @@ branch protection.
 |---|---|---|---|
 | `docker.yml`, **Docker Build, Test, and Publish** | `pull_request`, `push: main`, `workflow_call` (stable) | **PR:** `detect` → `build` only when the `docker` slow lane is on (Docker meta, dependency manifests, `pm/`, `tests/docker/`, webapp build recipe, or the `run-e2e` label). Builds slim+desktop × amd64+arm64 and runs the docker integration tests. Never pushes. **Push to `main` on the upstream repo:** always builds, then `publish` (env `container-publish`) and `merge` push `:main` / `:main-desktop` only (never `:latest`). **Stable `release-phase: test`:** builds the claim commit, tests it (unless the claim has no `docker-tests` lane), and archives the exact image. **`release-phase: publish`:** pushes the archived bytes under the attempt ref and returns the manifest digest. No `release: published` trigger, on purpose. | none (`gh run rerun`) |
 | `nix.yml`, **Nix flake check** | `pull_request`, `push: main`, `workflow_call` | `flake-check` runs when the `nix` lane is on (`nix/`, `flake.*`, dependency/npm manifests, `.github/`, `run-e2e` label). Every push to `main` turns it on. `release: true` forces it. | none |
-| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, darwin-x64, win32-x64, win32-arm64. Linux targets are commented out. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
+| `pm-bundle.yml`, **PM Bundle** | `pull_request` on `pm/**` (not `*.md`), `scripts/bundles/**`, the Windows build deps, `uv.lock`, `pyproject.toml`, itself; `workflow_dispatch`; `workflow_call` (stable) | Stages and smoke-tests `hermes pm bundle` on darwin-arm64, win32-x64, win32-arm64. Linux targets are commented out; there is no Intel macOS leg. | `gh workflow run pm-bundle.yml [-f ref=<sha>]` |
 | `termux-verify.yml`, **Termux verification** | `push: main` / `pull_request` on `scripts/termux/**`, `pm/**` (not `*.md`), `tests/scripts/test_termux*`, itself; `workflow_dispatch`; `workflow_call` (stable) | `contracts` and `tui` always run. `r2-provisioned` is skipped on PRs. `native-runtime` (arm64) runs only when R2 secrets exist or `release: true`. A release run fails loudly without R2. | `gh workflow run termux-verify.yml` |
 | `plugin-catalog-ci.yml`, **Plugin Catalog CI** | `pull_request` on `plugin-catalog/**` | `structural` (schema) and `pinned-source-validate` (the pinned SHA is reachable and the plugin passes `hermes plugins validate`; inner steps skip when no entry file changed). | none |
 | `sandbox-image.yml`, **Sandbox desktop image** | `pull_request` on its Dockerfile and smoke script; `release: published`; `workflow_dispatch` (`publish`) | `build`+smoke on the upstream repo only. `publish`/`merge` (push `nousresearch/hermes-sandbox:desktop`) only on `release` or a dispatch with `publish=true`. Never on `main` pushes. | `gh workflow run sandbox-image.yml -f publish=true` |
@@ -388,7 +388,7 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
   ```sh
   python scripts/release.py release --commit "$(git rev-parse origin/main)" --bump patch --remote origin
   python scripts/release.py release … --only windows,docker      # lane subset
-  python scripts/release.py release … --with macos-intel --without install-e2e
+  python scripts/release.py release … --with termux --without install-e2e
   python scripts/release.py publish --version X.Y.Z --remote origin
   python scripts/release.py abandon --version X.Y.Z --remote origin
   ```
@@ -414,7 +414,7 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
   | `windows-live` (on) | `windows-live` → `windows-venv-e2e.yml` |
   | `install-e2e` (on) | `install-e2e` → `install-e2e.yml` (route `all`) |
   | `windows` (on), `windows-store` (on) | `candidates-win32-{x64,arm64,bundle}`, Store submission |
-  | `macos-arm64` (on), `macos-intel` (off) | `candidates-darwin-{arm64,x64}` |
+  | `macos-arm64` (on) | `candidates-darwin-arm64` |
   | `smoke` (on) | native smokes inside the candidate calls |
   | `upgrade` (on) | `transitions-*` and `windows-packaged` / `macos-packaged-*` (signed OLD→NEW). Also skipped when no published baseline exists. |
   | `bootstrap-version` (on) | `bootstrap-version` |
@@ -443,8 +443,8 @@ Long-form reference: `website/docs/developer-guide/stable-releases.md`.
 ### Desktop bundles: `desktop-bundled-release.yml`
 
 **Desktop Bundled Release.** This is the native build, sign, stage and publish
-pipeline for darwin-arm64/x64, win32-x64/arm64 (+ universal bundle and Store
-bundle), and Termux. The linux-x64/arm64 groups are **disabled** (dummy jobs).
+pipeline for darwin-arm64, win32-x64/arm64 (+ universal bundle and Store
+bundle), and Termux. There is no Intel macOS (darwin-x64) build. The linux-x64/arm64 groups are **disabled** (dummy jobs).
 
 | Mode | How it starts | Key inputs | Publishes |
 |---|---|---|---|

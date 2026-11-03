@@ -708,6 +708,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
     is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
     interrupt) withdraws the request with ``request.cancel``."""
+    from tui_gateway import server_requests
     from tools import approval as _approval
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
@@ -728,7 +729,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
                                            request_id=request_id or None)
 
-    settle = _server_requests.send_async("approval", sid, payload, on_result)
+    settle = server_requests.send_async("approval", sid, payload, on_result)
     # The wait can end between the frame going out and the hook attaching (the client answered by RPC, another
     # surface resolved it): withdraw now, or the request stays in ``open_requests`` for every later resume.
     if request_id and not _approval.register_gateway_settle(session_key, request_id, settle):
@@ -987,9 +988,10 @@ def _clarify_block(sid: str, questions: list[dict]) -> dict:
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
     (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
     (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
+    from tui_gateway import server_requests
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
-    result = _server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
                                   qids=[e["qid"] for e in questions])
     return result or {"answers": {}, "outcome": "undelivered"}
 

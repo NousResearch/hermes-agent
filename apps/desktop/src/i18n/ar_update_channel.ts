@@ -14,6 +14,8 @@ export const arUpdateChannel = {
   latestRelease: (v: string) => `أنت على أحدث إصدار مستقر (${v}).`,
   rollbackTitle: (v: string) => `العودة إلى الإصدار المستقر ${v}`,
   rollbackBody: (v: string) => `هذا الإصدار أحدث من الإصدار المستقر ${v}. سيعيد التثبيت Hermes إلى ذلك الإصدار.`,
+  heldBody: (v: string) =>
+    `هذا الإصدار أحدث من الإصدار المستقر ${v}، وجلساتك تستخدم بالفعل بيئة البوابة الخاصة به التي لا يستطيع ${v} فتحها. سيبقى Hermes على هذا الإصدار حتى يصدر إصدار مستقر أحدث.`,
   rollbackAction: (v: string) => `العودة إلى ${v}`,
   allChanges: 'عرض كل التغييرات'
 }

@@ -23,7 +23,8 @@ import type { ReadableAtom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForActiveRoute } from '@/store/active-route-request'
+import { activeGatewayProfileKey } from '@/store/gateway'
 import { $gatewayState } from '@/store/session'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
@@ -48,6 +49,8 @@ export interface PluginCatalogEntry {
   subdir?: string
   /** The description's first sentence: what the plugin does, in one line. */
   summary?: string
+  /** official / verified / community; badges the install dialog. */
+  tier?: string
 }
 
 export type PluginCatalogLookupError = 'invalid_name' | 'unavailable' | 'unknown'
@@ -71,7 +74,7 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
   const row = raw as Record<string, unknown>
 
   // A field that is not a string reads as absent.
-  const text = (field: 'description' | 'name' | 'repo' | 'sha' | 'subdir'): string | undefined => {
+  const text = (field: 'description' | 'name' | 'repo' | 'sha' | 'subdir' | 'tier'): string | undefined => {
     const value = row[field]
 
     return typeof value === 'string' ? value : undefined
@@ -89,7 +92,8 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
     repo,
     sha: text('sha') || undefined,
     subdir: text('subdir') || undefined,
-    summary: firstSentence(text('description') ?? '')
+    summary: firstSentence(text('description') ?? ''),
+    tier: text('tier') || undefined
   }
 }
 
@@ -99,7 +103,7 @@ export interface CatalogLookupReply {
   status?: string
 }
 
-/** The lookup RPC for one name, as `requestGatewayForProfile` sends it for the active profile. */
+/** The lookup RPC for one name, as `requestGatewayForActiveRoute` sends it for the active route. */
 export type CatalogRequest = (
   method: 'plugins.catalog.lookup',
   params: { name: string }
@@ -140,12 +144,12 @@ export function sendWhenGatewayOpen<T>(
   return withTimeout(opened, timeoutMs, 'Hermes backend did not connect', () => stop()).then(send)
 }
 
-// The route lookup inside requestGatewayForProfile has no deadline of its own, so the
+// The route lookup inside requestGatewayForActiveRoute has no deadline of its own, so the
 // whole call is bounded here, not just the RPC.
 const activeProfileRequest: CatalogRequest = (method, params) =>
   sendWhenGatewayOpen(() =>
     withTimeout(
-      requestGatewayForProfile<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS),
+      requestGatewayForActiveRoute<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS),
       LOOKUP_TIMEOUT_MS,
       `request timed out: ${method}`
     )

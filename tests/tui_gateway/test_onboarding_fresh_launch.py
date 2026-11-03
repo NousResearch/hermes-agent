@@ -30,7 +30,7 @@ def root(tmp_path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def client(root, monkeypatch) -> list:
+def client(root, monkeypatch):
     """session.resume and prompt.submit as a recorder; a submit stores its user turn, as the real turn does."""
     calls = []
 
@@ -45,7 +45,9 @@ def client(root, monkeypatch) -> list:
 
     monkeypatch.setitem(server._methods, "session.resume", resume)
     monkeypatch.setitem(server._methods, "prompt.submit", submit)
-    return calls
+    from hermes_cli.process_identity import serving_local_desktop
+    with serving_local_desktop(True):  # the local Desktop's requests: only it starts a first run
+        yield calls
 
 
 @pytest.fixture

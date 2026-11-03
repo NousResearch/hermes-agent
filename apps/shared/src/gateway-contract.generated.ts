@@ -1642,12 +1642,16 @@ export interface RoomDriverStatus {
   pending_actions: Record<string, unknown>[]
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
+  max_rounds?: number | null
   peer_routes: PeerRouteStatus[]
 }
-/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
 export interface RoomMemberActivity {
   member_id: string
   status: string
+  started_at?: number | null
+  tool?: string | null
+  progress_at?: number | null
 }
 export interface PeerRouteStatus {
   room_id: string

@@ -50,6 +50,15 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
             "execution_generation": task["execution_generation"]}
 
 
+def _member_activity(task: Mapping[str, Any]) -> dict[str, Any]:
+    from tui_gateway.hosted_room_member_activity import task_progress
+
+    row = {"member_id": task_member_id(task), "status": str(task["status"])}
+    if task.get("started_at") is not None:
+        row["started_at"] = task["started_at"]
+    return {**row, **task_progress(task["identity"].room_id, task["identity"].task_id)}
+
+
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
     """Read the room owner's config, never the current member's profile scope. A malformed value
     keeps today's defaults (logged) rather than taking every room on this store offline."""
@@ -673,10 +682,9 @@ class HostedRoomService:
             pending_actions.extend(
                 dict(action) for (action_room_id, _member_id), action
                 in self._pending_actions.items() if action_room_id == room_id)
-        # Who is answering right now: clients render per-member working indicators from it.
+        # Who is answering right now, since when, and (when this process runs the turn) in which tool.
         member_activity = [
-            {"member_id": task_member_id(task), "status": str(task["status"])}
-            for task in tasks if task["status"] in _LIVE_STATUSES]
+            _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]
         return {
             "running": runtime["running"], "working": bool(member_activity),
             "blocked": room_id in runtime["blocked_rooms"]
@@ -684,6 +692,7 @@ class HostedRoomService:
             "counts": dict(counts), "pending_actions": pending_actions,
             "member_activity": member_activity,
             "last_error": self._prepare_stalls.last_error(room_id),
+            "max_rounds": self.discussion_limits.max_rounds,
             "peer_routes": self._route_statuses(room_id)}
 
 

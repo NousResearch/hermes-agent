@@ -215,10 +215,15 @@ class PeerRouteStatus(Result):
 
 
 class RoomMemberActivity(Result):
-    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``."""
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``started_at`` is when it
+    began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the
+    process running the turn."""
 
     member_id: str
     status: str
+    started_at: float | None = None
+    tool: str | None = None
+    progress_at: float | None = None
 
 
 class RoomDriverStatus(Result):
@@ -236,6 +241,7 @@ class RoomDriverStatus(Result):
     pending_actions: list[dict[str, JsonValue]]
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     last_error: str | None = None
+    max_rounds: int | None = None
     peer_routes: list[PeerRouteStatus]
 
 

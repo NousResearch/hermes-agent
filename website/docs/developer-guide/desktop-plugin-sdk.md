@@ -978,7 +978,7 @@ ctx.register({
     // Optional: a Hermes OAuth provider id from GET /api/providers/oauth.
     signIn: { provider: 'xai-oauth' },
     // Optional: keys of THIS plugin's manifest config_schema to show inline.
-    settingsKeys: ['voice', 'instructions'],
+    settingsKeys: ['voice', 'language', 'instructions'],
     status: async () => {
       const s = await ctx.rest<{ ready: boolean; reason?: string }>('/status')
       return { available: s.ready, reason: s.reason ?? null }
@@ -1034,6 +1034,10 @@ ctx.register({
 - **`settingsKeys`.** These keys of the plugin's manifest `config_schema` render under the engine
   in Settings ▸ Voice. The form and the save are the same as the plugin's own page under
   Settings ▸ Plugins. Values stay in `plugins.entries.<id>.settings`.
+  Include a `language` key only if the plugin's schema and engine actually implement it;
+  core does not assume all providers share OpenAI's language codes or Auto semantics.
+  Settings presents conversation mode as **Duplex** and the selected engine separately,
+  while persisting the existing single engine id in `voice.voice_chat_mode`.
 
 **Older hosts and fallback.** A host without this area does not export `VOICE_ENGINE_AREA`.
 Feature-detect it and keep your own composer button only as a fallback:

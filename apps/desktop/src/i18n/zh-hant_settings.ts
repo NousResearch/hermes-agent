@@ -90,7 +90,10 @@ export const zhHantSettings = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已審核的固定提交 ${sha}` : '已審核的固定提交'),
         latestCommit: '最新提交',
-        sourceMoved: sha => (sha ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。` : '自你審閱後儲存庫已變更。正在讀取新版本…'),
+        sourceMoved: sha =>
+          sha
+            ? `自你審閱後儲存庫已變更。請先審閱新版本（提交 ${sha}）再安裝。`
+            : '自你審閱後儲存庫已變更。正在讀取新版本…',
         legacyBackendConfirm:
           '此後端比本應用程式舊，無法保證安裝的就是你審閱過的版本：如果儲存庫之後有變更，安裝的會是較新的版本。更新後端即可獲得這項保證。',
         installAnyway: '仍要安裝',
@@ -441,6 +444,7 @@ export const zhHantSettings = {
       }
     },
     fieldLabels: defineFieldCopy({
+      'voice.gptLive.language': 'OpenAI 回覆語言',
       model: '預設模型',
       modelContextLength:
         '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
@@ -620,6 +624,7 @@ export const zhHantSettings = {
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      'voice.gptLive.language': '自動保留現有的多語言行為。所選語言透過工作階段指令引導語音回覆，不變更語音轉寫設定。',
       model: '除非你在輸入框選擇其他模型，否則新聊天會使用此模型。',
       modelContextLength: '保留 0 會使用所選模型偵測到的上下文視窗。',
       fallbackProviders: '預設模型失敗時要嘗試的備用 provider:model 項目。',
@@ -1034,7 +1039,8 @@ export const zhHantSettings = {
         lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
         noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
         modePublic: '我自己的網址',
-        modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
+        modePublicDetail: port =>
+          `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`
       }
     },
     keys: {

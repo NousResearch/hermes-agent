@@ -257,6 +257,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Extension engines (`<plugin>:<engine>`, contrib/voice-engines.ts) are appended live by
   // useVoiceChatModeChoices.
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.gpt_live.language': ['auto', 'en', 'fr', 'de', 'es', 'it', 'pt', 'zh', 'ja', 'ko', 'ar', 'hi', 'ru'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -486,6 +487,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     voiceChatMode: 'Voice Chat Mode',
     gptLive: {
       voice: 'GPT-Live Voice',
+      language: 'OpenAI Response Language',
       instructions: 'GPT-Live Persona'
     }
   },
@@ -676,6 +678,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
+      language:
+        'Auto keeps the existing multilingual behavior. A chosen language guides spoken responses through session instructions; it does not change speech-to-text settings.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
     }
@@ -798,6 +802,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'voice.voice_chat_mode',
       'voice.gpt_live.voice',
+      'voice.gpt_live.language',
       'voice.gpt_live.instructions',
       'tts.provider',
       'stt.enabled',

@@ -14,7 +14,6 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
-
   catalog: {
     add: '新增',
     added: '已新增',
@@ -165,6 +164,8 @@ export const zhHantOverrides = {
   artifactPreview: zhHantArtifacts.artifactPreview,
   sidebar: zhHantChrome.sidebar,
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: '自動',
     ...zhHantChat.composer,
     redirect: '重新導向目前的執行',
     queueLostNote: '重新啟動期間該回合已遺失',

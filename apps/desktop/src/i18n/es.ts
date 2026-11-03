@@ -1152,6 +1152,7 @@ export const esOverrides = {
       }
     },
     fieldLabels: defineFieldCopy({
+      'voice.gptLive.language': 'Idioma de respuesta de OpenAI',
       model: 'Modelo predeterminado',
       modelContextLength: 'Ventana de contexto del modelo principal (forzada)',
       fallbackProviders: 'Modelos de respaldo',
@@ -1328,6 +1329,8 @@ export const esOverrides = {
       }
     }),
     fieldDescriptions: defineFieldCopy({
+      'voice.gptLive.language':
+        'Auto conserva el comportamiento multilingüe existente. El idioma elegido guía las respuestas habladas mediante instrucciones de sesión, sin cambiar la transcripción.',
       model: 'Se usa para chats nuevos salvo que elijas otro modelo en el compositor.',
       modelContextLength:
         'Sustituye la ventana de contexto detectada solo del modelo de chat PRINCIPAL (en tokens). Déjalo en 0 para usar el valor detectado del modelo seleccionado. No afecta a los modelos auxiliares/MoA.',
@@ -2980,7 +2983,8 @@ export const esOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Sin token de bot',
-      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      intro: (platform: string) =>
+        `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
       link: (platform: string) => `Vincular ${platform}`,
       linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
       linkedAccounts: 'Cuentas vinculadas',
@@ -2998,10 +3002,12 @@ export const esOverrides = {
       refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
       qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
       managed: 'Gestionado por Team Gateway',
-      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedNote: (platform: string) =>
+        `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
       managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
       openPortal: 'Vincular cuentas en Nous Portal',
-      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+      noNewAccount: (platform: string) =>
+        `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
     },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
@@ -3738,6 +3744,8 @@ export const esOverrides = {
     markAllRead: 'Marcar todo como leído'
   },
   composer: {
+    voiceModeDuplex: 'Duplex',
+    voiceLanguageAuto: 'Auto',
     message: 'Mensaje',
     wakingProfile: profile => `Despertando ${profile}…`,
     placeholderStarting: 'Iniciando Hermes...',

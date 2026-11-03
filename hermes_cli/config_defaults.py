@@ -1199,17 +1199,14 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
-        # How the Desktop voice conversation is wired:
-        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
-        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
-        #              DELEGATES every real request to Hermes (any model / provider you have
-        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
-        #   <plugin>:<engine> — a live voice engine a Desktop plugin provides (same delegation to
-        #              Hermes; the plugin owns the transport). Falls back to chained when absent.
+        # Desktop engine: chained (STT → Hermes → TTS), gpt-live (OpenAI), or <plugin>:<engine>.
+        # Duplex engines own the transport and delegate real work to Hermes with its full toolset.
+        # OpenAI needs its own key; a missing extension engine falls back to chained.
         "voice_chat_mode": "chained",
         "gpt_live": {
             "model": "gpt-live-1",
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
+            "language": "auto",  # Auto keeps multilingual behavior; tags (fr, pt-BR, ...) guide replies via instructions.
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only

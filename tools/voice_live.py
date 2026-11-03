@@ -140,8 +140,20 @@ def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
 
 
 def live_instructions(live: Optional[dict[str, Any]] = None) -> str:
-    extra = str((live if live is not None else _live_section()).get("instructions") or "").strip()
-    return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
+    live = live if live is not None else _live_section()
+    extra = str(live.get("instructions") or "").strip()
+    instructions = f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
+    language = str(live.get("language") or "auto").strip()
+    if language == "auto":
+        return instructions  # Preserve the existing multilingual behavior and persona byte-for-byte.
+    if len(language) > 35 or not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", language):
+        raise ValueError("GPT-Live language must be auto or a language tag such as fr or pt-BR")
+    # Live controls response language through instructions, not a Realtime/STT language field.
+    return (
+        f"{instructions}\n\nResponse language: {language}. "
+        "Always answer in this language, even when the user speaks another language. "
+        "Keep the delegation policy above unchanged."
+    )
 
 
 def resolve_gpt_live_status() -> dict[str, Any]:

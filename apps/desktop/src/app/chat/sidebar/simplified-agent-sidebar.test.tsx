@@ -3,6 +3,7 @@ import type { ComponentProps } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -24,6 +25,7 @@ import {
   $messagingPlatformTotals,
   $messagingSessions,
   $messagingTruncated,
+  $selectedStoredSessionId,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading
@@ -76,6 +78,9 @@ function mount(overrides: Partial<ComponentProps<typeof SimplifiedAgentSidebar>>
 
 beforeEach(() => {
   setSimplifiedAgentMode(true)
+  $apiRequestScope.set({ connectionId: null, profile: null })
+  $gatewayState.set('idle')
+  $selectedStoredSessionId.set(null)
   $connectionsRegistry.set(null)
   $fleetRoster.set(null)
   $profiles.set([
@@ -102,6 +107,9 @@ afterEach(() => {
   cleanup()
   setSimplifiedAgentMode(false)
   $sessions.set([])
+  $apiRequestScope.set({ connectionId: null, profile: null })
+  $gatewayState.set('idle')
+  $selectedStoredSessionId.set(null)
   $fleetRoster.set(null)
 })
 it('keeps server-pinned chats reachable and resumes the exact session', () => {
@@ -301,4 +309,87 @@ it('shows last activity under agents, keeps profile labels on pins, and refreshe
     cleanup()
     vi.useRealTimers()
   }
+})
+
+it('marks only the active gateway and updates its status when the live connection drops', () => {
+  $apiRequestScope.set({ connectionId: 'a', profile: 'default' })
+  $gatewayState.set('open')
+  $connectionsRegistry.set({
+    version: 1,
+    secureTokenStorage: true,
+    primary: 'a',
+    connections: [
+      {
+        id: 'a',
+        kind: 'remote',
+        label: 'Alpha',
+        url: 'https://user:secret@alpha.example:9137/private?token=hidden',
+        tokenSet: false,
+        tokenPreview: null
+      }
+    ]
+  })
+  $fleetRoster.set({
+    sources: [
+      { connectionId: 'a', kind: 'remote', label: 'Alpha', reachable: true },
+      { connectionId: 'b', kind: 'remote', label: 'Beta', reachable: false }
+    ],
+    agents: [
+      { connectionId: 'a', connectionKind: 'remote', connectionLabel: 'Alpha', profile: 'default', handle: 'a' },
+      { connectionId: 'b', connectionKind: 'remote', connectionLabel: 'Beta', profile: 'default', handle: 'b' }
+    ]
+  })
+  mount()
+  const alpha = screen.getByRole('group', { name: 'Alpha' })
+  const beta = screen.getByRole('group', { name: 'Beta' })
+  expect(within(alpha).getByText('alpha.example:9137')).toBeTruthy()
+  expect(alpha.textContent).not.toContain('secret')
+  expect(alpha.textContent).not.toContain('hidden')
+  expect(alpha.getAttribute('aria-current')).toBe('true')
+  expect(beta.hasAttribute('aria-current')).toBe(false)
+  expect(within(alpha).getByText('Connected')).toBeTruthy()
+  expect(within(beta).getByText('Offline')).toBeTruthy()
+  act(() => $gatewayState.set('closed'))
+  expect(within(alpha).queryByText('Connected')).toBeNull()
+  expect(within(alpha).getByText('Offline')).toBeTruthy()
+  act(() => $gatewayState.set('connecting'))
+  expect(within(alpha).getByText('Connecting')).toBeTruthy()
+  const alphaToggle = within(alpha).getByRole('button', { name: 'Alpha' })
+  const betaToggle = within(beta).getByRole('button', { name: 'Beta' })
+  fireEvent.click(alphaToggle)
+  fireEvent.click(betaToggle)
+  fireEvent.click(screen.getByText('Pinned plan'))
+  expect(alphaToggle.getAttribute('aria-expanded')).toBe('true')
+  expect(betaToggle.getAttribute('aria-expanded')).toBe('false')
+  expect(screen.getAllByText('Pinned plan')).toHaveLength(2)
+})
+
+it('preserves manual agent expansion when selecting chats and only reveals a pinned chat owner', () => {
+  mount()
+  const research = screen.getByRole('button', { name: 'Research', expanded: true })
+  const defaultAgent = screen.getByRole('button', { name: 'default', expanded: true })
+  fireEvent.click(research)
+  fireEvent.click(screen.getByText('Regular chat'))
+  act(() => {
+    $selectedStoredSessionId.set('regular')
+    $activeGatewayProfile.set('default')
+  })
+  expect(research.getAttribute('aria-expanded')).toBe('false')
+  expect(defaultAgent.getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(research)
+  act(() => $selectedStoredSessionId.set('another-chat'))
+  expect(research.getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(research)
+  fireEvent.click(defaultAgent)
+  fireEvent.click(screen.getByText('Pinned plan'))
+  act(() => {
+    $selectedStoredSessionId.set('pinned')
+    $activeGatewayProfile.set('research')
+  })
+  expect(research.getAttribute('aria-expanded')).toBe('true')
+  expect(defaultAgent.getAttribute('aria-expanded')).toBe('false')
+  expect(screen.getAllByText('Pinned plan')).toHaveLength(2)
+  fireEvent.click(research)
+  fireEvent.click(screen.getByText('Pinned plan'))
+  expect(research.getAttribute('aria-expanded')).toBe('true')
 })

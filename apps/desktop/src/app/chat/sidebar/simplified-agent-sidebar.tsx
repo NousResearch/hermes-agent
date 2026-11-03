@@ -35,6 +35,7 @@ import { SimplifiedNewSession } from './simplified-new-session'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
+import { useSimplifiedAgents } from './use-simplified-agents'
 import { useSimplifiedSessionSearch } from './use-simplified-session-search'
 
 import type { ChatSidebar } from './index'
@@ -55,6 +56,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const messagingTruncated = useStore($messagingTruncated)
   const messagingTotals = useStore($messagingPlatformTotals)
   const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [loadingMore, setLoadingMore] = useState(false)
 
   const all = useMemo(
@@ -83,6 +85,8 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const rows = searchRows.filter(
     row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row))
   )
+
+  const agents = useSimplifiedAgents(rows)
 
   const shared = {
     activeSessionId,
@@ -173,16 +177,36 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
               size={12}
             />
           </RowButton>
-          {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} showAgent />}
+          {pinsOpen && (
+            <SimplifiedSessionList
+              {...shared}
+              onResumeSession={(id, row) => {
+                if (row) {
+                  const owner = row.connection_id || agents.owner
+                  setExpanded(current => ({
+                    ...current,
+                    [JSON.stringify(['gateway', owner])]: true,
+                    [JSON.stringify([owner, row.profile || 'default'])]: true
+                  }))
+                }
+
+                props.onResumeSession(id, row)
+              }}
+              sessions={pinned.filter(matches)}
+              showAgent
+            />
+          )}
         </section>
         <SimplifiedAgentList
+          agents={agents}
+          expanded={expanded}
+          onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
           renderSessions={agentSessions => (
             <div className="mb-2 ml-8 mt-0.5 border-l border-(--ui-stroke-secondary) pl-2">
               <SimplifiedSessionList {...shared} sessions={agentSessions} />
             </div>
           )}
           searching={Boolean(query.trim())}
-          sessions={rows}
         />
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
         {!loading && rows.length === 0 && (

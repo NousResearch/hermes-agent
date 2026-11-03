@@ -1555,8 +1555,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
         pks = [str(t[1]).lower() for t in tags if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
         roster = dict.fromkeys(await self._channel_member_pubkeys(channel_id))
         pks = [pk for pk in pks if pk in roster or not roster]  # p-tags are sender-controlled and read before authorization
-        names: set[str] = set()
         budget = _MENTION_LOOKUP_CAP
+        lookups = []
         for pk in dict.fromkeys(pks + list(roster)):
             if pk == self._self_pubkey or not _HEX64_RE.fullmatch(pk):
                 continue
@@ -1564,10 +1564,10 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
                 if budget <= 0:
                     continue  # later pubkeys may still be cached
                 budget -= 1
-            name = await self._profile_display_name(pk)
-            if name.lower().startswith(own) and re.search(r"\w", name[len(own):]):
-                names.add(name.lower())
-        return list(names)
+            lookups.append(pk)
+        # One CLI subprocess per uncached name: run them concurrently so a cold roster doesn't stall intake serially.
+        resolved = await asyncio.gather(*(self._profile_display_name(pk) for pk in lookups))
+        return list({n.lower() for n in resolved if n.lower().startswith(own) and re.search(r"\w", n[len(own):])})
 
     def _is_mentioned(self, content: str, longer_names=()) -> bool:
         """True when text explicitly addresses this agent (npub, hex, or @name)."""

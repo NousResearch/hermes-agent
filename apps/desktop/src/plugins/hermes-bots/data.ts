@@ -373,10 +373,9 @@ async function persistBotMetaPatch(
   name: string,
   route: null | ProfileRoute,
   patch: StoredBotMeta,
-  progress: { reached: boolean }
+  progress: { reached: boolean },
+  rebase?: BotMetaRebase
 ): Promise<null | ProfilesConfigureResult> {
-  const { image: _image, pet: _pet, ...fields } = patch
-
   for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
     const server = await readServerBotMeta(bot, name, route)
     progress.reached = true
@@ -386,6 +385,7 @@ async function persistBotMetaPatch(
     }
 
     const { chat: _chat, ...base } = server.meta
+    const { image: _image, pet: _pet, ...fields } = rebase ? rebase(server.meta) : patch
 
     const params: Record<string, unknown> = {
       name,
@@ -433,20 +433,38 @@ async function settleServerOutcome(
     }
 
     return result && typeof result === 'object' && result.applied && typeof result.applied === 'object' ? 'failed' : 'unsupported'
-  } catch {
-    // A routed row that never answered is offline, not an older gateway.
-    return routed && !progress.reached ? 'unreachable' : 'unsupported'
+  } catch (error) {
+    // The pooled local backend keeps the documented fallback: its local copy is the save.
+    if (!routed || rpcMethodMissing(error)) {
+      return 'unsupported'
+    }
+
+    // A routed row that never answered is offline. One that answered the read
+    // and then dropped or refused the write did not take it: only a missing
+    // method is an older gateway.
+    return progress.reached ? 'failed' : 'unreachable'
   }
 }
 
-export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
-  const { bot, key, name, route } = botOwner(owner)
-  const prevMeta = $botMeta.get()[key] || {}
+/** JSON-RPC method-not-found (`tui_gateway/rpc_dispatch.py`): the backend predates the call.
+ *  The message match covers errors that lost their frame across the IPC bridge. */
+function rpcMethodMissing(error: unknown): boolean {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
 
+  if (typeof code === 'number') {
+    return code === -32601
+  }
+
+  return /method not found|-32601|unknown method|no such method/i.test(error instanceof Error ? error.message : String(error))
+}
+
+/** Rewrite this window's copy of one bot's metadata (and its plugin storage) without touching
+ *  the bot's backend: the local half of a save, and how a caller mirrors a server value it read. */
+function writeLocalBotMeta(key: string, route: null | ProfileRoute, patch: StoredBotMeta): Promise<void> {
   const next = {
     ...$botMeta.get(),
     [key]: {
-      ...prevMeta,
+      ...($botMeta.get()[key] || {}),
       ...patch
     }
   }
@@ -455,18 +473,53 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   $botMeta.set(next)
 
   // Local plugin storage: instant, and the fallback for older gateways.
-  let localPersistence = Promise.resolve()
-
   try {
     const persisted =
       route || botMetaV2Active
         ? commitBotMetaV2(getPluginCtx()?.storage, next)
         : Promise.resolve(getPluginCtx()?.storage?.set?.(BOT_META_V1_KEY, next))
 
-    localPersistence = persisted.catch(() => undefined)
+    return persisted.then(
+      () => undefined,
+      () => undefined
+    )
   } catch {
     /* storage unavailable — look persists for this window only */
+    return Promise.resolve()
   }
+}
+
+/** Mirror a value the bot's own backend reported into this window only. */
+export function setLocalBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<void> {
+  const { key, route } = botOwner(owner)
+
+  return writeLocalBotMeta(key, route, patch)
+}
+
+/** The bot's `hermes-bots` metadata as its own backend holds it now; null when it does not answer. */
+export async function readBotMetaFromServer(owner: RosterRow | string): Promise<null | StoredBotMeta> {
+  const { bot, name, route } = botOwner(owner)
+
+  try {
+    return (await readServerBotMeta(bot, name, route))?.meta ?? null
+  } catch {
+    return null
+  }
+}
+
+/** `saveBotMeta`'s optional server-side form of a patch: computed from the bot's
+ *  metadata as its backend holds it at write time (re-run on every CAS retry), so
+ *  a delta such as "drop this one room" never writes back another edit's stale list. */
+export type BotMetaRebase = (server: StoredBotMeta) => StoredBotMeta
+
+export async function saveBotMeta(
+  owner: RosterRow | string,
+  patch: StoredBotMeta,
+  rebase?: BotMetaRebase
+): Promise<BotMetaSaveResult> {
+  const { bot, key, name, route } = botOwner(owner)
+  const prevMeta = $botMeta.get()[key] || {}
+  const localPersistence = writeLocalBotMeta(key, route, patch)
 
   // Server-side (source of truth when supported): profile.yaml ui_meta,
   // namespaced under this plugin's id — every client machine sees the same
@@ -480,7 +533,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   const progress = { reached: false }
 
   try {
-    serverRequest = persistBotMetaPatch(bot, name, route, patch, progress)
+    serverRequest = persistBotMetaPatch(bot, name, route, patch, progress, rebase)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -535,6 +588,8 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   //   'unreachable' — a routed (other-machine) row whose gateway never
   //                   answered the read: nothing landed there, and its
   //                   unchanged ui_meta wins again on reconnect.
+  // A routed row that answered the read but whose write then failed for any
+  // reason other than a missing method is 'failed', never 'unsupported'.
   const serverOutcome = serverRequest ? await settleServerOutcome(serverRequest, Boolean(route), progress) : 'unsupported'
 
   if (serverRequest) {

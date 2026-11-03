@@ -30,7 +30,16 @@ import {
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
-import { $botMeta, $lastRoster, botHandle, botRosterKey, botSourceStatus, saveBotMeta } from './data'
+import {
+  $botMeta,
+  $lastRoster,
+  botHandle,
+  botRosterKey,
+  botSourceStatus,
+  readBotMetaFromServer,
+  saveBotMeta,
+  setLocalBotMeta
+} from './data'
 import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import {
@@ -112,28 +121,119 @@ function memberSaveFailed(bot: RosterRow, meta: Record<string, BotMeta>): Error 
  *  gateway with no ui_meta contract ('unsupported') holds no seat to restore. */
 const REMOTE_WRITE_MISSED = new Set(['failed', 'unreachable'])
 
+/** An undo its machine confirmed, or one with no server copy to undo (older gateway). */
+const UNDO_LANDED = new Set(['persisted', 'unsupported'])
+
 interface MembershipWrite {
   bot: RosterRow
   enabled: boolean
-  previous: string[]
+}
+
+interface AppliedWrite extends MembershipWrite {
+  outcome: string
+}
+
+/** The tail of every bot's membership edits, keyed by roster identity
+ *  (connection + profile). An edit reads the bot's groups[] and the room's
+ *  seats when it STARTS, so two edits running at once would each restore a
+ *  list the other already changed. */
+const membershipEdits = new Map<string, Promise<unknown>>()
+
+/** Run `edit` once every earlier membership edit touching any of `bots` has settled. */
+function queueMembershipEdit<T>(bots: RosterRow[], edit: () => Promise<T>): Promise<T> {
+  const keys = [...new Set(bots.map(botRosterKey))]
+  const run = Promise.allSettled(keys.map(key => membershipEdits.get(key))).then(edit)
+
+  const settled = run.then(
+    () => undefined,
+    () => undefined
+  )
+
+  for (const key of keys) {
+    membershipEdits.set(key, settled)
+  }
+
+  void settled.then(() => {
+    for (const key of keys) {
+      if (membershipEdits.get(key) === settled) {
+        membershipEdits.delete(key)
+      }
+    }
+  })
+
+  return run
+}
+
+/** Undo each applied write as an inverse delta — drop only the room the write
+ *  added, re-add only the room it removed — against the bot's groups[] as its
+ *  own backend holds them now, never a snapshot taken before the edit. Returns
+ *  the writes whose undo its machine did not confirm. */
+async function undoMembershipWrites(group: string, applied: AppliedWrite[]): Promise<AppliedWrite[]> {
+  const stuck: AppliedWrite[] = []
+
+  for (const write of [...applied].reverse()) {
+    const undo = (meta: BotMeta | null | undefined) => groupMembershipPatch(meta, group, !write.enabled)
+    const result = await saveBotMeta(write.bot, undo(botRosterMeta(write.bot, $botMeta.get())), undo)
+
+    // A write that never reached its machine left nothing there to undo.
+    if (write.outcome !== 'unreachable' && !UNDO_LANDED.has(result.serverOutcome)) {
+      stuck.push(write)
+    }
+  }
+
+  return stuck
+}
+
+/** After undos that did not land, make this window and the room record say what
+ *  those machines actually hold: re-read each one, and when it still does not
+ *  answer, keep its change (it may well have persisted there). */
+async function reconcileStuckWrites(group: string, previous: RosterRow[], stuck: AppliedWrite[]) {
+  let seats = previous
+
+  for (const write of stuck) {
+    const server = await readBotMetaFromServer(write.bot)
+    const groups = server ? botGroups(server) : botGroups(groupMembershipPatch(botRosterMeta(write.bot, $botMeta.get()), group, write.enabled))
+    await setLocalBotMeta(write.bot, { group: groups[0] || null, groups })
+
+    const key = botRosterKey(write.bot)
+    seats = seats.filter(member => botRosterKey(member) !== key)
+
+    if (groups.includes(group)) {
+      seats = [...seats, write.bot]
+    }
+  }
+
+  if ($groupChats.get()[group]) {
+    await commitGroupChatRoster(group, previous, seats)
+  }
 }
 
 /** Write every changed row's groups[], other machines first. When one of them
- *  did not take the change, put back every row already written (and that one's
- *  local copy) and fail, so membership stays the same on every machine. */
-async function writeMembershipChanges(group: string, writes: MembershipWrite[], meta: Record<string, BotMeta>) {
+ *  did not take the change, undo every row already written (and that one's
+ *  local copy) and fail. An undo that did not land is reported as such, with
+ *  the room left showing what that machine holds. */
+async function writeMembershipChanges(group: string, writes: MembershipWrite[], previous: RosterRow[]) {
   const connectionId = host.state.connectionId.get()
   const remote = (write: MembershipWrite) => onOtherMachine(write.bot, connectionId)
   const ordered = [...writes.filter(remote), ...writes.filter(write => !remote(write))]
-  const done: MembershipWrite[] = []
+  const applied: AppliedWrite[] = []
 
   for (const write of ordered) {
-    const result = await saveBotMeta(write.bot, groupMembershipPatch(botRosterMeta(write.bot, meta), group, write.enabled))
-    done.push(write)
+    const patch = groupMembershipPatch(botRosterMeta(write.bot, $botMeta.get()), group, write.enabled)
+    const { serverOutcome } = await saveBotMeta(write.bot, patch)
+    applied.push({ ...write, outcome: serverOutcome })
 
-    if (remote(write) && REMOTE_WRITE_MISSED.has(result.serverOutcome)) {
-      for (const undo of done.reverse()) {
-        await saveBotMeta(undo.bot, { group: undo.previous[0] || null, groups: undo.previous })
+    if (remote(write) && REMOTE_WRITE_MISSED.has(serverOutcome)) {
+      const stuck = await undoMembershipWrites(group, applied)
+      const meta = $botMeta.get()
+
+      if (stuck.length) {
+        await reconcileStuckWrites(group, previous, stuck)
+        const held = stuck[0].bot
+
+        throw new Error(
+          botsText().crossGateway.memberRollbackFailed(connectionName(held), displayName(held, botRosterMeta(held, meta)))
+        )
       }
 
       throw memberSaveFailed(write.bot, meta)
@@ -142,14 +242,17 @@ async function writeMembershipChanges(group: string, writes: MembershipWrite[], 
 }
 
 /** Persist the room-side member picker result: each Bot's `groups[]` metadata
- * (on its owning connection) and the room's stored descriptors together. Fails,
- * with nothing changed, when a removed member's machine is offline or a remote
- * write does not land. */
-export async function setGroupChatMembers(group: string, selected: RosterRow[]) {
+ * (on its owning connection) and the room's stored descriptors together. Fails
+ * when a removed member's machine is offline or a remote write does not land. */
+export function setGroupChatMembers(group: string, selected: RosterRow[]) {
   if (selected.length < 2 || selected.length > GROUP_CHAT_MAX_MEMBERS) {
-    throw new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`)
+    return Promise.reject(new Error(`A group chat needs between 2 and ${GROUP_CHAT_MAX_MEMBERS} bots`))
   }
 
+  return queueMembershipEdit([...$lastRoster.get(), ...selected], () => saveGroupChatMembers(group, selected))
+}
+
+async function saveGroupChatMembers(group: string, selected: RosterRow[]) {
   // A remote and local Bot may share a profile name.  Membership selection is
   // source-qualified everywhere else, so the room picker must use the same
   // identity rather than accidentally seating its local namesake too.
@@ -165,10 +268,9 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
 
   for (const bot of $lastRoster.get()) {
     const enabled = selectedKeys.has(botRosterKey(bot))
-    const current = botGroups(botRosterMeta(bot, meta))
 
-    if (current.includes(group) !== enabled) {
-      writes.push({ bot, enabled, previous: current })
+    if (botGroups(botRosterMeta(bot, meta)).includes(group) !== enabled) {
+      writes.push({ bot, enabled })
     }
   }
 
@@ -179,16 +281,21 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
     throw memberSaveFailed(stranded.bot, meta)
   }
 
-  await writeMembershipChanges(group, writes, meta)
+  await writeMembershipChanges(group, writes, previous)
   await commitGroupChatRoster(group, previous, selected)
 }
 
 /** The per-Bot door ("Manage groups"): toggle ONE Bot's seat in a room. Writes
  *  the Bot's `groups[]` metadata and the room's stored descriptors together —
  *  unchecking a Bot here used to leave its stored descriptor behind, so the
- *  room still gave it a turn (#91329). Like Manage members, it fails with
- *  nothing changed when the Bot's machine is offline or the write misses it. */
-export async function setGroupMembership(bot: RosterRow, group: string, enabled: boolean) {
+ *  room still gave it a turn (#91329). Like Manage members, it fails when the
+ *  Bot's machine is offline or the write misses it. Edits of one Bot run one
+ *  at a time, so a fast second toggle never races the first. */
+export function setGroupMembership(bot: RosterRow, group: string, enabled: boolean) {
+  return queueMembershipEdit([bot], () => saveGroupMembership(bot, group, enabled))
+}
+
+async function saveGroupMembership(bot: RosterRow, group: string, enabled: boolean) {
   const meta = $botMeta.get()
   const previous = groupChatMemberBots(group, $lastRoster.get(), meta)
 
@@ -196,7 +303,7 @@ export async function setGroupMembership(bot: RosterRow, group: string, enabled:
     throw memberSaveFailed(bot, meta)
   }
 
-  await writeMembershipChanges(group, [{ bot, enabled, previous: botGroups(botRosterMeta(bot, meta)) }], meta)
+  await writeMembershipChanges(group, [{ bot, enabled }], previous)
 
   if (!$groupChats.get()[group]) {
     // Metadata-only group (never opened as a room): no stored seats to reconcile.

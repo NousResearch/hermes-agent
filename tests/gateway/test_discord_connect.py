@@ -968,11 +968,11 @@ async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
     def _find_library(name):
         probe_started.set()
         # Only a free loop can set loop_ticked while this wait is in progress.
-        loop_free.append(loop_ticked.wait(timeout=1))
+        loop_free.append(loop_ticked.wait(timeout=5))
 
     monkeypatch.setattr("ctypes.util.find_library", _find_library)
     task = asyncio.create_task(adapter.connect())
-    await asyncio.to_thread(probe_started.wait, 1)
+    assert await asyncio.to_thread(probe_started.wait, 5)
     loop_ticked.set()
     assert await task is True
     await adapter.disconnect()

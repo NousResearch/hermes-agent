@@ -164,6 +164,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
         <SearchField
           aria-label={t.sidebar.searchAria}
           containerClassName="mx-0 gap-2.5 px-2 opacity-60 focus-within:opacity-100"
+          loading={search.pending}
           onChange={setQuery}
           placeholder={t.sidebar.searchPlaceholder}
           value={query}
@@ -205,7 +206,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
         </div>
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
         {query.trim() && search.pending && (
-          <p className="px-2 py-3 text-xs text-(--ui-text-tertiary)" role="status">
+          <p className="sr-only" role="status">
             {t.common.loading}
           </p>
         )}

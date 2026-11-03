@@ -17,7 +17,7 @@ export function SimplifiedPinnedSessions(props: ComponentProps<typeof Simplified
   return (
     <section
       aria-label={t.sidebar.pinned}
-      className={pinsOpen && props.sessions.length ? 'flex min-h-17 flex-col shrink' : 'flex shrink-0 flex-col'}
+      className={pinsOpen ? 'flex min-h-17 flex-[1_1_0%] flex-col' : 'flex shrink-0 flex-col'}
     >
       <RowButton
         aria-expanded={pinsOpen}

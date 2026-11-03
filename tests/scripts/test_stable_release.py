@@ -349,6 +349,9 @@ def https_origin(tmp_path, monkeypatch):
     base = f"https://127.0.0.1:{server.server_port}"
     server.base, server.opener = base, opener
     monkeypatch.setenv('SSL_CERT_FILE', str(cert_file))
+    # urlopen() caches its default opener, SSL context included, on first use; each
+    # origin has its own certificate, so a later test must not inherit an earlier CA.
+    monkeypatch.setattr(urllib.request, "_opener", None)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

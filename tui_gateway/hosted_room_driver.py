@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+
+logger = logging.getLogger(__name__)
 
 _CANCEL_ROUTE_RETRIES = 8
 _STOP_ACK_STATUSES = {"cancelled", "interrupted"}
@@ -248,9 +251,14 @@ class HostedRoomRuntime:
             "cancel kept losing races with task transitions "
             f"(last observed state '{final['status']}')")
 
-    def retry_indeterminate(self, identity: state.TaskIdentity) -> dict[str, Any]:
+    def retry_indeterminate(
+        self, identity: state.TaskIdentity, *, execution_generation: int | None = None) -> dict[str, Any]:
         """Explicitly retry one uncertain attempt under the current room lease."""
         task = state.get_task(self.db_path, identity)
+        # The write below fences on this re-read generation, so pinning it to the
+        # caller's selected attempt keeps a stale Retry off a newer attempt.
+        if execution_generation not in (None, task["execution_generation"]):
+            raise state.StaleTaskError("task attempt changed before retry")
         if task["status"] not in {"indeterminate", "deferred"}:
             raise state.InvalidTaskTransitionError(f"cannot retry task in state '{task['status']}'")
         binding = self._binding_for_room(identity.room_id)
@@ -589,10 +597,12 @@ class HostedRoomRuntime:
     ) -> None:
         profile, submit_attempted = task["payload"]["target_profile"], False
         attachments = task["payload"].get("attachments")
-        transport = self._transport_for(binding, task)
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
+            # Inside the try: a member whose destination is gone (an unserved bot) fails its own
+            # turn before submit instead of leaving the task running and the room wedged.
+            transport = self._transport_for(binding, task)
             if attachments and not getattr(transport, "accepts_attachments", False):
                 # A route that cannot carry the files would answer without them, and a
                 # retry cannot change the route: settle a proven failure before submit.
@@ -623,7 +633,14 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            # Exceptions may contain prompt text or credentials. Persist only a fixed
+            # reason, not the free-form messages retained in the in-memory status.
+            reason = 'request_too_large' if getattr(exc, 'reason', None) == 'request_too_large' else 'attempt_failed'
+            logger.warning('hosted room task %s: %s', attempt.identity.task_id, reason)
+            if getattr(exc, "refused_before_submit", False):
+                # File preparation refused work that never started; no retry can change it.
+                self._settle_failure_if_current(attempt, exc)
+            elif submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

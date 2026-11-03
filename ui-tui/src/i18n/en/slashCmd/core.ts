@@ -147,6 +147,12 @@ export const slashCmdCoreEn = {
     },
     retry: {
       nothing: 'nothing to retry'
+    },
+    // A refused /undo or /retry: main's busy text (tui_gateway/user_messages.py::busy_message).
+    busy: {
+      replying: (command: string) =>
+        `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
+      compressing: (command: string) => `session busy — a /compress is running; run /${command} when it finishes.`
     }
   },
   debug: {

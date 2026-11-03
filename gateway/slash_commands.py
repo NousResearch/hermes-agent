@@ -73,8 +73,10 @@ output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 env = dict(os.environ, PYTHONUNBUFFERED="1")
 with open(output_path, "wb") as f:
     rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
+# Temp + replace: the gateway watcher polls the exit code and reads an empty file as failure.
+with open(exit_code_path + ".tmp", "w", encoding="utf-8") as f:
     f.write(str(rc))
+os.replace(exit_code_path + ".tmp", exit_code_path)
 """.strip()
 
 
@@ -137,6 +139,7 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
              sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+            # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
     hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
@@ -145,11 +148,14 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
-        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
+        # Temp + mv: the gateway watcher polls the exit code and reads an empty file as failure.
+        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path) + '.tmp')}"
+        f" && mv -f {shlex.quote(str(exit_code_path) + '.tmp')} {shlex.quote(str(exit_code_path))}")
     # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
     argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
+    # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
     subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
@@ -226,11 +232,15 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
-    def _checkpoint_manager(self):
-        """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
+    def _checkpoint_manager(self, source=None):
+        """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from gateway.session_authorities import active_authority
+        from gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
-        cp = _checkpoint_agent_kwargs(_load_gateway_config())
+        policy = policy_for_source(self, source) if source is not None else None
+        cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
+                                      else _load_gateway_config())
         if not cp["checkpoints_enabled"]:
             return None
         # AIAgent kwargs are ``checkpoint_<field>``; CheckpointManager takes the bare field names.
@@ -432,13 +442,16 @@ class GatewaySlashCommandsMixin(
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
-        agent = self._running_agents.get(session_key)
+        # A turn the app started while the chat was elsewhere still runs on its own key (/resume).
+        from gateway.session_detached import chat_running_key
+        run_key = chat_running_key(self, session_key, session_entry)
+        agent = self._running_agents.get(run_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
-            await _stop(session_key, "stop_command_pending")
-            logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
+            await _stop(run_key, "stop_command_pending")
+            logger.info("STOP (pending) for session %s — sentinel cleared", run_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:  # force-clean the session lock so a truly hung agent doesn't keep it forever
-            await _stop(session_key, "stop_command_handler")
+            await _stop(run_key, "stop_command_handler")
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No run under the caller's own key: a live turn in THIS chat may still carry a differently
@@ -587,6 +600,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_autoprune_command(self, event: MessageEvent) -> str:
+        """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
+        from hermes_cli.prune_advisor import answered
+        reply = _execute("autoprune", args=event.get_command_args()).text
+        if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
+            from gateway.run_housekeeping_disk import clear_local_auto_prune_notice
+            clear_local_auto_prune_notice(self, event.source)
+        return reply
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text
@@ -672,6 +694,8 @@ class GatewaySlashCommandsMixin(
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
             self._save_voice_modes()
+            from gateway.session_config import local_voice_transition
+            local_voice_transition(event.source, mode)
             if not adapter:
                 return
             if mode == "off":
@@ -714,7 +738,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
-        mgr = self._checkpoint_manager()
+        mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
         cwd = self._terminal_cwd()
@@ -765,7 +789,7 @@ class GatewaySlashCommandsMixin(
         cwd = self._terminal_cwd()
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
-            mgr = self._checkpoint_manager()
+            mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
@@ -1038,7 +1062,12 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
+            # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
+            # surface reads it (gateway.display_config.local_display_config), so the setting holds
+            # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
+            leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
+                    else ("display",)) + ("runtime_footer", "enabled")
+            _write_raw_config_leaf(config_path, leaf, new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
@@ -1249,6 +1278,22 @@ class GatewaySlashCommandsMixin(
                                       _capture_dump, _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
+
+        wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
+        if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
+            # From a chat the report can't stay on the machine; `/debug local` must never fall
+            # through to the public paste. Bare `/debug` is the upload form.
+            return t("gateway.debug.local_refused")
+        if wants_local:
+            # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
+            # return the redacted report for the client to show, with no network call at all (not
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
+            from hermes_cli.debug import collect_share_bundle
+
+            def _collect_local():
+                return collect_share_bundle(log_lines=200)["report"]
+
+            return await self._run_in_executor_with_context(_collect_local)
 
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()

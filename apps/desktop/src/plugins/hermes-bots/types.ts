@@ -104,6 +104,10 @@ export interface RosterRow {
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string
+  /** A default row whose source also has a real (pre-reservation) `hermes`
+   *  profile: that profile keeps @hermes and this row answers to @default.
+   *  Set by `claimDefaultHandles`. */
+  hermesHandleTaken?: boolean
   has_avatar?: boolean
   /** The connection's backend identity (/api/status `install_id`) when the
    *  roster source has seen it — stable across Desktops, unlike `connectionId`
@@ -120,6 +124,9 @@ export interface RosterRow {
   sourceReachable?: boolean | null
   sourceScoped?: boolean
   targetProfile?: string
+  /** Its source lists this profile but does not serve it (the Webapp's gateway
+   *  lists every installed profile and reaches only those it serves). */
+  unserved?: boolean
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
@@ -143,6 +150,7 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'hermesHandleTaken'
   | 'installId'
   | 'name'
   | 'previous_names'

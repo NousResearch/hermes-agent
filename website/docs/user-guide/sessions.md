@@ -224,6 +224,8 @@ hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 
 A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
 
+Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
+
 ### Filtering Sessions by Workspace
 
 `hermes sessions list` accepts `--workspace <needle>` to show only sessions whose workspace key (git repo root, else cwd) matches — by path substring or exact directory basename:
@@ -658,6 +660,15 @@ hermes sessions archive --title "dry run" --dry-run
 hermes sessions archive --title "dry run" --yes
 ```
 
+Archive matches ended sessions by default. Desktop and other gateway-owned
+local sessions are never "ended", so the command tells you how many matching
+sessions it skipped as still open; add `--include-open` to archive them too
+(`prune` never deletes open sessions):
+
+```bash
+hermes sessions archive --title "Review Hermes" --include-open --yes
+```
+
 At least one filter is required — a bare `hermes sessions archive` refuses to
 archive your entire history. A compacted conversation is archived as a unit
 through its live tip: an old compression segment never matches on its own age,
@@ -689,6 +700,47 @@ Database size: 12.4 MB
 ```
 
 For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
+
+### Refresh Prompts After a Profile Update
+
+A continuing session sends the same system prompt on every turn, the bytes it
+built on its first turn. Keeping those bytes fixed is what lets the provider
+reuse its prompt cache across a long conversation. The side effect: changes to
+`SOUL.md`, installed or edited skills, or project context files (`AGENTS.md`
+and friends) do not reach a session that is already running. A gateway
+restart does not change that, because the gateway restores each session's
+stored prompt. Until now the only way in was `/new`, which also drops the
+conversation.
+
+After updating a profile's prompt sources, ask its sessions to adopt them:
+
+```bash
+# Every session in the active profile (add -p <profile> for another one)
+hermes sessions refresh-prompts
+
+# One session (id or unique prefix)
+hermes sessions refresh-prompts --session SESSION_ID
+```
+
+The command records a refresh request in the profile's `state.db` and prints
+how many sessions hold a stored prompt. On each session's next turn, Hermes
+rebuilds the system prompt from the current sources and then sends the
+message. The conversation history, the session id and the session's tool list
+stay as they were. The rebuilt prompt is saved, so every later turn reuses it
+byte for byte.
+
+- **Cost:** each refreshed session pays one prompt-cache miss, on the turn
+  that rebuilds. Later turns are cached again.
+- **No restart needed:** the request is read at the start of every turn, by
+  agents the gateway keeps in memory and by agents it restores from the
+  database. It also survives restarts. Run it once the new files are in
+  place: an update script can call it before or after replacing the gateway.
+- **What gets rebuilt:** the whole system prompt goes through the normal
+  builder, so memory and `USER.md` blocks also pick up their latest saved
+  state on that turn. Tool definitions do not change. A session started after
+  the request already has the new prompt and does not rebuild again.
+- **Without the command** nothing changes: sessions keep replaying their
+  stored prompt as before.
 
 ### Repair Stranded Gateway Sessions
 
@@ -740,14 +792,14 @@ live session. After the root fix in PR #122825 is installed, use
 `hermes sessions repair-prompts` to find rows that were already degraded.
 
 The scan is conservative: it only proposes a repair when the stored prompt is
-missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+missing the `skill_manage` guidance line **and** the persisted `tools[]` pin
 contains `skill_manage` (which always emits that guidance). Rows with no
 readable pin, or with a `memory`-only pin (which is also a legitimate
 `toolsets: [memory]` setup), are reported as **unverifiable** and are not
 changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
 memory-only row also becomes repairable on its own: once the session is resumed, its
 `tools[]` pin re-pins the full tool surface, after which a scan sees
-`skill_manage` without the Skill Safety guidance and clears it.
+`skill_manage` without that guidance line and clears it.
 
 ```bash
 # Report verified candidates and unverifiable rows; writes nothing
@@ -1140,24 +1192,25 @@ Key tables in `state.db`:
 
 - Gateway conversations persist across inactivity; use `/new` or `/reset` for an explicit boundary
 - Before reset, the agent saves memories and skills from the expiring session
-- Auto-pruning (**on by default** since #54189): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- Auto-pruning (**off by default**; opt in): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- **Low-disk prompt.** While your `config.yaml` has no `sessions.auto_prune` key, Hermes checks the disk holding `state.db` at session start (two filesystem calls, no measurable cost). When that disk is low (under 2 GB free, or under 10% free with less than 20 GB left) it asks once: the classic CLI asks at startup (the first low-disk launch only measures, in the background, and the question appears from the next launch on, so startup never waits on the database), the TUI and Desktop show a notice, and a gateway posts the question to its home channel. The prompt estimates how much history a prune would delete (weighted by stored bytes, so many small old messages don't overstate it) and says plainly when pruning will *not* fix the disk (no session older than `retention_days`, or the history is a small share of the full disk). Deleted history frees space inside `state.db`; the automatic `VACUUM` below rarely triggers after a single prune, so run `hermes sessions optimize` to give the space back to the disk. Answer with `/autoprune on`, `/autoprune off` (keep everything; never asked again) or `/autoprune later` (reminded in a week); `/autoprune` alone shows the current state
 - `sessions.retention_days` must be a whole number of days `>= 0`. A negative value (or a missing one) is rejected: startup maintenance logs a warning naming the allowed range and skips the sweep instead of treating the future cutoff as "everything" — `sessions.auto_prune: false` is the switch that disables pruning
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
-Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. If you would rather keep every ended session forever (the pre-#54189 behavior), turn it off in `~/.hermes/config.yaml`:
+Without pruning, `state.db` grows without bound — multi-GB files within weeks were reported on gateway + cron installs. To bound it, turn it on in `~/.hermes/config.yaml` (or answer `/autoprune on`):
 
 ```yaml
 sessions:
-  auto_prune: false         # default is true — set false to keep all history
+  auto_prune: true          # default is false — true deletes ended sessions past retention_days
   retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
   min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 
-Existing installs that already set any of these keys explicitly keep their
-values; only unset keys pick up the new defaults.
+Installs that set any of these keys explicitly keep their values; only unset
+keys follow the defaults.
 
 Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
@@ -1181,6 +1234,20 @@ deleted by a *later* pass after a further full retention window. Messaging
 platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
 sessions, and sessions with a live turn or compression in progress are
 never closed by this sweep.
+
+**Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
+viewer disappeared without closing it (a killed terminal, a dropped connection,
+or a gateway stop or restart while it was open) is ended by the gateway
+`sessions.orphan_end_grace_s` seconds later (default `300`; `0` never ends it),
+`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart, no
+sooner than 6 hours after its last activity, since an idle classic CLI only
+reconnects when you next use it). While `orphan_end_grace_s` is unset, the
+legacy `dashboard.ws_orphan_reap_grace_s: 0` turns this off, and
+`dashboard.startup_orphan_sweep: false` turns off the after-restart end. A turn
+still running keeps running, and the session ends once it settles; one paused on
+an interrupted turn stays open until you Discard it. A viewer that reconnects
+within the grace keeps the session open. Ending is non-destructive: the session
+stays resumable, and its next message reopens it on the same id.
 
 ### Oversized-Transcript Guards
 
@@ -1232,5 +1299,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-Auto-prune is **on by default**: ended sessions that have been inactive for `sessions.retention_days` (default 90) are removed at startup, and active sessions are never touched (see [Automatic Cleanup](#automatic-cleanup) above). Session history powers `session_search` recall across past conversations, so if you want to keep every ended session forever, set `sessions.auto_prune: false` in `config.yaml`, or raise `retention_days`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
+Auto-prune is **off by default**, and Hermes asks you once when the disk holding `state.db` runs low (see [Automatic Cleanup](#automatic-cleanup) above). When on, ended sessions inactive for `sessions.retention_days` (default 90) are removed at startup and active sessions are never touched. Session history powers `session_search` recall across past conversations, so the choice is yours: `/autoprune on|off`, or `sessions.auto_prune` in `config.yaml`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
 :::

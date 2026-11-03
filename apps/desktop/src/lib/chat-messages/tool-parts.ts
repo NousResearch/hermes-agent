@@ -412,6 +412,10 @@ export interface SettledClarifyProjection {
   streamId: string | null
 }
 
+/** A tool call that neither returned nor was sealed: it is still running. */
+export const hasUnresolvedToolCall = (message: ChatMessage) =>
+  message.parts.some(part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined)
+
 /**
  * Find the message that owns a tool call, by its stable call id, anywhere in
  * the transcript — not just in the currently-streaming bubble.
@@ -619,7 +623,46 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  return restorePendingBlockingToolCall(messages, { name: 'clarify', ...payload }, occurredAt)
+  const { at, ...projection } = rearmBlockingToolCall(messages, { name: 'clarify', ...payload }, occurredAt)
+  const requestId = toolId(payload)
+
+  return at && requestId ? { ...projection, messages: bindClarifyRow(projection.messages, at, requestId) } : projection
+}
+
+/**
+ * Tie the live clarify request to the one row the re-arm picked: that row carries the request id, every
+ * other open clarify row `''`, so `ClarifyToolLive` renders the request on that row only. Question text
+ * cannot decide this: an earlier call left without its completion, or a duplicated copy of this one, can
+ * ask the same question. A row already tied to another request keeps that id.
+ */
+function bindClarifyRow(messages: ChatMessage[], at: PendingClarifyLocation, requestId: string): ChatMessage[] {
+  return messages.map((message, messageIndex) => {
+    let changed = false
+
+    const parts = message.parts.map((part, partIndex) => {
+      if (part.type !== 'tool-call' || !QUESTION_CARD_TOOLS.has(part.toolName) || part.result !== undefined) {
+        return part
+      }
+
+      const owner = messageIndex === at.messageIndex && partIndex === at.partIndex
+
+      const clarifyRequestId = owner
+        ? requestId
+        : part.clarifyRequestId === undefined || part.clarifyRequestId === requestId
+          ? ''
+          : part.clarifyRequestId
+
+      if (part.clarifyRequestId === clarifyRequestId) {
+        return part
+      }
+
+      changed = true
+
+      return { ...part, clarifyRequestId }
+    })
+
+    return changed ? { ...message, parts } : message
+  })
 }
 
 /** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
@@ -629,6 +672,17 @@ export function restorePendingBlockingToolCall(
   clarifyPayload: GatewayEventPayload & { name: string },
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
+  const { at: _at, ...projection } = rearmBlockingToolCall(messages, clarifyPayload, occurredAt)
+
+  return projection
+}
+
+/** `restorePendingBlockingToolCall`, plus where the re-armed or appended part sits. */
+function rearmBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt: number
+): PendingClarifyProjection & { at: null | PendingClarifyLocation } {
   const location = findPendingClarifyLocation(messages, clarifyPayload, new Set([clarifyPayload.name]))
 
   if (location) {
@@ -636,7 +690,7 @@ export function restorePendingBlockingToolCall(
     const part = message.parts[location.partIndex]
 
     if (part.type !== 'tool-call') {
-      return { messages, streamId: message.id }
+      return { at: null, messages, streamId: message.id }
     }
 
     // A correlated row that settle sealed (stop, lost completion) is live
@@ -657,7 +711,7 @@ export function restorePendingBlockingToolCall(
     const next = [...messages]
     next[location.messageIndex] = { ...message, parts, pending: true }
 
-    return { messages: next, streamId: message.id }
+    return { at: location, messages: next, streamId: message.id }
   }
 
   const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt)
@@ -666,18 +720,16 @@ export function restorePendingBlockingToolCall(
 
   if (tail?.role === 'assistant') {
     const next = [...messages]
-    next[tailIndex] = {
-      ...tail,
-      parts: [...completeOpenStreamParts(tail.parts, occurredAt), ...parts],
-      pending: true
-    }
+    const tailParts = [...completeOpenStreamParts(tail.parts, occurredAt), ...parts]
+    next[tailIndex] = { ...tail, parts: tailParts, pending: true }
 
-    return { messages: next, streamId: tail.id }
+    return { at: { messageIndex: tailIndex, partIndex: tailParts.length - 1 }, messages: next, streamId: tail.id }
   }
 
   const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
 
   return {
+    at: { messageIndex: messages.length, partIndex: 0 },
     messages: [
       ...messages,
       {
@@ -915,6 +967,49 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     toolResultMetadata: storedToolResultMetadata(toolMessage),
     isError: false
   }
+}
+
+/**
+ * Merge an activation page's stream row (`earlier`) with the live store's copy
+ * of that turn (`later`) so each tool call appears once. A call keeps its place
+ * in `earlier`, so text and reasoning that followed it there still follow it,
+ * and the live copy's fields win unless only the page's copy carries a result.
+ * Two parts are one call when tool name and id match and either their args
+ * match or neither has finished: ids repeat across calls (llama.cpp sends one
+ * constant id), and a finished call must not replace a running call, or an
+ * answered clarify an open one, that shares its id. A re-delivered
+ * `open_requests` marks the cached row changed, and a raw concat rendered the
+ * same call twice.
+ */
+export function concatPartsByToolCall(earlier: ChatMessagePart[], later: ChatMessagePart[]): ChatMessagePart[] {
+  const hasResult = (part: ChatMessagePart) => part.type === 'tool-call' && part.result !== undefined
+
+  const argsOf = (part: ChatMessagePart) =>
+    part.type === 'tool-call' ? (part.argsText ?? JSON.stringify(part.args ?? {})) : ''
+
+  const sameCall = (a: ChatMessagePart, b: ChatMessagePart) =>
+    a.type === 'tool-call' &&
+    b.type === 'tool-call' &&
+    Boolean(a.toolCallId) &&
+    a.toolCallId === b.toolCallId &&
+    a.toolName === b.toolName &&
+    (argsOf(a) === argsOf(b) || (!hasResult(a) && !hasResult(b)))
+
+  const placed = new Set<ChatMessagePart>()
+
+  const merged = earlier.map(part => {
+    const live = later.find(candidate => !placed.has(candidate) && sameCall(part, candidate))
+
+    if (!live) {
+      return part
+    }
+
+    placed.add(live)
+
+    return hasResult(part) && !hasResult(live) ? part : live
+  })
+
+  return [...merged, ...later.filter(part => !placed.has(part))]
 }
 
 export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {

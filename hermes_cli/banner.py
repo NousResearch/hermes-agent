@@ -128,8 +128,8 @@ def get_available_skills() -> dict[str, list[str]]:
     ``prefetch_banner_data()`` pays it off-thread. A failed scan yields ``{}`` and is not cached.
     """
     def _scan():
-        from tools.skills_tool import _find_all_skills
-        return _find_all_skills()  # already filtered
+        from tools.skills_tool import find_all_skills
+        return find_all_skills()  # already filtered
 
     def _compute():
         all_skills = _quiet(_scan)

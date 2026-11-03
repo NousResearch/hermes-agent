@@ -70,3 +70,28 @@ async def test_unknown_managed_execution_releases_all_observers_without_false_se
             await waiter
     assert owner.sessions['s'].event_stream.execution == {}
     assert [get_session_admission(owner.db, admission_id=row['admission_id'])['status'] for row in rows] == ['unknown', 'queued']
+
+
+@pytest.mark.asyncio
+async def test_a_lost_execution_drops_its_deferred_reset(owner, monkeypatch):
+    """LC-23: an overflowing LOCAL turn hands its compression-exhaustion reset to the drain. When
+    that execution is then lost (``ManagedExecutionUnknown``) it is never replayed, so its reset
+    must not survive it and fire, with a stale session entry, after the next settled turn."""
+    from gateway.session_managed_worker import ManagedExecutionUnknown
+    ref = session(owner)
+    admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
+                        request_id='lost', payload={'text': 'lost'})
+    fired = []
+
+    async def stale_reset():
+        fired.append(True)
+
+    async def execute(authority, ref, row):
+        authority.deferred_resets['route'] = stale_reset
+        authority.epoch = begin_runtime_epoch(authority.db, instance_id='recovery')
+        recover_session_inputs(authority.db, epoch=authority.epoch)
+        raise ManagedExecutionUnknown('worker lost')
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    await owner._drain(ref)
+    assert 'route' not in owner.deferred_resets
+    assert fired == [], 'an unknown execution is never replayed: its reset is dropped, not run'

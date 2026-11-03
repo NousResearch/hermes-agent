@@ -37,6 +37,7 @@ hermes skills uninstall <skill-name>
 | [**dynamic-workflow**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow.md) | Plan-in-code fan-outs, adversarial verification, waves. |
 | [**grok**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.md) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**honcho**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho.md) | Configure and troubleshoot Honcho memory for Hermes. |
+| [**opencode**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
 
 ## blockchain
@@ -61,7 +62,6 @@ hermes skills uninstall <skill-name>
 | [**anatomy**](../user-guide/skills/optional/creative/creative-anatomy.md) | Explain an idea as an interactive isometric machine figure. |
 | [**archify**](../user-guide/skills/optional/creative/creative-archify.md) | Validated interactive HTML diagrams, upstream-maintained. |
 | [**ascii-art**](../user-guide/skills/optional/creative/creative-ascii-art.md) | ASCII art: pyfiglet, cowsay, boxes, image-to-ascii. |
-| [**audiocraft-audio-generation**](../user-guide/skills/optional/creative/creative-audiocraft-audio-generation.md) | AudioCraft: MusicGen text-to-music, AudioGen text-to-sound. |
 | [**auteur**](../user-guide/skills/optional/creative/creative-auteur.md) | Design and build cinematic, award-level web pages. |
 | [**baoyu-article-illustrator**](../user-guide/skills/optional/creative/creative-baoyu-article-illustrator.md) | Article illustrations: type × style × palette consistency. |
 | [**baoyu-comic**](../user-guide/skills/optional/creative/creative-baoyu-comic.md) | Knowledge comics (知识漫画): educational, biography, tutorial. |
@@ -70,6 +70,7 @@ hermes skills uninstall <skill-name>
 | [**comfyui**](../user-guide/skills/optional/creative/creative-comfyui.md) | Generate images, video, and audio via diffusion workflows. |
 | [**concept-diagrams**](../user-guide/skills/optional/creative/creative-concept-diagrams.md) | Generate flat, minimal educational SVG visuals as HTML. |
 | [**creative-ideation**](../user-guide/skills/optional/creative/creative-creative-ideation.md) | Generate ideas via named methods from creative practice. |
+| [**design-md**](../user-guide/skills/optional/creative/creative-design-md.md) | Author/validate/export Google's DESIGN.md token spec files. |
 | [**draw-your-font**](../user-guide/skills/optional/creative/creative-draw-your-font.md) | Turn a handwriting photo into an installable TTF font. |
 | [**dream-loop**](../user-guide/skills/optional/creative/creative-dream-loop.md) | Build stunning 3D scenes via a concept-art fidelity loop. |
 | [**excalidraw**](../user-guide/skills/optional/creative/creative-excalidraw.md) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). |
@@ -155,11 +156,12 @@ hermes skills uninstall <skill-name>
 | [**mcp-oauth-remote-gateway**](../user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) | Manual OAuth for remote MCP servers on headless gateways. |
 | [**mcporter**](../user-guide/skills/optional/mcp/mcp-mcporter.md) | List, auth, and call MCP servers/tools from the terminal. |
 
-## migration
+## media
 
 | Skill | Description |
 |-------|-------------|
-| [**openclaw-migration**](../user-guide/skills/optional/migration/migration-openclaw-migration.md) | Import an OpenClaw setup (memories, skills) into Hermes. |
+| [**gif-search**](../user-guide/skills/optional/media/media-gif-search.md) | Search/download GIFs from Tenor via curl + jq. |
+| [**songsee**](../user-guide/skills/optional/media/media-songsee.md) | Audio spectrograms/features (mel, chroma, MFCC) via CLI. |
 
 ## mlops
 
@@ -168,39 +170,26 @@ hermes skills uninstall <skill-name>
 | [**accelerate**](../user-guide/skills/optional/mlops/mlops-accelerate.md) | Run PyTorch training across GPUs with minimal changes. |
 | [**axolotl**](../user-guide/skills/optional/mlops/mlops-training-axolotl.md) | Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO). |
 | [**chroma**](../user-guide/skills/optional/mlops/mlops-chroma.md) | Embedding database for RAG and semantic search. |
-| [**clip**](../user-guide/skills/optional/mlops/mlops-clip.md) | Zero-shot image classification and image-text search. |
 | [**dspy**](../user-guide/skills/optional/mlops/mlops-research-dspy.md) | DSPy: declarative LM programs, auto-optimize prompts, RAG. |
 | [**evaluating-llms-harness**](../user-guide/skills/optional/mlops/mlops-evaluation-evaluating-llms-harness.md) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). |
 | [**faiss**](../user-guide/skills/optional/mlops/mlops-faiss.md) | Fast vector similarity search at billion scale. |
 | [**flash-attention**](../user-guide/skills/optional/mlops/mlops-flash-attention.md) | Speed up long-sequence transformer training and inference. |
-| [**guidance**](../user-guide/skills/optional/mlops/mlops-guidance.md) | Constrain LLM output with grammars; guarantee valid JSON. |
-| [**huggingface-hub**](../user-guide/skills/optional/mlops/mlops-models-huggingface-hub.md) | HuggingFace hf CLI: search/download/upload models, datasets. |
-| [**huggingface-tokenizers**](../user-guide/skills/optional/mlops/mlops-huggingface-tokenizers.md) | Fast BPE/WordPiece tokenization and custom vocab training. |
-| [**instructor**](../user-guide/skills/optional/mlops/mlops-instructor.md) | Structured LLM outputs validated with Pydantic. |
 | [**lambda-labs**](../user-guide/skills/optional/mlops/mlops-lambda-labs.md) | On-demand GPU cloud instances for ML training. |
 | [**llama-cpp**](../user-guide/skills/optional/mlops/mlops-inference-llama-cpp.md) | llama.cpp local GGUF inference + HF Hub model discovery. |
-| [**llava**](../user-guide/skills/optional/mlops/mlops-llava.md) | Vision-language chat: VQA, captioning, image dialogue. |
 | [**modal**](../user-guide/skills/optional/mlops/mlops-modal.md) | Serverless GPU cloud for ML jobs and model APIs. |
 | [**nemo-curator**](../user-guide/skills/optional/mlops/mlops-nemo-curator.md) | Curate LLM training data: dedupe, filter, PII redaction. |
 | [**obliteratus**](../user-guide/skills/optional/mlops/mlops-obliteratus.md) | OBLITERATUS: abliterate LLM refusals (diff-in-means). |
-| [**outlines**](../user-guide/skills/optional/mlops/mlops-inference-outlines.md) | Outlines: structured JSON/regex/Pydantic LLM generation. |
 | [**peft**](../user-guide/skills/optional/mlops/mlops-peft.md) | Fine-tune large LLMs with LoRA on limited GPU memory. |
-| [**pinecone**](../user-guide/skills/optional/mlops/mlops-pinecone.md) | Managed vector DB for production RAG and search. |
 | [**pytorch-fsdp**](../user-guide/skills/optional/mlops/mlops-pytorch-fsdp.md) | Fully sharded data-parallel training for large models. |
 | [**pytorch-lightning**](../user-guide/skills/optional/mlops/mlops-pytorch-lightning.md) | Clean training loops with built-in distributed support. |
-| [**qdrant**](../user-guide/skills/optional/mlops/mlops-qdrant.md) | Vector search engine for production RAG systems. |
 | [**saelens**](../user-guide/skills/optional/mlops/mlops-saelens.md) | Train sparse autoencoders to interpret model features. |
 | [**segment-anything-model**](../user-guide/skills/optional/mlops/mlops-models-segment-anything-model.md) | SAM: zero-shot image segmentation via points, boxes, masks. |
 | [**serving-llms-vllm**](../user-guide/skills/optional/mlops/mlops-inference-serving-llms-vllm.md) | vLLM: high-throughput LLM serving, OpenAI API, quantization. |
 | [**simpo**](../user-guide/skills/optional/mlops/mlops-simpo.md) | Reference-free preference alignment, simpler than DPO. |
 | [**slime**](../user-guide/skills/optional/mlops/mlops-slime.md) | RL post-training for LLMs with Megatron and SGLang. |
-| [**stable-diffusion**](../user-guide/skills/optional/mlops/mlops-stable-diffusion.md) | Text-to-image generation, inpainting, and img2img. |
 | [**tensorrt-llm**](../user-guide/skills/optional/mlops/mlops-tensorrt-llm.md) | High-throughput LLM inference on NVIDIA GPUs. |
 | [**torchtitan**](../user-guide/skills/optional/mlops/mlops-torchtitan.md) | Pretrain LLMs at scale with PyTorch 4D parallelism. |
-| [**trl-fine-tuning**](../user-guide/skills/optional/mlops/mlops-training-trl-fine-tuning.md) | TRL: SFT, DPO, GRPO, RLOO reward modeling for LLM RLHF. |
 | [**unsloth**](../user-guide/skills/optional/mlops/mlops-training-unsloth.md) | Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM. |
-| [**weights-and-biases**](../user-guide/skills/optional/mlops/mlops-evaluation-weights-and-biases.md) | W&B: log ML experiments, sweeps, model registry, dashboards. |
-| [**whisper**](../user-guide/skills/optional/mlops/mlops-whisper.md) | Transcribe and translate speech in 99 languages. |
 
 ## payments
 
@@ -214,11 +203,14 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**airtable**](../user-guide/skills/optional/productivity/productivity-airtable.md) | Airtable REST API via curl. Records CRUD, filters, upserts. |
+| [**box**](../user-guide/skills/optional/productivity/productivity-box.md) | Box manages cloud files, sharing, search, and metadata. |
 | [**canvas**](../user-guide/skills/optional/productivity/productivity-canvas.md) | Fetch Canvas LMS courses and assignments via API token. |
 | [**decision-questionnaire**](../user-guide/skills/optional/productivity/productivity-decision-questionnaire.md) | Turn an unanswerable decision into a questionnaire doc. |
 | [**here-now**](../user-guide/skills/optional/productivity/productivity-here-now.md) | Publish sites to &#123;slug&#125;.here.now and store files in Drives. |
 | [**live-dashboard**](../user-guide/skills/optional/productivity/productivity-live-dashboard.md) | Build self-updating dashboards from live sources. |
 | [**memento-flashcards**](../user-guide/skills/optional/productivity/productivity-memento-flashcards.md) | Spaced-repetition flashcards: create, review, quiz, export. |
+| [**notion**](../user-guide/skills/optional/productivity/productivity-notion.md) | Notion API + ntn CLI: pages, databases, markdown, Workers. |
 | [**property-listings**](../user-guide/skills/optional/productivity/productivity-property-listings.md) | Present property and rental listings as desktop cards. |
 | [**shop**](../user-guide/skills/optional/productivity/productivity-shop.md) | Shop catalog search, checkout, order tracking, returns. |
 | [**shopify**](../user-guide/skills/optional/productivity/productivity-shopify.md) | Query Shopify Admin/Storefront GraphQL APIs via curl. |
@@ -236,9 +228,9 @@ hermes skills uninstall <skill-name>
 | [**drug-discovery**](../user-guide/skills/optional/research/research-drug-discovery.md) | Drug discovery: ChEMBL search, drug-likeness, interactions. |
 | [**duckduckgo-search**](../user-guide/skills/optional/research/research-duckduckgo-search.md) | Free keyless web, news, and image search via ddgs. |
 | [**gitnexus-explorer**](../user-guide/skills/optional/research/research-gitnexus-explorer.md) | Serve an interactive codebase knowledge graph web UI. |
+| [**llm-wiki**](../user-guide/skills/optional/research/research-llm-wiki.md) | Karpathy's LLM Wiki: build/query interlinked markdown KB. |
 | [**osint-investigation**](../user-guide/skills/optional/research/research-osint-investigation.md) | Follow the money via public records and sanctions data. |
 | [**parallel-cli**](../user-guide/skills/optional/research/research-parallel-cli.md) | Agent-native web search, deep research, and enrichment. |
-| [**pinecone-research**](../user-guide/skills/optional/research/research-pinecone-research.md) | Agent RAG and long-term memory with Pinecone. |
 | [**qmd**](../user-guide/skills/optional/research/research-qmd.md) | Hybrid local search over notes, docs, and transcripts. |
 | [**research-paper-writing**](../user-guide/skills/optional/research/research-research-paper-writing.md) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
 | [**rss-feeds**](../user-guide/skills/optional/research/research-rss-feeds.md) | Read RSS, Atom, JSON feeds; discover feeds behind a page. |
@@ -253,7 +245,7 @@ hermes skills uninstall <skill-name>
 | [**godmode**](../user-guide/skills/optional/security/security-godmode.md) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. |
 | [**oss-forensics**](../user-guide/skills/optional/security/security-oss-forensics.md) | GitHub supply-chain forensics: recovery, IOCs, reporting. |
 | [**sherlock**](../user-guide/skills/optional/security/security-sherlock.md) | Find accounts for a username across 400+ platforms. |
-| [**unbroker**](../user-guide/skills/optional/security/security-unbroker.md) | Autonomously remove your info from data-broker sites. |
+| [**unbroker**](../user-guide/skills/optional/security/security-unbroker.md) | Remove your info from data-broker sites, by name or phone. |
 | [**web-pentest**](../user-guide/skills/optional/security/security-web-pentest.md) | Authorized web pentest: recon, proof-based exploits, report. |
 
 ## smart-home
@@ -275,7 +267,11 @@ hermes skills uninstall <skill-name>
 | [**ast-grep**](../user-guide/skills/optional/software-development/software-development-ast-grep.md) | AST-aware structural code search and rewrite via ast-grep. |
 | [**code-wiki**](../user-guide/skills/optional/software-development/software-development-code-wiki.md) | Generate wiki docs + Mermaid diagrams for any codebase. |
 | [**grill-me**](../user-guide/skills/optional/software-development/software-development-grill-me.md) | Adversarial plan interview before implementation. |
+| [**hermes-agent-skill-authoring**](../user-guide/skills/optional/software-development/software-development-hermes-agent-skill-authoring.md) | Author in-repo SKILL.md files: frontmatter and structure. |
+| [**inspecting-hermes-desktop-dom**](../user-guide/skills/optional/software-development/software-development-inspecting-hermes-desktop-dom.md) | Read the live Hermes desktop DOM/CSS over CDP. |
+| [**node-inspect-debugger**](../user-guide/skills/optional/software-development/software-development-node-inspect-debugger.md) | Debug Node.js via --inspect + Chrome DevTools Protocol CLI. |
 | [**pr-lens**](../user-guide/skills/optional/software-development/software-development-pr-lens.md) | Draw code changes as animated architecture/data-flow SVGs. |
+| [**python-debugpy**](../user-guide/skills/optional/software-development/software-development-python-debugpy.md) | Debug Python: pdb REPL + debugpy remote (DAP). |
 | [**rest-graphql-debug**](../user-guide/skills/optional/software-development/software-development-rest-graphql-debug.md) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](../user-guide/skills/optional/software-development/software-development-subagent-driven-development.md) | Execute plans via delegate_task subagents (2-stage review). |
 

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -9,6 +10,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
+  queuedSubmissionId,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
   shouldAutoDrain,
@@ -193,7 +195,7 @@ export function useBackgroundQueueDrain({
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
             fromQueue: true,
-            submission_id: liveEntry.id,
+            submission_id: queuedSubmissionId(liveEntry),
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })
@@ -238,6 +240,13 @@ export function useBackgroundQueueDrain({
     const working = [...workingSessionIds]
 
     for (const [sessionKey, entries] of Object.entries(queuedPromptsBySession)) {
+      // A fresh draft key has no session yet: its follow-ups wait for the
+      // creation handoff to re-key them onto the stored id. Draining here
+      // would exhaust the budget and drop them as a gone session.
+      if (isFreshDraftScope(sessionKey)) {
+        continue
+      }
+
       const isSelected =
         Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
 

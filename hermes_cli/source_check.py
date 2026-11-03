@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
 _UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 _UPDATE_CHECK_FAILURE_CACHE_SECONDS = 3600
+_RUNTIME_LOOKUP_SECONDS = 8.0
 
 
 def _quiet(fn, default=None):
@@ -114,8 +115,9 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
-    A token GitHub rejects (401) drops this request to anonymous rather than
-    failing the check on a stale credential.
+    A token GitHub rejects drops this request to anonymous rather than failing the
+    check on a stale credential: 401, or a 403 that is not a spent rate limit (a
+    suspended or restricted account's token, still printed by ``gh auth token``, #134335).
     """
     from hermes_cli.github_api import github_token
 
@@ -123,7 +125,8 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     try:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
-        if token is None or exc.code != 401:
+        spent = exc.headers is not None and exc.headers.get("x-ratelimit-remaining") == "0"
+        if token is None or exc.code not in (401, 403) or spent:
             exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
@@ -288,6 +291,114 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
+def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
+    """Read the tree and at most four schema blobs at once, within one lookup deadline."""
+    from contextvars import copy_context
+    from fnmatch import fnmatchcase
+    from itertools import islice
+    from queue import Empty, Queue
+    from threading import Thread
+
+    from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+
+    deadline = time.monotonic() + _RUNTIME_LOOKUP_SECONDS
+    replies: Queue[Optional[str]] = Queue()
+
+    def launch(url: str, *, api: bool = False) -> None:
+        def read() -> None:
+            replies.put(_quiet(lambda: _request(url) if api else _request_with(url, "*/*", None)))
+
+        # A socket timeout alone does not bound a response that keeps trickling bytes. Daemon
+        # workers let --version return at the deadline without waiting for stalled downloads.
+        Thread(target=copy_context().run, args=(read,), daemon=True).start()
+
+    def receive() -> Optional[str]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Empty
+        return replies.get(timeout=remaining)
+
+    launch(f"https://api.github.com/repos/{repository}/git/trees/{sha}", api=True)
+    try:
+        tree = _quiet(lambda: json.loads(receive() or ""))
+        entries = tree.get("tree") if isinstance(tree, dict) and not tree.get("truncated") else None
+        if not isinstance(entries, list):
+            return None
+        paths = [e["path"] for e in entries if isinstance(e, dict) and e.get("type") == "blob"
+                 and isinstance(e.get("path"), str) and fnmatchcase(e["path"], STATE_MODULES)]
+        if not paths:
+            return None  # not a recognised Hermes tree: no claim either way
+        urls = iter(f"https://raw.githubusercontent.com/{repository}/{sha}/{quote(path)}" for path in paths)
+        pending = 0
+        for url in islice(urls, 4):
+            launch(url)
+            pending += 1
+        while pending:
+            text = receive()
+            if text is None:
+                return None  # an unread module may hold the marker
+            if defines_runtime([text]):
+                return False
+            pending -= 1
+            url = next(urls, None)
+            if url is not None:
+                launch(url)
+                pending += 1
+        return True
+    except Empty:
+        return None
+
+
+def _github_predates_runtime(repository: str, sha: str, cache_file: Path) -> Optional[bool]:
+    """Read an unfetched release without Git writes. Definite verdicts are immutable per SHA;
+    unknown verdicts expire so passive cache hits do not repeatedly contact an unreachable GitHub.
+    Schema blobs use raw.githubusercontent.com rather than spending the anonymous API quota."""
+    known = _read_json(cache_file)
+    known = known if isinstance(known, dict) else {}
+    cached = known.get(sha)
+    if isinstance(cached, bool):
+        return cached
+    now = time.time()
+    retry_at = cached.get("retryAt") if isinstance(cached, dict) else None
+    if isinstance(retry_at, (int, float)) and now < retry_at:
+        return None
+    verdict = _read_runtime_verdict(repository, sha)
+    try:
+        from utils import atomic_json_write
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(cache_file, {**known, sha: verdict if verdict is not None else
+                                      {"retryAt": time.time() + _UPDATE_CHECK_FAILURE_CACHE_SECONDS}})
+    except OSError as exc:
+        logger.debug("Could not cache the release schema verdict: %s", exc)
+    return verdict
+
+
+def _update_refuses(co: _Checkout, target: str, home: Path) -> bool:
+    """The updater's downgrade refusal, asked read-only. An embedded checkout has no git to ask."""
+    if co.embedded:
+        return False
+    from hermes_cli.update_downgrade_guard import would_refuse
+
+    def git(*args: str) -> int:
+        result = _git_run(list(args), cwd=co.root, git=co.git, text=False, timeout=20)
+        return -1 if result is None else result.returncode
+
+    def remote(sha: str) -> Optional[bool]:
+        return _github_predates_runtime(co.repository or OFFICIAL_REPOSITORY, sha,
+                                        home / "source-checks" / "release-runtime.json")
+    return would_refuse(co.root, target, home, git=git, remote=remote)
+
+
+def _hold_refused_release(result: dict, co: _Checkout, home: Path) -> None:
+    """Hold an offered release `hermes update` refuses (it predates the gateway runtime these session
+    stores use). Covers releases off this checkout's history too, which the ancestry-only rollback
+    test cannot see. Apply only after caching the release facts: stores can gain runtime history,
+    or the only ledgered profile can be removed, between checks."""
+    target = result.get("targetSha")
+    if result.get("updateAvailable") and target and _update_refuses(co, target, home):
+        result.update(updateAvailable=False, behind=0, held="downgrade", rollback=False)
+
+
 def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
@@ -437,13 +548,16 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1,
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 3,
                 "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
     if cached is not None:
-        return {**cached, "dirty": co.dirty, "currentBranch": co.current_branch}
+        cached = {**cached, "dirty": co.dirty, "currentBranch": co.current_branch}
+        if cached.get("channel"):
+            _hold_refused_release(cached, co, home)
+        return cached
     result["fetchedAt"] = int(now * 1000)
     source_target = None
     if not _is_full_sha(co.head):
@@ -459,6 +573,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         _check_branch(result, co, selected_branch,
                       heal=(branch_config_path, desktop_config) if heal else None)
     _write_cache(cache_file, identity, now, result)
+    if result.get("channel"):
+        _hold_refused_release(result, co, home)
     return result
 
 

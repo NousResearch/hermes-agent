@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError, type PluginsManageParams } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
@@ -51,8 +52,11 @@ export interface AgentPluginRow {
   catalog_sha?: string
   /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
   catalog_version?: string | null
-  /** Installed SHA differs from the catalog pin — an update is available. */
+  /** An update is available: the catalog pin moved past the installed SHA, or (git installs) the last
+   *  update check found a newer remote commit. */
   update_available?: boolean
+  /** Git installs: what the last update check found to move to (a commit or a feed version). */
+  update_target?: string
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
   /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
@@ -248,6 +252,11 @@ export interface AgentPluginInstallResult {
   ok: boolean
   /** The client stopped waiting; the backend may still finish the install. */
   timedOut?: boolean
+  /** Refused: the source moved off the reviewed commit (`isSourceMovedRefusal`). */
+  sourceMoved?: boolean
+  /** Refused at admission by a backend that predates `inspected_sha`: nothing was installed, and an install
+   *  there cannot be held to the reviewed commit. Only the user may choose to install without it. */
+  inspectedShaUnsupported?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -282,6 +291,48 @@ const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 // giving normal installs time to return their authoritative result.
 const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
+interface InstallReply {
+  ok?: boolean
+  plugin_name?: string
+  warnings?: string[]
+  missing_env?: string[]
+  enabled?: boolean
+  activation?: {
+    live_now?: {
+      mcp_servers?: AgentPluginLiveServer[]
+      skills?: { name: string }[]
+    } | null
+    deferred?: Record<string, string[]>
+  } | null
+  error?: string
+}
+
+/** The message `tui_gateway/contracts/registry.py::validate_params` opens its admission refusal with. */
+const INSPECTED_SHA_ADMISSION_REFUSAL = 'invalid params for plugins.manage: inspected_sha: '
+
+/** A backend predating `inspected_sha` (native Desktop on an older SSH/URL/Cloud runtime) refuses the
+ *  whole install at admission (code 4000, handler never ran). Installing there without the field takes
+ *  whatever the source holds at that moment, so the dialog asks the user first; nothing resends on its
+ *  own. Only that refusal qualifies: the code AND a message that OPENS with the admission prefix. Any
+ *  other error (a 5026 install failure echoing a git server's text included) is an ordinary failure.
+ *  Delete once no supported backend predates the field. */
+function backendPredatesInspectedSha(params: Record<string, unknown>, error: unknown): boolean {
+  return (
+    'inspected_sha' in params &&
+    error instanceof JsonRpcGatewayError &&
+    error.code === 4000 &&
+    error.message.startsWith(INSPECTED_SHA_ADMISSION_REFUSAL)
+  )
+}
+
+/** The backend refused because the source is no longer at the commit the dialog reviewed
+ *  (`tui_gateway/methods_tools.py::_source_moved_data`): read it again, never resend that commit. */
+export function isSourceMovedRefusal(error: unknown): boolean {
+  const data = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined) : undefined
+
+  return data?.reason === 'source_moved'
+}
+
 export async function installAgentPlugin(
   request: GatewayRequest,
   opts: {
@@ -293,40 +344,28 @@ export async function installAgentPlugin(
     catalogName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
+    /** The commit the install dialog inspected: a custom source with no `ref` whose branch moved since is
+     *  refused by the backend, never installed at the new tip. */
+    inspectedSha?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
 ): Promise<AgentPluginInstallResult> {
+  const params = withProfile(
+    {
+      action: 'install',
+      identifier: opts.identifier,
+      force: Boolean(opts.force),
+      enable: opts.enable ?? true,
+      ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+      ...(opts.ref ? { ref: opts.ref } : {}),
+      ...(!opts.ref && opts.inspectedSha ? { inspected_sha: opts.inspectedSha } : {})
+    },
+    opts.profile
+  )
+
   try {
-    const result = await request<{
-      ok?: boolean
-      plugin_name?: string
-      warnings?: string[]
-      missing_env?: string[]
-      enabled?: boolean
-      activation?: {
-        live_now?: {
-          mcp_servers?: AgentPluginLiveServer[]
-          skills?: { name: string }[]
-        } | null
-        deferred?: Record<string, string[]>
-      } | null
-      error?: string
-    }>(
-      'plugins.manage',
-      withProfile(
-        {
-          action: 'install',
-          identifier: opts.identifier,
-          force: Boolean(opts.force),
-          enable: opts.enable ?? true,
-          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
-        },
-        opts.profile
-      ),
-      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
-    )
+    const result = await request<InstallReply>('plugins.manage', params, PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
 
     if (!result?.ok) {
       return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
@@ -354,6 +393,8 @@ export async function installAgentPlugin(
     return {
       ok: false,
       timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      sourceMoved: isSourceMovedRefusal(e),
+      inspectedShaUnsupported: backendPredatesInspectedSha(params, e),
       error: message,
       live: NO_LIVE,
       nextChat: false
@@ -361,25 +402,217 @@ export async function installAgentPlugin(
   }
 }
 
-/** Outcome of `updateAgentPlugin`: `applied` when the re-pin landed, `unchanged`
- *  when already at pin, `consent` when the new pin widens the plugin — the
- *  backend changed nothing and waits for `acceptCapabilities`. */
-export type AgentPluginUpdateOutcome =
-  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+/** What a repository holds, the shape native Desktop's `probePluginRepo` answers. `unavailable`: the
+ *  backend cannot inspect at all (it predates `plugins.manage inspect`), which no retry changes. */
+export interface AgentPluginInspection {
+  ok: boolean
+  agent: boolean
+  desktop: boolean
+  agentName?: string | null
+  desktopName?: string | null
+  warnings: string[]
+  insecure?: boolean
+  /** The commit the backend read; absent when it reported none or not a full SHA. */
+  sha?: string
+  /** Read at the catalog entry's pin, as a catalog install checks it out: `sha` is what that install must be. */
+  catalogPin?: boolean
+  unavailable?: boolean
+  error?: string
+}
 
-/** Re-pin a catalog-installed plugin to the current catalog SHA (backend
- *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. A pin that adds tools / hooks / deps / capabilities / a Desktop half
- *  comes back as `consent` with the delta; the caller confirms and retries with
- *  `acceptCapabilities`. */
+// `_run_action`'s unknown action, and JSON-RPC's unknown method.
+const INSPECT_UNSUPPORTED_CODES = new Set([4017, -32601])
+/** A backend that predates `install_desktop`: it answers the action as unknown (4017). */
+const INSTALL_DESKTOP_UNSUPPORTED_CODES = new Set([4017, -32601])
+
+/** Inspect a source through the backend (`plugins.manage inspect`): it clones into a temp folder and
+ *  reports which halves ship, installing and running nothing. For a renderer with no Git of its own
+ *  (the browser-hosted app); native Desktop inspects in Electron. Never rejects. */
+export async function inspectAgentPlugin(
+  request: GatewayRequest,
+  opts: { identifier: string; catalogName?: string; profile?: string | null }
+): Promise<AgentPluginInspection> {
+  try {
+    const result = await request<{
+      ok?: boolean
+      agent?: boolean
+      desktop?: boolean
+      agent_name?: string | null
+      desktop_name?: string | null
+      sha?: string | null
+      warnings?: string[]
+      insecure?: boolean
+      error?: string
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'inspect',
+          identifier: opts.identifier,
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {})
+        },
+        opts.profile
+      ),
+      // A clone runs on the backend, as an install's does. One that outlasts this wait keeps running
+      // there, and Retry collects its answer instead of starting another clone.
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
+
+    const ok = Boolean(result?.ok)
+
+    return {
+      ok,
+      agent: ok && Boolean(result.agent),
+      desktop: ok && Boolean(result.desktop),
+      agentName: result?.agent_name ?? null,
+      desktopName: result?.desktop_name ?? null,
+      warnings: result?.warnings ?? [],
+      insecure: Boolean(result?.insecure),
+      ...(ok && typeof result.sha === 'string' && COMMIT_SHA_RE.test(result.sha)
+        ? { sha: result.sha.toLowerCase() }
+        : {}),
+      ...(ok && opts.catalogName ? { catalogPin: true } : {}),
+      ...(ok ? {} : { error: result?.error || 'Inspection failed' })
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      agent: false,
+      desktop: false,
+      warnings: [],
+      unavailable: e instanceof JsonRpcGatewayError && INSPECT_UNSUPPORTED_CODES.has(e.code ?? 0),
+      error: e instanceof Error ? e.message : String(e)
+    }
+  }
+}
+
+/** Install a repository's desktop half onto the host that serves this client (`plugins.manage
+ *  install_desktop`). Native Desktop clones one itself; a browser-hosted renderer has no disk of its
+ *  own, so it asks the backend that serves the tab and the plugin appears in the folder the Webapp
+ *  already loads. Never rejects. */
+export async function installDesktopPluginHalf(
+  request: GatewayRequest,
+  opts: { identifier: string; catalogName?: string; force?: boolean; profile?: string | null; ref?: string }
+): Promise<{
+  ok: boolean
+  pairedWithAgent?: boolean
+  pluginName?: string
+  /** The backend predates the action: no retry changes that (a build older than this one). */
+  unsupported?: boolean
+  /** Refused: the source moved off the reviewed commit (`isSourceMovedRefusal`). */
+  sourceMoved?: boolean
+  warnings: string[]
+  error?: string
+}> {
+  try {
+    const result = await request<{
+      ok?: boolean
+      plugin_name?: string
+      paired_with_agent?: boolean
+      warnings?: string[]
+      error?: string
+    }>(
+      'plugins.manage',
+      withProfile(
+        {
+          action: 'install_desktop',
+          identifier: opts.identifier,
+          force: Boolean(opts.force),
+          ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.ref ? { ref: opts.ref } : {})
+        },
+        opts.profile
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
+    )
+
+    if (!result?.ok) {
+      return { ok: false, warnings: [], error: result?.error || 'Desktop plugin install failed' }
+    }
+
+    return {
+      ok: true,
+      pluginName: result.plugin_name,
+      pairedWithAgent: Boolean(result.paired_with_agent),
+      warnings: result.warnings ?? []
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      unsupported: e instanceof JsonRpcGatewayError && INSTALL_DESKTOP_UNSUPPORTED_CODES.has(e.code ?? 0),
+      sourceMoved: isSourceMovedRefusal(e),
+      warnings: [],
+      error: e instanceof Error ? e.message : String(e)
+    }
+  }
+}
+
+/** Remove one installed desktop plugin folder from the host that serves this client
+ *  (`plugins.manage remove_desktop`); a package's own half is refused by the backend unless forced.
+ *  Never rejects. */
+export async function removeDesktopPluginHalf(
+  request: GatewayRequest,
+  opts: { force?: boolean; name: string; profile?: string | null }
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const result = await request<{ ok?: boolean; error?: string }>(
+      'plugins.manage',
+      withProfile({ action: 'remove_desktop', name: opts.name, force: Boolean(opts.force) }, opts.profile)
+    )
+
+    return result?.ok ? { ok: true } : { ok: false, error: result?.error || 'Desktop plugin removal failed' }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** One security-scan finding on an update the scan blocked. */
+export interface AgentPluginScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
+
+/** Outcome of `updateAgentPlugin`: `applied` when the update landed, `unchanged`
+ *  when already current, `consent` when a new catalog pin widens the plugin
+ *  (retry with `acceptCapabilities`), `scan` when the security scan blocked the
+ *  new code (a `caution` verdict can be retried with `force`). The backend
+ *  changed nothing for `consent` and `scan`. */
+export type AgentPluginUpdateOutcome =
+  | { kind: 'applied' | 'unchanged' | 'failed' }
+  | { kind: 'consent'; sha: string; deltaLines: string[] }
+  | { kind: 'scan'; verdict: string; findings: AgentPluginScanFinding[] }
+
+export interface AgentPluginUpdateOptions {
+  /** Apply a catalog re-pin the user confirmed after a `consent` outcome. */
+  acceptCapabilities?: boolean
+  /** Apply an update whose scan returned caution, after the user saw the findings. */
+  force?: boolean
+}
+
+/** Update an installed plugin (backend `plugins.manage update`): a catalog install
+ *  re-pins to the current catalog SHA, a git install pulls. Refreshes the list on
+ *  success. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
   profile?: string | null,
-  acceptCapabilities = false
+  options: AgentPluginUpdateOptions = {}
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
+
+  const params: PluginsManageParams = { action: 'update', name }
+
+  if (options.acceptCapabilities) {
+    params.accept_capabilities = true
+  }
+
+  if (options.force) {
+    params.force = true
+  }
 
   try {
     const result = await request<{
@@ -388,13 +621,17 @@ export async function updateAgentPlugin(
       consent_required?: boolean
       sha?: string
       delta_lines?: string[]
-    }>(
-      'plugins.manage',
-      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
-    )
+      scan_blocked?: boolean
+      scan_verdict?: string
+      scan_findings?: AgentPluginScanFinding[]
+    }>('plugins.manage', withProfile({ ...params }, profile), PLUGIN_INSTALL_REQUEST_TIMEOUT_MS)
 
     if (result?.consent_required) {
       return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+    }
+
+    if (result?.scan_blocked) {
+      return { kind: 'scan', verdict: result.scan_verdict ?? 'dangerous', findings: result.scan_findings ?? [] }
     }
 
     if (!result?.ok) {
@@ -476,8 +713,12 @@ export async function saveAgentPluginSettings(
       }
     }
 
+    // A secret-only save still makes the (empty) settings call: the backend's save is what tells a
+    // Desktop half `plugin.<id>.settings.changed`, and a new API key is the change it most needs.
+    const wroteSecret = Object.values(opts.secrets).some(Boolean)
+
     const result =
-      Object.keys(opts.values).length > 0
+      Object.keys(opts.values).length > 0 || wroteSecret
         ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
             'plugins.manage',
             withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)

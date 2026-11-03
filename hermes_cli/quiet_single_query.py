@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from typing import Any, Callable, MutableMapping
+
+logger = logging.getLogger(__name__)
 
 # Nested A→B→C is one extra turn; this caps a runaway message_agent chain.
 _MAX_QUIET_NOTIFY_ROUNDS = 8
@@ -177,6 +181,22 @@ def _diagnostic_only_wake_muted(events) -> bool:
     return not warning_notifications_enabled("cli")
 
 
+# A one-shot answer ending in a fenced ```json receipt block (carrier node_outcome token) is the
+# final word: a late notify_on_complete exit-0 is the run's own machinery winding down, not news.
+_FINAL_JSON_BLOCK_RE = re.compile(r"```json\b.*?```\s*\Z", re.DOTALL)
+
+
+def answer_has_final_json(text: str | None) -> bool:
+    """True when a one-shot answer already carries its final fenced ```json receipt block."""
+    return bool(text) and bool(_FINAL_JSON_BLOCK_RE.search(text))
+
+
+def _clean_completion_event(event) -> bool:
+    """A plain completion whose process exited 0 (not a failure notice): nothing to wake for."""
+    return (isinstance(event, dict) and event.get("type") == "completion"
+            and int(event.get("exit_code") or 0) == 0)
+
+
 def quiet_notify_linger_seconds() -> float:
     """Total linger budget for one quiet run: the shared ``terminal.oneshot_completion_wait_seconds``.
 
@@ -196,6 +216,7 @@ def continue_quiet_notify_completions(
     owns_event=None,
     max_rounds: int = _MAX_QUIET_NOTIFY_ROUNDS,
     linger_budget: float | None = None,
+    final_answer: str | None = None,
 ) -> Any:
     """Linger for ``notify_on_complete`` work, then run owned completion texts as follow-up turns.
 
@@ -204,10 +225,16 @@ def continue_quiet_notify_completions(
     process that times out is waited on no further this run: after the current round's drained
     texts run, the loop stops (the finalize linger still covers it once, bounded, via the
     budget handshake below).
+
+    *final_answer* is the answer this run will print. When it already carries a final fenced
+    ```json receipt block, a drained plain completion with exit_code 0 is claimed, completed,
+    debug-logged and DROPPED — no follow-up turn, no displacement of the receipt. Non-zero
+    exits, watch matches and async_delegation results keep today's wake behavior.
     """
     from tools.process_registry import process_registry
     from tools.async_delegation import claim_event_delivery, complete_event_delivery
 
+    drop_post_answer_clean = answer_has_final_json(final_answer)
     last: Any = None
     key = session_id or ""
     if linger_budget is None:
@@ -225,6 +252,11 @@ def continue_quiet_notify_completions(
             if claim is None:
                 continue
             complete_event_delivery(event, claim)
+            if drop_post_answer_clean and _clean_completion_event(event):
+                # Answer already carries its receipt: book the late clean exit, don't wake on it.
+                logger.debug("quiet linger: dropped post-answer completion session_key=%r command=%r",
+                             event.get("session_key"), event.get("command"))
+                continue
             drained.append((event, text))
         # Every drained event type carries formatted text (completions, watch matches,
         # async_delegation results): drain_notifications POPS owned events off the queue,

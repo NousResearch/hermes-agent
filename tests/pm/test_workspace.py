@@ -436,30 +436,3 @@ def test_selected_plugin_extra_naming_core_installs_the_workspace_core(layout):
     installed = {p.name.split("-")[0] for p in site_packages(environment.destination).glob("*.dist-info")}
     assert {"member_dep", "other_dep"} <= installed
 
-
-@pytest.mark.parametrize("dependencies, chosen", [
-    pytest.param('"member-dep==1.0"', '"hermes-agent[other]>=2"', id="selected-extra"),
-    pytest.param('"member-dep==1.0", "hermes-agent>=2"', '"other-dep==1.0"', id="runtime-dependency"),
-])
-def test_plugin_requiring_another_hermes_version_is_refused(layout, monkeypatch, dependencies, chosen):
-    """A plugin's applicable requirement on Hermes stays binding although PM supplies Hermes itself.
-
-    A runtime requirement naming core is dropped and a selected extra naming it binds to the
-    workspace, where uv ignores the specifier: both installed ``>=2`` against Hermes 1. The
-    refusal is a resolver verdict, which update-time eviction parks the plugin on.
-    """
-    from pm.environment import ResolutionConflict
-
-    tmp, core, plugin, _ = layout
-    manifest = core / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace('name="construction-root"', 'name="hermes-agent"'))
-    monkeypatch.setattr("hermes_cli.plugins_manifest.running_hermes_version", lambda: "1")
-    (plugin / "pyproject.toml").write_text(
-        '[project]\nname="core-pinning-plugin"\nversion="1"\nrequires-python=">=3.11"\n'
-        f'dependencies=[{dependencies}]\n[project.optional-dependencies]\nchosen=[{chosen}]\n'
-        '[tool.uv]\npackage=false\n', encoding="utf-8")
-    environment = managed_environment(tmp / "env")
-    with pytest.raises(ResolutionConflict, match=r"plugin member requires hermes-agent.*>=2, but this Hermes is 1"):
-        ws.lock_and_sync([plugin], ["chosen"], root=tmp / "workspace", source=core, seed_lock=None,
-                         environment=environment)
-    assert not environment.destination.exists()

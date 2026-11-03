@@ -520,6 +520,29 @@ describe('MessagingView allowlist editor', () => {
       'default'
     )
   })
+
+  it('saves slash-command admins to the platform config instead of .env', async () => {
+    const admins = allowlist({
+      description: 'Only these allowed users can run every slash command.',
+      is_set: false,
+      key: 'allow_admin_from',
+      prompt: 'Slash command admins',
+      redacted_value: null,
+      value: ''
+    })
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ config_fields: [admins] })] })
+
+    await renderMessaging()
+
+    fireEvent.change(await screen.findByLabelText('Slash command admins 1'), { target: { value: '111, 222' } })
+    await save()
+
+    expect(updateMessagingPlatform).toHaveBeenCalledWith(
+      'teams',
+      { config: { allow_admin_from: ['111', '222'] }, env: {} },
+      'default'
+    )
+  })
 })
 
 describe('MessagingView Telegram quick setup', () => {

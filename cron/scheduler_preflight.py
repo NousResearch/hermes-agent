@@ -166,7 +166,18 @@ def _primary_profile_routes_for_current_home() -> list:
         # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
         # false-blocked and routed delivery failed closed on centrally-managed installs.
         from gateway.config_loader import read_yaml_layers
-        layered = read_yaml_layers(primary_home.expanduser())
+        # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
+        # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
+        # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
+        # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
+        # a satellite key of the same name was substituted into the primary's config (#148606).
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from tui_gateway.launch_profile_policy import owner_secret_scope
+        scope_token = set_secret_scope(owner_secret_scope(primary_home), profile_home=str(primary_home))
+        try:
+            layered = read_yaml_layers(primary_home.expanduser())
+        finally:
+            reset_secret_scope(scope_token)
         routes_raw = layered.get("profile_routes")
         if routes_raw is None and isinstance(layered.get("gateway"), dict):
             routes_raw = layered["gateway"].get("profile_routes")

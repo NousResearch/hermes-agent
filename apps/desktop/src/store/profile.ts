@@ -8,7 +8,15 @@ import { persistStore } from '@/lib/persist-store'
 import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
-import { arraysEqual, persistBoolean, persistStringArray, persistStringRecord, storedBoolean, storedStringArray, storedStringRecord } from '@/lib/storage'
+import {
+  arraysEqual,
+  persistBoolean,
+  persistStringArray,
+  persistStringRecord,
+  storedBoolean,
+  storedStringArray,
+  storedStringRecord
+} from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
@@ -1146,10 +1154,8 @@ export function newSessionInProfile(name: string, options?: FreshSessionRequestO
   })
 }
 
-/** Start a draft owned by a specific registry agent. Foreground activation is
- * only a presentation step; the route stays attached to the draft for the
- * eventual session.create request. */
-export function newSessionInAgent(route: AgentProfileRoute, options?: FreshSessionRequestOptions): void {
+/** Pin the next new chat to an exact registry agent; session.create reads this route. */
+export function pinNewChatRoute(route: AgentProfileRoute): AgentProfileRoute {
   const captured = {
     ...route,
     connectionId: route.connectionId.trim(),
@@ -1164,6 +1170,15 @@ export function newSessionInAgent(route: AgentProfileRoute, options?: FreshSessi
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
   captureNewChatSource(captured.connectionId)
+
+  return captured
+}
+
+/** Start a draft owned by a specific registry agent. Foreground activation is
+ * only a presentation step; the route stays attached to the draft for the
+ * eventual session.create request. */
+export function newSessionInAgent(route: AgentProfileRoute, options?: FreshSessionRequestOptions): void {
+  const captured = pinNewChatRoute(route)
   leaveForeignProjectScope(captured.profile, captured.connectionId)
   requestFreshSession(options)
   // #81094: surface the failed dial instead of failing silently.

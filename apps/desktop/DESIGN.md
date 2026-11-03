@@ -354,6 +354,11 @@ Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
+On macOS, native traffic lights use a 12-point left inset in every titled window.
+Keep the renderer's startup fallback insets aligned with that position so the
+adjacent toolbar and panel reservations do not jump when native state arrives.
+Windows/Linux retain their previous toolbar startup fallback until native state arrives.
+
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,
@@ -365,6 +370,9 @@ binding and hovered/focused-zone resolver as the number shortcuts.
 
 Tab close buttons fade the label with a content mask, not a painted gradient.
 The tab reads its surface token directly so glass tint is painted only once.
+Close glyphs keep a 24px hit area, including session tabs wrapped in context menus.
+`PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
+disable that width or the label mask.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.

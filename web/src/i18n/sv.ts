@@ -228,6 +228,28 @@ export const sv = defineLocale({
     toolSource: 'Verktyg',
     vulcanDelegate: 'Vulcan-delegering'
   },
+  pairingUi: {
+    failedToLoad: 'Det gick inte att läsa in parkopplingsbegäranden',
+    missingRequest: 'Parkopplingsbegäran saknas',
+    approved: 'Godkänd: "{user}"',
+    failedToApprove: 'Det gick inte att godkänna parkopplingsbegäran: {error}',
+    confirmClearPending: 'Vill du rensa alla väntande parkopplingsbegäranden?',
+    clearedPending: 'Antal rensade väntande begäranden: {count}',
+    failedToClear: 'Det gick inte att rensa väntande begäranden: {error}',
+    revoked: 'Åtkomst återkallad: "{user}"',
+    failedToRevoke: 'Det gick inte att återkalla åtkomst: {error}',
+    clearPending: 'Rensa väntande',
+    revokeAccess: 'Återkalla åtkomst',
+    revokeUserDescription: '"{user}" förlorar åtkomst. Åtgärden kan inte ångras.',
+    revokeDescription: 'Användaren förlorar åtkomst. Åtgärden kan inte ångras.',
+    revoke: 'Återkalla',
+    pendingRequests: 'Väntande begäranden ({count})',
+    noPendingRequests: 'Inga väntande parkopplingsbegäranden',
+    minutesAgo: 'för {count} min sedan',
+    approve: 'Godkänn',
+    approvedUsers: 'Godkända användare ({count})',
+    noApprovedUsers: 'Inga godkända användare'
+  },
   files: {
     title: 'Filer',
     refresh: 'Uppdatera filer',

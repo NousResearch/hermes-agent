@@ -282,6 +282,30 @@ export interface Translations {
     vulcanDelegate: string;
   };
 
+  /** Optional while existing locales adopt the pairing-page strings. */
+  pairingUi?: {
+    failedToLoad: string;
+    missingRequest: string;
+    approved: string;
+    failedToApprove: string;
+    confirmClearPending: string;
+    clearedPending: string;
+    failedToClear: string;
+    revoked: string;
+    failedToRevoke: string;
+    clearPending: string;
+    revokeAccess: string;
+    revokeUserDescription: string;
+    revokeDescription: string;
+    revoke: string;
+    pendingRequests: string;
+    noPendingRequests: string;
+    minutesAgo: string;
+    approve: string;
+    approvedUsers: string;
+    noApprovedUsers: string;
+  };
+
   // ── Files page ──
   /** Optional while existing locales adopt the files-page strings. */
   files?: {

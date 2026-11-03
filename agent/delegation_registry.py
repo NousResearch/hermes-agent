@@ -19,7 +19,7 @@ from typing import Any, Mapping, Optional
 
 from agent.delegation_provider import DelegationProvider, DelegationRouteError
 from agent.provider_registry import ProviderRegistry, is_available_safe, lower_key
-from hermes_constants import get_process_hermes_home, hermes_home_key
+from hermes_constants import get_routing_process_hermes_home, hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +88,14 @@ def _available(provider: Optional[DelegationProvider]) -> bool:
 
 def _launch_scope_key() -> Optional[str]:
     """The launch home's registry scope when the active home is a served profile; ``None`` when they
-    are the same home (the CLI, a single-home gateway): those reads already see every registration."""
-    launch = hermes_home_key(get_process_hermes_home())
+    are the same home (the CLI, a single-home gateway): those reads already see every registration.
+
+    The launch home is the routing resolver's (the pin a multiplexing process or embedding host
+    installs), never a live ``HERMES_HOME`` read: like every launch-home comparison
+    (``agent.secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``), a host
+    that mirrors the served profile into the env var must not make a served profile's registrations
+    look like the launch home's."""
+    launch = hermes_home_key(get_routing_process_hermes_home())
     return None if launch == hermes_home_key(None) else launch
 
 

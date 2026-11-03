@@ -81,6 +81,13 @@ _LAYOUT_DIRS = frozenset(
 )
 
 
+def _within_interpreter(path: str, *, metadata: bool) -> bool:
+    """*path* is in the interpreter's own installation (a PM-managed python under ~/.hermes/tools):
+    stdlib source reads (linecache, traceback) are not Hermes state, nor is realpath() walking up
+    through its ancestors (*metadata*)."""
+    return any(_within(path, prefix) or (metadata and _contains(path, prefix)) for prefix in _INTERPRETER_PREFIX_STRS)
+
+
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
     if path == prefix:
@@ -148,12 +155,8 @@ class HomeIOGuard:
                 entries = self._path_entries(path, cwd)
                 if os.path.dirname(absolute) in entries or any(_contains(absolute, entry) for entry in entries):
                     return
-            # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
-            # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
-            # realpath() walking up through its ancestors.
-            for prefix in _INTERPRETER_PREFIX_STRS:
-                if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
-                    return
+            if _within_interpreter(absolute, metadata=metadata):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             for root in roots:
@@ -164,9 +167,8 @@ class HomeIOGuard:
             if metadata and resolved in roots:
                 return
             # A fixture symlink to the running interpreter resolves into its installation.
-            for prefix in _INTERPRETER_PREFIX_STRS:
-                if _within(resolved, prefix):
-                    return
+            if _within_interpreter(resolved, metadata=False):
+                return
             for root in roots:
                 if _within(resolved, root):
                     self.refuse(value)

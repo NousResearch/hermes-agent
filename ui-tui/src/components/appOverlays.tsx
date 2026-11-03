@@ -14,7 +14,6 @@ import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { ConnectorsOverlay } from './connectorsOverlay.js'
 import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
@@ -363,39 +362,6 @@ export function FloatingOverlays({
             onClose={() => patchOverlayState({ connectors: false })}
             t={theme}
           />
-        </FloatBox>
-      )
-    })
-  }
-
-  const pager = overlay.pager
-
-  if (pager) {
-    widgets.push({
-      id: 'pager',
-      render: () => (
-        <FloatBox color={theme.color.border}>
-          <Box flexDirection="column" paddingX={1} paddingY={1}>
-            {pager.title && (
-              <Box justifyContent="center" marginBottom={1}>
-                <Text bold color={theme.color.primary}>
-                  {pager.title}
-                </Text>
-              </Box>
-            )}
-
-            {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
-              <Text key={i}>{line}</Text>
-            ))}
-
-            <Box marginTop={1}>
-              <OverlayHint t={theme}>
-                {pager.offset + pagerPageSize < pager.lines.length
-                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
-                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${pager.lines.length} lines)`}
-              </OverlayHint>
-            </Box>
-          </Box>
         </FloatBox>
       )
     })

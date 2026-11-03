@@ -14,6 +14,7 @@ import tempfile
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
@@ -312,15 +313,42 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title:
     except ValueError as exc:
         raise _pc().PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.",
                                          failure_class="manifest_invalid") from exc
-    for server_decl in package.server_declarations.values():
-        result = availability(server_decl.declaration)
-        if result.offerable:
-            continue
+    blocked = [(name, decl, result) for name, decl in package.server_declarations.items()
+               if not (result := availability(decl.declaration)).offerable]
+    if blocked:
+        # Every declared server must pass. Prefer structural incompatibility over a
+        # missing app: installing one app cannot repair an unsupported sibling. Same
+        # order as the presence card, so the refusal names the blocker the dialog showed.
+        from hermes_cli.plugin_catalog_presence import blocker_rank
+
+        def rank(row) -> int:
+            state = "uncertain" if row[2].state == "version_too_old" and not row[2].version else row[2].state
+            return blocker_rank(state, row[2].min_version, row[2].version)
+
+        server_name, server_decl, result = min(blocked, key=rank)
+        # The catalog title names the blocked server's app only when it is the plugin's one app.
+        app_servers = [name for name, decl in package.server_declarations.items()
+                       if getattr(decl.declaration, "app", None) is not None]
+        display_title = app_title if app_servers == [server_name] else None
         problem = availability_problem(result)
-        reason = (describe(server_decl.declaration, result, problem, display_name=app_title)
-                  if problem else f"its app is unavailable ({result.state}).")
-        raise _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
-                                         failure_class="incompatible")
+        if result.state == "version_too_old" and not result.version:
+            reason = (f"could not determine {display_title or plugin_name}'s installed version; "
+                      f"version {result.min_version} or newer is required. Check the app's version "
+                      "on this machine before retrying.")
+        else:
+            reason = (describe(server_decl.declaration, result, problem, display_name=display_title)
+                      if problem else f"its app is unavailable ({result.state}).")
+        from hermes_cli.plugin_catalog_presence import app_guidance
+        # The clone itself is authoritative at the publication gate, not an earlier preflight pin.
+        # A custom source has no trusted vendor URL; the catalog identity is attached later.
+        entry = SimpleNamespace(name=plugin_name)
+        error = _pc().PluginOperationError(f"Can't install plugin '{plugin_name}': {reason}",
+                                           failure_class="incompatible")
+        error.app_guidance = app_guidance(entry, "uncertain" if result.state == "version_too_old" and not result.version
+                                          else result.state, required_version=result.min_version,
+                                          found_version=result.version, app_title=display_title)
+        error.app_declaration = server_decl.declaration
+        raise error
 
 
 def _known_issue_warnings(entry) -> list[str]:
@@ -849,6 +877,21 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple:
     return entry, identifier, warnings, None
 
 
+def _app_refusal_result(exc, entry, *, at_reviewed_pin: bool = True) -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": False, "error": str(exc)}
+    if guidance := exc.app_guidance:
+        from hermes_cli.plugin_catalog_presence import app_guidance
+        result["app_guidance"] = (app_guidance(entry, guidance["reason"],
+                                  required_version=guidance["required_version"],
+                                  found_version=guidance["found_version"],
+                                  actual_declaration=exc.app_declaration,
+                                  app_title=guidance["app_title"]) if entry and at_reviewed_pin
+                                  and exc.app_declaration is not None
+                                  else {**guidance, "download_url": None,
+                                        "app_title": entry.name if entry else guidance["app_title"]})
+    return result
+
+
 def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assume_deps_consent: bool,
                 step: Callable[[InstallPhase], None], inspected_sha: Optional[str] = None) -> tuple | dict:
     """``(target, manifest, installed_name)`` of the tree to enable, or the error result. A catalog
@@ -859,8 +902,17 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
     from hermes_cli import plugins_cmd_catalog as catalog
     ref = (ref or "").strip() or None
     inspected_sha = None if ref else inspected_sha
+    at_reviewed_pin = entry is not None and (ref is None or ref.lower() == entry.sha.lower())
     on_disk = _catalog_install_on_disk(entry.name, ref, inspected_sha) if entry is not None and not force else None
-    if on_disk is not None:
+    if on_disk is not None and entry is not None:
+        installed = catalog.catalog_install_record(on_disk[0])
+        # Same pin rule as updates: commit or annotated-tag pin, case-insensitive.
+        at_reviewed_pin = at_reviewed_pin and bool(installed) and catalog.at_catalog_pin(installed, entry.sha.lower())
+        try:
+            # Same app name as a fresh install at the pin (plugins_cmd_catalog passes the catalog title).
+            _refuse_unavailable_portable_plugin(on_disk[2], on_disk[0], (entry.title or None) if at_reviewed_pin else None)
+        except _pc().PluginOperationError as exc:
+            return _app_refusal_result(exc, entry, at_reviewed_pin=at_reviewed_pin)
         return on_disk
 
     def _install() -> tuple:
@@ -877,7 +929,10 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
     except _pc().PluginScanBlocked as exc:
         return scan_blocked_result(exc)
     except _pc().PluginOperationError as exc:
-        return {"ok": False, "error": str(exc), **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
+        result = _app_refusal_result(exc, entry, at_reviewed_pin=at_reviewed_pin)
+        if isinstance(exc, _pc().PluginSourceMoved):
+            result["source_moved"] = True
+        return result
 
 
 def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:

@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 
 import { notifyError } from '@/store/notifications'
 
+import { type AppGuidance, appGuidanceFromError } from './plugin-app-guidance'
+
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
  * portable Agent Plugins v1 packages the backend discovers on disk. Settings
@@ -107,6 +109,14 @@ export const $agentPluginsError = atom<string | null>(null)
  *  settings must check it: the list is shared, and a scope switch keeps the
  *  previous profile's rows on screen until the new list lands. */
 export const $agentPluginsProfile = atom<null | string | undefined>(undefined)
+/** Owner-specific snapshots survive another surface refreshing a different backend's shared list. */
+export const $agentPluginsByOwner = atom<Record<string, AgentPluginRow[]>>({})
+/** A foreign list request must not erase this owner's failure signal. */
+export const $agentPluginsErrorByOwner = atom<Record<string, string | null>>({})
+/** Shared per-owner in-flight state also covers manual retry/rescan, not just page mount. */
+export const $agentPluginsLoadingByOwner = atom<Record<string, boolean>>({})
+export const pluginInventoryKey = (connectionId: string, profile: string | null) =>
+  JSON.stringify([connectionId, profile])
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -136,6 +146,30 @@ let inflightProfile: string | null = null
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
+// A pinned connection's list has its own in-flight request and generation per owner.
+const ownerInflight = new Map<string, Promise<void>>()
+const ownerGenerations = new Map<string, number>()
+let ownerGeneration = 0
+
+/** Invalidate a pre-mutation list without invalidating another owner's cache. */
+function invalidateListForMutation(profile: string | null | undefined, connectionId: string | null) {
+  const scope = profile ?? null
+
+  if (connectionId) {
+    const key = pluginInventoryKey(connectionId, scope)
+    ownerGenerations.delete(key)
+    ownerInflight.delete(key)
+    $agentPluginsLoadingByOwner.set({ ...$agentPluginsLoadingByOwner.get(), [key]: false })
+
+    return
+  }
+
+  if (inflight && inflightProfile === scope) {
+    ++loadGeneration
+    inflight = null
+    inflightProfile = null
+  }
+}
 
 /** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
  *  backend's launch profile — older backends ignore the extra param. */
@@ -146,16 +180,26 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  HERMES_HOME. Always refetches (it's a cheap local disk scan on the
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
- *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+ *  stale list. Force after a completed install to bypass a pre-install read;
+ *  owner generations keep its late result from replacing the new snapshot.
+ *  With a `connectionId` the rows land only in that owner's snapshot. */
+export function loadAgentPlugins(
+  request: GatewayRequest,
+  profile?: string | null,
+  connectionId: string | null = null,
+  { force = false }: { force?: boolean } = {}
+): Promise<void> {
   const scope = profile ?? null
 
-  if (inflight && inflightProfile === scope) {
+  if (connectionId) {
+    return loadOwnerPlugins(request, scope, pluginInventoryKey(connectionId, scope), force)
+  }
+
+  if (!force && inflight && inflightProfile === scope) {
     return inflight
   }
 
   const generation = ++loadGeneration
-
   inflightProfile = scope
   inflight = (async () => {
     if ($agentPluginsStatus.get() !== 'ready') {
@@ -194,6 +238,54 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
   return inflight
 }
 
+/** A pinned connection's list. The shared list stays the ambient backend's:
+ *  Settings, delegation, search and tool-media ownership read it by profile
+ *  label alone, so another backend's rows there would pass for their own. */
+function loadOwnerPlugins(request: GatewayRequest, scope: string | null, key: string, force: boolean): Promise<void> {
+  const pending = ownerInflight.get(key)
+
+  if (!force && pending) {
+    return pending
+  }
+
+  const generation = ++ownerGeneration
+  ownerGenerations.set(key, generation)
+  $agentPluginsErrorByOwner.set({ ...$agentPluginsErrorByOwner.get(), [key]: null })
+  $agentPluginsLoadingByOwner.set({ ...$agentPluginsLoadingByOwner.get(), [key]: true })
+
+  const load = (async () => {
+    try {
+      const result = await request<{ plugins?: AgentPluginRow[] }>(
+        'plugins.manage',
+        withProfile({ action: 'list' }, scope)
+      )
+
+      if (ownerGenerations.get(key) === generation) {
+        $agentPluginsByOwner.set({
+          ...$agentPluginsByOwner.get(),
+          [key]: (result?.plugins ?? []).map(normalizeAgentPluginRow)
+        })
+      }
+    } catch (e) {
+      if (ownerGenerations.get(key) === generation) {
+        $agentPluginsErrorByOwner.set({
+          ...$agentPluginsErrorByOwner.get(),
+          [key]: e instanceof Error ? e.message : String(e)
+        })
+      }
+    } finally {
+      if (ownerGenerations.get(key) === generation) {
+        $agentPluginsLoadingByOwner.set({ ...$agentPluginsLoadingByOwner.get(), [key]: false })
+        ownerInflight.delete(key)
+      }
+    }
+  })()
+
+  ownerInflight.set(key, load)
+
+  return load
+}
+
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed
  *  copy. Addressed by canonical key ONLY — bare names collide across category
  *  dirs (image_gen/fal vs video_gen/fal), which is exactly why the backend
@@ -206,7 +298,8 @@ export async function toggleAgentPlugin(
   key: string,
   enable: boolean,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  connectionId: string | null = null
 ): Promise<boolean> {
   $agentPluginBusy.set(key)
 
@@ -228,14 +321,28 @@ export async function toggleAgentPlugin(
     }
 
     const refreshed = result.plugin
+    invalidateListForMutation(profile, connectionId)
 
-    // Patch only a list loaded for the profile this toggle targeted.
-    if (refreshed && $agentPluginsProfile.get() === (profile ?? null)) {
+    // Patch only the list this owner reads: its own snapshot, or the shared list loaded for its profile.
+    if (refreshed) {
       const snapshot = normalizeAgentPluginRow(refreshed)
 
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
+      if (connectionId) {
+        const ownerKey = pluginInventoryKey(connectionId, profile ?? null)
+        const owned = $agentPluginsByOwner.get()[ownerKey]
+
+        if (owned) {
+          $agentPluginsByOwner.set({
+            ...$agentPluginsByOwner.get(),
+            [ownerKey]: owned.map(row => (row.key === key ? { ...row, ...snapshot } : row))
+          })
+        }
+      } else if ($agentPluginsProfile.get() === (profile ?? null)) {
+        $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
+        $agentPluginsStatus.set('ready')
+      }
     } else {
-      await loadAgentPlugins(request, profile)
+      await loadAgentPlugins(request, profile, connectionId)
     }
 
     return true
@@ -265,6 +372,8 @@ export interface AgentPluginInstallResult {
   /** The `<namespace>:<skill>` names the model can now load (`activation.live_now.skills`). */
   skillIds?: string[]
   error?: string
+  /** Structured backend-host refusal when app availability changed after preflight. */
+  appGuidance?: AppGuidance
   /** What became usable in open chats of the profile (`activation.live_now`). */
   live: AgentPluginLiveNow
   /** Python tools or prompt sections that wait for the next chat (`activation.deferred`). */
@@ -396,6 +505,7 @@ export async function installAgentPlugin(
       sourceMoved: isSourceMovedRefusal(e),
       inspectedShaUnsupported: backendPredatesInspectedSha(params, e),
       error: message,
+      appGuidance: opts.catalogName ? (appGuidanceFromError(e) ?? undefined) : undefined,
       live: NO_LIVE,
       nextChat: false
     }
@@ -600,7 +710,8 @@ export async function updateAgentPlugin(
   name: string,
   failMessage: string,
   profile?: string | null,
-  options: AgentPluginUpdateOptions = {}
+  options: AgentPluginUpdateOptions = {},
+  connectionId: string | null = null
 ): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
 
@@ -638,7 +749,8 @@ export async function updateAgentPlugin(
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    invalidateListForMutation(profile, connectionId)
+    await loadAgentPlugins(request, profile, connectionId)
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
@@ -658,7 +770,8 @@ export async function removeAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
-  profile?: string | null
+  profile?: string | null,
+  connectionId: string | null = null
 ): Promise<boolean> {
   $agentPluginBusy.set(name)
 
@@ -669,7 +782,18 @@ export async function removeAgentPlugin(
       throw new Error(failMessage)
     }
 
-    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    invalidateListForMutation(profile, connectionId)
+
+    if (connectionId) {
+      const ownerKey = pluginInventoryKey(connectionId, profile ?? null)
+      const owned = $agentPluginsByOwner.get()[ownerKey]
+
+      if (owned) {
+        $agentPluginsByOwner.set({ ...$agentPluginsByOwner.get(), [ownerKey]: owned.filter(row => row.name !== name) })
+      }
+    } else if ($agentPluginsProfile.get() === (profile ?? null)) {
+      $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    }
 
     return true
   } catch (e) {

@@ -785,6 +785,25 @@ export const frOverrides = {
         runtime: "à l'exécution"
       },
       installModal: {
+        appGuidance: {
+          missing: name => `${name} n’est pas installé. Installez-le sur l’ordinateur du backend avant ce plugin.`,
+          oldVersion: (name, required, found) =>
+            `${name} ${required} ou plus récent est nécessaire (version détectée : ${found || 'ancienne'}). Mettez-le à jour sur le backend.`,
+          unreadableVersion: (name, required) =>
+            `Impossible de déterminer la version installée de ${name}. La version ${required} ou plus récente est requise ; vérifiez-la sur le backend avant de réessayer.`,
+          unsupportedOs: name => `${name} n’est pas pris en charge par le système du backend.`,
+          unsupportedGpu: name => `Le GPU du backend n’est pas pris en charge pour ${name}.`,
+          uncertain: name =>
+            `Impossible de vérifier si ${name} est disponible. Vous pouvez essayer d’installer le plugin.`,
+          notRunning: name => `${name} est installé, mais ne fonctionne pas dans une session de bureau interactive.`,
+          backendHost: 'La vérification concerne le backend connecté, pas cette application Desktop.',
+          download: name => `Télécharger ${name} depuis le site officiel`,
+          recheck: 'Vérifier à nouveau',
+          checking: 'Vérification des prérequis du plugin sur le backend…',
+          askHermes: 'Demander de l’aide à Hermes',
+          helpDraft: (name, profile) =>
+            `Aide-moi à installer ou mettre à jour ${name} sur le backend pour le profil ${profile}. Vérifie d’abord son système et les prérequis. Explique les étapes et demande mon accord avant toute modification ou téléchargement. Jusqu’au lancement du programme d’installation, dis-moi à chaque étape ce que tu attends : lance les téléchargements en arrière-plan en indiquant leur progression, et préviens-moi quand une autorisation dans Hermes ou une demande d’administrateur sur cet ordinateur m’attend.`
+        },
         installFromGit: 'Installer depuis Git',
         reviewRepository: 'Examiner le dépôt',
         repoPlaceholder: 'https://github.com/proprietaire/depot',

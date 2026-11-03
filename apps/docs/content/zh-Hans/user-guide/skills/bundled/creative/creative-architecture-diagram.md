@@ -21,7 +21,7 @@ description: "深色主题 SVG 架构/云/基础设施图表（HTML 格式）"
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `architecture`, `diagrams`, `SVG`, `HTML`, `visualization`, `infrastructure`, `cloud` |
-| 相关 skill | [`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw) |
+| 相关 skill | [`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams), [`excalidraw`](/user-guide/skills/optional/creative/creative-excalidraw) |
 
 ## 参考：完整 SKILL.md
 

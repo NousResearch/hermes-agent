@@ -19,7 +19,7 @@ p5.js 草图：生成艺术、着色器、交互、3D。
 | 版本 | `1.0.0` |
 | 平台 | linux, macos, windows |
 | 标签 | `creative-coding`, `generative-art`, `p5js`, `canvas`, `interactive`, `visualization`, `webgl`, `shaders`, `animation` |
-| 相关 skill | [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video), [`excalidraw`](/user-guide/skills/bundled/creative/creative-excalidraw) |
+| 相关 skill | [`ascii-video`](/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/user-guide/skills/bundled/creative/creative-manim-video), [`excalidraw`](/user-guide/skills/optional/creative/creative-excalidraw) |
 
 ## 参考：完整 SKILL.md
 

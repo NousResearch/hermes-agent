@@ -21,7 +21,7 @@ description: "使用 python-pptx 无头构建 PowerPoint 演示文稿"
 | 许可证 | Apache-2.0 |
 | 平台 | linux, macos, windows |
 | 标签 | `powerpoint`, `pptx`, `python-pptx`, `presentation`, `finance` |
-| 相关 skill | [`excel-author`](/user-guide/skills/optional/finance/finance-excel-author), [`powerpoint`](/user-guide/skills/bundled/productivity/productivity-powerpoint) |
+| 相关 skill | [`excel-author`](/user-guide/skills/optional/finance/finance-excel-author), [`microsoft-office`](/user-guide/skills/bundled/productivity/productivity-microsoft-office) |
 
 ## 参考：完整 SKILL.md
 

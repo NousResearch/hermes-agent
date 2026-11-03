@@ -137,6 +137,7 @@ class CLIInitMixin:
             self.tool_progress_mode = FOCUS_TOOL_PROGRESS_MODE
         self.resume_display = display.get("resume_display", "full")  # "full" | "minimal"
         self.bell_on_complete = display.get("bell_on_complete", False)
+        self._configure_tab_activity_indicator(display)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)

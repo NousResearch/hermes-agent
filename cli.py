@@ -45,6 +45,7 @@ from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
+from hermes_cli.cli_tab_title_mixin import CLITabTitleMixin
 from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
 # Extracted clusters (mechanical split, #116911); re-exported here so `cli.<name>` stays the seam.
@@ -877,7 +878,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLITabTitleMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates

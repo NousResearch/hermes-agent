@@ -338,6 +338,7 @@ class CLITuiRuntimeMixin:
                 f"[bold {_accent_hex()}]{t('cli.tui.activated_skills_label')}[/] {', '.join(_skills_for_line)}")
             self._startup_skills_line_shown = True
         self._console_print()
+        self._set_tab_title_state("idle", force=True)
 
     def _tui_startup_prewarm_and_warnings(self, _welcome_skin):
         """Idle-window prewarms (picker cache, agent runtime imports) plus the redaction-off and OpenClaw-residue banners."""

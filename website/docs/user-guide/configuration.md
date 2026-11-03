@@ -2323,6 +2323,38 @@ display:
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 
+### Classic CLI tab activity indicator
+
+The classic CLI can update its terminal title while a turn runs. It is disabled by
+default and does not change the separate Ink TUI title settings.
+
+```yaml
+display:
+  tab_activity_indicator: true
+  tab_title_idle: "{title}"
+  tab_title_busy: "{spinner} Hermes"
+  tab_title_done: "{title}"
+  tab_title_spinner_frames: ["⠋", "⠙", "⠹", "⠸"]
+```
+
+Templates accept `{title}` (session title, falling back to `Hermes`), `{session}`
+(the same label), `{label}`, `{session_id}`, `{short_session_id}`, and `{spinner}`.
+Busy titles update at most four times per second. Control characters are removed
+and titles are limited to 255 characters. Identical titles are not written again.
+
+| Terminal host | Title update path | Limitations |
+| --- | --- | --- |
+| Linux, macOS, WSL | OSC 0 through the original TTY stream | The terminal must support OSC titles. Redirected output receives no OSC bytes. |
+| Native Windows console (conhost) | Windows console title API | No OSC is emitted without a terminal capability hint. |
+| Windows Terminal, VS Code terminal, Git Bash/mintty | Windows console title API plus OSC 0 for a TTY advertising `WT_SESSION`, `TERM_PROGRAM`, `MSYSTEM`, or a nonempty, non-`dumb` `TERM` | Host settings or a manually pinned tab label can override application titles. A non-TTY stream receives no OSC fallback. |
+
+These paths have automated coverage; the environment hints do not guarantee a
+visible tab-label change in every terminal version. To check a host manually,
+enable the option, submit a prompt, verify busy and completed titles, then run a
+slow slash command and verify the title returns to idle. Also check the disabled
+option and redirected output. Do not treat mocked transport tests as a completed
+Windows Terminal / VS Code / mintty / conhost visual test matrix.
+
 ### Per-turn summary and spinner token flow
 
 `display.turn_summary` (default `true`) prints one dim accounting line after each **interactive CLI** turn, summarising what that turn actually did:

@@ -620,6 +620,7 @@ class CLIStreamMixin:
         self._command_running = True
         self._command_blocks_input = blocks_input
         self._command_status = status
+        self._set_tab_title_state("busy", force=True)
         self._invalidate(min_interval=0.0)
         try:
             _cprint(f"⏳ {status}")
@@ -628,6 +629,7 @@ class CLIStreamMixin:
             self._command_running = False
             self._command_blocks_input = previous_blocks_input
             self._command_status = ""
+            self._set_tab_title_state("idle", force=True)
             self._invalidate(min_interval=0.0)
 
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:

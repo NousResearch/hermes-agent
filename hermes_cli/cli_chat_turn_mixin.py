@@ -122,6 +122,7 @@ class CLIChatTurnMixin:
                 self._prompt_duration = 0.0
                 # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
                 agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
+                self._set_tab_title_state("busy", force=True)
                 agent_thread.start()
                 interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
                 self._chat_settle_turn(turn)
@@ -131,6 +132,7 @@ class CLIChatTurnMixin:
                 return None
             finally:
                 self._chat_release_turn_audio(turn)
+                self._set_tab_title_state("done", force=True)
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
@@ -414,6 +416,7 @@ class CLIChatTurnMixin:
 
         interrupt_msg = None
         while agent_thread.is_alive():
+            self._tick_tab_activity_indicator()
             try:
                 interrupt_msg = self._interrupt_queue.get(timeout=0.1)
             except queue.Empty:

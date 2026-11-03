@@ -530,6 +530,35 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_process = managed_process
         self._http_session = aiohttp.ClientSession()
         self._poll_task = asyncio.create_task(self._poll_messages())
+        self._poll_task.add_done_callback(self._on_poll_task_done)
+
+    def _on_poll_task_done(self, task: asyncio.Task) -> None:
+        """A poller that ends outside an orderly stop is a retryable fatal error.
+
+        Unsupervised, its death left inbound dead while sends and /health still said connected.
+        Orderly: disconnect() (``_shutting_down``), an adapter already stopped or fatal (both
+        clear ``_running``), or a task that a newer attach replaced."""
+        if getattr(self, "_shutting_down", False) or not self._running or task is not self._poll_task:
+            return
+        if task.cancelled():
+            reason = "was cancelled outside shutdown"
+        elif task.exception() is not None:
+            reason = f"crashed: {task.exception()!r}"
+        else:
+            reason = "returned while the adapter was running"
+        message = f"WhatsApp inbound poller {reason}; reconnecting."
+        self._set_fatal_error("whatsapp_poller_died", message, retryable=True)
+        logger.error("[%s] %s", self.name, message)
+        # Strong ref: the loop keeps only a weak one.
+        self._poller_death_report = asyncio.get_running_loop().create_task(self._report_poller_death())
+
+    async def _report_poller_death(self) -> None:
+        try:
+            await self._notify_fatal_error()
+        except Exception:
+            # Nobody awaits this task; unlogged, a handler failure would only surface as
+            # "Task exception was never retrieved".
+            logger.exception("[%s] WhatsApp fatal-error handler failed after the poller died", self.name)
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""

@@ -20,6 +20,62 @@ def setup_function():
     _reset_version_info_cache()
 
 
+@pytest.fixture
+def live_git_checkout(tmp_path):
+    """A real git repo whose only reachable tag is CalVer, plus its ``git`` helper.
+
+    ``STABLE_TAG_RE`` rejects a 4-digit major on purpose, so a checkout in this
+    shape is exactly the one ``write_source_stamp`` recorded ``baseVersion:
+    unknown`` on. The git walk still resolves a version through the tag's
+    ``pyproject.toml``, which is what makes a stale placeholder detectable: the
+    stamp and the checkout disagree.
+
+    Yields ``(repo, git)``; ``git`` runs a real subprocess in the repo and
+    returns stripped stdout.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+    return repo, git
+
+
+def _write_stamp(repo: Path, **fields: object) -> Path:
+    """Write an install stamp into ``repo`` and return its path."""
+    stamp = {
+        "commit": None,
+        "source": "git",
+        "updateMechanism": "self",
+        "baseVersion": "unknown",
+        "displayVersion": "unknown",
+    }
+    stamp.update(fields)
+    stamp_file = repo / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
+    return stamp_file
+
+
+def _point_at(monkeypatch, repo: Path, stamp_file: Path) -> None:
+    """Resolve the stamp and the git walk against the same temporary checkout."""
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+
 def test_derived_version_shows_plus_question_for_dirty_unknown_distance():
     assert _derived_version("0.19.0", None, dirty=True) == "0.19.0+?"
     assert _derived_version("0.19.0", None, dirty=False) == "0.19.0"
@@ -219,7 +275,8 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
 
 
-def test_stale_unknown_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("placeholder", [None, "", "unknown"])
+def test_stale_unknown_stamp_defers_to_live_checkout(live_git_checkout, monkeypatch, placeholder):
     """A stamp naming the live commit but no resolvable version must not win.
 
     ``write_source_stamp`` published ``baseVersion: unknown`` on a checkout
@@ -229,55 +286,80 @@ def test_stale_unknown_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
     even after a semver release becomes reachable, or after the CalVer
     fallback learns to read the tag's pyproject.
 
+    ``baseVersion`` reaches the guard in three spellings: an absent key parsed
+    as ``None``, an empty string from a template, and the literal placeholders
+    the writer and older stamps use. All three describe the same missing fact,
+    so all three must defer.
+
     The stamp is only skipped when it names HEAD and carries no version: a
     sealed install's stamp, with no ``.git`` beside it to defer to, stays
     authoritative.
     """
-    repo = tmp_path / "repo"
-    repo.mkdir()
-
-    def git(*args: str) -> str:
-        result = subprocess.run(
-            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
-            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
-        )
-        return result.stdout.strip()
-
-    git("init", "-q")
-    git("config", "user.name", "Hermes Test")
-    git("config", "user.email", "hermes@example.invalid")
-    (repo / "pyproject.toml").write_text(
-        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\n', encoding="utf-8"
-    )
-    git("add", "pyproject.toml")
-    git("commit", "-qm", "release")
-    git("tag", "v2026.9.24")
-
-    # The stamp this checkout was left with: written while the tag's pyproject
-    # could not be read, so the version walk had nothing to record.
-    (repo / "install-stamp.json").write_text(
-        json.dumps(
-            {
-                "commit": git("rev-parse", "HEAD"),
-                "source": "git",
-                "updateMechanism": "self",
-                "baseVersion": "unknown",
-                "displayVersion": f"git.{git('rev-parse', '--short=7', 'HEAD')}",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: repo / "install-stamp.json")
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    repo, git = live_git_checkout
+    head = git("rev-parse", "HEAD")
+    stamp_file = _write_stamp(repo, commit=head, baseVersion=placeholder)
+    _point_at(monkeypatch, repo, stamp_file)
 
     info = get_version_info()
 
     assert info.base_version == "0.21.5"
     assert info.distance == 0
     assert info.derived_version == "0.21.5"
-    assert info.commit == git("rev-parse", "HEAD")
+    assert info.commit == head
     assert info.source == "git"
+
+
+def test_valid_version_stamp_beside_a_live_checkout_stays_authoritative(live_git_checkout, monkeypatch):
+    """A stamp that names a real version is not deferred, even at HEAD.
+
+    The placeholder skip excuses only a stamp carrying no version. A stamp that
+    records ``0.21.4+3`` keeps answering with that version and its provenance —
+    the git walk would say ``0.21.5`` here, so the assertion tells the two
+    paths apart.
+    """
+    repo, git = live_git_checkout
+    head = git("rev-parse", "HEAD")
+    stamp_file = _write_stamp(
+        repo,
+        commit=head,
+        baseVersion="0.21.4",
+        displayVersion="0.21.4+3",
+        distance=3,
+    )
+    _point_at(monkeypatch, repo, stamp_file)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.4"
+    assert info.distance == 3
+    assert info.derived_version == "0.21.4+3"
+    assert info.commit == head
+
+
+def test_stamp_naming_another_commit_defers_to_the_live_checkout(live_git_checkout, monkeypatch):
+    """The pre-existing contract: a stamp describing a different commit is stale.
+
+    This is the guard the placeholder skip sits behind. It has to keep firing
+    for a stamp whose version looks perfectly valid, because that version
+    describes a checkout that is no longer here — trusting it would report the
+    previous build's identity against the current tree.
+    """
+    repo, git = live_git_checkout
+    head = git("rev-parse", "HEAD")
+    stamp_file = _write_stamp(
+        repo,
+        commit="f" * 40,
+        baseVersion="0.21.4",
+        displayVersion="0.21.4+3",
+        distance=3,
+    )
+    _point_at(monkeypatch, repo, stamp_file)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.5"
+    assert info.distance == 0
+    assert info.commit == head
 
 
 def test_stamped_unknown_version_still_wins_without_git(tmp_path, monkeypatch):

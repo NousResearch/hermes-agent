@@ -148,6 +148,15 @@ mini-swe-agent/
 .direnv/
 .nix-stamps/
 result
+# Legacy Docusaurus outputs left by source-checkout upgrades. Only the
+# released-client model catalog remains tracked under website/.
+/website/*
+!/website/static/
+/website/static/*
+!/website/static/api/
+/website/static/api/*
+!/website/static/api/model-catalog.json
+
 apps/docs/public/api/skills-index.json
 # skills.json + skills-meta.json are build artifacts emitted by
 # apps/docs/scripts/extract-skills.py during prebuild — keep them out of

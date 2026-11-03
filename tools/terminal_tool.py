@@ -1423,18 +1423,25 @@ def _pre_exec_block(
         command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
     )
     if blocked:
-        raise _Rejected(blocked)
+        raise _guard_refusal(blocked, "gateway_lifecycle")
     if workdir:
         workdir_error = _validate_workdir(workdir)
         if workdir_error:
             logger.warning("Blocked dangerous workdir: %s (command: %s)",
                            workdir[:200], _safe_command_preview(command))
-            raise _Rejected(_error_json(workdir_error, status="blocked"))
+            raise _guard_refusal(_error_json(workdir_error, status="blocked"), "workdir")
     if env_type == "local":
-        blocked = (self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
-                   or locked_skill_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key))
-        if blocked:
-            raise _Rejected(blocked)
+        for source, guard in (("self_repo", self_repo_block), ("locked_skill", locked_skill_block)):
+            if blocked := guard(command=command, cwd=cwd, workdir=workdir, session_key=session_key):
+                raise _guard_refusal(blocked, source)
+
+
+def _guard_refusal(result_json: str, source: str) -> _Rejected:
+    """A pre-exec guard refused the command: these guards run ahead of the approval gate (which
+    notes its own verdicts), so note the ``tool_decision`` policy block here."""
+    from agent.tool_decision import note
+    note("blocked_by_policy", source)
+    return _Rejected(result_json)
 
 
 _PTY_DISABLED_REASON = (
@@ -1552,11 +1559,11 @@ def terminal_tool(
             finally:
                 acting_for_tid.reset(_acting_token)
             if bounded_guard.timed_out:
-                raise _Rejected(_error_json(
+                raise _guard_refusal(_error_json(
                     f"Terminal pre-execution guard did not finish within {guard_timeout}s "
                     "(process-identity probe wedged); the command was not run. Retry the call.",
                     status="error",
-                ))
+                ), "pre_exec_timeout")
             # Pre-exec security checks (floors + dangerous command detection);
             # force=True means the user already confirmed.
             verdict = _run_approval_guards(command, env_type, plan.config, force=force)

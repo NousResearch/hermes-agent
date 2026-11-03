@@ -134,6 +134,45 @@ def test_deny_rule_inside_the_handler_emits_one_denied_by_rule_event(hooks, monk
     assert (event["verdict"], event["source"]) == ("denied_by_rule", "approvals.deny")
 
 
+@pytest.fixture
+def terminal(monkeypatch):
+    """The real terminal tool with planning, env and execution stubbed; every pre-exec guard passes."""
+    from tools import terminal_tool
+    plan = SimpleNamespace(config={}, env_type="local", effective_task_id="task-1", cwd="/w",
+                           effective_timeout=5, promoted_from_foreground_timeout=None)
+    monkeypatch.setattr(terminal_tool, "_plan_execution", lambda *a, **k: plan)
+    monkeypatch.setattr(terminal_tool, "_acquire_env", lambda *a, **k: object())
+    monkeypatch.setattr(terminal_tool, "_run_foreground", lambda *a, **k: '{"ok": true}')
+    for guard in ("gateway_lifecycle_block", "self_repo_block", "locked_skill_block"):
+        monkeypatch.setattr(terminal_tool, guard, lambda **k: None)
+    return terminal_tool
+
+
+def _run_terminal(terminal):
+    return _call("terminal", {"command": "echo ok"},
+                 dispatch=lambda name, args, **k: terminal.terminal_tool(args["command"]))[0]
+
+
+@pytest.mark.parametrize("guard, source", [("gateway_lifecycle_block", "gateway_lifecycle"),
+                                           ("self_repo_block", "self_repo"), ("locked_skill_block", "locked_skill")])
+def test_terminal_pre_exec_guard_refusal_emits_one_blocked_by_policy_event(hooks, monkeypatch, terminal, guard, source):
+    """These guards refuse on the deadline worker, before the approval gate could note anything."""
+    monkeypatch.setattr(terminal, guard, lambda **k: '{"error": "Blocked: refused", "status": "blocked"}')
+    assert "Blocked: refused" in _run_terminal(terminal)
+    [event] = hooks.decisions
+    assert (event["verdict"], event["source"]) == ("blocked_by_policy", source)
+
+
+def test_terminal_pre_exec_guard_timeout_emits_one_blocked_by_policy_event(hooks, monkeypatch, terminal):
+    """A guard that never rendered a verdict fails closed: the command did not run, so it is not allowed."""
+    monkeypatch.setattr(terminal, "_PRE_EXEC_GUARD_MIN_TIMEOUT_S", 0)
+    terminal._plan_execution().effective_timeout = 0.05
+    monkeypatch.setattr(terminal, "_pre_exec_block", lambda *a, **k: threading.Event().wait(1))
+    assert "did not finish" in _run_terminal(terminal)
+    [event] = hooks.decisions
+    assert (event["verdict"], event["source"]) == ("blocked_by_policy", "pre_exec_timeout")
+
+
 def test_executor_owned_terminal_event_is_the_only_one(hooks, monkeypatch):
     """Sequential executor path: the inner post hook is suppressed, the executor emits once, and the
     verdict a gate noted during the suppressed dispatch is still the one reported."""

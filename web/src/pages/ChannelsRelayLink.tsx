@@ -7,6 +7,8 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { MessagingPlatform, RelayLinkCode, RelayLinkedAccount } from "@/lib/api";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import { useI18n } from "@/i18n";
 
 const POLL_MS = 3000;
 // Consecutive poll failures before the panel stops waiting and shows the error.
@@ -38,6 +40,12 @@ export function RelayLinkPanel({
   platform: MessagingPlatform;
   showToast: (message: string, type: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
+  const relayUi = t.channelsRelayUi ?? en.channelsRelayUi!;
+  const withPlatform = useCallback(
+    (text: string) => text.replaceAll("{platform}", platform.name),
+    [platform.name],
+  );
   const [accounts, setAccounts] = useState<RelayLinkedAccount[] | null>(null);
   const [botUrl, setBotUrl] = useState<string | null>(null);
   const [link, setLink] = useState<RelayLinkCode | null>(null);
@@ -86,7 +94,12 @@ export function RelayLinkPanel({
         if (state.state === "refused") {
           setLink(null);
           setQrDataUrl("");
-          setError(`${platform.name} refused the link${state.reason ? ` (${state.reason})` : ""}. Get a new code and try again.`);
+          setError(
+            withPlatform(relayUi.linkRefused).replace(
+              "{reason}",
+              state.reason ? ` (${state.reason})` : "",
+            ),
+          );
           return;
         }
         // Reload before closing the code: closing re-runs this effect and cancels the rest of it.
@@ -97,13 +110,11 @@ export function RelayLinkPanel({
         if (!after) return;
         // `inactive` alone means used, expired or unknown: only a new account id proves the link.
         if (after.some((account) => !linkedBefore.current.has(account.platformUserId))) {
-          showToast(`${platform.name} account linked. Message the bot to talk to your agent.`, "success");
+          showToast(withPlatform(relayUi.accountLinked), "success");
         } else if (hasExpired(link)) {
-          setError("That code expired before it was used. Get a new code and try again.");
+          setError(relayUi.codeExpired);
         } else {
-          setNotice(
-            `The code is no longer active and no new account appeared. If your ${platform.name} account isn't listed, get a new code and try again.`,
-          );
+          setNotice(withPlatform(relayUi.inactiveCode));
         }
       } catch (pollError) {
         if (cancelled) return;
@@ -122,7 +133,7 @@ export function RelayLinkPanel({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [link, loadAccounts, platform.name, showToast]);
+  }, [link, loadAccounts, relayUi, showToast, withPlatform]);
 
   const start = async () => {
     setBusy(true);
@@ -159,9 +170,9 @@ export function RelayLinkPanel({
     if (!link) return;
     try {
       await navigator.clipboard.writeText(link.command);
-      showToast("Copied", "success");
+      showToast(relayUi.copied, "success");
     } catch {
-      showToast(`Copy failed. Type ${link.command} instead.`, "error");
+      showToast(relayUi.copyFailed.replace("{command}", link.command), "error");
     }
   };
 
@@ -170,11 +181,11 @@ export function RelayLinkPanel({
   return (
     <div className="flex flex-col gap-3 border-t border-border pt-3" data-testid={`relay-link-${platform.id}`}>
       <div className="flex items-center gap-2 flex-wrap">
-        <Badge tone="secondary">Team Gateway</Badge>
+        <Badge tone="secondary">{relayUi.teamGateway}</Badge>
         <span className="text-xs text-muted-foreground">
           {portalUrl
-            ? `${platform.name} reaches this agent through the shared Hermes bot. This agent's accounts are linked from Nous Portal.`
-            : `${platform.name} reaches this agent through the shared Hermes bot. Link your ${platform.name} account to it; no bot token needed.`}
+            ? withPlatform(relayUi.managedHint)
+            : withPlatform(relayUi.linkHint)}
         </span>
       </div>
 
@@ -185,7 +196,7 @@ export function RelayLinkPanel({
               <span className="truncate">{accountLabel(account)}</span>
               {!portalUrl && (
                 <Button ghost size="sm" onClick={() => void unlink(account)}>
-                  Unlink
+                  {relayUi.unlink}
                 </Button>
               )}
             </li>
@@ -200,40 +211,40 @@ export function RelayLinkPanel({
           onClick={() => window.open(portalUrl, "_blank", "noopener,noreferrer")}
           prefix={<ExternalLink className="h-4 w-4" />}
         >
-          Link accounts in Nous Portal
+          {relayUi.linkInPortal}
         </Button>
       ) : link ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
           {qrDataUrl && (
             <img
               src={qrDataUrl}
-              alt={`${platform.name} shared bot QR code`}
+              alt={withPlatform(relayUi.qrCodeAlt)}
               className="h-40 w-40 shrink-0 rounded border border-border bg-white p-1"
             />
           )}
           <div className="flex flex-col gap-2 text-sm">
             <span>
-              1. {qrDataUrl ? "Scan the code with your phone, or open" : "Open"} the bot in {platform.name}.
+              {qrDataUrl ? withPlatform(relayUi.scanOrOpen) : withPlatform(relayUi.openBot)}
             </span>
             <span>
-              2. Send it this message from the account you want to link:
+              {relayUi.sendMessage}
             </span>
             <code className="w-fit rounded bg-muted px-2 py-1 font-mono">{link.command}</code>
             <div className="flex flex-wrap gap-2">
               {openUrl && (
                 <Button size="sm" onClick={() => window.open(openUrl, "_blank", "noopener,noreferrer")} prefix={<ExternalLink className="h-4 w-4" />}>
-                  Open {platform.name}
+                  {withPlatform(relayUi.openPlatform)}
                 </Button>
               )}
               <Button ghost size="sm" onClick={() => void copyCommand()} prefix={<Copy className="h-4 w-4" />}>
-                Copy message
+                {relayUi.copyMessage}
               </Button>
               <Button ghost size="sm" onClick={() => { setLink(null); setQrDataUrl(""); }}>
-                Cancel
+                {relayUi.cancel}
               </Button>
             </div>
             <span className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Spinner /> Waiting for the bot to see your message. The code works once.
+              <Spinner /> {relayUi.waiting}
             </span>
           </div>
         </div>
@@ -245,7 +256,9 @@ export function RelayLinkPanel({
           disabled={busy}
           prefix={busy ? <Spinner /> : <Link2 className="h-4 w-4" />}
         >
-          {accounts && accounts.length > 0 ? `Link another ${platform.name} account` : `Link ${platform.name}`}
+          {accounts && accounts.length > 0
+            ? withPlatform(relayUi.linkAnother)
+            : withPlatform(relayUi.link)}
         </Button>
       )}
 

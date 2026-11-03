@@ -132,6 +132,30 @@ export interface Translations {
     disabledStatus: string;
   };
 
+  channelsRelayUi?: {
+    copied: string;
+    copyFailed: string;
+    teamGateway: string;
+    managedHint: string;
+    linkHint: string;
+    unlink: string;
+    linkInPortal: string;
+    qrCodeAlt: string;
+    scanOrOpen: string;
+    openBot: string;
+    sendMessage: string;
+    openPlatform: string;
+    copyMessage: string;
+    cancel: string;
+    waiting: string;
+    linkAnother: string;
+    link: string;
+    linkRefused: string;
+    accountLinked: string;
+    codeExpired: string;
+    inactiveCode: string;
+  };
+
   // ── App shell ──
   app: {
     brand: string;

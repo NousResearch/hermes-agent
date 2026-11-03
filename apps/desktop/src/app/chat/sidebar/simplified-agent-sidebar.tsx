@@ -167,7 +167,11 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             <SidebarPanelLabel className="flex-1 px-2 py-2 [&>span:first-child]:mx-1">
               {t.sidebar.pinned}
             </SidebarPanelLabel>
-            <Codicon className="mr-2 text-(--ui-text-tertiary)" name={pinsOpen ? 'chevron-down' : 'chevron-right'} />
+            <Codicon
+              className="mr-2 text-(--ui-text-tertiary)"
+              name={pinsOpen ? 'chevron-down' : 'chevron-right'}
+              size={12}
+            />
           </RowButton>
           {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} showAgent />}
         </section>

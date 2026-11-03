@@ -106,9 +106,9 @@ export function SimplifiedAgentList({
                   aria-label={group[0].gateway}
                   onClick={() => toggle(gatewayId, open)}
                   size="icon-xs"
-                  variant="ghost"
+                  variant="grip"
                 >
-                  <Codicon name={open ? 'chevron-down' : 'chevron-right'} />
+                  <Codicon name={open ? 'chevron-down' : 'chevron-right'} size={12} />
                 </Button>
               )}
             </div>
@@ -118,23 +118,23 @@ export function SimplifiedAgentList({
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                    <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center rounded-sm px-2 hover:bg-(--chrome-action-hover) focus-within:bg-(--chrome-action-hover)">
+                    <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center rounded-sm px-2 focus-within:bg-(--chrome-action-hover)">
                       {group.length > 1 ? (
                         <Button
                           aria-expanded={agentOpen}
                           aria-label={agent.label}
                           onClick={() => toggle(agent.id, agentOpen)}
                           size="icon-xs"
-                          variant="ghost"
+                          variant="grip"
                         >
-                          <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} />
+                          <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} size={12} />
                         </Button>
                       ) : (
                         <span aria-hidden />
                       )}
                       <RowButton
                         aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                        className="flex min-h-8.5 min-w-0 items-center gap-2 rounded-sm text-left text-xs font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                        className="flex min-h-8.5 min-w-0 items-center gap-2 rounded-sm text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
                         disabled={pending !== null}
                         onClick={() => void openAgent(agent)}
                       >
@@ -154,9 +154,9 @@ export function SimplifiedAgentList({
                         }}
                         size="icon-xs"
                         title={t.sidebar.newSessionIn(agent.label)}
-                        variant="ghost"
+                        variant="grip"
                       >
-                        <Codicon name="edit" />
+                        <Codicon name="add" size={14} />
                       </Button>
                     </div>
                     {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}

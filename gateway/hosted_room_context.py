@@ -108,7 +108,17 @@ def post_scheduled_message(
     job_label = re.sub(r"[^A-Za-z0-9._:-]", "-", job_id)[: hosted_rooms.MAX_ACTOR_ID_CHARS - len(prefix)] or "job"
     actor = {"kind": "user", "id": f"{prefix}{job_label}",
              "display_name": (job_name or job_id)[: hosted_rooms.MAX_ACTOR_LABEL_CHARS]}
-    return hosted_rooms.append_event(
-        db_path, room_id=room_id, event_id=f"cron-post:{digest[:40]}", kind="message.user", actor=actor,
-        payload=payload, authority_gateway_id=state["authority_gateway_id"],
-        authority_epoch=state["authority_epoch"], now=now)
+    event_id = f"cron-post:{digest[:40]}"
+    try:
+        return hosted_rooms.append_event(
+            db_path, room_id=room_id, event_id=event_id, kind="message.user", actor=actor,
+            payload=payload, authority_gateway_id=state["authority_gateway_id"],
+            authority_epoch=state["authority_epoch"], now=now)
+    except hosted_rooms.EventConflictError:
+        # A retry of the same run re-rendered different text (a re-run agent, a new timestamp): the first
+        # post already landed and the run is delivered, so report that post rather than a failure.
+        with closing(hosted_rooms._read_connection(db_path)) as conn:
+            row = hosted_rooms._load_event(conn, state["room_id"], event_id)
+        if row is None:
+            raise
+        return hosted_rooms._event_from_row(row, idempotent=True)

@@ -1517,10 +1517,15 @@ platform_toolsets:
 #           - my_plugin_command
 #           - my-important-skill
 #   matrix:
+#     # Platform-wide: successful explicit NO_REPLY/[SILENT] finals stay silent in every
+#     # chat on this platform (DMs included), even when addressed. A room's own
+#     # allow_silence (true or false) overrides it; omitted/null inherits.
+#     # allow_silence: true
 #     channel_overrides:
 #       "!exampleTeamRoom:example.org":
 #         # Successful explicit NO_REPLY/[SILENT] finals stay silent, even when addressed.
-#         # Omitted/null/false keeps the current reply policy; failures remain visible.
+#         # Omitted/null inherits the platform's allow_silence; false keeps the current
+#         # reply policy. Failures remain visible.
 #         # Restart the gateway after changing room overrides.
 #         allow_silence: true
 #   slack:

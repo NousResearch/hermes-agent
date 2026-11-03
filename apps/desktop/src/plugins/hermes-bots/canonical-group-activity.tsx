@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
 import { RoomBotAvatar } from './group-room-avatar'
-import { formatElapsed, isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
+import { isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
 import { MemberStatusChip, ROOM_AVATAR_SIZE, RoomCycleFooter, type RoomStatusLabels, RoomTypingRow } from './group-room-ui'
 
 /** `groups.state` driver fields that say who is answering. */
@@ -76,13 +76,6 @@ export function CanonicalGroupTyping({ members = [], labels, statuses }: {
   })}</>
 }
 
-/** `builder (terminal, 1m20s)` */
-function workingName(member: CanonicalRoomMember, status: BusyStatus): string {
-  const detail = [status.tool, status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined].filter(Boolean)
-
-  return detail.length ? `${canonicalMemberName(member)} (${detail.join(', ')})` : canonicalMemberName(member)
-}
-
 /** The room's footer: its round cycle once the log names a discussion; before that (or on a
  *  gateway without member activity) the plain working line. */
 export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statuses }: {
@@ -92,7 +85,8 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
   const busy = members.filter(member => isBusyStatus(statusOf(statuses, member)))
 
   if (cycle) {
-    return <RoomCycleFooter cycle={cycle} labels={labels} working={busy.map(member => workingName(member, statusOf(statuses, member) as BusyStatus))} />
+    // Names only: the chips and typing rows already carry each member's tool and time.
+    return <RoomCycleFooter cycle={cycle} labels={labels} working={busy.map(canonicalMemberName)} />
   }
 
   if (!busy.length && !driver?.working) {return null}

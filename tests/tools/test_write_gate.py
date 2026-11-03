@@ -32,6 +32,12 @@ from tools.write_gate import (
 )
 from tools.memory_tool_store import MemoryStore
 from tools.memory_tool import memory_tool
+import tools.memory_tool as _memory_tool_mod
+
+# Capability probe for the doc-chain variants: the MODULE, never the
+# entry-point function of the same name — getattr on the function is None
+# forever, which made the old skipif unfalsifiable (the doc arms never ran).
+_DOC_CHAIN_PRESENT = getattr(_memory_tool_mod, "DOC_TARGET_PREFIX", None) is not None
 from datetime import UTC
 
 
@@ -250,7 +256,7 @@ class TestRerouteTargetField:
         assert refusal.reroute_target == "skills/"
 
     @pytest.mark.skipif(
-        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        not _DOC_CHAIN_PRESENT,
         reason="doc-chain primitives absent (the #116673 store is not in this push)",
     )
     def test_over_budget_refusal_names_chain_doc_destination(self):
@@ -512,7 +518,7 @@ class TestGrowingReplaceCapBypass:
         assert _stage1_projected_hard_cap(store, "memory", "replace", "y", "abcdefgh") is None
 
     @pytest.mark.skipif(
-        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        not _DOC_CHAIN_PRESENT,
         reason="doc-chain primitives absent (the #116673 store is not in this push)",
     )
     def test_growing_replace_on_doc_target_admitted(self):
@@ -545,7 +551,7 @@ class TestDateCurrencyFacets:
         assert _stage2_date_currency("Deployed 1999-01-15") is None
 
     @pytest.mark.skipif(
-        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        not _DOC_CHAIN_PRESENT,
         reason="doc-chain primitives absent (the #116673 store is not in this push)",
     )
     def test_doc_target_skips_date_advisory(self, tmp_path, monkeypatch):
@@ -605,7 +611,7 @@ class TestBatchStaleEntryBoundary:
         assert calls == [], f"Stage 6 must be skipped on batch paths, got {len(calls)} call(s)"
 
     @pytest.mark.skipif(
-        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        not _DOC_CHAIN_PRESENT,
         reason="doc-chain primitives absent (the #116673 store is not in this push)",
     )
     def test_batch_doc_target_variant(self, tmp_path, monkeypatch):
@@ -801,7 +807,7 @@ class TestGateWiringProof:
 # =========================================================================
 
 @pytest.mark.skipif(
-    getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+    not _DOC_CHAIN_PRESENT,
     reason="doc-chain primitives absent (the #116673 store is not in this push) — "
     "the doc-chain arms degrade to the plain-memory path",
 )

@@ -36,6 +36,17 @@ _TRANSIENT_HTTP_NEEDLES = _TRANSIENT_OSERROR_NEEDLES + (
 _TRANSIENT_ERRNOS = frozenset({
     errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN,
     errno.ETIMEDOUT, errno.EAGAIN})
+# The error summarizer (``agent.api_error_summary``) folds raw network/DNS failures into this
+# canonical offline sentence, and ``cron.scheduler`` re-raises that prose bare (no ``__cause__``)
+# from the summarized result payload — without this needle the matcher walks a chain that no
+# longer exists and offline failures never enter the retry ladder (#118536).
+_SUMMARIZED_OFFLINE_NEEDLES = ("hermes can't reach the model provider",)
+# Cancellation prose from ``agent.conversation_loop.INTERRUPT_WAITING_FOR_MODEL_PREFIX``: a
+# desktop app quit mid-run fails the fire with this sentence and no cause chain, so the fresh
+# never-spent run never enters the ladder either (#118536 follow-up). Anchored on the opening
+# paren so the loop's own backoff variants ("retrying API call...", "handling API error...")
+# stay out; the ``session_api_calls`` gate in ``unreachable_retry`` still excludes spent runs.
+_INTERRUPTED_RUN_NEEDLES = ("operation interrupted: waiting for model response (",)
 
 
 def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
@@ -72,6 +83,14 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
                 return True
         # Bare exceptions that carry the raw DNS text (format_runtime_provider_error).
         if any(needle in msg for needle in _DNS_FAILURE_NEEDLES):
+            return True
+        # Summarized offline prose (``api_error_summary``): the raw transport exception was
+        # already folded away, so match the canonical sentence itself (#118536).
+        if any(needle in msg for needle in _SUMMARIZED_OFFLINE_NEEDLES):
+            return True
+        # Interrupted-mid-run prose (``conversation_loop``): the run never delivered its answer
+        # because it was cut off before finishing (#118536 follow-up).
+        if any(needle in msg for needle in _INTERRUPTED_RUN_NEEDLES):
             return True
         cur = cur.__cause__ or cur.__context__
     return False

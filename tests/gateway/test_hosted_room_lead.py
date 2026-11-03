@@ -214,6 +214,22 @@ def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db
         "purpose": "New purpose", "notes": "", "routing": "lead", "lead_member_id": "member-ada"}
 
 
+def test_attachment_only_message_tells_the_lead_what_arrived():
+    room = {"room_id": "room", "name": "Files", "authority_gateway_id": "gw", "authority_epoch": 1,
+            "members": [{"member_id": p, "profile": p, "handle": p} for p in ("alice", "bob")]}
+    files = [{"attachment_id": f"att_{n:032x}", "kind": kind, "name": name, "size": 1, "mime": mime}
+             for n, (kind, name, mime) in enumerate([("file", "crash.log", "text/plain"), ("image", "trace.png", "image/png")])]
+    events = [{"room_id": "room", "seq": 1, "event_id": "event-1", "kind": "message.user", "authority_epoch": 1,
+               "actor": {"kind": "user", "id": "user"}, "payload": {"text": "", "thread_id": "t", "attachments": files}}]
+
+    routing = discussion.plan_next_task(room, events, local_profiles=("alice", "bob"),
+                                        room_context={"routing": "lead", "lead_member_id": "alice"})
+
+    assert (routing.reason, routing.task.member.member_id) == ("lead_routing", "alice")
+    prompt = routing.task.payload["prompt"]
+    assert "crash.log (file, text/plain)" in prompt and "trace.png (image, image/png)" in prompt
+
+
 def test_retried_settings_save_returns_its_first_event_after_a_routing_edit(room_db: Path):
     first = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
     _lead_room(room_db)  # another client turns on a lead meanwhile

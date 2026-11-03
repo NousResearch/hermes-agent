@@ -2589,6 +2589,12 @@ export const en: Translations = {
     restartFailedManualDetail: 'Try Restart again; if it still fails, open the logs and send diagnostics.',
     restartAgain: 'Restart again',
     openLogs: 'Open logs',
+    teamGateway: {
+      title: 'Messaging runs through Team Gateway',
+      body: 'This agent reaches chat platforms through Team Gateway\'s shared bots, so it needs no bot tokens of its own. Choose which platforms it uses and who can message it on the agent\'s page in Nous Portal.',
+      carried: (platforms: string) => `Carried for this agent: ${platforms}`,
+      openPortal: 'Manage agents in Nous Portal'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'No bot token needed',

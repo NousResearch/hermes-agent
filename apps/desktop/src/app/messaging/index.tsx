@@ -22,6 +22,7 @@ import {
   type MessagingPlatformUpdate,
   type PairingUser,
   revokePairing,
+  type TeamGatewayInfo,
   type TelegramOnboardingApplyResponse,
   updateMessagingPlatform
 } from '@/hermes'
@@ -50,6 +51,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { AllowlistField } from './allowlist-field'
 import { PlatformAvatar } from './platform-icon'
 import { RelayLinkSetup } from './relay-link'
+import { TeamGatewayMessaging } from './team-gateway'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
@@ -155,6 +157,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the active profile; the API helpers treat null as "target primary").
   const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+  const [teamGateway, setTeamGateway] = useState<null | TeamGatewayInfo>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
   // vanishing toast is not enough: the page keeps a banner up until a restart
   // actually happens (dashboard parity). Cleared on a completed restart.
@@ -218,6 +221,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
         if (scopeRef.current === scopeProfile) {
           setPlatforms(result.platforms)
+          setTeamGateway(result.team_gateway ?? null)
         }
       } catch (err) {
         if (!silent) {
@@ -282,6 +286,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   if (prevScope !== scopeProfile) {
     setPrevScope(scopeProfile)
     setPlatforms(null)
+    setTeamGateway(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
   }
@@ -550,6 +555,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       setPairing(snapshot)
       throw err
     }
+  }
+
+  // Team Gateway owns this profile's messaging: no direct bot runs, so the page is the Portal link.
+  if (teamGateway) {
+    return (
+      <PageSearchShell {...props} searchHidden>
+        <div className="flex h-full min-h-0 flex-col">
+          <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
+          <TeamGatewayMessaging teamGateway={teamGateway} />
+        </div>
+      </PageSearchShell>
+    )
   }
 
   return (

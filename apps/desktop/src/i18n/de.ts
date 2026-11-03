@@ -2984,6 +2984,12 @@ export const deOverrides = {
       'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
+    teamGateway: {
+      title: 'Messaging läuft über Team Gateway',
+      body: 'Dieser Agent erreicht Chat-Plattformen über die gemeinsamen Bots von Team Gateway und braucht daher keine eigenen Bot-Tokens. Welche Plattformen er nutzt und wer ihm schreiben darf, legst du auf der Seite des Agenten im Nous Portal fest.',
+      carried: (platforms: string) => `Für diesen Agenten verfügbar: ${platforms}`,
+      openPortal: 'Agenten im Nous Portal verwalten'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'Kein Bot-Token nötig',

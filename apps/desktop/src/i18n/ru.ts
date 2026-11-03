@@ -1876,6 +1876,12 @@ export const ruOverrides = {
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    teamGateway: {
+      title: 'Сообщения идут через Team Gateway',
+      body: 'Этот агент подключается к чат-платформам через общих ботов Team Gateway, поэтому собственные токены ботов ему не нужны. Выберите платформы и тех, кто может ему писать, на странице агента в Nous Portal.',
+      carried: (platforms: string) => `Доступно для этого агента: ${platforms}`,
+      openPortal: 'Управлять агентами в Nous Portal'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'Токен бота не нужен',

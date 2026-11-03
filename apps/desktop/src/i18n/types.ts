@@ -2341,6 +2341,12 @@ export interface Translations extends NoticeTranslations {
     restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
+    teamGateway: {
+      title: string
+      body: string
+      carried: (platforms: string) => string
+      openPortal: string
+    }
     relayLink: {
       title: string
       badge: string

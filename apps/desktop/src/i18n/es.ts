@@ -2973,6 +2973,12 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    teamGateway: {
+      title: 'La mensajería pasa por Team Gateway',
+      body: 'Este agente llega a las plataformas de chat a través de los bots compartidos de Team Gateway, así que no necesita tokens de bot propios. Elige qué plataformas usa y quién puede escribirle en la página del agente en Nous Portal.',
+      carried: (platforms: string) => `Disponibles para este agente: ${platforms}`,
+      openPortal: 'Gestionar agentes en Nous Portal'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'Sin token de bot',

@@ -1616,6 +1616,12 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    teamGateway: {
+      title: 'メッセージは Team Gateway 経由です',
+      body: 'このエージェントは Team Gateway の共有ボットを通じてチャットプラットフォームに接続するため、独自のボットトークンは不要です。使用するプラットフォームとメッセージを送れるユーザーは、Nous Portal のエージェントページで設定します。',
+      carried: (platforms: string) => `このエージェントで利用可能: ${platforms}`,
+      openPortal: 'Nous Portal でエージェントを管理'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'ボットトークン不要',

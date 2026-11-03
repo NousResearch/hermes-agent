@@ -586,3 +586,32 @@ describe('MessagingView Telegram quick setup', () => {
     }
   })
 })
+
+describe('MessagingView under Team Gateway', () => {
+  it('replaces per-platform setup with the Portal Manage Agents link when Team Gateway owns messaging', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({ id: 'telegram', name: 'Telegram', relay_exclusive: true, relay_fronted: true })],
+      team_gateway: { platforms: ['discord', 'telegram'], portal_url: 'https://portal.example.test/agents' }
+    })
+
+    await renderMessaging()
+
+    expect(await screen.findByText('Messaging runs through Team Gateway')).toBeTruthy()
+    expect(screen.getByText('Carried for this agent: Discord, Telegram')).toBeTruthy()
+    expect(screen.queryByTestId('relay-link-telegram')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Manage agents in Nous Portal/ }))
+    expect(openExternalLink).toHaveBeenCalledWith('https://portal.example.test/agents')
+  })
+
+  it('keeps per-platform setup when Team Gateway does not own messaging', async () => {
+    $settingsScopeOverride.set(null)
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()], team_gateway: null })
+
+    await renderMessaging()
+
+    expect(await screen.findAllByText('Microsoft Teams')).not.toHaveLength(0)
+    expect(screen.queryByText('Messaging runs through Team Gateway')).toBeNull()
+  })
+})

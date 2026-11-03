@@ -196,6 +196,12 @@ export const arCommandCenter = {
     restartNow: 'إعادة التشغيل الآن',
     restarting: 'جارٍ إعادة التشغيل…',
     restartFailedManual: 'فشلت إعادة تشغيل البوابة — أعد تشغيلها يدويًا وتحقق من سجلات البوابة.',
+    teamGateway: {
+      title: 'تمر المراسلة عبر Team Gateway',
+      body: 'يصل هذا الوكيل إلى منصات الدردشة عبر بوتات Team Gateway المشتركة، لذا لا يحتاج إلى رموز بوت خاصة به. اختر المنصات التي يستخدمها ومن يمكنه مراسلته من صفحة الوكيل في Nous Portal.',
+      carried: (platforms: string) => `متاح لهذا الوكيل: ${platforms}`,
+      openPortal: 'إدارة الوكلاء في Nous Portal'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: 'لا حاجة لرمز بوت',

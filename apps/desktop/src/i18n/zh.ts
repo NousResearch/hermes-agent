@@ -2510,6 +2510,12 @@ export const zhOverrides = {
     restartNow: '立即重启',
     restarting: '正在重启…',
     restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    teamGateway: {
+      title: '消息通过 Team Gateway 传递',
+      body: '此代理通过 Team Gateway 的共享机器人连接聊天平台，因此不需要自己的机器人令牌。请在 Nous Portal 的代理页面中选择它使用的平台以及谁可以给它发消息。',
+      carried: (platforms: string) => `此代理可用：${platforms}`,
+      openPortal: '在 Nous Portal 中管理代理'
+    },
     relayLink: {
       title: 'Team Gateway',
       badge: '无需机器人令牌',

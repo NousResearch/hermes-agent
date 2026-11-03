@@ -24,6 +24,9 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { profile: 'default', cwd: '/w', reasoning: 'high', service_tier: 'normal' }],
   ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { profile: 'default', reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
   ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { profile: 'default', follow_profile_config: true, hidden: true }],
+  // group-turns.ts: a Desktop-driven room's member session on this owner. `room_plumbing` is the
+  // serve socket's flag; the owner keys the same behaviour on hidden + follow_profile_config.
+  ['Desktop-driven room member', { ...BASE, title: 'Group: r-1 · t1', hidden: true, room_plumbing: true, follow_profile_config: true }, { profile: 'default', title: 'Group: r-1 · t1', follow_profile_config: true, hidden: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { profile: 'default', cwd: '/w', service_tier: 'priority' }],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { profile: 'default', service_tier: 'ultrafast' }],
   // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.

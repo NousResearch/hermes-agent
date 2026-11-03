@@ -359,10 +359,11 @@ describe('WebAccessSettings while Start runs', () => {
     start_progress: { started_at: Date.now() / 1000 - secondsAgo, step: 'building' }
   })
 
-  // The progress poll and the elapsed clock run only while the window is viewed.
+  // The progress poll and the elapsed clock run only while the window is viewed. `Date` is pinned:
+  // the statuses and the elapsed clock both read it, so a runner pause cannot move the label.
   beforeEach(() => {
     vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ now: new Date('2026-11-03T12:00:00Z'), toFake: ['Date', 'setInterval', 'clearInterval'] })
   })
 
   afterEach(() => {

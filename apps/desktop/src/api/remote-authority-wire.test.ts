@@ -130,3 +130,44 @@ test.each(['abort', 'deadline'] as const)('a request waiting for public readines
     await shut(client, server)
   }
 })
+
+test('a closed-handler redial survives the previous socket\'s close until its own readiness', async () => {
+  const server = await listen()
+  let connections = 0
+  server.on('connection', (socket: FixtureSocket) => {
+    if (++connections === 1) {
+      setTimeout(() => socket.terminate(), 20)
+
+      return
+    }
+
+    setTimeout(() => socket.send(readyFrame), 20)
+    socket.on('message', bytes => {
+      const frame = JSON.parse(bytes.toString())
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {} }))
+    })
+  })
+  const client = new HermesGateway()
+  const address = server.address() as { port: number }
+  const url = `ws://127.0.0.1:${address.port}/api/ws?ticket=public-fixture`
+  let redial: Promise<void> | undefined
+  let opened = false
+
+  // Registered before the first dial, so it runs ahead of that dial's readiness listener.
+  const off = client.onState(state => {
+    if (state === 'open') { opened = true }
+
+    if (state === 'closed' && opened && !redial) { redial = client.connect(url) }
+  })
+
+  try {
+    await expect(client.connect(url)).rejects.toThrow('before protocol readiness')
+    await expect(redial).resolves.toBeUndefined()
+    expect(client.connectionState).toBe('open')
+    await expect(client.request('ping')).resolves.toEqual({})
+    expect(connections).toBe(2)
+  } finally {
+    off()
+    await shut(client, server)
+  }
+})

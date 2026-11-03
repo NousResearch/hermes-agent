@@ -1,15 +1,13 @@
-"""Channel dispatch: the local command names intent; CI allocates and builds.
+"""Channel administration from release.py: list, retire and bootstrap channel records.
 
-A channel build is a preview of an exact pushed commit. The local command does
-not touch R2: it resolves the commit, validates the request and dispatches the
-default-branch workflow. The workflow's privileged allocation step creates the
-channel and mints the immutable build request (see channel_disposable.py).
+Building into a channel is a channel claim (release.py --channel NAME --build-commit REV,
+scripts/releases/commit_build.py): Stable Release admits it, allocates its request
+(channel_claims.py), builds and tests it like a release and advances the channel.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 
@@ -19,84 +17,7 @@ from hermes_cli.release_channels import (
     validate_repository,
 )
 from scripts.releases import commit_build, r2
-from scripts.releases.bundle_env import parse_assignments, validate
 from scripts.releases.channels import BRANDINGS, ChannelPublisher, R2ChannelStore
-
-
-def dispatch_command(
-    name: str,
-    commit: str,
-    repository: str,
-    branch: str,
-    bundle_env: dict | None = None,
-    branding: str = "preview",
-) -> list[str]:
-    validate_name(name)
-    if branding not in BRANDINGS:
-        raise ChannelError(f"Unknown channel branding: {branding}")
-    validate_repository(repository)
-    commit_build.require_commit(commit)
-    if not branch or branch.startswith("-"):
-        raise ChannelError("Missing repository default branch")
-    command = [
-        "gh",
-        "workflow",
-        "run",
-        commit_build.WORKFLOW,
-        "--repo",
-        repository,
-        "--ref",
-        branch,
-        "-f",
-        "channel=" + name,
-        "-f",
-        "build_commit=" + commit,
-        "-f",
-        "tag=",
-        "-f",
-        "upload_release=false",
-        "-f",
-        "termux_upgrade_from_tag=",
-    ]
-    if bundle_env:
-        command += ["-f", "bundle_env=" + json.dumps(bundle_env, sort_keys=True)]
-    if branding != "preview":
-        command += ["-f", "branding=" + branding]
-    return command
-
-
-def prepare_build(
-    *,
-    name: str,
-    revision: str,
-    remote: str,
-    repo: Path,
-    repository: str,
-    default_branch: str,
-    dispatch,
-    bundle_env: dict | None = None,
-    publish: bool = False,
-    branding: str = "preview",
-) -> dict:
-    validate_name(name)
-    validate_repository(repository)
-    bundle_env = validate({} if bundle_env is None else bundle_env)
-    commit = commit_build.resolve_revision(revision, remote, repo)
-    version = commit_build.version_at(repo, commit)
-    if not default_branch or default_branch.startswith("-"):
-        raise ChannelError("Missing repository default branch")
-    command = dispatch_command(name, commit, repository, default_branch, bundle_env, branding)
-    result = {
-        "channel": name,
-        "branding": branding,
-        "repository": repository,
-        "commit": commit,
-        "sourceVersion": version,
-    }
-    if not publish:
-        return {**result, "command": command}
-    dispatch(command)
-    return {**result, "command": command}
 
 
 def maintainer_authorizer(repository: str):
@@ -124,22 +45,11 @@ def maintainer_authorizer(repository: str):
 
 
 def configured_publisher(repository: str) -> ChannelPublisher:
-    from scripts.releases.r2_scope import R2Scope, channel_public_base
+    from scripts.releases.r2_scope import channel_public_base
 
     validate_repository(repository)
-    scope = R2Scope.configured(repository)
-    if scope.prefix:
-        actual_id = commit_build.output([
-            "gh",
-            "api",
-            f"repos/{repository}",
-            "--jq",
-            ".id",
-        ])
-        if actual_id != os.environ.get("GITHUB_REPOSITORY_ID"):
-            raise ChannelError("Disposable namespace belongs to another repository")
     base = channel_public_base()
-    store = R2ChannelStore(*r2.credentials(), scope=scope)
+    store = R2ChannelStore(*r2.credentials())
 
     def verify_build(request: dict, manifest: dict) -> bool:
         from scripts.releases.channel_releases import verify_bootstrap
@@ -163,37 +73,6 @@ def cmd_channel(args) -> None:
         repository = release.remote_github_repo(remote)
         if not repository:
             raise ChannelError("Channel commands require an explicit GitHub remote")
-        default_branch = release._default_branch(repository)
-        if args.channel:
-            bundle_env = parse_assignments(args.bundle_env, args.bundle_unset)
-            if args.channel_specific_data_dirs:
-                bundle_env["HERMES_DATA_DIR_SUFFIX"] = f"-channel-build-{args.channel}"
-                bundle_env["HERMES_HOME"] = None
-                bundle_env["HERMES_DESKTOP_USER_DATA_DIR"] = None
-                bundle_env["HERMES_SHARED_AUTH_DIR"] = None
-
-            result = prepare_build(
-                name=args.channel,
-                revision=args.build_commit,
-                remote=remote,
-                repo=release.REPO_ROOT,
-                repository=repository,
-                default_branch=default_branch,
-                dispatch=lambda command: subprocess.run(
-                    command, cwd=release.REPO_ROOT, check=True, timeout=60
-                ),
-                bundle_env=bundle_env,
-                publish=args.publish,
-                branding=args.branding,
-            )
-            print(json.dumps(result, sort_keys=True, indent=2))
-            if not args.publish:
-                print("Dry run: no workflow was dispatched. Add --publish to dispatch.")
-                return
-            print(f"Channel build for {args.channel} started at commit {result['commit']}.")
-            print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
-            print("Wait for that workflow to finish. It builds this commit and moves the channel when every native smoke passes.")
-            return
         publisher = configured_publisher(repository)
         operations = {
             "channels": lambda: publisher.list(),

@@ -24,6 +24,7 @@ SMOKE_WORKFLOW = "./.github/workflows/desktop-bundle-smoke.yml"
 BUILD_CACHE_ACTION = "./.github/actions/desktop-build-cache"
 SHA = "a" * 40
 CANARY_TAG = "canary.20260818T101010Z-v0.28.0"
+CHANNEL_TAG = "channel.20260818T101010Z-v0.28.0"
 PLATFORMS = ("darwin", "win32")
 ARCHES = ("arm64", "x64")
 NATIVE_TARGETS = tuple(f"{platform}-{arch}" for platform in PLATFORMS for arch in ARCHES)
@@ -120,11 +121,6 @@ def _renders(job: dict, flag: str) -> bool:
                for step in job.get("steps", []))
 
 
-def channel_publisher(jobs: dict) -> str:
-    return _only([name for name, job in jobs.items() if _renders(job, "--channel-build")],
-                 "channel publisher")
-
-
 def commit_summary(jobs: dict) -> str:
     return _only([name for name, job in jobs.items() if _renders(job, "--summary-commit")],
                  "commit build summary")
@@ -143,11 +139,10 @@ def phase_result(jobs: dict) -> str:
                          for step in job.get("steps", []))], "stable phase result")
 
 
-def stage_step(job: dict, *, channel: bool = False) -> dict:
-    """The step that stages this job's receipt, for a channel or tag/commit build."""
-    flag = "--channel-request" if channel else "--commit-build"
+def stage_step(job: dict) -> dict:
+    """The step that stages this job's receipt under its tag, claim or commit archive."""
     (step,) = [step for step in job["steps"]
-               if "scripts.releases.handoff stage" in step.get("run", "") and flag in step["run"]]
+               if "scripts.releases.handoff stage" in step.get("run", "") and "--commit-build" in step["run"]]
     return step
 
 
@@ -160,17 +155,19 @@ def credential_gate(job: dict) -> dict:
 
 # Dispatch shapes that produce downloadable artifacts, keyed by trust branch.
 DOWNLOADABLE_DISPATCHES = {
-    "tag": {"tag": CANARY_TAG, "upload_release": True, "build_commit": "", "channel": "",
+    "tag": {"tag": CANARY_TAG, "upload_release": True, "build_commit": "",
             "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
-    "candidate": {"tag": "v0.28.0", "upload_release": False, "build_commit": "", "channel": "",
+    "candidate": {"tag": "v0.28.0", "upload_release": False, "build_commit": "",
                   "release-phase": "candidate", "jobs": ",".join(JOB_GROUPS)},
-    "commit": {"tag": "", "upload_release": False, "build_commit": SHA, "channel": "",
+    "commit": {"tag": "", "upload_release": False, "build_commit": SHA,
                "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
-    "channel": {"tag": "", "upload_release": False, "build_commit": SHA, "channel": "preview",
-                "release-phase": "", "jobs": ",".join(JOB_GROUPS)},
+    # A channel claim's candidate: Stable Release passes the request it admitted.
+    "channel": {"tag": CHANNEL_TAG, "upload_release": False, "build_commit": "",
+                "release-phase": "candidate", "jobs": ",".join(JOB_GROUPS),
+                "channel_build": "b" * 32, "channel_request_sha256": "c" * 64},
 }
 # A dry build: nothing leaves the runner.
-DRY_DISPATCH = {"tag": "v0.28.0", "upload_release": False, "build_commit": "", "channel": "",
+DRY_DISPATCH = {"tag": "v0.28.0", "upload_release": False, "build_commit": "",
                 "release-phase": "", "jobs": ",".join(JOB_GROUPS)}
 
 

@@ -20,14 +20,14 @@ class MissingReceipt(ValueError):
 def validate_identity(tag: str, commit: str, name: str) -> None:
     # Stable attempts stage and fetch under their attempt ref, so the receipt
     # identity admits rc.N-vX.Y.Z beside plain vX.Y.Z and canary.<stamp>-vX.Y.Z tags.
-    # A commit claim (commit.<stamp>-vX.Y.Z) stages under its own claim archive too;
-    # its version is no release version, which is why it never reaches a feed.
-    from hermes_cli.update_channel import is_commit_tag, release_version
+    # Commit and channel claims (commit.|channel.<stamp>-vX.Y.Z) stage under their own claim
+    # archives too; their versions are no release versions, which is why they never reach a feed.
+    from hermes_cli.update_channel import is_preview_tag, release_version
     from scripts.releases.versioning import parse_attempt_ref
 
     if (not isinstance(tag, str)
             or not (is_release_version(release_version(tag) or "") or parse_attempt_ref(tag)
-                    or is_commit_tag(tag))
+                    or is_preview_tag(tag))
             or not re.fullmatch(r"[a-f0-9]{40}", commit or "")
             or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name or "")):
         raise ValueError("Invalid release handoff identity")
@@ -101,63 +101,9 @@ def _receipt_file_rows(selected: dict[str, Path]) -> list[dict]:
             for path, file in sorted(selected.items())]
 
 
-def channel_prefix(request: dict) -> str:
-    """A channel build is an allocation, never a source SHA alias."""
-    from hermes_cli.release_channels import build_prefix, validate_request
-    return build_prefix(validate_request(request)["buildId"])
-
-
-def validate_channel_receipt(receipt: dict, request: dict, name: str) -> list[dict]:
-    channel_prefix(request)
-    validate_commit_identity(request["commit"], name)
-    if (not isinstance(receipt, dict) or receipt.get("schema") != 3
-            or receipt.get("request") != request or receipt.get("commit") != request["commit"]
-            or receipt.get("name") != name or "tag" in receipt):
-        raise ValueError("Channel handoff request identity mismatch")
-    return validate_receipt_files(receipt)
-
-
 def _prefix(receipt: dict) -> str:
-    if "request" in receipt:
-        return channel_prefix(receipt["request"])
     return (r2.staging_key_for(receipt["tag"], "") if "tag" in receipt
             else r2.commit_prefix_for(receipt["commit"]))
-
-
-def stage_channel_build(request: dict, name: str, root: Path, includes: list[str]) -> dict:
-    channel_prefix(request)
-    validate_commit_identity(request["commit"], name)
-    selected = _select_files(root, includes)
-    receipt = {"schema": 3, "request": request, "commit": request["commit"], "name": name,
-               "files": _receipt_file_rows(selected)}
-    validate_channel_receipt(receipt, request, name)
-    return _stage(receipt, selected)
-
-
-def read_channel_receipt(request: dict, name: str, *, public_base: str | None = None) -> dict:
-    validate_commit_identity(request["commit"], name)
-    key = channel_prefix(request) + receipt_name(name)
-    try:
-        if public_base is not None:
-            receipt = r2.read_public_receipt(public_base, key)
-        else:
-            creds, base, bucket = r2.credentials()
-            text = r2.get_object(creds, base, bucket, key, r2.amz_timestamp())
-            if text is None:
-                raise MissingReceipt(f"Missing channel handoff: {name}")
-            receipt = json.loads(text)
-    except r2.R2RequestError as err:
-        if err.status == 404:
-            raise MissingReceipt(f"Missing channel handoff: {name}") from err
-        raise
-    validate_channel_receipt(receipt, request, name)
-    return receipt
-
-
-def fetch_channel_build(request: dict, names: list[str], root: Path,
-                        includes: list[str] | None = None, *, public_base: str | None = None) -> list[dict]:
-    receipts = [read_channel_receipt(request, name, public_base=public_base) for name in names]
-    return _fetch_receipts(receipts, root, includes, public_base=public_base)
 
 
 def _stage(receipt: dict, selected: dict[str, Path]) -> dict:
@@ -295,7 +241,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--commit-build", default=None,
                         help="Commit-only mode: stage/fetch under releases/commit/<sha>/ "
                              "with schema-2 receipts (no tag; exact full SHA required)")
-    parser.add_argument("--channel-request", type=Path, help="Pinned admitted channel request JSON")
     parser.add_argument("--commit", default=None,
                         help="Artifact commit. Must equal --commit-build when both are supplied.")
     parser.add_argument("--name", action="append", required=True)
@@ -305,23 +250,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.public_base is not None and args.command != 'fetch':
         parser.error('--public-base is only supported for fetch')
-    if args.channel_request:
-        request = json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
-        # One-dispatch runs export HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT to
-        # every leg, and argparse defaults pick them up even when the leg's
-        # explicit args name only --channel-request. A commit equal to the
-        # request's own is provenance, not selection; only a genuinely
-        # different commit (or any tag) is an override attempt.
-        if args.tag or (args.commit_build and args.commit_build != request.get("commit")) \
-                or (args.commit and args.commit != request.get("commit")):
-            parser.error("Channel requests cannot select a tag or another commit")
-        if args.command == "stage":
-            if len(args.name) != 1 or not args.include:
-                parser.error("stage needs one name and at least one include pattern")
-            stage_channel_build(request, args.name[0], args.root, args.include)
-        else:
-            fetch_channel_build(request, args.name, args.root, args.include, public_base=args.public_base)
-        return
     if args.commit_build:
         if args.tag:
             parser.error("--commit-build and --tag are mutually exclusive")

@@ -153,9 +153,7 @@ module.exports = {
     // Electron 44 no longer supports macOS 11 or 12.
     minimumSystemVersion: '13.0',
     // The packaged client reads this generated app-update.yml by default.
-    publish: channelRequest?.receiverCandidate
-      ? [{ provider: 'generic', url: `${channelRequest.publicBase}/releases/darwin/stable/`, channel: 'stable' }]
-      : channelRequest
+    publish: channelRequest
       ? [{ provider: 'generic', url: `${channelRequest.publicBase}/releases/channel-builds/${channelRequest.buildId}/darwin/`, channel: 'latest' }]
       : publicUrl && channel && macFeed
       ? [{ provider: 'generic', url: `${publicUrl}/${macFeed.directory}/`, channel: macFeed.channel }]

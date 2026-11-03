@@ -246,13 +246,16 @@ def publish_channel_build(channel_archive, name, build_id, commit, *, sequence=1
                 "artifactNamePascal": "Fixture", "appId": "ai.fixture.preview",
                 "msixAppIdWithOrg": "Fixture.Preview", "cliName": "fixture-preview",
                 "windowsExecutableName": "Fixture"}
-    version = f"1.2.{sequence}" if stable else f"0.0.{sequence}"
+    from hermes_cli.update_channel import release_version, stamped_windows_version
+
+    # A preview build carries its channel claim's version and stamped quad.
+    tag = f"v1.2.{sequence}" if stable else f"channel.20261028T12{sequence % 60:02d}00Z-v1.2.{sequence}"
+    version = release_version(tag)
+    windows = version + ".0" if stable else stamped_windows_version(tag)
     request = {"schema": 1, "channel": name, "buildId": build_id, "sequence": sequence,
                "repository": "NousResearch/hermes-agent", "commit": commit,
-               "sourceVersion": f"1.2.{sequence}", "version": version, "windowsVersion": version + ".0",
+               "sourceVersion": f"1.2.{sequence}", "releaseTag": tag, "version": version, "windowsVersion": windows,
                "identity": identity, "bundleEnv": {}, "publicBase": base}
-    if stable:
-        request["releaseTag"] = "v" + version
     manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [{
         "platform": "darwin", "arch": "arm64", "variant": "bundled",
         "artifact": {"key": prefix + "fixture.zip", "size": 1, "sha256": "d" * 64},

@@ -94,9 +94,17 @@ def is_commit_claim(tag: object) -> bool:
     return is_commit_tag(tag)
 
 
+def is_channel_claim(tag: object) -> bool:
+    """A channel build runs the stable pipeline on its own annotated ``channel.<stamp>-vX.Y.Z`` tag."""
+    from hermes_cli.update_channel import is_channel_tag
+
+    return is_channel_tag(tag)
+
+
 def is_stamped_claim(tag: object) -> bool:
-    """A claim tag that is its own release identity and carries its build time (canary, commit)."""
-    return is_canary_claim(tag) or is_commit_claim(tag)
+    """A claim tag that is its own release identity and carries its build time (canary, commit,
+    channel)."""
+    return is_canary_claim(tag) or is_commit_claim(tag) or is_channel_claim(tag)
 
 
 def _deb_version(tag: str) -> str:
@@ -133,10 +141,10 @@ def canary_epoch(tag: str) -> int:
 
 
 def stamped_epoch(tag: str) -> int:
-    """A canary's or commit build's immutable build time: the UTC stamp its tag name carries."""
-    from hermes_cli.update_channel import canary_timestamp, commit_timestamp
+    """A stamped claim's immutable build time: the UTC stamp its tag name carries."""
+    from hermes_cli.update_channel import claim_stamp
 
-    stamp = canary_timestamp(tag) or commit_timestamp(tag)
+    stamp = claim_stamp(tag)
     if stamp is None:
         raise ValueError("Invalid canary release identity")
     try:
@@ -156,10 +164,11 @@ def canary_windows_version(tag: str) -> str:
 
 
 def stamped_windows_version(tag: str) -> str:
-    """The package quad ``yy.mmdd.hh.mmss`` of a canary or commit build, from its tag stamp."""
-    instant = datetime.fromtimestamp(stamped_epoch(tag), tz=UTC)
-    return (f"{instant.year % 100}.{instant.month * 100 + instant.day}.{instant.hour}."
-            f"{instant.minute * 100 + instant.second}")
+    """The package quad ``yy.mmdd.hh.mmss`` of a stamped claim (update_channel.stamped_windows_version)."""
+    from hermes_cli.update_channel import stamped_windows_version as quad
+
+    stamped_epoch(tag)  # the same refusal for anything that is not a stamped claim
+    return quad(tag)
 
 
 def release_windows_version(tag: str, epoch: object) -> str:
@@ -546,18 +555,19 @@ def validate_claim(metadata: object, *, version: str, attempt: int, commit: str)
 
 
 def stamped_claim(raw: str, *, tag: str, commit: str) -> dict:
-    """A canary or commit claim message's exact shape: its lanes and its green policy, plus a
-    commit build's baked bundle defaults (``bundleEnv``).
+    """A canary, commit or channel claim message's exact shape: its lanes and its green policy, plus
+    a commit or channel build's baked bundle defaults (``bundleEnv``) and a channel build's channel
+    name and branding.
 
-    ``scripts/release.py --canary`` / ``--build-commit`` write it. The kind is the tag's prefix. The
-    lanes are read exactly as a stable claim's (lanes.claim_lanes), then held to what that kind can
-    run (lanes.POLICY_REFUSED).
+    ``scripts/release.py --canary`` / ``--build-commit`` / ``--channel`` write it. The kind is the
+    tag's prefix. The lanes are read exactly as a stable claim's (lanes.claim_lanes), then held to
+    what that kind can run (lanes.POLICY_REFUSED).
     """
     from hermes_cli.update_channel import tag_core, tag_kind
 
     kind = tag_kind(tag)
-    if kind not in ("canary", "commit"):
-        raise ValueError("Claim tag is neither a canary nor a commit build")
+    if kind not in ("canary", "commit", "channel"):
+        raise ValueError("Claim tag is not a canary, commit or channel build")
     label = kind.capitalize()
     try:
         metadata = tag_record(raw)
@@ -565,18 +575,29 @@ def stamped_claim(raw: str, *, tag: str, commit: str) -> dict:
         raise ValueError(f"{label} claim metadata is invalid") from error
     expected = {"schema": 1, "kind": kind, "version": tag_core(tag), "commit": commit,
                 "lanesRevision": lane_set.LANES_REVISION}
-    keys = {*expected, "lanes", "requireGreen", *(("bundleEnv",) if kind == "commit" else ())}
+    extra = {"canary": (), "commit": ("bundleEnv",), "channel": ("bundleEnv", "channel", "branding")}[kind]
+    keys = {*expected, "lanes", "requireGreen", *extra}
     if (not isinstance(metadata, dict) or set(metadata) != keys
             or any(metadata[key] != value for key, value in expected.items())
             or not isinstance(metadata["requireGreen"], bool)):
         raise ValueError(f"{label} claim metadata is invalid")
-    if kind == "commit":
+    if "bundleEnv" in extra:
         from scripts.releases.bundle_env import validate
 
         try:
             validate(metadata["bundleEnv"])
         except ValueError as error:
-            raise ValueError(f"Commit claim metadata is invalid: {error}") from error
+            raise ValueError(f"{label} claim metadata is invalid: {error}") from error
+    if kind == "channel":
+        from hermes_cli.release_channels import ChannelError, validate_name
+        from scripts.releases.channels import BRANDINGS
+
+        try:
+            validate_name(metadata["channel"])
+        except ChannelError as error:
+            raise ValueError(f"Channel claim metadata is invalid: {error}") from error
+        if metadata["branding"] not in BRANDINGS:
+            raise ValueError("Channel claim metadata is invalid: unknown branding")
     try:
         lanes = lane_set.claim_lanes(metadata)
         lane_set.require_allowed(lanes, kind)
@@ -716,16 +737,19 @@ def check_claim(env: dict, run=output) -> dict:
     run(["git", "fetch", "origin", *release_line_refspecs("origin")])
 
     if is_stamped_claim(claim_tag):
-        # A canary's or commit build's tag prefix is its policy and its stamp is its build time;
-        # its claim message records the lanes it runs and whether a red suite holds its
-        # publication (and a commit build's bundle defaults). Only main may cut a canary. A commit
-        # build may build any commit: its claim tag on origin is what pushed it, and the actors
-        # who dispatched it must be able to write the repository.
-        policy = "canary" if is_canary_claim(claim_tag) else "commit"
+        # A stamped claim's tag prefix is its policy and its stamp is its build time; its claim
+        # message records the lanes it runs and whether a red suite holds its publication (and a
+        # commit or channel build's bundle defaults, a channel build's channel and branding). Only
+        # main may cut a canary. A commit or channel build may build any commit: its claim tag on
+        # origin is what pushed it, and the actors who dispatched it must be able to write the
+        # repository.
+        from hermes_cli.update_channel import tag_kind
+
+        policy = tag_kind(claim_tag)
         if policy == "canary" and not run(["git", "for-each-ref", "--contains", commit,
                                            "--format=%(refname)", "refs/remotes/origin/main"]):
             raise ValueError(f"{commit} is not on main")
-        if policy == "commit":
+        if policy in ("commit", "channel"):
             commit_actor_permissions(env, run=run)
         metadata = stamped_claim(run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
                                  tag=claim_tag, commit=commit)
@@ -733,6 +757,7 @@ def check_claim(env: dict, run=output) -> dict:
                 "attempt": None, "commit": commit, "claim_object": local_object, "autopublish": True,
                 "lanes": metadata["lanes"], "require_green": metadata["requireGreen"],
                 "bundle_env": metadata.get("bundleEnv", {}),
+                **({"channel": metadata["channel"], "branding": metadata["branding"]} if policy == "channel" else {}),
                 "claim_epoch": stamped_epoch(claim_tag), "policy": policy}
 
     def on_main(sha: str) -> bool:
@@ -854,13 +879,19 @@ def admit(env: dict) -> None:
     admitted = check_claim(env)
     repository = env["GITHUB_REPOSITORY"]
     policy = admitted["policy"]
-    # A commit build owns no GitHub release: it publishes nowhere, and its builds page lives in its
-    # claim archive (releases/tag/<claim>/index.html).
-    release = {"databaseId": ""} if policy == "commit" else json.loads(output([
+    # A commit or channel build owns no GitHub release: its builds page lives in its claim archive
+    # (releases/tag/<claim>/index.html), and a channel build publishes through the channel CAS.
+    release = {"databaseId": ""} if policy in ("commit", "channel") else json.loads(output([
         "gh", "release", "view", admitted["claim_tag"], "--repo", repository,
         "--json", "databaseId,tagName,isDraft,isPrerelease",
     ]))
-    if policy == "commit":
+    channel = {"channel-build": "", "channel-request-sha256": ""}
+    if policy == "channel":
+        # The claim's one channel request: allocated now (or found again on a rerun), then built.
+        from scripts.releases.channel_claims import admit_request
+
+        channel = admit_request(admitted, env)
+    elif policy == "commit":
         pass
     elif policy == "canary":
         if (release.get("tagName") != admitted["claim_tag"] or not isinstance(release.get("isDraft"), bool)
@@ -883,8 +914,10 @@ def admit(env: dict) -> None:
         # for the accepted candidate. Always true for a stable release; a canary or commit claim
         # chooses.
         "require-green": "true" if admitted["require_green"] else "false",
-        # A commit build's baked bundle defaults (claim bundleEnv); empty for every release.
+        # A commit or channel build's baked bundle defaults (claim bundleEnv); empty for a release.
         "bundle-env": json.dumps(admitted.get("bundle_env") or {}, sort_keys=True),
+        # A channel build's allocated request (its identity and channel sequence); empty otherwise.
+        **channel,
     }, env)
     summary(
         f"## {policy.capitalize()} candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
@@ -904,6 +937,13 @@ def verify(env: dict) -> None:
 
     if decode(env.get("BUNDLE_ENV_JSON", "")) != (claim.get("bundle_env") or {}):
         raise ValueError("Bundle environment differs from the admitted claim")
+    if claim.get("policy") == "channel":
+        # The legs build exactly the request admission allocated for this claim, no other.
+        from scripts.releases.channel_claims import require_admitted_request
+
+        require_admitted_request(tag, claim, env)
+    elif env.get("CHANNEL_BUILD") or env.get("CHANNEL_REQUEST_SHA256"):
+        raise ValueError("Only a channel claim builds a channel request")
     emit({"tag": tag, "sha": commit, "channel": claim.get("policy", "stable"), "payload-version": payload_version(tag),
           "release-epoch": claim["claim_epoch"]}, env)
 

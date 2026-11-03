@@ -21,11 +21,10 @@ const POLL_MS = 3000
 // Consecutive poll failures before the panel stops waiting and shows the error.
 const MAX_POLL_ERRORS = 5
 
-/** A code that went inactive before it expired was used: the account may already have been linked. */
-function redeemedBeforeExpiry(link: RelayLinkCode): boolean {
+function hasExpired(link: RelayLinkCode): boolean {
   const expiresAt = link.expires_at ? Date.parse(link.expires_at) : Number.NaN
 
-  return !Number.isFinite(expiresAt) || Date.now() < expiresAt
+  return Number.isFinite(expiresAt) && Date.now() >= expiresAt
 }
 
 async function renderQr(payload: string): Promise<string> {
@@ -63,7 +62,9 @@ function accountLabel(account: RelayLinkedAccount): string {
 /**
  * Team Gateway setup for a platform the relay's shared bot carries (#141546). On such an instance a
  * bot of the user's own is switched off at every gateway start, so setup is linking the user's chat
- * account to the shared bot: mint a one-time code, send `/link <code>` to the bot, done.
+ * account to the shared bot: mint a one-time code, send `/link <code>` to the bot, done. A
+ * Portal-managed agent takes links only from the Portal (a code minted here would bind nothing), so
+ * there the card lists the linked accounts and points to the Portal.
  */
 export function RelayLinkSetup({
   platform,
@@ -80,13 +81,16 @@ export function RelayLinkSetup({
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  // Accounts linked when the code was minted: a redeemed code shows up as one more.
-  const linkedBefore = useRef(0)
+  const [notice, setNotice] = useState('')
+  const [portalUrl, setPortalUrl] = useState<null | string>(null)
+  // Accounts linked when the code was minted: only an id not in this set proves a new link.
+  const linkedBefore = useRef<Set<string>>(new Set())
 
   const loadAccounts = useCallback(async () => {
     try {
       const response = await getRelayLinks(scopeProfile)
       const row = response.platforms.find(entry => entry.platform === platform.id)
+      setPortalUrl(response.managed_by === 'portal' ? (response.portal_url ?? null) : null)
       setAccounts(row?.accounts ?? [])
       setBotUrl(row?.bot_url ?? null)
       setError('')
@@ -146,10 +150,17 @@ export function RelayLinkSetup({
         setLink(null)
         setQrDataUrl('')
 
-        if (after && (after.length > linkedBefore.current || redeemedBeforeExpiry(link))) {
+        if (!after) {
+          return
+        }
+
+        // `inactive` alone means used, expired or unknown: only a new account id proves the link.
+        if (after.some(account => !linkedBefore.current.has(account.platformUserId))) {
           notify({ kind: 'success', message: r.linked(platform.name) })
-        } else if (after) {
+        } else if (hasExpired(link)) {
           setError(r.expired)
+        } else {
+          setNotice(r.noNewAccount(platform.name))
         }
       } catch (pollError) {
         if (cancelled) {
@@ -158,7 +169,7 @@ export function RelayLinkSetup({
 
         failures += 1
 
-        if (failures >= MAX_POLL_ERRORS || !redeemedBeforeExpiry(link)) {
+        if (failures >= MAX_POLL_ERRORS || hasExpired(link)) {
           setLink(null)
           setQrDataUrl('')
           setError(relayErrorText(pollError))
@@ -184,10 +195,11 @@ export function RelayLinkSetup({
   const start = async () => {
     setBusy(true)
     setError('')
+    setNotice('')
 
     try {
       const result = await requestRelayLink(platform.id, scopeProfile)
-      linkedBefore.current = accounts?.length ?? 0
+      linkedBefore.current = new Set((accounts ?? []).map(account => account.platformUserId))
       setLink(result)
       const target = result.bot_url ?? botUrl
       setQrDataUrl(target ? await renderQr(target) : '')
@@ -235,9 +247,16 @@ export function RelayLinkSetup({
           </div>
           <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
             {r.intro(platform.name)}
+            {portalUrl && ` ${r.managedIntro}`}
           </p>
         </div>
-        {!link && (
+        {portalUrl && (
+          <Button onClick={() => openExternalLink(portalUrl)} size="sm">
+            <ExternalLink />
+            {r.openPortal}
+          </Button>
+        )}
+        {!portalUrl && !link && (
           <Button disabled={busy} onClick={() => void start()} size="sm">
             <QrCode />
             {accounts && accounts.length > 0 ? r.linkAnother(platform.name) : r.link(platform.name)}
@@ -251,14 +270,17 @@ export function RelayLinkSetup({
           {accounts.map(account => (
             <div className="flex items-center justify-between gap-2" key={account.platformUserId}>
               <span className="truncate text-sm">{accountLabel(account)}</span>
-              <Button onClick={() => void unlink(account)} size="sm" variant="ghost">
-                {r.unlink}
-              </Button>
+              {!portalUrl && (
+                <Button onClick={() => void unlink(account)} size="sm" variant="ghost">
+                  {r.unlink}
+                </Button>
+              )}
             </div>
           ))}
         </div>
       )}
 
+      {notice && <p className="mt-3 text-xs text-muted-foreground">{notice}</p>}
       {error && <ErrorBanner className="mt-3">{error}</ErrorBanner>}
 
       {link && (

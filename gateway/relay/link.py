@@ -11,12 +11,19 @@ Codes are minted with the gateway's per-gateway secret, which lives only in the 
 (``self_provision_relay``), so the dashboard reaches these calls through the ``relay-link``
 control-socket verb. Wire: ``POST /manage/link``, ``/manage/link/state``, ``/manage/link-status``
 and ``/manage/unlink`` on the connector, all authenticated with the WS-upgrade bearer.
+
+A Portal-managed agent (the connector's ``/manage/access/list`` answers ``managedBy: portal``) is
+the exception: there the Portal access setting is the only input, so a code minted with the
+gateway bearer carries no owner and its redeem binds nothing. For those agents linking happens in
+the Portal, which mints owner-attested codes; the instance only lists the linked accounts.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
+import urllib.request
 from typing import Any, Callable, Optional
 
 _HTTP_TIMEOUT_S = 10.0
@@ -128,12 +135,55 @@ def _post(path: str, body: dict) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _get(path: str) -> dict:
+    from gateway.relay.http_diagnostics import connector_reason, read_error_body, redact_excerpt
+
+    token, base = _bearer_and_base()
+    req = urllib.request.Request(f"{base}{path}", method="GET", headers={
+        "Authorization": f"Bearer {token}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+            payload = json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        reason = redact_excerpt(connector_reason(read_error_body(exc)), (token,))
+        raise _http_error(exc.code, reason) from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RelayLinkError("connector_unreachable", f"Could not reach Team Gateway: {exc}") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def portal_agents_url() -> str:
+    from hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
+
+    base = (os.environ.get("HERMES_PORTAL_BASE_URL") or os.environ.get("NOUS_PORTAL_BASE_URL")
+            or DEFAULT_NOUS_PORTAL_URL)
+    return f"{base.rstrip('/')}/agents"
+
+
+def managed_by() -> str:
+    """``portal`` when the Portal access setting governs this agent, else ``connector``.
+
+    A connector that does not serve access grants (no route: 404) has no Portal setting either."""
+    try:
+        payload = _get("/manage/access/list")
+    except RelayLinkError as exc:
+        if exc.status == 404:
+            return "connector"
+        raise
+    return "portal" if payload.get("managedBy") == "portal" else "connector"
+
+
 def request_link(platform: str) -> dict[str, Any]:
     """Mint a one-time code that binds the chat account which DMs it to this instance."""
     from gateway.relay import relay_fronted_platforms
 
     if platform not in relay_fronted_platforms():
         raise RelayLinkError("platform_not_fronted", f"Team Gateway does not carry {platform} on this instance.")
+    if managed_by() == "portal":
+        raise RelayLinkError(
+            "managed_by_portal",
+            "Accounts for this agent are linked from Nous Portal: open the agent there and use Message platforms.",
+            409)
     payload = _post("/manage/link", {"platform": platform})
     code = str(payload.get("code") or "").strip()
     if not code:
@@ -156,7 +206,8 @@ def link_status() -> dict[str, Any]:
     payload = _post("/manage/link-status", {"platforms": platforms}) if platforms else {}
     accounts = {row.get("platform"): row.get("accounts") or []
                 for row in payload.get("statuses") or [] if isinstance(row, dict)}
-    return {"platforms": [{"platform": p, "bot_url": shared_bot_url(p), "accounts": accounts.get(p, [])}
+    return {"managed_by": managed_by() if platforms else "connector", "portal_url": portal_agents_url(),
+            "platforms": [{"platform": p, "bot_url": shared_bot_url(p), "accounts": accounts.get(p, [])}
                           for p in platforms]}
 
 

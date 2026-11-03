@@ -20,9 +20,21 @@ _GATEWAY_ID = "gw-test"
 
 class _Connector(BaseHTTPRequestHandler):
     seen: list = []
+    managed_by = "connector"
 
     def log_message(self, format, *args):
         pass
+
+    def _reply(self, status: int, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # /manage/access/list: who governs this agent's access
+        self._reply(200, {"agent": "inst-1", "managedBy": _Connector.managed_by, "grants": []})
 
     def do_POST(self):
         token = self.headers.get("Authorization", "").removeprefix("Bearer ")
@@ -31,14 +43,8 @@ class _Connector(BaseHTTPRequestHandler):
         valid = hmac.compare_digest(sig, hmac.new(_SECRET.encode(), signed.encode(), hashlib.sha256).hexdigest())
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         _Connector.seen.append((self.path, signed.split(":")[0], body))
-        status, payload = (401, {"error": "bad bearer"}) if not valid else (
-            200, {"code": "AB12CD", "expiresAt": "2026-11-03T00:10:00.000Z"})
-        data = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        self._reply(*((401, {"error": "bad bearer"}) if not valid else (
+            200, {"code": "AB12CD", "expiresAt": "2026-11-03T00:10:00.000Z"})))
 
 
 @pytest.fixture
@@ -46,6 +52,7 @@ def connector(monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), _Connector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     _Connector.seen = []
+    _Connector.managed_by = "connector"
     monkeypatch.setenv("GATEWAY_RELAY_URL", f"ws://127.0.0.1:{server.server_port}/relay")
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "telegram")
     monkeypatch.setenv("GATEWAY_RELAY_BOT_IDS", json.dumps({"telegram": {"botId": "42", "username": "@NousHermesBot"}}))
@@ -76,3 +83,19 @@ def test_link_code_is_minted_with_the_gateway_bearer_and_points_at_the_shared_bo
     monkeypatch.setenv("GATEWAY_RELAY_SECRET", "rotated-elsewhere")
     refused = relay_link_verb({"action": "request", "platform": "telegram"})
     assert refused["error"] == "relay_not_authorized" and refused["status"] == 401
+
+
+def test_portal_managed_agent_is_sent_to_the_portal_instead_of_a_code_that_binds_nothing(connector, monkeypatch):
+    """On a Portal-managed agent a gateway-bearer code carries no owner, so its redeem binds no
+    account (connector scopeService: managed agents take only the Portal setting)."""
+    from gateway.relay.link import relay_link_verb
+
+    monkeypatch.setenv("GATEWAY_RELAY_SECRET", _SECRET)
+    connector.managed_by = "portal"
+
+    refused = relay_link_verb({"action": "request", "platform": "telegram"})
+    status = relay_link_verb({"action": "status"})
+
+    assert refused["ok"] is False and refused["error"] == "managed_by_portal"
+    assert [path for path, *_ in connector.seen] == ["/manage/link-status"]
+    assert status["managed_by"] == "portal" and status["portal_url"].endswith("/agents")

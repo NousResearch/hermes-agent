@@ -31,6 +31,7 @@ import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icon
 import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $activeConnectionId } from '@/store/connections'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
@@ -744,6 +745,7 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
+  const connectionId = useStore($activeConnectionId)
   const viaRelay = Boolean(platform.relay_exclusive)
 
   return (
@@ -837,7 +839,12 @@ function PlatformDetail({
 
       {platform.relay_fronted && (
         <section>
-          <RelayLinkSetup key={platform.id} platform={platform} scopeProfile={scopeProfile} />
+          <RelayLinkSetup
+            // A new backend or profile is a new flow: no code, poll or account list carries over.
+            key={`${connectionId ?? 'local'}:${scopeProfile ?? ''}:${platform.id}`}
+            platform={platform}
+            scopeProfile={scopeProfile}
+          />
         </section>
       )}
 

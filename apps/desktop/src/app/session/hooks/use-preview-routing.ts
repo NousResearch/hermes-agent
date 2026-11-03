@@ -31,6 +31,20 @@ function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
 }
 
+function trimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function previewIdentityForEvent(event: GatewayEvent) {
+  return event.session_id
+    ? visibleSessionIdentity({
+        activeSessionId: $activeSessionId.get(),
+        sessionId: event.session_id,
+        source: event
+      })
+    : undefined
+}
+
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
@@ -78,15 +92,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // open (offer, don't hijack). Routes through the same normalizer as
         // the file browser so URLs, localhost, and file paths all resolve.
         const { url, label } = asRecord(event.payload)
-        const target = typeof url === 'string' ? url.trim() : ''
+        const target = trimmedString(url)
 
-        const owner = event.session_id
-          ? visibleSessionIdentity({
-              activeSessionId: $activeSessionId.get(),
-              sessionId: event.session_id,
-              source: event
-            })
-          : undefined
+        const owner = previewIdentityForEvent(event)
 
         if (target && (!event.session_id || owner)) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
@@ -95,7 +103,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
                 return
               }
 
-              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
+              const trimmedLabel = trimmedString(label)
               // The agent's loopback is the GATEWAY's loopback. Give the pane a
               // URL this machine can load, keeping the original as the label so
               // the user still sees the address the agent named.
@@ -122,15 +130,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // a session the user can see may tidy the pane it opened; a hidden
         // background turn must not dismiss the user's preview.
         const { url } = asRecord(event.payload)
-        const target = typeof url === 'string' ? url.trim() : ''
+        const target = trimmedString(url)
 
-        const identity = event.session_id
-          ? visibleSessionIdentity({
-              activeSessionId: $activeSessionId.get(),
-              sessionId: event.session_id,
-              source: event
-            })
-          : undefined
+        const identity = previewIdentityForEvent(event)
 
         if (event.session_id && !identity) {
           return

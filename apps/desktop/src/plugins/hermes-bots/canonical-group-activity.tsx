@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
 import { RoomBotAvatar } from './group-room-avatar'
-import { isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
+import { focusThread, isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
 import { MemberStatusChip, ROOM_AVATAR_SIZE, RoomCycleFooter, type RoomStatusLabels, RoomTypingRow } from './group-room-ui'
 
 /** `groups.state` driver fields that say who is answering. */
@@ -95,16 +95,18 @@ export function CanonicalGroupCycle({ cycle, driver, members = [], labels, statu
     text={busy.length ? `${labels.memberWorking}: ${busy.map(canonicalMemberName).join(', ')}` : labels.groupWorking} working={[]} />
 }
 
-/** Every member's status, the room's cycle and whether it works, from one poll's state + log. */
-export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverActivity | undefined, members: CanonicalRoomMember[]) {
+/** Every member's status, the room's cycle and whether it works, from one poll's state + log. Outcomes are
+ *  read per thread; the round comes from the live tasks' own thread (`replyThread`'s when it has work). */
+export function useCanonicalRoomLive(events: CanonicalGroupEvent[], driver: CanonicalDriverActivity | undefined, members: CanonicalRoomMember[], replyThread?: string) {
   const activity = driver?.member_activity
   const anyLive = !!activity?.some(row => row.status !== 'queued')
   const now = useNowSeconds(anyLive)
   const log = events as RoomLogEvent[]
+  const focus = focusThread(log, replyThread)
   const outcomes = memberOutcomes(log)
 
   return {
-    cycle: roomCycle(log, activity, driver?.max_rounds),
+    cycle: roomCycle(log, activity, driver?.max_rounds, focus),
     statuses: new Map(members.map(member => [member.member_id, memberStatus(member.member_id, activity, outcomes, now)])),
     working: !!driver?.working || !!activity?.length
   }

@@ -4626,6 +4626,17 @@ export const esOverrides = {
           system_prompt: 'Prompt del sistema',
           tool_definitions: 'Definiciones de herramientas'
         },
+        compact: {
+          action: 'Compactar conversación',
+          busyHint: 'Termina o detén primero la respuesta en curso',
+          confirm: 'Compactar',
+          failed: 'No se pudo compactar',
+          hint: 'Resume el contexto anterior para hacer espacio. Continúa en esta misma conversación.',
+          pending: 'la compactación sigue en segundo plano',
+          progress: 'compactando el contexto...',
+          question: '¿Compactar esta conversación en un resumen?',
+          working: 'Compactando…'
+        },
         empty: 'Aún no hay datos de contexto',
         loading: 'Cargando desglose…',
         percentFull: percent => `${percent}% lleno`,

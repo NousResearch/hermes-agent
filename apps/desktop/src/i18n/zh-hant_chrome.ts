@@ -402,6 +402,17 @@ export const zhHantChrome = {
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
+        compact: {
+          action: '壓縮對話',
+          busyHint: '請先完成或停止目前的回覆',
+          confirm: '壓縮',
+          failed: '壓縮失敗',
+          hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
+          pending: '壓縮仍在背景進行',
+          progress: '正在壓縮上下文…',
+          question: '將此對話壓縮為摘要？',
+          working: '正在壓縮…'
+        },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
@@ -470,12 +481,9 @@ export const zhHantChrome = {
     terminalCloseAll: '全部關閉',
     terminalNewOn: '新增終端機於…',
     terminalGatewayRemoved: '已移除的閘道',
-    terminalGatewayRemovedBody:
-      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
-    terminalGatewayNoShellBody:
-      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
-    terminalDisconnectedBody:
-      '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
+    terminalGatewayRemovedBody: '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody: '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalDisconnectedBody: '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },
 

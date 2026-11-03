@@ -34,7 +34,8 @@ The following is the complete skill definition that Hermes loads when this skill
 One script, one key, twelve hosted models. Use this when the user wants an actual
 audio file (a track, a jingle, a full song with lyrics, a sound effect) and has no
 GPU for `heartmula`. Cloud generation takes
-15–120 s and costs cents; no local model download.
+15–120 s and costs from under a cent to about $3 per call (ElevenLabs Music at 5 min);
+no local model download.
 
 ## When to Use
 

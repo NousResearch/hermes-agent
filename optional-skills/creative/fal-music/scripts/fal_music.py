@@ -186,6 +186,16 @@ MODELS: dict[str, dict[str, Any]] = {
 }
 
 DEFAULT_MODEL = "elevenlabs-music"
+# Longest generation (stable-audio-3, ~6 min of audio) plus queueing; a wedged job must not block the turn forever.
+SUBSCRIBE_TIMEOUT_S = 900
+
+
+def _positive_seconds(value: str) -> float:
+    """A sign typo must fail before billing, not clamp to the model minimum and generate."""
+    seconds = float(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError(f"--duration must be positive, got {value}")
+    return seconds
 
 
 def clamp_duration(model: str, duration: Optional[float]) -> Optional[float]:
@@ -233,7 +243,8 @@ def generate(model: str, payload: dict[str, Any], output: str) -> dict[str, Any]
     if not os.environ.get("FAL_KEY"):
         raise SystemExit("FAL_KEY is not set (https://fal.ai/dashboard/keys)")
     try:
-        result = fal_client.subscribe(MODELS[model]["endpoint"], arguments=payload, with_logs=False)
+        result = fal_client.subscribe(MODELS[model]["endpoint"], arguments=payload, with_logs=False,
+                                      client_timeout=SUBSCRIBE_TIMEOUT_S)
     except Exception as exc:  # fal_client raises its own HTTP error types; surface the message, not a traceback
         raise SystemExit(f"fal request failed ({MODELS[model]['endpoint']}): {exc}") from exc
     url = _audio_url(result)
@@ -252,7 +263,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(MODELS), help=f"model id (default {DEFAULT_MODEL})")
     p.add_argument("--prompt", help="style / content description (tags for ace-step, effect text for elevenlabs-sfx)")
     p.add_argument("--lyrics", help="lyrics with [verse]/[chorus] structure tags (models with lyrics support)")
-    p.add_argument("--duration", type=float, help="target length in seconds (clamped to the model's range)")
+    p.add_argument("--duration", type=_positive_seconds, help="target length in seconds (clamped to the model's range)")
     p.add_argument("--seed", type=int, help="seed (models that declare one)")
     p.add_argument("--negative-prompt", help="qualities to avoid (stable-audio-3 only)")
     p.add_argument("--instrumental", action="store_true", help="no vocals (elevenlabs-music, minimax-music-2.6)")

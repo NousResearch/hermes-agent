@@ -6,7 +6,13 @@ import { TimeoutError } from '@/lib/with-timeout'
 
 import { serverOwnsComposerQueue } from './composer-queue'
 import { $connectionWires, connectionWire, recordConnectionWire } from './connection-wire'
-import { closeSecondaryGateways, configureGatewayRegistry, ensureGatewayForProfile, setPrimaryGateway, setPrimaryGatewayConnectionId } from './gateway'
+import {
+  closeSecondaryGateways,
+  configureGatewayRegistry,
+  ensureGatewayForProfile,
+  setPrimaryGateway,
+  setPrimaryGatewayConnectionId
+} from './gateway'
 import { isStalledDialError } from './gateway-dial-failures'
 import { $connection, _resetSessionOwnerHintsForTests, setSessionOwnerHint } from './session'
 
@@ -31,9 +37,15 @@ class ReviewSocket extends EventTarget {
       this.dispatchEvent(new Event('open'))
 
       if (payload !== null) {
-        this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
-          jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload }
-        }) }))
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'event',
+              params: { type: 'gateway.ready', payload }
+            })
+          })
+        )
       }
     }, 1)
   }
@@ -41,7 +53,9 @@ class ReviewSocket extends EventTarget {
   send(_data: string): void {}
 
   close(): void {
-    if (this.readyState === ReviewSocket.CLOSED) { return }
+    if (this.readyState === ReviewSocket.CLOSED) {
+      return
+    }
     this.readyState = ReviewSocket.CLOSED
     this.dispatchEvent(new CloseEvent('close', { code: 1000 }))
   }
@@ -50,8 +64,12 @@ class ReviewSocket extends EventTarget {
 let primary: HermesGateway
 
 const descriptor = {
-  connectionId: 'override-remote', mode: 'remote', profile: 'worker', authMode: 'token',
-  token: 'synthetic-only', wsUrl: 'wss://override.example/api/ws?ticket=synthetic',
+  connectionId: 'override-remote',
+  mode: 'remote',
+  profile: 'worker',
+  authMode: 'token',
+  token: 'synthetic-only',
+  wsUrl: 'wss://override.example/api/ws?ticket=synthetic',
   baseUrl: 'https://override.example'
 } as HermesConnection
 
@@ -134,7 +152,10 @@ test('a real protocol readiness timeout is classified as a stalled dial', async 
   ReviewSocket.advertise = null
   const client = new HermesGateway()
   const connected = client.connect('wss://silent.example/api/ws?ticket=synthetic')
-  const outcome = connected.then(() => null, error => error)
+  const outcome = connected.then(
+    () => null,
+    error => error
+  )
 
   try {
     await vi.advanceTimersByTimeAsync(15_001)

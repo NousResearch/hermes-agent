@@ -31,7 +31,14 @@ interface CanonicalGroupRowProps {
 
 /** One gateway Group Chat in the roster list, with the same right-click Open /
  *  Delete a Desktop-local group row has (#143571). */
-export function CanonicalGroupRow({ binding, memberCount, members = [], name, onDelete, onOpen }: CanonicalGroupRowProps) {
+export function CanonicalGroupRow({
+  binding,
+  memberCount,
+  members = [],
+  name,
+  onDelete,
+  onOpen
+}: CanonicalGroupRowProps) {
   const labels = useCanonicalGroupLabels()
   const { group } = useBots()
   const [confirming, setConfirming] = useState(false)
@@ -44,13 +51,34 @@ export function CanonicalGroupRow({ binding, memberCount, members = [], name, on
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <Button aria-label={name} className="justify-start gap-2" onClick={onOpen} variant="ghost">
-            <AvatarStack avatars={members.map(member => ({ key: member.member_id, node: <RoomBotAvatar name={member.profile || member.handle} size={16} /> }))} max={4} />
+            <AvatarStack
+              avatars={members.map(member => ({
+                key: member.member_id,
+                node: <RoomBotAvatar name={member.profile || member.handle} size={16} />
+              }))}
+              max={4}
+            />
             <span className="min-w-0 truncate">{name}</span>
-            {state && <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-[0.6875rem]" data-room-state={state}>
-              {state === 'working' ? <span aria-hidden="true" className="text-(--ui-accent)"><GlyphSpinner /></span>
-                : <Codicon className={state === 'failed' ? 'text-destructive' : 'text-(--ui-accent)'} name={state === 'failed' ? 'error' : 'bell-dot'} />}
-              <span className="sr-only">{state === 'working' ? labels.rowWorking : state === 'failed' ? labels.rowFailed : labels.rowNeedsYou}</span>
-            </span>}
+            {state && (
+              <span
+                className="ml-auto inline-flex shrink-0 items-center gap-1 text-[0.6875rem]"
+                data-room-state={state}
+              >
+                {state === 'working' ? (
+                  <span aria-hidden="true" className="text-(--ui-accent)">
+                    <GlyphSpinner />
+                  </span>
+                ) : (
+                  <Codicon
+                    className={state === 'failed' ? 'text-destructive' : 'text-(--ui-accent)'}
+                    name={state === 'failed' ? 'error' : 'bell-dot'}
+                  />
+                )}
+                <span className="sr-only">
+                  {state === 'working' ? labels.rowWorking : state === 'failed' ? labels.rowFailed : labels.rowNeedsYou}
+                </span>
+              </span>
+            )}
           </Button>
         </ContextMenuTrigger>
         <ContextMenuContent>

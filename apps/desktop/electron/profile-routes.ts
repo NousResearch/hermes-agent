@@ -25,7 +25,9 @@ export function profileRouteSuffix(pathname: string): string {
 export function profileCollectionRoute(pathname: string, method?: string): null | string {
   const suffix = profileRouteSuffix(pathname)
 
-  if (!suffix || !Object.hasOwn(PROFILE_COLLECTION_ROUTES, suffix)) {return null}
+  if (!suffix || !Object.hasOwn(PROFILE_COLLECTION_ROUTES, suffix)) {
+    return null
+  }
 
   return method === undefined || PROFILE_COLLECTION_ROUTES[suffix].includes(method.toUpperCase()) ? suffix : null
 }

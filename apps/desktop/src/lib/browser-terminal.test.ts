@@ -28,10 +28,18 @@ class Socket {
   }
 
   metadata(extra: Record<string, unknown> = {}) {
-    this.onmessage?.({ data: META + JSON.stringify({
-      shell: 'bash', cwd: '/original', terminalId: 'opaque-server-id', retentionSeconds: 900,
-      reconnected: this.url.searchParams.has('attach'), ...extra
-    }) } as MessageEvent)
+    this.onmessage?.({
+      data:
+        META +
+        JSON.stringify({
+          shell: 'bash',
+          cwd: '/original',
+          terminalId: 'opaque-server-id',
+          retentionSeconds: 900,
+          reconnected: this.url.searchParams.has('attach'),
+          ...extra
+        })
+    } as MessageEvent)
   }
 
   output(text: string) {
@@ -43,7 +51,9 @@ class Socket {
     this.onclose?.(new CloseEvent('close', { code, reason }))
   }
 
-  send(data: string) { this.sent.push(data) }
+  send(data: string) {
+    this.sent.push(data)
+  }
 }
 
 function install() {
@@ -61,7 +71,10 @@ beforeEach(() => {
   Socket.reply = socket => socket.metadata()
   vi.stubGlobal('WebSocket', Socket)
   let tickets = 0
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ticket: `fresh-${++tickets}` }))))
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify({ ticket: `fresh-${++tickets}` })))
+  )
   $connection.set({ profile: 'original' } as never)
 })
 
@@ -284,7 +297,10 @@ describe('persistent browser terminals', () => {
     await expect(api.closeSaved!('tab-one')).rejects.toThrow(/close/i)
     expect(localStorage.length).toBe(1)
 
-    Socket.reply = socket => { socket.metadata({ closed: true }); socket.close() }
+    Socket.reply = socket => {
+      socket.metadata({ closed: true })
+      socket.close()
+    }
     await expect(api.closeSaved!('tab-one')).resolves.toBe(true)
     expect(localStorage.length).toBe(0)
   })
@@ -293,7 +309,15 @@ describe('persistent browser terminals', () => {
     const api = install()
     const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
     let finishTicket!: (response: Response) => void
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finishTicket = resolve })))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>(resolve => {
+            finishTicket = resolve
+          })
+      )
+    )
     Socket.instances[0].close(1006)
     await vi.advanceTimersByTimeAsync(1000)
     await api.detach!(session.id)

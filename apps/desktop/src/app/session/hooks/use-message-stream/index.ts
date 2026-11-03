@@ -638,14 +638,16 @@ export function useMessageStream({
           // history, so a new turn reusing the id seeds its own row instead
           // of clobbering the prior turn's command. With no turn live, a start
           // carrying a sealed row's exact arguments is a late copy of that call.
-          eventTarget: state => toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive),
+          eventTarget: state =>
+            toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive, state.turnAnchorId),
           // A copy of a call this turn already finished (re-delivered start or
           // completion) would otherwise draw that call a second time. A queued
           // prompt row is passed over only until its own turn starts; from then
           // on it is that turn's boundary.
           skip: state =>
             isRedeliveredToolEvent(state.messages, payload, phase, {
-              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages)
+              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages),
+              turnAnchorId: state.turnAnchorId
             })
         },
         occurredAt

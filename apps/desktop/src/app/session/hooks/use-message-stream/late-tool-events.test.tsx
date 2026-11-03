@@ -318,4 +318,41 @@ describe('tool events for a part that already exists on a sealed message', () =>
     })
     expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
   })
+
+  it("seeds a new row when a later turn reuses an id from an earlier turn's interim-sealed bubble", () => {
+    // Turn A: an interim seals the tool's bubble, the tool's completion is
+    // lost, and the final reply streams into a bubble of its own. Settling
+    // that final leaves the sealed bubble marked `interim`.
+    event('message.start', 1200)
+    event('tool.start', 1201, { args: { command: 'echo A' }, name: 'terminal', tool_id: 'call_interim_history' })
+    event('message.interim', 1202, { text: 'Checking first.', already_streamed: false })
+    event('message.delta', 1203, { text: 'All done.' })
+    event('message.complete', 1204, { text: 'All done.' })
+
+    expect(stream.state(SID).messages[toolRows('call_interim_history')[0].messageIndex].interim).toBe(true)
+
+    // Turn B (backend-started, no prompt row) reuses the id for a new command.
+    event('message.start', 1300)
+    event('tool.start', 1301, { args: { command: 'echo B' }, name: 'terminal', tool_id: 'call_interim_history' })
+    event('tool.complete', 1302, { name: 'terminal', result: 'B output', tool_id: 'call_interim_history' })
+    event('message.complete', 1303, { text: 'second' })
+
+    const rows = toolRows('call_interim_history')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].part).toMatchObject({ args: { command: 'echo A' } })
+    expect((rows[0].part as { result?: unknown }).result).toBeUndefined()
+    expect(rows[1].part).toMatchObject({ args: { command: 'echo B' }, result: 'B output' })
+    expect(rows[1].messageIndex).toBeGreaterThan(rows[0].messageIndex)
+  })
+
+  it('still re-arms an interim-sealed row for a running copy of its call in the same turn', () => {
+    event('message.start', 1400)
+    event('tool.start', 1401, { args: { command: 'echo same' }, name: 'terminal', tool_id: 'call_interim_live' })
+    event('message.interim', 1402, { text: 'Still working.', already_streamed: false })
+    event('tool.start', 1403, { args: { command: 'echo same' }, name: 'terminal', tool_id: 'call_interim_live' })
+
+    const rows = toolRows('call_interim_live')
+    expect(rows).toHaveLength(1)
+    expect((rows[0].part as { completedAt?: number }).completedAt).toBeUndefined()
+  })
 })

@@ -114,6 +114,7 @@ class HostedRoomRuntime:
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
+        retire_task_progress: Callable[[str, str, int], None] | None = None,
         remote_member: Callable[[str, str], bool] | None = None,
         maintain: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.time,
@@ -141,6 +142,7 @@ class HostedRoomRuntime:
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
         self.pending_action, self.task_progress, self.clock = pending_action, task_progress, clock
+        self.retire_task_progress = retire_task_progress
         self.remote_member = remote_member
         self.maintain = maintain  # once per worker cycle, outside any room (owed grant revokes)
         for name, value in positive.items():
@@ -349,6 +351,10 @@ class HostedRoomRuntime:
         self, requeue: Callable[..., dict[str, Any]], task: Mapping[str, Any],
         lease: state.DriverLease, room_id: str) -> dict[str, Any]:
         retried = self._fenced(requeue, None, task, lease)
+        # Only a successful requeue replaces the attempt. A refused Retry or peer recovery
+        # still owns its original generation and must keep accepting that run's progress.
+        if self.retire_task_progress is not None:
+            self.retire_task_progress(room_id, task["identity"].task_id, int(task["execution_generation"]))
         self._set_blocked(room_id, False)
         self.wakeup()
         return retried
@@ -858,12 +864,18 @@ class HostedRoomRuntime:
 
     def _inspect_recovery_session(
         self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> _RecoveryInspection:
-        profile, transport = task["payload"]["target_profile"], self._transport_for(binding, task)
-        with self.turn_lock(profile):
-            session_id = self._resume_exact(transport, task["identity"].room_id, profile)
-            if session_id is None:
-                return _NO_INSPECTION
-            return self._inspect_session(transport, task, session_id, read_history=True)
+        inspection = _NO_INSPECTION
+        try:
+            profile, transport = task["payload"]["target_profile"], self._transport_for(binding, task)
+            with self.turn_lock(profile):
+                session_id = self._resume_exact(transport, task["identity"].room_id, profile)
+                if session_id is not None:
+                    inspection = self._inspect_session(transport, task, session_id, read_history=True)
+            return inspection
+        finally:
+            if inspection is _NO_INSPECTION and self.task_progress is not None:
+                self.task_progress(
+                    task["identity"].room_id, task["identity"].task_id, int(task["execution_generation"]), {})
 
     def _inspect_local_recovery_session(self, task: Mapping[str, Any]) -> _RecoveryInspection:
         """Check only live process state (no resume, no history) before explicit local recovery.

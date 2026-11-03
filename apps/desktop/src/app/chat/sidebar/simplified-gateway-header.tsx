@@ -52,8 +52,9 @@ export function SimplifiedGatewayHeader({
       aria-current={selected ? 'true' : undefined}
       aria-label={label}
       className={cn(
-        'flex min-h-8.5 items-center gap-2 rounded-sm px-2 py-1.5 text-xs',
-        selected && 'bg-(--chrome-action-hover)'
+        'flex min-h-8.5 items-center gap-2 px-2 py-1.5 text-xs',
+        selected && 'bg-(--chrome-action-hover)',
+        selected && open ? 'mb-1 rounded-t-md' : 'rounded-md'
       )}
       role="group"
     >

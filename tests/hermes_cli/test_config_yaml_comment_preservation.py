@@ -144,3 +144,69 @@ class TestStaticGuard:
         with patch.object(guard, "ROOT", tmp_path):
             problems = guard.scan_file(bad)
         assert [p.split(":")[1] for p in problems] == ["4", "6"], problems
+
+
+LIST_WITH_INLINE_COMMENT = """\
+kanban:
+  dispatch_profiles:     # some comment
+    - mordecai
+  dispatch_in_gateway: true
+  dispatch_interval_seconds: 60
+"""
+
+MAP_WITH_INLINE_COMMENT = """\
+kanban:
+  board:     # some comment
+    queue: 1
+    done: 2
+  dispatch_in_gateway: true
+"""
+
+
+@pytest.fixture
+def home_list_comment(tmp_path):
+    (tmp_path / ".env").touch()
+    (tmp_path / "config.yaml").write_text(LIST_WITH_INLINE_COMMENT, encoding="utf-8")
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        from hermes_cli import config as config_mod
+        config_mod._RAW_CONFIG_CACHE.clear()
+        yield tmp_path
+
+
+@pytest.fixture
+def home_map_comment(tmp_path):
+    (tmp_path / ".env").touch()
+    (tmp_path / "config.yaml").write_text(MAP_WITH_INLINE_COMMENT, encoding="utf-8")
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        from hermes_cli import config as config_mod
+        config_mod._RAW_CONFIG_CACHE.clear()
+        yield tmp_path
+
+
+class TestEmptyingACommentedContainer:
+    """Setting a list/mapping key that carries an inline comment to an empty
+    literal (#148524). The writer used to empty the round-trip container in
+    place, and the dumper then emitted an unparseable file: the new value alone
+    on a line and the following keys merged into one."""
+
+    def test_set_empty_list_keeps_file_parseable(self, home_list_comment):
+        from hermes_cli.config import set_config_value
+
+        set_config_value("kanban.dispatch_profiles", "[]")
+        text = (home_list_comment / "config.yaml").read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+        assert data["kanban"]["dispatch_profiles"] == []
+        assert "# some comment" in text
+        assert "dispatch_profiles: []" in text, f"value and comment must share the key line:\n{text}"
+        assert data["kanban"]["dispatch_in_gateway"] is True
+        assert data["kanban"]["dispatch_interval_seconds"] == 60
+
+    def test_set_empty_map_keeps_file_parseable(self, home_map_comment):
+        from hermes_cli.config import set_config_value
+
+        set_config_value("kanban.board", "{}")
+        text = (home_map_comment / "config.yaml").read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+        assert data["kanban"]["board"] == {}
+        assert "# some comment" in text
+        assert data["kanban"]["dispatch_in_gateway"] is True

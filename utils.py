@@ -656,9 +656,20 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
         if isinstance(value, dict) and isinstance(current, CommentedMap):
-            _merge(current, value)
+            if not value:
+                # Emptying a round-trip container in place keeps the block-seq
+                # formatting and comment tokens of its old items, and the dumper
+                # then emits an unparseable mix (the value alone on a line, the
+                # next keys merged into one). A fresh node dumps as
+                # ``key: {}`` with the key's inline comment kept (#148524).
+                dst[key] = _rt_value(value)
+            else:
+                _merge(current, value)
         elif isinstance(value, list) and isinstance(current, CommentedSeq):
-            _merge_seq(current, value)
+            if not value:
+                dst[key] = _rt_value(value)  # same in-place hazard (#148524)
+            else:
+                _merge_seq(current, value)
         elif not _unchanged(current, value):
             dst[key] = _rt_value(value)
         # else: unchanged — keep the existing node and the comments/quoting attached to it

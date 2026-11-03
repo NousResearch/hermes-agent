@@ -339,7 +339,14 @@ class SessionSearchMixin:
         if high_water is None or int(high_water) <= 0:
             return None
         total, progress = int(high_water), int(meta.get(f"{prefix}_progress") or 0)
-        return {"pending": True, "total": total, "indexed": progress, "percent": min(100, int(100 * progress / total))}
+        # Ids need not start near 1: an import with explicit ids moves AUTOINCREMENT up (#144879). Measured
+        # from 0, ids starting at 3.85e12 read 99% after the first chunk; measure from the first message.
+        # MIN(id) is a rowid-btree edge lookup, cheap enough for session_search's per-call status.
+        first = self._read_all("SELECT MIN(id) AS first FROM messages")[0]["first"]
+        floor = int(first) - 1 if first is not None else 0
+        span = total - floor
+        percent = 100 if span <= 0 else min(100, int(100 * (max(progress, floor) - floor) / span))
+        return {"pending": True, "total": total, "indexed": progress, "percent": percent}
 
     # Re-index rows in an id window the index is missing. docsize has one row
     # per indexed doc, so the anti-join is exact. Params: (lo, hi).

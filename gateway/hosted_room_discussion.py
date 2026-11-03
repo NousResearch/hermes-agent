@@ -556,13 +556,21 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
     return tuple((*members[shift:], *members[:shift]))
 
 
+def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
+    """The job label of a scheduler-authored ``message.user`` event, else None (the human wrote it)."""
+    if event is None or event.kind != "message.user" or scheduled_post_kind(event.actor) is None:
+        return None
+    return str(event.actor.get("display_name") or event.actor.get("id"))
+
+
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
-    if event.kind == "message.user":
-        if scheduled_post_kind(event.actor) is None:
-            return f"User (user): {event.payload['text']}"
-        job = event.actor.get("display_name") or event.actor.get("id")
-        return f'Scheduled job "{job}" (automated post, not the user): {event.payload["text"]}'
+    if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
+        return f"User (user): {event.payload['text']}"
+    # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
+    # control-frame relabel as a member reply; only the human's own lines stay verbatim.
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+    if event.kind == "message.user":
+        return f'Scheduled job "{job}" (automated post, not the user): {text}'
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
 
@@ -588,7 +596,8 @@ def _context_lines(context: Mapping[str, str] | None) -> list[str]:
 
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None) -> str:
+    seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
+    addressed_by_job: str | None = None) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
@@ -596,7 +605,8 @@ def _build_prompt(
         f"with {peers or 'no other members'} and the user.", "", *_context_lines(context),
         "New messages in this thread since your last turn (oldest first):"]
     participation = [
-        "- The user directly addressed you. Reply with your answer, result, or concrete blocker.",
+        (f'- The scheduled job "{addressed_by_job}" addressed you. Reply with your answer, result, or concrete blocker.'
+         if addressed_by_job else "- The user directly addressed you. Reply with your answer, result, or concrete blocker."),
         '- Do not return "(pass)". If you cannot proceed, explain why and what you need from the user.',
     ] if reply_required else [
         "- Reply with one conversational message only when you have something new worth adding.",
@@ -791,7 +801,7 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq, context=context,
+                seen_through_seq=seen_through_seq, context=context, addressed_by_job=_scheduled_job(discussion),
                 reply_required=_requires_direct_reply(room, discussion, member, round_index))
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,

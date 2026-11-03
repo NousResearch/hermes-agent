@@ -6,7 +6,13 @@ import { I18nProvider } from '@/i18n/context'
 import { en } from '@/i18n/en'
 import { $gateway } from '@/store/gateway'
 import { $sendDiagnostics } from '@/store/send-diagnostics'
-import { $backendUpdateApply, $updateOverlayOpen, $updateOverlayTarget, resetUpdateApplyState } from '@/store/updates'
+import {
+  $backendUpdateApply,
+  $updateApply,
+  $updateOverlayOpen,
+  $updateOverlayTarget,
+  resetUpdateApplyState
+} from '@/store/updates'
 
 import { UpdatesOverlay } from './updates-overlay'
 
@@ -66,4 +72,40 @@ it('a failed backend update shares its output from the backend and shows the lin
   expect(params.extra_files['update-output.log']).toContain('venv rebuild failed (exit 3)')
   expect(screen.getByText('https://nas.example/view/u1')).toBeTruthy()
   expect(screen.getByText(en.updates.errorTitle)).toBeTruthy()
+})
+
+it('a report never outlives its failure: switching the update target drops it', async () => {
+  $gateway.set({ request: vi.fn() } as never)
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+
+  const failed = {
+    applying: false,
+    command: null,
+    error: 'apply-failed',
+    log: [{ at: 1, message: 'error: venv rebuild failed (exit 3)', stage: 'pull' as const }],
+    message: 'Backend update failed.',
+    percent: null,
+    stage: 'error' as const
+  }
+
+  $backendUpdateApply.set(failed)
+  $updateApply.set({ ...failed, message: 'Desktop update failed.' })
+
+  await act(async () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+
+  fireEvent.click(screen.getByRole('button', { name: en.errors.sendDiagnostics }))
+  expect($sendDiagnostics.get()?.errorContext).toContain('Backend update failed.')
+
+  await act(async () => $updateOverlayTarget.set('client'))
+
+  expect($sendDiagnostics.get()).toBeNull()
+  expect(screen.queryByRole('button', { name: en.sendDiagnostics.upload })).toBeNull()
+  expect(screen.getByRole('button', { name: en.errors.sendDiagnostics })).toBeTruthy()
 })

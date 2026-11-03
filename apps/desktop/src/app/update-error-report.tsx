@@ -30,6 +30,17 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
   const reportRef = useRef<HTMLDivElement>(null)
   const phase = report?.phase
 
+  // The inline report belongs to the failure this box shows: retry, close or a
+  // target switch unmounts the box and drops it, so it never resurfaces later.
+  useEffect(
+    () => () => {
+      if ($sendDiagnostics.get()?.inline) {
+        dismissSendDiagnostics()
+      }
+    },
+    []
+  )
+
   // In a short window the revealed consent/result can open below the fold.
   useEffect(() => {
     if (phase) {

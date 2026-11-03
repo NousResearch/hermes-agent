@@ -1571,65 +1571,56 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
-def _upload_flag_owner_index(command: str) -> list[tuple[int, int, int | None, list[int], list[int]]]:
-    """Parse each simple command once: its bounds, where its first word that may run curl/wget starts,
-    and its word bounds. Built once per detection variant, so a long command full of ``cut -d`` flags
-    costs one walk instead of one walk per flag."""
-    index = []
+def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:
+    """Merged ``(starts, ends)`` of the ranges where an upload flag may belong to curl/wget.
+    ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter and upload
+    nothing. A range runs from a curl/wget word (``xargs curl``, ``ssh host curl``) or a word that
+    may expand to one to the end of its simple command, and covers the inside of a quoted word
+    (``eval "curl -d …"``, ``ssh host "curl …"``) that another program may re-parse as a command.
+    Built once per command, so many delimiter flags cost one parse instead of one parse each."""
+    ranges = []
     for start, _, _ in _iter_shell_command_word_spans(command):
         end = start + len(_shell_command_segment(command, start))
-        owner, word_starts, word_ends, pos = None, [], [], start
+        pos = start
         while pos < end:
             word_start, pos, word = _read_shell_word(command, pos)
             if word_start == pos:
                 break
-            word_starts.append(word_start)
-            word_ends.append(pos)
-            if owner is None and _word_may_run_curl_or_wget(word):
-                owner = word_start
-        index.append((start, end, owner, word_starts, word_ends))
-    return index
+            if _word_may_run_curl_or_wget(word):
+                ranges.append((word_start, end))
+                break
+            if any(ch.isspace() for ch in command[word_start:pos]):
+                ranges.append((word_start + 1, pos))
+    starts: list[int] = []
+    ends: list[int] = []
+    for range_start, range_end in sorted(ranges):
+        if ends and range_start <= ends[-1]:
+            ends[-1] = max(ends[-1], range_end)
+        else:
+            starts.append(range_start)
+            ends.append(range_end)
+    return starts, ends
 
 
-def _upload_flag_owned_by_curl_or_wget(index, flag_start: int) -> bool:
-    """True when a word that may run curl/wget precedes the upload flag at *flag_start* in the same
-    simple command. ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter
-    and upload nothing; curl run as an argument (``xargs curl``, ``ssh host curl``) still owns its flags."""
-    for start, end, owner, word_starts, word_ends in index:
-        if not start <= flag_start < end:
-            continue
-        if owner is not None and owner < flag_start:
-            return True
-        word = bisect.bisect_left(word_starts, flag_start) - 1
-        if word >= 0 and word_ends[word] > flag_start:
-            # The flag sits inside a quoted word that ``eval``, ``ssh host`` or ``sh -c`` may
-            # re-parse as a command, so curl may own it.
-            return True
-    return False
-
-
-def _credential_upload_owned_by_curl_or_wget(pattern_re, command: str) -> bool:
-    """True when any credential-upload match in *command* is an upload flag curl/wget may own."""
-    index = None
-    for match in pattern_re.finditer(command):
-        if index is None:
-            index = _upload_flag_owner_index(command)
-        if _upload_flag_owned_by_curl_or_wget(index, match.start()):
-            return True
-    return False
+def _upload_flag_owned_by_curl_or_wget(owner_ranges: tuple[list[int], list[int]], flag_start: int) -> bool:
+    """True when the upload flag at *flag_start* lies in a range from :func:`_upload_flag_owner_ranges`."""
+    starts, ends = owner_ranges
+    index = bisect.bisect_right(starts, flag_start) - 1
+    return index >= 0 and flag_start < ends[index]
 
 
 def _word_may_run_curl_or_wget(word: str) -> bool:
-    """True when a shell word names curl/wget (``/usr/bin/curl``, ``curl.exe``, ``C:\\tools\\wget.exe``)
-    or holds an expansion that may produce such a name (``$CURL``, ``c${suffix}``, ``/usr/bin/$CURL``,
-    ``"$(which curl)"``): what an expansion runs is unknown without executing the shell. Option words
-    and ``NAME=value`` assignments are never a command name."""
-    for spelling in (_deobfuscate_shell_word_for_detection(word), word.strip("'\"")):
-        name = re.split(r"[\\/]", spelling)[-1].lower()
-        if name.removesuffix(".exe") in ("curl", "wget"):
-            return True
-    return (("$" in word or "`" in word) and not word.startswith("-")
-            and not _ENV_ASSIGNMENT_RE.fullmatch(word))
+    """True for a curl/wget word (also ``curl.exe``, ``C:\\tools\\curl.exe``) or a word whose command
+    name holds an unresolved expansion (``$CURL``, ``"$(which curl)"``, ``/usr/bin/$CURL``,
+    ``c${suffix}``): what it runs is unknown without executing the shell."""
+    names = (os.path.basename(_deobfuscate_shell_word_for_detection(word)), re.split(r"[\\/]", word)[-1])
+    if any(name.lower().removesuffix(".exe") in ("curl", "wget") for name in names):
+        return True
+    unquoted = word.lstrip("'\"")
+    if unquoted.startswith(("$", "`")):
+        return True
+    # An option (``-d``) or assignment (``x="$A"``) cannot name the command being run.
+    return not unquoted.startswith("-") and "=" not in word and ("$" in word or "`" in word)
 
 
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
@@ -1656,10 +1647,12 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                     )
                 if pattern_re.search(masked_lower):
                     yield description
-            elif description != _CREDENTIAL_UPLOAD_DESCRIPTION:
-                if pattern_re.search(command_lower):
+            elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:
+                matches = list(pattern_re.finditer(command_lower))
+                owner_ranges = _upload_flag_owner_ranges(command_lower) if matches else ([], [])
+                if any(_upload_flag_owned_by_curl_or_wget(owner_ranges, match.start()) for match in matches):
                     yield description
-            elif _credential_upload_owned_by_curl_or_wget(pattern_re, command_lower):
+            elif pattern_re.search(command_lower):
                 yield description
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.

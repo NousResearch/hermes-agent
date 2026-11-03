@@ -316,6 +316,51 @@ class TestExtractText:
         }
         assert DingTalkAdapter._extract_text(msg) == "[引用] a b\n\nok"
 
+    def test_quoted_reply_under_text_key(self):
+        """Mac client nests the reply block under extensions['text'], not content."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "again"}]
+        msg.message_type = "richText"
+        msg.extensions = {
+            "text": {
+                "isReplyMsg": True,
+                "repliedMsg": {"msgType": "text", "content": {"text": "the earlier note"}},
+                "content": "again",
+            },
+            "content": "again",
+        }
+        assert DingTalkAdapter._extract_text(msg) == "[引用] the earlier note\n\nagain"
+
+    def test_quoted_reply_ai_card_is_not_truncated(self):
+        """AI-card quotes are flattened from cardContent and kept whole."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        body = "段" * 1200
+        msg = MagicMock()
+        msg.text = None
+        msg.rich_text = None
+        msg.rich_text_content = [{"text": "see above"}]
+        msg.message_type = "richText"
+        msg.extensions = {
+            "text": {
+                "isReplyMsg": True,
+                "repliedMsg": {
+                    "msgType": "interactiveCard",
+                    "content": {"cardContent": [{"elementType": "CARD", "children": [
+                        {"elementType": "TEXT", "value": "【工单预演】"},
+                        {"elementType": "TEXT", "value": body},
+                    ]}]},
+                },
+            }
+        }
+        out = DingTalkAdapter._extract_text(msg)
+        assert out.startswith("[引用] 【工单预演】 段段")
+        assert body in out, "quote must not be truncated"
+        assert "…" not in out
+        assert out.endswith("see above")
+
     def test_quoted_reply_without_content_does_not_prefix(self):
         """isReplyMsg without a usable repliedMsg must not add an empty prefix."""
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter

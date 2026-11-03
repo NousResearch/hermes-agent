@@ -32,6 +32,22 @@ def _ext_content(message: Any) -> Optional[dict]:
     return content if isinstance(content, dict) else None
 
 
+def _reply_container(message: Any) -> dict:
+    """Return the dict that actually carries ``isReplyMsg`` / ``repliedMsg``.
+
+    The same callback lands in different keys depending on client and SDK version:
+    mobile puts it under ``extensions['content']``, the Mac client under
+    ``extensions['text']`` (with ``extensions['content']`` holding a plain string).
+    Accept only a dict that owns one of the two reply fields.
+    """
+    ext = _extensions(message)
+    for key in ("content", "text", "richText"):
+        cand = ext.get(key)
+        if isinstance(cand, dict) and ("isReplyMsg" in cand or "repliedMsg" in cand):
+            return cand
+    return {}
+
+
 def _rich_list(message: Any) -> Optional[list]:
     """Rich-text item list from either SDK shape (``rich_text_content.rich_text_list`` or legacy ``rich_text``)."""
     rich_text = getattr(message, "rich_text_content", None) or getattr(message, "rich_text", None)
@@ -98,7 +114,7 @@ def _quoted_text(message: Any) -> str:
     {"msgId": ..., "msgType": "text", "content": {"text": "..."}}, "richText": [...]}``。
     注意这是 ``content`` 子字段，不是顶层字段，SDK 的 ChatbotMessage 不认识它，只落进 extensions。
     """
-    ext = _ext_content(message) or {}
+    ext = _reply_container(message)
     if not ext.get("isReplyMsg"):
         return ""
     replied = ext.get("repliedMsg") or {}
@@ -114,9 +130,40 @@ def _quoted_text(message: Any) -> str:
                 text = " ".join(
                     str(item.get("text", "")).strip() for item in rich if isinstance(item, dict)
                 ).strip()
+        if not text:
+            text = _inline_card_text(inner)
     elif isinstance(inner, str):
         text = inner.strip()
     return text
+
+
+def _inline_card_text(inner: dict) -> str:
+    """Pull plain text out of an AI card reply (``content = {"cardContent": [...]}``).
+
+    AI cards nest their message under ``cardContent``; each text node is
+    ``{"elementType": "TEXT", "value": "..."}``. Never truncate: the quote *is*
+    the context, and a cut-off quote is worse than a few hundred more tokens.
+    """
+    cards = inner.get("cardContent") or inner.get("card_content") or []
+    if not isinstance(cards, list):
+        return ""
+    out: List[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if str(node.get("elementType", "")).upper() == "TEXT":
+                val = str(node.get("value", "")).strip()
+                if val:
+                    out.append(val)
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(cards)
+    return " ".join(out).strip()
 
 
 def extract_text(message: Any) -> str:

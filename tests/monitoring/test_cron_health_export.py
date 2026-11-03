@@ -125,5 +125,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
 
     registered = set(gateway_health_export._OBSERVABLE_METRIC_NAMES)
 
+    # The memory-health reader runs for real here (sandboxed home: no ledger files yet).
+    assert {"hermes.gateway.previous_exit", "hermes.gateway.memory_pressure"} <= snapshot_names
     missing = snapshot_names - registered
     assert not missing, f"gauges emitted but NOT registered in metric_names (will be silently dropped): {sorted(missing)}"

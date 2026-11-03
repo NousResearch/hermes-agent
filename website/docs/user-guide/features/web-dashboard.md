@@ -470,7 +470,18 @@ The response also carries two advisory resource blocks (they never affect the
   lifecycle ledger. Fields: `pressure` (`ok` / `elevated` / `critical` /
   `unknown`), `gateway_rss_mb`, `system_total_mb`, `system_available_mb`,
   `swap_used_mb`, `sampled_at`, `boot_id`, `last_boot_unclean`,
-  `last_boot_suspected_oom`. Pressure is `elevated` below 128 MiB (or 15%) of
+  `last_boot_suspected_oom`, `last_boot_oom_kill` (`null`, `cgroup` or
+  `host`: the gateway died uncleanly and, between its last heartbeat and this
+  boot, the kernel OOM-killed a process in the gateway's cgroup (`cgroup`) /
+  somewhere on the host (`host`); the counter does not say which process, and
+  `host` also counts any other process on the machine. A systemd unit or
+  container restart recreates the cgroup, so after one this is usually
+  `host`; `cgroup` applies only when the gateway restarts inside a surviving
+  cgroup. Compared only when the last heartbeat is at most 15 minutes old;
+  Linux only), `last_boot_watchdog_exit` (the previous gateway
+  life was ended by a watchdog: either the event-loop liveness watchdog or the
+  shutdown watchdog), `last_boot_memory_starved` (that watchdog kill happened
+  while host memory pressure was `critical`). Pressure is `elevated` below 128 MiB (or 15%) of
   available system memory and `critical` below 64 MiB (or 5%) — the same
   levels at which a subsequent unclean exit would be flagged as a suspected
   OOM kill. Heartbeats older than 150 seconds (or future-dated) keep their

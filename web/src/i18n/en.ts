@@ -136,6 +136,24 @@ export const en: Translations = {
     inactiveCode: "The code is no longer active and no new account appeared. If your {platform} account isn't listed, get a new code and try again.",
   },
 
+  channelsUi: {
+    state: { connected: "Connected", pendingRestart: "Restart to apply", gatewayStopped: "Gateway stopped", startFailed: "Start failed", disconnected: "Disconnected", notConfigured: "Not configured", disabled: "Disabled", error: "Error", viaTeamGateway: "Via Team Gateway", managedByTeamGateway: "Managed by Team Gateway" },
+    loadFailed: "Could not load channels: {detail}",
+    nothingToSave: "Nothing to save — fill in at least one field.",
+    fixFields: "Fix the highlighted fields before saving.",
+    saved: "{name} saved",
+    savedConnecting: "{name} saved; the running gateway is connecting",
+    saveFailed: "Failed to save: {detail}",
+    updateFailed: "Could not update the channel: {detail}",
+    testFailed: "Could not test the channel: {detail}",
+    restarting: "Restarting…",
+    restartGateway: "Restart gateway",
+    restartRequired: "Changes are saved. Restart the gateway for them to take effect.",
+    restartNow: "Restart now",
+    gatewayStoppedHint: "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
+    configuredSummary: "{configured} of {total} channels configured. Credentials are written to {path}; the gateway connects each enabled channel on its next restart.",
+  },
+
   app: {
     brand: "Hermes Agent",
     brandShort: "HA",

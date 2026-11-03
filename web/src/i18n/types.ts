@@ -156,6 +156,35 @@ export interface Translations {
     inactiveCode: string;
   };
 
+  channelsUi?: {
+    state: {
+      connected: string;
+      pendingRestart: string;
+      gatewayStopped: string;
+      startFailed: string;
+      disconnected: string;
+      notConfigured: string;
+      disabled: string;
+      error: string;
+      viaTeamGateway: string;
+      managedByTeamGateway: string;
+    };
+    loadFailed: string;
+    nothingToSave: string;
+    fixFields: string;
+    saved: string;
+    savedConnecting: string;
+    saveFailed: string;
+    updateFailed: string;
+    testFailed: string;
+    restarting: string;
+    restartGateway: string;
+    restartRequired: string;
+    restartNow: string;
+    gatewayStoppedHint: string;
+    configuredSummary: string;
+  };
+
   // ── App shell ──
   app: {
     brand: string;

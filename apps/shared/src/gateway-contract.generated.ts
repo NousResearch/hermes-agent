@@ -1527,6 +1527,7 @@ export interface Room {
   idempotent?: boolean
   disbanded_at?: number | null
   latest_seq?: number | null
+  lead_member_id?: string | null
   adopted?: boolean | null
   claim_event?: RoomEvent | null
   authority_claim?: RoomEvent | null
@@ -1661,6 +1662,40 @@ export interface GroupsStopParams {
 }
 export interface GroupsStopResult {
   cancelled: number
+}
+/** ``member_id`` is required *present*: ``null`` clears the lead, absent is ``bad_request``. The wire model cannot say that, so the handler reads the raw params (see ``methods_groups``). */
+export interface GroupsLeadParams {
+  profile?: string | null
+  room_id: string
+  member_id?: string | null
+}
+export interface GroupsLeadResult {
+  room_id: string
+  lead?: RoomLead | null
+  previous_member_id?: string | null
+  seq: number
+}
+/** The lead after the call; ``label`` is the roster's own name for the member (spec 2). */
+export interface RoomLead {
+  member_id: string
+  profile?: string | null
+  label?: string | null
+}
+export interface GroupsHandoffParams {
+  profile?: string | null
+  room_id: string
+  from_member_id: string
+  to_member_id: string
+  task_id?: string | null
+  summary?: string | null
+}
+/** ``cancelled_task_id`` is the ``task_id`` the caller passed, or ``null`` (spec 3). */
+export interface GroupsHandoffResult {
+  room_id: string
+  seq: number
+  from_member_id: string
+  to_member_id: string
+  cancelled_task_id?: string | null
 }
 export interface GroupsApproveParams {
   profile?: string | null
@@ -6113,6 +6148,10 @@ export interface RpcMethods {
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
   /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. */
   'groups.disband': { params: GroupsDisbandParams; result: GroupsDisbandResult }
+  /** Move the room's lead, and optionally the running turn, to another member. */
+  'groups.handoff': { params: GroupsHandoffParams; result: GroupsHandoffResult }
+  /** Name or clear one hosted room's lead; appends exactly one room.lead_changed event. */
+  'groups.lead': { params: GroupsLeadParams; result: GroupsLeadResult }
   /** List rooms hosted by this gateway, most recently changed first. */
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
@@ -6563,6 +6602,8 @@ export const RPC_METHODS = [
   'groups.create',
   'groups.demote',
   'groups.disband',
+  'groups.handoff',
+  'groups.lead',
   'groups.list',
   'groups.log',
   'groups.peer.invite',

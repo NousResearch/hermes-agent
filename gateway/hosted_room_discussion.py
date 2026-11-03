@@ -104,6 +104,9 @@ class DiscussionRoom:
     members: tuple[DiscussionMember, ...]
     gateway_id: str
     authority_epoch: int
+    #: The room's lead (``hosted_rooms._lead_from_conn``), when the row carries one. Only the
+    #: default-recipient order uses it; a lead never gates a turn (D2).
+    lead_member_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -309,7 +312,11 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
     gateway_id = _identifier(value.get("authority_gateway_id"), label="authority_gateway_id")
     authority_epoch = _positive_int(value.get("authority_epoch"), label="authority_epoch")
     members = validate_roster(value.get("members"), local_profiles=local_profiles)
-    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch)
+    # A lead the roster no longer lists is dropped here rather than raising: a stale pointer
+    # must never take a whole room's replay down with it (spec 7.3).
+    lead = value.get("lead_member_id")
+    lead_member_id = lead if isinstance(lead, str) and any(m.member_id == lead for m in members) else None
+    return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch, lead_member_id)
 
 
 def is_pass_text(value: Any) -> bool:
@@ -318,8 +325,22 @@ def is_pass_text(value: Any) -> bool:
     return not text or re.fullmatch(r"\(?\s*pass\s*\)?\.?", text, re.IGNORECASE) is not None
 
 
+def _lead_first(
+    members: Sequence[DiscussionMember], lead_member_id: str | None
+) -> tuple[DiscussionMember, ...]:
+    """The room's default recipients: the lead first, everyone else in frozen roster order.
+
+    A stable sort, so the only thing the lead changes is who is asked first — ``@nom`` still
+    addresses a member directly, and no member is ever filtered out (D2, spec 5.1).
+    """
+    if not lead_member_id:
+        return tuple(members)
+    return tuple(sorted(members, key=lambda member: member.member_id != lead_member_id))
+
+
 def resolve_mentions(
-    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True
+    texts: Iterable[str], members: Sequence[DiscussionMember], *, default_all: bool = True,
+    lead_member_id: str | None = None,
 ) -> tuple[DiscussionMember, ...]:
     """Resolve member handles deterministically against the frozen roster."""
     by_handle = {member.handle.casefold(): member for member in members}
@@ -333,7 +354,7 @@ def resolve_mentions(
             elif handle in by_handle:
                 mentioned.add(handle)
     if everyone or (default_all and not mentioned):
-        return tuple(members)
+        return _lead_first(members, lead_member_id)
     return tuple(member for member in members if member.handle.casefold() in mentioned)
 
 
@@ -447,8 +468,70 @@ def _validate_gateway_event(kind: str, payload: Payload, actor: Payload, room: D
     return payload
 
 
+_HANDOFF_PAYLOAD_FIELDS = frozenset({"from_member_id", "to_member_id"})
+_LEAD_CHANGED_PAYLOAD_FIELDS = frozenset({"lead_member_id", "previous_member_id", "reason"})
+
+
+def _validate_handoff_event(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
+    """``bot.handoff``: the exact shape of spec 4.1, and no ``member_id`` key (trap 1).
+
+    ``_exact_fields`` is what refuses the trap: ``member_id`` is neither required nor optional here,
+    so a log that carries one is rejected instead of silently stealing the line's author. The
+    writer (``hosted_rooms.handoff``) never emits it; this is the reader's half of the same rule.
+    """
+    _exact_fields(payload, label="bot.handoff payload", required=_HANDOFF_PAYLOAD_FIELDS,
+                  optional={"task_id", "summary"})
+    sender = _member_by_id(room, payload.get("from_member_id"))
+    recipient = _member_by_id(room, payload.get("to_member_id"))
+    if sender.member_id == recipient.member_id:
+        raise DiscussionValidationError("bot.handoff members must differ")
+    if actor.get("kind") != "member" or actor.get("id") != sender.member_id:
+        raise DiscussionValidationError("bot.handoff actor must be the member handing over")
+    task_id = payload.get("task_id")
+    if task_id is not None and not isinstance(task_id, str):
+        raise DiscussionValidationError("bot.handoff task_id must be a string or null")
+    summary = payload.get("summary")
+    if summary is not None:
+        if not isinstance(summary, str):
+            raise DiscussionValidationError("bot.handoff summary must be a string or null")
+        if len(summary) > hosted_rooms.MAX_HANDOFF_SUMMARY_CHARS:
+            raise DiscussionValidationError("bot.handoff summary is too long")
+        if any(ord(char) < 32 or ord(char) == 127 for char in summary):
+            raise DiscussionValidationError("bot.handoff summary contains a control character")
+    return payload
+
+
+def _validate_lead_changed_event(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
+    """``room.lead_changed``: the exact shape of spec 4.2, and no ``member_id`` key (D4)."""
+    _exact_fields(payload, label="room.lead_changed payload", required=_LEAD_CHANGED_PAYLOAD_FIELDS)
+    reason = payload.get("reason")
+    if reason not in hosted_rooms.LEAD_CHANGE_REASONS:
+        raise DiscussionValidationError("invalid room.lead_changed reason")
+    expected_kind = "system" if reason == "member_left" else "user"
+    if actor.get("kind") != expected_kind:
+        raise DiscussionValidationError(
+            f"room.lead_changed with reason '{reason}' requires a {expected_kind} actor")
+    lead = payload.get("lead_member_id")
+    if reason == "member_left":
+        # The member is gone: resolving it against the roster is exactly what cannot work here.
+        if lead is not None:
+            raise DiscussionValidationError("a member_left lead change clears the lead")
+        return payload
+    if reason == "named" and lead is None:
+        raise DiscussionValidationError("a named lead change requires lead_member_id")
+    if reason == "cleared" and lead is not None:
+        raise DiscussionValidationError("a cleared lead change carries a null lead_member_id")
+    if lead is not None:
+        _member_by_id(room, lead)
+    previous = payload.get("previous_member_id")
+    if previous is not None:
+        _member_by_id(room, previous)
+    return payload
+
+
 _EVENT_VALIDATORS = {
     "message.user": _validate_user_event, "message.member": _validate_member_message,
+    "bot.handoff": _validate_handoff_event, "room.lead_changed": _validate_lead_changed_event,
     **dict.fromkeys(_TERMINAL_EVENT_KINDS, _validate_terminal_event),
     **dict.fromkeys(_GATEWAY_EVENT_FIELDS, _validate_gateway_event)}
 
@@ -717,8 +800,9 @@ def plan_next_task(
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
         responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
-            else _unaddressed_member_mentions(discussion_messages, room))
+            resolve_mentions(
+                (str(discussion.payload["text"]),), room.members, lead_member_id=room.lead_member_id)
+            if round_index == 0 else _unaddressed_member_mentions(discussion_messages, room))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
             delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)

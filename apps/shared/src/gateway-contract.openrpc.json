@@ -1213,6 +1213,42 @@
       }
     },
     {
+      "name": "groups.handoff",
+      "summary": "Move the room's lead, and optionally the running turn, to another member.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsHandoffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsHandoffResult"
+        }
+      }
+    },
+    {
+      "name": "groups.lead",
+      "summary": "Name or clear one hosted room's lead; appends exactly one room.lead_changed event.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsLeadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsLeadResult"
+        }
+      }
+    },
+    {
       "name": "groups.list",
       "summary": "List rooms hosted by this gateway, most recently changed first.",
       "params": [
@@ -19505,6 +19541,189 @@
         "title": "GroupsDiscardResult",
         "type": "object"
       },
+      "GroupsHandoffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "from_member_id": {
+            "title": "From Member Id",
+            "type": "string"
+          },
+          "to_member_id": {
+            "title": "To Member Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Summary"
+          }
+        },
+        "required": [
+          "room_id",
+          "from_member_id",
+          "to_member_id"
+        ],
+        "title": "GroupsHandoffParams",
+        "type": "object"
+      },
+      "GroupsHandoffResult": {
+        "additionalProperties": false,
+        "description": "``cancelled_task_id`` is the ``task_id`` the caller passed, or ``null`` (spec 3).",
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "from_member_id": {
+            "title": "From Member Id",
+            "type": "string"
+          },
+          "to_member_id": {
+            "title": "To Member Id",
+            "type": "string"
+          },
+          "cancelled_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cancelled Task Id"
+          }
+        },
+        "required": [
+          "room_id",
+          "seq",
+          "from_member_id",
+          "to_member_id"
+        ],
+        "title": "GroupsHandoffResult",
+        "type": "object"
+      },
+      "GroupsLeadParams": {
+        "additionalProperties": false,
+        "description": "``member_id`` is required *present*: ``null`` clears the lead, absent is ``bad_request``.\nThe wire model cannot say that, so the handler reads the raw params (see ``methods_groups``).",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member Id"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsLeadParams",
+        "type": "object"
+      },
+      "GroupsLeadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "lead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomLead"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "previous_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Previous Member Id"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "seq"
+        ],
+        "title": "GroupsLeadResult",
+        "type": "object"
+      },
       "GroupsListParams": {
         "additionalProperties": false,
         "properties": {
@@ -33573,6 +33792,18 @@
             "default": null,
             "title": "Latest Seq"
           },
+          "lead_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lead Member Id"
+          },
           "adopted": {
             "anyOf": [
               {
@@ -33960,6 +34191,45 @@
           "policy_digest"
         ],
         "title": "RoomExecutionPolicy",
+        "type": "object"
+      },
+      "RoomLead": {
+        "additionalProperties": false,
+        "description": "The lead after the call; ``label`` is the roster's own name for the member (spec 2).",
+        "properties": {
+          "member_id": {
+            "title": "Member Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          }
+        },
+        "required": [
+          "member_id"
+        ],
+        "title": "RoomLead",
         "type": "object"
       },
       "RoomLinkCatalog": {

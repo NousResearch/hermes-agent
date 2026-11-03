@@ -19,6 +19,7 @@ _METHODS = (
     "groups.capabilities", "groups.list", "groups.create", "groups.state", "groups.send",
     "groups.rename", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.retry", "groups.approve",
+    "groups.lead", "groups.handoff",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register")
 LONG_HANDLERS = frozenset(_METHODS)
 
@@ -432,6 +433,56 @@ def _(rid, params: dict, service) -> dict:
     count = service.stop_room(
         str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or "desktop-stop"))
     return _ok(rid, {"cancelled": count})
+
+
+@_room_method(
+    "groups.lead", code=5124, room_code=4124, service_code=4123,
+    service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Name or clear one room's lead; appends exactly one ``room.lead_changed``.
+
+    ``member_id`` must be PRESENT: ``null`` clears, absent is ``bad_request``, so no client can
+    clear a lead by omission (spec 2). Every refusal is a ``RoomLeadError`` reason, no event."""
+    from gateway.hosted_rooms import RoomLeadError
+    room_id = str(params.get("room_id") or "").strip()
+    if not room_id:
+        raise RoomLeadError("room_id is required", reason="bad_request")
+    if "member_id" not in params:
+        raise RoomLeadError("member_id is required (null clears the lead)", reason="bad_request")
+    member_id = params.get("member_id")
+    if member_id is not None:
+        if not isinstance(member_id, str) or not member_id.strip():
+            raise RoomLeadError("member_id must be a member id or null", reason="bad_request")
+        member_id = member_id.strip()
+    return _ok(rid, service.set_lead(room_id=room_id, member_id=member_id))
+
+
+@_room_method(
+    "groups.handoff", code=5125, room_code=4125, service_code=4123,
+    service_message=_WORKER_UNAVAILABLE)
+def _(rid, params: dict, service) -> dict:
+    """Stop the departing turn (when ``task_id`` is given) and record one ``bot.handoff``.
+
+    The event carries no ``member_id`` key: ``GroupEvent.from`` reads ``payload.member_id`` before
+    the actor, and one would steal the line's author (D4, spec 4.1 trap 1)."""
+    from gateway.hosted_rooms import RoomLeadError
+    room_id = str(params.get("room_id") or "").strip()
+    from_member_id = str(params.get("from_member_id") or "").strip()
+    to_member_id = str(params.get("to_member_id") or "").strip()
+    if not room_id or not from_member_id or not to_member_id:
+        raise RoomLeadError(
+            "room_id, from_member_id and to_member_id are required", reason="bad_request")
+    task_id = params.get("task_id")
+    if task_id is not None:
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise RoomLeadError("task_id must be a non-empty string or null", reason="bad_request")
+        task_id = task_id.strip()
+    summary = params.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        raise RoomLeadError("summary must be a string or null", reason="bad_request")
+    return _ok(rid, service.handoff(
+        room_id=room_id, from_member_id=from_member_id, to_member_id=to_member_id,
+        task_id=task_id, summary=summary))
 
 
 @_room_method("groups.approve", code=5119, service_code=4115)

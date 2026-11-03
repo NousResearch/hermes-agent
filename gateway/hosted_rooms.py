@@ -27,6 +27,9 @@ MAX_ROOM_NAME_CHARS = 200
 MAX_EVENT_KIND_CHARS = 64
 MAX_ACTOR_ID_CHARS = 128
 MAX_ACTOR_LABEL_CHARS = 200
+MAX_HANDOFF_SUMMARY_CHARS = 280
+#: Closed set of ``room.lead_changed.reason`` values (spec §4.2).
+LEAD_CHANGE_REASONS = frozenset({"named", "cleared", "member_left"})
 MAX_MEMBERS = 128
 MAX_MEMBERS_JSON_BYTES = 128 * 1024
 MAX_EVENT_JSON_BYTES = 256 * 1024
@@ -48,12 +51,13 @@ _JOURNAL_MODE_LOCK_RETRIES = 8
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested"})
 _EVENT_KINDS_BY_ACTOR = {
-    "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
-    "gateway": frozenset({
+    "user": frozenset({"message.user", "room.lead_changed"}),
+    "member": frozenset({"message.member", "bot.handoff"}), "gateway": frozenset({
         "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
+        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed",
+        "room.lead_changed"
     })}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
@@ -155,6 +159,11 @@ _REMOTE_RUN_SCHEMA_COLUMNS = _REQUIRED_COLUMNS[4][1]
 # --- SQL fragments (statement text must stay byte-stable after whitespace normalisation) ---
 _EVENT_COLUMNS = ("room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, created_at")
 _SELECT_EVENT = f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?"
+#: The lead is read from the log, not from a room column: the last event that names one wins.
+#: ``bot.handoff`` moves it to the recipient — D3 forbids a second event for one gesture.
+_SELECT_LEAD = (
+    "SELECT kind, payload_json FROM hosted_room_events WHERE room_id=?"
+    " AND kind IN ('room.lead_changed', 'bot.handoff') ORDER BY seq DESC LIMIT 1")
 _INSERT_EVENT = (f"INSERT INTO hosted_room_events ({_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 _ROOM_COLUMNS = (
     "room_id, name, members_json, authority_gateway_id, authority_epoch, next_seq, revision,"
@@ -205,6 +214,15 @@ class AuthorityConflictError(HostedRoomError):
 
 class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
+
+class RoomLeadError(HostedRoomError):
+    """A lead/handoff request the room refuses; ``reason`` is the stable client token (spec 2, 3).
+    Clients branch on ``data.reason`` — the numeric code belongs to the RPC envelope."""
+    reason = "conflict"
+
+    def __init__(self, message: str, *, reason: str = "conflict"):
+        super().__init__(message)
+        self.reason = reason
 
 
 # --- validation ---------------------------------------------------------------
@@ -386,6 +404,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_RETIRE_FROM_ROOMS.format(where="disbanded_at IS NOT NULL"))
     _migrate_remote_run_schema(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_cursor ON hosted_room_events(room_id, seq)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hosted_room_events_lead ON hosted_room_events(room_id, kind, seq)")
     if not _schema_is_current(conn):
         raise HostedRoomError("hosted room schema migration did not complete")
 
@@ -953,6 +972,167 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
         return {**_room_from_row(updated), "event": _event_from_row(_load_event(conn, room_id, event_id))}
 
 
+# --- lead and handoff ----------------------------------------------------------
+def _lead_from_conn(conn: sqlite3.Connection, room_id: str) -> str | None:
+    """The lead as the log states it, or ``None`` when the room never named one."""
+    row = conn.execute(_SELECT_LEAD, (room_id,)).fetchone()
+    if row is None:
+        return None
+    field = "to_member_id" if row["kind"] == "bot.handoff" else "lead_member_id"
+    value = json.loads(row["payload_json"]).get(field)
+    return value if isinstance(value, str) and value else None
+
+
+def _room_member(room: sqlite3.Row, member_id: str) -> dict[str, Any]:
+    """One roster row of this room, or ``member_not_in_room``."""
+    for member in json.loads(room["members_json"]):
+        if isinstance(member, dict) and str(member.get("member_id") or "") == member_id:
+            return member
+    raise RoomLeadError(f"'{member_id}' is not a member of this room", reason="member_not_in_room")
+
+
+def _lead_member(room: sqlite3.Row, member_id: str | None) -> dict[str, Any] | None:
+    """The ``lead`` object of a ``groups.lead`` answer: the roster's own label (spec 2)."""
+    if member_id is None:
+        return None
+    member = _room_member(room, member_id)
+    label = str(member.get("display_name") or member.get("handle") or member_id)
+    return {"member_id": member_id, "profile": str(member.get("profile") or ""), "label": label}
+
+
+def lead_member_id(db_path: DbPath, *, room_id: Any) -> str | None:
+    """Read one room's current lead from its log (``None`` when it has none)."""
+    room_id = _room_id(room_id)
+    with closing(_read_connection(db_path)) as conn:
+        return _lead_from_conn(conn, room_id)
+
+
+def set_lead(
+    db_path: DbPath, *, room_id: Any, event_id: Any, member_id: Any, authority_gateway_id: Any,
+    authority_epoch: Any, reason: Any = "named", now: float | None = None,
+) -> dict[str, Any]:
+    """Name or clear one room's lead with exactly one ``room.lead_changed`` event, nothing else.
+
+    ``member_id=None`` clears the lead. Clearing a room that has none, or naming the member that
+    already leads, is ``already_lead`` and writes nothing (spec 2, 7.2). ``reason`` is ``named``,
+    ``cleared`` or ``member_left``; the last one is written by the server itself (``system`` actor).
+    """
+    room_id = _room_id(room_id)
+    event_id = _event_id(event_id)
+    if reason not in LEAD_CHANGE_REASONS:
+        raise RoomLeadError("invalid lead change reason", reason="bad_request")
+    if member_id is not None:
+        member_id = _actor_id(member_id, "member_id")
+    elif reason == "named":
+        reason = "cleared"
+    authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
+    authority_epoch = _require_positive_int(authority_epoch, "authority_epoch")
+    now = _now(now)
+    actor = {"kind": "system" if reason == "member_left" else "user", "id": "room-control"}
+    _, actor_json = _validate_actor(actor, kind="room.lead_changed")
+    with _transaction(db_path, immediate=True) as conn:
+        room = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
+        if room is None or room["disbanded_at"] is not None:
+            raise RoomLeadError("hosted room not found", reason="room_not_found")
+        previous_member_id = _lead_from_conn(conn, room_id)
+        payload_json = _payload_json({
+            "lead_member_id": member_id, "previous_member_id": previous_member_id, "reason": reason})
+        existing = _load_event(conn, room_id, event_id)
+        if existing is not None:
+            if _event_content(existing) != ("room.lead_changed", actor_json, authority_epoch, payload_json):
+                raise EventConflictError("event_id already exists with different content")
+            return {
+                "room_id": room_id, "lead": _lead_member(room, member_id),
+                "previous_member_id": previous_member_id, "seq": int(existing["seq"]),
+                "reason": reason, "event_id": event_id, "idempotent": True}
+        if member_id is None:
+            if previous_member_id is None:
+                raise RoomLeadError("this room has no lead to clear", reason="already_lead")
+        else:
+            _room_member(room, member_id)
+            if previous_member_id == member_id:
+                raise RoomLeadError(f"'{member_id}' already leads this room", reason="already_lead")
+        seq = int(room["next_seq"])
+        event_bytes = _prepare_event(conn, room, event_id, "room.lead_changed", actor_json, payload_json)
+        _fenced_update(conn, """UPDATE hosted_rooms
+                SET next_seq=next_seq+1, event_bytes=event_bytes+?, revision=revision+1, updated_at=?
+                WHERE room_id=? AND next_seq=?""", (event_bytes, now, room_id, seq),
+            RuntimeError("hosted room sequence advance lost its write fence"))
+        conn.execute(_INSERT_EVENT, (
+            room_id, seq, event_id, "room.lead_changed", actor_json, authority_epoch, payload_json, now))
+        room = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
+        return {
+            "room_id": room_id, "lead": _lead_member(room, member_id),
+            "previous_member_id": previous_member_id, "seq": seq, "reason": reason,
+            "event_id": event_id, "idempotent": False}
+
+
+def _handoff_summary(value: Any) -> str | None:
+    """``summary``: at most 280 characters, no control character; an empty string means absent."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RoomLeadError("summary must be a string", reason="bad_request")
+    summary = value.strip()
+    if not summary:
+        return None
+    if len(summary) > MAX_HANDOFF_SUMMARY_CHARS:
+        raise RoomLeadError(
+            f"summary is longer than {MAX_HANDOFF_SUMMARY_CHARS} characters", reason="summary_too_long")
+    if any(ord(char) < 32 or ord(char) == 127 for char in summary):
+        raise RoomLeadError("summary contains a control character", reason="bad_request")
+    return summary
+
+
+def handoff(
+    db_path: DbPath, *, room_id: Any, event_id: Any, from_member_id: Any, to_member_id: Any,
+    authority_gateway_id: Any, authority_epoch: Any, task_id: Any = None, summary: Any = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Append one ``bot.handoff`` and move the room's lead to ``to_member_id`` (spec 3, 4.1).
+
+    The payload carries no ``member_id`` key on purpose: ``GroupEvent.from`` reads
+    ``payload.member_id`` before the actor, and such a key would steal the line's author (D4).
+    """
+    room_id = _room_id(room_id)
+    event_id = _event_id(event_id)
+    sender = _actor_id(from_member_id, "from_member_id")
+    recipient = _actor_id(to_member_id, "to_member_id")
+    if sender == recipient:
+        raise RoomLeadError("from_member_id and to_member_id are the same member", reason="same_member")
+    task_id = None if task_id in (None, "") else _event_id(task_id)
+    summary = _handoff_summary(summary)
+    authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
+    authority_epoch = _require_positive_int(authority_epoch, "authority_epoch")
+    now = _now(now)
+    with _transaction(db_path, immediate=True) as conn:
+        room = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
+        if room is None or room["disbanded_at"] is not None:
+            raise RoomLeadError("hosted room not found", reason="room_not_found")
+        sender_member = _room_member(room, sender)
+        _room_member(room, recipient)
+        payload_json = _payload_json({
+            "from_member_id": sender, "to_member_id": recipient, "task_id": task_id, "summary": summary})
+        actor = {"kind": "member", "id": sender, "profile": str(sender_member.get("profile") or "")}
+        actor, actor_json = _validate_actor(actor, kind="bot.handoff")
+        existing = _load_event(conn, room_id, event_id)
+        if existing is not None:
+            if _event_content(existing) != ("bot.handoff", actor_json, authority_epoch, payload_json):
+                raise EventConflictError("event_id already exists with different content")
+            return {**_event_from_row(existing, idempotent=True), "actor": actor}
+        seq = int(room["next_seq"])
+        event_bytes = _prepare_event(conn, room, event_id, "bot.handoff", actor_json, payload_json)
+        _fenced_update(conn, """UPDATE hosted_rooms
+                SET next_seq=next_seq+1, event_bytes=event_bytes+?, revision=revision+1, updated_at=?
+                WHERE room_id=? AND next_seq=?""", (event_bytes, now, room_id, seq),
+            RuntimeError("hosted room sequence advance lost its write fence"))
+        conn.execute(_INSERT_EVENT, (
+            room_id, seq, event_id, "bot.handoff", actor_json, authority_epoch, payload_json, now))
+        row = conn.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?", (room_id, seq)).fetchone()
+    return {**_event_from_row(row), "actor": actor}
+
+
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
     authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
@@ -1046,7 +1226,10 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
             f"""SELECT {_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=?
                 AND kind='authority.claimed' AND authority_epoch=? ORDER BY seq DESC LIMIT 1""",
             (room_id, int(row["authority_epoch"]))).fetchone()
-    return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
+        lead_member_id = _lead_from_conn(conn, room_id)
+    return {
+        **_room_from_row(row), "lead_member_id": lead_member_id,
+        **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
 
 
 def request_room_stop(

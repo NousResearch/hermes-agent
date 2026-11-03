@@ -62,6 +62,8 @@ class Room(Result):
     idempotent: bool = False
     disbanded_at: float | None = None
     latest_seq: int | None = None
+    #: ``hosted_rooms._lead_from_conn`` — ``state`` only; the other branches leave it out.
+    lead_member_id: str | None = None
     adopted: bool | None = None
     claim_event: RoomEvent | None = None
     authority_claim: RoomEvent | None = None
@@ -314,6 +316,53 @@ class GroupsStopResult(Result):
 
 method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,
        doc="Durably cancel queued or running work for one hosted room.")
+
+
+class GroupsLeadParams(RoomParams):
+    """``member_id`` is required *present*: ``null`` clears the lead, absent is ``bad_request``.
+    The wire model cannot say that, so the handler reads the raw params (see ``methods_groups``)."""
+
+    member_id: str | None = None
+
+
+class RoomLead(Result):
+    """The lead after the call; ``label`` is the roster's own name for the member (spec 2)."""
+
+    member_id: str
+    profile: str | None = None
+    label: str | None = None
+
+
+class GroupsLeadResult(Result):
+    room_id: str
+    lead: RoomLead | None = None
+    previous_member_id: str | None = None
+    seq: int
+
+
+method("groups.lead", params=GroupsLeadParams, result=GroupsLeadResult,
+       doc="Name or clear one hosted room's lead; appends exactly one room.lead_changed event.")
+
+
+class GroupsHandoffParams(RoomParams):
+    from_member_id: str
+    to_member_id: str
+    task_id: str | None = None
+    summary: str | None = None
+
+
+class GroupsHandoffResult(Result):
+    """``cancelled_task_id`` is the ``task_id`` the caller passed, or ``null`` (spec 3)."""
+
+    room_id: str
+    seq: int
+    from_member_id: str
+    to_member_id: str
+    cancelled_task_id: str | None = None
+
+
+method("groups.handoff", params=GroupsHandoffParams, result=GroupsHandoffResult,
+       doc="Move the room's lead, and optionally the running turn, to another member.")
 
 
 class GroupsApproveParams(RoomParams):

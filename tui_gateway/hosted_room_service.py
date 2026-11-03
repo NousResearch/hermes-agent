@@ -35,6 +35,23 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+#: ``cancel_id`` namespace of a handoff-driven stop. The driver row records the cause only there;
+#: ``_publication_result`` turns it into the ``handed_over`` reason of spec 3.
+_HANDOFF_CANCEL_PREFIX = "handoff:"
+
+
+def _publication_result(task: Mapping[str, Any], status: str) -> Any:
+    """The ``result`` a terminal publication reads its reason from.
+
+    A cancelled task has no result mapping: the driver stores the cause as the ``cancel_id`` it was
+    called with. A handoff stop therefore publishes ``turn.cancelled`` with ``reason:
+    "handed_over"``, the exact token the client's note must render as nothing (spec 4.3, trap 2).
+    """
+    result = task.get("result")
+    if status == "cancelled" and result is None and str(
+            task.get("cancel_id") or "").startswith(_HANDOFF_CANCEL_PREFIX):
+        return {"reason": "handed_over"}
+    return result
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -398,7 +415,7 @@ class HostedRoomService:
                 task_events = [event for event in task_events if event["kind"] != "message.user"
                                or int(event["seq"]) <= int(task["payload"]["source_event_seq"])]
             publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
+                room, task_events, plan, status=status, result=_publication_result(task, status),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
             for event in publication.events:
@@ -423,9 +440,30 @@ class HostedRoomService:
                 "discussion_event_id": decision.discussion_event_id},
             authority_gateway_id=gateway_id, authority_epoch=epoch)
 
+    def _retire_lead_outside_roster(self, room: Mapping[str, Any]) -> dict[str, Any]:
+        """Clear a lead the roster no longer lists, in one ``system`` event (spec 6, row 4).
+
+        Runs on every prepare pass, but writes at most once: after the event the derived lead is
+        ``None``, so the next pass has nothing to clear. A failed write (another pass won, or the
+        room was disbanded under us) is never retried here — the room stays readable either way.
+        """
+        lead = room.get("lead_member_id")
+        members = room.get("members") or []
+        if not lead or any(str(member.get("member_id") or "") == lead for member in members):
+            return dict(room)
+        gateway_id, epoch = _authority(room)
+        try:
+            hosted_rooms.set_lead(
+                self.db_path, room_id=str(room["room_id"]), member_id=None,
+                event_id=f"lead-member-left:{lead}:{int(room.get('latest_seq') or 0)}",
+                reason="member_left", authority_gateway_id=gateway_id, authority_epoch=epoch)
+        except hosted_rooms.HostedRoomError:
+            return dict(room)
+        return self._room(str(room["room_id"]))
+
     def prepare_room(self, binding: HostedRoomBinding) -> None:
         with self._policy_lock:
-            room = self._room(binding.room_id)
+            room = self._retire_lead_outside_roster(self._room(binding.room_id))
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
             try:
                 changed = self._publish_terminal_tasks(room)
@@ -523,6 +561,84 @@ class HostedRoomService:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()
         return len(tasks)
+
+    def _room_is_stopping(self, room_id: str) -> bool:
+        """Whether a bot of this room still acknowledges a stop (spec 2, 3: ``room_stopping``)."""
+        return any(task.get("status") == "stopping"
+                   for task in self._list_tasks(room_id, _STOPPABLE_STATUSES))
+
+    def set_lead(self, *, room_id: str, member_id: str | None) -> dict[str, Any]:
+        """Name (``member_id``) or clear (``None``) one room's lead: one event, no other write."""
+        room = self._room(room_id)
+        if room.get("disbanded_at") is not None:
+            raise hosted_rooms.RoomLeadError("hosted room not found", reason="room_not_found")
+        members = room.get("members") or []
+        if member_id is not None:
+            member = next(
+                (candidate for candidate in members if str(candidate.get("member_id") or "") == member_id), None)
+            if member is None:
+                raise hosted_rooms.RoomLeadError(
+                    f"'{member_id}' is not a member of this room", reason="member_not_in_room")
+            profile, target = str(member.get("profile") or ""), member.get("target") or {}
+            if profile and target.get("kind") != "peer" and profile not in self.local_profiles():
+                raise hosted_rooms.RoomLeadError(
+                    f"profile '{profile}' is not served here", reason="profile_not_found")
+        if self._room_is_stopping(room_id):
+            raise hosted_rooms.RoomLeadError("room work is still stopping; retry", reason="room_stopping")
+        gateway_id, epoch = self._owned_authority(room_id)
+        return hosted_rooms.set_lead(
+            self.db_path, room_id=room_id, member_id=member_id,
+            event_id=f"lead:{member_id or 'none'}:{int(room.get('latest_seq') or 0)}",
+            authority_gateway_id=gateway_id, authority_epoch=epoch)
+
+    def _live_task_of(self, room_id: str, member_id: str, task_id: str) -> Mapping[str, Any]:
+        """The live task ``task_id`` of ``member_id``, or ``task_not_yours`` (spec 3)."""
+        for task in self._list_tasks(room_id, _STOPPABLE_STATUSES):
+            payload = task.get("payload") or {}
+            if (str(task["identity"].task_id) == task_id
+                    and str(payload.get("target_member_id") or "") == member_id):
+                return task
+        raise hosted_rooms.RoomLeadError(
+            f"'{task_id}' is not a running task of '{member_id}'", reason="task_not_yours")
+
+    def handoff(
+        self, *, room_id: str, from_member_id: str, to_member_id: str, task_id: str | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Stop the departing turn when ``task_id`` names it, then record one ``bot.handoff``.
+
+        The cancel is issued first so a running turn cannot overwrite the journal behind the hand:
+        its ``turn.cancelled`` is published by the terminal pipeline (``_publication_result`` stamps
+        ``reason: "handed_over"``), which is asynchronous, so it lands *after* the handoff event.
+        The spec asks for the opposite order; both read the same because ``handed_over`` renders no
+        line at all (spec 4.3, trap 2). See the handoff document, deviation D-1.
+        """
+        room = self._room(room_id)
+        if room.get("disbanded_at") is not None:
+            raise hosted_rooms.RoomLeadError("hosted room not found", reason="room_not_found")
+        member_ids = {str(member.get("member_id") or "") for member in room.get("members") or []}
+        for member_id in (from_member_id, to_member_id):
+            if member_id not in member_ids:
+                raise hosted_rooms.RoomLeadError(
+                    f"'{member_id}' is not a member of this room", reason="member_not_in_room")
+        if self._room_is_stopping(room_id):
+            raise hosted_rooms.RoomLeadError("room work is still stopping; retry", reason="room_stopping")
+        cancelled_task_id = None
+        if task_id:
+            task = self._live_task_of(room_id, from_member_id, task_id)
+            self.runtime.cancel(task["identity"], cancel_id=f"{_HANDOFF_CANCEL_PREFIX}{task_id}")
+            cancelled_task_id = task_id
+        gateway_id, epoch = self._owned_authority(room_id)
+        event = hosted_rooms.handoff(
+            self.db_path, room_id=room_id, from_member_id=from_member_id, to_member_id=to_member_id,
+            task_id=task_id, summary=summary, authority_gateway_id=gateway_id, authority_epoch=epoch,
+            event_id=(f"handoff:{from_member_id}:{cancelled_task_id or '-'}:"
+                      f"{int(room.get('latest_seq') or 0)}"))
+        self.runtime.wakeup()
+        return {
+            "room_id": str(room["room_id"]), "seq": int(event["seq"]),
+            "from_member_id": from_member_id, "to_member_id": to_member_id,
+            "cancelled_task_id": cancelled_task_id}
 
     def retry_room_task(self, room_id: str, *, task_id: str) -> dict[str, Any]:
         """Retry one uncertain or deferred task only after explicit user action."""

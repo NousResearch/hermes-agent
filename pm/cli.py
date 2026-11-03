@@ -472,7 +472,28 @@ def cmd_doctor(args) -> int:
             continue
         print(f"✓ {name} {fact['version']}")
     bad += _doctor_uv_cache(repair=getattr(args, "repair", False))
+    bad += _doctor_configured_features()
     return 1 if bad else 0
+
+
+def _doctor_configured_features() -> int:
+    """Flag configured gateway platforms/MCP whose SDK is not in this environment.
+
+    The package audit above covers only PM's recorded packages, so a configured
+    platform whose dependency install failed reads green there while the gateway
+    cannot load it on restart. Doctor is the expensive-path diagnostic: it must
+    say so. Read-only; the probe self-guards against config edge states, the
+    import guard keeps a broken install from crashing the diagnostic itself.
+    """
+    try:
+        from hermes_cli.main_install_repair import _configured_features_missing_deps
+        missing = _configured_features_missing_deps()
+    except Exception as exc:  # health: allow BLE001 -- a diagnostic must not crash
+        print(f"✗ configured features: could not check ({exc})")
+        return 1
+    for label, hint, _extra in missing:
+        print(f"✗ configured feature {label}: dependencies missing — {hint}")
+    return len(missing)
 
 
 def _doctor_uv_cache(*, repair: bool) -> int:

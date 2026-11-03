@@ -1056,7 +1056,25 @@ def _run_post_update_maintenance(
     ))
 
     print()
-    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
+    # The dependency sync already printed its own warnings for configured features whose
+    # SDK it could not install, but a degraded platform must also reach the receipt and
+    # the completion line operators read — otherwise a broken adapter reports as a clean
+    # update. This child runs on the selected interpreter, so the re-probe is safe. Like
+    # the SQLite verdict below, degraded features are reported and persisted but are not
+    # tail work: the tail cannot install platform SDKs.
+    degraded: list[tuple[str, str, str]] = []
+    with _best_effort('Configured-feature re-probe failed: %s'):
+        from hermes_cli.main_install_repair import _configured_features_missing_deps
+        degraded = _configured_features_missing_deps()
+    message = completion_message or _update_complete_message(pre_update_version)
+    if degraded:
+        labels = ", ".join(label for label, _hint, _extra in degraded)
+        unit = "feature" if len(degraded) == 1 else "features"
+        record_followup(
+            "features", f"{len(degraded)} configured {unit} missing dependencies: {labels}",
+            retry="the next `hermes update` retries the install; `hermes pm doctor` reports them")
+        message = f"{message} — {len(degraded)} configured {unit} degraded: {labels}"
+    update_complete = _print_verified_update_completion(message)
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):

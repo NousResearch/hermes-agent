@@ -1,20 +1,46 @@
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  textPart,
+  withoutInjectedMemoryContext
+} from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
-import { reconcileDurableHistory } from './utils'
+import { appendLiveSessionProjection, reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
-const userText = (text: string) => textWithoutReferenceLines(text).trim()
+const userText = (text: string) => textWithoutReferenceLines(withoutInjectedMemoryContext(text)).trim()
 const hasTools = (row: SessionMessage) => Array.isArray(row.tool_calls) && row.tool_calls.length > 0
 
 const renderedText = (raw: string) => {
   const part = assistantTextPart(raw)
 
   return part.type === 'text' ? part.text : ''
+}
+
+function queuedPromptRow(row: SessionMessage): boolean {
+  if (row.role !== 'user') {
+    return false
+  }
+
+  let metadata: unknown = row.display_metadata
+
+  if (typeof metadata === 'string') {
+    try {
+      metadata = JSON.parse(metadata)
+    } catch {
+      return false
+    }
+  }
+
+  return Boolean(
+    metadata && typeof metadata === 'object' && '_queued_prompt' in metadata && metadata._queued_prompt === true
+  )
 }
 
 interface PersistedTurn {
@@ -194,7 +220,7 @@ function snapshotIntervals(inflight: NonNullable<SessionResumeResult['inflight']
  * Reconcile the anchored partial turn before role-ordinal pairing sees it.
  * Missing provenance takes the legacy path without subtracting any snapshot text.
  */
-export function reconcilePersistedLiveTurn(
+function reconcileCurrentPersistedLiveTurn(
   messages: ChatMessage[],
   previous: ChatMessage[],
   rows: SessionMessage[],
@@ -327,4 +353,49 @@ export function reconcilePersistedLiveTurn(
   }
 
   return result
+}
+
+export function reconcilePersistedLiveTurn(
+  messages: ChatMessage[],
+  previous: ChatMessage[],
+  rows: SessionMessage[],
+  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+): ChatMessage[] | null {
+  const queuedRows = rows.filter(row => queuedPromptRow(row) && rowId(row) !== undefined)
+
+  if (!queuedRows.length) {
+    return reconcileCurrentPersistedLiveTurn(messages, previous, rows, projection)
+  }
+
+  // Accept-time queue rows can sit between the current turn's tool rounds.
+  // They are neither corrections nor a second copy of inflight.user.
+  const queuedIds = new Set(queuedRows.map(rowId))
+  const queuedMessage = (message: ChatMessage) => message.role === 'user' && queuedIds.has(message.rowId)
+  const queuedText = projection.queued?.user
+
+  const represented = Boolean(
+    queuedText && queuedRows.some(row => userText(String(row.content ?? '')) === userText(queuedText))
+  )
+
+  const currentProjection = represented ? { ...projection, queued: undefined } : projection
+
+  const currentMessages = messages.filter(message => !queuedMessage(message))
+
+  const currentPrevious = previous.filter((message, index) => {
+    const queueProjection =
+      represented &&
+      message.id === `user-queued-${projection.session_id}` &&
+      userText(chatMessageText(message)) === userText(queuedText ?? '') &&
+      !previous.slice(index + 1).some(row => row.role === 'assistant' && !row.hidden)
+
+    return !queuedMessage(message) && !queueProjection
+  })
+
+  const currentRows = rows.filter(row => !queuedRows.includes(row))
+
+  const current =
+    reconcileCurrentPersistedLiveTurn(currentMessages, currentPrevious, currentRows, currentProjection) ??
+    reconcileDurableHistory(appendLiveSessionProjection(currentMessages, currentProjection), currentPrevious)
+
+  return [...current, ...messages.filter(queuedMessage)]
 }

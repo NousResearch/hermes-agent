@@ -402,6 +402,26 @@ export function collectUnspokenTurnSpeech(
 
 export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
+/** Compare user turns without a trailing system-injected recall block; keep authored bytes unchanged. */
+export function withoutInjectedMemoryContext(value: string): string {
+  const start = value.lastIndexOf('<memory-context>')
+
+  if (start < 0) {
+    return value
+  }
+
+  const suffix = value.slice(start)
+
+  if (
+    !/^<memory-context>\s*\[System note: The following is recalled memory context, NOT new user input\./.test(suffix) ||
+    !/<\/memory-context>\s*$/.test(suffix)
+  ) {
+    return value
+  }
+
+  return value.slice(0, start).trimEnd()
+}
+
 type TextPart = Extract<ChatMessagePart, { type: 'text' }>
 const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
 

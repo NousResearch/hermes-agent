@@ -1,4 +1,3 @@
-
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -9,7 +8,8 @@ import {
   chatMessageText,
   preserveLocalAssistantErrors,
   textPart,
-  toChatMessages
+  toChatMessages,
+  withoutInjectedMemoryContext
 } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -79,6 +79,8 @@ import { chatMessageArraysEquivalent, chatMessagesEquivalent } from './message-e
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
+  normalizedMessageText,
+  transcriptAnchorMatches,
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
@@ -1038,7 +1040,9 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
 
   const persistedInLatestRun = (text: string): boolean =>
     latestUserRun.some(
-      message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
+      message =>
+        textWithoutReferenceLines(withoutInjectedMemoryContext(chatMessageText(message))) ===
+        textWithoutReferenceLines(withoutInjectedMemoryContext(text))
     )
 
   const inflightUserAlreadyPersisted =
@@ -1252,25 +1256,6 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   return projected.length ? [...messages, ...projected] : messages
 }
 
-function normalizedMessageText(message: ChatMessage): string {
-  return chatMessageText(message).replace(/\s+/g, ' ').trim()
-}
-
-function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
-  if (a.role !== b.role) {
-    return false
-  }
-
-  const aText = normalizedMessageText(a)
-  const bText = normalizedMessageText(b)
-
-  if (a.timestamp !== undefined && b.timestamp !== undefined) {
-    return a.timestamp === b.timestamp && aText === bText
-  }
-
-  return Boolean(aText) && aText === bText
-}
-
 /**
  * Mark only an already-materialized `inflight.user` for visual suppression.
  *
@@ -1293,7 +1278,9 @@ export function dedupeInflightUserAgainstTranscript(
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult
 ): ReconciledSessionResumeResult {
-  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightUser = withoutInjectedMemoryContext(projection.inflight?.user ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
 
   if (!inflightUser) {
     return projection
@@ -1342,7 +1329,10 @@ export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
   projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
 ): ChatMessage[] {
-  const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
+  const inflightUser = withoutInjectedMemoryContext(projection.inflight?.user ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
   const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''
 

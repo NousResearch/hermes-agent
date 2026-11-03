@@ -2,7 +2,8 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
-  normalizeWs as normalizedText
+  normalizeWs as normalizedText,
+  withoutInjectedMemoryContext
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
@@ -536,14 +537,69 @@ function attachmentSignature(message: ChatMessage): string {
   return (message.attachmentRefs ?? []).join('\n')
 }
 
-function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
+function userContentMatches(left: ChatMessage, right: ChatMessage): boolean {
   return (
     left.role === 'user' &&
     right.role === 'user' &&
-    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
-    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
+    normalizedText(withoutInjectedMemoryContext(chatMessageText(left))) ===
+      normalizedText(withoutInjectedMemoryContext(chatMessageText(right))) &&
     attachmentSignature(left) === attachmentSignature(right)
   )
+}
+
+function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
+  return (
+    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
+    userContentMatches(left, right)
+  )
+}
+
+function messagesAfterUser(messages: ChatMessage[], index: number): ChatMessage[] {
+  const next = messages.findIndex((message, at) => at > index && message.role === 'user')
+
+  return messages.slice(index + 1, next < 0 ? messages.length : next)
+}
+
+function rewrittenUserIndex(base: ChatMessage[], tail: ChatMessage[], tailIndex: number): number {
+  const user = tail[tailIndex]
+  const originalRowId = user.rowId
+
+  if (originalRowId === undefined || user.timestamp === undefined) {
+    return -1
+  }
+
+  const toolIds = new Set(
+    messagesAfterUser(tail, tailIndex).flatMap(message =>
+      message.role === 'assistant'
+        ? message.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+        : []
+    )
+  )
+
+  const matches = base.flatMap((candidate, index) => {
+    if (
+      candidate.rowId === undefined ||
+      candidate.rowId <= originalRowId ||
+      candidate.timestamp !== user.timestamp ||
+      !userContentMatches(candidate, user)
+    ) {
+      return []
+    }
+
+    // Compaction clones rows, but preserves their authored clock and calls.
+    // Reused tool ids in another user interval cannot establish this match.
+    const sharedTool = messagesAfterUser(base, index).some(
+      message =>
+        message.role === 'assistant' &&
+        message.parts.some(
+          part => part.type === 'tool-call' && typeof part.toolCallId === 'string' && toolIds.has(part.toolCallId)
+        )
+    )
+
+    return sharedTool ? [index] : []
+  })
+
+  return matches.length === 1 ? matches[0] : -1
 }
 
 function partHasRecoverableContent(part: ChatMessagePart): boolean {
@@ -789,6 +845,10 @@ export function mergeInFlightMessages(
     }
 
     matchingUserIndex = baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser))
+
+    if (matchingUserIndex < 0) {
+      matchingUserIndex = rewrittenUserIndex(baseMessages, tail, index)
+    }
 
     if (matchingUserIndex >= 0) {
       tailUserIndex = index

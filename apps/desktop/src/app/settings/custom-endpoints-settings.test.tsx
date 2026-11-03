@@ -117,6 +117,32 @@ describe('CustomEndpointsSettings', () => {
     )
   })
 
+  it('translates its own copy in Korean while leaving protocol names and identifiers alone', async () => {
+    getCustomEndpoints.mockResolvedValue(savedResponse)
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="ko">
+        <CustomEndpointsSettings />
+      </I18nProvider>
+    )
+
+    await screen.findByRole('textbox', { name: '이름' })
+
+    expect(screen.getByText('API 모드')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '자동 감지' })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '엔드포인트 URL' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '저장' })).toBeTruthy()
+
+    // Wire-protocol names identify a transport rather than describing one, so they read
+    // the same in every locale — as do the values the endpoint itself carries.
+    expect(screen.getByRole('button', { name: 'Chat Completions' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Responses API' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Anthropic Messages' })).toBeTruthy()
+    expect(screen.getByDisplayValue('http://profile-a.test/v1')).toBeTruthy()
+    expect(screen.getByDisplayValue('model-a')).toBeTruthy()
+  })
+
   it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({

@@ -1737,6 +1737,48 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
     return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
 
+def _capacity_preflight_route(job: dict, jc: _CronJobConfig, runtime: dict, model: str) -> tuple[dict, str]:
+    """Opt-in, cron-only routing before AIAgent exists; no config/session mutation."""
+    settings = ((jc.cfg.get("cron") or {}).get("capacity_preflight") or {}) if isinstance(jc.cfg, dict) else {}
+    chain = _job_fallback_chain(job, jc.cfg) or []
+    if not isinstance(settings, dict) or settings.get("enabled") is not True or not chain:
+        return runtime, model
+    try:
+        threshold = float(settings.get("threshold_percent", 95))
+        if not 0 < threshold <= 100:
+            return runtime, model
+        from agent.credential_pool import load_pool
+        from cron.capacity_preflight import preflight_cron_route
+        from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key, pre_agent_fallback_notice
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        # The agent may select a different account from its pool after setup.
+        # Never apply an ambient credential's usage to that unknown account.
+        if load_pool(runtime.get("provider") or "").entries():
+            return runtime, model
+
+        def resolve(entry):
+            kw = {"requested": entry["provider"], "target_model": entry["model"]}
+            if entry.get("base_url"):
+                kw["explicit_base_url"] = entry["base_url"]
+            if key := resolve_entry_api_key(entry):
+                kw["explicit_api_key"] = key
+            candidate = resolve_runtime_provider(**kw)
+            candidate["provider"] = effective_runtime_provider(entry, candidate)
+            if load_pool(candidate.get("provider") or "").entries():
+                raise ValueError("candidate account selected by credential pool is unknown")
+            return candidate
+
+        selected = preflight_cron_route(runtime, model, chain, threshold, resolve)
+        if selected is not None:
+            candidate, candidate_model = selected
+            candidate["_fallback_notice"] = pre_agent_fallback_notice(
+                runtime.get("provider"), model, candidate.get("provider"), candidate_model)
+            return candidate, candidate_model
+    except Exception:
+        logger.debug("Cron capacity preflight unavailable; retaining original route", exc_info=True)
+    return runtime, model
+
+
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
@@ -1759,7 +1801,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
-        return resolve_runtime_provider(**runtime_kwargs), model
+        return _capacity_preflight_route(job, jc, resolve_runtime_provider(**runtime_kwargs), model)
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.

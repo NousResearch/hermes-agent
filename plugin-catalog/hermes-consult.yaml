@@ -1,6 +1,6 @@
 name: hermes-consult
 repo: https://github.com/dandacompany/hermes-consult
-sha: 7c079d227017a9226b4786a74dd8bf68ebebce00
+sha: 27e21cb5d866571b04b156ad042870a30e2855f3
 description: Website voice consultations with an embedded server and bilingual Desktop settings.
 maintainer: dandacompany
 tier: community
@@ -11,8 +11,8 @@ title: hermes-consult
 readme: true
 platforms: [macos, linux]
 screenshots:
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/7c079d227017a9226b4786a74dd8bf68ebebce00/assets/desktop-assistant.png
-  - https://raw.githubusercontent.com/dandacompany/hermes-consult/7c079d227017a9226b4786a74dd8bf68ebebce00/assets/desktop-safety.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/27e21cb5d866571b04b156ad042870a30e2855f3/assets/desktop-assistant.png
+  - https://raw.githubusercontent.com/dandacompany/hermes-consult/27e21cb5d866571b04b156ad042870a30e2855f3/assets/desktop-safety.png
 known_issues:
   - Requires Node.js 24 or later and a separately provisioned public HTTPS origin.
   - Internal AIAgent and runtime-provider imports emit compatibility warnings; no core overrides.

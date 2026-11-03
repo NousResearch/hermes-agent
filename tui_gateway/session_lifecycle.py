@@ -917,10 +917,11 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
             if _ws_session_is_detached(session) and sid not in _pending_ws_reaps:
                 _schedule_ws_orphan_reap(sid)
         return
-    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-    # viewer becomes the transport instead of the drop sentinel.
+    # viewer becomes the transport instead of the drop sentinel. Attach and viewer bookkeeping share one
+    # hold so a detach cannot land between them (the lock is re-entrant, so the attach re-takes it).
     with _session_transport_lock:
+        _attach_session_transport(session, transport)
         session.setdefault("viewers", {})[transport] = time.time()
     # See #83716.
     if transport is not _detached_ws_transport:

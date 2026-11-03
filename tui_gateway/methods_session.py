@@ -716,8 +716,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
             return refusal
         live["last_active"] = time.time()
         if (transport := current_transport()) is not None:
-            with live.setdefault("history_lock", threading.Lock()):
-                _rebind_live_transport(live_sid, live, transport)
+            _rebind_live_transport(live_sid, live, transport)
         else:
             _cancel_ws_orphan_reap(live_sid)
     messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does

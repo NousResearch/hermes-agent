@@ -10,9 +10,9 @@ from tests.waiting import wait_until
 from tui_gateway import server
 
 
-def _live_session():
+def _live_session(key):
     return dict(transport=server._detached_ws_transport, running=True, history={}, history_lock=threading.Lock(),
-                agent=SimpleNamespace(get_activity_summary=lambda: {"seconds_since_activity": 0}))
+                session_key=key, agent=SimpleNamespace(get_activity_summary=lambda: {"seconds_since_activity": 0}))
 
 
 def _ctx():
@@ -24,13 +24,25 @@ def _ctx():
 def _resume(path, sid, session):
     if path == "reuse":
         return server._resume_reuse_live(_ctx(), sid, session)
-    return server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "session.activate",
+    method = "session.resume" if path == "resume" else "session.activate"
+    return server.handle_request({"jsonrpc": "2.0", "id": 1, "method": method,
                                   "params": {"session_id": sid, "omit_messages": True}})
 
 
-@pytest.mark.parametrize("path", ["reuse", "activate"])
+class _FakeTimer:
+    def __init__(self):
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+@pytest.mark.parametrize("path", ["reuse", "activate", "resume"])
 def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(monkeypatch, path):
-    busy, idle = _live_session(), _live_session()
+    # "resume" is session.resume with no state.db row: the live session is found by key (unpersisted path).
+    # A bound transport is required: the unpersisted path only touches the history_lock when it rebinds.
+    monkeypatch.setattr(server, "current_transport", lambda: object())
+    busy, idle = _live_session("busy"), _live_session("idle")
     monkeypatch.setattr(server, "_sessions", {"busy": busy, "idle": idle})
     monkeypatch.setattr(server, "_pending_ws_reaps", {})
     results = {}
@@ -39,9 +51,10 @@ def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(monkeypatc
         busy_thread = threading.Thread(
             target=lambda: results.update(busy=_resume(path, "busy", busy)), daemon=True)
         busy_thread.start()
-        # The busy resume has reached its wait: it holds the resume lock (baseline) or has already attached.
-        wait_until(lambda: server._session_resume_lock.locked() or busy["transport"] is server._stdio_transport,
-                   what="busy resume reached its history_lock wait")
+        # The busy resume has started and is still running, so it is parked on the history_lock we hold
+        # (or, at baseline, already holds the resume lock while it waits).
+        wait_until(lambda: server._session_resume_lock.locked() or busy_thread.is_alive(),
+                   what="busy resume started")
         idle_thread = threading.Thread(
             target=lambda: results.update(idle=_resume(path, "idle", idle)), daemon=True)
         idle_thread.start()
@@ -55,8 +68,34 @@ def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(monkeypatc
     assert "result" in results["busy"]
 
 
+@pytest.mark.parametrize("path", ["reuse", "resume"])
+def test_resume_waits_for_held_resume_lock_before_rebinding_or_cancelling_reap(monkeypatch, path):
+    transport = object()
+    monkeypatch.setattr(server, "current_transport", lambda: transport)
+    session, timer = _live_session("sid"), _FakeTimer()
+    monkeypatch.setattr(server, "_sessions", {"sid": session})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {"sid": timer})
+    results = {}
+    server._session_resume_lock.acquire()  # grace expiry holds the resume lock: a resume must not interleave
+    try:
+        resumer = threading.Thread(target=lambda: results.update(r=_resume(path, "sid", session)), daemon=True)
+        resumer.start()
+        resumer.join(timeout=0.5)
+        assert resumer.is_alive(), "resume ran past the held _session_resume_lock"
+        assert not timer.cancelled, "resume cancelled the orphan reap while grace expiry held the lock"
+        assert server._pending_ws_reaps.get("sid") is timer
+    finally:
+        server._session_resume_lock.release()
+    resumer.join(timeout=3)
+    assert not resumer.is_alive()
+    assert "result" in results["r"]
+    assert timer.cancelled
+    assert "sid" not in server._pending_ws_reaps
+    assert session["transport"] is transport
+
+
 def test_orphan_reaper_activity_check_does_not_wait_on_history_lock(monkeypatch):
-    session = dict(_live_session(), _compute_host_turn_id="turn", _compute_host_activity_ns=time.perf_counter_ns())
+    session = dict(_live_session("k"), _compute_host_turn_id="turn", _compute_host_activity_ns=time.perf_counter_ns())
     monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 600)
     result = {}
     session["history_lock"].acquire()  # the reaper runs under the global resume lock; a turn holds history_lock

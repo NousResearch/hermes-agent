@@ -39,22 +39,30 @@ logger = logging.getLogger("gateway.run")
 
 
 def _profile_channel_overrides(home: Path, platform: Platform):
-    """A config holding only *platform*'s ``channel_overrides`` from *home*'s config.yaml, read the
-    way the loader does: merge every nested platform block, then the block ``platform_section``
-    picks (a top-level ``<platform>:`` block first) wins. ``GatewayConfig.from_dict(raw)`` alone
-    reads only the nested ``platforms`` form."""
-    from gateway.config import GatewayConfig
+    """A config holding only *platform*'s ``channel_overrides`` and ``allow_silence`` from *home*'s
+    config.yaml, read the way the loader does: merge every nested platform block, then the block
+    ``platform_section`` picks (a top-level ``<platform>:`` block first) wins for the overrides and
+    the platform keys it sets. ``GatewayConfig.from_dict(raw)`` alone reads only the nested form."""
+    from gateway.config import GatewayConfig, PlatformConfig
     from gateway.config_loader import merge_platform_sections, platform_section
     from gateway.run import _load_gateway_config
     raw = _load_gateway_config(home / "config.yaml")
     name, gateway_section = str(platform.value), raw.get("gateway")
-    overrides = (merge_platform_sections(raw, gateway_section, {}).get(name) or {}).get("channel_overrides")
-    section, _ = platform_section(raw, name, (
+    merged = merge_platform_sections(raw, gateway_section, {}).get(name) or {}
+    overrides, extra = merged.get("channel_overrides"), PlatformConfig.from_dict(merged).extra
+    section, toplevel = platform_section(raw, name, (
         gateway_section.get("platforms") if isinstance(gateway_section, dict) else None))
     if isinstance(section, dict) and isinstance(section.get("channel_overrides"), dict):
         overrides = section["channel_overrides"]
+    if toplevel and isinstance(section, dict):
+        # A root block's keys win, except over what the user authored under ``platforms.<p>.extra``.
+        authored = merged.get("extra")
+        extra = {**extra, **PlatformConfig.from_dict(section).extra,
+                 **(authored if isinstance(authored, dict) else {})}
     return GatewayConfig.from_dict({"platforms": {name: {
-        "channel_overrides": overrides if isinstance(overrides, dict) else {}}}})
+        "channel_overrides": overrides if isinstance(overrides, dict) else {},
+        "allow_silence": extra.get("allow_silence")}}})
+
 
 DEFAULT_HUMAN_DELAY_RANGE_MS: tuple[int, int] = (800, 2500)
 
@@ -76,6 +84,26 @@ def streaming_config_for_source(runner, source):
         if runtime and runtime != (getattr(runner, "_primary_profile_name", None) or "default"):
             config = (getattr(runner, "_profile_configs", None) or {}).get(runtime, config)
     return getattr(config, "streaming", None) or StreamingConfig()
+
+
+def _effective_allow_silence(platform_config, source: SessionSource) -> Optional[bool]:
+    """``allow_silence`` for ``source``: the nearest room entry that sets it, else the platform's.
+
+    Rooms are looked up chat -> thread -> parent like every channel override; an entry that sets
+    only ``model``/``provider``/``system_prompt`` does not stop the walk. A platform value that is
+    not a bool is ignored, so a quoted ``"true"`` opts nothing in.
+    """
+    if platform_config is None:
+        return None
+    from gateway.run import _channel_override_lookup_keys
+    overrides = platform_config.channel_overrides or {}
+    for key in _channel_override_lookup_keys(
+            source.chat_id, thread_id=source.thread_id, parent_id=source.parent_chat_id):
+        entry = overrides.get(key)
+        if entry is not None and entry.allow_silence is not None:
+            return entry.allow_silence
+    value = (platform_config.extra or {}).get("allow_silence")
+    return value if isinstance(value, bool) else None
 
 
 class GatewayConfigLoadersMixin:
@@ -171,18 +199,21 @@ class GatewayConfigLoadersMixin:
             agent_result=agent_result)
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
-        """Resolve the room policy in the serving profile, never the launch snapshot for a route."""
-        from gateway.run import _get_channel_override
+        """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.
+
+        The first ``channel_overrides`` entry along chat -> thread -> parent that sets it (true or
+        false) wins; an entry that sets only other keys inherits. Otherwise the platform's own
+        ``platforms.<platform>.allow_silence`` applies, else None (the default reply rule).
+        """
         try:
-            override = _get_channel_override(
-                self._serving_channel_config(source, unbound_reads_home=True), source.platform, source.chat_id,
-                thread_id=source.thread_id, parent_id=source.parent_chat_id)
+            config = self._serving_channel_config(source, unbound_reads_home=True)
+            platform_config = (getattr(config, "platforms", None) or {}).get(source.platform)
+            return _effective_allow_silence(platform_config, source)
         except Exception:
             # No permission means the default reply rule; a lookup failure must not become an error reply.
             logger.warning("Room allow_silence lookup failed for %s; keeping the reply rule",
                            source.chat_id, exc_info=True)
             return None
-        return override.allow_silence if override is not None else None
 
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,

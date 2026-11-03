@@ -21,7 +21,7 @@ export type {
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
 import type {
-  MessagingPlatform,
+  MessagingPlatformsResponse,
   RelayLinkCode,
   RelayLinkCodeState,
   RelayLinksResponse,
@@ -29,10 +29,12 @@ import type {
 export type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
+  MessagingPlatformsResponse,
   RelayLinkCode,
   RelayLinkCodeState,
   RelayLinkedAccount,
   RelayLinksResponse,
+  TeamGatewayInfo,
 } from "./api-messaging";
 import type {
   ManagedFileReadResponse,
@@ -1693,12 +1695,6 @@ export interface McpOAuthFlow {
   authorization_url: string | null;
   error: string | null;
   tools?: Array<{ name: string; description: string }>;
-}
-
-export interface MessagingPlatformsResponse {
-  env_path: string;
-  gateway_start_command: string;
-  platforms: MessagingPlatform[];
 }
 
 export interface MessagingPlatformUpdate {

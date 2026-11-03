@@ -64,3 +64,23 @@ it("keeps the plain Disabled state and a live toggle when the user turned it off
   expect(container.textContent).not.toContain("Team Gateway");
   expect(toggle().disabled).toBe(false);
 });
+
+it("replaces per-platform setup with the Portal's Manage Agents page when Team Gateway owns messaging", async () => {
+  getMessagingPlatforms.mockResolvedValue({
+    env_path: "~/.hermes/.env", gateway_start_command: "hermes gateway start",
+    platforms: [slack({ relay_fronted: true, relay_exclusive: true })],
+    team_gateway: { portal_url: "https://portal.example.test/agents", platforms: ["slack", "telegram"] },
+  });
+  const open = vi.spyOn(window, "open").mockReturnValue(null);
+  await act(async () => { root.render(<ChannelsPage />); });
+
+  expect(container.textContent).toContain("Messaging runs through Team Gateway");
+  expect(container.textContent).toContain("Slack, Telegram");
+  expect(container.querySelector('[aria-label="Enable Slack"]')).toBeNull();
+  expect(container.textContent).not.toContain("channels configured");
+  const button = [...container.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes("Manage agents in Nous Portal"));
+  await act(async () => { button?.click(); });
+  expect(open).toHaveBeenCalledWith("https://portal.example.test/agents", "_blank", "noopener,noreferrer");
+  open.mockRestore();
+});

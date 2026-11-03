@@ -30,6 +30,7 @@ import type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
+  TeamGatewayInfo,
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
@@ -40,6 +41,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { RelayLinkPanel } from "./ChannelsRelayLink";
+import { TeamGatewayChannels } from "./ChannelsTeamGateway";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -157,6 +159,7 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [teamGateway, setTeamGateway] = useState<TeamGatewayInfo | null>(null);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
     "hermes gateway start",
@@ -189,6 +192,7 @@ export default function ChannelsPage() {
       .getMessagingPlatforms()
       .then((res) => {
         setPlatforms(res.platforms);
+        setTeamGateway(res.team_gateway ?? null);
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
@@ -346,6 +350,15 @@ export default function ChannelsPage() {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
+      </div>
+    );
+  }
+
+  if (teamGateway) {
+    return (
+      <div className="flex flex-col gap-6">
+        <Toast toast={toast} />
+        <TeamGatewayChannels teamGateway={teamGateway} />
       </div>
     );
   }

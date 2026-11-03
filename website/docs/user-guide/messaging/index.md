@@ -365,11 +365,26 @@ platforms:
 The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
 when a human message needs a reply (or the adapter cannot tell). Internal notifications,
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
-even with `allow_silence: false`. This is a room override, not a profile-wide setting.
+even with `allow_silence: false`. This is a room (or platform) override, not a profile-wide setting.
 It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
 matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
 thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
 parent's opt-in.
+
+To cover every group, channel and thread on a platform without listing rooms, set `allow_silence`
+on the platform block itself (`platforms.<platform>.allow_silence` or a top-level
+`<platform>: {allow_silence: true}`). It applies wherever no matching room entry sets
+`allow_silence`, so a room's own `false` still keeps the warning there. Direct messages are never
+covered by the platform setting; opt a DM in with its own room entry.
+
+```yaml
+platforms:
+  slack:
+    allow_silence: true          # shared chats only; DMs keep the reply rule
+    channel_overrides:
+      "C0123456789":
+        allow_silence: false     # this channel always gets the warning
+```
 
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
 The override affects final delivery only: it does not undo tool actions, retract progress already

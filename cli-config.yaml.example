@@ -1523,6 +1523,8 @@ platform_toolsets:
 #         # Omitted/null/false keeps the current reply policy; failures remain visible.
 #         # Restart the gateway after changing room overrides.
 #         allow_silence: true
+#     # Platform-wide fallback for groups/channels/threads with no room setting (never DMs):
+#     # allow_silence: true
 #   slack:
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit

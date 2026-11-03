@@ -292,3 +292,55 @@ def test_primary_profile_keeps_the_supplied_config(monkeypatch, tmp_path, runtim
     source._identity = RoutingIdentity("primary", runtime, tmp_path, home, multiplexed=False)
 
     assert runner._room_allow_silence(source) is (True if expected else None)
+
+
+_ON = {"allow_silence": True}
+
+
+@pytest.mark.parametrize("raw,chat_type,expected", [
+    ({"platforms": {"telegram": _ON}}, "group", True),
+    ({"telegram": _ON}, "group", True),
+    ({"telegram": {**_ON, "channel_overrides": {"-1001": {"allow_silence": False}}}}, "group", False),
+    ({"telegram": {**_ON, "channel_overrides": {"-1001": {"model": "m"}}}}, "group", True),
+    ({"telegram": _ON}, "dm", None),
+    ({"telegram": {"allow_silence": "true"}}, "group", None),
+], ids=["nested", "top-level", "room-false-wins", "model-only-room-inherits", "dm-excluded", "non-bool"])
+@pytest.mark.parametrize("runtime", ["primary", "served"])
+def test_platform_allow_silence_covers_unlisted_shared_chats(monkeypatch, tmp_path, raw, chat_type, expected, runtime):
+    from gateway.config_loader import load_yaml_layer
+    runner = _runner(monkeypatch, tmp_path)
+    runner._primary_profile_name = "primary"
+    home = tmp_path / runtime
+    home.mkdir()
+    (home / "config.yaml").write_text(json.dumps(raw), encoding="utf-8")
+    gw_data = {}
+    if runtime == "primary":  # the primary profile serves ``runner.config``, built by the real loader
+        load_yaml_layer(home, gw_data)
+    runner.config = GatewayConfig.from_dict(gw_data)
+    source = _source()
+    source.chat_type = chat_type
+    source._identity = RoutingIdentity("primary", runtime, tmp_path, home, multiplexed=runtime == "served")
+
+    assert runner._room_allow_silence(source) is expected
+    healthy = {"final_response": "NO_REPLY", "completed": True}
+    assert runner._silence_allowed_for_source(source, None, None, healthy) is bool(expected)
+
+
+@pytest.mark.parametrize("pin", [
+    {"telegram": {"allow_silence": False}},
+    {"gateway": {"platforms": {"telegram": {"extra": {"allow_silence": False}}}}},
+], ids=["root", "gateway-platforms-extra"])
+def test_routed_platform_allow_silence_honours_a_managed_pin(monkeypatch, tmp_path, pin):
+    runner = _runner(monkeypatch, tmp_path)
+    home, managed = tmp_path / "served", tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / "config.yaml").write_text(json.dumps(
+        {"platforms": {"telegram": {"extra": {"allow_silence": True}}}}), encoding="utf-8")
+    (managed / "config.yaml").write_text(json.dumps(pin), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    source = _source()
+    source._identity = RoutingIdentity("default", "served", tmp_path, home)
+
+    assert runner._room_allow_silence(source) is False
+

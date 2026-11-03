@@ -131,6 +131,23 @@ export const sv = defineLocale({
     codeExpired: 'Koden hann löpa ut innan den användes. Hämta en ny kod och försök igen.',
     inactiveCode: 'Koden är inte längre aktiv och inget nytt konto har hittats. Om ditt {platform}-konto inte visas i listan, hämta en ny kod och försök igen.'
   },
+  channelsUi: {
+    state: { connected: 'Ansluten', pendingRestart: 'Starta om för att tillämpa', gatewayStopped: 'Gatewayen är stoppad', startFailed: 'Starten misslyckades', disconnected: 'Frånkopplad', notConfigured: 'Inte konfigurerad', disabled: 'Inaktiverad', error: 'Fel', viaTeamGateway: 'Via Team Gateway', managedByTeamGateway: 'Hanteras av Team Gateway' },
+    loadFailed: 'Det gick inte att läsa in kanaler: {detail}',
+    nothingToSave: 'Det finns inget att spara. Fyll i minst ett fält.',
+    fixFields: 'Rätta de markerade fälten innan du sparar.',
+    saved: '{name} har sparats',
+    savedConnecting: '{name} har sparats. Den aktiva gatewayen ansluter.',
+    saveFailed: 'Det gick inte att spara: {detail}',
+    updateFailed: 'Det gick inte att uppdatera kanalen: {detail}',
+    testFailed: 'Det gick inte att testa kanalen: {detail}',
+    restarting: 'Startar om…',
+    restartGateway: 'Starta om gateway',
+    restartRequired: 'Ändringarna är sparade. Starta om gatewayen för att de ska börja gälla.',
+    restartNow: 'Starta om nu',
+    gatewayStoppedHint: 'Gatewayen körs inte. Konfigurera kanaler här och starta sedan gatewayen med {command} (eller knappen Starta om ovan).',
+    configuredSummary: '{configured} av {total} kanaler är konfigurerade. Inloggningsuppgifterna sparas i {path}. Gatewayen ansluter varje aktiverad kanal vid nästa omstart.'
+  },
   app: {
     brand: 'Hermes Agent',
     brandShort: 'HA',

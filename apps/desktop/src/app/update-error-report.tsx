@@ -4,7 +4,7 @@
 // runs backend-side (diagnostics.share_nous collects that runtime's update.log
 // and hand-off log); the output shown here rides along as a client file.
 import { useStore } from '@nanostores/react'
-import { type SyntheticEvent, useRef } from 'react'
+import { type SyntheticEvent, useEffect, useRef } from 'react'
 
 import { DiagnosticsLinkRow } from '@/components/send-diagnostics-dialog'
 import { Button } from '@/components/ui/button'
@@ -27,6 +27,15 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
   const report = state?.inline ? state : null
   const logText = log.join('\n')
   const logRef = useRef<HTMLPreElement>(null)
+  const reportRef = useRef<HTMLDivElement>(null)
+  const phase = report?.phase
+
+  // In a short window the revealed consent/result can open below the fold.
+  useEffect(() => {
+    if (phase) {
+      reportRef.current?.scrollIntoView?.({ block: 'nearest' })
+    }
+  }, [phase])
 
   // The failing line is the last one: open the output scrolled to its tail.
   const revealTail = (event: SyntheticEvent<HTMLDetailsElement>) => {
@@ -64,7 +73,7 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
           {t.errors.sendDiagnostics}
         </Button>
       ) : report.phase === 'consent' || report.phase === 'uploading' ? (
-        <div className="grid gap-2 rounded-md border border-border/70 px-3 py-2">
+        <div className="grid gap-2 rounded-md border border-border/70 px-3 py-2" ref={reportRef}>
           <p className="text-[0.6875rem] leading-4 text-muted-foreground">{copy.privacyNotice}</p>
           <div className="flex justify-end gap-2">
             <Button onClick={dismissSendDiagnostics} size="sm" variant="ghost">
@@ -83,7 +92,7 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
           </div>
         </div>
       ) : report.phase === 'error' ? (
-        <div className="grid gap-1 text-xs" data-selectable-text="true">
+        <div className="grid gap-1 text-xs" data-selectable-text="true" ref={reportRef}>
           <p className="font-medium text-destructive">{copy.failedTitle}</p>
           <p className="wrap-break-word text-muted-foreground">{report.error}</p>
           <p className="text-muted-foreground">{copy.failedHint}</p>
@@ -92,7 +101,7 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
           </Button>
         </div>
       ) : (
-        <div className="grid gap-2">
+        <div className="grid gap-2" ref={reportRef}>
           <p className="text-center text-xs font-medium">{copy.doneTitle}</p>
           <p className="text-xs text-muted-foreground">{copy.doneDescription}</p>
           <DiagnosticsLinkRow result={report.result} />

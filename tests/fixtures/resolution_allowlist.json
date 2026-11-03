@@ -409,6 +409,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "pm/build_compilers.py",
+    "symbol": "_linux_defaults",
+    "kind": "bare_which"
+  },
+  {
     "path": "pm/libatomic.py",
     "symbol": "_command_plan",
     "kind": "bare_which"

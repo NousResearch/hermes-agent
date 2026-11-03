@@ -178,7 +178,9 @@ def restore_local_session(authority, sid):
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
-    if live is None:
+    from gateway.session_history_mount import is_history_mount
+    if live is None or is_history_mount(live):
+        source = adapter.kept_source(source)
         with store._lock:
             store._ensure_loaded_locked()
             current = store._entries.get(route)
@@ -194,7 +196,13 @@ def restore_local_session(authority, sid):
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy
-        authority.sessions[sid] = LiveSession(source, route)
+        if live is None:
+            authority.sessions[sid] = LiveSession(source, route)
+            authority.retired_local.discard(sid)  # back in memory (session_retirement)
+        else:
+            # A read-only view opened before the adoption (a metadata read, another viewer) becomes the
+            # adopted conversation in place, so its viewers keep their subscriptions (as restore_api_session).
+            live.source, live.route = source, route
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
           or live.source.to_dict() != source.to_dict()

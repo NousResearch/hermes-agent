@@ -6,13 +6,16 @@ export function startVoiceLevelMeter(
   source: MediaStreamAudioSourceNode,
   onLevel: (level: number, audioTimeMs: number, isCurrent: boolean) => void,
   onError: () => void
-): () => void {
+): { stop: () => void; ready: Promise<boolean> } {
   let disposed = false
   let node: AudioWorkletNode | null = null
   let connected = false
+  let running = context.state === 'running'
+  const { promise: ready, resolve: settleReady } = Promise.withResolvers<boolean>()
 
   const stop = () => {
     disposed = true
+    settleReady(false)
     context.removeEventListener('error', fail)
     context.removeEventListener('statechange', checkState)
 
@@ -41,7 +44,9 @@ export function startVoiceLevelMeter(
   }
 
   const checkState = () => {
-    if (context.state === 'closed') {
+    if (context.state === 'running') {
+      running = true
+    } else if (running || context.state === 'closed') {
       fail()
     }
   }
@@ -51,12 +56,20 @@ export function startVoiceLevelMeter(
   context.addEventListener('statechange', checkState)
 
   void (async () => {
-    await context.audioWorklet.addModule(processorUrl)
+    const resumed = context.state === 'suspended' ? context.resume().catch(fail) : Promise.resolve()
+    await Promise.all([context.audioWorklet.addModule(processorUrl), resumed])
 
     if (disposed) {
       return
     }
 
+    if (context.state !== 'running') {
+      fail()
+
+      return
+    }
+
+    running = true
     node = new AudioWorkletNode(context, 'hermes-voice-level', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -76,7 +89,8 @@ export function startVoiceLevelMeter(
     source.connect(node)
     connected = true
     node.connect(context.destination)
+    settleReady(true)
   })().catch(fail)
 
-  return stop
+  return { stop, ready }
 }

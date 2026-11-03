@@ -385,11 +385,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         }
       }
 
-      stopMeter = startVoiceLevelMeter(context, source, onLevel, failMeter)
-
-      if (context.state === 'suspended') {
-        void context.resume().catch(failMeter)
-      }
+      stopMeter = startVoiceLevelMeter(context, source, onLevel, failMeter).stop
     } catch {
       cleanup()
     }

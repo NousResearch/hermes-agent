@@ -66,12 +66,21 @@ used by existing sensitivity preferences. Its output is silent; it does not
 play microphone input through the speakers. Hidden windows skip cosmetic
 meter-state updates, not speech detection or PCM capture.
 
+Do not report listening or start MediaRecorder until the meter's `ready` promise
+settles. Cancellation settles pending readiness immediately and cannot restart
+capture or reacquire a dictation lease. A turn that becomes busy during startup
+re-arms listening when it returns idle.
+
 The capture owner closes its AudioContext through `mic-meter-context.ts`.
 Stopping the meter fences pending module loads and queued samples. A failed
 meter must release a pending conversation capture without transcribing a
 potentially truncated command; explicit cancellation delivers nothing.
 Detach recorder handlers even after `stop()` has made the recorder inactive:
 its final events can still be queued.
+Resume an initially suspended context independently of worklet loading so a
+failed meter preserves manual recording and the PCM fallback. Once running,
+a suspended audio clock is a meter failure: release a pending barge capture
+without submitting partial audio rather than waiting for silence that cannot arrive.
 
 Process queued audio levels in order, including historical speech. Rotate quiet
 pre-roll or end capture only when the audio clock is still inside that sample's

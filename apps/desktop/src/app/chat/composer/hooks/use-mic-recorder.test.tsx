@@ -17,10 +17,24 @@ vi.mock('@/lib/voice-level-meter', () => ({
   ) => {
     meter.onLevel = (level, at) => onLevel(level, at, context.currentTime * 1_000 < at + 1_000 / 60)
     meter.onError = onError
+    context.addEventListener('error', onError)
 
-    return () => {
-      meter.onLevel = null
-      meter.onError = null
+    const onStateChange = () => {
+      if (context.state === 'closed') {
+        onError()
+      }
+    }
+
+    context.addEventListener('statechange', onStateChange)
+
+    return {
+      ready: Promise.resolve(true),
+      stop: () => {
+        context.removeEventListener('error', onError)
+        context.removeEventListener('statechange', onStateChange)
+        meter.onLevel = null
+        meter.onError = null
+      }
     }
   }
 }))

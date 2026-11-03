@@ -24,9 +24,12 @@ vi.mock('@/lib/voice-level-meter', () => ({
     meter.onLevel = (level, at) => onLevel(level, at, context.currentTime * 1_000 < at + 1_000 / 60)
     meter.onError = onError
 
-    return () => {
-      meter.onLevel = null
-      meter.onError = null
+    return {
+      ready: Promise.resolve(true),
+      stop: () => {
+        meter.onLevel = null
+        meter.onError = null
+      }
     }
   }
 }))

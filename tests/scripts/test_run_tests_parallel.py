@@ -885,6 +885,44 @@ def test_fork_server_reports_failures_and_kills_stragglers(tmp_path: Path, monke
     assert proc.returncode != 0, proc.stdout
     assert "test_probe_red.py" in proc.stdout and "1 failed" in proc.stdout, proc.stdout
     assert "5s exceeded; process tree SIGKILL'd" in proc.stdout, proc.stdout
+
+
+@pytest.mark.platforms("linux")
+def test_fork_child_drops_the_servers_env_and_cached_tempdir(tmp_path: Path) -> None:
+    """A variable only the fork server has, and its cached gettempdir(), must not reach a file."""
+    repo_root = Path(__file__).resolve().parents[2]
+    probe = tmp_path / "test_probe_child.py"
+    probe.write_text(
+        "import os, tempfile\n\n"
+        "def test_sees_only_its_own_state():\n"
+        "    assert 'HERMES_FORK_SERVER_ONLY' not in os.environ\n"
+        "    assert tempfile.gettempdir() == os.environ['TMPDIR']\n",
+        encoding="utf-8",
+    )
+    file_tmp = tmp_path / "file-tmp"
+    file_tmp.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    env["TMPDIR"] = str(file_tmp)
+    out = tmp_path / "out.txt"
+    # Stand-in for the fork server: it has its own variable and has already asked gettempdir().
+    server = (
+        "import json, os, sys, tempfile\n"
+        "os.environ['HERMES_FORK_SERVER_ONLY'] = '1'\n"
+        "tempfile.tempdir = sys.argv[1]\n"
+        "sys.path.insert(0, sys.argv[2])\n"
+        "from scripts import run_tests_fork_child\n"
+        "run_tests_fork_child.run(sys.argv[3], ['-q', '-p', 'no:cacheprovider'], sys.argv[4],\n"
+        "                         json.loads(sys.argv[5]), sys.argv[6], sys.path[1:], 'pytest')\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", server, str(tmp_path), str(repo_root), str(probe), str(tmp_path),
+         json.dumps(env), str(out)],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert proc.returncode == 0, out.read_text(encoding="utf-8") + proc.stderr
+    assert "1 passed" in out.read_text(encoding="utf-8")
+
+
 def test_files_start_slowest_cached_first_and_keep_order_without_a_cache() -> None:
     """A slow file submitted last runs alone at the end of the run; start it first."""
     import importlib.util

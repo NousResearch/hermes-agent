@@ -74,9 +74,11 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         fixed = [c for c in commands if name_of(c) in registry_command_names]
         other = [c for c in commands if name_of(c) not in registry_command_names]
         ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
-    else:
-        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
-    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+        return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+    # A typed query is a SEARCH: every skill match comes back. The cap would keep a bare "/" from
+    # dumping the library, but on a search it silently dropped real matches — a skill whose name
+    # starts with the three characters typed could be absent from its own completion list.
+    return commands[:_SLASH_COMPLETION_LIMIT] + skills
 
 
 _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
@@ -265,7 +267,8 @@ def slash_completions(text: str = "", scope=None) -> dict:
     from agent.skill_bundles import get_skill_bundles
     from tools.skills_tool import shared_scan_signature
     with scope if scope is not None else contextlib.nullcontext(), shared_scan_signature():
-        skill_commands, skill_bundles = dict(get_interactive_skill_commands()), dict(get_skill_bundles())
+        skill_commands, skill_bundles = (
+            dict(get_interactive_skill_commands()), dict(get_skill_bundles()))
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):

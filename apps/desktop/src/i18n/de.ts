@@ -2984,6 +2984,27 @@ export const deOverrides = {
       'Versuchen Sie den Neustart erneut; wenn er weiterhin fehlschlägt, öffnen Sie die Logs und senden Sie Diagnosedaten.',
     restartAgain: 'Erneut neu starten',
     openLogs: 'Logs öffnen',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Kein Bot-Token nötig',
+      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      link: (platform: string) => `${platform} verknüpfen`,
+      linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
+      linkedAccounts: 'Verknüpfte Konten',
+      unlink: 'Trennen',
+      unlinkFailed: 'Konto konnte nicht getrennt werden',
+      stepOpen: (platform: string) => `1. Scanne den Code mit dem Handy oder öffne den Bot in ${platform}.`,
+      stepSend: '2. Sende dem Bot diese Nachricht von dem Konto, das du verknüpfen willst:',
+      open: (platform: string) => `${platform} öffnen`,
+      copy: 'Nachricht kopieren',
+      copied: 'Kopiert',
+      copyFailed: (command: string) => `Kopieren fehlgeschlagen. Tippe stattdessen ${command}.`,
+      waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
+      linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
+      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`
+    },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
       subtitle:

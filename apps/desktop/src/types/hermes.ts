@@ -380,8 +380,37 @@ export interface MessagingPlatformInfo {
    *  the client (or vendor console) must call. Null for standalone and default-profile platforms. */
   ingress_url?: null | string
   name: string
+  /** Team Gateway's shared bot carries this platform: setup links a chat account to it. */
+  relay_fronted?: boolean
+  /** The relay owns this platform outright, so a direct bot is switched off at every start. */
+  relay_exclusive?: boolean
   state?: null | string
   updated_at?: null | string
+}
+
+export interface RelayLinkedAccount {
+  displayName?: string
+  handle?: string
+  platformUserId: string
+}
+
+export interface RelayLinksResponse {
+  platforms: { accounts: RelayLinkedAccount[]; bot_url: null | string; platform: string }[]
+}
+
+export interface RelayLinkCode {
+  bot_url: null | string
+  code: string
+  /** The exact message to send the shared bot. */
+  command: string
+  expires_at: null | string
+  platform: string
+}
+
+export interface RelayLinkCodeState {
+  reason?: null | string
+  /** pending = not redeemed yet; inactive = used or expired; refused = see reason. */
+  state: 'inactive' | 'pending' | 'refused'
 }
 
 export interface MessagingPlatformsResponse {

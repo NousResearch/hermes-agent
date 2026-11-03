@@ -1876,6 +1876,27 @@ export const ruOverrides = {
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Токен бота не нужен',
+      intro: (platform: string) => `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
+      link: (platform: string) => `Привязать ${platform}`,
+      linkAnother: (platform: string) => `Привязать ещё один аккаунт ${platform}`,
+      linkedAccounts: 'Привязанные аккаунты',
+      unlink: 'Отвязать',
+      unlinkFailed: 'Не удалось отвязать аккаунт',
+      stepOpen: (platform: string) => `1. Отсканируйте код телефоном или откройте бота в ${platform}.`,
+      stepSend: '2. Отправьте боту это сообщение с аккаунта, который хотите привязать:',
+      open: (platform: string) => `Открыть ${platform}`,
+      copy: 'Скопировать сообщение',
+      copied: 'Скопировано',
+      copyFailed: (command: string) => `Не удалось скопировать. Введите ${command} вручную.`,
+      waiting: 'Ждём, пока бот получит сообщение. Код действует один раз.',
+      linked: (platform: string) => `Аккаунт ${platform} привязан. Напишите боту, чтобы говорить с агентом.`,
+      expired: 'Срок действия кода истёк до использования. Получите новый код и попробуйте снова.',
+      refused: (platform: string) => `${platform} отклонил привязку. Получите новый код и попробуйте снова.`,
+      qrAlt: (platform: string) => `QR-код общего бота ${platform}`
+    },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
       subtitle:

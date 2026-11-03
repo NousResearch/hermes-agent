@@ -222,7 +222,7 @@ def _relay_disabled_platform_ids(scoped: bool) -> frozenset[str]:
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None, source_keys: Collection[str] = (),
-    relay_disabled: frozenset[str] = frozenset(),
+    relay_disabled: frozenset[str] = frozenset(), relay_view: tuple[frozenset[str], bool] = (frozenset(), False),
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -294,6 +294,10 @@ def _messaging_platform_payload(
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
         "disabled_by_relay": not enabled and platform_id in relay_disabled,
+        # Team Gateway's shared bot carries this platform: setup is linking an account to it, and a
+        # direct bot is switched off at every start when ``relay_exclusive`` (#141546).
+        "relay_fronted": platform_id in relay_view[0],
+        "relay_exclusive": platform_id in relay_view[0] and relay_view[1],
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
@@ -326,9 +330,20 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     source_values = get_secret_source_values(scoped_dir) if scoped else {}
     source_keys = frozenset(key for key, value in source_values.items() if str(value).strip())
     relay_disabled = _relay_disabled_platform_ids(scoped)
+    relay_view = _relay_channel_view(own_home)
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped, profile_home=scoped_dir,
-                                        source_keys=source_keys, relay_disabled=relay_disabled)
+                                        source_keys=source_keys, relay_disabled=relay_disabled,
+                                        relay_view=relay_view)
             for entry in entries]
+
+
+def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
+    """The relay serves only the gateway's own (launch) profile; other profiles keep direct setup."""
+    if Path(home).resolve() != Path(get_process_hermes_home()).resolve():
+        return frozenset(), False
+    from gateway.relay.link import relay_channel_view
+
+    return relay_channel_view()
 
 
 @contextlib.contextmanager

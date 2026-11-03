@@ -62,27 +62,36 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
       (!row.connection_id || row.connection_id === activeScope.connectionId)
 
     return (
-      <div className="group flex min-w-0 items-center gap-1" key={sessionRowKey(row)}>
+      <div className="group/session relative flex min-w-0 items-center" key={sessionRowKey(row)}>
         <RowButton
           aria-current={selected ? 'page' : undefined}
           className={cn(
-            'flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-(--chrome-action-hover)',
+            'flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring [@media(hover:none)]:pr-8',
             selected && 'bg-(--chrome-action-hover)'
           )}
           onClick={event => {
-            if (event.metaKey || event.ctrlKey)
-              {openSession(row.id, navigate, event.shiftKey ? 'window' : 'tab', {
+            if (event.metaKey || event.ctrlKey) {
+              openSession(row.id, navigate, event.shiftKey ? 'window' : 'tab', {
                 workspaceMode: 'sessions',
                 ownerRoute: sessionOwnerRouteFromRow(row)
-              })}
-            else {props.onResumeSession(row.id, row)}
+              })
+            } else {
+              props.onResumeSession(row.id, row)
+            }
           }}
         >
-          <SessionStatusDot session={row} storedSessionId={row.id} />
-          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="grid size-4 shrink-0 place-items-center">
+            <SessionStatusDot session={row} storedSessionId={row.id} />
+          </span>
+          <span className="min-w-0 flex-1 truncate" title={title}>
+            {title}
+          </span>
           <span
             aria-label={`${t.simplifiedAgents.agents}: ${row.profile || 'default'}`}
-            className="max-w-24 truncate text-xs text-(--ui-text-tertiary)"
+            className={cn(
+              'min-w-6 max-w-[30%] truncate text-right text-[0.6875rem] text-(--ui-text-tertiary)',
+              !props.ambiguousIds.has(row.id) && 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
+            )}
           >
             {row.profile || 'default'}
           </span>
@@ -101,7 +110,12 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             title={title}
             unread={row.unread === true}
           >
-            <Button aria-label={t.sidebar.row.sessionActions} size="icon" variant="ghost">
+            <Button
+              aria-label={t.sidebar.row.sessionActions}
+              className="absolute right-0 top-1 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+              size="icon-xs"
+              variant="ghost"
+            >
               <Codicon name="kebab-vertical" />
             </Button>
           </SessionActionsMenu>

@@ -3,7 +3,9 @@ import { type ComponentProps, useMemo, useState } from 'react'
 
 import { ambientOwnerConnectionId } from '@/api/client'
 import { mutateSessionHttp } from '@/api/sessions'
-import { Button } from '@/components/ui/button'
+import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
+import { Codicon } from '@/components/ui/codicon'
+import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { type SessionInfo } from '@/hermes'
@@ -79,11 +81,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     : all
 
   const rows = searchRows.filter(
-    row =>
-      !row.hidden &&
-      !row.archived &&
-      !removed.has(row.id) &&
-      !removed.has(sessionRowKey(row))
+    row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row))
   )
 
   const shared = {
@@ -149,6 +147,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
         />
         <SearchField
           aria-label={t.sidebar.searchAria}
+          containerClassName="mx-0 gap-2.5 px-2 opacity-60 focus-within:opacity-100"
           onChange={setQuery}
           placeholder={t.sidebar.searchPlaceholder}
           value={query}
@@ -160,19 +159,21 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           </p>
         )}
         <section className="max-h-[25%] shrink-0 overflow-y-auto">
-          <Button
+          <RowButton
             aria-expanded={pinsOpen}
-            className="w-full justify-start"
+            className="flex w-full items-center rounded-sm text-left hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
             onClick={() => setSidebarPinsOpen(!pinsOpen)}
-            variant="ghost"
           >
-            {t.sidebar.pinned}
-          </Button>
+            <SidebarPanelLabel className="flex-1 px-2 py-2 [&>span:first-child]:mx-1">
+              {t.sidebar.pinned}
+            </SidebarPanelLabel>
+            <Codicon className="mr-2 text-(--ui-text-tertiary)" name={pinsOpen ? 'chevron-down' : 'chevron-right'} />
+          </RowButton>
           {pinsOpen && <SimplifiedSessionList {...shared} sessions={pinned.filter(matches)} />}
         </section>
         <SimplifiedAgentList
           renderSessions={agentSessions => (
-            <div className="pl-14">
+            <div className="mb-2 ml-8 border-l border-(--ui-stroke-secondary) pl-2">
               <SimplifiedSessionList {...shared} sessions={agentSessions} />
             </div>
           )}

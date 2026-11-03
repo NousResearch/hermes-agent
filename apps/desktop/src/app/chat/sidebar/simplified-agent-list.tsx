@@ -7,6 +7,7 @@ import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { RowButton } from '@/components/ui/row-button'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
@@ -80,7 +81,7 @@ export function SimplifiedAgentList({
 
   return (
     <section aria-label={t.simplifiedAgents.agents} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-      <SidebarPanelLabel>{t.simplifiedAgents.agents}</SidebarPanelLabel>
+      <SidebarPanelLabel className="px-2 py-2 [&>span:first-child]:mx-1">{t.simplifiedAgents.agents}</SidebarPanelLabel>
       {gateways.map(connectionId => {
         const group = sorted.filter(agent => agent.connectionId === connectionId)
         const gatewayId = JSON.stringify(['gateway', connectionId])
@@ -89,45 +90,50 @@ export function SimplifiedAgentList({
 
         return (
           <div className="shrink-0" key={gatewayId}>
-            <Button
-              aria-expanded={open}
-              className="w-full justify-start text-xs text-(--ui-text-tertiary)"
-              onClick={() => toggle(gatewayId, open)}
-              variant="ghost"
-            >
-              {gateways.length > 1 && <Codicon name={open ? 'chevron-down' : 'chevron-right'} />}
-              {reachable !== undefined && (
-                <span
-                  aria-hidden
-                  className={`size-1.5 shrink-0 rounded-full ${reachable ? 'bg-green-500' : 'bg-(--ui-text-tertiary)'}`}
-                />
+            <div className="grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_1.5rem] items-center gap-2 px-2 text-xs text-(--ui-text-tertiary)">
+              <span aria-hidden className="grid size-4 place-items-center">
+                <span className={`size-1.5 rounded-full ${reachable ? 'bg-green-500' : 'bg-(--ui-text-quaternary)'}`} />
+              </span>
+              <span className="truncate" title={group[0].gateway}>
+                {group[0].gateway}
+              </span>
+              {gateways.length > 1 && (
+                <Button
+                  aria-expanded={open}
+                  aria-label={group[0].gateway}
+                  onClick={() => toggle(gatewayId, open)}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={open ? 'chevron-down' : 'chevron-right'} />
+                </Button>
               )}
-              <span className="truncate">{group[0].gateway}</span>
-            </Button>
+            </div>
             {open &&
               group.map(agent => {
                 const agentOpen = group.length === 1 || isOpen(agent.id, agent.id === focusedAgent)
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                    <div className="group/agent flex items-center">
-                      {group.length > 1 && (
+                    <div className="group/agent grid min-h-8 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center rounded-sm px-2 hover:bg-(--chrome-action-hover) focus-within:bg-(--chrome-action-hover)">
+                      {group.length > 1 ? (
                         <Button
                           aria-expanded={agentOpen}
                           aria-label={agent.label}
                           onClick={() => toggle(agent.id, agentOpen)}
-                          size="icon"
+                          size="icon-xs"
                           variant="ghost"
                         >
                           <Codicon name={agentOpen ? 'chevron-down' : 'chevron-right'} />
                         </Button>
+                      ) : (
+                        <span aria-hidden />
                       )}
-                      <Button
+                      <RowButton
                         aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                        className="min-w-0 flex-1 justify-start"
+                        className="flex min-h-8 min-w-0 items-center gap-2 rounded-sm text-left text-xs font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
                         disabled={pending !== null}
                         onClick={() => void openAgent(agent)}
-                        variant="ghost"
                       >
                         <ProfileGlyph
                           color={resolveProfileColor(agent.profile, colors)}
@@ -135,7 +141,7 @@ export function SimplifiedAgentList({
                           name={agent.label}
                         />
                         <span className="truncate">{agent.label}</span>
-                      </Button>
+                      </RowButton>
                       <Button
                         aria-label={t.sidebar.newSessionIn(agent.label)}
                         className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
@@ -143,7 +149,7 @@ export function SimplifiedAgentList({
                           recordAction('session.new', 'click')
                           startSimplifiedAgentSession(agent)
                         }}
-                        size="icon"
+                        size="icon-xs"
                         title={t.sidebar.newSessionIn(agent.label)}
                         variant="ghost"
                       >

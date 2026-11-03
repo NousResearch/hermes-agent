@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   DropdownMenu,
@@ -12,6 +11,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
+import { RowButton } from '@/components/ui/row-button'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
@@ -61,8 +61,8 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   })
 
   const button = (
-    <Button
-      className="w-full justify-start"
+    <RowButton
+      className="flex min-h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
       onClick={() => {
         recordAction('session.new', 'click')
 
@@ -70,11 +70,12 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
           request()
         }
       }}
-      variant="ghost"
     >
-      <Codicon name="add" />
+      <span className="grid size-4 shrink-0 place-items-center">
+        <Codicon name="add" />
+      </span>
       {t.sidebar.nav['new-session']}
-    </Button>
+    </RowButton>
   )
 
   if (agents.length <= 1) {

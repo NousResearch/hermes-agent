@@ -17,7 +17,9 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import sys
 import threading
 import time
@@ -333,3 +335,143 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert result.get("error") is None
     assert [s["session_id"] for s in result["sessions"]] == ["s1"]
     assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+# ---- Locale / i18n (Accept-Language) ----
+#
+# Localization is a per-request overlay on the English snapshot cache: the API
+# translates achievement name/description/category/criteria when the request
+# negotiates a catalog we carry (zh-CN); tier/state stay English because the
+# dashboard derives CSS classes, tier colors, and filter comparisons from them.
+# Static UI chrome is translated by the host's shared web/src/i18n catalogs.
+
+
+class _FakeRequest:
+    """Duck-typed stand-in for fastapi.Request — only .headers.get() is needed."""
+
+    def __init__(self, accept_language: str):
+        self.headers = {"accept-language": accept_language}
+
+
+def test_resolve_locale_maps_simplified_chinese_only(plugin_api):
+    for header in ["zh", "zh-CN", "zh-cn", "zh-Hans", "zh-SG", "cmn", "zh-CN,zh;q=0.9,en;q=0.8"]:
+        assert plugin_api._resolve_locale(_FakeRequest(header)) == "zh-CN"
+    # Traditional Chinese tags (and every other language) fall back to English
+    # until a zh-Hant catalog exists — Simplified text is worse than en there.
+    for header in ["zh-TW", "zh-Hant", "zh-HK", "zh-MO", "en-US,en;q=0.9", "ja", "*", ""]:
+        assert plugin_api._resolve_locale(_FakeRequest(header)) == "en"
+    assert plugin_api._resolve_locale(None) == "en"
+
+
+def test_localized_english_path_is_unchanged(plugin_api):
+    for definition in plugin_api.ACHIEVEMENTS:
+        for state in ("discovered", "secret"):
+            item = {**definition, "state": state}
+            assert plugin_api.localized_criteria(item, "en") == plugin_api.criteria_for(item)
+            assert plugin_api.localized_display(plugin_api.display_achievement(item), "en") == plugin_api.display_achievement(item)
+
+
+def test_english_criteria_never_contains_fullwidth_punctuation(plugin_api):
+    """Regression: an earlier draft built one template for all locales, leaking
+    "。等级阶梯:" into English criteria. English output must stay pure ASCII-
+    punctuated English regardless of which catalogs ship beside the plugin."""
+    for definition in plugin_api.ACHIEVEMENTS:
+        for state in ("discovered", "secret"):
+            text = plugin_api.criteria_for({**definition, "state": state})
+            for ch in "。；：「」":
+                assert ch not in text, f"{definition['id']}: {text!r}"
+
+
+def test_zh_cn_criteria_translates_ladder_and_uses_local_punctuation(plugin_api):
+    threshold = next(a for a in plugin_api.ACHIEVEMENTS if a["id"] == "let_him_cook")
+    text = plugin_api.localized_criteria({**threshold, "state": "discovered"}, "zh-CN")
+    assert text.startswith("要求：")
+    assert "。等级阶梯：" in text
+    assert "青铜 200" in text and "奥林匹亚 8000" in text
+    assert "Copper" not in text and "Tier ladder" not in text and "Requirement" not in text
+
+    multi = next(a for a in plugin_api.ACHIEVEMENTS if a.get("requirements"))
+    text = plugin_api.localized_criteria({**multi, "state": "discovered"}, "zh-CN")
+    assert "；" in text, "multi-condition criteria join with the locale separator"
+    assert text.endswith("。")
+
+
+def test_localized_payload_translates_dynamic_fields_keeps_machine_fields(plugin_api):
+    snapshot = plugin_api._build_pending_snapshot(int(time.time()))
+    catalog = json.loads((plugin_api._LOCALE_DIR / "zh-CN.json").read_text(encoding="utf-8"))
+
+    items = plugin_api._localize_achievements(snapshot["achievements"], "zh-CN")
+    assert len(items) == len(snapshot["achievements"])
+
+    normal = next(a for a in plugin_api.ACHIEVEMENTS if not a.get("secret"))
+    zh = next(a for a in items if a["id"] == normal["id"])
+    assert zh["name"] == catalog[normal["id"]]["name"]
+    assert zh["description"] == catalog[normal["id"]]["description"]
+    assert zh["category"] == catalog[normal["id"]]["category"]
+
+    # Machine fields stay English: tier names feed ha-tier-* CSS classes and the
+    # tierHex color map; state strings are the visibility filter's comparison keys.
+    for a in items:
+        assert a["state"] in ("discovered", "unlocked", "secret")
+        assert a.get("tier") is None or a["tier"] in plugin_api.TIER_NAMES
+        assert a.get("next_tier") is None or a["next_tier"] in plugin_api.TIER_NAMES
+
+
+def test_localized_secret_never_leaks_catalog_identity(plugin_api):
+    """Regression: an earlier overlay applied catalog names before the secret
+    check, so a zh-CN response revealed secret achievement names/descriptions."""
+    snapshot = plugin_api._build_pending_snapshot(int(time.time()))
+    secrets = [a for a in snapshot["achievements"] if a["state"] == "secret"]
+    assert secrets, "catalog must contain secret achievements for this test to mean anything"
+
+    for a in plugin_api._localize_achievements(secrets, "zh-CN"):
+        assert a["name"] == "???"
+        assert a["icon"] == "secret"
+        assert a["criteria"].startswith("秘密：")
+        assert a["description"] == "秘密成就：在 Hermes 检测到首个相关行为之前保持隐藏。"
+
+
+def test_achievements_route_localizes_per_request(plugin_api, monkeypatch):
+    snapshot = plugin_api._build_pending_snapshot(int(time.time()))
+    monkeypatch.setattr(plugin_api, "evaluate_all", lambda force=False: snapshot)
+
+    en = asyncio.run(plugin_api.achievements(_FakeRequest("en-US,en;q=0.9")))
+    zh = asyncio.run(plugin_api.achievements(_FakeRequest("zh-CN,zh;q=0.9")))
+
+    # English responses are byte-identical to the untranslated snapshot payload.
+    assert en["achievements"] == snapshot["achievements"]
+    assert "_ui" not in en  # static chrome belongs to web/src/i18n, not the payload
+
+    # Chinese responses localize content but keep shape/counts identical.
+    assert zh["total_count"] == en["total_count"]
+    assert zh["unlocked_count"] == en["unlocked_count"]
+    assert zh["secret_count"] == en["secret_count"]
+    assert zh["scan_meta"] == en["scan_meta"]
+
+    normal = next(a for a in plugin_api.ACHIEVEMENTS if not a.get("secret"))
+    en_a = next(a for a in en["achievements"] if a["id"] == normal["id"])
+    zh_a = next(a for a in zh["achievements"] if a["id"] == normal["id"])
+    assert zh_a["name"] != en_a["name"]
+    assert zh_a["description"] != en_a["description"]
+    assert zh_a["category"] != en_a["category"]
+
+
+def test_recent_unlocks_and_badges_routes_localize(plugin_api, monkeypatch):
+    unlocked_item = {
+        **next(a for a in plugin_api.ACHIEVEMENTS if not a.get("secret")),
+        "unlocked": True, "discovered": True, "state": "unlocked",
+        "unlocked_at": int(time.time()), "tier": "Gold",
+    }
+    snapshot = {
+        **plugin_api._build_pending_snapshot(int(time.time())),
+        "achievements": [dict(unlocked_item)],
+    }
+    monkeypatch.setattr(plugin_api, "evaluate_all", lambda force=False: snapshot)
+
+    zh = asyncio.run(plugin_api.recent_unlocks(_FakeRequest("zh")))
+    assert len(zh) == 1
+    assert zh[0]["name"] != unlocked_item["name"]
+    assert zh[0]["tier"] == "Gold"  # machine field untouched
+
+    en = asyncio.run(plugin_api.recent_unlocks(_FakeRequest("en-GB")))
+    assert en[0]["name"] == unlocked_item["name"]

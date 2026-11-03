@@ -132,6 +132,34 @@ def test_a_discarded_routing_turn_records_no_assignment_and_the_lead_still_answe
     assert _plan(room_db, seq).status == "settled"
 
 
+def test_a_purpose_only_save_racing_a_routing_change_never_restores_the_old_routing(room_db: Path, monkeypatch):
+    import threading
+
+    _lead_room(room_db)
+    real_validate = context.validate_context
+    first_read, routing_saved = threading.Event(), threading.Event()
+
+    def validate(*args, **kwargs):
+        if threading.current_thread().name == "older-client" and not first_read.is_set():
+            first_read.set()
+            # Hold the older client right after it read the current routing. Unless that read sits
+            # under the write lock, the routing change commits meanwhile and would be written back stale.
+            routing_saved.wait(timeout=1.0)
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(context, "validate_context", validate)
+    older = threading.Thread(name="older-client", target=lambda: context.set_room_context(
+        room_db, room_id=ROOM_ID, event_id="c-older", purpose="Older client purpose", notes=""))
+    older.start()
+    assert first_read.wait(timeout=5)
+    context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-routing", purpose="Kernel work", notes="",
+                             routing="everyone")
+    routing_saved.set()
+    older.join(timeout=10)
+
+    assert context.room_context(room_db, room_id=ROOM_ID)["routing"] == "everyone"
+
+
 @pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
 def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
     _lead_room(room_db)

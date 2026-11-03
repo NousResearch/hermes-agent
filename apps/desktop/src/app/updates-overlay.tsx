@@ -34,6 +34,7 @@ import { AlertCircle, Check, Copy, ExternalLink, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, rollbackRelease, type UpdateTarget } from '@/lib/update-copy'
 import { fetchUpdateNoteItems, updateNotesSource, updateNotesUrl, updateReleaseTag } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
+import { $sendDiagnostics, dismissSendDiagnostics } from '@/store/send-diagnostics'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -56,6 +57,7 @@ import {
 } from '@/store/updates'
 
 import { DiscontinuedNotice } from './retirement-view'
+import { UpdateErrorReport } from './update-error-report'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -206,12 +208,20 @@ export function UpdatesOverlay() {
             ? 'error'
             : 'idle'
 
+  // The error box's inline report belongs to the failure it was opened for.
+  const dropInlineReport = () => {
+    if ($sendDiagnostics.get()?.inline) {
+      dismissSendDiagnostics()
+    }
+  }
+
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
       return
     }
 
     setUpdateOverlayOpen(next)
+    dropInlineReport()
 
     if (
       !next &&
@@ -222,6 +232,7 @@ export function UpdatesOverlay() {
   }
 
   const handleInstall = () => {
+    dropInlineReport()
     void install()
   }
 
@@ -251,7 +262,12 @@ export function UpdatesOverlay() {
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
 
         {phase === 'error' ? (
-          <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
+          <ErrorView
+            log={apply.log.map(entry => entry.message)}
+            message={apply.message}
+            onDismiss={() => handleClose(false)}
+            onRetry={handleInstall}
+          />
         ) : null}
 
         {phase === 'idle' && !isBackend && status?.retirement?.state === 'discontinued' && (
@@ -646,7 +662,17 @@ function ApplyingView({
   )
 }
 
-function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+function ErrorView({
+  log,
+  message,
+  onDismiss,
+  onRetry
+}: {
+  log: readonly string[]
+  message: string
+  onDismiss: () => void
+  onRetry: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
 
@@ -666,6 +692,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       <Button onClick={onDismiss} variant="text">
         {u.notNow}
       </Button>
+      <UpdateErrorReport log={log} message={message || u.errorBody} />
     </ErrorState>
   )
 }

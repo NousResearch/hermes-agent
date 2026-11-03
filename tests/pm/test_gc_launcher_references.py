@@ -165,3 +165,114 @@ def test_gc_ignores_foreign_launcher_and_external_python(launcher_gc_env):
 
     assert removed == 1 and kept == 1
     assert not (store / "python-orphan").exists()
+
+
+@pytest.mark.parametrize("failure", ["directory_status", "directory_scan", "launcher_status", "launcher_read", "launcher_text_read"])
+def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
+    launcher_gc_env, monkeypatch, failure
+):
+    _home, root, store = launcher_gc_env
+    python = Path(sys._base_executable).resolve()
+    old_python = _entry(store, "python-old", python)
+    _entry(store, "python-current", python)
+    out = root / ".hermes/bin"
+    out.mkdir(parents=True)
+    launcher = _launchers.mint_launcher("hermes", root, out, old_python, None)
+    assert launcher is not None
+    _write_orphan(store)
+
+    if failure in ("directory_status", "launcher_status"):
+        original_stat = Path.stat
+        broken = out if failure == "directory_status" else launcher
+
+        def unreadable_status(self, *args, **kwargs):
+            if self == broken:
+                raise PermissionError("launcher status unavailable")
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", unreadable_status)
+    elif failure == "directory_scan":
+        original_iterdir = Path.iterdir
+
+        def unreadable_directory(self):
+            if self == out:
+                raise PermissionError("launcher directory unavailable")
+            return original_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", unreadable_directory)
+    elif failure == "launcher_read":
+        original_read = Path.read_bytes
+
+        def unreadable_launcher(self):
+            if self == launcher:
+                raise PermissionError("launcher unreadable")
+            return original_read(self)
+
+        monkeypatch.setattr(Path, "read_bytes", unreadable_launcher)
+    else:
+        original_read_text = Path.read_text
+
+        def unreadable_text(self, *args, **kwargs):
+            if self == launcher:
+                raise PermissionError("launcher text unreadable")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable_text)
+
+    with pytest.raises(OSError, match="Cannot (scan launcher directory|inspect launcher)"):
+        _gc_store(Store(store), Facts(store / "facts.json"))
+    assert old_python.is_file()
+    assert (store / "python-old").is_dir()
+    assert (store / "python-orphan").is_dir()
+
+
+@pytest.mark.parametrize("reader", ["python_bytes", "owner_text", "checkout_text"])
+def test_gc_aborts_when_parser_read_fails_after_preflight(
+    launcher_gc_env, monkeypatch, reader
+):
+    _home, root, store = launcher_gc_env
+    python = Path(sys._base_executable).resolve()
+    old_python = _entry(store, "python-old", python)
+    _entry(store, "python-current", python)
+    out = root / ".hermes/bin"
+    out.mkdir(parents=True)
+    if reader == "checkout_text":
+        launcher = out / "hermes.cmd"
+        _write_cmd(launcher, old_python, root)
+    else:
+        launcher = _launchers.mint_launcher("hermes", root, out, old_python, None)
+        assert launcher is not None
+    _write_orphan(store)
+
+    if reader == "python_bytes":
+        original = Path.read_bytes
+        calls = 0
+
+        def fail_second_read(self):
+            nonlocal calls
+            if self == launcher:
+                calls += 1
+                if calls == 2:
+                    raise PermissionError("launcher changed during read")
+            return original(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_second_read)
+    else:
+        original = Path.read_text
+        calls = 0
+        fail_at = 3 if reader == "checkout_text" else 2
+
+        def fail_parser_read(self, *args, **kwargs):
+            nonlocal calls
+            if self == launcher:
+                calls += 1
+                if calls == fail_at:
+                    raise PermissionError("launcher changed during read")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fail_parser_read)
+
+    with pytest.raises(OSError, match="Cannot inspect launcher"):
+        _gc_store(Store(store), Facts(store / "facts.json"))
+    assert old_python.is_file()
+    assert (store / "python-orphan").is_dir()

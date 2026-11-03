@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -487,26 +488,42 @@ def _gc_launcher_entries(store_root: Path) -> set[str]:
     directories = (root / ".hermes" / "bin", get_default_hermes_root() / "bin")
     for directory in dict.fromkeys(directories):
         try:
-            targets = list(directory.iterdir()) if directory.is_dir() else ()
-        except OSError:
-            continue
-        for target in targets:
-            # One unreadable launcher must not abort the rest of the
-            # directory: a still-referenced entry would then be reclaimed.
             try:
-                if not target.is_file() or not (
-                    _owns_launcher(target, root) or _launcher_checkout(target) == root
-                ):
+                if not stat.S_ISDIR(directory.stat().st_mode):
                     continue
-                python = _launcher_python(target)
+            except FileNotFoundError:
+                continue  # This optional launcher directory has not been created.
+            targets = list(directory.iterdir())
+        except OSError as exc:
+            raise OSError(f"Cannot scan launcher directory: {directory}") from exc
+        for target in targets:
+            try:
+                try:
+                    if not stat.S_ISREG(target.stat().st_mode):
+                        continue
+                except FileNotFoundError:
+                    continue  # A removed launcher cannot keep an interpreter alive.
+                # Path.is_file and the launcher parsers suppress OS errors. Test
+                # both underlying read paths before consulting those parsers;
+                # an incomplete scan must not authorize a destructive sweep.
+                target.read_bytes()
+                if target.suffix.lower() != ".exe":
+                    try:
+                        target.read_text(encoding="utf-8-sig")
+                    except UnicodeError:
+                        pass  # Binary non-exe files are not readable launchers.
+                if not (_owns_launcher(target, root, strict_io=True)
+                        or _launcher_checkout(target, strict_io=True) == root):
+                    continue
+                python = _launcher_python(target, strict_io=True)
                 if python is None:
                     continue
                 for parent in python.parents:
                     if parent.resolve() == store_root:
                         entries.add(python.relative_to(parent).parts[0])
                         break
-            except OSError:
-                continue
+            except OSError as exc:
+                raise OSError(f"Cannot inspect launcher: {target}") from exc
     return entries
 
 

@@ -125,9 +125,12 @@ async def webapp_access_status(profile: Optional[str] = None):
     The pane polls this, so the status (a control-socket round trip) runs outside the skills lock,
     as in ``_restart``."""
     gateway = await _scoped(profile, lambda gateway: gateway)
+    # Before the status round trip: a Start that ends during it is still reported, so the pane polls
+    # again rather than showing that config change undone until its next refetch.
+    progress = _STARTS.get(gateway)
     return await _in_gateway_home(gateway, lambda: {
         **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway),
-        "start_progress": _STARTS.get(gateway)})
+        "start_progress": progress})
 
 
 @router.post("/api/webapp-access/start")

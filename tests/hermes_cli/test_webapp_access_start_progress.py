@@ -138,3 +138,48 @@ def test_a_profile_with_its_own_gateway_never_shows_another_gateways_start(resta
     assert (seen["default"] or {}).get("step") == "building"
     assert seen["served"] == seen["default"]
     assert seen["solo"] is None
+
+
+def test_a_status_read_during_the_last_step_still_reports_that_start(client, nous, monkeypatch):
+    """A second window's status read that starts while the Start restarts the gateway, and whose
+    control-socket round trip outlasts the Start, reports the Start it began during: the pane shows
+    it running and polls again instead of showing Stopped with Start enabled until its next refetch."""
+    import hermes_cli.web_server_gateway as gw
+    from hermes_cli import webapp, webapp_access
+
+    in_restart, release, start_done = threading.Event(), threading.Event(), threading.Event()
+    armed = threading.Event()
+    real_status = webapp_access.access_status
+
+    def restart(_profile, *, what, label):
+        in_restart.set()
+        assert release.wait(20)
+        return {"restart_started": True}
+
+    def slow_status():
+        # Only the second window's read: the Start finishes while it waits on the gateway.
+        if armed.is_set():
+            armed.clear()
+            release.set()
+            assert start_done.wait(20)
+        return real_status()
+
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda project_root, **_options: webapp.webapp_dist_dir(project_root))
+    monkeypatch.setattr(gw, "_restart_gateway_after", restart)
+    monkeypatch.setattr(webapp_access, "access_status", slow_status)
+
+    def run_start() -> None:
+        response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+        assert response.status_code == 200, response.text
+        start_done.set()
+
+    start = threading.Thread(target=run_start, daemon=True)
+    start.start()
+    assert in_restart.wait(20)
+    armed.set()
+
+    progress = _status_from_another_window(client)["start_progress"]
+
+    start.join(timeout=20)
+    assert start_done.is_set()
+    assert (progress or {}).get("step") == "restarting"

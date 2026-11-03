@@ -16,7 +16,14 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead, requestSessionResume } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  lineageAliases,
+  markSessionRead,
+  requestSessionResume
+} from '@/store/session'
 import { noteUserSessionOpen } from '@/store/session-open-intent'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
@@ -228,11 +235,11 @@ function openInPlace(
 ): void {
   const focused = focusOpenSession(storedSessionId, workspaceScope)
 
-  if (
-    !focused &&
-    workspaceScope.workspaceMode === 'sessions' &&
-    openInFocusedSessionTab(storedSessionId, workspaceScope)
-  ) {
+  // A Bot scope never claims a 'main' hit in focusOpenSession, so the chat main
+  // already holds is checked here: that one is fronted below, not reopened.
+  const mainHolds = lineageAliases(storedSessionId, $sessions.get()).includes($selectedStoredSessionId.get() ?? '')
+
+  if (!focused && !mainHolds && openInFocusedSessionTab(storedSessionId, workspaceScope)) {
     return
   }
 

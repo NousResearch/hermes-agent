@@ -44,8 +44,9 @@ beforeAll(() => {
   return disposeWorkspace
 })
 
-const IDS = ['chat-a', 'chat-b', 'draft-a', 'busy-a', 'target']
+const IDS = ['chat-a', 'chat-b', 'draft-a', 'busy-a', 'target', 'bot-chat']
 const SESSIONS = { workspaceMode: 'sessions' } as const
+const BOT = { workspaceMode: 'bots', workspaceOwnerKey: 'local::emp', workspaceTabTitle: 'Bot Chat' } as const
 
 function state(messages: number, busy = false): ClientSessionState {
   return { busy, messages: Array.from({ length: messages }, (_, i) => ({ id: `m${i}` })) } as ClientSessionState
@@ -171,6 +172,44 @@ describe('a plain session click opens in the focused tab', () => {
     expect(navigate).not.toHaveBeenCalled()
     expect(mainGroup().panes).toEqual(['workspace', tilePane('chat-b'), tilePane('chat-a')])
     expect(mainGroup().active).toBe(tilePane('chat-b'))
+  })
+
+  it('opens a Bot roster click in the focused tab, keeping the Bot scope on the new tab', () => {
+    openTile('chat-a', 3)
+    openTile('chat-b', 2)
+    states.focusOpenSession('chat-a', SESSIONS)
+
+    openSession('bot-chat', navigate, 'in-place', BOT)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('bot-chat'), tilePane('chat-b')])
+    expect(mainGroup().active).toBe(tilePane('bot-chat'))
+
+    const tile = states.$sessionTiles.get().find(t => t.storedSessionId === 'bot-chat')
+    expect(tile?.workspaceMode).toBe('bots')
+    expect(tile?.workspaceOwnerKey).toBe(BOT.workspaceOwnerKey)
+  })
+
+  it('fronts main for a Bot roster click on the chat main already holds (#125899)', () => {
+    session.$selectedStoredSessionId.set('bot-chat')
+    openTile('chat-a', 3)
+
+    openSession('bot-chat', navigate, 'in-place', BOT)
+
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('chat-a')])
+    expect(mainGroup().active).toBe('workspace')
+  })
+
+  it('replaces a focused Bot tab with a plain session click', () => {
+    states.openSessionTile('bot-chat', 'center', 'workspace', undefined, BOT)
+    states.patchSessionTile('bot-chat', { runtimeId: 'rt-bot-chat' })
+    states.$sessionStates.set({ ...states.$sessionStates.get(), 'rt-bot-chat': state(4) })
+    states.focusOpenSession('bot-chat', BOT)
+
+    openSession('target', navigate)
+
+    expect(navigate).not.toHaveBeenCalled()
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('target')])
   })
 
   it('keeps ⌘-click as a new tab beside the focused one', () => {

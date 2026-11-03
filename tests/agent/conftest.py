@@ -45,3 +45,20 @@ def _fast_retry_backoff(request, monkeypatch):
     # server-error retries don't burn real wall-clock seconds.
     from agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
+
+
+def sdk_status_error(status: int, message: str, *, wrapped: bool = False, **error_fields):
+    """An error shaped like openai-python's ``_make_status_error`` output (``wrapped``: a relay that keeps
+    the ``{"error": ...}`` envelope on the exception body). Shared by the aux error-policy tests."""
+    import httpx
+    import openai
+
+    body = {"message": message, **error_fields}
+    if wrapped:
+        body = {"error": body}
+    by_status = {400: openai.BadRequestError, 401: openai.AuthenticationError, 403: openai.PermissionDeniedError,
+                 404: openai.NotFoundError, 429: openai.RateLimitError}
+    cls = by_status.get(status, openai.InternalServerError if status >= 500 else openai.APIStatusError)
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return cls(f"Error code: {status} - {{'error': {body!r}}}", response=httpx.Response(status, request=request),
+               body=body)

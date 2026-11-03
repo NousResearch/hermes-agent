@@ -45,8 +45,11 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import {
+  botOnConnection,
   groupCreationSource,
   groupExecutionMode,
+  groupNeedsDesktopCourier,
+  groupSelectionElsewhere,
   seatableGroupBots,
   useGroupCapability
 } from './canonical-group-capabilities'
@@ -1279,9 +1282,10 @@ async function revalidateGroupCreationMode(
 }
 
 /** Discord-style group chat creation: pick 2+ routable bots via checkboxes
- *  (with search), name the group, create. Legacy assignments append to each
- *  local bot's group membership list and sync through ui_meta; canonical groups
- *  keep members on their authority connection. */
+ *  (with search), name the group, create. A selection on the current connection
+ *  becomes a gateway-owned room there; one that reaches another connection (or
+ *  any selection on a legacy gateway) becomes a Desktop-driven room, whose
+ *  memberships append to each bot's group list and sync through ui_meta. */
 export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: CreateGroupChatDialogProps) {
   const { t } = useI18n()
   const b = useBots()
@@ -1307,6 +1311,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const selectableRoster = seatableGroupBots(roster, { connectionId, mode, seatable })
 
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
+  // A selection spanning connections cannot be owned by one gateway: the room
+  // runs on this Desktop, which carries each member's turn home. A selection
+  // wholly on ANOTHER connection can be owned by neither side from here.
+  const desktopDriven = groupNeedsDesktopCourier(selected, connectionId)
+  const elsewhere = groupSelectionElsewhere(selected, connectionId)
+  const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
   const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
 
@@ -1315,7 +1325,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     : b.group.nameLabel
 
   const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    (mode === 'canonical' || mode === 'legacy')
+    (mode === 'canonical' || mode === 'legacy') && (mode === 'legacy' || !elsewhere)
 
   const creating = useRef(false)
 
@@ -1342,7 +1352,11 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       throw new Error(b.canonical.driverUnavailable)
     }
 
-    if (currentMode === 'canonical') {
+    if (currentMode === 'canonical' && groupSelectionElsewhere(selected, route.connectionId)) {
+      throw new Error(b.crossGateway.selectionElsewhere(selected[0].connectionLabel || selected[0].connectionId || ''))
+    }
+
+    if (currentMode === 'canonical' && !groupNeedsDesktopCourier(selected, route.connectionId)) {
       if (!sourceCurrent()) {
         throw new Error(b.canonical.driverUnavailable)
       }
@@ -1425,6 +1439,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
+        {elsewhere && mode === 'canonical' && (
+          <p className="text-xs text-(--ui-text-secondary)" role="note">
+            {b.crossGateway.selectionElsewhere(selected[0].connectionLabel || selected[0].connectionId || '')}
+          </p>
+        )}
+        {desktopDriven && mode !== 'unavailable' && (
+          <p className="text-xs text-(--ui-text-secondary)" data-group-engine="desktop" role="note">
+            {b.crossGateway.desktopDriven}
+          </p>
+        )}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}
@@ -1490,14 +1514,16 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-xs text-foreground">{displayName(bot, meta)}</div>
                       <div className="truncate text-[0.625rem] text-(--ui-text-quaternary)">
-                        {[
-                          currentGroups.length
-                            ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
-                            : `@${botHandle(bot.name, bot)}`,
-                          bot.remoteSource && bot.connectionLabel ? ` · ${bot.connectionLabel}` : ''
-                        ].join('')}
+                        {currentGroups.length
+                          ? `@${botHandle(bot.name, bot)} · in ${currentGroups.map(group => `“${group}”`).join(', ')}`
+                          : `@${botHandle(bot.name, bot)}`}
                       </div>
                     </div>
+                    {spansConnections && (
+                      <Badge className="shrink-0 rounded-full px-1.5 text-[0.625rem]" data-device-badge variant="muted">
+                        {bot.connectionLabel || (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
+                      </Badge>
+                    )}
                     <Checkbox
                       checked={isChecked}
                       disabled={disabled}

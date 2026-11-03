@@ -139,7 +139,7 @@ fi
 # Windows (issues #67385, #70813). PATHEXT is also required: without .EXE,
 # PowerShell opens a native child as a document without waiting for its exit.
 # PSModuleAnalysisCachePath: the hosted Windows images point PowerShell at a
-# shared module analysis cache, which the job's earlier PowerShell steps warm.
+# shared module analysis cache, which CI warms before the tests (tests-os.yml).
 # Without it a test's powershell.exe child falls back to a cold per-user cache
 # and re-analyses every installed module (~22s per launch on arm64 runners).
 # These are location variables, not

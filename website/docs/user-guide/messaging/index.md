@@ -386,6 +386,10 @@ including an explicit `false`. An entry that sets only other keys (say a thread 
 default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
 `<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
 
+With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is
+hidden, so a healthy marker-only turn stays silent even where `allow_silence` is unset or `false`
+(see [Warning and error notifications](#warning-and-error-notifications-opt-in-suppression)).
+
 The platform setting covers direct messages too. There, a question the model answers with only a
 marker gets no reply at all, so set `allow_silence: false` on any DM or channel that must always
 get an answer.
@@ -982,7 +986,11 @@ suppression.
 The setting controls automatic engine warnings, retry/fallback diagnostics,
 watchdog and database notices, cron failure notifications, Kanban failure
 notifications, background/delegation diagnostics, and adapter-generated error
-notices. It applies to messaging platforms, CLI/TUI presentation and API
+notices. It also covers the silence-marker notice ("The model returned only a
+silence marker..."): where suppression is on for the chat's platform, a
+successful turn that ends on a bare `[SILENT]`/`NO_REPLY` stays silent, as if
+[`allow_silence`](#per-platform-and-per-room-intentional-silence) were set. Failed,
+partial, interrupted and empty results are presented as before. It applies to messaging platforms, CLI/TUI presentation and API
 notification presentation. Classification belongs to the producer: warning-like
 text in a user request or an ordinary result is not filtered by its wording.
 

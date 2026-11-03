@@ -2017,7 +2017,9 @@ display:
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
-  # stalls, media-delivery fallbacks, cron failure alerts) on this surface.
+  # stalls, media-delivery fallbacks, cron failure alerts) on this surface. Also
+  # hides the "returned only a silence marker" notice: a successful turn ending
+  # on a bare [SILENT]/NO_REPLY then stays silent (failed/partial turns still show).
   # Requested results, approvals, clarifications and command outcomes are never
   # hidden, and nothing is removed from the logs. Per-platform override under
   # display.platforms.<platform>.suppress_warning_notifications.

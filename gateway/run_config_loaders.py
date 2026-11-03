@@ -129,11 +129,36 @@ class GatewayConfigLoadersMixin:
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
     def _silence_allowed_for_source(self, source, display_kind, reply_expected, agent_result) -> bool:
-        """Evaluate existing exemptions before consulting the optional room permission."""
+        """Evaluate existing exemptions before consulting the optional room/platform permission.
+
+        Where warning notifications are hidden for the turn's platform, the unexpected-silence
+        notice is one of them: a healthy marker-only final then stays silent instead.
+        """
         from gateway.response_filters import silence_allowed
-        return silence_allowed(display_kind, reply_expected) or silence_allowed(
-            display_kind, reply_expected, allow_silence=self._room_allow_silence(source),
-            agent_result=agent_result)
+        if silence_allowed(display_kind, reply_expected):
+            return True
+        allow = self._room_allow_silence(source)
+        if allow is not True and self._silence_notice_suppressed(source):
+            silent = silence_allowed(display_kind, reply_expected, allow_silence=True, agent_result=agent_result)
+            if silent:
+                logger.info("silence marker kept silent: warning notifications are suppressed for %s chat=%s",
+                            source.platform.value, source.chat_id or "unknown")
+            return silent
+        return silence_allowed(display_kind, reply_expected, allow_silence=allow, agent_result=agent_result)
+
+    def _silence_notice_suppressed(self, source: SessionSource) -> bool:
+        """``display.suppress_warning_notifications`` for ``source.platform`` in the serving profile.
+
+        Read under the routed profile's scope, as crash recovery reads the diagnostic policy; a
+        failed read keeps the notice (presentation fails open).
+        """
+        from gateway.warning_notifications import warning_notifications_enabled
+        try:
+            with self._media_delivery_scope_for_source(source):
+                return not warning_notifications_enabled(source.platform)
+        except Exception:
+            logger.debug("Warning policy lookup failed for %s; keeping the notice", source.chat_id, exc_info=True)
+            return False
 
     def _room_allow_silence(self, source: SessionSource) -> Optional[bool]:
         """Resolve ``allow_silence`` in the serving profile, never the launch snapshot for a route.

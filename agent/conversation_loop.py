@@ -1574,6 +1574,11 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
     while s.retry_count < s.max_retries:
+        from agent.quota_preflight import preflight_quota_route
+        if preflight_quota_route(agent):
+            s.active_system_prompt = _arm_fallback_restart(
+                agent, s.api_messages, s.active_system_prompt, s._retry)
+            return None
         _ng = _run_phase(nous_rate_limit_guard, agent, s)
         if _ng.action == "return":
             return _ng.result
@@ -1616,6 +1621,8 @@ def _turn_without_loop(agent: Any, s: _LoopState, block_message: str) -> Optiona
     if block_message:
         s.final_response, s._turn_exit_reason = block_message, PRE_LLM_BLOCK_EXIT_REASON
         return _finalize_from_state(agent, s)
+    from agent.quota_preflight import prepare_quota_turn
+    prepare_quota_turn(agent, s)
     return _codex_app_server_turn(agent, s) if agent.api_mode == "codex_app_server" else None
 
 

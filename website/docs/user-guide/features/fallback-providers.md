@@ -59,6 +59,38 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
 
+### Quota preflight (Codex account windows)
+
+Main-agent and delegated-child conversation calls inspect the bound Codex account's
+session/weekly usage before inference. A fresh, exhausted **account** window can
+advance only through that agent's existing ordered fallback chain. A sibling model
+on the same known exhausted account is skipped; no destination is added and an
+explicit empty chain still disables fallback. Keep capability, independent-review,
+cost and privacy restrictions in those existing chains: quota evidence does not
+authorize a different route or check those task-specific policies for you.
+
+The process-local cache is profile-, endpoint- and account-scoped, shared with
+threaded children, limited to 256 entries and 60 seconds. Unknown/fetch-failed
+observations are cached for 15 seconds. A reset expires the old observation; it
+does not prove recovery. Only a fresh positive account observation permits a
+quota-selected fallback to restore its primary on a later turn. Requests still use
+native client, transport, context and reasoning rebinding and native reactive
+credential rotation/fallback after errors. Usage is evidence, never a reservation
+or a guarantee that the next inference will succeed.
+
+Preflight reads use the exact bound credential and the native read-only usage
+fetcher; they do not refresh credentials, activate banked resets or change account
+policy. A refresh can take the native HTTP timeout (15 seconds). Unknown, stale,
+unsupported or failed usage data preserves the configured route, with reactive
+recovery retained. If no eligible fallback binds, the current route is retained.
+
+This preflight does not currently select auxiliary/compression/vision routes,
+reserve quota across processes, proactively rotate multi-account credential
+pools, or infer exhaustion from ambiguous plugin/model-family windows. Such
+routes retain their native reactive recovery. Only native Codex account-window
+evidence is supported for proactive switching; other provider gauges remain
+unknown. The observer/context-injection hook `pre_llm_call` does not reroute calls.
+
 ### Supported Providers
 
 | Provider | Value | Requirements |

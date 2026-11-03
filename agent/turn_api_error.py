@@ -128,6 +128,8 @@ def handle_api_error(
         base_url=str(getattr(agent, "base_url", "") or ""),
         api_key=getattr(agent, "api_key", None),
     )
+    from agent.quota_preflight import invalidate_on_quota_error
+    invalidate_on_quota_error(agent, classified.reason)
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
         classified.reason.value, classified.status_code,

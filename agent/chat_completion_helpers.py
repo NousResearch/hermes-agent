@@ -1939,40 +1939,6 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     return until is None or until - time.time() > 600
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
-    """True when the entry is already unavailable, malformed, locally unusable, or resolves
-    to the backend that just failed (falling back to it would loop the failure)."""
-    if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return True
-    if not fb_provider or not fb_model:
-        return True
-    from agent.fallback_cooldown import _is_entitlement_rejected
-    if _is_entitlement_rejected(agent, fb_provider, fb_model):
-        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
-        return True
-    if _candidate_pool_exhausted(agent, fb_provider, fb_model):
-        logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
-        return True
-    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
-    if local_skip_reason:
-        unavailable.add(fb_key)
-        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
-        return True
-    # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
-    # are owned by agent.backend_identity — do not re-implement comparisons here.
-    # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
-    # See #22548, #62984, #70893.
-    from agent.backend_identity import BackendIdentity, should_skip_candidate
-    current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
-    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
-    if should_skip_candidate(fb_ident, current_ident):
-        logger.warning(
-            "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
-            fb_provider, fb_model, current_ident.base_url or current_ident.provider)
-        return True
-    return False
 
 
 def _update_fallback_context_compressor(agent) -> None:
@@ -2055,6 +2021,9 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.quota_preflight import invalidate_on_quota_error
+    from agent.fallback_candidates import _should_skip_fallback_candidate
+    invalidate_on_quota_error(agent, reason)
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
@@ -2107,7 +2076,8 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)
-            logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            # Client-construction errors can echo auth headers or URLs with credentials.
+            logger.error("Failed to activate fallback %s (%s)", fb_model, type(e).__name__)
             continue  # try next in chain
 
 
@@ -2295,13 +2265,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     nudge = append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
-        build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
-        attempt = build_attempt(agent, api_messages, summary_api_request_id)
-
+        from agent.quota_preflight import preflight_quota_route
         # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
+            preflight_quota_route(agent)
+            api_messages = _iteration_summary_api_messages(agent, messages)
+            build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
+            attempt = build_attempt(agent, api_messages, summary_api_request_id)
             text = attempt(retry_count)
             if not text:
                 continue

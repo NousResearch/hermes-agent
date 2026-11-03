@@ -734,7 +734,7 @@ class TaskTest(_TaskEnv):
 
         text = watchdog.write_launcher().read_text(encoding="utf-16")
 
-        (run_line,) = [line for line in text.split("\r\n") if line.startswith("sh.Run ")]
+        (run_line,) = [line for line in text.splitlines() if line.startswith("sh.Run ")]
         literal, wait = run_line[len("sh.Run "):].rsplit(", 0, ", 1)
         self.assertEqual(wait, "True")
         self.assertEqual(literal[1:-1].replace('""', '"'), subprocess.list2cmdline(

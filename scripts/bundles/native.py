@@ -272,6 +272,10 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         print(f"✓ uv-cache (lock-scoped: pruned {pruned} stale entries; offline rebuilds resolve from shipped wheels)", flush=True)
     else:
         raise InstallError("uv-cache", "runtime dependency cache is missing")
+    if current_target().startswith("win32-"):
+        from scripts.bundles.msix_names import drop_msix_reserved_names
+        for tree in drop_msix_reserved_names(out):
+            print(f"✓ msix: dropped {tree.as_posix()} (holds a package-reserved name, never read at runtime)")
 
     bad = _arch_guard(store_dir)
     for line in bad:
@@ -291,7 +295,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     relativize_links(out)
     from scripts.bundles.bytecode import bake_bytecode
     baked = bake_bytecode(out, python_bin)
-    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
+    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, owner-writable caches)")
     inputs = AgentInputs(
         project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
         placement="contained", target=current_target(), python=python_bin,

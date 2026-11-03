@@ -488,7 +488,7 @@ export const zhOverrides = {
       advancedOutput: '输出限制',
       advancedDelegation: '子智能体',
       advancedDesktop: '桌面与启动',
-      gatewayConnection: '当前窗口',
+      gatewayConnection: '主网关',
       gatewayDevices: '已保存的连接',
       gatewayManagedUpdates: '远程更新',
       gatewayManagedUpdatesUnavailable: '远程更新需要支持托管 SSH 更新的桌面版本。',
@@ -3908,7 +3908,9 @@ export const zhOverrides = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
       updateFailed: '模型选项更新失败',
-      fastFailed: '快速模式更新失败'
+      fastFailed: '快速模式更新失败',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失败'
     },
     gatewayMenu: {
       gateway: '网关',

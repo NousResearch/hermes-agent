@@ -398,7 +398,7 @@ export const ruOverrides = {
       advancedOutput: 'Ограничения вывода',
       advancedDelegation: 'Субагенты',
       advancedDesktop: 'Приложение и запуск',
-      gatewayConnection: 'Это окно',
+      gatewayConnection: 'Основной шлюз',
       gatewayDevices: 'Сохранённые подключения',
       gatewayManagedUpdates: 'Удалённые обновления',
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
@@ -3169,7 +3169,9 @@ export const ruOverrides = {
       ultra: 'Ультра',
       sendsOnRoute: (level: string) => `на этом маршруте отправляется ${level}`,
       updateFailed: 'Не удалось обновить опцию модели',
-      fastFailed: 'Не удалось обновить быстрый режим'
+      fastFailed: 'Не удалось обновить быстрый режим',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Не удалось обновить Daybreak'
     },
     gatewayMenu: {
       gateway: 'Шлюз',

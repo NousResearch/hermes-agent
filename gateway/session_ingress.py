@@ -190,6 +190,45 @@ async def deliver_resolved(authority, admission_id, *, owed):
     await deliver_settled(authority, admission_id)
 
 
+def _take_post_delivery(authority, admission_id, source, route):
+    """Move the turn's post-delivery slot off its adapter onto this admission. A native waiter (the
+    messaging adapter task that sends the reply) runs it after its own send instead. A runner or
+    adapter without the seam (a webhook sink, a bare test double) holds none."""
+    resolve = getattr(authority.runner, '_adapter_for_source', None)
+    native = admission_id in authority.native_waiters
+    slots = getattr(resolve(source), '_post_delivery_callbacks', None) if resolve and source and not native else None
+    entry = slots.pop(route, None) if slots is not None else None
+    if entry is not None:
+        _registry(authority, 'post_delivery')[admission_id] = (slots, route, entry)
+
+
+def _hand_back_post_delivery(authority, admission_id):
+    """A native waiter registered after the turn started: its adapter task sends the reply and then
+    runs the slot, which goes back unless a newer turn's already took it."""
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is not None:
+        slots, route, entry = taken
+        slots.setdefault(route, entry)
+
+
+async def fire_post_delivery(authority, admission_id):
+    """Run a settled turn's post-delivery callbacks (background-review release, temp-bubble cleanup,
+    a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
+    does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
+    and result) in the adapter's slot until restart."""
+    if admission_id in authority.native_waiters:
+        _hand_back_post_delivery(authority, admission_id)
+        return
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is None:
+        return
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    callback = _split_post_delivery_entry(taken[2])[1]
+    with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
+        await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
 async def _release_turn_marker(authority, event):
     if getattr(event, '_gateway_active_turn_token', None):
         await authority.runner._clear_durable_active_turn(event)
@@ -252,6 +291,8 @@ async def execute_admission(authority, ref, row):
     if policy is not None:
         return await admit_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
+    # The key the turn registers its post-delivery slot under; a rebind mid-turn must not move the take.
+    route = live.route
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
     if 'native_text_v1' in row['payload']:
@@ -339,6 +380,10 @@ async def execute_admission(authority, ref, row):
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
     finally:
+        if not native:
+            # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
+            # once the turn settled and its reply went out (``fire_post_delivery``).
+            _take_post_delivery(authority, row['admission_id'], event.source, route)
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)
@@ -401,6 +446,7 @@ async def deliver_settled(authority, admission_id):
         # ``admit_message`` registered its delivery waiter after this turn started: the drain
         # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
         authority.native_waiters.discard(admission_id)
+        _hand_back_post_delivery(authority, admission_id)
         authority.pending_deliveries.pop(admission_id)
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:

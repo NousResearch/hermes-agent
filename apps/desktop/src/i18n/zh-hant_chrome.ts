@@ -305,7 +305,9 @@ export const zhHantChrome = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
-      fastFailed: '快速模式更新失敗'
+      fastFailed: '快速模式更新失敗',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失敗'
     },
     gatewayMenu: {
       gateway: '閘道',

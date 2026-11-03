@@ -52,6 +52,12 @@ _TURN_ID_RE = re.compile(
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$")
 
+
+def turn_round(turn_id: str) -> int | None:
+    """The 0-based round a Discussion turn id names, or None for a turn id of another shape."""
+    match = _TURN_ID_RE.fullmatch(turn_id)
+    return int(match.group("round")) if match else None
+
 _TARGET_FIELDS = {
     "local": frozenset({"kind", "profile"}),
     "peer": frozenset({"kind", "peer_id", "installation_id", "profile", "capability_digest"})}

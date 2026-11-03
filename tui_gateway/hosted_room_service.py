@@ -52,10 +52,14 @@ def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _member_activity(task: Mapping[str, Any]) -> dict[str, Any]:
-    row = {"member_id": task_member_id(task), "status": str(task["status"])}
+    identity = task["identity"]
+    # The thread and round let a client scope outcomes and the round strip to the discussion that owns the task.
+    row = {"member_id": task_member_id(task), "status": str(task["status"]), "thread_id": identity.thread_id}
+    if (round_index := discussion.turn_round(identity.turn_id)) is not None:
+        row["round_index"] = round_index
     if task.get("started_at") is not None:
         row["started_at"] = task["started_at"]
-    return {**row, **task_progress(task["identity"].room_id, task["identity"].task_id)}
+    return {**row, **task_progress(identity.room_id, identity.task_id)}
 
 
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
@@ -610,6 +614,9 @@ class HostedRoomService:
                      and execution_generation in (None, c["execution_generation"])), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
+        # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
+        forget_task_progress(room_id, task_id)
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
 

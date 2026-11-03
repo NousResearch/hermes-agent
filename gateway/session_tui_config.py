@@ -190,6 +190,10 @@ async def config_set(connection, ref, params):
     if key in _DISPLAY_TOGGLE_KEYS or key == 'voice.voice_chat_mode':
         return {'key': key, **await asyncio.to_thread(_write_profile_config, connection,
                                                       lambda cfg: _set_profile_leaf(cfg, key, value))}
+    if key == 'daybreak':
+        # Profile-wide like Codex's own switch; every next turn re-reads it (``_load_daybreak``).
+        return {'key': key, **await asyncio.to_thread(_write_profile_config, connection,
+                                                      lambda cfg: _set_profile_leaf(cfg, 'agent.daybreak', value))}
     result = await asyncio.to_thread(_write_profile_config, connection,
                                      lambda cfg: _set_display(cfg, key, value))
     if key == 'focus' and ref.session_id and 'tool_progress' in result:

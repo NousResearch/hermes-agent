@@ -287,7 +287,7 @@ FROM runtime_base AS python_deps
 # restores this baseline into volumes that already lost it.
 #
 # The [documents] extra (python-docx, openpyxl, python-pptx, reportlab, pypdf;
-# ~25 MB) is baked so the docx/xlsx/powerpoint/pdf skills work out of the box:
+# ~25 MB) is baked so the microsoft-office and pdf skills work out of the box:
 # this venv is sealed and has no pip, so the agent could not add them itself.
 #
 # Source binding is created after the source copy below.
@@ -527,6 +527,8 @@ COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-di
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
 ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+# Login shells re-read /etc/profile, which resets PATH; this re-adds the dirs above.
+COPY --chmod=0644 docker/profile-hermes-path.sh /etc/profile.d/hermes.sh
 # PM's atomic writer creates private facts for source installs. In the
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove

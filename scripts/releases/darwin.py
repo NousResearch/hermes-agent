@@ -8,7 +8,7 @@ from . import r2 as r2_module
 from .semver import compare, is_release_version
 from hermes_cli.update_channel import canary_timestamp, is_canary_tag
 
-ARCHES = ("arm64", "x64")
+ARCHES = ("arm64",)  # Apple Silicon only: no Intel macOS build ships
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")
 
 
@@ -78,16 +78,12 @@ def mac_feed_references(text: str) -> list[str]:
 
 
 def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
-                    archive: str | None = None, arches: tuple[str, ...] | None = None) -> dict[str, Any]:
-    """Validate both native legs, merge them, and rewrite artifact URLs into
-    the immutable per-release tag namespace. `archive` keys that namespace
-    (the attempt ref for stable attempts); `tag` stays the version identity.
-    `arches` defaults to both; a stable release that did not opt into macOS
-    Intel passes ("arm64",) and the feed then carries the arm64 leg alone."""
-    arches = ARCHES if arches is None else tuple(arches)
-    if "arm64" not in arches or not set(arches) <= set(ARCHES) or len(set(arches)) != len(arches):
-        raise ValueError("macOS feeds need the arm64 leg and only known architectures")
-    arches = tuple(arch for arch in ARCHES if arch in arches)
+                    archive: str | None = None) -> dict[str, Any]:
+    """Validate the native leg of every ARCHES entry, merge them, and rewrite
+    artifact URLs into the immutable per-release tag namespace. `archive` keys
+    that namespace (the attempt ref for stable attempts); `tag` stays the
+    version identity."""
+    arches = ARCHES
     import hermes_yaml as yaml  # lazy
 
     version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
@@ -96,8 +92,7 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
     selection = _darwin_feed("canary" if is_canary_tag(tag) else "stable", light)
     expected = [f"{arch}-{selection['fileName']}" for arch in arches]
     if sorted(legs.keys()) != sorted(expected):
-        raise ValueError("Expected exactly one ARM64 and one x64 macOS feed" if len(arches) == 2
-                         else "Expected exactly one ARM64 macOS feed")
+        raise ValueError("Expected exactly one ARM64 macOS feed")
     files: dict[str, dict[str, Any]] = {}
     first: dict[str, Any] | None = None
     for index, name in enumerate(expected):
@@ -177,8 +172,8 @@ def publish_mac_feed(
 # ---------------------------------------------------------------------------
 
 def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
-             arches: tuple[str, ...] | None = None, verify_bytes: bool = True) -> None:
-    """Validate both native legs, verify their streamed bytes, then replace
+             verify_bytes: bool = True) -> None:
+    """Validate the native legs, verify their streamed bytes, then replace
     the feed pointer (conditional write, then readback).
 
     ``verify_bytes=False`` (stable promotion of an accepted candidate, whose
@@ -195,7 +190,7 @@ def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None
         for name in sorted(os.listdir(dir))
         if name.endswith("-mac.yml")
     }
-    plan = merge_mac_feeds(legs, tag, variant == "light", archive=archive, arches=arches)
+    plan = merge_mac_feeds(legs, tag, variant == "light", archive=archive)
 
     def read(key: str) -> dict[str, str] | None:
         try:

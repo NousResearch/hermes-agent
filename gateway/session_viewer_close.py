@@ -238,9 +238,14 @@ async def arm_detached_orphan_close(authority, session_id):
 
 def _idle_s(authority, session_id):
     from hermes_state_common import _sql_session_last_active
+    # Resolve the target BEFORE opening a read context: ``_physical_target`` reads the receipt, and
+    # a read that lands on the degraded path (non-WAL, or every read permit spent) waits on the
+    # writer's non-reentrant lock. Nested inside this block it would wait on the lock this thread
+    # already holds — a boot-time self-deadlock the watchdog can only answer by killing the gateway.
+    target = _physical_target(authority, session_id)
     with authority.db._read_ctx() as conn:
         row = conn.execute(f'SELECT {_sql_session_last_active("s")} FROM sessions s WHERE s.id = ?',
-                           (_physical_target(authority, session_id),)).fetchone()
+                           (target,)).fetchone()
     return time.time() - row[0] if row and row[0] else 0.0
 
 
@@ -291,6 +296,7 @@ async def settle_viewer_close(authority, session_id):
     # settler run, so the close is re-checked after each one.
     if await asyncio.to_thread(_busy, authority, session_id, target):
         return  # the drain's next idle point completes it
+    idle_stamp = live.event_stream.execution  # each claim stamps a new one (``_stamp_claim``)
     row = await asyncio.to_thread(authority.db.get_session, target)
     if not _still_pending(authority, session_id, live, close):
         return
@@ -311,6 +317,10 @@ async def settle_viewer_close(authority, session_id):
     from gateway.session_vault_prompt import release_unlocks
     release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
+    if not live.subscribers:  # ended: no viewer is left to replay to; a resume refetches history
+        live.event_stream.release()
+    from gateway.session_retirement import retire_closed
+    retire_closed(authority, session_id, live, target, idle_stamp)
 
 
 async def _resolve_abandoned_unknown(authority, session_id, live, close):

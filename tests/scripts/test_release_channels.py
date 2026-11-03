@@ -316,7 +316,7 @@ def test_retire_derives_receiver_kind_from_channel_identity_match():
 
 
 def test_retire_refuses_a_stable_head_without_the_previews_targets():
-    """An Intel preview cannot be pinned to an arm64-only stable head it has no package in."""
+    """A preview cannot be pinned to a stable head that lacks a target the preview ships."""
     from hermes_cli.release_channels import ChannelError, canonical_json
 
     def with_arches(manifest, arches):
@@ -452,6 +452,8 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         prefix = f"releases/tag/{tag}/"
         for platform in ("darwin", "win32"):
             for arch in ("arm64", "x64"):
+                if (platform, arch) in (("darwin", "x64"), ("macos", "x64")):
+                    continue  # no Intel macOS package
                 native = "macos" if platform == "darwin" else "windows"
                 version = "2.0.0" if platform == "darwin" else "2.0.0.0"
                 metadata = {"platform": native, "arch": arch, "tag": tag, "commit": commit,
@@ -497,7 +499,8 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         request = pub.allocate_protected("released", commit, "2.0.0", release_tag=tag, version="2.0.0", windows_version="2.0.0.0", identity=identity, policy="stable-release", release_gate=lambda request: True)
         from scripts.bundles.channel_artifacts import assemble
         manifest, feeds = assemble(request, native, tmp_path, artifact_prefix=prefix)
-        assert {p["arch"] for p in manifest["packages"]} == {"arm64", "x64"}
+        assert {(p["platform"], p["arch"]) for p in manifest["packages"]} == {
+            ("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")}
         assert all(p["artifact"]["key"].startswith(prefix) for p in manifest["packages"])
         assert all(f.is_file() for f in feeds)
         accepted = {"packages": []}
@@ -512,15 +515,11 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
             channel_releases.match_accepted_packages(manifest, wrong)
         with pytest.raises(ChannelError, match="every native"):
             channel_releases.match_accepted_packages(dict(manifest, packages=manifest["packages"][:1]), accepted)
-        # A release that did not opt into macOS Intel accepts three desktop packages.
-        def no_intel(rows, key):
-            return [row for row in rows if (row[key], row["arch"]) not in (("darwin", "x64"), ("macos", "x64"))]
-        lean = dict(accepted, packages=no_intel(accepted["packages"], "platform"))
-        assert channel_releases.native_legs(lean) == ("darwin-arm64", "win32-arm64", "win32-x64", "windows-universal")
-        assert channel_releases.native_legs(accepted) == channel_releases.NATIVE_LEGS
-        channel_releases.match_accepted_packages(dict(manifest, packages=no_intel(manifest["packages"], "platform")), lean)
+        # An accepted release carrying an Intel Mac package cannot advance the channel: none ships.
+        intel = deepcopy(accepted)
+        intel["packages"].append({**next(row for row in intel["packages"] if row["platform"] == "macos"), "arch": "x64"})
         with pytest.raises(ChannelError, match="every native"):
-            channel_releases.match_accepted_packages(manifest, lean)
+            channel_releases.match_accepted_packages(manifest, intel)
         # Exercise the real controller, HTTP receipt downloader, immutable feeds,
         # manifest and final CAS; only GitHub admission and generated product facts
         # are fixture inputs (no native signature acceptance is claimed here).
@@ -643,6 +642,8 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
                      "packages": []}
         for platform in ("macos", "windows"):
             for arch in ("arm64", "x64"):
+                if (platform, arch) in (("darwin", "x64"), ("macos", "x64")):
+                    continue  # no Intel macOS package
                 candidate["packages"].append({"platform": platform, "arch": arch, "tag": tag, "commit": commit,
                     "version": "2.0.0" if platform == "macos" else "2026.5761.123.0", "identity": "fixture.identity",
                     **({"executableVersion": "2026.5761.123.0"} if platform == "windows" else {}),

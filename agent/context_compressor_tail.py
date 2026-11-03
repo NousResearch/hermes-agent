@@ -132,6 +132,27 @@ def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: i
     return price if newest < 0 else (lambda i: 0 if i <= newest else price(i))
 
 
+def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], head_end: int, cut_idx: int) -> int:
+    """Lowest tail cut that leaves the summary window a row the handoff scan keeps.
+
+    The scan drops standalone handoff rows from the window, so when every row before the cut (and up to the newest
+    handoff) is a handoff, the planned window is empty and compress() no-ops with ``empty_post_handoff_window``. That
+    happens when the cut lands inside the tool group right after the handoff and is aligned back onto the group's
+    assistant. The floor then moves past that group, unless doing so would take the newest row or the active user
+    request out of the tail; those cases keep the old ``head_end + 1`` floor. ``_compress_window``'s
+    assistant/tool bridge before the active request obeys the same floor, so the two never disagree: when the floor
+    sits on the active request, the summary merges into that row instead of the bridge emptying the window."""
+    floor = head_end + 1
+    newest = next(
+        (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,
+    )
+    if newest < 0 or not all(map(compressor._is_context_summary_message, messages[head_end:max(cut_idx, newest + 1)])):
+        return floor
+    raised = compressor._align_boundary_forward(messages, newest + 2)
+    last_user = compressor._find_last_user_message_idx(messages, newest + 1)
+    return floor if raised >= len(messages) or 0 <= last_user < raised else raised
+
+
 def with_skill_safety_rule(
     summary: str, head: list[dict[str, Any]], tail: list[dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:

@@ -77,7 +77,7 @@ export const arSettings = {
       advancedOutput: 'حدود المخرجات',
       advancedDelegation: 'الوكلاء الفرعيون',
       advancedDesktop: 'سطح المكتب وبدء التشغيل',
-      gatewayConnection: 'هذه النافذة',
+      gatewayConnection: 'البوابة الأساسية',
       gatewayDevices: 'الاتصالات المحفوظة',
       gatewayManagedUpdates: 'التحديثات البعيدة',
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
@@ -266,6 +266,17 @@ export const arSettings = {
         backgroundDone: {
           label: 'اكتملت مهمة الخلفية',
           description: 'اكتمل أمر طرفية يعمل في الخلفية.'
+        }
+      },
+      browserPermission: {
+        title: 'إشعارات المتصفح',
+        allow: 'السماح',
+        states: {
+          default: 'يعرض هذا المتصفح التنبيهات عندما تكون علامة التبويب في الخلفية. إلى أن تسمح بذلك، يومض عنوان علامة التبويب فقط.',
+          granted: 'مسموح. تظهر التنبيهات عندما تكون علامة التبويب هذه في الخلفية، ويومض عنوانها أيضًا.',
+          denied: 'محظور في إعدادات الموقع لهذا المتصفح. سيظل عنوان علامة التبويب يومض.',
+          insecure: 'يتطلب HTTPS، مثل Tailscale serve. عبر HTTP العادي يومض عنوان علامة التبويب فقط.',
+          unsupported: 'لا يستطيع هذا المتصفح عرض الإشعارات. سيظل عنوان علامة التبويب يومض.'
         }
       },
       test: 'إرسال إشعار تجريبي',
@@ -744,6 +755,13 @@ export const arSettings = {
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        startStages: {
+          preparing: 'جارٍ تجهيز تطبيق الويب. قد يستغرق إنشاؤه بضع دقائق.',
+          building: 'جارٍ إنشاء تطبيق الويب. قد يستغرق ذلك بضع دقائق.',
+          registering: 'جارٍ إعداد تسجيل الدخول عبر Nous لهذا العنوان.',
+          restarting: 'جارٍ إعادة تشغيل البوابة لتقديم تطبيق الويب.'
+        },
+        startElapsed: time => `الوقت المنقضي: ${time}`,
         start: 'تشغيل',
         stop: 'إيقاف',
         restartGateway: 'إعادة تشغيل البوابة',

@@ -146,6 +146,11 @@ async def test_secondary_profile_handoff_uses_its_own_adapter(monkeypatch):
         f"session key must carry the profile namespace, got {captured['session_key']}"
     )
     assert captured["source"].profile == "medicina"
+    # The turn answers through medicina's bot, so once ingress pins its identity medicina's allowlist
+    # authorizes it, not the primary's.
+    from hermes_cli.profiles import get_profile_dir
+    runner._canonicalize(captured["source"])
+    assert runner._authorization_home_for_source(captured["source"]) == get_profile_dir("medicina")
 
 
 @pytest.mark.asyncio

@@ -271,6 +271,7 @@ const TURN_CODE_KEY: Record<string, keyof Translations['userMessages']['turn']['
   content_policy_blocked: 'contentPolicyBlocked',
   context_overflow: 'contextOverflow',
   format_error: 'formatError',
+  local_runtime_unavailable: 'localRuntimeUnavailable',
   model_not_found: 'modelNotFound',
   overloaded: 'overloaded',
   payload_too_large: 'payloadTooLarge',

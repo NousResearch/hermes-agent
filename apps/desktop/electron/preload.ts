@@ -346,6 +346,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
+    importConnections: (record: Record<string, string>) =>
+      ipcRenderer.invoke('hermes:profile:connections:import', record),
+    rememberConnection: (connectionId: string, profile: string) =>
+      ipcRenderer.invoke('hermes:profile:connections:remember', connectionId, profile),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   // The handler resolves an expected 404 with a sentinel instead of rejecting
@@ -488,7 +492,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
-  reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
+  reconcileDesktopPlugins: async () => (await ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins')).published,
+  reconcileDesktopPluginsReport: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
   logsRoot: (profile?: string) => ipcRenderer.invoke('hermes:fs:logsRoot', profile),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),

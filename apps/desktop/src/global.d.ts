@@ -288,6 +288,10 @@ declare global {
         // Remembers last use without interrupting a live workspace switch or
         // replacing an explicit default route.
         remember: (name: string | null) => Promise<DesktopActiveProfile>
+        // Main keeps each connection's last-used profile so it boots a remote primary on it:
+        // one-time import of this window's earlier record, then one change at a time.
+        importConnections?: (record: Record<string, string>) => Promise<void>
+        rememberConnection?: (connectionId: string, profile: string) => Promise<void>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -522,6 +526,11 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
+      /** The same refresh, also naming each package whose desktop half it refused and why. */
+      reconcileDesktopPluginsReport?: () => Promise<{
+        published: string[]
+        refused: { name: string; reason: string }[]
+      }>
       /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
        *  profile) — error card "Open Logs". */
       logsRoot?: (profile?: string) => Promise<string>
@@ -625,7 +634,9 @@ declare global {
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
         start: (options?: {
           cols?: number
+          connectionId?: null | string
           cwd?: string
+          profile?: string
           rows?: number
           restoreKey?: string
           resumeOnly?: boolean
@@ -805,9 +816,14 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
+  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  connectionId?: null | string
   cwd: string
   id: string
   shell: string
+  /** No shell was started: the tab's gateway was removed (`missing`) or has
+   *  no shell transport (`no-shell`). */
+  unavailable?: 'missing' | 'no-shell'
   /** Server-owned process and replay; do not restore renderer scrollback. */
   persistent?: boolean
 }

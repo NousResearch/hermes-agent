@@ -3,7 +3,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens, imageAttachments } from '../domain/attachments.js'
-import { completionToApplyOnSubmit } from '../domain/slash.js'
+import { completionToApplyOnEnter } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
@@ -501,11 +501,24 @@ export function useSubmission(opts: UseSubmissionOptions) {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
 
-        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace, name =>
-          Boolean(findSlashCommand(name))
+        // Path vs slash split is centralised in completionToApplyOnEnter: a
+        // path (`@file:`/`@folder:`) row is ALWAYS selected on Enter — never
+        // submitted — so you can pick several working files before sending.
+        // Closing the popup (suppressNextCompletion) stops it re-opening into
+        // the just-selected folder, so the next `@` starts a fresh pick.
+        const next = completionToApplyOnEnter(
+          value,
+          row?.text,
+          composerState.compReplace,
+          composerState.completionKind,
+          name => Boolean(findSlashCommand(name))
         )
 
         if (next !== null) {
+          if (composerState.completionKind === 'path') {
+            composerActions.suppressNextCompletion()
+          }
+
           return composerActions.setInput(next)
         }
       }

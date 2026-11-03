@@ -532,3 +532,32 @@ def cli_slash_completer(cli):
     return SlashCommandCompleter(
         skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
         skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))
+
+def at_completion_to_accept_on_enter(buffer):
+    """Return the highlighted completion when Enter should accept it, else None.
+
+    The classic CLI binds Enter to submit. That is right for slash-command
+    completion (Tab is the accept key there), but ``@file:``/``@folder:``
+    context references are picked one-at-a-time *before* sending the prompt —
+    with Enter submitting, stacking several ``@`` picks was impossible
+    (the first Enter fired the half-typed message). The TUI handles this via
+    ``completionToApplyOnEnter``; this is the classic-CLI mirror: while an
+    ``@`` completion menu is open, Enter accepts the highlighted row and the
+    composer stays open; sending happens on a later bare Enter once the menu
+    is gone (Esc also closes it without accepting).
+
+    Every ``@`` context completion text starts with ``@`` (static refs like
+    ``@diff``, prefixed paths like ``@file:src/a.py``), while slash commands
+    start with ``/`` — so the prefix is a safe discriminator. Anything that is
+    not an ``@`` row returns None and keeps the existing submit behavior.
+    """
+    state = getattr(buffer, "complete_state", None)
+    if not state:
+        return None
+    completion = getattr(state, "current_completion", None)
+    if completion is None:
+        completions = getattr(state, "completions", None) or ()
+        completion = completions[0] if completions else None
+    if completion is None:
+        return None
+    return completion if completion.text.startswith("@") else None

@@ -15,17 +15,17 @@ import { $activeSessionId } from '@/store/session'
 import { $sessionControlBySession, refreshSessionControl, runSessionControlAction, type SessionControlAction } from '@/store/session-control'
 
 import {
+  type AutomationCopy,
   automationLabels,
   buildArgs,
   deliverKickoff,
   existingAutomation,
   isUnavailable,
   loopIntervalTooShort,
+  type OnSubmitText,
   pauseBlocked,
   submitBlocked,
-  useAutomationForm,
-  type AutomationCopy,
-  type OnSubmitText
+  useAutomationForm
 } from './automation-composer-form'
 import {
   AutomationConsequence,
@@ -120,9 +120,9 @@ export function AutomationComposerDialog({
     }
 
     if ('title' in snap) {
-      form.replace({ prompt: snap.title, criteria: [...snap.subgoals], maxTurns: String(snap.max_turns) })
+      replace({ prompt: snap.title, criteria: [...snap.subgoals], maxTurns: String(snap.max_turns) })
     } else {
-      form.replace({
+      replace({
         prompt: snap.prompt,
         interval: String(snap.interval_seconds),
         ...('times' in snap ? { runLimit: snap.times ? String(snap.times) : '', stopCondition: snap.until || '' } : {})

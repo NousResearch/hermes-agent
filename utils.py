@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from contextlib import suppress
+from io import StringIO
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -538,13 +539,65 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
-    def _write(f) -> None:
-        yaml_rt.dump(config, f)
-        if extra_content:
-            f.write(extra_content)
+def _rt_assign(container, key, value) -> None:
+    """``container[key] = value`` in a round-trip tree. Comment lines between a mapping key and
+    its block entries have nothing to precede once the value is an empty ``[]``/``{}``: ruamel
+    still writes them, puts the empty collection on its own line and loses the line break before
+    a later key. Drop them, as ruamel already does when the new value is a scalar. (A list item
+    keeps its own ``-  # note`` in that slot, and an emptied item dumps fine, so lists are left.)"""
+    container[key] = value
+    slots = container.ca.items.get(key)
+    if slots and isinstance(container, dict) and isinstance(value, (dict, list)) and not value:
+        slots[3] = None
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
+
+def _same_yaml_data(a: Any, b: Any) -> bool:
+    """Deep data equality: strict about ``True`` vs ``1``, ``.nan`` equal to itself, ``!!pairs``
+    tuples equal to the lists they reload as, and tagged scalars (``!!str 123``, ``!custom x``)
+    compared by tag and value, since ruamel's ``TaggedScalar`` has no ``==`` of its own."""
+    from ruamel.yaml.comments import TaggedScalar
+
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_yaml_data(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(map(_same_yaml_data, a, b))
+    if isinstance(a, TaggedScalar) and isinstance(b, TaggedScalar):
+        return str(a.tag) == str(b.tag) and a.value == b.value
+    if isinstance(a, float) and isinstance(b, float) and a != a and b != b:
+        return True
+    return a == b and isinstance(a, bool) is isinstance(b, bool)
+
+
+def _reads_back_as(text: str, config: Any) -> bool:
+    """Whether *text* loads as *config*. Hermes' own reader (C parser, ~3 ms on the 2.4k-line
+    example config) settles nearly every write; only a disagreement pays for the exact oracle,
+    the round-trip loader that produced *config* (~80 ms), which alone keeps tags like ``!!str``."""
+    with suppress(yaml.YAMLError):  # e.g. an application tag only the round-trip loader knows
+        if _same_yaml_data(yaml.safe_load(text) or {}, config):
+            return True
+    return _same_yaml_data(yaml.roundtrip_yaml().load(text) or {}, config)
+
+
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
+    """Dump *config* to *path*, but only once the text is proven to read back as *config*.
+
+    The round-trip emitter's comment handling has written files that no longer parse (#148524)
+    and files that parse as different values (two list items fused into one string). Either way
+    the file is the user's only copy of their settings, so it is never replaced by text that does
+    not reload as exactly the data being saved."""
+    out = StringIO()
+    yaml_rt.dump(config, out)
+    text = out.getvalue() + (extra_content or "")
+    try:
+        faithful = _reads_back_as(text, config)
+        problem = "the rewritten YAML reads back as different values"
+    except yaml.YAMLError as exc:  # its mark would point into the rewritten text, not the user's file
+        faithful, problem = False, f"the rewritten YAML does not parse ({type(exc).__name__})"
+    if not faithful:
+        from hermes_cli.config_read_errors import _refuse_overwrite
+        raise _refuse_overwrite(path, "would have been rewritten incorrectly", ValueError(problem),
+                                "Make this change by editing the file directly.")
+    _atomic_write(path, lambda f: f.write(text), prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
@@ -577,7 +630,7 @@ def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) ->
             if value is None:
                 current.pop(seg, None)
             else:
-                current[seg] = value
+                _rt_assign(current, seg, value)
             break
         next_value = current.get(seg)
         if not isinstance(next_value, CommentedMap):
@@ -655,12 +708,16 @@ def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
 
     def _merge_item(dst, key, value) -> None:
         current = dst[key]
-        if isinstance(value, dict) and isinstance(current, CommentedMap):
+        # Merge in place only while the collection stays non-empty. ruamel keeps the comment ahead
+        # of the first entry (``key:  # note``) on the node itself and dumps an emptied node as that
+        # comment, a line break, then ``[]``/``{}`` at column 0 (#148524); an empty ``{}`` filled
+        # in place stays flow-style around block entries. A fresh node dumps cleanly either way.
+        if value and current and isinstance(value, dict) and isinstance(current, CommentedMap):
             _merge(current, value)
-        elif isinstance(value, list) and isinstance(current, CommentedSeq):
+        elif value and current and isinstance(value, list) and isinstance(current, CommentedSeq):
             _merge_seq(current, value)
         elif not _unchanged(current, value):
-            dst[key] = _rt_value(value)
+            _rt_assign(dst, key, _rt_value(value))
         # else: unchanged — keep the existing node and the comments/quoting attached to it
 
     def _merge(dst: CommentedMap, src: dict) -> None:

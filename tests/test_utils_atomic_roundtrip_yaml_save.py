@@ -210,6 +210,105 @@ class TestAtomicRoundtripYamlSave:
         result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert result["toolsets"] == ["three"]
 
+    def test_emptying_commented_list_keeps_comment_on_key_line(self, config_path):
+        """#148524: ``config set kanban.dispatch_profiles '[]'`` wrote the comment, a newline and
+        ``[]`` at column 0, then joined the next two keys — the file no longer parsed."""
+        config_path.write_text(
+            "kanban:\n"
+            "  dispatch_profiles:     # some comment\n"
+            "    - mordecai\n"
+            "  dispatch_in_gateway: true\n"
+            "  dispatch_interval_seconds: 60\n",
+            encoding="utf-8",
+        )
+        state = {"kanban": {
+            "dispatch_profiles": [], "dispatch_in_gateway": True, "dispatch_interval_seconds": 60}}
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, state)
+
+        text = config_path.read_text(encoding="utf-8")
+        assert yaml.safe_load(text) == state
+        assert "  dispatch_profiles: []  # some comment\n" in text
+
+    @pytest.mark.parametrize(
+        ("original", "state"),
+        [
+            pytest.param("l:  # note\n  - x\nk: 1\n", {"l": [], "k": 1}, id="top-level-list"),
+            pytest.param("a:\n  l:  # note\n    - x\n", {"a": {"l": []}}, id="last-key-list"),
+            pytest.param("a:\n  m:  # note\n    k: 1\n  o: 1\n", {"a": {"m": {}, "o": 1}}, id="mapping"),
+            pytest.param("l:\n  -  # note\n    - x\n  - k\n", {"l": [[], "k"]}, id="list-in-list"),
+            pytest.param("g:\n  - {}  # note\n  - x\n", {"g": [{"k": 1, "m": 2}, "x"]}, id="filled-empty-item"),
+        ],
+    )
+    def test_emptying_or_filling_a_commented_collection_keeps_the_file_valid(
+            self, config_path, original, state):
+        config_path.write_text(original, encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, state)
+
+        text = config_path.read_text(encoding="utf-8")
+        assert yaml.safe_load(text) == state
+        assert "# note" in text
+
+    @pytest.mark.parametrize("above", ["    # describe the entries\n", "\n"], ids=["comment-line", "blank-line"])
+    def test_lines_above_removed_entries_go_with_them(self, config_path, above):
+        """A comment or blank line between a key and its entries used to be written before a bare
+        ``[]`` on its own line, after which the next key lost its line break."""
+        config_path.write_text(
+            f"a:\n  l:\n{above}    - x\n  o: 1\nb: 2\nz: 3\n", encoding="utf-8")
+        state = {"a": {"l": [], "o": 1}, "b": 2, "z": 3}
+
+        from utils import atomic_roundtrip_yaml_save
+
+        atomic_roundtrip_yaml_save(config_path, state)
+
+        assert config_path.read_text(encoding="utf-8") == "a:\n  l: []\n  o: 1\nb: 2\nz: 3\n"
+
+    def test_refuses_a_write_that_would_not_read_back(self, config_path, monkeypatch):
+        """The last line of defence: whatever the emitter gets wrong, config.yaml is only replaced
+        by text that reloads as the data being saved. Re-create the stock ruamel ``{}`` defect
+        that hermes_yaml patches and check the save refuses, leaving the file untouched."""
+        from ruamel.yaml.emitter import RoundTripEmitter
+        import hermes_yaml
+
+        original = "a:   # note\n  - {}\n  - false\n  - 1\nmodel: old\n"
+        config_path.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(hermes_yaml._RoundTripEmitter, "expect_first_flow_mapping_key",
+                            RoundTripEmitter.expect_first_flow_mapping_key)
+
+        from utils import atomic_roundtrip_yaml_save
+
+        with pytest.raises(RuntimeError, match="rewritten incorrectly, so this change was not saved"):
+            atomic_roundtrip_yaml_save(config_path, {"a": [{}, False, 1], "model": "new"})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.parametrize("kept", ["!!str 123", "!custom value", ".nan"])
+    def test_values_without_plain_equality_do_not_trip_the_guard(self, config_path, kept):
+        """ruamel's TaggedScalar has no ``==`` and ``.nan != .nan``; neither may read as a change."""
+        config_path.write_text(f"kept: {kept}\nmodel: old\n", encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(config_path, "model", "new")
+
+        assert config_path.read_text(encoding="utf-8") == f"kept: {kept}\nmodel: new\n"
+
+    def test_pairs_rewritten_as_lists_do_not_trip_the_guard(self, config_path):
+        # ruamel has always re-emitted ``!!pairs`` tuples as nested lists; same entries, so allowed.
+        config_path.write_text("kept: !!pairs [{a: 1}, {a: 2}]\nmodel: old\n", encoding="utf-8")
+
+        from utils import atomic_roundtrip_yaml_update
+
+        atomic_roundtrip_yaml_update(config_path, "model", "new")
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {
+            "kept": [["a", 1], ["a", 2]], "model": "new"}
+
     def test_recurses_into_nested_dicts(self, config_path):
         """Deep mutations target the matching subtree, not the whole parent.
 

@@ -3346,6 +3346,7 @@ class TelegramAdapter(TelegramSiblingMediaMixin, TelegramHeldInboundMixin, Teleg
         inflight = getattr(self, "_media_inflight", None)
         if inflight is not None:
             inflight.clear()
+        self._release_sibling_media_waits()
         self._media_inflight_generation = getattr(self, "_media_inflight_generation", 0) + 1
         self._clear_task_attrs_except(
             current_task, "_polling_error_task", "_polling_progress_verifier_task", "_held_inbound_redispatch_task")

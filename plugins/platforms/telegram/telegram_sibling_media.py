@@ -46,6 +46,7 @@ class TelegramSiblingMediaMixin:
         remaining = inflight.get(key, 0) - 1
         if remaining <= 0:
             inflight.pop(key, None)
+            self._signal_sibling_wait(key)
         else:
             inflight[key] = remaining
 
@@ -79,6 +80,7 @@ class TelegramSiblingMediaMixin:
         task = self._pending_text_batch_tasks.pop(key, None)
         if task is not None and not task.done():
             task.cancel()
+        self._signal_sibling_wait(self._sibling_media_key(pending))
         comment = (pending.text or "").strip()
         caption = (event.text or "").strip()
         if comment and not caption:
@@ -147,6 +149,7 @@ class TelegramSiblingMediaMixin:
         """Wait for the download that claimed this text batch, up to the cap.
 
         If this batch was not claimed, return and let the normal text delay flush it.
+        The download signals when it finishes. The cap is the only timer.
         """
         inflight_cap = float(getattr(self, "_TEXT_MEDIA_INFLIGHT_CAP_S", 0) or 0)
         pending = self._pending_text_batches.get(key)
@@ -157,15 +160,49 @@ class TelegramSiblingMediaMixin:
         ):
             return
         sibling_key = self._sibling_media_key(pending)
-        inflight = getattr(self, "_media_inflight", {}) or {}
-        if inflight.get(sibling_key, 0) <= 0:
-            return
-        inflight_deadline = time.monotonic() + inflight_cap
-        while inflight.get(sibling_key, 0) > 0 and time.monotonic() < inflight_deadline:
-            if self._pending_text_batches.get(key) is None:
+        deadline = time.monotonic() + inflight_cap
+        while True:
+            if self._sibling_wait_done(key, sibling_key):
                 return
-            await asyncio.sleep(0.05)
-            inflight = getattr(self, "_media_inflight", {}) or {}
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            event = self._sibling_wait_event(sibling_key)
+            if self._sibling_wait_done(key, sibling_key):
+                return
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except TimeoutError:
+                return
+
+    def _sibling_wait_done(self, key: str, sibling_key: str) -> bool:
+        if self._pending_text_batches.get(key) is None:
+            return True
+        inflight = getattr(self, "_media_inflight", None) or {}
+        return inflight.get(sibling_key, 0) <= 0
+
+    def _sibling_wait_event(self, sibling_key: str) -> asyncio.Event:
+        events = self.__dict__.setdefault("_sibling_media_done", {})
+        event = events.get(sibling_key)
+        if event is None or event.is_set():
+            event = asyncio.Event()
+            events[sibling_key] = event
+        return event
+
+    def _signal_sibling_wait(self, sibling_key: str) -> None:
+        events = getattr(self, "_sibling_media_done", None)
+        if events:
+            event = events.get(sibling_key)
+            if event is not None:
+                event.set()
+
+    def _release_sibling_media_waits(self) -> None:
+        events = getattr(self, "_sibling_media_done", None)
+        if not events:
+            return
+        for event in list(events.values()):
+            event.set()
+        events.clear()
 
     def _pending_text_is_sibling_comment(self, pending: Optional[MessageEvent]) -> bool:
         """True for a short text-only comment that sibling media may absorb."""

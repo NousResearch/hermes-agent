@@ -777,6 +777,29 @@ class TestSiblingMediaAbsorb:
         finally:
             adapter._end_media_inflight(sibling_key)
 
+    @pytest.mark.asyncio
+    async def test_ending_inflight_releases_the_flush(self):
+        """Finishing the claimed download releases the text without waiting out the cap."""
+        adapter = _make_adapter()
+        adapter._text_batch_delay_seconds = 0.02
+        adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 20.0
+        holding = _arm_hold_probe(adapter)
+        comment = _make_event("held")
+        media = _make_event("caption", message_type=MessageType.VIDEO)
+        sibling_key = adapter._sibling_media_key(comment)
+        adapter._enqueue_text_event(comment)
+        adapter._mark_sibling_absorb_eligibility(media)
+        adapter._begin_media_inflight(sibling_key)
+        await asyncio.wait_for(holding.wait(), timeout=2)
+        adapter.handle_message.assert_not_called()
+        adapter._end_media_inflight(sibling_key)
+        await async_wait_until(
+            lambda: getattr(adapter.handle_message, "called", False),
+            timeout=1,
+            what="flush after download",
+        )
+        assert adapter.handle_message.call_args[0][0].text == "held"
+
     def test_observe_attribution_same_sender_still_pairs(self):
         """Group-observe strips source.user_id; pairing falls back to raw_message.from_user."""
         adapter = _make_adapter()

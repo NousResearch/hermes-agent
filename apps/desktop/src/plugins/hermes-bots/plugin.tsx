@@ -70,6 +70,7 @@ import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
+import { registerBotChatPalette } from './palette'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
 import {
@@ -115,6 +116,7 @@ export default {
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
+    const syncBotChatPalette = registerBotChatPalette(ctx)
     // The user's own roster sections. Read once at register; every mutation
     // writes through.
     loadBotSections()
@@ -375,7 +377,7 @@ export default {
     // pane has ever mounted (#94018). The pane owns the refresh once open.
     const primeOnGatewayOpen = (state: unknown) => {
       if (String(state) === 'open') {
-        void primeRoster()
+        void primeRoster().then(syncBotChatPalette)
       }
     }
 

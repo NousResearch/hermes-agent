@@ -3141,12 +3141,29 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
         return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
 
+    async def _reaction_target(self, event: MessageEvent) -> Any:
+        """The message to react to: the live one, or a partial message built from the event's ids when
+        it has none (a queued message restored from the session queue), best effort."""
+        message = event.raw_message
+        if message is not None or not self._client:
+            return message
+        source = event.source
+        # An auto-thread's starter message lives in the parent channel, not in the thread.
+        channel_id = source.parent_chat_id if source.auto_thread_created else source.chat_id
+        try:
+            channel = await self._resolve_channel(channel_id)
+            return channel.get_partial_message(int(event.message_id))
+        except Exception:
+            logger.debug("[%s] No reaction target for message %s", self.name, event.message_id, exc_info=True)
+            return None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
-        message = event.raw_message
         acked = False
-        if self._reactions_enabled() and hasattr(message, "add_reaction"):
-            acked = await self._add_reaction(message, "👀")
+        if self._reactions_enabled():
+            message = await self._reaction_target(event)
+            if hasattr(message, "add_reaction"):
+                acked = await self._add_reaction(message, "👀")
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -3154,7 +3171,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         await asyncio.to_thread(self._record_discord_processing_complete, event, outcome)
         if not self._reactions_enabled():
             return
-        message = event.raw_message
+        message = await self._reaction_target(event)
         if hasattr(message, "add_reaction"):
             await self._remove_reaction(message, "👀")
             if outcome == ProcessingOutcome.SUCCESS:

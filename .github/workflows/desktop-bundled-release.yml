@@ -1031,6 +1031,23 @@ jobs:
           key: mac-signatures-v1-${{ matrix.target.label }}
           restore-keys: mac-signatures-v1-${{ matrix.target.label }}-
 
+      - name: Disable QUIC (UDP 443) for the rest of the job
+        # stapler fetches the notarization ticket from api.apple-cloudkit.com over
+        # HTTP/3, and on GitHub's macOS runners those QUIC connections drop: the
+        # staple, and `stapler validate` in the verify step, exit 68 with
+        # NSURLErrorDomain -1005 (actions/runner-images#14924). This rejects outbound
+        # UDP 443 for every process for the rest of the job, so stapler, notarytool and
+        # the build's own downloads and uploads all fall back to TCP. The rule loads into
+        # a com.apple sub-anchor, which the runner's default ruleset already evaluates,
+        # so that ruleset stays as it is. Apple Silicon only: Intel Macs are unsupported
+        # (the macos-intel lane in scripts/releases/lanes.py).
+        if: matrix.target.label == 'darwin-arm64'
+        shell: bash
+        run: |
+          echo 'block return out quick proto udp to any port 443' | sudo pfctl -a com.apple/hermes-no-quic -f -
+          sudo pfctl -E
+          sudo pfctl -a com.apple/hermes-no-quic -sr
+
       - name: Build and package
         shell: bash
         timeout-minutes: 330

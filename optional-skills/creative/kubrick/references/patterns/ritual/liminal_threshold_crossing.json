@@ -1,0 +1,24 @@
+{
+  "pattern_id": "liminal_threshold_crossing",
+  "title": "Liminal Threshold Crossing",
+  "version": "0.11.5",
+  "domain": "ritual-liminal",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Arnold van Gennep and Victor Turner", "title": "Rites of Passage / The Ritual Process", "date": "1909 / 1969"}],
+  "observed_structure": [
+    "A subject leaves a prior status, crosses a bounded interval, and enters a changed relation.",
+    "The threshold makes the before-and-after distinction observable through space, sound, costume, or access."
+  ],
+  "dramatic_operations": ["status change", "separation from old state", "conditional entry"],
+  "transformation_grammars": ["initiation", "crossing"],
+  "cinematic_affordances": ["frame-edge crossing", "sound change at boundary", "doorway or checkpoint", "costume or access change"],
+  "misuse_risks": ["generic doorway symbolism", "flattening a specific ritual tradition", "crossing without consequence"],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["threshold type", "entry condition", "status before", "status after", "residue of crossing"]
+  },
+  "transferable_structure": "Make status change legible through a consequential boundary crossing with a clear before, interval, and after.",
+  "non_transferable_surface": "Do not copy sacred rites, regalia, chants, or culturally specific initiation practices without provenance and permission.",
+  "production_cost": "low",
+  "confidence": 0.8
+}

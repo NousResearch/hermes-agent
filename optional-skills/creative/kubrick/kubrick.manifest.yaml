@@ -1,0 +1,85 @@
+{
+  "manifest_version": 1,
+  "name": "kubrick",
+  "version": "0.14.0",
+  "host": "hermes",
+  "runtime_profiles": {
+    "prose": {
+      "dependencies": [],
+      "guarantee": "Creative routing, diagnosis, drafting, revision, and symbolic translation through SKILL.md and references."
+    },
+    "stdlib": {
+      "dependencies": [],
+      "guarantee": "Core routing, structural validation, deterministic hashing, graph operations, and JSON artifacts with Python 3.10+."
+    },
+    "validation": {
+      "dependencies": ["PyYAML>=6", "jsonschema>=4"],
+      "guarantee": "Full YAML parsing and JSON Schema validation."
+    },
+    "dev": {
+      "dependencies": ["pytest>=8", "ruff>=0.12", "mypy>=1.16", "PyYAML>=6", "jsonschema>=4"],
+      "guarantee": "Tests, static checks, corpus QA, and release validation."
+    }
+  },
+  "intents": {
+    "compile": {"description": "Full brief-to-packet compile", "default_action": "run", "actions": {"run": "kubrick_compile.py"}},
+    "retrieve": {"description": "Registry-aware pattern retrieval", "default_action": "retrieve", "actions": {"retrieve": "retrieve_symbolic_patterns_registry.py"}},
+    "ledger": {"description": "Project symbolic ledger", "default_action": null, "actions": {"init": "symbolic_ledger.py", "audit": "symbolic_ledger.py", "mutate": "symbolic_ledger.py", "rehydrate": "symbolic_ledger.py", "apply-forge": "symbolic_ledger.py", "export-retrieval": "symbolic_ledger.py", "record-pattern": "symbolic_ledger.py"}},
+    "design": {"description": "Design-specification compilation", "default_action": "build", "actions": {"build": "generate_design_spec.py"}},
+    "storyboard": {"description": "Multi-frame state", "default_action": null, "actions": {"propagate": "propagate_graph_state.py", "compare": "compare_frame_state.py"}},
+    "adapt": {"description": "Neutral packet and provider adaptation", "default_action": "build", "actions": {"build": "build_model_adapter_packet.py", "provider": "adapt_provider.py"}},
+    "visual": {"description": "Visual QA loop", "default_action": null, "actions": {"normalize": "normalize_visual_observation.py", "compare": "compare_visual_observation.py", "correct": "build_visual_correction_packet.py", "govern": "govern_correction_iteration.py", "closed-loop": "closed_loop_visual_qa.py"}},
+    "learn": {"description": "Outcomes and multi-signal evolution", "default_action": null, "actions": {"outcome": "record_pattern_outcome.py", "evolve": "propose_pattern_evolution.py", "forge-signals": "extract_forge_signals.py"}},
+    "check": {"description": "Validation and regression", "default_action": "smoke", "actions": {"skill": "validate_hermes_skill.py", "manifest": "validate_manifest.py", "corpus": "validate_pattern_corpus.py", "coverage": "audit_corpus_coverage.py", "artifact": "validate_artifact.py", "repeatability": "check_repeatability.py", "release": "audit_release_version.py", "eval": "run_hermes_evals.py", "smoke": "validate_hermes_skill.py"}},
+    "operate": {"description": "Graph/ledger operators", "default_action": null, "actions": {"saturation-score": "graph_operators.py", "counterpoint": "graph_operators.py", "convergence-lock": "graph_operators.py", "surface-occult-audit": "graph_operators.py", "symbolic-architecture-export": "graph_operators.py", "motif-mutation": "graph_operators.py"}},
+    "mcp": {"description": "Optional MCP server", "default_action": "serve", "actions": {"serve": "mcp_kubrick_server.py"}},
+    "bundle": {"description": "Grok review bundle", "default_action": "build", "actions": {"build": "build_grok_review_bundle.py"}}
+  },
+  "legacy_aliases": {
+    "compile": {"intent": "compile", "action": "run"},
+    "retrieve": {"intent": "retrieve", "action": "retrieve"},
+    "ledger": {"intent": "ledger", "action": "init", "passthrough_action": true},
+    "design-build": {"intent": "design", "action": "build"},
+    "storyboard-propagate": {"intent": "storyboard", "action": "propagate"},
+    "storyboard-compare": {"intent": "storyboard", "action": "compare"},
+    "adapter-build": {"intent": "adapt", "action": "build"},
+    "adapt-provider": {"intent": "adapt", "action": "provider"},
+    "adapt-grok": {"intent": "adapt", "action": "provider", "fixed_flags": ["--provider", "grok-imagine"]},
+    "adapt-flux": {"intent": "adapt", "action": "provider", "fixed_flags": ["--provider", "flux"]},
+    "adapt-sd3": {"intent": "adapt", "action": "provider", "fixed_flags": ["--provider", "sd3"]},
+    "adapt-midjourney": {"intent": "adapt", "action": "provider", "fixed_flags": ["--provider", "midjourney"]},
+    "visual-normalize": {"intent": "visual", "action": "normalize"},
+    "visual-compare": {"intent": "visual", "action": "compare"},
+    "visual-correct": {"intent": "visual", "action": "correct"},
+    "correction-govern": {"intent": "visual", "action": "govern"},
+    "closed-loop-qa": {"intent": "visual", "action": "closed-loop"},
+    "outcome-record": {"intent": "learn", "action": "outcome"},
+    "evolution-propose": {"intent": "learn", "action": "evolve"},
+    "forge-signals": {"intent": "learn", "action": "forge-signals"},
+    "validate-skill": {"intent": "check", "action": "skill"},
+    "validate-corpus": {"intent": "check", "action": "corpus"},
+    "coverage": {"intent": "check", "action": "coverage"},
+    "artifact-validate": {"intent": "check", "action": "artifact"},
+    "repeatability": {"intent": "check", "action": "repeatability"},
+    "eval": {"intent": "check", "action": "eval"},
+    "operator": {"intent": "operate", "action": "saturation-score", "passthrough_action": true},
+    "mcp-server": {"intent": "mcp", "action": "serve"},
+    "grok-review-bundle": {"intent": "bundle", "action": "build"}
+  },
+  "recipes": {
+    "storyboard-example": ["do", "compile", "--brief", "examples/authority-transfer-storyboard/brief.yaml", "--ledger", "examples/authority-transfer-storyboard/symbolic-ledger.yaml", "--mode", "storyboard", "--storyboard-plan", "examples/authority-transfer-storyboard/storyboard-plan.yaml", "--provider", "grok-imagine", "--out", "out/kubrick/authority-transfer"],
+    "verify": ["do", "check", "--action", "smoke"]
+  },
+  "providers": ["generic", "flux", "sd3", "midjourney", "grok-imagine"],
+  "artifact_types": ["symbolic-architecture", "motif-structure-graph", "project-symbolic-ledger", "storyboard-symbolic-state", "model-adapter-packet", "visual-observation", "visual-fidelity-report", "correction-iteration-receipt", "pattern-use-receipt", "pattern-evolution-proposal", "multi-signal-evolution-receipt", "forge-signal-bundle", "design-specification"],
+  "schemas": ["schemas/diagnostic.schema.json", "schemas/provider-preservation-report.schema.json", "schemas/symbolic-architecture.schema.json", "schemas/motif-structure-graph.schema.yaml", "schemas/project-symbolic-ledger.schema.yaml", "schemas/storyboard-symbolic-state.schema.yaml", "schemas/model-adapter-packet.schema.yaml", "schemas/visual-observation.schema.yaml", "schemas/visual-fidelity-report.schema.yaml", "schemas/correction-iteration-receipt.schema.yaml", "schemas/pattern-use-receipt.schema.yaml", "schemas/pattern-evolution-proposal.schema.yaml", "schemas/multi-signal-evolution-receipt.schema.yaml", "schemas/forge-signal-bundle.schema.yaml", "schemas/design-specification.schema.yaml"],
+  "optional_integrations": ["continuity-forge", "mcp", "model-apis", "vision-apis"],
+  "authority_classes": ["PROPOSED", "OBSERVATION", "NOT_COMPUTABLE", "AUTHORITATIVE_EXTERNAL"],
+  "exit_codes": {
+    "0": "success",
+    "1": "validation or execution failure",
+    "2": "invalid command, intent, action, or arguments",
+    "3": "optional dependency unavailable with no useful degraded operation",
+    "4": "NOT_COMPUTABLE due to insufficient or contradictory evidence"
+  }
+}

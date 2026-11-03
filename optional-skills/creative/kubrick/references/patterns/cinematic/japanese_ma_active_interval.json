@@ -1,0 +1,23 @@
+{
+  "pattern_id": "japanese_ma_active_interval",
+  "title": "Ma / Active Interval",
+  "version": "0.11.0",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Japanese aesthetic and performance scholarship","title":"Ma as interval and relational space","date":"20th-century scholarship","cultural_context":"Japanese arts and spatial aesthetics"}],
+  "observed_structure": ["an interval between actions remains perceptually active", "absence changes the relation between surrounding events", "duration and spacing create pressure without withholding basic causality"],
+  "dramatic_operations": ["activate absence", "delay response without stalling", "make relational distance legible"],
+  "transformation_grammars": ["active interval", "presence-through-spacing"],
+  "cinematic_affordances": ["held empty frame after departure", "pause preserving environmental sound", "negative space between bodies", "cut delayed until the relation changes"],
+  "applicable_genres": ["drama", "thriller", "romance", "art film", "documentary"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["Japanese aesthetic concept; retain provenance and do not claim universal equivalence with generic minimalism"],
+  "misuse_risks": ["slow pacing as exotic texture", "empty frames without relational function", "flattening ma into Western minimalism"],
+  "mutation_requirements": {"required":true,"variables":["interval duration","environmental sound","distance","entry timing","empty-space ownership"]},
+  "transferable_structure": "the interval between present elements becomes an active relational force that changes subsequent action",
+  "non_transferable_surface": "imitating Japanese architecture, ritual, costume, or framing as aesthetic shorthand",
+  "production_cost": {"location_dependency":0.2,"prop_dependency":0.0,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["tzimtzum", "liminality", "silence"],
+  "confidence": 0.80
+}

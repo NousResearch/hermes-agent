@@ -1,0 +1,43 @@
+suite: closed-loop-visual-qa-v0.11
+runtime: standalone-hermes
+entrypoints:
+  compare: scripts/compare_visual_observation.py
+  correct: scripts/build_visual_correction_packet.py
+cases:
+  - id: perfect_frame_match
+    expected_status: PASS
+    expected_dimension_scores:
+      geometry: 1.0
+      state: 1.0
+      ownership: 1.0
+      residue: 1.0
+      convergence: 1.0
+  - id: wrong_owner
+    expected_status: REVISE
+    expected_dimension: ownership
+    expected_severity: high
+  - id: lost_residue
+    expected_status: REVISE
+    expected_dimension: residue
+    expected_correction: restore residue
+  - id: wrong_light_state
+    expected_status: REVISE
+    expected_dimension: light
+  - id: convergence_missing
+    expected_status: REVISE
+    expected_dimension: convergence
+  - id: graph_identity_mismatch
+    expected_status: NOT_COMPUTABLE
+    expected_code: GRAPH_ID_MISMATCH
+  - id: correction_preserves_passing_dimensions
+    expected_preserve_minimum: 1
+    expected_change_minimum: 1
+  - id: correction_adapter_identity_mismatch
+    expected_status: INVALID
+    expected_error: graph identities differ
+invariants:
+  aggregate_score_hides_critical_failure: false
+  correction_changes_symbolic_intent: false
+  vision_model_required: false
+  generation_api_required: false
+  network_required: false

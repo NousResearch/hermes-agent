@@ -1,0 +1,35 @@
+suite: storyboard-state-propagation-v0.11
+runtime: standalone-hermes
+entrypoints:
+  propagate: scripts/propagate_graph_state.py
+  compare: scripts/compare_frame_state.py
+cases:
+  - id: valid_three_frame_transfer
+    expected_status: VALID
+    expectations:
+      graph_identity_preserved: true
+      residue_monotonic: true
+      ownership_changes_recorded: true
+      prohibited_resets: []
+      transition_count: 2
+  - id: reset_to_initial_without_permission
+    expected_status: INVALID
+    expected_error: prohibited reset
+  - id: residue_disappears
+    expected_compare_status: INVALID
+    expected_error: lost residue
+  - id: ownership_transfer
+    expected_delta_field: motif_ownership
+  - id: light_state_mutation
+    expected_delta_field: light_states
+  - id: convergence_site_change
+    expected_transition_record: convergence_lost
+  - id: insufficient_frames
+    expected_status: INVALID
+    expected_error: at least two frames are required
+privacy:
+  pattern_links_audience_facing: false
+  lexicon_links_audience_facing: false
+  model_api_required: false
+  forge_required: false
+  network_required: false

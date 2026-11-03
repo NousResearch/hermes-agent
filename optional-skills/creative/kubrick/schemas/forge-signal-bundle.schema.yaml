@@ -1,0 +1,130 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/forge-signal-bundle.schema.yaml
+title: Kubrick Forge Signal Bundle
+description: Deterministic multi-signal extraction from Continuity Forge outcomes. Observations only; Forge remains canonical.
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - bundle_id
+  - project_id
+  - source
+  - signals
+  - pattern_evidence
+  - authority
+  - validation
+properties:
+  schema_version: {const: "1.0.0"}
+  bundle_id: {type: string, minLength: 1}
+  project_id: {type: string, minLength: 1}
+  source:
+    type: object
+    additionalProperties: false
+    required: [kind, paths]
+    properties:
+      kind:
+        type: string
+        enum:
+          - ledger_diff
+          - revision_record
+          - saturation_report
+          - collision_report
+          - ingestion_receipt
+          - payoff_record
+          - mixed
+      paths:
+        type: array
+        minItems: 1
+        items: {type: string}
+      forge_document_key: {type: [string, "null"]}
+      forge_state_hash: {type: [string, "null"]}
+  signals:
+    type: object
+    additionalProperties: false
+    required:
+      - ledger_delta
+      - revision
+      - saturation
+      - collisions
+      - ingestion
+      - payoff
+    properties:
+      ledger_delta:
+        type: object
+        additionalProperties: false
+        properties:
+          motifs_added: {type: array, items: {type: string}}
+          motifs_removed: {type: array, items: {type: string}}
+          motifs_mutated: {type: array, items: {type: string}}
+          debt_delta: {type: [number, "null"]}
+          saturation_delta: {type: [number, "null"]}
+          revision_span: {type: [integer, "null"], minimum: 0}
+      revision:
+        type: object
+        additionalProperties: false
+        properties:
+          preserved: {type: array, items: {type: string}}
+          removed: {type: array, items: {type: string}}
+          weakened: {type: array, items: {type: string}}
+          strengthened: {type: array, items: {type: string}}
+          orphaned_setups: {type: array, items: {type: string}}
+          broken_payoffs: {type: array, items: {type: string}}
+          required_repairs: {type: array, items: {type: string}}
+      saturation:
+        type: object
+        additionalProperties: false
+        properties:
+          score: {type: [number, "null"], minimum: 0, maximum: 1}
+          trend: {enum: [rising, falling, stable, unknown]}
+          debt: {type: [number, "null"], minimum: 0}
+      collisions:
+        type: object
+        additionalProperties: false
+        properties:
+          count: {type: integer, minimum: 0}
+          types: {type: array, items: {type: string}}
+          pattern_ids: {type: array, items: {type: string}}
+      ingestion:
+        type: object
+        additionalProperties: false
+        properties:
+          status: {enum: [COMMITTED, REJECTED, PARTIAL, UNKNOWN, null]}
+          motif_identity_preserved: {type: [boolean, "null"]}
+          mutation_history_preserved: {type: [boolean, "null"]}
+          notes: {type: array, items: {type: string}}
+      payoff:
+        type: object
+        additionalProperties: false
+        properties:
+          realized: {type: array, items: {type: string}}
+          unresolved: {type: array, items: {type: string}}
+          failed: {type: array, items: {type: string}}
+  pattern_evidence:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [pattern_id, evidence_of_use, outcome_confidence]
+      properties:
+        pattern_id: {type: string, minLength: 1}
+        evidence_of_use: {type: array, minItems: 1, items: {type: string}}
+        source_projects: {type: array, items: {type: string}}
+        outcome_confidence: {type: number, minimum: 0, maximum: 1}
+        debt_contribution: {type: number, minimum: 0}
+        collision_count: {type: integer, minimum: 0}
+        payoff_status: {enum: [realized, unresolved, failed, unknown]}
+  authority:
+    type: object
+    additionalProperties: false
+    required: [state, forge_canonical, automatic_corpus_change_allowed]
+    properties:
+      state: {const: OBSERVATION}
+      forge_canonical: {const: true}
+      automatic_corpus_change_allowed: {const: false}
+  validation:
+    type: object
+    additionalProperties: false
+    required: [status, errors]
+    properties:
+      status: {enum: [VALID, INVALID, NOT_COMPUTABLE]}
+      errors: {type: array, items: {type: string}}

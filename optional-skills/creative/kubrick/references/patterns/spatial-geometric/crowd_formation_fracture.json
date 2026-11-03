@@ -1,0 +1,23 @@
+{
+  "pattern_id": "crowd_formation_fracture",
+  "title": "Crowd Formation / Fracture Reveals Agency",
+  "version": "0.11.3",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative choreography and crowd-scene analysis","title":"Formation, repetition, and break","date":"modern performance and cinema","cultural_context":"Group movement and visual organization"}],
+  "observed_structure": ["a group establishes a repeated formation or movement rule", "one body changes timing, direction, or spacing", "the deviation alters the group rather than remaining decorative"],
+  "dramatic_operations": ["make conformity visible", "reveal agency through deviation", "convert formation into conflict"],
+  "transformation_grammars": ["formation-to-fracture", "collective-to-individual-pressure"],
+  "cinematic_affordances": ["repeated body spacing", "one delayed or reversed movement", "wide frame preserving group consequence", "sound rhythm changing after deviation"],
+  "applicable_genres": ["drama", "satire", "thriller", "musical", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general group-formation structure; project context must identify the institution and stakes"],
+  "misuse_risks": ["crowd used as faceless texture", "perfect formation equated automatically with oppression", "deviation without group consequence"],
+  "mutation_requirements": {"required":true,"variables":["spacing","timing","direction","initiator","group response"]},
+  "transferable_structure": "a repeated group rule becomes visible when one participant deviates and forces the collective to respond",
+  "non_transferable_surface": "copying specific military, ritual, labor, or dance formations without contextual provenance",
+  "production_cost": {"location_dependency":0.4,"prop_dependency":0.2,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["egregore", "quaternity", "rhythm", "individuation"],
+  "confidence": 0.84
+}

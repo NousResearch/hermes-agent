@@ -1,0 +1,196 @@
+index_version: 0.11.5
+runtime: standalone-hermes
+registry: references/executable-corpus-registry.yaml
+retrieval_rules:
+  identify_dramatic_problem_first: true
+  require_observable_evidence: true
+  primary_limit: 1
+  supporting_limit: 2
+  prefer_process_over_icon: true
+  require_provenance: true
+  require_mutation: true
+  fail_closed: NOT_COMPUTABLE
+  minimum_threshold: 0.55
+by_dramatic_problem:
+  identity_dissolution_breakdown:
+    patterns:
+    - alchemical_nigredo_putrefaction
+    - alchemical_calcination_false_structure
+    - alchemical_dissolution_boundary_loss
+    - lynch_causal_discontinuity_residue
+  discernment_signal_from_noise:
+    patterns:
+    - alchemical_separation_signal_from_noise
+    - image_dialogue_counterpoint
+    - broken_symmetry_state_evidence
+  opposed_forces_third_state:
+    patterns:
+    - alchemical_conjunction_opposed_forces
+    - dual_light_conflicting_claims
+    - image_dialogue_counterpoint
+  iterative_refinement:
+    patterns:
+    - alchemical_distillation_iterative_refinement
+    - resnais_temporal_recurrence_substitution
+    - indian_tala_accent_displacement
+  embodied_consequence:
+    patterns:
+    - alchemical_coagulation_embodied_consequence
+    - object_residue_continuity_after_use
+    - material_repair_visible_scar
+    - costume_state_identity_migration
+  authority_transfer_and_vacancy:
+    patterns:
+    - kubrick_center_transfer_authority
+    - doorway_ownership_transfer
+    - interface_badge_authority_transfer
+    - negative_space_authority_vacancy
+  institutional_pressure:
+    patterns:
+    - corporate_grid_enclosure_compliance
+    - surveillance_distributed_gaze
+    - vertical_hierarchy_descent
+    - crowd_formation_fracture
+  memory_time_and_residue:
+    patterns:
+    - resnais_temporal_recurrence_substitution
+    - tarkovsky_material_memory_weathering
+    - object_residue_continuity_after_use
+    - reflection_substitution_ownership
+  sound_absence_and_distributed_agency:
+    patterns:
+    - sonic_motif_source_migration
+    - sonic_silence_withdrawal_revelation
+    - japanese_ma_active_interval
+    - indian_tala_accent_displacement
+  spatial_threshold_and_route_pressure:
+    patterns:
+    - labyrinth_route_pressure
+    - doorway_ownership_transfer
+    - vertical_hierarchy_descent
+    - occlusion_relational_denial
+  contemporary_status_and_template_systems:
+    patterns:
+    - interface_badge_authority_transfer
+    - meme_template_role_mutation
+    - corporate_grid_enclosure_compliance
+    - surveillance_distributed_gaze
+    - memetic_template_half_life
+    - platform_attention_economy_gaze
+  light_color_and_formal_state:
+    patterns:
+    - dual_light_conflicting_claims
+    - kubrick_red_culmination_state
+    - broken_symmetry_state_evidence
+    - negative_space_authority_vacancy
+  environment_and_world_agency:
+    patterns:
+    - environmental_response_world_agency
+    - tarkovsky_material_memory_weathering
+    - object_residue_continuity_after_use
+by_domain:
+  alchemical:
+  - alchemical_nigredo_putrefaction
+  - alchemical_calcination_false_structure
+  - alchemical_dissolution_boundary_loss
+  - alchemical_separation_signal_from_noise
+  - alchemical_conjunction_opposed_forces
+  - alchemical_distillation_iterative_refinement
+  - alchemical_coagulation_embodied_consequence
+  cinematic:
+  - kubrick_center_transfer_authority
+  - kubrick_red_culmination_state
+  - bresson_gesture_object_transfer
+  - tarkovsky_material_memory_weathering
+  - lynch_causal_discontinuity_residue
+  - resnais_temporal_recurrence_substitution
+  - soviet_montage_collision_thesis
+  - dual_light_conflicting_claims
+  - japanese_ma_active_interval
+  - environmental_response_world_agency
+  sound-rhythmic:
+  - sonic_motif_source_migration
+  - sonic_silence_withdrawal_revelation
+  - indian_tala_accent_displacement
+  spatial-geometric:
+  - labyrinth_route_pressure
+  - doorway_ownership_transfer
+  - vertical_hierarchy_descent
+  - crowd_formation_fracture
+  - occlusion_relational_denial
+  - broken_symmetry_state_evidence
+  - negative_space_authority_vacancy
+  semiotic:
+  - image_dialogue_counterpoint
+  - reflection_substitution_ownership
+  - object_residue_continuity_after_use
+  - material_repair_visible_scar
+  - costume_state_identity_migration
+  contemporary:
+  - interface_badge_authority_transfer
+  - corporate_grid_enclosure_compliance
+  - meme_template_role_mutation
+  - surveillance_distributed_gaze
+  - memetic_template_half_life
+  - platform_attention_economy_gaze
+strong_defaults:
+- alchemical_separation_signal_from_noise
+- alchemical_coagulation_embodied_consequence
+- kubrick_center_transfer_authority
+- bresson_gesture_object_transfer
+- tarkovsky_material_memory_weathering
+- sonic_silence_withdrawal_revelation
+- image_dialogue_counterpoint
+- environmental_response_world_agency
+- negative_space_authority_vacancy
+retrieval_scoring:
+  weights:
+    dramatic_fit: 0.24
+    character_fit: 0.1
+    cinematic_fit: 0.12
+    cultural_fit: 0.1
+    source_quality: 0.1
+    mutation_potential: 0.14
+    continuity_compatibility: 0.1
+    payoff_compatibility: 0.1
+  route_match_bonus: 0.08
+  strong_default_bonus: 0.03
+  minimum_threshold: 0.55
+  return_if_below: NOT_COMPUTABLE
+motif_collision_types:
+- REDUNDANT
+- CONTRADICTORY
+- CULTURALLY_INCOMPATIBLE
+- VISUALLY_CONFUSING
+- RHYTHMICALLY_OVERLAPPING
+- PAYOFF_COMPETITION
+project_symbolic_ledger_template:
+  governing_grammar: null
+  supporting_grammars: []
+  active_motifs: []
+  retired_motifs: []
+  prohibited_motifs: []
+  scene_usage: {}
+  shot_usage: {}
+  unresolved_payoffs: []
+  completed_payoffs: []
+  symbolic_debt: 0.0
+  saturation_score: 0.0
+  collisions: []
+  prohibited_cultural_scopes: []
+symbolic_budget_defaults:
+  project_density_target: 1
+  sequence_density_target: 2
+  maximum_active_motifs_per_scene: 3
+  maximum_symbolic_channels_per_beat: 2
+  explicitness_ceiling: peripheral
+  recurrence_spacing: at least one scene or significant mutation between recurrences
+  overload_failure: SYMBOLIC_OVERLOAD
+guards:
+  observed_form_first: true
+  mandatory_mutation: true
+  latent_operation_default: true
+  tradition_boundaries_required: true
+  symbolism_subordinate_to_causality: true
+  direct_film_imitation_prohibited: true
+  color_meaning_project_specific: true

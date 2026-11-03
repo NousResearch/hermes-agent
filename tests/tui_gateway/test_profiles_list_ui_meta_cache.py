@@ -63,3 +63,25 @@ def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     (assets / "avatar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
     assert _row()["has_avatar"] is True
+
+
+def test_avatar_rev_is_none_without_an_asset(home):
+    """No asset → no revision; clients keep whatever they have painted."""
+    assert _row()["has_avatar"] is False
+    assert _row()["avatar_rev"] is None
+
+
+def test_avatar_rev_moves_when_the_asset_is_replaced(home):
+    """The revision is live like ``has_avatar``: replacing the file — from another
+    desktop, the mobile app, or a plain drop-in — shows on the very next listing."""
+    import os
+
+    avatar = home / "profiles" / "bob" / "assets" / "avatar.png"
+    avatar.parent.mkdir(parents=True)
+    avatar.write_bytes(b"one")
+    os.utime(avatar, (1_000_000, 1_000_000))
+    assert _row()["avatar_rev"] == 1_000_000_000
+
+    avatar.write_bytes(b"two")
+    os.utime(avatar, (2_000_000, 2_000_000))
+    assert _row()["avatar_rev"] == 2_000_000_000

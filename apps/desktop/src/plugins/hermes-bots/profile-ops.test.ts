@@ -269,3 +269,90 @@ describe('roster avatar sync (#102978)', () => {
     expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
   })
 })
+
+describe('stale avatar refresh (#136826)', () => {
+  const row = (avatar_rev?: number) =>
+    ({
+      connectionId: 'local',
+      has_avatar: true,
+      name: 'researcher',
+      ...(avatar_rev === undefined ? {} : { avatar_rev }),
+      route: { connectionId: 'local', mode: 'local', profile: 'researcher', targetProfile: 'researcher' },
+      sourceScoped: true
+    }) as RosterRow
+
+  it('re-fetches once when the row revision differs from the cached copy', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,BBBB', found: true })
+
+    // A cached image painted before the avatar was replaced outside this window.
+    $botMeta.set({ 'local::researcher': { image: 'data:image/png;base64,OLD' } })
+
+    pullServerAvatars([row(111)])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(1))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($botMeta.get()['local::researcher']?.image).toBe('data:image/png;base64,BBBB')
+    expect($botMeta.get()['local::researcher']?.avatarRev).toBe(111)
+
+    // The matching revision holds across ticks — no per-tick re-probe.
+    pullServerAvatars([row(111)])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+
+    // A new revision (replaced elsewhere again) re-fetches exactly once more.
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,CCCC', found: true })
+    pullServerAvatars([row(222)])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(2))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($botMeta.get()['local::researcher']?.image).toBe('data:image/png;base64,CCCC')
+  })
+
+  it('keeps the legacy never-re-fetch behavior on gateways without avatar_rev', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,BBBB', found: true })
+    $botMeta.set({ 'local::researcher': { image: 'data:image/png;base64,OLD' } })
+
+    pullServerAvatars([row()])
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(hostMock.request).not.toHaveBeenCalled()
+    expect($botMeta.get()['local::researcher']?.image).toBe('data:image/png;base64,OLD')
+  })
+
+  it('a face-only probe with a recorded revision does not re-probe every tick', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    faceOnlyMock.mockReturnValue(true)
+    hostMock.request.mockResolvedValue({ data: 'data:image/png;base64,AAAA', found: true })
+
+    pullServerAvatars([row(7)])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(1))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The raster stays unparked, but the revision is recorded so the gate holds.
+    expect($botMeta.get()['local::researcher']?.image).toBeUndefined()
+    expect($botMeta.get()['local::researcher']?.avatarRev).toBe(7)
+
+    pullServerAvatars([row(7)])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+  })
+
+  it('a vanished asset records the revision instead of re-probing every tick', async () => {
+    const { pullServerAvatars } = await import('./profile-ops')
+    hostMock.request.mockResolvedValue({ found: false })
+    $botMeta.set({ 'local::researcher': { image: 'data:image/png;base64,OLD' } })
+
+    pullServerAvatars([row(111)])
+    await vi.waitFor(() => expect(hostMock.request).toHaveBeenCalledTimes(1))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The cached copy keeps painting; the revision stops the per-tick probe.
+    expect($botMeta.get()['local::researcher']?.image).toBe('data:image/png;base64,OLD')
+    expect($botMeta.get()['local::researcher']?.avatarRev).toBe(111)
+
+    pullServerAvatars([row(111)])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(hostMock.request).toHaveBeenCalledTimes(1)
+  })
+})

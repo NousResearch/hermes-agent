@@ -278,6 +278,19 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
+    def _avatar_rev() -> int | None:
+        # Live revision for the avatar asset (mtime in ms), same files get_asset serves.
+        # A client that already cached the image compares this against the revision its
+        # copy was painted at, so an avatar replaced OUTSIDE this window (another desktop,
+        # the mobile app, a dropped-in file) is re-fetched instead of painted stale
+        # forever (#136826). Computed live like has_avatar — never cached — and None
+        # when no asset exists or the stat fails.
+        stats = [(profile_dir / "assets" / f"avatar.{e}").stat()
+                 for e in _ASSET_EXTS if (profile_dir / "assets" / f"avatar.{e}").is_file()]
+        return int(max(s.st_mtime for s in stats) * 1000) if stats else None
+
+    row["avatar_rev"] = _try(_avatar_rev, None)
+
 
 @_profile_handler("profiles.list", 5061)
 def _(rid, params: dict) -> dict:

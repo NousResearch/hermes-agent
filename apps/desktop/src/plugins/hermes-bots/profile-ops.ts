@@ -163,18 +163,34 @@ interface ProfilesGetAssetResult {
 }
 
 /** Fetch server-side avatars for roster rows flagged has_avatar when the
- *  local cache doesn't already have an image for them. Fire-and-forget. */
+ *  local cache doesn't already have an image for them — or when the row's
+ *  `avatar_rev` differs from the revision the cached copy was painted at,
+ *  which means the avatar was replaced outside this window (another desktop,
+ *  the mobile app, a dropped-in file) and the cache is stale (#136826).
+ *  Fire-and-forget. */
 export function pullServerAvatars(roster: RosterRow[]) {
   pushLocalAvatars(roster)
 
   for (const bot of roster) {
     const key = botMetaKey(bot)
+    const mine = $botMeta.get()[key] || {}
 
-    if (!bot.has_avatar || avatarFetchInflight.has(key) || avatarFaceOnly.has(key)) {
+    if (!bot.has_avatar || avatarFetchInflight.has(key)) {
       continue
     }
 
-    if ($botMeta.get()[key]?.image) {
+    // Gateways that report `avatar_rev` decide by revision: a matching value
+    // means the painted copy (image, or a face-only probe) is current, and
+    // this holds across ticks. Gateways WITHOUT the field keep today's
+    // behavior — a cached image is never re-fetched, so nothing re-probes
+    // on every tick there.
+    const rev = typeof bot.avatar_rev === 'number' ? bot.avatar_rev : null
+
+    if (rev === null && (mine.image || avatarFaceOnly.has(key))) {
+      continue
+    }
+
+    if (rev !== null && mine.avatarRev === rev) {
       continue
     }
 
@@ -187,16 +203,27 @@ export function pullServerAvatars(roster: RosterRow[]) {
 
     assetRequest
       .then(res => {
-        if (res?.found && res.data) {
-          const current = $botMeta.get()
-          const mine = current[key] || {}
+        const current = $botMeta.get()
+        const mine = current[key] || {}
 
+        if (res?.found && res.data) {
           // A 160px raster of the vector face is only for inter-agent
           // notices. Do not park it on the roster or the live face dies —
           // and remember the answer, or the empty image slot re-fetches the
           // same raster on every roster tick.
           if (isBackfilledFacePng(res.data) && mine.imageKind !== 'photo' && !mine.pet) {
             avatarFaceOnly.add(key)
+
+            if (rev !== null) {
+              $botMeta.set({
+                ...current,
+                [key]: {
+                  ...mine,
+                  avatarRev: rev
+                }
+              })
+              persistBotMetaSnapshot($botMeta.get(), Boolean(bot.sourceScoped))
+            }
 
             return
           }
@@ -205,7 +232,23 @@ export function pullServerAvatars(roster: RosterRow[]) {
             ...current,
             [key]: {
               ...mine,
+              avatarRev: rev ?? undefined,
               image: res.data
+            }
+          })
+          persistBotMetaSnapshot($botMeta.get(), Boolean(bot.sourceScoped))
+
+          return
+        }
+
+        // Asset gone or unreadable: keep painting the cached copy, but record
+        // the revision so the changed gate stops re-probing every tick.
+        if (rev !== null) {
+          $botMeta.set({
+            ...current,
+            [key]: {
+              ...mine,
+              avatarRev: rev
             }
           })
           persistBotMetaSnapshot($botMeta.get(), Boolean(bot.sourceScoped))

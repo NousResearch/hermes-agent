@@ -165,11 +165,13 @@ export function clearBotAttention(key: string) {
   $botAttention.set(next)
 }
 
-/** The persisted record adds two keys the shared domain model deliberately
- *  omits: `chat`, the dead canonical-chat pointer that mergeServerMeta strips
- *  on sight, and `pet`, the extracted pet icon that stays local and is never
- *  sent to the server. */
+/** The persisted record adds keys the shared domain model deliberately
+ * omits: `chat`, the dead canonical-chat pointer that mergeServerMeta strips
+ * on sight, `pet`, the extracted pet icon that stays local and is never
+ * sent to the server, and `avatarRev`, the server `avatar_rev` the cached
+ * `image` was fetched at (local-only, like the image itself — #136826). */
 interface StoredBotMeta extends BotMeta {
+  avatarRev?: number
   chat?: unknown
   pet?: unknown
 }
@@ -374,7 +376,7 @@ async function persistBotMetaPatch(
   route: null | ProfileRoute,
   patch: StoredBotMeta
 ): Promise<null | ProfilesConfigureResult> {
-  const { image: _image, pet: _pet, ...fields } = patch
+  const { image: _image, pet: _pet, avatarRev: _avatarRev, ...fields } = patch
 
   for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
     const server = await readServerBotMeta(bot, name, route)

@@ -191,3 +191,27 @@ def test_skips_own_authored_comments_without_env_profile(worker_home, monkeypatc
     _unthrottle()
     assert kt.inject_new_comments_from_env(agent) is False
     assert agent.steers == []
+
+
+def test_live_note_surfaces_comment_image_path(worker_home, monkeypatch):
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="image note")
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_PROFILE", "worker-bot")
+    agent = FakeAgent()
+    _unthrottle()
+    kt.inject_new_comments_from_env(agent)  # seed
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, tid, author="desktop", body="see this ![shot (1).png](</tmp/att/shot (1).png>)")
+    finally:
+        conn.close()
+
+    _unthrottle()
+    assert kt.inject_new_comments_from_env(agent) is True
+    assert "Image attached: `/tmp/att/shot (1).png` — view it with vision_analyze" in agent.steers[0]

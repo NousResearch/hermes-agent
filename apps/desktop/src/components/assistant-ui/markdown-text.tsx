@@ -12,6 +12,7 @@ import type { code as streamdownCode } from '@streamdown/code'
 import {
   Children,
   type ComponentProps,
+  type ComponentType,
   isValidElement,
   memo,
   type ReactNode,
@@ -485,6 +486,10 @@ interface MarkdownTextSurfaceProps {
   disableArtifacts?: boolean
   /** Foreign history must not load images or mount live transcript directives. */
   previewOnly?: boolean
+  /** Replaces the image component for a surface whose images live where the
+   *  active gateway can't read them (a plugin's own files). It receives the
+   *  default as `fallback` for the sources it doesn't claim. Keep it stable. */
+  img?: ComponentType<ComponentProps<'img'> & { fallback: ComponentType<ComponentProps<'img'>> }>
   /** Re-render the direct text nodes of paragraph-level containers (p / li /
    *  td) — a transcript surface styles its own inline tokens (a Bot Mode room's
    *  routed @mentions) without owning the Markdown pipeline. Nested inline
@@ -628,6 +633,7 @@ function MarkdownTextSurface({
   decorateText,
   defer,
   disableArtifacts,
+  img: Img,
   previewOnly,
   scratchpad,
   textDirection
@@ -743,7 +749,11 @@ function MarkdownTextSurface({
             {decorateText ? decorateText(children) : children}
           </td>
         ),
-        img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
+        img: previewOnly
+          ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span>
+          : Img
+            ? (props: ComponentProps<'img'>) => <Img {...props} fallback={MarkdownImage} />
+            : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
         // html/svg/code fences promote to an artifact card that opens in the
         // right rail; every other language falls back to the Shiki-highlighted
@@ -766,7 +776,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [boxDir, decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [boxDir, decorateText, disableArtifacts, Img, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -834,13 +844,15 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * that is a broken image at best and a same-path local file at worst. */
 export function MessageTextContent({
   decorateText,
+  img,
   media = true,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText' | 'img'> & { media?: boolean; text: string }) {
   return (
     <MarkdownTextContent
       decorateText={decorateText}
       disableArtifacts
+      img={img}
       isRunning={false}
       text={media ? renderMediaTags(text) : text}
     />

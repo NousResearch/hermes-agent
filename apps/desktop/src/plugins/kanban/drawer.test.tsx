@@ -216,8 +216,8 @@ describe('task attachment compatibility', () => {
     const upload = await screen.findByRole('button', { name: en.uploadAttachment })
     expect(screen.getByText(en.noAttachments)).toBeTruthy()
 
-    // The modal portals out of the render container; query inside the dialog.
-    const input = screen.getByRole('dialog').querySelector<HTMLInputElement>('input[type="file"]')!
+    // The sidebar's own picker sits beside its button (the comment composer has another).
+    const input = upload.parentElement!.querySelector<HTMLInputElement>('input[type="file"]')!
     const click = vi.spyOn(input, 'click')
     fireEvent.click(upload)
     expect(click).toHaveBeenCalledOnce()

@@ -1454,6 +1454,23 @@ export function overlayConcurrentMessageChanges(
     const text = textWithoutReferenceLines(chatMessageText(current)).trim()
     const lastUser = overlaid.findLastIndex(message => message.role === 'user')
     const liveRows = transcriptRowIds(current)
+    // A still-pending row is the turn's stream target: the committed row may
+    // retire it only when it already spells out everything the live row shows.
+    const pending = current.pending === true
+
+    // Coverage is one-directional for a pending row — the committed text must
+    // carry the live text, never the reverse. Folding a row that streamed past
+    // the fold would throw away text that never reached disk, and a row id
+    // alone proves only that the row exists, not that this text reached it.
+    const coversText = (full: string): boolean => {
+      const candidate = textWithoutReferenceLines(full).trim()
+
+      return (
+        candidate === text ||
+        isStrictAnswerTextExtension(candidate, text) ||
+        (!pending && isStrictAnswerTextExtension(text, candidate))
+      )
+    }
 
     return (
       Boolean(text) &&
@@ -1463,16 +1480,17 @@ export function overlayConcurrentMessageChanges(
           message.role !== 'assistant' ||
           baselineById.has(message.id) ||
           isLiveTailRow(message) ||
-          (current.pending === true && !carriesToolOccurrences(message, current))
+          (pending && !carriesToolOccurrences(message, current))
         ) {
           return false
         }
 
         // The completion bound the reply to its stored row. A tool turn's
         // history folds that row into the bubble that opened the turn, whose
-        // text also carries the narration, so match the row, not the words.
+        // text also carries the narration, so match the row, not the words —
+        // but a pending row still has to prove its text reached that row.
         if (liveRows.length && transcriptRowIds(message).some(id => liveRows.includes(id))) {
-          return true
+          return !pending || coversText(chatMessageText(message)) || coversText(replyAfterLastTool(message))
         }
 
         // The committed row and the settled live row capture the same reply
@@ -1481,15 +1499,7 @@ export function overlayConcurrentMessageChanges(
         // text-extension of the other, the same trade
         // removeRepresentedLocalLiveProjection made in 2494b95929. A folded
         // tool turn is compared by its answer, the text after its last tool.
-        return [chatMessageText(message), replyAfterLastTool(message)].some(full => {
-          const candidate = textWithoutReferenceLines(full).trim()
-
-          return (
-            candidate === text ||
-            isStrictAnswerTextExtension(candidate, text) ||
-            isStrictAnswerTextExtension(text, candidate)
-          )
-        })
+        return [chatMessageText(message), replyAfterLastTool(message)].some(coversText)
       })
     )
   }

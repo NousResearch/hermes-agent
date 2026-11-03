@@ -45,6 +45,7 @@ def _probe_root(tmp_path):
     (scripts / "ci").mkdir(parents=True, exist_ok=True)
     real = Path(__file__).resolve().parents[2] / "scripts"
     shutil.copy2(real / "run_tests_parallel.py", scripts)
+    shutil.copy2(real / "run_tests_launch.py", scripts)
     shutil.copy2(real / "run_tests_fork_child.py", scripts)
     # The runner shares the platforms() spec resolver with the CI lane selector.
     shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
@@ -943,13 +944,14 @@ def test_fork_server_exit_status_survives_concurrent_starts() -> None:
     import multiprocessing
     from concurrent.futures import ThreadPoolExecutor
 
-    rtp = _load_runner("rtp_forkstatus")
+    from scripts import run_tests_launch
+
     ctx = multiprocessing.get_context("forkserver")
 
     def one(_):
         proc = ctx.Process(target=sys.exit, args=(0,))
-        rtp._start_forked(proc)
-        return rtp._forked_exit_status(proc, 60)
+        run_tests_launch.start_forked(proc)
+        return run_tests_launch.forked_exit_status(proc, 60)
 
     # Unlocked, about 1 status in 400 comes back 255; 2000 children take ~3s.
     with ThreadPoolExecutor(16) as pool:

@@ -1,4 +1,4 @@
-"""Child side of run_tests_parallel.py's fork server (HERMES_TEST_FORKSERVER=1, Linux).
+"""Child side of the test runner's fork server (run_tests_launch.py; HERMES_TEST_FORKSERVER=1, Linux).
 
 A fresh ``python -m pytest <file>`` spends about half a second starting the
 interpreter and importing pytest and the third-party libraries every test file

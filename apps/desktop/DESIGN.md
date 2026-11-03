@@ -332,11 +332,13 @@ Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
 status dots after 400ms, without changing tab widths. Hints follow the same
 binding and hovered/focused-zone resolver as the number shortcuts.
 
-Tab close buttons fade the label with a content mask, not a painted gradient.
+A closeable tab reserves a close lane after its label (`--pane-tab-close-width`),
+at rest as well as on hover: the ✕ never covers text, long labels ellipsize
+before the lane, and revealing the ✕ shifts nothing.
 The tab reads its surface token directly so glass tint is painted only once.
 Close glyphs keep a 24px hit area, including session tabs wrapped in context menus.
 `PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
-disable that width or the label mask.
+disable that width or the close lane.
 
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.

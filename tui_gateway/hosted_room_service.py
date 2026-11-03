@@ -165,9 +165,10 @@ class HostedRoomService:
         # Duck-typed transports of dropped routes, by grant digest, for this process's owed revokes;
         # an HTTP RoomLink revoke always goes through a fresh short-timeout client.
         self._revoke_clients: dict[str, Any] = {}
-        # Serializes a peer route's publication with Disband, on both surfaces: a route is published
-        # only while its room is live, or its grant's revoke is owed.
+        # Lock order: peer_route_lock -> _policy_lock. Route sections only compare/persist/publish;
+        # never call Stop, recovery or the network while holding either lock.
         self.peer_route_lock = threading.Lock()
+        self._disbanding_rooms: set[str] = set()
         self._prepare_stalls = prepare_stall.PrepareStallTracker()
         self._router_calls = router_call.RouterCalls(self.db_path)
         try:
@@ -472,12 +473,41 @@ class HostedRoomService:
             else:
                 self._pending_actions[(room_id, member_id)] = {**action, "member_id": member_id}
 
+    @contextlib.contextmanager
+    def disbanding(self, room_id: str):
+        """Fence new routes while Stop runs outside the publication and policy locks."""
+        with self.peer_route_lock:
+            if room_id in self._disbanding_rooms:
+                raise RuntimeError("room is already disbanding; retry deletion")
+            self._disbanding_rooms.add(room_id)
+        try:
+            yield
+        finally:
+            with self.peer_route_lock:
+                self._disbanding_rooms.remove(room_id)
+
+    def route_authority(self, room_id: str) -> tuple[str, int]:
+        """Check publication authority under peer_route_lock, including an in-progress Disband."""
+        if room_id in self._disbanding_rooms:
+            from hermes_state_runtime import RuntimeStoreError
+            # Stop can still fail: this temporary refusal must not owe a surviving route's revoke.
+            raise RuntimeStoreError("room_disbanding_retry")
+        return self._owned_authority(room_id)
+
     def _rotate_route_grant(
         self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None = None,
         previous: str | None = None) -> None:
         """Persist a target-refreshed scoped grant before publishing it live. A renewal of
         ``previous`` is published only while the route still holds that grant: a re-seat that
         landed meanwhile stays the route's, and the renewal serves only the turn that asked."""
+        with self.peer_route_lock:
+            self.route_authority(room_id)
+            self._rotate_live_route_grant(room_id, member_id, grant, catalog, previous)
+
+    def _rotate_live_route_grant(
+        self, room_id: str, member_id: str, grant: str, catalog: GatewayRoomCatalog | None,
+        previous: str | None) -> None:
+        """Compare, persist and publish while registration and Disband are excluded."""
         key = (room_id, member_id)
         route = self.peer_routes.get(key)
         if route is None:
@@ -810,15 +840,16 @@ class HostedRoomService:
             for key in [key for key, action in self._pending_actions.items() if key[0] == room_id
                         and (action.get("task_id"), action.get("execution_generation")) in stopped]:
                 self._pending_actions.pop(key, None)
-            for task in tasks.values():
-                if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
-                    unconfirmed += 1
-                    continue
-                own_cancel_id = (
-                    task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
-                result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
-                if result["status"] == "stopping" and not self._member_is_peer(room_id, _member_of(task)):
-                    pending += 1
+        # Stopping a member on another gateway waits on the network: never under the policy lock.
+        for task in tasks.values():
+            if task["status"] == "deferred" and not self._stop_deferred_peer(room_id, task):
+                unconfirmed += 1
+                continue
+            own_cancel_id = (
+                task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
+            result = self.runtime.cancel(task["identity"], cancel_id=own_cancel_id or cancel_id)
+            if result["status"] == "stopping" and not self._member_is_peer(room_id, _member_of(task)):
+                pending += 1
         if require_acknowledged and pending:
             raise RuntimeError("room work is still stopping; retry deletion after Stop completes")
         self.runtime.wakeup()

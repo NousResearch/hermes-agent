@@ -668,6 +668,21 @@ def _is_untyped_scaffold_notice(message) -> bool:
     return isinstance(content, str) and content.lstrip().startswith("[System:")
 
 
+def _is_intentional_silence_row(message) -> bool:
+    """A completed assistant turn whose whole reply is a silence marker (``[SILENT]``, ``NO_REPLY``, ...).
+
+    The gateway suppresses these at delivery and keeps the row only for role alternation, so live
+    chat never shows them; a transcript reload must not resurrect them as bubbles either. Rows that
+    carry tool calls or an explicit ``display_kind`` are left alone.
+    """
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return False
+    if message.get("tool_calls") or message.get("display_kind"):
+        return False
+    from gateway.response_filters import is_intentional_silence_response
+    return is_intentional_silence_response(message.get("content"))
+
+
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
     """Replace compaction summaries with their display-only projection and hide untyped
     gateway-scaffold notices.
@@ -710,7 +725,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             message.get("role"), message.get("content"))
         if failed_turn:
             message = {**message, "display_kind": failed_turn}
-        if _is_untyped_scaffold_notice(message):
+        if _is_untyped_scaffold_notice(message) or _is_intentional_silence_row(message):
             projected = message.copy()
             projected["display_kind"] = "hidden"
             projected_messages.append(projected)

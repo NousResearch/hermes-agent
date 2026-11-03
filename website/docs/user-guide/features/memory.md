@@ -328,17 +328,18 @@ for the configuration details.
 
 ## Controlling memory writes (`write_approval`)
 
-By default the agent saves memory freely — including from the background
-self-improvement review that runs after a turn. If you'd rather approve saves
-first, set `memory.write_approval: true`. It's a simple on/off gate applied to
-**both** foreground turns and the background review:
+By default the agent can add built-in memory without approval, including from
+the background self-improvement review that runs after a turn. To review writes
+through the built-in `memory` tool to `MEMORY.md` and `USER.md`, set
+`memory.write_approval: true`. This gate applies to **both** foreground turns
+and the background review; it is not a global external-provider write gate:
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
-| `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
+| `false` (default) | The built-in approval gate is off. Background-review `patch` and `remove` operations still stage for review, as described below. |
+| `true` | Require approval before built-in `memory` tool mutations are saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
-> To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
+> To turn off both built-in memory stores (not external-provider persistence), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
 Review staged writes from the CLI or any messaging platform:
 
@@ -349,9 +350,28 @@ Review staged writes from the CLI or any messaging platform:
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 
-This is the answer to "the agent saved a wrong assumption about me": set
-`write_approval: true`, and every save — especially the unprompted background
-ones — waits for your yes/no before it ever enters your profile.
+With `write_approval: true`, built-in tool writes wait for approval. After a
+successful built-in write, Hermes notifies the external provider, which may
+mirror the committed change. Failed, denied, or still-staged writes do not
+trigger that mirror. Local success does not guarantee remote success.
+
+External providers also have separate persistence paths: automatic conversation
+uploads, session commits/extraction and pending-session recovery, plus explicit
+provider tools. These do **not** become approval-only merely because
+`memory.write_approval` is on. For example, with OpenViking selected and its
+normal primary-conversation capture enabled, a built-in write may be waiting in
+`/memory pending` while conversation uploads and extraction continue. Explicit
+`viking_remember`, `viking_forget`, and `viking_add_resource` calls use their own
+tool and server access checks, not this built-in staging queue.
+
+OpenViking skips automatic capture, lifecycle commits/recovery and native memory
+mirroring in `cron`, `subagent`, and `flush` contexts when the host supplies that
+context. That restriction is separate from whether provider tools are exposed
+and authorized in the session; it does not itself disable explicit writes.
+See the plugin's [write and recovery guidance](https://github.com/volcengine/OpenViking/blob/main/examples/hermes-plugin/CONFIGURATION.md#memory-writes-and-deletes)
+for those paths and their version limits. A submitted capture or accepted
+extraction commit is not proof that a particular memory record was created or
+replaced; verify the exact record through an authorized read after extraction.
 
 A staged `patch` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.

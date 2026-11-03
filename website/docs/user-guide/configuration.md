@@ -889,10 +889,18 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
-  write_approval: false     # true = require approval before any memory write
+  write_approval: false     # true = require approval for built-in memory tool writes
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, writes through the built-in `memory` tool to `MEMORY.md` and `USER.md` need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+
+This is not a global external-store freeze. A successful built-in write can be
+mirrored to the configured provider after the local write; failed or still-staged
+writes are not mirrored. Provider lifecycle uploads, commits/extraction and
+recovery, and explicit provider tools have separate controls and access checks.
+For example, turning this gate on with OpenViking selected does not stop normal
+primary-conversation capture or route `viking_remember` through `/memory pending`.
+See the [OpenViking configuration guide](https://github.com/volcengine/OpenViking/blob/main/examples/hermes-plugin/CONFIGURATION.md#memory-writes-and-deletes).
 
 ## Context File Truncation
 

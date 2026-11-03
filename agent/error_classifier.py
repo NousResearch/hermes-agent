@@ -342,6 +342,15 @@ _PARAM_REJECTION_WORDS = ("not supported", "unsupported", "unknown", "unrecogniz
 # Anthropic thinking-block 400 wordings (see _provider_special_cases).
 _THINKING_MUTATION_WORDS = ("signature", "cannot be modified", "must remain as they were")
 
+
+def _is_anthropic_thinking_rejection(msg: str) -> bool:
+    """A thinking block the upstream will not verify: a signature broken by transcript mutation, or a
+    ``redacted_thinking`` blob it cannot open (another model's sealed reasoning after a /model switch or
+    fallback: ``Invalid `data` in `redacted_thinking` block``). Both heal by stripping the replayed blocks."""
+    return "thinking" in msg and (
+        any(p in msg for p in _THINKING_MUTATION_WORDS) or ("redacted_thinking" in msg and "invalid" in msg))
+
+
 # Local MoA streaming adapter-shape bugs (see _moa_special_cases).
 _MOA_ADAPTER_SHAPE_BUGS = (
     "'types.SimpleNamespace' object is not iterable", "'types.SimpleNamespace' object has no attribute 'index'",
@@ -895,9 +904,9 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # strips Anthropic thinking blocks and resends the same encrypted item forever.
     if status == 400 and (c.code == "thinking_signature_invalid" or "thinking_signature_invalid" in msg):
         return _V_INVALID_ENCRYPTED
-    # Anthropic thinking-block 400s (signature mismatch after transcript
-    # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
-    if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
+    # Anthropic thinking-block 400s (signature mismatch after transcript mutation, or a sealed blob
+    # the upstream cannot open). Not gated on provider — OpenRouter proxies Anthropic errors.
+    if status == 400 and _is_anthropic_thinking_rejection(msg):
         return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
@@ -1023,7 +1032,7 @@ def classify_api_error(
     The credential is never included in the returned context."""
     from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
-    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
+    # Some SDK RateLimitErrors (OpenAI-compatible relays) may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
         status_code = 429
     body = _extract_error_body(error)

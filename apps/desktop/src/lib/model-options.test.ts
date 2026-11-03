@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getGlobalModelOptions } from '@/hermes'
 
 import {
+  cachedProfileModelOptions,
   catalogProviderMatches,
   customDefaultSupersedesPick,
   moaPickRemoved,
@@ -188,6 +189,43 @@ describe('requestModelOptions', () => {
 
     await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toBe(ownerPayload)
     expect(getGlobalModelOptions).not.toHaveBeenCalled()
+  })
+})
+
+describe('cachedProfileModelOptions', () => {
+  const row = (slug: string, models: string[], isCurrent = false) => ({ is_current: isCurrent, models, name: slug, slug })
+
+  it('seeds a cold session from the newest catalog of the same profile, without its session pick', () => {
+    const client = new QueryClient()
+    vi.useFakeTimers()
+
+    try {
+      vi.setSystemTime(1_000)
+      client.setQueryData(modelOptionsQueryKey('default', 'old'), { providers: [row('openai', ['gpt-old'])] })
+      vi.setSystemTime(2_000)
+      client.setQueryData(modelOptionsQueryKey('default', 'recent'), {
+        model: 'gpt-new',
+        provider: 'openai',
+        providers: [row('openai', ['gpt-new'], true)]
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(cachedProfileModelOptions(client, 'default')).toEqual({
+      providers: [{ models: ['gpt-new'], name: 'openai', slug: 'openai' }]
+    })
+  })
+
+  it('never borrows another profile or registry connection catalog', () => {
+    const client = new QueryClient()
+
+    client.setQueryData(modelOptionsQueryKey('compass', 'session-1'), { providers: [row('a', ['a/model'])] })
+    client.setQueryData(modelOptionsQueryKey('default', 'session-1', 'source-b'), { providers: [row('b', ['b/m'])] })
+
+    expect(cachedProfileModelOptions(client, 'default')).toBeUndefined()
+    expect(cachedProfileModelOptions(client, 'default', 'source-a')).toBeUndefined()
+    expect(cachedProfileModelOptions(client, 'default', 'source-b')?.providers[0]?.slug).toBe('b')
   })
 })
 

@@ -1,6 +1,6 @@
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -14,7 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, Search, X } from '@/lib/icons'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { cachedProfileModelOptions, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import { confirm } from '@/store/confirm'
@@ -83,8 +83,11 @@ export function ModelVisibilityDialog({
   const collapsedProviders = useStore($collapsedProviders)
   const customModels = useStore($customModels)
 
+  const queryClient = useQueryClient()
+
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    placeholderData: () => cachedProfileModelOptions(queryClient, profile, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway: gw, profile, request: ownerModelOptionsRequest(gw, sessionId), sessionId }),
     enabled: open

@@ -1,4 +1,5 @@
 import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { QueryClient } from '@tanstack/react-query'
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
@@ -126,6 +127,31 @@ export function modelOptionsQueryKey(
   const ownerKey = (ownerConnectionId ?? '').trim()
 
   return ['model-options', profileKey, sessionId || 'global', ...(ownerKey ? ['owner', ownerKey] : [])] as const
+}
+
+/** Placeholder for a catalog query that has no data yet. The key carries the session
+ *  id, so every new session starts cold while the backend rebuild takes seconds; seed
+ *  it with the newest catalog the same profile + owner already holds. The real fetch
+ *  still runs and replaces it. The session-specific selection (`model`, `provider`,
+ *  `is_current`) is dropped so another session's pick never paints here. */
+export function cachedProfileModelOptions(
+  client: QueryClient,
+  profile: null | string | undefined,
+  ownerConnectionId?: null | string
+): ModelOptionsResult | undefined {
+  const [, profileKey, , ...ownerTail] = modelOptionsQueryKey(profile, null, ownerConnectionId)
+  let newest: { at: number; data: ModelOptionsResult } | undefined
+
+  for (const query of client.getQueryCache().findAll({ queryKey: ['model-options', profileKey] })) {
+    const data = query.state.data as ModelOptionsResult | undefined
+    const sameOwner = JSON.stringify(query.queryKey.slice(3)) === JSON.stringify(ownerTail)
+
+    if (sameOwner && data?.providers?.length && (!newest || query.state.dataUpdatedAt > newest.at)) {
+      newest = { at: query.state.dataUpdatedAt, data }
+    }
+  }
+
+  return newest && { providers: newest.data.providers.map(({ is_current: _isCurrent, ...row }) => row) }
 }
 
 function hasSelectableModels(options: ModelOptionsResult | null | undefined): boolean {

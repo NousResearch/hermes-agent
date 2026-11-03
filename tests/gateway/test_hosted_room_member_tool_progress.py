@@ -101,6 +101,6 @@ def test_groups_state_names_the_tool_a_member_transport_reports(tmp_path: Path):
         service.rpc.on_terminal({"status": "settled", "text": "Build logs are clean."})
         wait_until(lambda: scout_activity() == {}, timeout=5)
         from tui_gateway.hosted_room_member_activity import task_progress
-        assert task_progress("room-1", service.rpc.task.task_id) == {}
+        assert task_progress("room-1", service.rpc.task.task_id, 1) == {}
     finally:
         service.stop(timeout=5)

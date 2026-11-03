@@ -113,7 +113,7 @@ class HostedRoomRuntime:
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
-        task_progress: Callable[[str, str, Mapping[str, Any]], None] | None = None,
+        task_progress: Callable[[str, str, int, Mapping[str, Any]], None] | None = None,
         clock: Callable[[], float] = time.time,
         lease_ttl_seconds: float = 30.0, poll_interval_seconds: float = 5.0,
         active_poll_interval_seconds: float = 0.25, turn_timeout_seconds: float = 1830.0,
@@ -410,7 +410,8 @@ class HostedRoomRuntime:
         self, task: Mapping[str, Any], *, session_id: str, info: Mapping[str, Any]) -> None:
         if self.task_progress is not None:
             # The member's current tool rides the same info poll as its pending approval.
-            self.task_progress(task["identity"].room_id, task["identity"].task_id, info)
+            self.task_progress(
+                task["identity"].room_id, task["identity"].task_id, int(task["execution_generation"]), info)
         if self.pending_action is None:
             return
         approval, action = info.get("pending_approval") or info.get("approval"), None

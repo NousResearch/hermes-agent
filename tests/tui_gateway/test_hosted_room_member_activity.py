@@ -78,7 +78,8 @@ def test_status_names_the_member_answering_while_its_turn_runs(tmp_path: Path):
         # The member's own session frames say which tool it is in, and that it is still making progress.
         [task] = driver.list_tasks(service.db_path, room_id="room-1")
         sessions = {"member-sid": {"_hosted_room_task": {
-            "room_id": "room-1", "task_id": task["identity"].task_id, "member_id": "ops"}}}
+            "room_id": "room-1", "task_id": task["identity"].task_id, "member_id": "ops",
+            "execution_generation": task["execution_generation"]}}}
 
         def frame(kind: str) -> dict:
             return {"method": "event", "params": {

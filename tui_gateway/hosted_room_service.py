@@ -59,7 +59,7 @@ def _member_activity(task: Mapping[str, Any]) -> dict[str, Any]:
         row["round_index"] = round_index
     if task.get("started_at") is not None:
         row["started_at"] = task["started_at"]
-    return {**row, **task_progress(identity.room_id, identity.task_id)}
+    return {**row, **task_progress(identity.room_id, identity.task_id, int(task["execution_generation"]))}
 
 
 def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
@@ -540,7 +540,7 @@ class HostedRoomService:
         stalls.clear(binding.room_id)
 
     def publish_terminal(self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> None:
-        forget_task_progress(binding.room_id, task["identity"].task_id)
+        forget_task_progress(binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
         self._prepare_tracked(binding)
         self.runtime.wakeup()
 
@@ -616,7 +616,7 @@ class HostedRoomService:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
         # Retry keeps the task id: drop the old attempt's tool and last-frame time before the new attempt can
         # run, or the room reads the fresh retry as stalled on the old attempt's progress_at.
-        forget_task_progress(room_id, task_id)
+        forget_task_progress(room_id, task_id, int(task["execution_generation"]))
         return self.runtime.retry_indeterminate(
             task["identity"], execution_generation=task["execution_generation"])
 

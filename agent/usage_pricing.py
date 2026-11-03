@@ -531,11 +531,22 @@ def _pricing_entry_from_metadata(
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        if value is None or value < 0:
+            # Router pseudo-models (openrouter/auto, openrouter/fusion,
+            # nvidia/switchyard, ...) publish a ``-1`` sentinel meaning "billed at
+            # whichever model the router picks, not knowable up front". Treating
+            # -1/token as a rate bills about -$1 per token, so a single session
+            # books five-figure negative spend and poisons every total it reaches.
+            # Refuse to price instead: the caller reports status "unknown" and
+            # stores no cost, which under-counts but never corrupts.
+            return None
+        return value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = _to_decimal(pricing.get("request"))
+    if request is not None and request < 0:  # same sentinel, per-request field
+        request = None
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(

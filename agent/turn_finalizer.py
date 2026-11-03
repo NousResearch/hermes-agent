@@ -122,8 +122,12 @@ def _hand_off_background_review(agent, messages, *, review_memory: bool, review_
             "_review_session_id": str(getattr(agent, "session_id", None) or ""),
         }
     else:
+        # Synchronous spawn: the chokepoint (``run_agent._spawn_background_review``) structurally
+        # clones the snapshot and owns the isolation guarantee; a pre-clone here would make every
+        # bare turn pay two O(transcript) clones. The captures above clone at hand-off time
+        # because their spawn runs after the live transcript may already have moved on.
         agent._spawn_background_review(
-            messages_snapshot=_clone_background_review_messages(messages),
+            messages_snapshot=list(messages),
             review_memory=review_memory, review_skills=review_skills,
         )
 

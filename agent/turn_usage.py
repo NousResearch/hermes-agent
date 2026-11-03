@@ -11,9 +11,10 @@ model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
@@ -70,9 +71,84 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _served_model_fields(agent: Any, response: Any, wire_model: Any) -> Optional[str]:
+    """The model the route reports serving, when it differs from the model SENT on the wire.
+
+    Both the non-streaming SDK object and the streaming finish block stamp ``response.model``;
+    ``agent/served_model.py``'s httpx hook sees headers only (reading a body there buffers the
+    SSE stream), so the turn seam is where a served MODEL becomes visible. Compare against the
+    WIRE model, not ``agent.model``: OpenRouter's speed-tier pins rewrite ``top_level["model"]``
+    (``plugins/model-providers/openrouter``), so a pinned slug legitimately answers with the base
+    slug and must not produce a bogus ``served=`` value.
+
+    Same-or-absent clears a stamp THIS function made (``_turn_served_model``) so a value never
+    outlives the response that produced it, while a proxy deployment id captured by the header
+    hook is left alone. Fail-open: any surprise reports "nothing captured".
+    """
+    try:
+        _served_raw = getattr(response, "model", None)
+        _wire_raw = wire_model if isinstance(wire_model, str) and wire_model.strip() else getattr(agent, "model", None)
+        served = _served_raw.strip() if isinstance(_served_raw, str) else ""
+        wire = _wire_raw.strip() if isinstance(_wire_raw, str) else ""
+        if not served or served == wire:
+            # Nothing new for this response: drop only our own previous stamp.
+            _stamp = getattr(agent, "_turn_served_model", None)
+            if _stamp is not None and getattr(agent, "last_served_model", None) == _stamp:
+                agent.last_served_model = None
+            agent._turn_served_model = None
+            return None
+        # A proxy header captured for THIS response names the actual deployment, which is more
+        # specific than the body's model echo. Never overwrite it with the coarser signal.
+        if getattr(agent, "last_served_model", None) and not getattr(agent, "_turn_served_model", None):
+            return None
+        agent.last_served_model = served
+        agent._turn_served_model = served
+        return served
+    except Exception:  # accounting never raises into a turn
+        return None
+
+
+def wire_model_from_api_kwargs(api_kwargs: Any) -> Optional[str]:
+    """The model field of the request actually SENT (``model``; Bedrock's ``modelId``).
+
+    Served-model comparison must be against what went on the wire, not ``agent.model``: a
+    provider profile may rewrite the outgoing model (OpenRouter speed-tier pins), and the
+    router answering with that rewritten slug is not a reroute. Fail-open -> None.
+    """
+    try:
+        if not isinstance(api_kwargs, dict):
+            return None
+        value = api_kwargs.get("model") or api_kwargs.get("modelId")
+        return value.strip() if isinstance(value, str) and value.strip() else None
+    except Exception:  # accounting never raises into a turn
+        return None
+
+
+def _provider_actual_cost(canonical_usage: Any, response: Any) -> Optional[float]:
+    """The provider's own billed cost for THIS call, from the response usage
+    (``usage.cost`` as OpenRouter reports it), or ``None`` when the route doesn't
+    report one. ``raw_usage`` survives normalization (``CanonicalUsage.__add__``
+    drops it, so read the pre-fold aggregator usage); a bare dict usage carrying
+    ``cost`` without ``raw_usage`` is accepted too. Fail-open: a non-finite or
+    negative figure is not a price, so the caller estimates instead."""
+    try:
+        raw = getattr(canonical_usage, "raw_usage", None)
+        value = raw.get("cost") if isinstance(raw, dict) else None
+        if value is None:
+            usage = getattr(response, "usage", None)
+            value = usage.get("cost") if isinstance(usage, dict) else None
+        if value is None:
+            return None
+        amount = float(value)
+        return amount if math.isfinite(amount) and amount >= 0 else None
+    except Exception:  # accounting never raises into a turn
+        return None
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    wire_model: Optional[str] = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
@@ -83,6 +159,9 @@ def record_response_usage(
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
+    # Served model: stamped/cleared on EVERY completed attempt (including usage-less ones) so a
+    # value can never outlive the response that produced it.
+    _served = _served_model_fields(agent, response, wire_model)
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
@@ -209,6 +288,10 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    # The served MODEL (the route's own answer to "who ran this") differs from what we sent only
+    # when the router rerouted. Compared against the WIRE model so an endpoint pin isn't a reroute.
+    if _served:
+        _ident += f" served={_served}"
     logger.info(
         "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
@@ -229,27 +312,48 @@ def record_response_usage(
         _agg_cost_model = _agg_slot["model"]
         _agg_cost_provider = _agg_slot.get("provider") or agent.provider
         _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
-    cost_result = estimate_usage_cost(
-        _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
-        base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
-    )
-    # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
-    # advisor's own model rate), so state.db's estimated_cost_usd matches the folded
-    # token counts.
+    # The provider's exact billed cost (OpenRouter's ``usage.cost``) supersedes any estimate:
+    # it is the number on the invoice, and the models-API table cannot price a preset route at
+    # all. Read from the pre-fold aggregator usage — ``CanonicalUsage.__add__`` drops
+    # ``raw_usage``. The provider figure goes to the ACTUAL accumulator only, never to
+    # ``estimated_cost_usd`` (insights reconciles the two and would count the same call twice),
+    # and the estimate is not even computed for it.
+    _provider_cost = _provider_actual_cost(aggregator_usage, response)
     _cost_delta = None
-    if cost_result.amount_usd is not None:
-        _cost_delta = float(cost_result.amount_usd)
-        agent.session_estimated_cost_usd += _cost_delta
-    if _moa_ref_cost is not None:
-        try:
-            _moa_cost = float(_moa_ref_cost)
-        except (TypeError, ValueError):  # pragma: no cover - defensive
-            _moa_cost = None
-        if _moa_cost is not None:
-            agent.session_estimated_cost_usd += _moa_cost
-            _cost_delta = (_cost_delta or 0.0) + _moa_cost
-    agent.session_cost_status = cost_result.status
-    agent.session_cost_source = cost_result.source
+    _actual_delta = None
+    if _provider_cost is not None:
+        # Exact provider figure: actual column only; this call is NOT estimated as well.
+        _actual_delta = _provider_cost
+        agent.session_actual_cost_usd = float(getattr(agent, "session_actual_cost_usd", 0.0) or 0.0) + _actual_delta
+        _cost_status, _cost_source = "actual", "provider_response"
+        # MoA advisor fan-out is priced per-advisor, not billed — it stays in the estimated column.
+        if _moa_ref_cost is not None:
+            with suppress(TypeError, ValueError):
+                _moa_cost = float(_moa_ref_cost)
+                agent.session_estimated_cost_usd += _moa_cost
+                _cost_delta = _moa_cost
+    else:
+        cost_result = estimate_usage_cost(
+            _agg_cost_model, aggregator_usage, provider=_agg_cost_provider,
+            base_url=_agg_cost_base_url, api_key=getattr(agent, "api_key", ""),
+        )
+        # Cost delta = aggregator + MoA advisor cost (already priced per-advisor at each
+        # advisor's own model rate), so state.db's estimated_cost_usd matches the folded
+        # token counts.
+        if cost_result.amount_usd is not None:
+            _cost_delta = float(cost_result.amount_usd)
+            agent.session_estimated_cost_usd += _cost_delta
+        if _moa_ref_cost is not None:
+            try:
+                _moa_cost = float(_moa_ref_cost)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                _moa_cost = None
+            if _moa_cost is not None:
+                agent.session_estimated_cost_usd += _moa_cost
+                _cost_delta = (_cost_delta or 0.0) + _moa_cost
+        _cost_status, _cost_source = cost_result.status, cost_result.source
+    agent.session_cost_status = _cost_status
+    agent.session_cost_source = _cost_source
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite
@@ -270,12 +374,13 @@ def record_response_usage(
                 cache_write_tokens=canonical_usage.cache_write_tokens,
                 reasoning_tokens=canonical_usage.reasoning_tokens,
                 estimated_cost_usd=_cost_delta,
-                cost_status=cost_result.status,
-                cost_source=cost_result.source,
+                actual_cost_usd=_actual_delta,
+                cost_status=_cost_status,
+                cost_source=_cost_source,
                 billing_provider=agent.provider,
                 billing_base_url=agent.base_url,
                 billing_mode="subscription_included"
-                if cost_result.status == "included" else None,
+                if _cost_status == "included" else None,
                 model=agent.model,
                 api_call_count=1,
                 task=getattr(agent, "_turn_route_task", "") or "",

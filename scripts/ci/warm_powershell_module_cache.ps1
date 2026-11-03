@@ -9,12 +9,16 @@
 Get-ChildItem . | Out-Null
 $process = Get-Process -Id $PID
 $analysis = ((Get-Date) - $process.StartTime).TotalSeconds
-if ($analysis -gt 5) {
-    $cache = $env:PSModuleAnalysisCachePath
-    if (-not $cache) { $cache = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\PowerShell\ModuleAnalysisCache' }
-    for ($i = 0; $i -lt 40; $i++) {
-        if ((Test-Path $cache) -and (Get-Item $cache).LastWriteTime -gt $process.StartTime) { break }
-        Start-Sleep -Milliseconds 500
-    }
+$cache = $env:PSModuleAnalysisCachePath
+if (-not $cache) { $cache = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\PowerShell\ModuleAnalysisCache' }
+$saved = $analysis -le 5  # already warm: nothing new to save
+for ($i = 0; -not $saved -and $i -lt 40; $i++) {
+    $saved = (Test-Path $cache) -and (Get-Item $cache).LastWriteTime -gt $process.StartTime
+    if (-not $saved) { Start-Sleep -Milliseconds 500 }
 }
-Write-Host ("module analysis cache ready; this launch analysed for {0:N1}s" -f $analysis)
+if ($saved) {
+    Write-Host ("module analysis cache ready; this launch analysed for {0:N1}s" -f $analysis)
+} else {
+    # Not fatal: the tests still run, each PowerShell child paying the cold start.
+    Write-Host ("::warning::PowerShell did not save its module analysis cache to {0} within 20s; Windows tests will start PowerShell cold" -f $cache)
+}

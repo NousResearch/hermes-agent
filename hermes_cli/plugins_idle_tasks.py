@@ -10,7 +10,8 @@ other run of it holds the claim. Each due task runs on its own thread, started w
 contextvars (profile home and secret scope), and the poll returns at once: a slow task never holds
 up the host's housekeeping. The claim keeps one run at a time across pollers and processes; the
 worker records the run and releases the claim when ``fn`` returns or raises. An exception is logged
-and recorded, never raised.
+and recorded, never raised. A host that stops (gateway housekeeping) polls under an
+:class:`IdleTaskFence`: once it stops, no run starts and a run still going records nothing.
 
 State is per (profile, plugin, task): ``<plugin data dir>/idle-tasks/<name>.json`` with
 ``last_run_at``, ``run_count``, ``paused``, ``last_summary``, ``last_status``, ``last_error``.
@@ -22,6 +23,7 @@ No capability gates this surface: it calls nothing privileged itself; model call
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import re
@@ -78,6 +80,56 @@ _registries: weakref.WeakKeyDictionary[Any, dict[str, IdleTaskSpec]] = weakref.W
 # stale age; the claim alone would then let the next poll start a second run beside it.
 _in_flight: dict[str, threading.Thread] = {}
 _in_flight_lock = threading.Lock()
+
+
+# How long a stopping host (gateway housekeeping) waits for its idle-task runs. Inside the
+# gateway's housekeeping drain budget (``_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT``), so stop never hangs.
+SHUTDOWN_JOIN_SECONDS = 4.0
+
+
+class IdleTaskFence:
+    """A stopping host's hold on the idle-task runs it starts (gateway housekeeping). Once the fence
+    is closed (:meth:`close`, or its ``stop`` event set) no run starts under it, and a run still
+    going when it ends records nothing: the task's state stays as it was before the run, so the
+    task runs again on a later poll, and its claim is released. Plugin code cannot be stopped, so
+    :meth:`close` waits a bounded time for the runs, then returns."""
+
+    def __init__(self, stop: Any = None):
+        self._stop, self._closed = stop, False
+        self._lock = threading.Lock()  # held by a start and by a record, so close() waits for either
+        self._workers: list[threading.Thread] = []
+
+    @property
+    def closed(self) -> bool:
+        return self._closed or (self._stop is not None and self._stop.is_set())
+
+    def start(self, worker: threading.Thread) -> bool:
+        """Start ``worker`` under the fence; False, and not started, once the fence is closed."""
+        with self._lock:
+            if self.closed:
+                return False
+            worker.start()
+            self._workers = [w for w in self._workers if w.is_alive()] + [worker]
+            return True
+
+    @contextlib.contextmanager
+    def recording(self) -> Iterator[bool]:
+        """Held while a run records its state; yields False once the fence is closed (record nothing)."""
+        with self._lock:
+            yield not self.closed
+
+    def close(self, timeout: Optional[float] = None) -> bool:
+        """Close the fence and wait up to ``timeout`` seconds (default :data:`SHUTDOWN_JOIN_SECONDS`)
+        for its runs; True when none still runs. No run starts or records under it once this returns."""
+        with self._lock:
+            self._closed, workers = True, list(self._workers)
+        deadline = time.monotonic() + max(0.0, SHUTDOWN_JOIN_SECONDS if timeout is None else timeout)
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        running = [w.name for w in workers if w.is_alive()]
+        if running:
+            logger.warning("Idle task run(s) still going at shutdown, left unrecorded: %s", ", ".join(running))
+        return not running
 
 
 def registered_idle_tasks(manager: Any) -> dict[str, IdleTaskSpec]:
@@ -182,8 +234,10 @@ def _due(spec: IdleTaskSpec, state: dict[str, Any], path: Path, now: datetime) -
                         seed_summary="deferred first run: runs after one interval")
 
 
-def _execute(spec: IdleTaskSpec, run: IdleTaskRun, path: Path, lock: Path, now: datetime) -> None:
-    """The worker body: run ``spec.fn``, then record the run and release the claim, whatever happened."""
+def _execute(spec: IdleTaskSpec, run: IdleTaskRun, path: Path, lock: Path, now: datetime,
+             fence: Optional[IdleTaskFence] = None) -> None:
+    """The worker body: run ``spec.fn``, then record the run (unless ``fence`` closed meanwhile)
+    and release the claim, whatever happened."""
     from agent.idle_schedule import release_run
 
     started, status, summary, error = time.monotonic(), "ok", None, None
@@ -197,11 +251,16 @@ def _execute(spec: IdleTaskSpec, run: IdleTaskRun, path: Path, lock: Path, now: 
         logger.warning("Plugin %s idle task %s failed", spec.plugin_id, spec.name, exc_info=True)
     finally:
         try:
-            fresh = load_state(path, spec.plugin_id, spec.name)  # keep a pause set while it ran
-            fresh.update(last_run_at=now.isoformat(), run_count=int(fresh["run_count"] or 0) + 1, last_status=status,
-                         last_summary=summary, last_error=error, interval_hours=spec.interval_hours,
-                         last_run_duration_seconds=round(time.monotonic() - started, 3))
-            save_state(path, fresh)
+            with contextlib.nullcontext(True) if fence is None else fence.recording() as open_:
+                if open_:
+                    fresh = load_state(path, spec.plugin_id, spec.name)  # keep a pause set while it ran
+                    fresh.update(last_run_at=now.isoformat(), run_count=int(fresh["run_count"] or 0) + 1,
+                                 last_status=status, last_summary=summary, last_error=error,
+                                 interval_hours=spec.interval_hours,
+                                 last_run_duration_seconds=round(time.monotonic() - started, 3))
+                    save_state(path, fresh)
+                else:
+                    status = "abandoned at shutdown, not recorded"
         finally:
             release_run(lock)
             with _in_flight_lock:
@@ -209,15 +268,23 @@ def _execute(spec: IdleTaskSpec, run: IdleTaskRun, path: Path, lock: Path, now: 
     logger.info("plugin idle task plugin=%s task=%s status=%s", spec.plugin_id, spec.name, status)
 
 
-def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime) -> Optional[threading.Thread]:
+def _start(worker: threading.Thread, fence: Optional[IdleTaskFence]) -> bool:
+    if fence is None:
+        worker.start()
+        return True
+    return fence.start(worker)
+
+
+def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime,
+             fence: Optional[IdleTaskFence] = None) -> Optional[threading.Thread]:
     """Start ``spec`` on its own thread if every gate passes; the started worker, or None when not run.
 
     The worker carries the poller's contextvars (profile home and secret scope), so a host polling
-    under a profile's scope runs that profile's task in it."""
+    under a profile's scope runs that profile's task in it. Under a closed ``fence`` nothing starts."""
     from agent.idle_schedule import claim_run, release_run
     from agent.memory_provider import spawn_context_thread
 
-    if idle_for_seconds < spec.min_idle_hours * 3600.0:
+    if idle_for_seconds < spec.min_idle_hours * 3600.0 or (fence is not None and fence.closed):
         return None
     path = spec.state_path()
     state = load_state(path, spec.plugin_id, spec.name)
@@ -229,25 +296,28 @@ def _run_one(spec: IdleTaskSpec, idle_for_seconds: float, now: datetime) -> Opti
         # A run of this process still holds the claim: its age says nothing about a crash.
         if str(lock) in _in_flight or not claim_run(lock):  # or another process is running it
             return None
-        worker = spawn_context_thread(_execute, args=(spec, run, path, lock, now),
+        worker = spawn_context_thread(_execute, args=(spec, run, path, lock, now, fence),
                                       name=f"idle-task-{spec.plugin_id}-{spec.name}")
         _in_flight[str(lock)] = worker
         try:
-            worker.start()
-        except RuntimeError:  # no thread to be had: the claim must not outlive the attempt
+            started = _start(worker, fence)
+        except RuntimeError:  # no thread to be had
+            started = False
+            logger.warning("Plugin %s idle task %s could not start", spec.plugin_id, spec.name, exc_info=True)
+        if not started:  # the claim must not outlive the attempt
             _in_flight.pop(str(lock), None)
             release_run(lock)
-            logger.warning("Plugin %s idle task %s could not start", spec.plugin_id, spec.name, exc_info=True)
             return None
     return worker
 
 
 def run_plugin_idle_tasks(
     *, idle_for_seconds: float, manager: Any = None, now: Optional[datetime] = None,
+    fence: Optional[IdleTaskFence] = None,
 ) -> dict[str, threading.Thread]:
     """Poll the active profile's registered idle tasks and return at once; ``{"<plugin>:<task>":
     worker}`` for the runs it started, each on its own thread. A manager polled outside its own
-    profile runs nothing. Never raises."""
+    profile runs nothing; a host that stops passes its ``fence``. Never raises."""
     from hermes_constants import hermes_home_key
     from hermes_cli.plugins import get_plugin_manager
 
@@ -258,19 +328,22 @@ def run_plugin_idle_tasks(
             return started
         now = now or datetime.now(UTC)
         for key, spec in list(registered_idle_tasks(manager).items()):
-            if (worker := _run_one(spec, idle_for_seconds, now)) is not None:
+            if (worker := _run_one(spec, idle_for_seconds, now, fence)) is not None:
                 started[key] = worker
     except Exception:
         logger.debug("plugin idle task poll failed", exc_info=True)
     return started
 
 
-def run_idle_jobs(*, idle_for_seconds: float, on_summary: Optional[Callable[[str], None]] = None) -> None:
+def run_idle_jobs(
+    *, idle_for_seconds: float, on_summary: Optional[Callable[[str], None]] = None,
+    fence: Optional[IdleTaskFence] = None,
+) -> None:
     """The idle poll every curator host runs: the curator, then the plugins' idle tasks."""
     from agent.curator import maybe_run_curator
 
     maybe_run_curator(idle_for_seconds=idle_for_seconds, on_summary=on_summary)
-    run_plugin_idle_tasks(idle_for_seconds=idle_for_seconds)
+    run_plugin_idle_tasks(idle_for_seconds=idle_for_seconds, fence=fence)
 
 
 def cmd_idle_tasks(plugin: Optional[str] = None, *, pause: Optional[str] = None, resume: Optional[str] = None) -> None:

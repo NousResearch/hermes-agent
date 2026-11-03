@@ -787,14 +787,14 @@ Create `tests/gateway/test_newplat.py` covering:
 
 | File | What to add |
 |------|-------------|
-| `website/docs/user-guide/messaging/newplat.md` | Full platform setup page |
-| `website/docs/user-guide/messaging/index.md` | Platform comparison table, architecture diagram, toolsets table, security section, next-steps link |
-| `website/docs/reference/environment-variables.md` | All NEWPLAT_* env vars |
-| `website/docs/reference/toolsets-reference.md` | hermes-newplat toolset |
-| `website/docs/integrations/index.md` | Platform link |
-| `website/sidebars.ts` | Sidebar entry for the docs page |
-| `website/docs/developer-guide/architecture.md` | Adapter count + listing |
-| `website/docs/developer-guide/gateway-internals.md` | Adapter file listing |
+| `apps/docs/content/en/user-guide/messaging/newplat.md` | Full platform setup page |
+| `apps/docs/content/en/user-guide/messaging/index.md` | Platform comparison table, architecture diagram, toolsets table, security section, next-steps link |
+| `apps/docs/content/en/reference/environment-variables.md` | All NEWPLAT_* env vars |
+| `apps/docs/content/en/reference/toolsets-reference.md` | hermes-newplat toolset |
+| `apps/docs/content/en/integrations/index.md` | Platform link |
+| `apps/docs/src/lib/navigation-data.ts` | Sidebar entry for the docs page |
+| `apps/docs/content/en/developer-guide/architecture.md` | Adapter count + listing |
+| `apps/docs/content/en/developer-guide/gateway-internals.md` | Adapter file listing |
 
 ## Parity Audit
 

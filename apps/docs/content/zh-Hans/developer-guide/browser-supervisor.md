@@ -123,7 +123,7 @@ supervisor 附加期间，`CDPSupervisor.snapshot()` 包含三个字段：
 - `tools/browser_supervisor.py` — `CDPSupervisor`、`SupervisorRegistry`、`PendingDialog`、`FrameInfo`
 - `tools/browser_dialog_tool.py` — `browser_dialog` 工具处理器
 - `tests/tools/test_browser_supervisor.py` — 模拟 CDP WebSocket 服务器 + 生命周期/状态测试
-- `website/docs/developer-guide/browser-supervisor.md` — 本文件
+- `apps/docs/content/zh-Hans/developer-guide/browser-supervisor.md` — 本文件
 
 ### 修改
 
@@ -131,7 +131,7 @@ supervisor 附加期间，`CDPSupervisor.snapshot()` 包含三个字段：
 - `tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`、`/browser connect` 重新附加、对话框策略配置
 - `tools/browser_session_lifecycle.py` — 按会话拆除（先停止 supervisor）
 - `hermes_cli/config.py` — 向 `DEFAULT_CONFIG` 添加 `browser.dialog_policy` 和 `browser.dialog_timeout_s`
-- 文档：`website/docs/user-guide/features/browser.md`、`website/docs/reference/tools-reference.md`、`website/docs/reference/toolsets-reference.md`
+- 文档：`apps/docs/content/zh-Hans/user-guide/features/browser.md`、`apps/docs/content/zh-Hans/reference/tools-reference.md`、`apps/docs/content/zh-Hans/reference/toolsets-reference.md`
 
 ## 非目标
 

@@ -79,7 +79,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   this owner; never reload or purge modules to continue in the old interpreter. The parent keeps
   the lock, waits, and accepts only a correlated terminal result. `cmd_update` still finalizes
   early failures and missing/killed-child outcomes; PM refusal data survives the handoff.
-  See `website/docs/developer-guide/source-update-completion.md`. A begun-but-unwritten receipt is a bug.
+  See `apps/docs/content/en/developer-guide/source-update-completion.md`. A begun-but-unwritten receipt is a bug.
 - **Nothing runs pulled code in the pre-pull interpreter.** This tree finishes updates through
   `update_completion.run_completion` / `_update_takeover.py`.
   `hermes_cli/update_handoff.py` and `hermes_cli/update_serve_obligations.py` are the
@@ -93,7 +93,7 @@ Process-scan coordination between updater, serve/dashboard, and gateway is being
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
 #92091 before adding any heuristic. Process identity rules (never argv substrings; canonical
 matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87594): root
-`AGENTS.md` and `website/docs/developer-guide/cli-internals.md`.
+`AGENTS.md` and `apps/docs/content/en/developer-guide/cli-internals.md`.
 
 The systemd blunt-restart fallback waits for the unit's `TimeoutStopUSec` plus
 `TimeoutStartUSec`, with 15 seconds of client-side slack. It reads the target unit

@@ -86,7 +86,7 @@ This path includes everything from Path A plus:
 5. `agent/auxiliary_client.py`
 6. `agent/model_metadata.py`
 7. tests
-8. user-facing docs under `website/docs/`
+8. user-facing docs under `apps/docs/content/en/`
 
 :::tip
 `hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `hermes setup`.
@@ -380,9 +380,9 @@ For native providers, verify at least one tool call too, not just a plain text r
 
 If the provider is meant to ship as a first-class option, update the user docs too:
 
-- `website/docs/getting-started/quickstart.md`
-- `website/docs/user-guide/configuration.md`
-- `website/docs/reference/environment-variables.md`
+- `apps/docs/content/en/getting-started/quickstart.mdx`
+- `apps/docs/content/en/user-guide/configuration.mdx`
+- `apps/docs/content/en/reference/environment-variables.md`
 
 A developer can wire the provider perfectly and still leave users unable to discover the required env vars or setup flow.
 

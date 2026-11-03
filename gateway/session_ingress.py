@@ -26,7 +26,7 @@ busy_acceptance = ContextVar('busy_acceptance', default=None)
 busy_commit = ContextVar('busy_commit', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
 _CONTENT_CLAUSES = frozenset({
-    'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
+    'text', 'auto_skill', 'channel_prompt', 'channel_context', 'thread_starter_context', 'reply_expected',
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
     'media_filenames', 'media_filenames_length',
 })

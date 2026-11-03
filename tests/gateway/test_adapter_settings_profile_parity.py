@@ -82,6 +82,8 @@ _SETTINGS = [
      lambda m: m._default_agent_name()),
     ("plugins.platforms.discord.adapter", "DISCORD_COMMAND_SYNC_POLICY", "full", "off",
      lambda m: _discord(m, "_get_discord_command_sync_policy")),
+    ("plugins.platforms.discord.adapter", "DISCORD_OWN_POST_THREADS", "true", "false",
+     lambda m: _discord(m, "_discord_own_post_threads")),
     ("plugins.platforms.discord.adapter", "DISCORD_ALLOW_MENTION_EVERYONE", "true", "false",
      lambda m: m._env_bool("DISCORD_ALLOW_MENTION_EVERYONE", False)),
 ]

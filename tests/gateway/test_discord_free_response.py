@@ -1330,3 +1330,38 @@ async def test_recovered_message_in_a_thread_on_own_post_is_answered(adapter, mo
 
     adapter.handle_message.assert_awaited_once()
     assert "> Jobs" in _starter_context(adapter)
+
+
+def test_own_post_threads_is_read_per_profile_from_config_yaml(monkeypatch):
+    # A profile turns it on in its own config.yaml; the bridge seeds that adapter's extra, so a
+    # profile that leaves it out keeps the default: off. (The bridge also seeds the process env
+    # for the primary profile; a served secondary reads its own scope instead, which
+    # test_adapter_settings_profile_parity.py pins for DISCORD_OWN_POST_THREADS.)
+    monkeypatch.delenv("DISCORD_OWN_POST_THREADS", raising=False)
+    seeded = discord_platform._apply_yaml_config({}, {"own_post_threads": True})
+    monkeypatch.delenv("DISCORD_OWN_POST_THREADS", raising=False)
+    assert seeded["own_post_threads"] is True
+    on = DiscordAdapter(PlatformConfig(enabled=True, extra=dict(seeded)))
+    off = DiscordAdapter(PlatformConfig(enabled=True, extra={}))
+    assert on._discord_own_post_threads() is True
+    assert off._discord_own_post_threads() is False
+
+
+@pytest.mark.asyncio
+async def test_own_post_rides_a_batched_text_event(adapter, monkeypatch):
+    # Live, plain text is batched; the flushed event must still carry the post.
+    _ready(adapter, monkeypatch)
+    adapter._text_batch_delay_seconds = 0.01
+    thread, _ = _thread_on_post(post_author=adapter._client.user)
+
+    await adapter._dispatch_discord_message(_ask(thread, msg_id=777))
+    await adapter._dispatch_discord_message(_ask(thread, content="and why?", msg_id=778))
+    for _ in range(50):
+        if adapter.handle_message.await_count:
+            break
+        await asyncio.sleep(0.02)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "and why?" in event.text
+    assert "> Jobs · 2 worth a look of 20" in (event.thread_starter_context or "")

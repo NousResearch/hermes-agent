@@ -1,13 +1,21 @@
 import { bindSessionRowsToRoute } from './connection-config'
-import { backendScopePrefix, type ConnectionRegistry, type ResolvedConnectionDescriptor } from './connection-registry'
+import {
+  backendScopePrefix,
+  type ConnectionRegistry,
+  registrySourceOwnsPrimaryBackend,
+  type ResolvedConnectionDescriptor
+} from './connection-registry'
 import {
   applyRemoteProfileSessionOutcomes,
   composeUnifiedSessionResponse,
   fetchPrimaryProfileSessions,
   mergeRegistrySessionRows,
   type RegistrySessionSource,
-  settleRemoteProfileSessions
+  settleRemoteProfileSessions,
+  tagPrimaryAggregateRows
 } from './profile-session-routing'
+import { collectRegistrySessionSources } from './registry-session-sources'
+import { sharedSshProfiles } from './ssh-shared-profile-backend'
 
 interface BackendPoolEntry {
   connectionPromise: Promise<ResolvedConnectionDescriptor>
@@ -16,52 +24,40 @@ interface BackendPoolEntry {
 export function createPooledRegistrySessionSources(deps: {
   backendIdForConnection: (connectionId: string, descriptor: ResolvedConnectionDescriptor) => Promise<null | string>
   backendPool: Map<string, BackendPoolEntry>
+  primaryBackend: () => null | Promise<ResolvedConnectionDescriptor>
   readRegistry: () => ConnectionRegistry
+  sharedProfiles?: (connectionId: string, backends: RegistrySessionSource['backends']) => string[] | undefined
 }) {
   return async (includeLocal = false): Promise<RegistrySessionSource[]> => {
-    const sources: RegistrySessionSource[] = []
+    return collectRegistrySessionSources(
+      {
+        connections: deps.readRegistry().connections,
+        installId: async (connectionId, descriptor) =>
+          (await deps.backendIdForConnection(connectionId, descriptor as ResolvedConnectionDescriptor)) ?? undefined,
+        pool: deps.backendPool.entries(),
+        reusedPrimary: async connectionId => {
+          const pending = deps.primaryBackend()
 
-    for (const connection of deps.readRegistry().connections) {
-      if (connection.kind === 'local' && !includeLocal) {
-        continue
-      }
+          if (!pending) {
+            return null
+          }
 
-      const prefix = backendScopePrefix(connection.id)
+          try {
+            const descriptor = await Promise.race([
+              pending,
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
+            ])
 
-      const pooled = [...deps.backendPool.entries()].filter(
-        ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-      )
-
-      if (pooled.length === 0) {
-        continue
-      }
-
-      const backends: RegistrySessionSource['backends'] = []
-      const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
-
-      for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
-        try {
-          const descriptor = await Promise.race([
-            entry.connectionPromise,
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-          ])
-
-          backends.push({
-            descriptor,
-            profileLabel: perProfile ? key.slice(prefix.length) || 'default' : null
-          })
-        } catch {
-          // Dead or still-connecting backend contributes nothing this refresh.
-        }
-      }
-
-      if (backends.length) {
-        const backendId = await deps.backendIdForConnection(connection.id, backends[0].descriptor)
-        sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
-      }
-    }
-
-    return sources
+            return registrySourceOwnsPrimaryBackend(deps.readRegistry(), connectionId, descriptor) ? descriptor : null
+          } catch {
+            return null
+          }
+        },
+        scopePrefix: backendScopePrefix,
+        sharedProfiles: deps.sharedProfiles ?? sharedSshProfiles
+      },
+      includeLocal
+    )
   }
 }
 
@@ -69,18 +65,25 @@ export function createRemoteProfileSessionMerger(deps: {
   fetchJsonForProfile: (profile: null | string, path: string) => Promise<unknown>
   getJsonForBackend: (descriptor: unknown, path: string, options: { timeoutMs: number }) => Promise<unknown>
   pooledRegistrySessionSources: (includeLocal?: boolean) => Promise<RegistrySessionSource[]>
+  primaryBackend: () => Promise<unknown>
   primaryBackendId: () => Promise<null | string>
   remoteSessionList: (profile: string, params: URLSearchParams) => Promise<unknown>
 }) {
   return async (
     searchParams: URLSearchParams,
     remoteProfiles: string[],
-    registrySourcesOverride: RegistrySessionSource[] | null = null
+    registrySourcesOverride: RegistrySessionSource[] | null = null,
+    pinnedConnectionId: null | string = null
   ) => {
     const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
     const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
     const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
     const base = (await fetchPrimaryProfileSessions(searchParams, deps.fetchJsonForProfile, { prefixForMerge: true })) as any
+
+    if (pinnedConnectionId) {
+      await tagPrimaryAggregateRows(base, deps.primaryBackend, pinnedConnectionId)
+    }
+
     const remoteParams = new URLSearchParams(searchParams)
     remoteParams.set('limit', String(limit + offset))
     remoteParams.set('offset', '0')

@@ -238,18 +238,19 @@ export interface SidebarSessionsRequest {
 // The batched /sidebar endpoint shipped later than the per-slice route, so a
 // newer desktop can meet an older backend that 404s it ("No such API
 // endpoint"). Endpoint-missing is a capability signal, not a transient
-// failure: remember it (per renderer lifetime — a runtime home change reloads
-// the window and re-probes) and serve every subsequent refresh straight from
-// the three proven per-slice calls instead of re-probing a known-dead route
-// once per turn/broadcast.
-let sidebarBatchEndpointMissing = false
+// failure: remember it and serve every subsequent refresh straight from the
+// three proven per-slice calls instead of re-probing a known-dead route once
+// per turn/broadcast. It is a fact about ONE backend, so it is keyed by the
+// connection the request rode: a gateway pick re-scopes requests in place
+// (no reload, no list wipe), and the next gateway may well have the route.
+// Keyed at request time, a late 404 from the gateway just left still lands on
+// that gateway, not on the one now in front.
+const sidebarBatchEndpointMissing = new Set<string>()
 
-// Capability flags are per-backend facts. A hard re-home reloads the window
-// (module state resets naturally), but a soft gateway switch re-dials in
-// place — the next backend may well have the batched route, so the switch
-// paths call this to re-probe rather than leak the old backend's capability.
+// A Settings apply can re-point a connection id at a different backend, so it
+// forgets every remembered capability and re-probes.
 export function resetSidebarBatchCapability() {
-  sidebarBatchEndpointMissing = false
+  sidebarBatchEndpointMissing.clear()
 }
 
 // Compatibility fallback: reassemble the three sidebar slices from the
@@ -315,7 +316,9 @@ export function scanSessionPullRequests(
 }
 
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
-  if (sidebarBatchEndpointMissing) {
+  const capabilityKey = getApiRequestConnection() ?? ''
+
+  if (sidebarBatchEndpointMissing.has(capabilityKey)) {
     return listSidebarSessionsLegacy(req)
   }
 
@@ -350,7 +353,7 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
     }
 
     // Older backend without the batched route (desktop/runtime version skew).
-    sidebarBatchEndpointMissing = true
+    sidebarBatchEndpointMissing.add(capabilityKey)
 
     return listSidebarSessionsLegacy(req)
   }

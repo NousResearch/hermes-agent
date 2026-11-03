@@ -839,6 +839,10 @@ const BACKEND_ACTION_POLL_MS = 1500
 const BACKEND_ACTION_MAX_MS = 6 * 60 * 1000
 const BACKEND_RETURN_MAX_MS = 4 * 60 * 1000
 
+// Updater output kept for the error box's Technical details and the report it
+// attaches; the progress view only paints the last few lines.
+const UPDATE_LOG_LINES = 300
+
 // C3: a committed update succeeds even when post-commit steps are still owed,
 // and a partial one (committed, but the user must act) still owes them. Name
 // every owed step of THIS action's committed run whatever the exit: follow-ups
@@ -923,7 +927,7 @@ function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionSt
   const log = status.lines
     .filter(line => line.trim().length > 0)
     .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
-    .slice(-50)
+    .slice(-UPDATE_LOG_LINES)
 
   const latest = log.at(-1)?.message
 
@@ -1296,7 +1300,8 @@ async function runEverythingUpdate(): Promise<void> {
 
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
-  const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
+  const entry = { stage: payload.stage, message: payload.message, at: payload.at }
+  const log = [...current.log, entry].slice(-UPDATE_LOG_LINES)
 
   const terminal =
     payload.stage === 'error' ||

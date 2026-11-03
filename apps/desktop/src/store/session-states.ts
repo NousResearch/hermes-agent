@@ -95,7 +95,7 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { orderTilesByTree } from './session-tile-order'
-import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
+import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished, readBaselineOwnerRow } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -740,7 +740,7 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // completion's re-asserts. Dropping it here means this turn's finish
     // re-lights even if it lands within the same millisecond as the last
     // read (same-tick submit → finish in tests and fast local models).
-    clearReadBaseline(storedId)
+    clearReadBaseline(storedId, readBaselineOwnerRow(storedId, runtimeSessionOwner(runtimeId) ?? knownOwnerForSession(runtimeId)))
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
 

@@ -6311,15 +6311,13 @@ def _get_task_extra_body(task: str) -> dict[str, Any]:
     return result
 
 
-# Per-task concurrency limiting: many sessions can spawn unbounded background aux calls, each
-# retrying across the fallback chain during incidents.
-# During provider incidents each call also retries / fans out across the fallback chain, multiplying request
-# volume on already-degraded endpoints. A per-task semaphore caps in-flight calls so retry amplification
-# stays bounded. See #23324.
+# Per-task concurrency limiting: many sessions can spawn background aux calls, and during provider incidents
+# each retries / fans out across the fallback chain, multiplying request volume on already-degraded endpoints.
+# A per-task semaphore caps in-flight calls so retry amplification stays bounded. See #23324.
 # Keyed by profile home as well: the limit is the profile's ``auxiliary.<task>.max_concurrency``, and two
 # multiplexed profiles with different limits would otherwise rebuild (and reset) one shared semaphore.
 _aux_sync_semaphores: dict[tuple[str, str], tuple[int, threading.BoundedSemaphore]] = {}
-_aux_async_semaphores: dict[tuple[str, str, int], tuple[int, Any]] = {}
+_aux_async_semaphores: dict[Any, dict] = {}  # loop -> {(home, task): (limit, sem)} until closed: cache_bounds.live_loop_table
 _aux_sem_lock = threading.Lock()
 
 
@@ -6363,8 +6361,10 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
+    from agent.cache_bounds import live_loop_table
     from hermes_constants import hermes_home_key
-    return _cached_semaphore(_aux_async_semaphores, (hermes_home_key(), task, id(loop)), limit, asyncio.Semaphore)
+    tables = live_loop_table(_aux_async_semaphores, loop, _aux_sem_lock)
+    return _cached_semaphore(tables, (hermes_home_key(), task), limit, asyncio.Semaphore)
 
 
 def _reset_aux_semaphores() -> None:

@@ -18,6 +18,7 @@ import {
   sessionOwnerPinId,
   sessionPinId
 } from './session'
+import { isSessionOwnerRoute, sessionOwnerRowKey, type SessionOwnerScope } from './session-request-router'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
@@ -157,6 +158,24 @@ const rowsFor = (lists: readonly SessionInfo[][]): SessionInfo[] => lists.flat()
 const loadedUnreadRows = (): SessionInfo[] => rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
 let selectedOwnerKey: null | string = null
 
+export function readBaselineOwnerRow(storedSessionId: string, owner: SessionOwnerScope): SessionInfo | undefined {
+  const matches = loadedUnreadRows().filter(row => sessionMatchesStoredId(row, storedSessionId))
+
+  if (isSessionOwnerRoute(owner)) {
+    return matches.find(
+      row =>
+        row.connection_id?.trim() === owner.connectionId &&
+        profileKeyForRow(row) === normalizeProfileKey(owner.profile)
+    )
+  }
+
+  if (typeof owner === 'string') {
+    return matches.find(row => profileKeyForRow(row) === normalizeProfileKey(owner))
+  }
+
+  return matches.length === 1 ? matches[0] : undefined
+}
+
 /** Stable owner + lineage identity for unread persistence. Registry rows reuse
  * the pin owner key; legacy rows need profile scope without an ephemeral route
  * binding. */
@@ -288,6 +307,7 @@ export function lightDesktopMessagingCompletion(
   admissionId: string | undefined,
   focused: boolean,
   profile?: string,
+  connectionId?: string,
   completedAt = Date.now()
 ) {
   if (!admissionId) {
@@ -296,27 +316,39 @@ export function lightDesktopMessagingCompletion(
 
   if (!desktopAdmissions.delete(admissionId)) {
     // Its receipt may still be in flight: keep the completion until the admission is noted.
-    earlyCompletions.set(admissionId, { storedSessionId, focused, profile, completedAt })
+    earlyCompletions.set(admissionId, { storedSessionId, focused, profile, connectionId, completedAt })
     trimOldest(earlyCompletions)
 
     return
   }
 
-  // A held completion the user has since read (opened, even if left again) is already seen.
-  if (($lastReadAtBySessionId.get()[storedSessionId] ?? -1) >= completedAt) {
+  const row = resolveOwnedRow(storedSessionId, profile, connectionId)
+
+  if (!row || !isMessagingSource(row.source)) {
     return
   }
 
-  // The delivering socket's profile, when it names one, picks the row: another profile's same-id
-  // session must not decide this completion. The row's own id is marked, so a compressed
-  // conversation's listed segment paints at once.
-  const row = resolveOwnedRow(storedSessionId, profile)
+  const ownerKey = sessionOwnerRowKey(row)
 
-  // Written for the resolved row directly: a bare id would be re-resolved, and another profile's
-  // same-id row can win that tie-break.
-  if (row && !focused && isMessagingSource(row.source)) {
-    writeUnread(row.id, profileKeyForRow(row), sessionPinId(row))
+  const duplicate = loadedUnreadRows().some(
+    candidate =>
+      candidate !== row &&
+      sessionMatchesStoredId(candidate, storedSessionId) &&
+      sessionOwnerRowKey(candidate) !== ownerKey
+  )
+
+  if (focused && (!duplicate || selectedOwnerKey === unreadOwnerKey(row))) {
+    return
   }
+
+  const readKey = duplicate ? ownerKey : storedSessionId
+
+  // A held completion the user has since read (opened, even if left again) is already seen.
+  if (($lastReadAtBySessionId.get()[readKey] ?? -1) >= completedAt) {
+    return
+  }
+
+  writeUnread(duplicate ? ownerKey : row.id, profileKeyForRow(row), duplicate ? unreadOwnerKey(row) : sessionPinId(row))
 }
 
 /** The one unread write: the transient dot for `transientId`, plus `durableId`'s marker in
@@ -344,7 +376,7 @@ function writeUnread(transientId: string, profile: string, durableId: string) {
  *  admission noted, so its entry is expected to stay unmatched until the cap evicts it. */
 const earlyCompletions = new Map<
   string,
-  { storedSessionId: string; focused: boolean; profile?: string; completedAt: number }
+  { storedSessionId: string; focused: boolean; profile?: string; connectionId?: string; completedAt: number }
 >()
 
 function trimOldest(entries: Set<string> | Map<string, unknown>) {
@@ -368,15 +400,25 @@ observeCanonicalAdmissions((admissionId, status) => {
 
   if (early) {
     earlyCompletions.delete(admissionId)
-    lightDesktopMessagingCompletion(early.storedSessionId, admissionId, early.focused, early.profile, early.completedAt)
+    lightDesktopMessagingCompletion(
+      early.storedSessionId,
+      admissionId,
+      early.focused,
+      early.profile,
+      early.connectionId,
+      early.completedAt
+    )
   }
 })
 
 /** The row of a known owner profile; with no owner, the bare-id tie-break. */
-function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+function resolveOwnedRow(storedSessionId: string, profile?: string, connectionId?: string): SessionInfo | undefined {
   return profile
     ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
-        r => sessionMatchesStoredId(r, storedSessionId) && profileKeyForRow(r) === normalizeProfileKey(profile)
+        r =>
+          sessionMatchesStoredId(r, storedSessionId) &&
+          profileKeyForRow(r) === normalizeProfileKey(profile) &&
+          (!connectionId || r.connection_id?.trim() === connectionId.trim())
       )
     : resolveLoadedRow(storedSessionId)
 }
@@ -614,6 +656,7 @@ export function forgetSessionUnread(
  *  session never seen before seeds at its current count instead of lighting
  *  up green on first sight. Known, unselected rows are left alone — the gap
  *  between their watermark and live count IS the unread signal. */
+// health: allow CC -- owner-key migration and watermark ingestion must share one row snapshot to avoid re-entrant store drift
 function ingestRows(rows: readonly SessionInfo[]): void {
   const migratedMarkers = new Set<string>()
 

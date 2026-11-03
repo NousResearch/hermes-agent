@@ -2,13 +2,14 @@ import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/share
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import { useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway, ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { $daybreakByProfile, daybreakKey, setDaybreak, syncDaybreak } from '@/store/daybreak'
 import {
   $modelPresets,
   applyModelPreset,
@@ -102,6 +103,35 @@ export function useModelMenuController({
   const hostScope = `${ownerConnectionId ?? ''}::${profile}`
   const latestHostScope = useRef(hostScope)
   latestHostScope.current = hostScope
+
+  // Daybreak is read only once this account's catalog lists a model for it (`capabilities.daybreak`).
+  const daybreakListed = (modelOptions.data?.providers ?? []).some(row =>
+    Object.values(row.capabilities ?? {}).some(caps => caps?.daybreak)
+  )
+
+  const daybreakOn = useStore($daybreakByProfile)[daybreakKey(profile, ownerConnectionId)] ?? false
+
+  // The primary menu's shared requester follows focus when called, and a queued write (store/daybreak.ts)
+  // can go out after focus moved: bind reads and writes to THIS connection's gateway when the host has one.
+  // A tile's requester is already bound to its owner route.
+  const daybreakRequester = useCallback(
+    (requester: typeof requestGateway) =>
+      gateway
+        ? (method: string, params?: Record<string, unknown>) => gateway.request(method, params)
+        : (method: string, params?: Record<string, unknown>) => requester(method, params),
+    [gateway]
+  )
+
+  const daybreakRequest = useRef(daybreakRequester(requestGateway))
+  daybreakRequest.current = daybreakRequester(requestGateway)
+
+  useEffect(() => {
+    if (daybreakListed) {
+      void syncDaybreak((method, params) => daybreakRequest.current(method, params), profile, ownerConnectionId).catch(
+        () => undefined
+      )
+    }
+  }, [daybreakListed, ownerConnectionId, profile])
 
   const patchPreset = (patch: ModelPreset, row: { model: string; provider: string }, failMessage: string) => {
     const dimensions = [
@@ -203,6 +233,17 @@ export function useModelMenuController({
     },
 
     presetFor: (provider, model) => modelPresets[modelPresetKey(provider, model)] ?? {},
+
+    daybreak: {
+      on: daybreakOn,
+      set: on => {
+        void setDaybreak(daybreakRequester(requestGateway), profile, on, ownerConnectionId).then(ok => {
+          if (!ok) {
+            notify({ id: 'daybreak-update-failed', kind: 'error', message: t.shell.modelOptions.daybreakFailed })
+          }
+        })
+      }
+    },
 
     // The composer picker never persists the profile default. With a session it
     // scopes the switch to that session; with none it's UI state shipped on the

@@ -68,15 +68,15 @@ describe('watchSessionPins', () => {
   })
 
   it('keeps a registry row route binding on the pin PATCH', async () => {
-    $sessions.set([
-      row('bound', {
-        _desktop_route_binding: 'binding-a',
-        _lineage_root_id: 'root',
-        connection_id: 'same-id',
-        profile: 'work'
-      })
-    ])
-    $pinnedSessionIds.set(['root'])
+    const bound = row('bound', {
+      _desktop_route_binding: 'binding-a',
+      _lineage_root_id: 'root',
+      connection_id: 'same-id',
+      profile: 'work'
+    })
+
+    $sessions.set([bound])
+    $pinnedSessionIds.set([sessionOwnerPinId(bound)])
     await flush()
 
     expect(patch).toHaveBeenCalledWith('root', true, {

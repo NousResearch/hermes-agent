@@ -2,6 +2,14 @@ import type { SidebarListRow } from '@/lib/session-date-groups'
 import { sessionOwnerRowKey } from '@/store/session-request-router'
 import type { SessionInfo } from '@/types/hermes'
 
+export function canReorderSessions(
+  sessions: readonly SessionInfo[],
+  sortable: boolean,
+  hasReorderHandler: boolean
+): boolean {
+  return sortable && hasReorderHandler && new Set(sessions.map(session => session.id)).size === sessions.length
+}
+
 /**
  * Fold ids absent from the persisted order back in, on the side they belong.
  *

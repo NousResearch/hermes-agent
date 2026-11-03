@@ -21,11 +21,13 @@ import {
   mergeRegistrySessionRows,
   pathWithRemoteOwnerScope,
   pinnedRegistrySessionDescriptor,
+  primaryAggregateConnectionId,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
+  tagPrimarySessionRows,
   tagRemoteSessionRows,
   tagSessionResponseOwnership
 } from './profile-session-routing'
@@ -82,7 +84,8 @@ test('pinned registry aggregation requires the selected profile backend for per-
       backends: [
         { descriptor: 'default-desc', profileLabel: 'default' },
         { descriptor: 'research-desc', profileLabel: 'research' }
-      ]
+      ],
+      sharedProfiles: ['default', 'worker']
     },
     {
       connectionId: 'local',
@@ -100,11 +103,13 @@ test('pinned registry aggregation requires the selected profile backend for per-
   ]
 
   assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'research', sources), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'worker', sources), true)
   assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'missing', sources), false)
   assert.equal(hasPinnedRegistrySessionSource('local', 'work', sources, false), true)
   assert.equal(hasPinnedRegistrySessionSource('local', 'missing', sources, false), false)
   assert.equal(hasPinnedRegistrySessionSource('gateway-remote', 'any-profile', sources), true)
   assert.equal(pinnedRegistrySessionDescriptor('gateway-ssh', { profile: 'research' }, sources), 'research-desc')
+  assert.equal(pinnedRegistrySessionDescriptor('gateway-ssh', { profile: 'worker' }, sources), 'default-desc')
   assert.equal(
     pinnedRegistrySessionDescriptor(
       'gateway-ssh',
@@ -891,7 +896,7 @@ test('remote session reads keep small requests on one call', async () => {
   assert.equal(result, expected)
 })
 
-test('registry sources: ssh backends are read natively and rows tagged with connection + profile', async () => {
+test('registry sources: ssh backends use the shared cross-profile aggregate', async () => {
   const calls: Array<{ descriptor: unknown; path: string }> = []
 
   const rows = await fetchRegistrySessionRows(
@@ -909,24 +914,82 @@ test('registry sources: ssh backends are read natively and rows tagged with conn
     async (descriptor, path) => {
       calls.push({ descriptor, path })
 
-      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+      return {
+        sessions: [{ id: 's-research', profile: 'research', message_count: 3 }, { id: 's-chief', profile: 'chief-of-staff', message_count: 3 }],
+        total: 2
+      }
     }
   )
 
-  assert.equal(calls.length, 2)
-  // The remote serves its own state.db: no profile param forwarded.
-  assert.ok(calls.every(({ path }) => path.startsWith('/api/sessions?') && !path.includes('profile=')))
+  assert.equal(calls.length, 1)
+  // One warm SSH backend serves the shared remote HERMES_HOME.
+  assert.equal(calls[0].descriptor, 'spark-desc')
+  assert.ok(calls[0].path.startsWith('/api/profiles/sessions?') && calls[0].path.includes('profile=all'))
   // Hidden Bot Mode chats must stay hidden — include_hidden is never requested.
   assert.ok(calls.every(({ path }) => !path.includes('include_hidden')))
 
   assert.deepEqual(
     rows.map(row => [(row as any).id, (row as any).connection_id, (row as any).profile]),
     [
-      ['s-spark-desc', 'gw-spark', 'research'],
-      ['s-spark-desc-2', 'gw-spark', 'default']
+      ['s-research', 'gw-spark', 'research'],
+      ['s-chief', 'gw-spark', 'chief-of-staff']
     ]
   )
   assert.ok(rows.every(row => (row as any).is_default_profile === false))
+})
+
+test('registry sources: an older ssh runtime without the aggregate reads each pooled profile backend', async () => {
+  const calls: Array<{ descriptor: unknown; path: string }> = []
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-spark',
+        kind: 'ssh',
+        backends: [
+          { descriptor: 'spark-default', profileLabel: 'default' },
+          { descriptor: 'spark-research', profileLabel: 'research' }
+        ]
+      }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0', profile: 'all' }),
+    async (descriptor, path) => {
+      calls.push({ descriptor, path })
+
+      if (path.startsWith('/api/profiles/sessions')) {
+        throw Object.assign(new Error('404: Not Found'), { statusCode: 404 })
+      }
+
+      return { sessions: [{ id: `s-${descriptor}`, message_count: 3 }], total: 1 }
+    }
+  )
+
+  assert.deepEqual(
+    calls.filter(({ path }) => path.startsWith('/api/sessions?')).map(({ descriptor, path }) => [descriptor, path.includes('profile=')]),
+    [
+      ['spark-default', false],
+      ['spark-research', false]
+    ]
+  )
+  assert.deepEqual(
+    rows.map(row => [(row as any).id, (row as any).profile]),
+    [
+      ['s-spark-default', 'default'],
+      ['s-spark-research', 'research']
+    ]
+  )
+})
+
+test('pinned registry aggregation counts ssh profiles served through the default backend', () => {
+  const source = {
+    connectionId: 'gateway-ssh',
+    kind: 'ssh',
+    backends: [{ descriptor: 'default-desc', profileLabel: 'default' }]
+  }
+
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), true)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'gamma', [source]), false)
+  assert.equal(hasPinnedRegistrySessionSource('gateway-ssh', 'delta', [{ ...source, sharedProfiles: ['default', 'gamma'] }]), false)
 })
 
 test('registry sources: forced-local backends are read per profile', async () => {
@@ -1071,6 +1134,29 @@ test('registry paging and splicing keep same-id sessions from different profiles
     merged.filter((row: any) => row.id === 'shared').map((row: any) => row.profile),
     ['default', 'work']
   )
+})
+
+test('primary rows merged into a window pinned elsewhere keep their real owner', () => {
+  const base = () => ({
+    sessions: [
+      { id: 'laptop-chat', profile: 'laptop' },
+      { id: 'tagged', profile: 'default', connection_id: 'homelab' }
+    ]
+  })
+
+  // Pinned to a remote gateway, local primary: untagged rows are this device's.
+  const pinnedRemote = tagPrimarySessionRows(base(), null, 'butler') as any
+  assert.equal(pinnedRemote.sessions[0].connection_id, 'local')
+  assert.equal(pinnedRemote.sessions[1].connection_id, 'homelab')
+
+  // A remote primary names its own registry id.
+  const remotePrimary = tagPrimarySessionRows(base(), 'butler', 'local') as any
+  assert.equal(remotePrimary.sessions[0].connection_id, 'butler')
+
+  // Pinned to the primary itself, or unpinned: leave the renderer's stamp alone.
+  assert.equal((tagPrimarySessionRows(base(), 'local', 'local') as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), null, null) as any).sessions[0].connection_id, undefined)
+  assert.equal((tagPrimarySessionRows(base(), 'butler', 'butler') as any).sessions[0].connection_id, undefined)
 })
 
 test('registry-pinned session responses retain their owning connection', () => {
@@ -1845,4 +1931,18 @@ test('all-profiles cron list merges one read per profile like the gateway', asyn
   assert.deepEqual(reads.sort(), ['/api/cron/jobs?profile=broken', '/api/cron/jobs?profile=default', '/api/cron/jobs?profile=work'])
   // A duplicate keeps its first position but the default profile's copy; id-less jobs never fold.
   assert.deepEqual(jobs.map(job => `${job.id}:${job.profile ?? job.name}`), ['shared:default', 'w:work', 'unknown:w-orphan', 'unknown:d-orphan'])
+})
+
+test('the primary aggregate names this device only for a local backend', async () => {
+  assert.equal(await primaryAggregateConnectionId(async () => ({ connectionId: 'butler', mode: 'remote' })), 'butler')
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'local' })), 'local')
+  // HERMES_DESKTOP_REMOTE_URL: remote with no registry id. Its rows are not This device's.
+  assert.equal(await primaryAggregateConnectionId(async () => ({ mode: 'remote' })), null)
+  assert.equal(await primaryAggregateConnectionId(async () => null), null)
+  assert.equal(
+    await primaryAggregateConnectionId(async () => {
+      throw new Error('no backend')
+    }),
+    null
+  )
 })

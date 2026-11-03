@@ -27,13 +27,14 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import type { AgentProfileRoute } from '@/store/profile'
 import { sessionOwnerPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, sessionDotStateForRow } from '@/store/session-dot-state'
 import { sessionOwnerRowKey } from '@/store/session-request-router'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
-import { mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
+import { canReorderSessions, mergeVisibleReorder, orderRowsWithinGroups, reorderableRowIds } from './order'
 import {
   EnteredProjectContent,
   ProjectOverviewRow,
@@ -116,7 +117,7 @@ interface SidebarSessionsSectionProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (session: SessionInfo) => void
-  onNewSessionInWorkspace?: (path: null | string) => void
+  onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
@@ -264,12 +265,8 @@ export function SidebarSessionsSection({
   const showEmptyState =
     forceEmptyState || (!hasGroupedSessions && !hasProjectOverview && !hasProjectContent && sessions.length === 0)
 
-  // The flat recents/pinned list is the only place sessions reorder by hand;
-  // grouped/tree views always sort by creation date and never drag. Persisted
-  // order is id-only, so duplicate ids cannot be reordered without conflating
-  // owners; keep those rows non-sortable rather than registering duplicate DnD ids.
-  const hasDuplicateSessionIds = new Set(sessions.map(session => session.id)).size !== sessions.length
-  const sessionsDraggable = sortable && !!onReorderSessions && !hasDuplicateSessionIds
+  // Persisted order is id-only, so owner-colliding ids stay non-sortable.
+  const sessionsDraggable = canReorderSessions(sessions, sortable, !!onReorderSessions)
 
   // Only Pinned arrives pre-ordered as a flat sequence. Recents keeps its
   // recency sort — the drag order is layered on per date group below, so the

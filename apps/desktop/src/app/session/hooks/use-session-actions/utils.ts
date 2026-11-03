@@ -1,4 +1,3 @@
-import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
@@ -83,6 +82,7 @@ import {
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
+import { publishSessionUsage } from './session-usage'
 
 export {
   chatMessageArraysEquivalent,
@@ -1784,31 +1784,23 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
   return (session?.message_count ?? 0) > 0
 }
 
-export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
-
+/* eslint-disable padding-line-between-statements */ export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
 export function findListedSession(
   target: SessionInfo | string
 ): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
   const targetKey = typeof target === 'string' ? null : sessionOwnerRowKey(target)
   const targetId = typeof target === 'string' ? target : target.id
-
   const match = (session: SessionInfo) =>
     targetKey ? sessionOwnerRowKey(session) === targetKey : sessionMatchesStoredId(session, targetId)
-
   const fromMessaging = $messagingSessions.get().find(match)
-
   if (fromMessaging) {
     return { session: fromMessaging, slice: 'messaging' }
   }
-
   const fromCron = $cronSessions.get().find(match)
-
   if (fromCron) {
     return { session: fromCron, slice: 'cron' }
   }
-
   const fromSessions = $sessions.get().find(match)
-
   if (fromSessions) {
     return { session: fromSessions, slice: 'sessions' }
   }
@@ -1819,7 +1811,6 @@ export function findListedSession(
 export function dropListedSession(target: SessionInfo | string): void {
   const targetKey = typeof target === 'string' ? null : sessionOwnerRowKey(target)
   const targetId = typeof target === 'string' ? target : target.id
-
   const keep = (session: SessionInfo) =>
     targetKey ? sessionOwnerRowKey(session) !== targetKey : !sessionMatchesStoredId(session, targetId)
 
@@ -1840,7 +1831,6 @@ export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
   const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
   const restoredKey = sessionOwnerRowKey(session)
-
   const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => sessionOwnerRowKey(existing) !== restoredKey)
@@ -1861,7 +1851,7 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
   setSessions(prepend)
 }
 
-function upsertResolvedSession(
+/* eslint-enable padding-line-between-statements */ function upsertResolvedSession(
   session: SessionInfo,
   storedSessionId: string,
   tombstoneGenerationsAtRequestStart: SessionTombstoneGenerationSnapshot
@@ -2336,8 +2326,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
-      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot of THIS session: an omitted readout clears.
+      publishSessionUsage(sessionState.usage)
     }
   }
 
@@ -2346,12 +2336,12 @@ export function applyRuntimeInfo(
 
 export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
-  storedSessionId: null | string
+  storedSessionId: null | string,
+  options: { sameSession?: boolean } = {}
 ) {
-  // Compression count is live runtime state, not part of a durable session row.
-  // Drop the previous session's value immediately while the selected runtime
-  // resumes; the authoritative usage snapshot will repopulate it when present.
-  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // Compressions, cache-hit rate, t/s: live runtime state — a switch drops them (#146430), a re-resume keeps them.
+  const staleRates = options.sameSession ? {} : { avg_tps: undefined, cache_hit_pct: undefined }
+  setCurrentUsage(current => ({ ...current, ...staleRates, compressions: undefined }))
   // Transient: this is a PREVIEW painted while `session.resume` is still in
   // flight. If the resume is abandoned (user starts a new chat before it
   // returns, or the row is switched away), nothing repairs the selection

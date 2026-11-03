@@ -489,21 +489,6 @@ export const sessionMatchesPinId = (
   storedPinId: string
 ): boolean => storedPinId === sessionOwnerPinId(session) || sessionMatchesStoredId(session, storedPinId)
 
-/** Durable backend id embedded in an owner-qualified renderer pin key. */
-export function durableIdFromPinId(storedPinId: string): string {
-  try {
-    const parsed: unknown = JSON.parse(storedPinId)
-
-    if (Array.isArray(parsed) && parsed.length === 4 && parsed[0] === 'owner-pin' && typeof parsed[3] === 'string') {
-      return parsed[3]
-    }
-  } catch {
-    // Historical bare ids are not JSON.
-  }
-
-  return storedPinId
-}
-
 /** True when a stored/lineage id resolves to this session — it matches either
  *  the live id or the stable lineage root (see sessionPinId). The one place the
  *  "same conversation across compression" test lives. */
@@ -1629,12 +1614,14 @@ export const $lastReadAtBySessionId = atom<Record<string, number>>({})
 /** A new turn started for this session: the read baseline only guarded the
  *  PREVIOUS completion's re-asserts, so drop it — the new turn's finish must
  *  re-light even when it lands in the same millisecond as the last read. */
-export const clearReadBaseline = (storedSessionId: string) => {
+export const clearReadBaseline = (storedSessionId: string, row?: SessionInfo) => {
   const map = $lastReadAtBySessionId.get()
+  const keys = row ? [storedSessionId, sessionOwnerRowKey(row)] : [storedSessionId]
 
-  if (storedSessionId in map) {
-    const { [storedSessionId]: _dropped, ...rest } = map
-    $lastReadAtBySessionId.set(rest)
+  if (keys.some(key => key in map)) {
+    const next = { ...map }
+    keys.forEach(key => delete next[key])
+    $lastReadAtBySessionId.set(next)
   }
 }
 
@@ -1686,7 +1673,10 @@ export const markSessionRead = (target: SessionInfo | null | string | undefined)
     return
   }
 
-  const own = opened ? rows.filter(row => profileOf(row) === profileOf(opened)) : rows
+  const own = opened
+    ? rows.filter(row => profileOf(row) === profileOf(opened) && sessionOwnerPinId(row) === sessionOwnerPinId(opened))
+    : rows
+
   const familyIds = new Set<string>(lineageAliases(storedSessionId, own))
   const markerIds = new Set<string>()
 

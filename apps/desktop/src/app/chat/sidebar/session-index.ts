@@ -48,8 +48,10 @@ export function buildSessionByAnyId(
  * only local ids — renders empty, so the conversation vanishes from the
  * sidebar entirely (#85969). Falling back to the row flag keeps the invariant:
  * a session the backend says is pinned is always reachable from the Pinned
- * section, whatever the local cache holds. session-pin-sync then adopts the
- * pin into the local set on its next reconcile, restoring ordering control.
+ * section, whatever the local cache holds. For a row the pin set's own gateway
+ * owns, session-pin-sync then adopts the pin into the local set on its next
+ * reconcile, restoring ordering control; another gateway's row (kept or still
+ * painted after a pick) is never adopted and stays a server-only pin.
  *
  * `unconfirmedPinWrites` is that same module's fence, and the fallback has to
  * respect it. Unpinning drops the id from the local set immediately, but the

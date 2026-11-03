@@ -6,6 +6,7 @@ import { makeSessionInfo } from '@/test/session-info'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  canReorderSessions,
   mergeVisibleReorder,
   orderByIds,
   orderRowsWithinGroups,
@@ -15,6 +16,14 @@ import {
   resolveManualSessionOrderIds,
   sameIds
 } from './order'
+
+describe('canReorderSessions', () => {
+  it('rejects owner-colliding ids because persisted order is id-only', () => {
+    const sessions = [makeSessionInfo({ id: 'shared' }), makeSessionInfo({ connection_id: 'remote', id: 'shared' })]
+
+    expect(canReorderSessions(sessions, true, true)).toBe(false)
+  })
+})
 
 describe('resolveManualSessionOrderIds', () => {
   it('clears legacy auto-seeded order until the user manually reorders sessions', () => {

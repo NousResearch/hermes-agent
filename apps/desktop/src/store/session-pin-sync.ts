@@ -23,15 +23,17 @@
 
 import { atom } from 'nanostores'
 
+import { ambientOwnerConnectionId } from '@/api/client'
 import { type ProfileScope, setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
+  $connection,
   $cronSessions,
   $messagingSessions,
   $sessions,
-  durableIdFromPinId,
   sessionMatchesPinId,
   sessionOwnerPinId,
   sessionPinId,
@@ -43,6 +45,21 @@ import { isSessionRemovalPending } from '@/store/session-removal'
 import type { SessionInfo } from '@/types/hermes'
 
 import { sessionMutationScopeFromRow } from './session-request-router'
+
+/** Durable backend id embedded in an owner-qualified renderer pin key. */
+function durableIdFromPinId(storedPinId: string): string {
+  try {
+    const parsed: unknown = JSON.parse(storedPinId)
+
+    if (Array.isArray(parsed) && parsed.length === 4 && parsed[0] === 'owner-pin' && typeof parsed[3] === 'string') {
+      return parsed[3]
+    }
+  } catch {
+    // Historical bare ids are not JSON.
+  }
+
+  return storedPinId
+}
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -68,6 +85,38 @@ type OptimisticSessionRow = SessionInfo & { [optimisticPin]?: true }
 
 function isOptimisticRow(row: SessionInfo): boolean {
   return (row as OptimisticSessionRow)[optimisticPin] === true
+}
+
+function firstTrackedId(ids: ReadonlySet<string> | ReadonlyMap<string, unknown>, candidates: string[]): string | undefined {
+  return candidates.find(id => ids.has(id))
+}
+
+function shouldSkipUnconfirmedRow(row: SessionInfo, pinId: string, durablePinId: string): boolean {
+  const guardKey = firstTrackedId(unconfirmed, [pinId, durablePinId, row.id])
+  const guard = guardKey ? unconfirmed.get(guardKey) : undefined
+
+  if (!guard || !guardKey) {
+    return false
+  }
+
+  if (isOptimisticRow(row)) {
+    // Painted rows carry local intent, so only the cooldown can retire them.
+    if (Date.now() - guard.at >= WRITE_GUARD_MS) {
+      unconfirmed.delete(guardKey)
+    }
+
+    return false
+  }
+
+  if (guard.value === row.pinned) {
+    unconfirmed.delete(guardKey)
+  } else if (Date.now() - guard.at < WRITE_GUARD_MS) {
+    return true
+  } else {
+    unconfirmed.delete(guardKey)
+  }
+
+  return false
 }
 
 /**
@@ -105,8 +154,35 @@ function ownerFor(pinId: string): ProfileScope {
   return sessionMutationScopeFromRow(row) ?? row?.profile
 }
 
+/**
+ * Whether `row` lives on the gateway the pin set is scoped to.
+ *
+ * `$pinnedSessionIds` follows `$connection` (setConnection rescopes it), but
+ * the loaded slices can hold other gateways' rows: a gateway pick publishes
+ * the new connection while the previous one's rows are still painted, and
+ * kept gateways pool their rows into the same lists. Another gateway's
+ * `pinned` flag says nothing about this gateway's state.db, and a PATCH for it
+ * would ride the ambient connection to a backend that never had the row. A
+ * row with no `connection_id` belongs to the primary pool (the row stamp never
+ * tags `local` or the primary's own rows): `local` for a local primary, else
+ * the primary's registry id; a primary with no registry id keeps counting as
+ * the active backend's, as before. A descriptor that names no connection falls
+ * back to the ambient owner id (the request scope's tag, or `local` for the
+ * local pool).
+ */
+function ownedByPinScope(row: SessionInfo): boolean {
+  const primary = $primaryGatewayRoute.get()
+  const owner = row.connection_id?.trim() || (primary.mode === 'local' ? 'local' : primary.connectionId?.trim())
+
+  if (!owner) {
+    return true
+  }
+
+  return owner === ($connection.get()?.connectionId?.trim() || ambientOwnerConnectionId())
+}
+
 function loadedSessionRows(): SessionInfo[] {
-  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+  return [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].filter(ownedByPinScope)
 }
 
 /**
@@ -116,6 +192,18 @@ function loadedSessionRows(): SessionInfo[] {
  * profile and the next page re-adopts the pin.
  */
 function loadedRowFor(pinId: string): SessionInfo | undefined {
+  const allRows = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()]
+
+  const ownerRow = allRows.find(row => {
+    const ownerPinId = sessionOwnerPinId(row)
+
+    return ownerPinId !== sessionPinId(row) && ownerPinId === pinId
+  })
+
+  if (ownerRow) {
+    return ownerRow
+  }
+
   const rows = loadedSessionRows().filter(row => sessionMatchesPinId(row, pinId))
   const gateway = normalizeProfileKey($activeGatewayProfile.get())
 
@@ -175,10 +263,13 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
     let changed = false
 
     const next = rows.map(row => {
+      const matchesOwnerPin = sessionOwnerPinId(row) === pinId
+
       if (
         typeof row.pinned !== 'boolean' ||
         row.pinned === pinned ||
-        !sessionMatchesPinId(row, pinId) ||
+        (!matchesOwnerPin && !sessionMatchesPinId(row, pinId)) ||
+        (!matchesOwnerPin && !ownedByPinScope(row)) ||
         (owner != null && normalizeProfileKey(row.profile) !== owner)
       ) {
         return row
@@ -254,37 +345,13 @@ function pullRemotePins(): void {
     // cooldown → the page was almost certainly issued before our PATCH, so our
     // write is newer: skip the row. Contradicted past the cooldown → no page
     // ever confirmed us, so stop fencing and let the server win.
-    const guardKey = unconfirmed.has(pinId)
-      ? pinId
-      : unconfirmed.has(durablePinId)
-        ? durablePinId
-        : unconfirmed.has(row.id)
-          ? row.id
-          : null
-
-    const guard = guardKey ? unconfirmed.get(guardKey) : undefined
-
-    if (guard && guardKey) {
-      if (isOptimisticRow(row)) {
-        // Our own painted row agrees by construction (as does any value copy
-        // of it — the marker is enumerable and spreads with the row), so it is
-        // not a confirmation. Let the cooldown retire the guard as usual; the
-        // row then matches the local set and the checks below are a no-op.
-        if (Date.now() - guard.at >= WRITE_GUARD_MS) {
-          unconfirmed.delete(guardKey)
-        }
-      } else if (guard.value === row.pinned) {
-        unconfirmed.delete(guardKey)
-      } else if (Date.now() - guard.at < WRITE_GUARD_MS) {
-        continue
-      } else {
-        unconfirmed.delete(guardKey)
-      }
+    if (shouldSkipUnconfirmedRow(row, pinId, durablePinId)) {
+      continue
     }
 
     // Local intent still waiting on its PATCH (row unresolved when the push
     // pass ran) is also newer than the page — never revert it.
-    if (pending.has(pinId) || pending.has(durablePinId) || pending.has(row.id)) {
+    if (firstTrackedId(pending, [pinId, durablePinId, row.id])) {
       continue
     }
 

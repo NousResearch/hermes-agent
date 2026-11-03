@@ -100,6 +100,7 @@ export function createPreviewConsoleState() {
           ? {}
           : { source: truncateConsoleText(entry.source, PREVIEW_CONSOLE_MAX_SOURCE_CHARS) })
       }
+
       const logs = fitConsoleHistory([...$logs.get(), nextEntry])
 
       $logs.set(logs)

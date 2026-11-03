@@ -53,6 +53,10 @@ export const $uiBusy = computed($uiState, state => state.busy)
 
 export const getUiState = () => $uiState.get()
 
+// The folder a user-typed path is relative to: the session's, else the one `hermes --tui` was
+// launched from. Never this process's cwd (the ui-tui install) or the shared gateway's.
+export const sessionCwd = (): string | undefined => $uiState.get().info?.cwd || process.env.HERMES_CWD || undefined
+
 export const patchUiState = (next: Partial<UiState> | ((state: UiState) => UiState)) =>
   $uiState.set(typeof next === 'function' ? next($uiState.get()) : { ...$uiState.get(), ...next })
 

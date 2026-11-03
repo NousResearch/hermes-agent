@@ -10,7 +10,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import platform
 import re
 import sys
@@ -28,7 +28,7 @@ _INPUT_FILES = (
     "scripts/bundles/desktop_prepare.py", "scripts/bundles/desktop_toolchain.py",
     "scripts/bundles/desktop_inputs.py", "scripts/bundles/native.py", "scripts/bundles/native_prepared.py",
     "scripts/bundles/native_build.py",
-    "scripts/build/node-deps.mjs", "scripts/build/icon_environment.py",
+    "scripts/build/node-deps.mjs", "scripts/build/electron-runtime.mjs", "scripts/build/icon_environment.py",
     "pm/native_build.py", "scripts/windows-build-deps.ps1",
     "apps/desktop/scripts/stage-native-deps.mjs", "apps/desktop/scripts/prepare-packaging-tools.mjs",
     "apps/desktop/scripts/build-command-screenshot-monitor.mjs",
@@ -61,17 +61,6 @@ def _input_digest(source: Path, lock: dict) -> str:
     return digest.hexdigest()
 
 
-def _workspace_path(source: Path, name: str) -> None:
-    if (not isinstance(name, str) or not name or
-            any(char in name for char in "\\:*?[]!\r\n\0") or
-            PurePosixPath(name).is_absolute() or
-            any(part in ("", ".", "..", "node_modules") for part in name.split("/"))):
-        raise ValueError(f"invalid locked workspace path: {name!r}")
-    path = source / name
-    if not path.resolve().is_relative_to(source) or not (path / "package.json").is_file():
-        raise ValueError(f"missing or foreign locked workspace: {name!r}")
-
-
 def _cache_path(path: Path) -> str:
     if any(char in str(path) for char in "*?[]!\r\n\0") or path.resolve() != path:
         raise ValueError(f"unsafe cache path: {path}")
@@ -87,14 +76,10 @@ def describe_cache(source: Path, cache: Path, producer: str, *, work: Path | Non
     payload_only = producer == "payload-test"
     lock = {"packages": {}} if payload_only else json.loads(
         (source / "package-lock.json").read_text(encoding="utf-8-sig"))
-    # Match the Node owner's locked layout without needing Node before restore.
-    workspaces = sorted({entry["resolved"] for entry in lock["packages"].values() if entry.get("link")})
-    for workspace in set(workspaces) | {name for name in lock["packages"] if name and "node_modules" not in name.split("/")}:
-        _workspace_path(source, workspace)
+    # node_modules is never transported: npm ci deletes it before installing, so
+    # only npm's content cache (npm/_cacache) saves work on the next run.
     domains = ("tools", "python/runtime", "native") if payload_only else CACHE_DOMAINS
     paths = [_cache_path(cache / domain) for domain in domains]
-    if not payload_only:
-        paths += [_cache_path(source / workspace / "node_modules") for workspace in ["", *workspaces]]
     private_roots = {"source": source, "work": work,
                      "HERMES_HOME": Path(os.environ["HERMES_HOME"]) if os.environ.get("HERMES_HOME") else None}
     for name, private in private_roots.items():

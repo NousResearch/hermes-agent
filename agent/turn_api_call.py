@@ -15,7 +15,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
-from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.message_metadata import append_message
 from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -30,7 +30,6 @@ def stop_thinking_spinner(agent: Any, thinking_spinner: Any) -> None:
         thinking_spinner.stop("")
     if agent.thinking_callback:
         agent.thinking_callback("")
-    return None
 
 
 @dataclass
@@ -45,16 +44,21 @@ class ApiCallVerdict:
 
 
 def _should_stream(agent: Any) -> bool:
-    """Streaming is preferred even without consumers (stale-stream / read-timeout health
-    checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
-    external-process provider profile), MoA without a display consumer, or Mock clients in
-    tests (SimpleNamespace, not stream iterators)."""
+    """Prefer streaming for liveness even without display consumers. Process providers
+    must opt in; ACP transports and explicit session/provider disables stay non-streaming."""
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
+    if _base.startswith(("acp://", "acp+tcp://")):
+        return False
+    from providers import get_provider_profile
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
-    if _base.startswith(("acp://", "acp+tcp://")) or _is_external_process_provider(agent.provider):
+    profile = get_provider_profile(agent.provider)
+    streaming = getattr(profile, "supports_streaming", None)
+    if streaming is False:
+        return False
+    if _is_external_process_provider(agent.provider) and streaming is not True:
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":
@@ -88,8 +92,10 @@ def perform_api_call(
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
+            from agent.codex_responses_adapter import drops_replay_item_ids
+
             next_api_kwargs = agent._get_transport().preflight_kwargs(
-                next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+                next_api_kwargs, allow_stream=False, drop_replay_item_ids=drops_replay_item_ids(agent.base_url),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:
@@ -198,13 +204,12 @@ def handle_api_interrupt(
         # The interrupted row is replayed next turn; looped bytes there re-seed the loop
         # (#112764). Same hidden shape as the redirect placeholder: nothing visible in the
         # transcript, a neutral api_content so the pre-call sanitizer does not re-heal it.
-        append_message(messages, {
-            "role": "assistant", "content": "", "display_kind": "hidden",
-            "api_content": _INTERRUPTED_PLACEHOLDER,
-        })
+        append_message(messages, hidden_interrupt_placeholder_row())
         final_response = REPETITION_LOOP_INTERRUPTED
     elif _partial:
-        append_message(messages, {"role": "assistant", "content": _partial})
+        append_message(messages, {
+            "role": "assistant", "content": _partial, "display_metadata": {"interrupted": True},
+        })
         final_response = _partial
     else:
         final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
@@ -221,7 +226,7 @@ class NousRateGuardVerdict:
     active_system_prompt: Any
     retry_count: Any
     compression_attempts: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
 
 
 def nous_rate_limit_guard(
@@ -232,7 +237,7 @@ def nous_rate_limit_guard(
     SDK retries) counts against RPH. Never lets the guard itself break the agent loop."""
     from agent.conversation_loop import _arm_fallback_restart
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> NousRateGuardVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> NousRateGuardVerdict:
         return NousRateGuardVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
             compression_attempts=compression_attempts, result=result,

@@ -61,7 +61,8 @@ def _derived_version(
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -217,7 +218,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         # -uno: skip the untracked-file scan. This runs on the startup-banner
         # path, and a full working-tree walk costs real time on large or cold
         # checkouts. Same semantics as write_install_stamp.py.
-        status_command = ["git", "status", "--porcelain"]
+        # The 3 s timeout kills a slow status (a partial clone lazily fetching a tree, a cold or
+        # scanned disk), and a status killed while refreshing the index strands .git/index.lock:
+        # the update's own merge then dies on "File exists" (#132089). A read-only probe takes
+        # no optional lock.
+        status_command = ["git", "--no-optional-locks", "status", "--porcelain"]
         if not include_untracked:
             status_command.append("-uno")
         dirty_result = subprocess.run(
@@ -226,6 +231,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
             text=True, encoding="utf-8", errors="replace",
             timeout=3,
             cwd=str(repo_dir),
+            check=False,
         )
         dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
     except (OSError, subprocess.SubprocessError):
@@ -268,6 +274,21 @@ def _reset_version_info_cache() -> None:
     _cached_version_info = None
 
 
+def _stamp_or_none() -> VersionInfo | None:
+    """The install stamp's provenance, or None without a valid stamp.
+
+    A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
+    payload) raises RuntimeError — the build lane that wrote it must be
+    fixed, but a crashing CLI is the wrong failure mode for every uncached
+    caller. Degrade to live git / "unknown" and let the authoring lane's own
+    tests surface the malformed stamp.
+    """
+    try:
+        return _stamp_version_info()
+    except RuntimeError:
+        return None
+
+
 def get_version_info() -> VersionInfo:
     """Return cached provenance from install stamp, git, or unknown."""
     global _cached_version_info
@@ -275,15 +296,7 @@ def get_version_info() -> VersionInfo:
         return _cached_version_info
 
     # 1. Install stamp (packaged builds: Docker, Nix)
-    # A malformed stamp (missing/illegal updateMechanism, mispackaged "light"
-    # payload) raises RuntimeError — the build lane that wrote it must be
-    # fixed, but a crashing CLI is the wrong failure mode for every uncached
-    # caller. Degrade to "unknown" and let the authoring lane's own tests
-    # surface the malformed stamp.
-    try:
-        info = _stamp_version_info()
-    except RuntimeError:
-        info = None
+    info = _stamp_or_none()
 
     # 2. Live git (source/dev installs)
     if info is None:
@@ -297,6 +310,16 @@ def get_version_info() -> VersionInfo:
 
     _cached_version_info = info
     return info
+
+
+def hermes_user_agent(product: str = "hermes-cli") -> str:
+    """``<product>/<base version>`` for an outbound request.
+
+    Call it where the request is built, never at module level: a source checkout resolves the
+    release from git, so a module-level read made every Hermes start pay that walk whether or not
+    it ever sent the request.
+    """
+    return f"{product}/{get_version_info().base_version}"
 
 
 def get_code_identity(refresh: bool = False) -> dict:
@@ -324,3 +347,19 @@ def get_code_identity(refresh: bool = False) -> dict:
         "source": info.source,
         "commit_date": info.commit_date,
     }
+
+
+def read_checkout_sha() -> str | None:
+    """The running install's commit, re-read now: the stamp's, else ``git rev-parse HEAD``.
+
+    Same answer as ``get_code_identity(refresh=True)["sha"]`` for one git call instead of the
+    whole provenance walk (the tag scan alone costs ~0.35 s in a large clone), which the
+    pending-restart check on every CLI start was paying just to compare SHAs. Drops the cached
+    identity like that refresh does: the checkout may have moved under this process.
+    """
+    _reset_version_info_cache()
+    stamp = _stamp_or_none()
+    if stamp is not None:
+        return stamp.commit
+    repo_dir = _resolve_repo_dir()
+    return _run_git(repo_dir, "rev-parse", "HEAD") if repo_dir is not None else None

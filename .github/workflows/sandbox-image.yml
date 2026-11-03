@@ -45,21 +45,21 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: blacksmith-32vcpu-ubuntu-2404
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Build (${{ matrix.arch }})
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: docker/sandbox-desktop.Dockerfile
@@ -83,18 +83,18 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: blacksmith-32vcpu-ubuntu-2404
             platform: linux/amd64
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: blacksmith-32vcpu-ubuntu-2404-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -104,7 +104,7 @@ jobs:
 
       - name: Push ${{ matrix.arch }} by digest
         id: push
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
         with:
           context: .
           file: docker/sandbox-desktop.Dockerfile
@@ -120,7 +120,7 @@ jobs:
           digest="${{ steps.push.outputs.digest }}"
           touch "$RUNNER_TEMP/digests/${digest#sha256:}"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sandbox-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
@@ -131,11 +131,14 @@ jobs:
   merge:
     if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     needs: [publish]
+    # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
+    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: container-publish
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: ${{ runner.temp }}/digests
           pattern: sandbox-digest-*

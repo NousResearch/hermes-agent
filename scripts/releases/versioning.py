@@ -10,11 +10,13 @@ import json
 import re
 import subprocess
 from functools import cmp_to_key
+from typing import Any
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 from scripts.releases.semver import compare
 
-SEED = "0.21.4"
+# The legacy CalVer line published up to 0.21.5 (v2026.9.24); the pipeline continues it.
+SEED = "0.21.5"
 BUMPS = ("major", "minor", "patch")
 
 
@@ -104,6 +106,20 @@ def version_from_tag(ref: str) -> str | None:
     if not isinstance(ref, str) or not STABLE_TAG_RE.fullmatch(ref):
         return None
     return ref[1:]
+
+
+def tag_record(raw: str) -> Any:
+    """Decode the JSON record an annotated release tag carries.
+
+    ``git tag -l --format=%(contents)`` returns the whole message, and git keeps
+    a signature *inside* the message body: a signed tag reads as the record
+    followed by an armored signature block. The record is everything before the
+    armor, so every reader parses through here, never ``json.loads(raw)``.
+
+    Detached signatures (``git tag --detach-sign``) live outside the message and
+    leave this unchanged, as does an unsigned tag.
+    """
+    return json.loads(raw.split("\n-----BEGIN ", 1)[0])
 
 
 # The ref grammar only anchors; ``version_from_tag`` owns the version shape.

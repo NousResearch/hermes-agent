@@ -94,7 +94,7 @@ def _probe(row: Row, root: Path, kind: str) -> dict:
         try:
             proc = subprocess.run([sys.executable, "-c", script, row.name, unique], cwd=root, capture_output=True,
                                   text=True, env=hermetic_env(home, {**keys, **fake.proxy_env()}),
-                                  timeout=PROBE_TIMEOUT, stdin=subprocess.DEVNULL)
+                                  timeout=PROBE_TIMEOUT, stdin=subprocess.DEVNULL, check=False)
             out, err = proc.stdout, proc.stderr
         except subprocess.TimeoutExpired:
             out, err = "", f"TIMEOUT after {PROBE_TIMEOUT}s"

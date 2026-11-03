@@ -164,7 +164,7 @@ def _private_tui(tmp_path: Path) -> Path:
     def copied_intact() -> bool:
         shutil.copyfile(src, dst)
         return subprocess.run([shutil.which("node") or "node", "--check", str(dst)], capture_output=True,
-                              timeout=60, stdin=subprocess.DEVNULL).returncode == 0
+                              timeout=60, stdin=subprocess.DEVNULL, check=False).returncode == 0
     poll(copied_intact, 180, "an intact copy of ui-tui/dist/entry.js (a concurrent build may be writing it)",
          interval=1.0)
     return dst.parent.parent

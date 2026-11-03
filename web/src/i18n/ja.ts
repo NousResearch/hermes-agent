@@ -92,9 +92,18 @@ export const ja: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "有効なメモリプロバイダー",
+    noProvider: "なし — 組み込みのみ",
+    builtinLayer: "組み込みレイヤー",
+    builtinNote: "MEMORY.md と USER.md は外部プロバイダーとは別の Hermes 自身のメモリです。どちらも既定でセッションに読み込まれ、設定の切り替え (memory.memory_enabled / memory.user_profile_enabled) でそれぞれオフにできます。外部プロバイダーはこれに追加されるもので、置き換えることはありません。",
+  },
+
   status: {
     actionFailed: "アクションが失敗しました",
     actionFinished: "完了",
+    actionFinishedOwed: "更新済みですが未完了の処理があります（完了するには `hermes update` を再実行してください）",
     actions: "アクション",
     agent: "エージェント",
     activeSessions: "アクティブなセッション",

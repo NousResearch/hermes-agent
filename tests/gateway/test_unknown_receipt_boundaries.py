@@ -59,6 +59,9 @@ async def test_discard_closure_failure_keeps_unknown_fence_and_retry_is_exact(ow
         claim_session_input(owner.db, epoch=owner.epoch, session_id='s')
     monkeypatch.setattr(session_results, 'close_discarded_turn', close)
     settled = await owner.resolve_unknown(actor, ref, first['admission_id'], claim['generation'])
+    from gateway.session_runtime_workers import mutation_tasks
+    from tests.waiting import async_wait_until
+    await async_wait_until(lambda: not mutation_tasks(owner), timeout=5, what='off-loop media collection')
     assert not Path(references[0]['path']).exists()
     assert owner.db.latest_conversation_role(target) == 'assistant'
     successor = claim_session_input(owner.db, epoch=owner.epoch, session_id='s')

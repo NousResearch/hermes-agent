@@ -341,7 +341,8 @@ async def test_a_producer_drop_that_raises_does_not_skip_the_unsettled_review_re
     tmp_path, monkeypatch, caplog
 ):
     monkeypatch.setattr(recovery, "settle_with_retry", _unsettled)
-    monkeypatch.setattr(authority_module, "drop_producer_turn", _exploding_drop)
+    # The unsettled drop runs in ``settle_and_deliver``, which binds the name at import.
+    monkeypatch.setattr(recovery, "drop_producer_turn", _exploding_drop)
     timeline, turns = [], {}
     runner, authority = await _owner(tmp_path, monkeypatch)
     _install_turn(runner, monkeypatch, timeline, turns)

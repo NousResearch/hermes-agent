@@ -483,9 +483,8 @@ function classicRoom(group: string, members: RosterRow[], room: Record<string, u
   })
 }
 
-// On a gateway connection the gateway owns every group chat, as on main: a classic room never runs
-// here, whichever computers its Bots are on. The gate says why and what to do, and only Bots that
-// can form a gateway group here are offered Start new group.
+// These single-connection rooms exercise the gate. #148418 covers the restored Desktop-driven
+// path separately, including mixed-connection rooms saved before the update.
 it.each([
   ['Bots that can form a gateway group here', roster, 'legacyRoom', '', true],
   ['Bots on another connection', mini, 'legacyRoomElsewhere', 'Bots on other connections: Mini', false],

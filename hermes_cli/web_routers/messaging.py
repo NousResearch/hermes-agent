@@ -346,6 +346,20 @@ def _relay_channel_view(home: Path) -> tuple[frozenset[str], bool]:
     return relay_channel_view()
 
 
+def _team_gateway_payload(home: Path) -> Optional[dict[str, Any]]:
+    """Set when Team Gateway owns this profile's messaging (the relay-exclusive env stamp), else None.
+
+    Then no direct bot can run and channels are configured on the agent's page in Nous Portal, so the
+    Channels surfaces show that instead of per-platform setup. The opt-out
+    (``GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS``) keeps the per-platform page: direct bots run there."""
+    fronted, exclusive = _relay_channel_view(home)
+    if not exclusive:
+        return None
+    from gateway.relay.link import portal_agents_url
+
+    return {"portal_url": portal_agents_url(), "platforms": sorted(fronted)}
+
+
 @contextlib.contextmanager
 def _onboarding_save_errors(log_msg: str, detail: str):
     """Map onboarding env/config write failures: ValueError -> 400 (its text),
@@ -984,6 +998,8 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
+                "team_gateway": _team_gateway_payload(scoped_dir if scoped_dir is not None
+                                                      else get_process_hermes_home()),
             }
 
     return await asyncio.to_thread(_run)

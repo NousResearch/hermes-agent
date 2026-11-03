@@ -1,6 +1,6 @@
 ---
 name: tool-audit
-description: "Report per-tool call counts and error rates for a session."
+description: "Report per-tool calls and provable errors for a session."
 version: 2.0.0
 author: 黄云龙 (nankingjing), Hermes Agent
 license: MIT
@@ -55,7 +55,7 @@ python scripts/tool_audit.py --db /path/state.db # explicit store (e.g. another 
 | calls | `tool_calls` entries on assistant rows | `messages.tool_calls` JSON |
 | results | tool-role rows matched to a call by `tool_call_id` | `messages.tool_call_id` |
 | orphaned | calls with no matching result row | correlation gap |
-| errors | matched results whose payload is a JSON object with a truthy `error` key | same rule as the runtime observer (`model_tools._tool_result_observer_fields`) |
+| errors | matched results whose payload is a JSON object with a truthy `error` key | the JSON-object branch of the runtime observer's rule (`model_tools._tool_result_observer_fields`) |
 
 Uncorrelated tool results (a result row whose `tool_call_id` matches no
 surviving call, e.g. after compaction) are counted separately, never

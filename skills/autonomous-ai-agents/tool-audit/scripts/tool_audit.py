@@ -2,16 +2,19 @@
 """Per-tool call/result metrics for one session, from the Hermes session store.
 
 Reads the canonical SQLite session store (``state.db``) strictly READ-ONLY
-(SQLite ``mode=ro`` URI, same pattern as ``hermes_state.SessionDB(read_only=True)``)
+(SQLite ``mode=ro`` URI built with ``Path.as_uri()``, the same shape as
+``hermes_state_holders.read_only_db_uri`` / ``SessionDB(read_only=True)``)
 and reports, for a single session, only metrics the store can prove:
 
 * ``calls``    — ``tool_calls`` entries on assistant rows
 * ``results``  — tool-role rows correlated back to a call by ``tool_call_id``
 * ``orphaned`` — calls with no matching result row
 * ``errors``   — correlated results whose payload is a JSON object with a
-  truthy ``"error"`` key. This is deliberately the same classification rule
-  the runtime observer applies (``model_tools._tool_result_observer_fields``),
-  so the audit never claims more than the runtime itself would.
+  truthy ``"error"`` key. This is deliberately the JSON-object branch of the
+  rule the runtime observer applies (``model_tools._tool_result_observer_fields``);
+  the observer's heuristic-failure branch (plain-text prose, via
+  ``agent.display._detect_tool_failure``) is excluded, so the audit reports a
+  lower bound and never claims more than the runtime itself would.
 
 Latency is deliberately NOT reported: per-call ``duration_ms`` is computed in
 ``model_tools.handle_function_call`` and exposed only to ``post_tool_call``
@@ -64,9 +67,16 @@ def get_hermes_home() -> Path:
 
 
 def open_db_readonly(db_path: Path) -> sqlite3.Connection:
-    """Open ``state.db`` read-only (no write lock, no schema init)."""
+    """Open ``state.db`` read-only (no write lock, no schema init).
+
+    The URI is built with ``Path.as_uri()``, matching
+    ``hermes_state_holders.read_only_db_uri``: a raw
+    ``f"file:{path}?mode=ro"`` treats ``?`` as the start of the query and
+    ``#`` as a fragment, so a home path containing either character silently
+    opens the wrong (usually empty) database instead of the real store.
+    """
     conn = sqlite3.connect(
-        f"file:{db_path}?mode=ro",
+        Path(db_path).resolve().as_uri() + "?mode=ro",
         uri=True,
         timeout=1.0,
         isolation_level=None,

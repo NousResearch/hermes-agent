@@ -291,3 +291,19 @@ def test_store_is_opened_readonly_and_missing_db_fails_cleanly(tmp_path, capsys)
 
     assert mod.main(["--db", str(tmp_path / "nope.db")]) == 2
     assert "not found" in capsys.readouterr().err
+
+
+def test_readonly_uri_survives_uri_metacharacters_in_path(tmp_path, capsys):
+    """A '#' in the Hermes home must not be parsed as a URI fragment.
+
+    A raw ``f"file:{path}?mode=ro"`` DSN turns everything after ``#`` into a
+    fragment and silently opens a different, empty database (the same trap
+    ``hermes_state_holders.read_only_db_uri`` exists to avoid).
+    """
+    mod = load_module()
+    tricky_dir = tmp_path / "profile#one"
+    tricky_dir.mkdir()
+    db_path = _make_store(tricky_dir)
+
+    assert mod.main(["--db", str(db_path), "--session", "sess-aaa111", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["session"]["id"] == "sess-aaa111"

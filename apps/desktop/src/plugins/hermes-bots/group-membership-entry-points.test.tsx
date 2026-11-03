@@ -1,15 +1,19 @@
 /**
- * The room-membership entry points offer only what the room can seat: Manage
- * members uses New Group Chat's seatable predicate for add candidates.
+ * The two room-membership entry points offer only what the room can seat:
+ * Manage members uses New Group Chat's seatable predicate for add candidates,
+ * and New Group Chat is not offered when every seatable bot is on ONE other
+ * connection (each selection there is refused), saying why instead.
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $lastRoster } from './data'
 import { GroupMemberPicker } from './group-chat-view-members'
+import { botsText } from './i18n'
 import { translateBots } from './i18n-test-helper'
+import { renderRosterToolbar } from './roster-pane-toolbar'
 import type { RosterRow } from './types'
 
 const { request } = vi.hoisted(() => ({ request: vi.fn() }))
@@ -87,4 +91,59 @@ it('Manage members offers the seatable rows plus the current members, never a ro
   expect(offered).toContain('@beta')
   expect(offered).toContain('Other box')
   expect(offered).not.toContain('spoofed')
+})
+
+function renderToolbar(roster: RosterRow[]) {
+  const setGroupCreateOpen = vi.fn()
+
+  render(
+    renderRosterToolbar({
+      activeFilterCount: 0,
+      activeSourceRoster: roster,
+      activityFilter: 'all',
+      activityToasts: false,
+      b: botsText(),
+      gatewayFilter: 'all',
+      gatewayOptions: [],
+      query: '',
+      roster,
+      rowKindFilter: 'all',
+      setActivityFilter: vi.fn(),
+      setCreateOpen: vi.fn(),
+      setGatewayFilter: vi.fn(),
+      setGroupCreateOpen,
+      setQuery: vi.fn(),
+      setRowKindFilter: vi.fn(),
+      setSectionDialog: vi.fn(),
+      showRosterFilters: false,
+      showRosterSearch: false,
+      showRosterTools: false
+    })
+  )
+  fireEvent.keyDown(screen.getByRole('button', { name: botsText().roster.newBotOrGroup }), { key: 'Enter' })
+
+  return setGroupCreateOpen
+}
+
+it('New Group Chat is disabled, with the reason, when every seatable bot is on one other connection', async () => {
+  // This connection's only bot is one the authority will not seat.
+  const setGroupCreateOpen = renderToolbar([{ name: 'parked', connectionId: 'local' }, remote('scout'), remote('scribe')])
+  const note = botsText().crossGateway.selectionElsewhere('Other box')
+
+  const item = await screen.findByRole('menuitem', { name: new RegExp(botsText().group.newTitle) })
+  await waitFor(() => expect(item.hasAttribute('data-disabled')).toBe(true))
+  expect(item.textContent).toContain(note)
+  fireEvent.click(item)
+  expect(setGroupCreateOpen).not.toHaveBeenCalled()
+})
+
+it('New Group Chat stays offered for a selection that can span connections', async () => {
+  const setGroupCreateOpen = renderToolbar([alpha, remote('scout'), remote('scribe')])
+
+  const item = await screen.findByRole('menuitem', { name: botsText().group.newTitle })
+  await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
+  await act(async () => {})
+  expect(item.hasAttribute('data-disabled')).toBe(false)
+  fireEvent.click(item)
+  expect(setGroupCreateOpen).toHaveBeenCalledOnce()
 })

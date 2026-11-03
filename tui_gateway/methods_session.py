@@ -861,20 +861,29 @@ def _resume_guard(ctx: _Resume) -> dict | None:
 
 
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
+    """Reattach an already-live session. The resume lock covers only the grace-atomic part (client-gone check,
+    transport attach, reap cancel) so expiry stays atomic; the payload is built after release because it waits
+    on the session's history_lock, which the global lock must never wait on. _live_session_payload ATTACHES this
     caller alongside the client(s) already streaming instead of taking the slot from them."""
     with _session_resume_lock:
-        return _resume_reuse_live_locked(ctx, sid, session)
+        if (refusal := _resume_attach_live_locked(ctx, sid, session)) is not None:
+            return refusal
+    return _resume_reuse_payload(ctx, sid, session)
 
 
-def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reuse with _session_resume_lock already held (including the eager double-check)."""
+def _resume_attach_live_locked(ctx: _Resume, sid: str, session: dict) -> dict | None:
+    """Reattach with _session_resume_lock already held (including the eager double-check): the refusal, or None
+    once the transport is bound and the reap cancelled."""
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+    _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+    return None
+
+
+def _resume_reuse_payload(ctx: _Resume, sid: str, session: dict) -> dict:
+    """Resume payload for a session already attached by _resume_attach_live_locked. Caller holds no resume lock."""
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    transport=current_transport() or _stdio_transport,
                                     inline_images=ctx.inline_images)
     payload["resumed"] = ctx.target
     if ctx.defer_history:
@@ -1002,39 +1011,41 @@ def _resume_eager(ctx: _Resume) -> dict:
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
-            return _resume_reuse_live_locked(ctx, *live)
-        try:
-            with _profile_build_scope(ctx.profile_home):
-                _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd, session_db=ctx.db,
-                              source=source, profile_home=ctx.profile_home, explicit_cwd=bool(ctx.profile_resume_cwd))
-                # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
-                # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
-                # must not close it even if the transfer was refused (a leak beats "closed database" every
-                # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
+        else:
+            try:
+                with _profile_build_scope(ctx.profile_home):
+                    _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd, session_db=ctx.db,
+                                  source=source, profile_home=ctx.profile_home, explicit_cwd=bool(ctx.profile_resume_cwd))
+                    # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
+                    # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
+                    # must not close it even if the transfer was refused (a leak beats "closed database" every
+                    # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
+                    if ctx.owns_db:
+                        _transfer_db_to_agent(agent, ctx.db)
+                    ctx.owns_db = False
+                if (session := _sessions.get(sid)) is not None:
+                    if stored_runtime_overrides.get("model_override") is not None:
+                        session["model_override"] = stored_runtime_overrides["model_override"]
+                    model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                    if _row_follows_profile(ctx.found):
+                        session["follow_profile_config"] = True
+                        session["composer_override_profile"] = (
+                            model_config.get("composer_override_profile")
+                            if stored_runtime_overrides.get("model_override") else None)
+                    # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
+                    if ctx.profile_home is not None:
+                        session["profile_home"] = str(ctx.profile_home)
+                    session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+            except Exception as e:
+                # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
+                # would serve that dead session forever.
                 if ctx.owns_db:
-                    _transfer_db_to_agent(agent, ctx.db)
-                ctx.owns_db = False
-            if (session := _sessions.get(sid)) is not None:
-                if stored_runtime_overrides.get("model_override") is not None:
-                    session["model_override"] = stored_runtime_overrides["model_override"]
-                model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
-                if _row_follows_profile(ctx.found):
-                    session["follow_profile_config"] = True
-                    session["composer_override_profile"] = (
-                        model_config.get("composer_override_profile")
-                        if stored_runtime_overrides.get("model_override") else None)
-                # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
-                if ctx.profile_home is not None:
-                    session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
-        except Exception as e:
-            # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
-            # would serve that dead session forever.
-            if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, resume_failed_message(e))
-        session = _sessions.get(sid) or {}
+                    with _sessions_lock:
+                        _sessions.pop(sid, None)
+                return _err(ctx.rid, 5000, resume_failed_message(e))
+            session = _sessions.get(sid) or {}
+    if live is not None:
+        return _resume_reuse_live(ctx, *live)
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
@@ -1158,8 +1169,7 @@ def _(rid, params: dict, session: dict) -> dict:
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
-        with session["history_lock"]:
-            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+        _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
 

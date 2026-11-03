@@ -904,7 +904,9 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
+    """Attach a live peer without displacing existing subscribers. Callers hold ``_session_resume_lock`` for grace
+    atomicity and must NOT hold ``history_lock``: the global lock never waits on a session's history_lock, and
+    the attach plus the viewer bookkeeping are guarded by ``_session_transport_lock``.
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
     at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
     if transport is not _detached_ws_transport and _transport_is_dead(transport):
@@ -918,7 +920,8 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
-    session.setdefault("viewers", {})[transport] = time.time()
+    with _session_transport_lock:
+        session.setdefault("viewers", {})[transport] = time.time()
     # See #83716.
     if transport is not _detached_ws_transport:
         _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
@@ -938,10 +941,11 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
     if _WS_ORPHAN_ACTIVITY_STALE_S <= 0:
         return False
     if session.get("_compute_host_turn_id"):
-        with session["history_lock"]:
-            stamp = session.get("_compute_host_activity_ns")
-            return (session.get("running", False) and isinstance(stamp, int)
-                    and 0 <= (time.perf_counter_ns() - stamp) / 1_000_000_000 < _WS_ORPHAN_ACTIVITY_STALE_S)
+        # ponytail: lock-free read. The reaper calls this under _session_resume_lock and must never wait on
+        # history_lock; a torn read of running/stamp can only shift one grace poll.
+        stamp = session.get("_compute_host_activity_ns")
+        return (session.get("running", False) and isinstance(stamp, int)
+                and 0 <= (time.perf_counter_ns() - stamp) / 1_000_000_000 < _WS_ORPHAN_ACTIVITY_STALE_S)
     if not callable(summary_fn := getattr(session.get("agent"), "get_activity_summary", None)):
         return False
     try:

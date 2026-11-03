@@ -789,12 +789,10 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False, inline_images: bool = True) -> dict:
+    omit_messages: bool = False, inline_images: bool = True) -> dict:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.

@@ -62,6 +62,12 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )
     auth_reset.add_argument("provider", help="Provider id")
+    auth_reset.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Force-clear status fields directly in auth.json, bypassing disk merge guard",
+    )
     auth_status = auth_subparsers.add_parser(
         "status", help="Show auth status for a provider"
     )

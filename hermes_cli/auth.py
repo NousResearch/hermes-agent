@@ -1498,6 +1498,21 @@ def _merge_disk_cooldown_state(
 
         disk_status = disk_entry.get("last_status")
         if disk_status not in (STATUS_DEAD, STATUS_EXHAUSTED):
+            # Stale-writer guard: if the disk entry records a --force clear that
+            # happened after the in-memory entry's last status was written, wipe
+            # the stale status so a lagging writer cannot resurrect exhausted/dead
+            # state that the operator already cleared.
+            disk_force_ts = disk_entry.get("force_cleared_at")
+            if isinstance(disk_force_ts, (int, float)) and disk_force_ts > 0:
+                mem_status = entry.get("last_status")
+                if mem_status in (STATUS_DEAD, STATUS_EXHAUSTED):
+                    mem_ts = _parse_absolute_timestamp(entry.get("last_status_at")) or 0.0
+                    if mem_ts < disk_force_ts:
+                        # In-memory status predates the force-clear — wipe it.
+                        wiped = dict(entry)
+                        for f in _POOL_STATUS_FIELDS:
+                            wiped[f] = None
+                        return wiped
             return entry
         # A token change means the caller re-authed/refreshed this entry and
         # intentionally cleared its status (e.g. _sync_codex_entry_from_

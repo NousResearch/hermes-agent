@@ -527,7 +527,65 @@ def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     pool = load_pool(provider)
     count = pool.reset_statuses()
-    print(f"Reset status on {count} {provider} credentials")
+    if count:
+        print(f"Reset status on {count} {provider} credentials (in-memory pool)")
+    else:
+        print(
+            f"Reset status on 0 {provider} credentials (in-memory pool already clean;"
+            " use --force to also clear disk state)"
+        )
+
+    if getattr(args, "force", False):
+        # Force-clear: write the status fields to None directly in auth.json so
+        # that _merge_disk_cooldown_state cannot resurrect stale exhausted state
+        # when another process reads the pool from disk.
+        # force_cleared_at records the exact moment of the clear so that
+        # _merge_disk_cooldown_state can detect stale in-memory writers that
+        # loaded the pool before this force-clear ran and are about to write
+        # back their (now-invalidated) exhausted status.
+        try:
+            from hermes_cli.auth import (
+                _auth_store_lock,
+                _load_auth_store,
+                _save_auth_store,
+            )
+
+            _STATUS_FIELDS = (
+                "last_status",
+                "last_status_at",
+                "last_error_code",
+                "last_error_reason",
+                "last_error_message",
+                "last_error_reset_at",
+            )
+
+            now = time.time()
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                pool_section = auth_store.get("credential_pool")
+                if isinstance(pool_section, dict):
+                    provider_entries = pool_section.get(provider)
+                    if isinstance(provider_entries, list):
+                        for entry in provider_entries:
+                            if isinstance(entry, dict):
+                                for field in _STATUS_FIELDS:
+                                    entry[field] = None
+                                entry["force_cleared_at"] = now
+                        _save_auth_store(auth_store)
+                        print(
+                            f"Force-cleared status fields in auth.json for {provider} "
+                            f"({len(provider_entries)} entries); disk merge guard bypassed."
+                        )
+                    else:
+                        print(
+                            f"Force flag set but no credential_pool entries found for {provider} in auth.json."
+                        )
+                else:
+                    print(
+                        "Force flag set but credential_pool section not found in auth.json."
+                    )
+        except Exception as exc:
+            print(f"Warning: force-clear failed: {exc}")
 
 
 def auth_status_command(args) -> None:

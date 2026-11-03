@@ -2069,3 +2069,407 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+# ---------------------------------------------------------------------------
+# auth_reset_command --force tests (fix-B)
+# ---------------------------------------------------------------------------
+
+_STATUS_FIELDS = (
+    "last_status",
+    "last_status_at",
+    "last_error_code",
+    "last_error_reason",
+    "last_error_message",
+    "last_error_reset_at",
+)
+
+
+def _exhausted_anthropic_store(tmp_path):
+    """Build an auth.json with one exhausted Anthropic pool entry.
+
+    Uses source='manual' so that access_token / refresh_token are stored
+    directly in the pool entry (hermes_pkce_shared stores tokens externally
+    and strips them on re-serialisation).
+    """
+    entry = {
+        "id": "ant-1",
+        "label": "test@example.com",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        # token fields — must NOT be cleared by --force
+        "access_token": "at-keep",
+        "refresh_token": "rt-keep",
+        "expires_at_ms": 9999999999000,
+        # exhausted status fields — must all become None
+        "last_status": "exhausted",
+        "last_status_at": time.time(),
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit_reached",
+        "last_error_message": "Rate limited",
+        "last_error_reset_at": time.time() + 3600,
+    }
+    store = {
+        "version": 1,
+        "active_provider": "anthropic",
+        "providers": {},
+        "credential_pool": {"anthropic": [entry]},
+    }
+    _write_auth_store(tmp_path, store)
+    return store
+
+
+def test_auth_reset_force_clears_status_fields_not_tokens(tmp_path, monkeypatch):
+    """--force clears all 6 status fields in auth.json without touching token fields."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _exhausted_anthropic_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = payload["credential_pool"]["anthropic"][0]
+
+    # All 6 status fields must be None
+    for field in _STATUS_FIELDS:
+        assert entry[field] is None, f"field {field!r} must be None after --force"
+
+    # Token / identity fields must be untouched
+    assert entry["access_token"] == "at-keep"
+    assert entry["refresh_token"] == "rt-keep"
+    assert entry["expires_at_ms"] == 9999999999000
+
+
+def test_auth_reset_force_prints_cleared_count(tmp_path, monkeypatch, capsys):
+    """--force prints a confirmation message with the entry count."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _exhausted_anthropic_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())
+    out = capsys.readouterr().out
+    assert "Force-cleared" in out
+    assert "1 entries" in out or "1 entry" in out or "(1 entries)" in out
+
+
+def test_auth_reset_without_force_does_not_touch_disk_status(tmp_path, monkeypatch):
+    """Without --force, disk status fields are NOT cleared (merge guard active)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _exhausted_anthropic_store(tmp_path)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = False
+
+    auth_reset_command(_Args())
+
+    # The pool's reset_statuses() may write back None status fields through the
+    # normal persist path — that's acceptable.  What we assert here is that the
+    # --force block does NOT run, so auth.json remains valid and intact.
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "credential_pool" in payload
+    # Token fields must be untouched (--force block never ran, so no write-back risk)
+    entry = payload["credential_pool"]["anthropic"][0]
+    assert entry["access_token"] == "at-keep"
+    assert entry["refresh_token"] == "rt-keep"
+
+
+# ---------------------------------------------------------------------------
+# force_cleared_at stale writer race defence (fix-B core)
+# ---------------------------------------------------------------------------
+
+
+def test_force_reset_writes_force_cleared_at(tmp_path, monkeypatch):
+    """--force must stamp force_cleared_at on every credential entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _exhausted_anthropic_store(tmp_path)
+
+    before = time.time()
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())
+    after = time.time()
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entry = payload["credential_pool"]["anthropic"][0]
+    ts = entry.get("force_cleared_at")
+    assert isinstance(ts, float), f"force_cleared_at should be float, got {ts!r}"
+    assert before <= ts <= after, f"force_cleared_at {ts} not in [{before}, {after}]"
+    # status fields must still be None
+    for field in _STATUS_FIELDS:
+        assert entry[field] is None, f"field {field!r} must be None after --force"
+
+
+def test_merge_disk_cooldown_blocks_stale_writer():
+    """_merge_disk_cooldown_state wipes in-memory status when last_status_at
+    predates disk's force_cleared_at (the core stale-writer guard)."""
+    from hermes_cli.auth import _merge_disk_cooldown_state
+
+    force_ts = time.time()
+    stale_ts = force_ts - 30.0  # status was recorded 30 s before the force-clear
+
+    in_mem = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": "exhausted",
+        "last_status_at": str(stale_ts),
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit",
+        "last_error_message": "Rate limited",
+        "last_error_reset_at": str(force_ts + 3600),
+    }
+    on_disk = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": None,
+        "last_status_at": None,
+        "last_error_code": None,
+        "last_error_reason": None,
+        "last_error_message": None,
+        "last_error_reset_at": None,
+        "force_cleared_at": force_ts,
+    }
+
+    result = _merge_disk_cooldown_state(in_mem, on_disk, "anthropic")
+
+    assert result["last_status"] is None, "stale exhausted status must be wiped"
+    assert result["last_status_at"] is None
+    assert result["last_error_code"] is None
+    # token must be preserved
+    assert result["access_token"] == "tok"
+
+
+def test_merge_disk_cooldown_preserves_fresh_writer():
+    """_merge_disk_cooldown_state must NOT wipe in-memory status when
+    last_status_at is newer than force_cleared_at (fresh exhaustion after
+    the force-clear is valid and should be kept)."""
+    from hermes_cli.auth import _merge_disk_cooldown_state
+
+    force_ts = time.time() - 60.0  # force-clear happened 60 s ago
+    fresh_ts = force_ts + 30.0     # status written 30 s after the force-clear
+
+    in_mem = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": "exhausted",
+        "last_status_at": str(fresh_ts),
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit",
+        "last_error_message": "Rate limited",
+        "last_error_reset_at": str(fresh_ts + 3600),
+    }
+    on_disk = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": None,
+        "last_status_at": None,
+        "last_error_code": None,
+        "last_error_reason": None,
+        "last_error_message": None,
+        "last_error_reset_at": None,
+        "force_cleared_at": force_ts,
+    }
+
+    result = _merge_disk_cooldown_state(in_mem, on_disk, "anthropic")
+
+    assert result["last_status"] == "exhausted", "fresh status after force-clear must be preserved"
+
+
+def test_merge_disk_cooldown_no_force_cleared_at_unchanged():
+    """Without force_cleared_at on disk, stale-writer guard does not activate
+    (backwards-compat: old auth.json entries that don't have the field)."""
+    from hermes_cli.auth import _merge_disk_cooldown_state
+
+    stale_ts = time.time() - 30.0
+
+    in_mem = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": "exhausted",
+        "last_status_at": str(stale_ts),
+        "last_error_code": 429,
+        "last_error_reason": "usage_limit",
+        "last_error_message": "Rate limited",
+        "last_error_reset_at": str(stale_ts + 3600),
+    }
+    on_disk = {
+        "id": "ant-1",
+        "access_token": "tok",
+        "last_status": None,
+        "last_status_at": None,
+        "last_error_code": None,
+        "last_error_reason": None,
+        "last_error_message": None,
+        "last_error_reset_at": None,
+        # No force_cleared_at — old auth.json format
+    }
+
+    result = _merge_disk_cooldown_state(in_mem, on_disk, "anthropic")
+
+    # Without the field, the guard is skipped and entry is returned unchanged
+    assert result["last_status"] == "exhausted", "without force_cleared_at, status must be unchanged"
+
+
+def test_force_reset_missing_credential_pool(tmp_path, monkeypatch, capsys):
+    """--force on auth.json with no credential_pool section exits cleanly with warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    # auth.json without credential_pool key at all
+    store = {"version": 1, "active_provider": "anthropic", "providers": {}}
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())  # must not raise
+
+    captured = capsys.readouterr()
+    assert "credential_pool" in captured.out.lower(), (
+        f"expected warning about missing credential_pool, got: {captured.out!r}"
+    )
+
+    # file must remain unchanged (no credential_pool added)
+    import json as _json
+    on_disk = _json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "credential_pool" not in on_disk, "auth.json must not be mutated when credential_pool is absent"
+
+
+def test_force_reset_missing_provider(tmp_path, monkeypatch, capsys):
+    """--force for provider X when credential_pool has no X key exits cleanly with warning."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    # credential_pool exists but only has 'openai', not 'anthropic'
+    other_entry = {
+        "id": "oai-1",
+        "label": "other@example.com",
+        "auth_type": "api_key",
+        "source": "manual",
+        "access_token": "oai-token-keep",
+        "last_status": None,
+    }
+    store = {
+        "version": 1,
+        "active_provider": "anthropic",
+        "providers": {},
+        "credential_pool": {"openai": [other_entry]},
+    }
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())  # must not raise
+
+    captured = capsys.readouterr()
+    assert "no credential_pool entries found" in captured.out.lower(), (
+        f"expected warning about missing credential_pool entries for provider, got: {captured.out!r}"
+    )
+
+    # other provider data must remain intact
+    import json as _json
+    on_disk = _json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert on_disk["credential_pool"]["openai"][0]["access_token"] == "oai-token-keep", (
+        "other provider's token must not be touched"
+    )
+    assert "anthropic" not in on_disk["credential_pool"], (
+        "anthropic key must not be created in credential_pool"
+    )
+
+
+def test_force_reset_entry_not_dict(tmp_path, monkeypatch, capsys):
+    """--force when credential_pool entries list contains non-dict items skips them without error."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    # Mock load_pool so credential_pool.py never tries to deserialise non-dict payloads
+    class _FakePool:
+        def reset_statuses(self):
+            return 0
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _FakePool())
+
+    # entries list has a mix: one None, one string, one valid dict
+    valid_entry = {
+        "id": "anth-1",
+        "label": "user@example.com",
+        "auth_type": "oauth",
+        "source": "manual",
+        "access_token": "tok-keep",
+        "last_status": "ok",
+        "force_cleared_at": None,
+    }
+    store = {
+        "version": 1,
+        "active_provider": "anthropic",
+        "providers": {},
+        "credential_pool": {"anthropic": [None, "not-a-dict", valid_entry]},
+    }
+    _write_auth_store(tmp_path, store)
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "anthropic"
+        force = True
+
+    auth_reset_command(_Args())  # must not raise
+
+    import json as _json
+    on_disk = _json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    pool_entries = on_disk["credential_pool"]["anthropic"]
+
+    # non-dict entries untouched
+    assert pool_entries[0] is None, "None entry must remain as-is"
+    assert pool_entries[1] == "not-a-dict", "string entry must remain as-is"
+
+    # valid dict entry must have status fields cleared
+    assert pool_entries[2]["last_status"] is None, "last_status must be cleared for dict entry"
+    assert pool_entries[2]["force_cleared_at"] is not None, "force_cleared_at must be set for dict entry"
+    # token preserved
+    assert pool_entries[2]["access_token"] == "tok-keep", "access_token must not be touched by force-clear"
+

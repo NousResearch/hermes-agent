@@ -1680,8 +1680,8 @@ def _translate_anthropic_response_format(anthropic_kwargs: dict[str, Any], respo
             return
         schema = json_schema["schema"]
     elif format_type == "json_object":
-        # Anthropic SDK has no schema-less JSON mode; only ``json_schema``.
-        schema = {"type": "object"}
+        # No schema-less JSON mode: a bare object schema is a 400, so send none (caller parses text).
+        return
     else:
         return
     output_config = anthropic_kwargs.get("output_config")

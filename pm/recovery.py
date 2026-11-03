@@ -108,7 +108,7 @@ def _image_covers_selection(root: Path, missing: list[str]) -> bool:
     from pm.packages import Venv
 
     image = _facts().get("venv")
-    if not isinstance(image, dict) or not image.get("stamp") or "environment" in image:
+    if not isinstance(image, dict) or not image.get("stamp"):
         return False
     fact = Facts(runtime_facts_path(root), strict=True).get("venv") or {}
     _, stamp, _ = _target_selection(Venv(root), fact, extras=missing, inputs={}, repair=False,
@@ -188,22 +188,25 @@ def refresh_dependencies(project_root: Path) -> str:
     if not runtime_facts_path(root).is_file():
         return "base"
     missing = _baseline_gaps(root)
-    if not missing and venv_is_current(project_root=root):
-        return "current"
-    if _image_covers_selection(root, missing):
-        _select_image_environment(root)
-        return "image"
-    shortfall = _rebuild_shortfall()
-    if shortfall:
-        print(f"dependency refresh skipped: {shortfall}", file=sys.stderr)
-    else:
-        try:
+    # Everything past the recorded selection's own validity ends in the fallback when it raises
+    # (plugin discovery reads every enabled manifest): escaping here would leave the previous
+    # image's generation selected under the new code.
+    try:
+        if not missing and venv_is_current(project_root=root):
+            return "current"
+        if _image_covers_selection(root, missing):
+            _select_image_environment(root)
+            return "image"
+        shortfall = _rebuild_shortfall()
+        if shortfall:
+            print(f"dependency refresh skipped: {shortfall}", file=sys.stderr)
+        else:
             with contextlib.redirect_stdout(sys.stderr):
                 # The image's baseline, not a user request: it never undoes a `--without`.
                 sync_venv(missing or None, explicit=True, automatic=missing)
             return f"restored {', '.join(missing)}" if missing else "rebuilt"
-        except Exception as exc:
-            print(f"dependency refresh failed: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"dependency refresh failed: {exc}", file=sys.stderr)
     with runtime_lock(root, timeout=None):
         _free_a_full_volume()
         facts = Facts(runtime_facts_path(root), strict=True)

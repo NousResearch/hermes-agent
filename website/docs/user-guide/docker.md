@@ -580,7 +580,7 @@ dependencies) install on first use into PM dependency generations under
 The image's own `/opt/hermes/.venv` is never modified. On each boot the
 container re-resolves the recorded selection against the new image's lock
 before services start. A selection the image already ships boots the image's
-own environment, and its copy on the volume is collected. Otherwise it
+own environment, and its copy on the volume is collected once it is a day old. Otherwise it
 rebuilds, but only when the data volume has room for the rebuild (the image's
 uv cache it merges plus 256 MB); if the rebuild fails (for example offline) or
 there is no room, it boots the image's own environment and keeps the recorded

@@ -138,7 +138,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
               aria-label={t.sidebar.row.sessionActions}
               className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
               size="icon-xs"
-              variant="grip"
+              variant="ghost"
             >
               <Codicon name="kebab-vertical" />
             </Button>

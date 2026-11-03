@@ -18,7 +18,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (ensure_private_store, find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -253,8 +253,26 @@ def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> sub
     or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session.
     ``umask`` is the session store's (``ensure_private_store``): Baileys writes creds.json and the
     signal keys at the process umask."""
-    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
-                       stderr=log_fh, env=env, creationflags=windows_detach_flags(), umask=umask)
+    spawn_kwargs = dict(purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                        stderr=log_fh, env=env, umask=umask)
+    try:
+        return spawn_owned(argv, creationflags=windows_detach_flags(), **spawn_kwargs)
+    except OSError as exc:
+        # A scheduled-task (or Electron) parent wraps children in a job object that forbids
+        # breakaway, so CREATE_BREAKAWAY_FROM_JOB fails with WinError 5 and the bridge never
+        # starts. Same fallback as hermes_cli.gateway_windows._spawn_detached. The predicate is
+        # winerror-only ON PURPOSE: ERROR_ACCESS_DENIED is winerror 5, while errno 5 on Windows is
+        # EIO (CRT mapping) — an errno fallback in a retry predicate would misfire, and a
+        # genuinely broken spawn (missing binary, disk full) must keep failing loudly instead.
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        logger.warning(
+            "[Whatsapp] Bridge breakaway spawn refused (winerror=5; job object forbids "
+            "breakaway) — retrying without CREATE_BREAKAWAY_FROM_JOB; the bridge now lives inside "
+            "the gateway's job object",
+        )
+        return spawn_owned(argv, creationflags=windows_detach_flags_without_breakaway(),
+                           **spawn_kwargs)
 
 
 def _owner_only_opener(path, flags):

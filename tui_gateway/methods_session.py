@@ -705,32 +705,6 @@ def _find_live_unpersisted(needle: str, home) -> str:
         and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
 
-def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
-    """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
-    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
-    sentinel-parked the record) or it fires against this client."""
-    if ctx.owns_db:
-        _release_db(ctx.db)
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
-            return refusal
-        live["last_active"] = time.time()
-        if (transport := current_transport()) is not None:
-            _rebind_live_transport(live_sid, live, transport)
-        else:
-            _cancel_ws_orphan_reap(live_sid)
-    messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
-    # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
-    # Desktop picker on every reload while the session was still live, and back once it had been dropped.
-    model, provider = _live_session_identity(live)
-    return _ok(ctx.rid, _attach_todo_state({
-        "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(messages), "messages": messages,
-        "info": {"model": model, "provider": provider, "lazy": True,
-                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-                 "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
-
-
 def _resume_adopt_stranded(ctx: _Resume) -> None:
     """Adopt a lineage stranded in the DEFAULT store (older builds ran a profile bot's turns on the focused
     tile's backend; unadopted it 4001s forever). Exact-id ONLY — bot titles collide; never a retired donor."""
@@ -2346,3 +2320,5 @@ def register(server) -> None:
     methods_session_branch.register(server)
     from . import methods_session_interrupt
     methods_session_interrupt.register(server)
+    from . import methods_session_resume
+    methods_session_resume.register(server)

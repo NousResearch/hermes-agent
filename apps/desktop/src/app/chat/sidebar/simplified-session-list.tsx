@@ -47,7 +47,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
   const activeScope = useStore($apiRequestScope)
   const scrollRef = useRef<HTMLDivElement>(null)
   const density = useStore($sessionListDensity)
-  const virtual = props.sessions.length >= 60
+  const virtual = props.showAgent === true && props.sessions.length >= 60
   const [now, setNow] = useState(Date.now)
   useEffect(() => {
     if (props.showAgent) {

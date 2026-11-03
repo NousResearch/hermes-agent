@@ -29,10 +29,10 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
+import { SimplifiedAgentSessions } from './simplified-agent-sessions'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
-import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
 import { useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
 import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
@@ -57,6 +57,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const messagingTruncated = useStore($messagingTruncated)
   const messagingTotals = useStore($messagingPlatformTotals)
   const [query, setQuery] = useState('')
+  const [revealedSessionKey, setRevealedSessionKey] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -147,7 +148,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
       collapsible="none"
       data-tour="sessions-sidebar"
     >
-      <SidebarContent className="gap-2.5 overflow-hidden px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
+      <SidebarContent className="gap-2.5 overflow-y-auto px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
         <SimplifiedNewSession
           onFallback={() => {
             $newChatProfile.set(null)
@@ -178,6 +179,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           {...shared}
           onResumeSession={(id, row) => {
             if (row) {
+              setRevealedSessionKey(sessionRowKey(row))
               const owner = row.connection_id || agents.owner
               setExpanded(current => ({
                 ...current,
@@ -197,7 +199,12 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
           renderSessions={agentSessions => (
             <div className="mb-2 ml-8 mt-0.5 border-l border-(--ui-stroke-secondary) pl-2">
-              <SimplifiedSessionList {...shared} sessions={agentSessions} />
+              <SimplifiedAgentSessions
+                {...shared}
+                revealedSessionKey={revealedSessionKey}
+                searching={Boolean(query.trim())}
+                sessions={agentSessions}
+              />
             </div>
           )}
           searching={Boolean(query.trim())}

@@ -80,7 +80,7 @@ export function SimplifiedAgentList({
   const isOpen = (id: string) => searching || (expanded[id] ?? true)
 
   return (
-    <section aria-label={t.simplifiedAgents.agents} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+    <section aria-label={t.simplifiedAgents.agents} className="flex shrink-0 flex-col gap-1">
       <SidebarPanelLabel className="px-2 py-2 [&>span:first-child]:mx-1">{t.simplifiedAgents.agents}</SidebarPanelLabel>
       {gateways.map(connectionId => {
         const group = sorted.filter(agent => agent.connectionId === connectionId)

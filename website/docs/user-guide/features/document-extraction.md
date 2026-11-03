@@ -15,6 +15,7 @@ The `read_file` tool automatically converts common document formats to readable 
 | Jupyter notebooks | `.ipynb` | Built-in (stdlib) | Always |
 | Word documents | `.docx` | Built-in (stdlib) | Always |
 | Excel workbooks | `.xlsx` | Built-in (stdlib) | Always |
+| SQLite databases | `.db`, `.sqlite`, `.sqlite3` | Built-in (stdlib) | Always |
 | PDF | `.pdf` | Optional `anydoc` converter | Auto-installed on first use* |
 | Legacy Office | `.doc`, `.ppt`, `.xls`, `.pptx`, and variants | Optional `anydoc` converter | Auto-installed on first use* |
 | OpenDocument | `.odt`, `.ods`, `.odp` | Optional `anydoc` converter | Auto-installed on first use* |
@@ -22,7 +23,13 @@ The `read_file` tool automatically converts common document formats to readable 
 
 \* The optional converter is the `firecrawl-anydoc` package, installed lazily where installs are permitted (`security.allow_lazy_installs` in `config.yaml`). Without it, the three stdlib formats still work; other formats fall back to the binary-file guard.
 
-Conversion output is Markdown, paginated through `read_file`'s normal `offset`/`limit` window. Documents over 50 MB are refused to keep tool turns bounded.
+SQLite files render as a schema overview rather than a dump: each table's `CREATE` statement, row count and first five rows, plus the list of indexes, views and triggers. The database is opened read-only (`mode=ro&immutable=1`, so a live database another process holds open is still readable without locks); for anything beyond the preview, query it from the terminal with `sqlite3`. A `.db` that is not SQLite (the magic bytes do not match) is refused with the real reason. Hermes's own read denylist applies before extraction, so protected stores under `HERMES_HOME` stay unreadable.
+
+`read_file` also flags unresolved git merge conflicts: when the returned range contains balanced `<<<<<<< ` / `>>>>>>> ` marker lines, the result carries `conflict_blocks: N` and a hint to resolve them before editing around them. A lone marker inside a string or a test fixture is not counted.
+
+Conversion output is Markdown, paginated through `read_file`'s normal `offset`/`limit` window. East Asian phonetic guides (XLSX `rPh`, DOCX ruby text) annotate cell or run text and are not part of the extracted value: a cell holding 東京 with the guide トウキョウ reads as `東京`. Documents over 50 MB are refused to keep tool turns bounded.
+
+Notebook cell outputs longer than 20,000 characters are truncated; the truncation marker carries a `jq` command that names the notebook's full, shell-quoted path so the omitted output can be pulled from the original file.
 
 Extraction works with remote terminal backends (Docker, Modal, SSH): the file's bytes are transferred across the backend boundary and converted host-side, so a document inside a sandbox reads the same as a local one.
 
@@ -46,7 +53,7 @@ The warning lists the exact page ranges and the recovery paths:
 
 1. **A few pages — render + vision.** Convert the pages to images and read them with the vision tool:
    ```bash
-   pdftoppm -jpeg -r 150 -f 92 -l 94 document.pdf /tmp/page
+   pdftoppm -jpeg -r 150 -f 92 -l 94 document.pdf $TMPDIR/page
    ```
    Then inspect each image with `vision_analyze`. Zero extra dependencies (poppler is required for the detection itself).
 2. **Many pages — OCR.** The `ocr-and-documents` skill covers bulk OCR with marker-pdf (90+ languages, handles equations and tables; ~3-5 GB install).

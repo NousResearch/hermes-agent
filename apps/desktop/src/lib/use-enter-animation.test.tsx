@@ -47,7 +47,7 @@ describe('useEnterAnimation', () => {
     const played = mountAnimated(true, 'plays-once')
 
     expect(played).toBeDefined()
-    expect(played?.keyframes[0]).toMatchObject({ opacity: 0 })
+    expect(played?.keyframes[0]).toMatchObject({ transform: 'translateY(0.375rem)' })
   })
 
   it('stays out of the way when disabled', () => {
@@ -64,19 +64,21 @@ describe('useEnterAnimation', () => {
   })
 
   /**
-   * The animation fills forwards, so any value in its last keyframe is held in
-   * the animation origin of the cascade for the life of the element — above
-   * the stylesheet. Naming an end opacity therefore doesn't just finish the
-   * fade, it permanently overrules whatever opacity CSS wants the element to
-   * rest at, and transcript scaffolding rests dimmed. Rows that animated in
-   * during the turn stayed bright while their rehydrated neighbours faded, and
-   * no hover could lift the bright ones because the sheet had lost the
-   * argument. Opacity has to be left to CSS at the end.
+   * Opacity on any keyframe, under a fill that holds while the document
+   * timeline is paused (alt-tab, HUD hide, an unfocused window), pins the
+   * node at that value — opening at 0 left subagent rows and thinking blocks
+   * invisible (#105579). CSS already rests those surfaces at 0.67; the slide
+   * is transform-only and fill is 'backwards', so the offset applies on the
+   * first frame and then the effect releases instead of holding a filled
+   * transform (and its compositor layer) for the life of the node.
    */
-  it('leaves the resting opacity to the stylesheet', () => {
+  it('never animates opacity, and does not hold a filled transform', () => {
     const played = mountAnimated(true, 'resting-opacity')
 
-    expect(played?.options.fill).toBe('both')
-    expect(played?.keyframes.at(-1)).not.toHaveProperty('opacity')
+    expect(played?.options.fill).toBe('backwards')
+
+    for (const frame of played?.keyframes ?? []) {
+      expect(frame).not.toHaveProperty('opacity')
+    }
   })
 })

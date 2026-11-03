@@ -6,6 +6,9 @@ description: "在兼容 ACP 的编辑器和协作平台中使用 Hermes Agent"
 
 # ACP 宿主集成
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 可作为 ACP 服务器运行，让兼容 ACP 的编辑器通过 stdio 与 Hermes 通信并渲染：
 
 - 聊天消息
@@ -36,7 +39,7 @@ Hermes 使用专为编辑器工作流设计的精选 `hermes-acp` 工具集运�
 正常安装 Hermes 后，从安装检出目录添加 ACP 扩展：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 这将安装 `agent-client-protocol` 依赖并启用：
@@ -72,7 +75,7 @@ hermes acp --check
 
 ### 浏览器工具（可选）
 
-浏览器工具（`browser_navigate`、`browser_click` 等）依赖 `agent-browser` npm 包和 Chromium，这些不包含在 Python wheel 中。通过以下命令安装：
+浏览器工具（`browser_exec` 以及 CDP 工具 `browser_cdp`、`browser_dialog`、`browser_vault`）需要本地 Chromium，它不包含在 Python wheel 中。通过以下命令安装：
 
 ```bash
 hermes acp --setup-browser           # 交互式（下载约 400 MB 前会提示确认）
@@ -83,9 +86,8 @@ hermes acp --setup-browser --yes     # 非交互式接受下载
 
 具体操作：
 
-- 若缺少 Node.js 22 LTS，将其安装到 `~/.hermes/node/`
-- 将 `npm install -g agent-browser @askjo/camofox-browser` 安装到该前缀（无需 sudo — `npm` 的 `--prefix` 指向用户可写的 Hermes 管理 Node）
-- 安装 Playwright Chromium，或在检测到系统 Chrome/Chromium 时使用已有版本
+- 通过包管理器安装 Hermes 固定版本的 Chromium（`chromium` 包）；不涉及 Node.js 或 npm
+- 当 `browser_exec` 首次需要浏览器时，Hermes 会自行启动该 Chromium
 
 该引导过程是幂等的——重复运行速度很快，已完成的步骤会被跳过。
 
@@ -311,7 +313,7 @@ ACP 桥接将这些选项映射到 Hermes 的内部审批语义——`allow_alwa
 
 - 对于手动/本地开发，验证自定义 `agent_servers` 命令是否指向 `hermes acp`。
 - Hermes 已安装且在 PATH 中。
-- ACP 扩展已安装（`cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'`）。
+- ACP 扩展已安装（`cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"`）。
 
 ### ACP 启动后立即报错
 

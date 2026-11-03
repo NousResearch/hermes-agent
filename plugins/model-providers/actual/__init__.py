@@ -33,9 +33,12 @@ class ActualProfile(ProviderProfile):
             )
         ):
             return {}
-        import certifi
+        from agent.ssl_verify import certifi_bundle_path
 
-        return {"ssl_ca_cert": certifi.where()}
+        # Re-derived when an install-environment rotation deleted the directory certifi was
+        # imported from: a deleted path would otherwise be handed to the client as ssl_ca_cert.
+        bundle = certifi_bundle_path()
+        return {"ssl_ca_cert": bundle} if bundle else {}
 
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
         from agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
@@ -47,20 +50,15 @@ class ActualProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not isinstance(reasoning_config, dict):
             return {}, {}
-        from agent.reasoning_effort import clamp_effort, requested_effort
+        from agent.reasoning_effort import thinking_toggle_extras
 
-        enabled = reasoning_config.get("enabled") is not False
-        if str(reasoning_config.get("effort") or "").strip().lower() == "none":
-            enabled = False
-        extra_body = {"thinking": {"type": "enabled" if enabled else "disabled"}}
-        top_level: dict[str, Any] = {}
-        effort = requested_effort(reasoning_config)
-        if effort is not None:
-            supported = self.supported_reasoning_efforts(context.get("model"))
-            clamped = clamp_effort(effort, supported)
-            if clamped in (supported or ()):
-                top_level["reasoning_effort"] = clamped
-        return extra_body, top_level
+        # The relay accepts ``none`` as a real effort level: it switches thinking off AND
+        # is echoed as reasoning_effort, unlike the Moonshot/DeepSeek wires.
+        effort_none = str(reasoning_config.get("effort") or "").strip().lower() == "none"
+        if reasoning_config.get("enabled") is not False and effort_none:
+            return {"thinking": {"type": "disabled"}}, {"reasoning_effort": "none"}
+        supported = self.supported_reasoning_efforts(context.get("model")) or ()
+        return thinking_toggle_extras(reasoning_config, supported, always_emit_toggle=True)
 
     def fetch_models(
         self,

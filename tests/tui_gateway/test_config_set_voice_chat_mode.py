@@ -6,7 +6,7 @@ never lands on disk.
 """
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tui_gateway import server
 
@@ -14,9 +14,9 @@ from tui_gateway import server
 @pytest.fixture
 def config_home(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
     yield tmp_path / "config.yaml"
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
 
 def _set(value):

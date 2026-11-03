@@ -14,6 +14,7 @@ job of ``include_inactive`` (audit / debug reads).
 
 import json
 import sqlite3
+import tracemalloc
 
 import pytest
 
@@ -93,6 +94,27 @@ class TestIncludeCompacted:
         msgs = db.get_messages(sid, include_compacted=True)
         assert not any(not m["active"] and not m["compacted"] for m in msgs)
 
+    @pytest.mark.parametrize("read_only", [False, True])
+    @pytest.mark.parametrize("latest", [False, True])
+    @pytest.mark.parametrize("limit,offset", [(3, 1), (0, 0), (None, 2), (3, 100), (-1, 0), (3, -1)])
+    def test_include_inactive_compacted_paging_keeps_rewound_rows(self, tmp_path, read_only, latest, limit, offset):
+        path = tmp_path / "audit.db"
+        db = _seed(SessionDB(path))
+        expected = db.get_messages("s1", include_inactive=True)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL"))
+        if read_only:
+            db.close()
+            db = SessionDB(path, read_only=True)
+        try:
+            all_rows = db.get_messages("s1", include_compacted=True, include_inactive=True)
+            assert all_rows == expected
+            page = db.get_messages("s1", include_compacted=True, include_inactive=True,
+                                   limit=limit, offset=offset, latest=latest)
+            assert page == (expected[::-1][offset:][:limit][::-1] if latest else expected[offset:][:limit])
+        finally:
+            db.close()
+
     def test_include_inactive_still_returns_everything(self, db):
         """Audit semantics are unchanged: include_inactive wins."""
         sid = "s1"
@@ -149,6 +171,118 @@ class TestDisplayDedupe:
             )
 
         db._execute_write(_do)
+
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_legacy_page_retains_only_bounded_payloads(self, tmp_path, read_only):
+        """Benjamin Brumbaugh's PR #106838: backfill and fallback retain identities, not payloads."""
+        path = tmp_path / "legacy-large.db"
+        db = SessionDB(path)
+        sid = "legacy-large"
+        payload_size = 2_000_000
+        db.create_session(sid, source="desktop")
+        db.append_messages_batch(
+            sid, [{"role": "assistant", "content": f"small-{i}"} for i in range(1_001)],
+            chunk_rows=500)
+        first_id = db.get_messages(sid, limit=1)[0]["id"]
+        self._copy_tail_as_new_generation(db, sid, [first_id])
+        db.append_messages_batch(sid, [
+            {"role": "assistant", "content": chr(65 + i) * payload_size} for i in range(12)])
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL WHERE session_id = ?", (sid,)))
+        if read_only:
+            db.close()
+            db = SessionDB(path, read_only=True)
+        try:
+            tracemalloc.start()
+            try:
+                page = db.get_messages(sid, include_compacted=True, latest=True, limit=1)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            assert page[0]["content"] == "L" * payload_size
+            assert peak < payload_size * 5
+            if not read_only:
+                missing = db._read_one(
+                    "SELECT COUNT(*) FROM messages WHERE display_order IS NULL OR display_identity IS NULL")
+                assert missing is not None and missing[0] == 0
+                assert [row[0] for row in db._read_all(
+                    "SELECT display_order FROM messages WHERE content = ? ORDER BY id", ("small-0",))] == [first_id, first_id]
+        finally:
+            db.close()
+
+    @pytest.mark.parametrize("journal_mode", [
+        pytest.param("wal", marks=pytest.mark.requires_wal),
+        "delete",
+    ])
+    def test_legacy_page_keeps_one_snapshot_during_rewind(self, tmp_path, monkeypatch, journal_mode):
+        """WAL commits beside the snapshot; rollback journaling waits for its release."""
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: journal_mode)
+        path = tmp_path / "snapshot.db"
+        writer = SessionDB(path)
+        assert writer._read_one("PRAGMA journal_mode")[0] == journal_mode
+        writer.create_session("snapshot", source="desktop")
+        writer.append_message("snapshot", "assistant", "visible-at-scan")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL"))
+        writer._conn.execute("PRAGMA busy_timeout = 0")
+        reader = SessionDB(path, read_only=True)
+        identity = reader._display_identity
+
+        def rewind():
+            writer._execute_write(lambda conn: conn.execute(
+                "UPDATE messages SET content = 'rewound', active = 0, compacted = 0"), patience_s=0)
+
+        def rewind_after_identity(key):
+            result = identity(key)
+            if journal_mode == "wal":
+                rewind()
+            else:
+                # This callback runs inside the reader. Waiting for its own
+                # transaction to end would deadlock on rollback-journal builds.
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    rewind()
+            return result
+
+        monkeypatch.setattr(reader, "_display_identity", rewind_after_identity)
+        try:
+            page = reader.get_messages("snapshot", include_compacted=True, latest=True, limit=1)
+            assert [(row["active"], row["content"]) for row in page] == [(1, "visible-at-scan")]
+            assert reader._conn is not None
+            assert not reader._conn.in_transaction
+            monkeypatch.setattr(reader, "_display_identity", identity)
+            if journal_mode == "delete":
+                rewind()
+            assert reader.get_messages("snapshot", include_compacted=True) == []
+        finally:
+            reader.close()
+            writer.close()
+
+    def test_legacy_page_preserves_aborted_transaction_error(self, tmp_path, monkeypatch):
+        path = tmp_path / "read-error.db"
+        writer = SessionDB(path)
+        writer.create_session("error", source="desktop")
+        writer.append_message("error", "assistant", "message")
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL, display_identity = NULL"))
+        writer.close()
+        reader = SessionDB(path, read_only=True)
+        identity = reader._display_identity
+        connection = reader._conn
+        assert connection is not None
+
+        def abort_then_fail(key):
+            connection.execute("ROLLBACK")
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(reader, "_display_identity", abort_then_fail)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+                reader.get_messages("error", include_compacted=True, limit=1)
+            assert not connection.in_transaction
+            monkeypatch.setattr(reader, "_display_identity", identity)
+            assert reader.get_messages("error", include_compacted=True)[0]["content"] == "message"
+        finally:
+            reader.close()
 
     def test_display_paging_and_append_work_is_bounded(self, db):
         """Page and identity-lookup work scale with the page, not the transcript: 10x rows
@@ -215,7 +349,8 @@ class TestDisplayDedupe:
         large_steps = append_steps("write-large")
         assert large_steps < small_steps * 3
 
-    def test_composite_handoff_keeps_live_turn_identity_and_first_position(self, db):
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_composite_handoff_keeps_live_turn_identity_and_first_position(self, db, read_only):
         sid = "composite"
         db.create_session(sid, source="desktop")
         original_id = db.append_message(sid, role="user", content="live ask", timestamp=100.0)
@@ -236,7 +371,12 @@ class TestDisplayDedupe:
         db._execute_write(lambda conn: conn.execute(
             "UPDATE messages SET display_order = NULL WHERE session_id = ?", (sid,)))
 
-        messages = db.get_messages(sid, include_compacted=True)
+        reader = SessionDB(db.db_path, read_only=True) if read_only else db
+        try:
+            messages = reader.get_messages(sid, include_compacted=True)
+        finally:
+            if read_only:
+                reader.close()
 
         assert [message["id"] for message in messages] == [carrier_id, later_id]
         assert messages[0]["content"] == carrier
@@ -249,6 +389,71 @@ class TestDisplayDedupe:
         newest_id = db.append_message(sid, role="assistant", content="same", timestamp=0.0)
         assert [m["id"] for m in db.get_messages(sid, include_compacted=True)][-1:] == [newest_id]
         assert len([m for m in db.get_messages(sid, include_compacted=True) if m["content"] == "same"]) == 1
+
+    def test_display_metadata_update_does_not_invalidate_display_identity(self, tmp_path):
+        # Install the pre-narrowing trigger (``display_metadata`` in UPDATE OF, no WHEN) as an existing
+        # store would carry it; the reopen must replace it, since IF NOT EXISTS alone never would.
+        path = tmp_path / "state.db"
+        SessionDB(path).close()
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute(
+            "CREATE TRIGGER messages_display_identity_update AFTER UPDATE OF role, content, timestamp, "
+            "tool_call_id, tool_calls, tool_name, display_kind, display_metadata ON messages "
+            "BEGIN UPDATE messages SET display_identity = NULL, display_order = NULL WHERE id = new.id; END")
+        conn.commit()
+        conn.close()
+        db = SessionDB(path)
+        trigger_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_display_identity_update'").fetchone()[0]
+        assert "display_metadata" not in trigger_sql and "display_kind" in trigger_sql
+
+        sid = "metadata"
+        db.create_session(sid, source="desktop")
+        row_ids = [
+            db.append_message(sid, role="assistant", content=f"row-{index}", timestamp=100.0)
+            for index in range(3)
+        ]
+        before = db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
+
+        changes = db._conn.total_changes
+        db.set_message_reaction(sid, row_ids[1], "👍", author="user")
+        assert db._conn.total_changes - changes == 1
+        assert db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall() == before
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes == changes
+
+    def test_display_backfill_rewrites_only_changed_identity_group(self, db):
+        sid = "identity-update"
+        db.create_session(sid, source="desktop")
+        first = db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        unaffected = db.append_message(sid, role="assistant", content="other", timestamp=100.0)
+        unaffected_before = db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone()
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?", ('"changed"', first)))
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes - changes == 2
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (display_order IS NULL OR display_identity IS NULL)",
+            (sid,),
+        ).fetchone()[0] == 0
+        assert db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone() == unaffected_before
 
     def test_legacy_store_is_readable_then_lazily_migrated(self, tmp_path):
         path = tmp_path / "legacy.db"
@@ -270,6 +475,7 @@ class TestDisplayDedupe:
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_page")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
         conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_session_id")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
         for column in ("display_order", "display_identity"):
             if column in columns:

@@ -92,9 +92,18 @@ export const hu: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktív memóriaszolgáltató",
+    noProvider: "nincs — csak beépített",
+    builtinLayer: "Beépített réteg",
+    builtinNote: "A MEMORY.md és a USER.md a Hermes saját memóriája, független minden külső szolgáltatótól. Alapértelmezés szerint mindkettő betöltődik a munkamenetekbe; a (memory.memory_enabled / memory.user_profile_enabled) beállítások külön-külön kikapcsolják őket. A szolgáltató kiegészíti őket, de sosem helyettesíti.",
+  },
+
   status: {
     actionFailed: "Művelet sikertelen",
     actionFinished: "Befejezve",
+    actionFinishedOwed: "Frissítve, de még függőben (futtasd újra a `hermes update` parancsot a befejezéshez)",
     actions: "Műveletek",
     agent: "Ügynök",
     activeSessions: "Aktív munkamenetek",
@@ -162,9 +171,14 @@ export const hu: Translations = {
     deleteSelectedConfirmMessage:
       "Ez véglegesen eltávolítja a kijelölt {count} munkamenetet és minden üzenetüket. A művelet nem vonható vissza.",
     selectedSessionsDeleted: "{count} munkamenet törölve",
+    selectedSessionsSkippedActive: "{deleted} törölve; {count} megtartva, mert egy kör még fut",
     failedToDeleteSelected: "Nem sikerült törölni a kijelölt munkameneteket",
     resumeInChat: "Folytatás a csevegésben",
     newChat: "Új csevegés",
+    workspace: "munkaterület",
+    workspaceDefault: "Alapértelmezett",
+    workspaceRescan: "Tárolók újrakeresése",
+    workspaceCustom: "Másik útvonal…",
     previousPage: "Előző oldal",
     nextPage: "Következő oldal",
     roles: {
@@ -324,6 +338,8 @@ export const hu: Translations = {
     disableRuntime: "Letiltás",
     enableAfterInstall: "Engedélyezés a telepítés után",
     enableRuntime: "Engedélyezés",
+    toggleTakesEffectAfterRestart:
+      "Mentve — indítsa újra az átjárót a módosítás alkalmazásához.",
     forceReinstall: "Kényszerített újratelepítés (a meglévő mappa előbb törlődik)",
     headline:
       "Hermes-bővítmények felfedezése, telepítése, engedélyezése és frissítése (a `hermes plugins` paritás).",

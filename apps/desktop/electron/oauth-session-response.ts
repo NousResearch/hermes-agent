@@ -17,12 +17,22 @@ export interface WireOauthResponseOptions {
   clearTimer: () => void
   resolve: (value: unknown) => void
   reject: (error: Error) => void
+  /** Observe the response's `Set-Cookie` header(s) at wire time (#61457). */
+  onSetCookies?: (setCookie: string | string[] | undefined) => void
 }
 
 export function wireOauthSessionResponse(res: OauthResponseLike, opts: WireOauthResponseOptions): void {
   const { url, isTimedOut, clearTimer, resolve, reject } = opts
   const chunks: Buffer[] = []
   let settled = false
+
+  // Headers exist the moment the response event fires — capture before the
+  // body drains so a fast body can't race the capture.
+  try {
+    opts.onSetCookies?.(res.headers['set-cookie'] as string | string[] | undefined)
+  } catch {
+    // observation must never affect the request
+  }
 
   res.on('data', chunk => {
     if (!settled && !isTimedOut()) {

@@ -15,7 +15,7 @@ vLLM: high-throughput LLM serving, OpenAI API, quantization.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/serving-llms-vllm` |
-| Path | `optional-skills/mlops\inference\serving-llms-vllm` |
+| Path | `optional-skills/mlops/inference/serving-llms-vllm` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -363,13 +363,13 @@ vllm serve MODEL \
 
 ## Advanced topics
 
-**Server deployment patterns**: See [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\inference\serving-llms-vllm/references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
+**Server deployment patterns**: See [references/server-deployment.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/serving-llms-vllm/references/server-deployment.md) for Docker, Kubernetes, and load balancing configurations.
 
-**Performance optimization**: See [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\inference\serving-llms-vllm/references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
+**Performance optimization**: See [references/optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/serving-llms-vllm/references/optimization.md) for PagedAttention tuning, continuous batching details, and benchmark results.
 
-**Quantization guide**: See [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\inference\serving-llms-vllm/references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
+**Quantization guide**: See [references/quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/serving-llms-vllm/references/quantization.md) for AWQ/GPTQ/FP8 setup, model preparation, and accuracy comparisons.
 
-**Troubleshooting**: See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\inference\serving-llms-vllm/references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
+**Troubleshooting**: See [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/serving-llms-vllm/references/troubleshooting.md) for detailed error messages, debugging steps, and performance diagnostics.
 
 ## Hardware requirements
 

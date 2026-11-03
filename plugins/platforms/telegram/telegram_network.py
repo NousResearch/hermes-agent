@@ -11,9 +11,21 @@ from typing import Iterable, Optional
 
 import httpx
 
+from agent.ssl_verify import platform_ssl_context
+
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
+
+
+def _describe_transport_error(error: Exception) -> str:
+    """Return a non-empty, secret-safe exception representation for diagnostics."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(repr(error), force=True)
+    except Exception:
+        return type(error).__name__
 
 # TCP keepalive so a half-open/CLOSE-WAIT long-poll errors out instead of blocking getUpdates forever
 # (Windows leaves SO_KEEPALIVE off). Idle/interval knobs are best-effort per Python/OS combo.
@@ -80,6 +92,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         # ``_UNSET`` / ``None`` / ``str`` = no sticky yet / sticky hostname / sticky IPv4.
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
+        self._last_failure: tuple[str, str] | None = None
 
     async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
         async with self._fallback_lock:
@@ -136,6 +149,15 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
             transport = self._primary if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
+                if self._last_failure is not None:
+                    failed_path, failure = self._last_failure
+                    self._last_failure = None
+                    logger.info(
+                        "[Telegram] Telegram API transport recovered via %s after %s failed: %s",
+                        ip or _TELEGRAM_API_HOST,
+                        failed_path,
+                        failure,
+                    )
                 if self._sticky_ip is _UNSET or self._sticky_ip != ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is _UNSET or self._sticky_ip != ip:
@@ -148,6 +170,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 last_error = exc
                 if not _is_retryable_connect_error(exc):
                     raise
+                path = ip or _TELEGRAM_API_HOST
+                failure = _describe_transport_error(exc)
+                self._last_failure = (path, failure)
                 if self._sticky_ip is not _UNSET and ip == self._sticky_ip:
                     async with self._sticky_lock:
                         if self._sticky_ip is not _UNSET and self._sticky_ip == ip:
@@ -157,9 +182,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 ip if ip is not None else "api.telegram.org")
                 if ip is None:
                     await self._reset_primary(transport)
-                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", exc)
+                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
                     continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, exc)
+                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
                 await self._reset_fallback(ip)
                 continue
         if last_error is None:
@@ -242,7 +267,7 @@ async def discover_fallback_ips() -> list[str]:
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.

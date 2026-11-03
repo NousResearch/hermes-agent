@@ -1,14 +1,17 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { registry } from '@/contrib/registry'
+import { $paneStates, setPaneWidthOverride } from '@/store/panes'
+import { $connection } from '@/store/session'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport, declareDefaultTree } from '../store'
 
-import { NarrowOverlays } from './narrow-overlays'
+import { NarrowOverlays, narrowOverlayWidth } from './narrow-overlays'
 
 // Ground truth for "the Bots tab is still visible when the sessions sidebar
 // collapses on a narrow window". A collapsible pane DOCKED into the sessions
@@ -38,7 +41,12 @@ beforeEach(() => {
   window.localStorage.clear()
   $hiddenTreePanes.set(new Set())
 
-  registerPane('sessions', 'sessions', { collapsible: true, placement: 'left', width: '237px' }, 'session rows')
+  registerPane(
+    'sessions',
+    'sessions',
+    { collapsible: true, placement: 'left', width: '237px', revealAliases: ['chat-sidebar'] },
+    'session rows'
+  )
   registerPane('bots', 'Bots', { collapsible: true, placement: 'left', width: '260px' }, 'bot roster')
   registerPane('workspace', 'workspace', { placement: 'main', uncloseable: true }, 'chat')
 
@@ -50,6 +58,11 @@ afterEach(() => {
   cleanup()
   $narrowViewport.set(false)
   $layoutTree.set(null)
+  $connection.set(null)
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -61,7 +74,109 @@ const revealPane = (id: string) => {
 
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
+// The page the browser-hosted Desktop serves (its bridge writes this marker).
+const asBrowserHost = () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+}
+
+// Native Desktop: the Electron preload's bridge exists and no browser marker is set.
+const asNativeDesktop = () => {
+  ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {}
+}
+
+describe('narrow overlay in native Desktop', () => {
+  // A narrow native window keeps main's overlay: no full-window backdrop, so a
+  // click outside a pinned overlay reaches the app under it and the overlay
+  // stays open until Escape, the toggle or the edge hover closes it.
+  it('puts no outside-click backdrop over the app and keeps a pinned overlay open', () => {
+    asNativeDesktop()
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    expect(globalThis.document.querySelector('[data-narrow-overlay-backdrop]')).toBeNull()
+    expect(globalThis.document.querySelector('[data-narrow-overlay="sessions"]')).not.toBeNull()
+  })
+
+  // Closing the sessions sidebar (⌘B's setter in a narrow window) closes the
+  // overlay only when it shows that pane, as on main; a zone mate it shows
+  // instead (Bots) stays open.
+  it('closes only the named pane, not the zone mate the overlay shows', () => {
+    asNativeDesktop()
+    const { queryByTestId } = render(<NarrowOverlays />)
+    revealPane('bots')
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'chat-sidebar', mode: 'close' } }))
+    )
+    expect(queryByTestId('bots-body')).toBeTruthy()
+
+    act(() => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } })))
+    expect(queryByTestId('bots-body')).toBeNull()
+  })
+})
+
 describe('narrow overlay of a stacked zone', () => {
+  it('dismisses an outside tap while preserving inside controls and cancelled gestures', () => {
+    asBrowserHost()
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+    fireEvent.pointerDown(overlayTab('bots')!, { button: 0 })
+    expect(overlayTab('bots')?.getAttribute('aria-selected')).toBe('true')
+
+    const backdrop = globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay-backdrop]')!
+    expect(backdrop).not.toBeNull()
+    fireEvent.pointerDown(backdrop, { pointerId: 1, button: 0, clientX: 300, clientY: 200 })
+    fireEvent.pointerCancel(backdrop, { pointerId: 1 })
+    fireEvent.pointerUp(backdrop, { pointerId: 1, button: 0, clientX: 300, clientY: 200 })
+    expect(overlayTab('bots')).not.toBeNull()
+
+    fireEvent.pointerDown(backdrop, { pointerId: 2, button: 0, clientX: 300, clientY: 200 })
+    fireEvent.pointerUp(backdrop, { pointerId: 2, button: 0, clientX: 300, clientY: 200 })
+    expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
+
+  it('closes the visible zone mate through the sessions sidebar alias', () => {
+    asBrowserHost()
+    const { queryByTestId } = render(<NarrowOverlays />)
+    revealPane('bots')
+    expect(queryByTestId('bots-body')).toBeTruthy()
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'chat-sidebar', mode: 'close' } }))
+    )
+    expect(queryByTestId('bots-body')).toBeNull()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
+  it('publishes visible zone mates and clears them when Escape closes the overlay', () => {
+    const view = render(<NarrowOverlays />)
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+    revealPane('sessions')
+    expect([...$narrowOverlayPaneIds.get()]).toEqual(expect.arrayContaining(['sessions', 'bots', 'chat-sidebar']))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+    revealPane('bots')
+    view.unmount()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
+
+  it('reserves the browser touch titlebar above overlay tabs', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    const overlayInset = (touch: boolean) => {
+      vi.stubGlobal(
+        'matchMedia',
+        vi.fn().mockReturnValue({ matches: touch, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+      )
+      const { container, unmount } = render(<NarrowOverlays />)
+      revealPane('sessions')
+      const inset = parseFloat(container.querySelector<HTMLElement>('[data-narrow-overlay]')!.style.paddingTop)
+      unmount()
+
+      return inset
+    }
+
+    // The touch titlebar is taller than the pointer one; the tabs clear it.
+    expect(overlayInset(true)).toBeGreaterThan(overlayInset(false))
+  })
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 
@@ -90,5 +205,80 @@ describe('narrow overlay of a stacked zone', () => {
 
     expect(getByTestId('sessions-body')).toBeTruthy()
     expect(overlayTab('sessions')).toBeNull()
+  })
+
+  it('pads the overlay below the native window controls on macOS', () => {
+    // Ground truth for "the SESSIONS tab strip slides under the traffic
+    // lights on a narrow window" (#110033). The overlay starts at the
+    // viewport's top edge, so without a reservation its tab strip sits under
+    // the native controls.
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+    $connection.set({ windowButtonPosition: { x: 24, y: 0 } } as never)
+    // jsdom has no layout: the overlay fills the viewport's top-left corner.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 800,
+      height: 800,
+      left: 0,
+      right: 237,
+      toJSON: () => ({}),
+      top: 0,
+      width: 237,
+      x: 0,
+      y: 0
+    } as DOMRect)
+
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    // Controls rect = { x: 0, y: 0, width: 24 + 58, height: 34 }; the
+    // reservation is the overlap's bottom edge, so the strip starts below it.
+    const overlay = document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
+    expect(overlay?.style.paddingTop).toBe('34px')
+    // The reserved band stays a window-drag target, as in a docked TreeGroup.
+    const dragSpacer = overlay?.querySelector<HTMLElement>('[aria-hidden="true"]')
+    expect(dragSpacer).not.toBeNull()
+    expect(dragSpacer?.style.height).toBe('34px')
+  })
+
+  it('honors the user drag width, not the declared width, when the zone collapsed', () => {
+    // The sash writes a widthOverride per shown pane of the zone; the overlay
+    // must size from the same resolution the docked zone uses (fixedTrackSize
+    // = declared max() refined by overrides), not from data.width alone.
+    // jsdom's CSSOM drops the min() wrapper from style.width, so the rendered
+    // width is unobservable here — assert the overlay's own resolution
+    // (narrowOverlayWidth, the pure helper the component styles from) against
+    // the live tree + store the mounted overlay saw.
+    setPaneWidthOverride('sessions', 170)
+    setPaneWidthOverride('bots', 170)
+
+    const { container } = render(<NarrowOverlays />)
+
+    revealPane('bots')
+
+    const overlay = container.querySelector<HTMLElement>('[data-narrow-overlay]')
+    expect(overlay).toBeTruthy()
+
+    const tree = $layoutTree.get()!
+    const bots = registry.getArea('panes').find(p => p.id === 'bots')!
+
+    const width = narrowOverlayWidth(
+      {
+        paneFor: id => registry.getArea('panes').find(p => p.id === id),
+        paneGone: () => false,
+        overrides: $paneStates.get()
+      },
+      tree,
+      bots
+    )
+
+    // The user dragged the zone to 170px; the declared 260px must lose.
+    expect(width).toBe('170px')
+    expect(width).not.toBe('260px')
+
+    // And the seamless fallback: without a tree the declared width still
+    // sizes the overlay.
+    expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe(
+      '260px'
+    )
   })
 })

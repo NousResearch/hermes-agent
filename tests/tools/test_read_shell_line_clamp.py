@@ -54,8 +54,7 @@ def test_offset_past_monster_returns_normal_lines(tmp_path, ops):
     monster = tmp_path / "monster.txt"
     with open(monster, "w") as f:
         f.write("y" * 1_000_000 + "\n")
-        for i in range(5):
-            f.write(f"normal line {i}\n")
+        f.writelines(f"normal line {i}\n" for i in range(5))
 
     result = ops.read_file(str(monster), offset=2)
     assert result.error is None
@@ -120,7 +119,7 @@ def test_read_file_raw_not_clamped(tmp_path, ops):
     max_len = get_max_line_length()
     p = tmp_path / "long_raw.txt"
     long_line = "z" * (10 * max_len)
-    p.write_text(long_line + "\n")
+    p.write_bytes((long_line + "\n").encode("utf-8"))
     result = ops.read_file_raw(str(p))
     assert result.error is None
     assert result.content == long_line + "\n"

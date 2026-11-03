@@ -1,14 +1,27 @@
 /** Appended by TUI pickers; converted to the backend's `--session` flag before `config.set`. */
 export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 
+/** The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml
+ *  writes. */
+export const CANONICAL_REASONING_EFFORTS = new Set([
+  'none',
+  'false',
+  'disabled',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
 export const sessionScopedModelArg = (value: string) => {
   const parts = value.trim().split(/\s+/).filter(Boolean)
   const kept = parts.filter(part => part !== TUI_SESSION_MODEL_FLAG && part !== '--global' && part !== '--session')
 
   return kept.length ? `${kept.join(' ')} --session` : ''
 }
-
-export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
 
 // A `/` means two different things depending on where it sits:
 //
@@ -47,19 +60,6 @@ export const inlineSlashTrigger = (text: string): { query: string; start: number
   return { query, start: text.length - query.length - 1 }
 }
 
-// Only the separator between the command name and its argument is whitespace
-// the parser owns. Everything after it is the user's text and survives
-// verbatim: splitting the whole line on `\s+` and rejoining with a space
-// flattened every pasted diff, log, or PR thread into one run-on line before
-// the command ever saw it.
-const SLASH_PARTS_RE = /^(\S*)\s*([\s\S]*)$/
-
-export const parseSlashCommand = (cmd: string) => {
-  const [, name = '', arg = ''] = SLASH_PARTS_RE.exec(cmd.slice(1)) ?? []
-
-  return { arg, cmd, name: name.toLowerCase() }
-}
-
 /**
  * Apply a completion row to the current input, mirroring the editor's
  * replace semantics: replace from `compReplace` with the row text, dropping
@@ -93,9 +93,14 @@ export const applyCompletion = (value: string, rowText: string, compReplace: num
 export const completionToApplyOnSubmit = (
   value: string,
   rowText: string | undefined,
-  compReplace: number
+  compReplace: number,
+  isLocalCommand: (name: string) => boolean = () => false
 ): string | null => {
-  if (!rowText) {
+  // The gateway does not know TUI-local commands, so its fuzzy list can rank another command
+  // above one typed in full (`/connectors` matches a description word of `/login`).
+  const typed = value.trim()
+
+  if (!rowText || (/^\/[\w-]+$/.test(typed) && isLocalCommand(typed.slice(1)))) {
     return null
   }
 

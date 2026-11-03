@@ -20,6 +20,9 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_get = config_subparsers.add_parser("get", help="Print a resolved configuration value")
     config_get.add_argument("key", nargs="?", help="Configuration key (e.g., model)")
     add_json_flag(config_get, "Print value as JSON")
+    config_get.add_argument(
+        "--raw", action="store_true",
+        help="Print credential values unmasked (default masks api_key/token/secret-shaped values)")
 
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument(
@@ -27,8 +30,8 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_set.add_argument("value", nargs="?", help="Value to set")
     config_set.add_argument(
         "--force", action="store_true",
-        help="Skip the unknown-key notice printed after writing a key the "
-        "running version doesn't recognize (the value is saved either way).")
+        help="Write a key the running version doesn't recognize: an unknown path under a known "
+        "section is otherwise refused, and an unknown top-level key is written with a notice.")
 
     config_unset = config_subparsers.add_parser("unset", help="Remove a configuration value")
     config_unset.add_argument("key", nargs="?", help="Configuration key to remove")

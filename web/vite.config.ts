@@ -13,6 +13,9 @@ function compilerPreset() {
 }
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { fileURLToPath } from "node:url";
+
+const configDir: string = fileURLToPath(new URL(".", import.meta.url));
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
@@ -23,13 +26,15 @@ const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
  * token, every protected `/api/*` call 401s.
  *
  * This plugin fetches the running dashboard's `index.html` on each dev page
- * load, scrapes the `window.__HERMES_SESSION_TOKEN__` assignment, and
- * re-injects it into the dev HTML. No-op in production builds.
+ * load and forwards its runtime bootstrap values into the dev HTML. No-op in
+ * production builds.
  */
 function hermesDevToken(): Plugin {
   const TOKEN_RE = /window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/;
   const EMBEDDED_RE =
     /window\.__HERMES_DASHBOARD_EMBEDDED_CHAT__\s*=\s*(true|false)/;
+  const INITIAL_PROFILE_RE =
+    /window\.__HERMES_INITIAL_PROFILE__\s*=\s*("(?:\\.|[^"\\])*")/;
 
   return {
     name: "hermes:dev-session-token",
@@ -48,13 +53,16 @@ function hermesDevToken(): Plugin {
         }
         const embeddedMatch = html.match(EMBEDDED_RE);
         const embeddedJs = embeddedMatch ? embeddedMatch[1] : "true";
+        const initialProfileMatch = html.match(INITIAL_PROFILE_RE);
+        const initialProfileJs = initialProfileMatch?.[1] ?? '""';
         return [
           {
             tag: "script",
             injectTo: "head",
             children:
               `window.__HERMES_SESSION_TOKEN__="${match[1]}";` +
-              `window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=${embeddedJs};`,
+              `window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=${embeddedJs};` +
+              `window.__HERMES_INITIAL_PROFILE__=${initialProfileJs};`,
           },
         ];
       } catch (err) {
@@ -69,6 +77,11 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  css: {
+    // Tailwind runs through its Vite plugin. Keep unrelated ancestor PostCSS
+    // configs (including BOM-marked JSON) out of this build.
+    postcss: { plugins: [] },
+  },
   plugins: [
     react(),
     babel({ presets: [compilerPreset()] }),
@@ -77,8 +90,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@hermes/shared": path.resolve(__dirname, "../apps/shared/src"),
+      "@": path.resolve(configDir, "./src"),
+      "@hermes/shared": path.resolve(configDir, "../apps/shared/src"),
     },
     // When @nous-research/ui is symlinked via `file:../../design-language`,
     // Node's module resolution would pick up shared deps from
@@ -149,10 +162,18 @@ export default defineConfig({
     },
   },
   server: {
+    // Everything the dev page loads is same-origin. Vite's default CORS
+    // grants every localhost port, which would let another local page read
+    // the session token hermesDevToken() injects into index.html.
+    cors: false,
     proxy: {
       "/api": {
         target: BACKEND,
         ws: true,
+        // No changeOrigin or Origin rewrite: the backend admits a WebSocket
+        // whose Origin names the Host it was sent to, and the dev page's own
+        // upgrades arrive that way however BACKEND is reached (port forwards
+        // included). The backend trusts no fixed dev port.
       },
       // Same host as `hermes dashboard` must serve these; Vite has no
       // dashboard-plugins/* files, so without this, plugin scripts 404

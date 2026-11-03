@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,8 @@ import hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
 import hermes_cli.web_server_dashboard as _web_server_dashboard
 import hermes_cli.web_server_memory as _web_server_memory
 from hermes_cli import plugins_cmd
+from hermes_cli import plugin_catalog
+from hermes_cli import plugins_cmd_catalog
 from tools import registry as tools_registry
 
 
@@ -18,7 +21,7 @@ _PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "dem
 
 def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugins=None):
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
-    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", lambda: [])
+    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", list)
     monkeypatch.setattr(_cfg_mod, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
 
@@ -29,7 +32,7 @@ def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugi
     )
     monkeypatch.setattr(plugins_cmd, "_get_current_context_engine", lambda: "compressor")
     monkeypatch.setattr(plugins_cmd, "_get_current_memory_provider", lambda: "")
-    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", lambda: [])
+    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", list)
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"demo"})
     monkeypatch.setattr(plugins_cmd, "_read_manifest", lambda _path: {"provides_tools": ["demo_tool"]})
@@ -121,27 +124,30 @@ def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
 
 
 
-def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
+
+
+def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch):
+    """The synchronous catalog lookup must run in the route's worker thread."""
     tools_registry.invalidate_check_fn_cache()
     _web_server_dashboard._invalidate_plugins_hub_cache()
+    event_loop_thread = threading.current_thread()
+    annotation_threads: list[threading.Thread] = []
 
-    calls = {"discover": 0}
+    _patch_minimal_hub_dependencies(monkeypatch, check_fn=lambda: True)
+    monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
 
-    def discover_all_plugins():
-        calls["discover"] += 1
-        return list(_PLUGIN_ROW)
+    def removed_annotation(name, _dir_path, _removed_entries):
+        annotation_threads.append(threading.current_thread())
+        return "withdrawn by catalog" if name == "demo" else None
 
-    _patch_minimal_hub_dependencies(
-        monkeypatch,
-        check_fn=lambda: True,
-        discover_all_plugins=discover_all_plugins,
-    )
+    monkeypatch.setattr(plugins_cmd_catalog, "removed_annotation", removed_annotation)
+    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", list)
 
-    first = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
-    second = _web_server_dashboard._merged_plugins_hub()
+    payload = asyncio.run(_rt_dashboard_ui.get_plugins_hub(object()))
 
-    assert calls["discover"] == 1
-    assert first is second
+    assert payload["plugins"][0]["removed_reason"] == "withdrawn by catalog"
+    assert annotation_threads == [annotation_threads[0]]
+    assert annotation_threads[0] is not event_loop_thread
 
 
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):

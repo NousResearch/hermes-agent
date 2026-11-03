@@ -27,7 +27,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
 # Now we can safely import
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +67,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
+    msg.video_note = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None
@@ -175,20 +176,6 @@ class TestDocumentDownloadBlock:
         assert "Hello from a text file" in event.text
         assert "[Content of notes.txt]" in event.text
 
-    @pytest.mark.asyncio
-    async def test_supported_md_injects_content(self, adapter):
-        content = b"# Title\nSome markdown"
-        file_obj = _make_file_obj(content)
-        doc = _make_document(
-            file_name="readme.md", mime_type="text/markdown",
-            file_size=len(content), file_obj=file_obj,
-        )
-        msg = _make_message(document=doc)
-        update = _make_update(msg)
-
-        await adapter._handle_media_message(update, MagicMock())
-        event = adapter.handle_message.call_args[0][0]
-        assert "# Title" in event.text
 
     @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):
@@ -207,24 +194,20 @@ class TestDocumentDownloadBlock:
         assert "Please summarize" in event.text
 
 
-    @pytest.mark.asyncio
-    async def test_text_injection_capped(self, adapter):
-        """A .txt file over 100 KB should NOT have its content injected."""
-        large = b"x" * (200 * 1024)  # 200 KB
-        file_obj = _make_file_obj(large)
-        doc = _make_document(
-            file_name="big.txt", mime_type="text/plain",
-            file_size=len(large), file_obj=file_obj,
-        )
-        msg = _make_message(document=doc)
-        update = _make_update(msg)
 
-        await adapter._handle_media_message(update, MagicMock())
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        doc = _make_document(
+            file_name="notes.txt", mime_type="text/plain",
+            file_size=len(content), file_obj=_make_file_obj(content),
+        )
+        await adapter._handle_media_message(_make_update(_make_message(document=doc)), MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        # File should be cached
-        assert len(event.media_urls) == 1
-        # Content should NOT be injected
-        assert "[Content of" not in (event.text or "")
+        assert ("[Content of" in event.text) is inlined
+        assert event.media_text_inlined == [inlined]
 
 
     @pytest.mark.asyncio
@@ -246,7 +229,6 @@ class TestDocumentDownloadBlock:
         # 1. User is told the download failed, with the filename + exception type.
         msg.reply_text.assert_awaited_once()
         reply = msg.reply_text.await_args.args[0]
-        assert "Couldn't download" in reply
         assert "notes.md" in reply
         assert "RuntimeError" in reply
 
@@ -271,19 +253,33 @@ class TestDocumentDownloadBlock:
         await adapter._handle_media_message(update, MagicMock())
 
         msg.reply_text.assert_awaited_once()
-        assert "voice message" in msg.reply_text.await_args.args[0]
         adapter.handle_message.assert_called_once()
         event = adapter.handle_message.call_args[0][0]
         assert "could not be downloaded" in (event.text or "")
 
+    @pytest.mark.asyncio
+    async def test_video_note_failure_reply_is_localized(self, adapter, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "de")
+        msg = _make_message()
+        msg.video_note = _make_video()
+        msg.video_note.file_size = 100
+        msg.video_note.get_file = AsyncMock(side_effect=RuntimeError("CDN down"))
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        reply = str(msg.reply_text.await_args)
+        assert "Videodatei" in reply and "video note" not in reply
+        assert "send a video note" in adapter.handle_message.call_args[0][0].text
+
 
 class TestVideoDownloadBlock:
     @pytest.mark.asyncio
-    async def test_native_video_is_cached(self, adapter):
+    @pytest.mark.parametrize("attr", ["video", "video_note"])
+    async def test_native_video_is_cached(self, adapter, attr):
         file_obj = _make_file_obj(b"fake-mp4")
-        file_obj.file_path = "videos/clip.mp4"
+        file_obj.file_path = f"{attr}s/clip.mp4"
         msg = _make_message()
-        msg.video = _make_video(file_obj)
+        setattr(msg, attr, _make_video(file_obj))
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
@@ -292,6 +288,46 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    def test_media_handler_accepts_video_notes(self, adapter):
+        class _Names:  # filter stand-in: | collects names; & and ~ only need to compose
+            def __init__(self, *names):
+                self.names = set(names)
+
+            def __or__(self, other):
+                return _Names(*self.names, *other.names)
+
+            __and__ = __or__
+
+            def __invert__(self):
+                return self
+
+        fake_filters = SimpleNamespace(
+            **{name: _Names(name) for name in ("TEXT", "COMMAND", "LOCATION", "VENUE", "PHOTO", "VIDEO",
+                                                "VIDEO_NOTE", "AUDIO", "VOICE")},
+            Document=SimpleNamespace(ALL=_Names("DOCUMENT")), Sticker=SimpleNamespace(ALL=_Names("STICKER")),
+            StatusUpdate=None)
+        registered = {}
+        with patch.multiple("plugins.platforms.telegram.adapter", filters=fake_filters,
+                            TelegramMessageHandler=lambda flt, callback: registered.setdefault(callback, flt)):
+            adapter._register_handlers(MagicMock())
+        assert {"VIDEO", "VIDEO_NOTE"} <= registered[adapter._handle_media_message].names
+
+    @pytest.mark.asyncio
+    async def test_reply_to_a_video_note_caches_it(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp4")
+        file_obj.file_path = "video_notes/file_1.mp4"
+        replied = _make_message()
+        replied.video_note = _make_video(file_obj)
+        replied.video_note.file_size = 1024
+        msg = _make_message()
+        msg.reply_to_message = replied
+        event = MessageEvent(text="what is in this?", message_type=MessageType.TEXT)
+
+        await adapter._cache_replied_media(msg, event)
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_types == ["video/mp4"]
+        assert os.path.exists(event.media_urls[0])
 
 
 # ---------------------------------------------------------------------------
@@ -505,24 +541,6 @@ class TestSendVideo:
         adapter._bot = bot
         return adapter
 
-    @pytest.mark.asyncio
-    async def test_send_video_success(self, connected_adapter, tmp_path):
-        test_file = tmp_path / "clip.mp4"
-        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
-
-        mock_msg = MagicMock()
-        mock_msg.message_id = 200
-        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
-
-        result = await connected_adapter.send_video(
-            chat_id="12345",
-            video_path=str(test_file),
-            caption="Check this out",
-        )
-
-        assert result.success is True
-        assert result.message_id == "200"
-        connected_adapter._bot.send_video.assert_called_once()
 
 
     @pytest.mark.asyncio

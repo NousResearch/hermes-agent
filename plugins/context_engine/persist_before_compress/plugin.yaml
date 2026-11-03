@@ -1,0 +1,9 @@
+name: persist_before_compress
+kind: context_engine
+version: 1.0.0
+author: hermes
+description: >
+  Context engine that persists the assistant's inferences/learnings to the
+  knowledge dictionary BEFORE automatic context compaction, then delegates to
+  the built-in compressor. Fixes the soft-rule gap where pre-compaction
+  learnings were lost when compaction fired without a pre-save.

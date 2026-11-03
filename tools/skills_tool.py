@@ -6,6 +6,7 @@ linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export h
 
 import contextvars
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -32,13 +33,12 @@ from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
-# Per-session discovery cache: {cache_key: (signature, timestamp, skills_list)}. Signature =
-# every catalog directory's mtime and child-dir names, walked like the catalog itself (an install
-# under an existing category such as ``mlops/training/`` moves only that dir's mtime) + the disabled
-# set (config-only change, no mtime) + platform; the TTL bounds staleness from in-place SKILL.md
-# edits, which no directory signature can see.
+# Discovery cache: {tree signature: (signature, timestamp, rows)}. The signature is every catalog
+# directory's child-dir names (an install under an existing category such as ``mlops/training/``
+# changes that dir's names) + each dir's top-level SKILL.md ``(mtime, size)`` (an in-place edit) +
+# platform. File facts mean an edit re-scans immediately: there is no TTL to wait out. The disabled
+# set and the two visibility flags are read-time filters, so one parse serves every caller.
 _SKILLS_CACHE: dict = {}
-_SKILLS_CACHE_TTL_SECONDS = 30.0
 # One cached scan per tree signature (the flags are applied on the way out), bounded so a host
 # serving several profiles and repos keeps the recent trees and rebuilds the rest.
 _SKILLS_CACHE_MAX = 4
@@ -54,8 +54,98 @@ _SCAN_LOCK = threading.Lock()
 
 
 def clear_skills_cache() -> None:
-    """Drop the scanned catalog so the next listing re-scans (explicit reloads must not wait out the TTL)."""
+    """Drop the scanned catalog (memory + disk) so the next listing re-scans (explicit reloads
+    must re-scan now)."""
     _SKILLS_CACHE.clear()
+    with suppress(OSError):
+        _catalog_cache_path().unlink(missing_ok=True)
+
+
+_CATALOG_DISK_CACHE_NAME = "skills-catalog-v1.json"
+# One disk entry per tree: rows are unfiltered (visible/disabled filter on the way out), so the
+# filtered and the with-disabled callers share it instead of storing the same library twice.
+_DISK_CATALOG_KEY = ("catalog",)
+
+
+def _catalog_cache_path() -> Path:
+    return get_hermes_home() / "cache" / _CATALOG_DISK_CACHE_NAME
+
+
+def _ensure_catalog_cache_dir() -> None:
+    """Exist before the signature walk, not after: creating <home>/cache/ mid-call would bump the
+    home dir's mtime and invalidate that very walk's signature (fresh fixture homes have no cache
+    dir yet; real homes do). Idempotent and suppressed — never load-bearing."""
+    with suppress(OSError):
+        _catalog_cache_path().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _signature_digest(signature) -> str:
+    # Canonicalize: the disabled set is a frozenset whose iteration order (and so repr) is
+    # per-process random under hash randomization — a plain repr digest would never match across
+    # processes, defeating the restart-warm cache (only same-process hits).
+    dirs, disabled, platform = signature
+    payload = repr((dirs, sorted(map(repr, disabled or ())), platform))
+    return hashlib.sha256(payload.encode("utf-8", "backslashreplace")).hexdigest()
+
+
+def _disk_key(cache_key) -> str:
+    return "|".join(str(part) for part in cache_key)
+
+
+def _rows_to_json(rows):
+    out = []
+    for s in rows:
+        r = dict(s)
+        for k in ("path", "root"):
+            if r.get(k) is not None:
+                r[k] = str(r[k])
+        out.append(r)
+    return out
+
+
+def _rows_from_json(rows):
+    out = []
+    for s in rows:
+        if not isinstance(s, dict):
+            return None
+        r = dict(s)
+        for k in ("path", "root"):
+            if r.get(k) is not None:
+                r[k] = Path(r[k])
+        out.append(r)
+    return out
+
+
+def _load_disk_catalog(signature) -> list[dict[str, Any]] | None:
+    try:
+        data = json.loads(_catalog_cache_path().read_text(encoding="utf-8-sig"))
+        entry = data.get(_disk_key(_DISK_CATALOG_KEY)) if isinstance(data, dict) else None
+        if not isinstance(entry, dict) or entry.get("digest") != _signature_digest(signature):
+            return None
+        rows = _rows_from_json(entry.get("rows") or [])
+        return rows or None
+    except (OSError, ValueError, TypeError) as e:
+        logger.debug("Catalog disk cache unreadable: %s", e)
+        return None
+
+
+def _store_disk_catalog(signature, rows) -> None:
+    try:
+        path = _catalog_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[_disk_key(_DISK_CATALOG_KEY)] = {
+            "digest": _signature_digest(signature), "rows": _rows_to_json(rows)}
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        logger.debug("Catalog disk cache not stored: %s", e)
 
 
 def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
@@ -67,7 +157,7 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     invalidate a fresh scan."""
     from agent.skill_utils import EXCLUDED_SKILL_DIRS
     names: list[str] = []
-    skill_mtime = 0
+    skill_md: tuple[int, int] | None = None
     try:
         with os.scandir(root) as it:  # iterated, not materialized: one less list per directory
             for entry in it:
@@ -75,18 +165,19 @@ def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
                     if entry.is_dir():
                         names.append(entry.name)
                     elif entry.name == "SKILL.md":
-                        skill_mtime = entry.stat().st_mtime_ns
+                        md_stat = entry.stat()  # follows symlinks: an edit at a linked target shows
+                        skill_md = (md_stat.st_mtime_ns, md_stat.st_size)
                 except OSError:
                     continue
     except OSError:
         return
     names.sort()
-    sig.append((str(root), skill_mtime, tuple(names), skill_mtime != 0))
+    sig.append((str(root), tuple(names), skill_md))
     if depth <= 0:
         return
     # A skill dir is a leaf: the catalog only reads its top-level SKILL.md, so its subdirectories are
     # bulk the signature must not pay for.
-    if skill_mtime:
+    if skill_md is not None:
         return
     for name in names:
         if name not in EXCLUDED_SKILL_DIRS:
@@ -293,8 +384,13 @@ def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
 
 def skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
-    ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
+    ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent).
+
+    Also brings the catalog disk-cache dir into existence: every signature walk comes through here
+    first, so the dir predates any recorded signature and a later store's writes cannot look like
+    library change."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
+    _ensure_catalog_cache_dir()
     active_skills_dir = _skills_dir()
     roots = [(t, d) for t, d in get_skill_search_roots(active_skills_dir)
              if t != TIER_LOCAL or d.exists()]
@@ -311,7 +407,10 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = skill_search_dirs()
     dirs = [d for _t, d in roots]
-    signature = (_tree_signature(dirs), _platform_tag())
+    # Disabled state is a read-time filter now, not a scan input: the same tree signature serves the
+    # filtered and the with-disabled caller from one parse and one disk row. Empty disabled keeps the
+    # 3-tuple shape the digest canonicalizes.
+    signature = (_tree_signature(dirs), frozenset(), _platform_tag())
 
     def _rows_for(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -325,7 +424,9 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
 
     def _cached_rows() -> list[dict[str, Any]] | None:
         cached = _SKILLS_CACHE.get(signature)
-        if cached is not None and (time.monotonic() - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
+        # Signature match is the freshness proof (file facts included), so there is no TTL to wait
+        # out: an unchanged library is served, an in-place edit re-scans immediately.
+        if cached is not None and cached[0] == signature:
             return cached[2]
         return None
 
@@ -335,6 +436,11 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         # Single-flight: a caller that waited while another thread scanned must not rescan.
         if (hit := _cached_rows()) is not None:
             return _rows_for(hit)
+        disk = _load_disk_catalog(signature)
+        if disk is not None:
+            # Restart-warm: a gateway booted against an unchanged library parses no frontmatter.
+            _SKILLS_CACHE[signature] = (signature, time.monotonic(), disk)
+            return _rows_for(disk)
         scanned = []
         for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
             _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
@@ -370,6 +476,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
         # signature, so the next call re-scans instead of serving a torn result.
         _SKILLS_CACHE[signature] = (signature, time.monotonic(), rows)
+        _store_disk_catalog(signature, rows)
         while len(_SKILLS_CACHE) > _SKILLS_CACHE_MAX:
             _SKILLS_CACHE.pop(next(iter(_SKILLS_CACHE)), None)
     return _rows_for(rows)
@@ -597,7 +704,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs, signature=Non
                 _record(row_path.parent, row_path)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
-        for found_md in _flat_markdown_matches(search_dir, name, signature):
+        for found_md in _flat_markdown_matches(search_dir, name, signature[0]):
             if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
                     and not _is_package_owned_markdown(found_md, search_dir)):
                 _record(None, found_md)

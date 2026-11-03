@@ -99,3 +99,47 @@ def test_concurrent_cold_catalog_reads_run_one_parse_pass(tmp_path):
         f"({len(parses) / len(expected_names):.1f}x the catalog); one scan must serve all of them"
     )
     assert all(sorted(r) == sorted(expected_names) for r in results)
+
+
+def test_cache_freshness_without_ttl(tmp_path):
+    """The scan signature covers SKILL.md files, not only directories: an
+    in-place edit (dir mtimes + listings unchanged) invalidates the cache
+    immediately, and an unchanged library never re-parses — no TTL re-scan."""
+    import os
+    import time as _time
+
+    import tools.skills_tool as st
+
+    _make_skill(tmp_path, "alpha")
+
+    parses = []
+    real_parse = st._parse_frontmatter
+
+    def counting_parse(*args, **kwargs):
+        parses.append(1)
+        return real_parse(*args, **kwargs)
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(
+        st, "_parse_frontmatter", side_effect=counting_parse
+    ):
+        st.clear_skills_cache()
+        first = [s["name"] for s in st.find_all_skills()]
+        assert first == ["alpha"]
+        assert len(parses) == 1
+
+        # nothing changed: a later call must serve the cache without re-parsing
+        st.find_all_skills()
+        assert len(parses) == 1, "an unchanged library must not re-parse the catalog"
+
+        # in-place edit: file facts change, directory facts do NOT
+        skill_md = tmp_path / "alpha" / "SKILL.md"
+        text = skill_md.read_text(encoding="utf-8")
+        skill_md.write_text(
+            text.replace("Description for alpha.", "Edited in place."), encoding="utf-8"
+        )
+        os.utime(skill_md, ns=(_time.time_ns(), _time.time_ns() + 1_000_000_000))
+        rows = st.find_all_skills()
+        assert len(parses) == 2, "an in-place SKILL.md edit must invalidate the scan cache"
+        assert any("Edited in place." in (s["description"] or "") for s in rows), (
+            "the edited description must be visible immediately, not after a TTL"
+        )

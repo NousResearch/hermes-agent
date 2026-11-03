@@ -29,6 +29,9 @@ EXCLUDED_SKILL_DIRS = frozenset((
     ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", DIST_SWAP_DIR,
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    # Runtime state, never skill content: the catalog disk cache and scratch churn here, and
+    # their writes must not look like library change to a signature walk.
+    "cache",
 ))
 
 # Progressive-disclosure support dirs inside a skill package: loaded explicitly

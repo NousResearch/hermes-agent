@@ -182,6 +182,22 @@ def test_rank_slash_completions_ties_break_on_usage_then_name():
     assert [item["text"] for item in ranked] == ["/alpha", "/beta"]
 
 
+def test_rank_slash_completions_keeps_every_skill_match_when_searching():
+    # A typed query is a SEARCH: the skill block is user-growable, so the browse cap must never
+    # hide a skill from its own prefix — a large library silently lost a fifth of its skills at
+    # the three characters the user had already typed.
+    skills = [_item(f"/pro{i:02d}", kind="skill") for i in range(40)]
+
+    ranked = _rank_slash_completions(
+        skills,
+        lambda _name: 1,
+        lambda _name: "user",
+        browsing=False,
+    )
+    assert len(ranked) == 40
+    assert ranked[0]["text"] == "/pro00"
+
+
 def test_repo_file_cache_sweeps_expired_roots_on_write(tmp_path, monkeypatch):
     """A root queried once and never again is dropped by the next write past its TTL — the TTL
     used to be checked only on read, pinning every worktree listing for the process lifetime."""

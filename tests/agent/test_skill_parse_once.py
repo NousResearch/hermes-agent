@@ -68,3 +68,32 @@ def test_command_map_matches_row_registration(tmp_path):
     assert commands["/bodyonly"]["description"] == "First body line as the description."
     assert commands["/s0"]["description"] == "Skill s0."
     assert commands["/s0"]["skill_md_path"].endswith("SKILL.md")
+
+
+def test_both_flag_combinations_share_one_parse_pass(tmp_path):
+    """The scan ignores skip_disabled/include_hidden — they filter on the way out — so a second
+    caller with different flags must reuse the first parse instead of re-reading the library."""
+    import agent.skill_utils as su
+    import tools.skills_tool as st
+
+    for i in range(6):
+        _make_skill(tmp_path, f"s{i}")
+
+    parses = []
+    real_parse = su.parse_frontmatter
+
+    def counting_parse(content):
+        parses.append(1)
+        return real_parse(content)
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+            patch.object(su, "parse_frontmatter", side_effect=counting_parse):
+        st.clear_skills_cache()
+        visible = st._skill_catalog()
+        first = len(parses)
+        all_rows = st._skill_catalog(skip_disabled=True, include_hidden=True)
+        second = len(parses) - first
+
+    assert first == 6, f"the cold catalog parsed {first} files for 6 skills"
+    assert second == 0, f"the second flag combination re-parsed {second} files"
+    assert len(all_rows) >= len(visible)

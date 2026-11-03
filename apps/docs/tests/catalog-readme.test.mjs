@@ -1,11 +1,12 @@
 // Security/behavior tests for the build-time plugin README renderer
 // (apps/docs/scripts/lib/plugin-readme.mjs), ported from the Docusaurus plugin
-// along with it. These cover ONLY the pure helpers: the serializer's tag/attribute
+// along with it. The pure-helper tests cover the serializer's tag/attribute
 // allowlist, URL safety, pinned-commit link rewriting and the fetch host guard.
-// renderReadme itself needs the unified/remark-* dependencies and is exercised by
-// the build (and by CI browser checks), not here.
+// The anchor tests run the REAL renderReadme pipeline (unified/remark-* and
+// github-slugger are direct dependencies), so heading ids and fragment links
+// are proven against actual rendered output, not hand-built HAST.
 //
-// Run: node --test apps/docs/tests/   (from apps/docs; no test runner install needed)
+// Run from apps/docs: node --test tests/catalog-readme.test.mjs
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +15,7 @@ import {
   fetchReadme,
   forgeBases,
   readmeCandidates,
+  renderReadme,
   rewriteUrls,
   safeUrl,
   serialize,
@@ -191,4 +193,141 @@ test("fetchReadme refuses plain-http URLs even on an allowlisted host", async ()
   const got = await fetchReadme("http://raw.githubusercontent.com/x/README.md", "/tmp/nonexistent-cache", (m) => logs.push(m));
   assert.equal(got, null);
   assert.ok(logs.some((m) => m.includes("refusing README fetch from raw.githubusercontent.com")));
+});
+
+// ── renderReadme: GitHub-compatible anchors, proven through the real pipeline ──
+//
+// The unified pipeline by itself never assigns heading ids, but GitHub-flavoured
+// READMEs link to their own headings with bare `#slug` hrefs. The contract the
+// output validator's fragment gate relies on: every heading carries a
+// readme-<github-slug> id (duplicate-aware), every id on the page is namespaced
+// under readme- (footnotes included), and every non-empty #fragment href either
+// resolves to one of those ids or was rewritten to the pinned source README on
+// the forge — never a guessed local target.
+
+const render = (markdown, readmeUrl = GH_README) => renderReadme(markdown, readmeUrl);
+
+/** All id="…" values on the page. */
+function pageIds(html) {
+  return new Set([...html.matchAll(/\bid="([^"]*)"/g)].map((m) => m[1]));
+}
+
+/** Every non-empty #fragment href, without the leading #. */
+function fragmentHrefs(html) {
+  return [...html.matchAll(/\shref="#([^"]+)"/g)].map((m) => m[1]);
+}
+
+test("renderReadme assigns GitHub-style duplicate-aware readme- ids to headings", async () => {
+  const html = await render("# Usage\n\n## Usage\n\n## Usage\n");
+  assert.match(html, /<h1 id="readme-usage">Usage<\/h1>/);
+  assert.match(html, /<h2 id="readme-usage-1">Usage<\/h2>/);
+  assert.match(html, /<h2 id="readme-usage-2">Usage<\/h2>/);
+  assert.equal(pageIds(html).size, 3); // unique — no duplicate ids on the page
+});
+
+test("rich inline headings slug from their text content", async () => {
+  const html = await render("## The `install` **command** — 実行\n");
+  assert.match(
+    html,
+    /<h2 id="readme-the-install-command--実行">The <code>install<\/code> <strong>command<\/strong> — 実行<\/h2>/,
+  );
+});
+
+test("bare fragment links resolve to the namespaced heading ids", async () => {
+  const html = await render("## Setup\n\nSee [setup](#setup) and [top](#).\n");
+  assert.ok(html.includes('<a href="#readme-setup">setup</a>'));
+  assert.ok(html.includes('<a href="#">top</a>')); // empty # keeps current behavior
+});
+
+test("fragment links resolve to duplicate-suffixed heading ids", async () => {
+  const html = await render("## Setup\n\n## Setup\n\n[first](#setup) [second](#setup-1)\n");
+  assert.ok(html.includes('<a href="#readme-setup">first</a>'));
+  assert.ok(html.includes('<a href="#readme-setup-1">second</a>'));
+});
+
+test("percent-encoded and CJK fragments decode to their heading slugs", async () => {
+  const html = await render(
+    "## 中文标题\n\n[a](#中文标题) [b](#%E4%B8%AD%E6%96%87%E6%A0%87%E9%A2%98) [c](#%e4%b8%ad%e6%96%87%e6%a0%87%e9%a2%98)\n",
+  );
+  assert.match(html, /<h2 id="readme-中文标题">/);
+  for (const label of ["a", "b", "c"]) {
+    assert.ok(html.includes(`<a href="#readme-中文标题">${label}</a>`), `link ${label}`);
+  }
+});
+
+test("fragment matching normalizes case and %20 like GitHub's anchor slugs", async () => {
+  const html = await render("## Foo Bar\n\n## Usage\n\n[x](#foo%20bar) [y](#FOO%20BAR) [z](#foo-bar) [w](#USAGE)\n");
+  assert.match(html, /<h2 id="readme-foo-bar">/);
+  for (const label of ["x", "y", "z"]) {
+    assert.ok(html.includes(`<a href="#readme-foo-bar">${label}</a>`), `link ${label}`);
+  }
+  assert.ok(html.includes('<a href="#readme-usage">w</a>'));
+});
+
+test("unmatched fragments fall back to the pinned source README, not a local guess", async () => {
+  const html = await render('## Usage\n\n<a name="custom"></a> [x](#custom)\n');
+  const source = `https://github.com/acme/plug/blob/${SHA}/sub/README.md`;
+  assert.ok(!pageIds(html).has("custom"));
+  assert.ok(!html.includes("name=")); // the raw anchor was dropped, not rendered
+  assert.ok(html.includes(`<a href="${source}#custom">x</a>`));
+});
+
+test("unmatched fragments on gitlab READMEs fall back to the gitlab blob form", async () => {
+  const html = await render("[x](#nope)\n", GL_README);
+  const source = `https://gitlab.com/grp/proj/-/blob/${SHA}/dir/README.md`;
+  assert.ok(html.includes(`<a href="${source}#nope">x</a>`));
+});
+
+test("raw HTML never contributes ids; its fragments leave the page for the pinned source", async () => {
+  const html = await render('<h2 id="evil">Hi</h2>\n\n<a name="custom"></a>\n\n## Hi\n\n[x](#evil) [y](#custom) [z](#hi)\n');
+  const ids = pageIds(html);
+  assert.ok(!ids.has("evil"));
+  assert.ok(!ids.has("custom"));
+  assert.ok(ids.has("readme-hi")); // only the markdown heading got an id
+  const source = `https://github.com/acme/plug/blob/${SHA}/sub/README.md`;
+  assert.ok(html.includes(`<a href="${source}#evil">x</a>`));
+  assert.ok(html.includes(`<a href="${source}#custom">y</a>`));
+  assert.ok(html.includes('<a href="#readme-hi">z</a>'));
+});
+
+test("footnote ids and refs stay consistent and are namespaced under readme-", async () => {
+  const html = await render("Note[^1].\n\n[^1]: Body.\n");
+  assert.match(html, /<sup><a href="#readme-user-content-fn-1" id="readme-user-content-fnref-1">1<\/a><\/sup>/);
+  assert.match(html, /<li id="readme-user-content-fn-1">/);
+  assert.match(html, /<a href="#readme-user-content-fnref-1" class="data-footnote-backref">/);
+  assert.match(html, /<h2 class="sr-only" id="readme-footnote-label">/); // never slug-collides with a `## Footnotes` heading
+  const ids = pageIds(html);
+  for (const frag of fragmentHrefs(html)) {
+    assert.ok(ids.has(frag), `footnote fragment #${frag} has no matching id`);
+  }
+});
+
+test("every non-empty fragment href resolves to an id on the page (fragment-gate contract)", async () => {
+  const html = await render([
+    "# Title",
+    "",
+    "## Setup",
+    "",
+    "## Setup",
+    "",
+    "## 中文 标题",
+    "",
+    "See [setup](#setup), [second](#setup-1), [cjk](#%E4%B8%AD%E6%96%87%20%E6%A0%87%E9%A2%98), [missing](#nope), [top](#).",
+    "",
+    "Note[^1]",
+    "",
+    "[^1]: Footnote body.",
+  ].join("\n"));
+  const ids = pageIds(html);
+  for (const id of ids) {
+    assert.ok(id.startsWith("readme-"), `id ${id} is not namespaced under readme-`);
+  }
+  const frags = fragmentHrefs(html);
+  assert.ok(frags.length >= 4, `expected several fragment hrefs, got ${frags.length}`);
+  for (const frag of frags) {
+    assert.ok(ids.has(frag), `fragment #${frag} has no id on the page`);
+  }
+  // Unmatched fragments retain their source destination, not a guessed local id.
+  assert.ok(!frags.includes("nope"));
+  assert.ok(html.includes(`href="https://github.com/acme/plug/blob/${SHA}/sub/README.md#nope"`));
 });

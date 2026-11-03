@@ -54,7 +54,9 @@ jobs:
           fi
 
       - name: Check cross-page links resolve on GitHub and on the site
-        run: python3 apps/docs/scripts/check_doc_links.py
+        run: |
+          python3 apps/docs/scripts/check_doc_links.py
+          node apps/docs/scripts/check-source-links.mjs
 
       - name: Lint docs diagrams
         run: npm run lint:diagrams

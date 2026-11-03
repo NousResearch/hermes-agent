@@ -12,13 +12,8 @@
 // URLs. Relative image and link paths are rewritten to the pinned commit on the forge.
 // Third-party READMEs are NEVER compiled as MDX/JS — this is plain markdown → string.
 //
-// Formerly website/plugins/plugin-catalog-pages/readme.js, where the remark packages
-// were resolved through @docusaurus/mdx-loader. They are now DIRECT dependencies of
-// apps/docs (see .hermes/migration/catalogs-handoff.md for names/versions):
-//   unified, remark-parse, remark-gfm, remark-rehype
-// The pipeline is loaded lazily, so importing this module (and the pure helpers it
-// exports for tests) works without those packages installed; only renderReadme needs
-// them.
+// Direct dependencies keep this renderer independent of the documentation engine.
+// Load them lazily so pure URL/serializer helpers also work before installation.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -92,11 +87,87 @@ function rewriteUrls(node, bases) {
     const props = node.properties || {};
     if (node.tagName === "img" && props.src != null) props.src = absolutize(props.src, bases.raw);
     if (node.tagName === "a" && props.href != null) props.href = absolutize(props.href, bases.blob);
-    // GitHub-flavoured READMEs assume the forge's heading ids; prefix ours so they never clash
-    // with the page chrome.
+    // Prefix ids the pipeline already produced (remark-gfm's footnote section
+    // label) with our readme- namespace; applyAnchors below assigns slug ids to
+    // the remaining headings, so nothing clashes with the page chrome.
     if (/^h[1-6]$/.test(node.tagName) && typeof props.id === "string") props.id = `readme-${props.id}`;
   }
   for (const child of node.children || []) rewriteUrls(child, bases);
+}
+
+/** Concatenated text of a hast subtree — what GitHub anchors slug a heading
+ *  from. Raw HTML never reaches the tree (remark-rehype runs without
+ *  allowDangerousHtml), so inline code/strong/em flatten to plain text; image
+ *  alt text does not contribute, matching hast-util-to-string. */
+function subtreeText(node) {
+  if (node.type === "text") return node.value;
+  let out = "";
+  for (const child of node.children || []) out += subtreeText(child);
+  return out;
+}
+
+/** Percent-decode a link fragment; malformed %-sequences pass through as written. */
+function decodeFragment(frag) {
+  try {
+    return decodeURIComponent(frag);
+  } catch {
+    return frag;
+  }
+}
+
+/** Preserve the original pinned source when a fragment cannot be hosted safely. */
+function pinnedSourceUrl(readmeUrl) {
+  const u = new URL(readmeUrl);
+  if (u.hostname === "raw.githubusercontent.com") {
+    const [, owner, repo, sha, ...rest] = u.pathname.split("/");
+    return `https://github.com/${owner}/${repo}/blob/${sha}/${rest.join("/")}`;
+  }
+  return `https://${u.hostname}${u.pathname.replace("/-/raw/", "/-/blob/")}`;
+}
+
+/** Namespace heading/footnote anchors away from page chrome. Unknown fragments
+ *  retain the pinned source destination; sanitizing a README must not require
+ *  executing its raw HTML. This does not assert the upstream fragment is valid. */
+function applyAnchors(tree, slugger, slug, sourceUrl) {
+  const targets = new Map(); // fragment as the README writes it → id on this page
+  (function namespace(node) {
+    if (node.type === "element" && typeof (node.properties || {}).id === "string") {
+      const props = node.properties;
+      if (!props.id.startsWith("readme-")) props.id = `readme-${props.id}`;
+      targets.set(props.id.slice("readme-".length), props.id);
+    }
+    for (const child of node.children || []) namespace(child);
+  })(tree);
+  (function assignHeadingIds(node) {
+    if (node.type === "element" && /^h[1-6]$/.test(node.tagName)) {
+      const props = node.properties || (node.properties = {});
+      if (typeof props.id !== "string") {
+        const text = subtreeText(node);
+        // The stateful slugger dedupes across headings; the loop additionally
+        // avoids ids already claimed in step 1 (slugger repeats yield -1, -2 …).
+        let headingSlug = slugger.slug(text);
+        while (targets.get(headingSlug) === `readme-${headingSlug}`) headingSlug = slugger.slug(text);
+        if (headingSlug) props.id = `readme-${headingSlug}`;
+      }
+      if (typeof props.id === "string") targets.set(props.id.slice("readme-".length), props.id);
+    }
+    for (const child of node.children || []) assignHeadingIds(child);
+  })(tree);
+  (function rewriteFragments(node) {
+    if (node.type === "element" && node.tagName === "a") {
+      const props = node.properties || {};
+      if (typeof props.href === "string" && props.href.startsWith("#") && props.href !== "#") {
+        const raw = props.href.slice(1);
+        // The pure `slug` normalizes the fragment like GitHub's anchor lookup;
+        // the slugger instance is never used here — it would dedupe against
+        // headings and shift every later id.
+        const decoded = decodeFragment(raw);
+        const target = targets.get(decoded) ?? targets.get(slug(decoded));
+        props.href = target ? `#${target}` : `${sourceUrl}#${raw}`;
+      }
+    }
+    for (const child of node.children || []) rewriteFragments(child);
+  })(tree);
 }
 
 function serializeAttrs(tagName, props) {
@@ -133,19 +204,29 @@ function loadPipeline() {
   if (pipelinePromise) return pipelinePromise;
   pipelinePromise = (async () => {
     // Direct dependencies of apps/docs (no more @docusaurus/mdx-loader indirection).
-    const [{ unified }, remarkParse, remarkGfm, remarkRehype] = await Promise.all([
+    const [{ unified }, remarkParse, remarkGfm, remarkRehype, slugger] = await Promise.all([
       import("unified"), import("remark-parse"), import("remark-gfm"), import("remark-rehype"),
+      import("github-slugger"),
     ]);
-    return unified().use(remarkParse.default).use(remarkGfm.default).use(remarkRehype.default);
+    return {
+      processor: unified().use(remarkParse.default).use(remarkGfm.default).use(remarkRehype.default),
+      // github-slugger: the default class is stateful and duplicate-aware (a
+      // fresh instance per render); the named `slug` is the pure normalizer.
+      GithubSlugger: slugger.default,
+      slug: slugger.slug,
+    };
   })();
   return pipelinePromise;
 }
 
-/** Markdown → allowlisted HTML string. `readmeUrl` anchors relative paths at the pinned commit. */
+/** Markdown → allowlisted HTML string. `readmeUrl` anchors relative paths at the
+ *  pinned commit and is the fragment fallback target for anchors the sanitizer
+ *  drops. */
 async function renderReadme(markdown, readmeUrl) {
-  const processor = await loadPipeline();
+  const { processor, GithubSlugger, slug } = await loadPipeline();
   const tree = await processor.run(processor.parse(markdown));
   rewriteUrls(tree, forgeBases(readmeUrl));
+  applyAnchors(tree, new GithubSlugger(), slug, pinnedSourceUrl(readmeUrl));
   return serialize(tree);
 }
 

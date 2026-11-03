@@ -177,6 +177,23 @@ function buildExport(t) {
   return { root, appDir, outDir, routes };
 }
 
+test('the deployment validator rejects missing internal pages and fragments', (t) => {
+  const { appDir, outDir } = buildExport(t);
+  const home = path.join(outDir, 'index.html');
+  const links = '<a href="/docs/missing-extensionless/">missing page</a>'
+    + '<a href="#missing-local-heading">missing local heading</a>'
+    + '<a href="/docs/getting-started/quickstart/#missing-cross-heading">missing cross heading</a>';
+  writeFileSync(home, readFileSync(home, 'utf8').replace('</body>', links + '</body>'));
+  const result = validateOutput(appDir);
+  assert.equal(result.ok, false);
+  for (const token of ['missing-extensionless', 'missing-local-heading', 'missing-cross-heading']) {
+    assert.ok(result.errors.some((error) => error.includes(token)), result.errors.join('\n'));
+  }
+  const cli = runValidator(appDir);
+  assert.equal(cli.status, 1);
+  assert.match(cli.stderr, /missing-extensionless/);
+});
+
 function runValidator(appDir, options = {}) {
   return spawnSync(process.execPath, [validatorCli, "--app-dir", appDir], {
     encoding: "utf8",
@@ -283,7 +300,9 @@ test("the CLI default anchors to its own apps/docs, not the working directory", 
   cpSync(validatorCli, path.join(scripts, "validate-output.mjs"));
   cpSync(postbuildCli, path.join(scripts, "postbuild.mjs"));
   cpSync(path.join(docsAppDir, "scripts/opensearch.mjs"), path.join(scripts, "opensearch.mjs"));
-  symlinkSync(path.join(docsAppDir, "src"), path.join(appDir, "src"), "dir");
+  cpSync(path.join(docsAppDir, "scripts/check-export-links.mjs"), path.join(scripts, "check-export-links.mjs"));
+  cpSync(path.join(docsAppDir, "src"), path.join(appDir, "src"), { recursive: true });
+  writeFileSync(path.join(appDir, "src/lib/fragment-translations.json"), '{}');
   symlinkSync(path.join(docsAppDir, "node_modules"), path.join(appDir, "node_modules"), "dir");
   const entry = path.join(scripts, "validate-output.mjs");
   const linkedEntry = path.join(root, "validate-export.mjs");

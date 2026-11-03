@@ -35,6 +35,27 @@ async function renderQr(payload: string): Promise<string> {
   return QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 1, width: 192 })
 }
 
+// The IPC bridge hands a router refusal over as "Error invoking remote method 'hermes:api': Error:
+// 409: {"detail":{"code":…,"message":…}}"; the card shows the connector's sentence, not the envelope.
+function relayErrorText(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  const text = (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/s)?.[1] ?? raw).replace(/^Error:\s*/, '')
+  const body = text.match(/^\d{3}:\s*(\{.*\})$/s)?.[1]
+
+  if (!body) {
+    return text
+  }
+
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail
+    const message = typeof detail === 'string' ? detail : (detail as undefined | { message?: unknown })?.message
+
+    return typeof message === 'string' && message ? message : text
+  } catch {
+    return text
+  }
+}
+
 function accountLabel(account: RelayLinkedAccount): string {
   return account.displayName || (account.handle ? `@${account.handle.replace(/^@/, '')}` : '') || account.platformUserId
 }
@@ -67,7 +88,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
       return row?.accounts ?? []
     } catch (loadError) {
       setAccounts(null)
-      setError(loadError instanceof Error ? loadError.message : String(loadError))
+      setError(relayErrorText(loadError))
 
       return null
     }
@@ -165,7 +186,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
       const target = result.bot_url ?? botUrl
       setQrDataUrl(target ? await renderQr(target) : '')
     } catch (startError) {
-      setError(startError instanceof Error ? startError.message : String(startError))
+      setError(relayErrorText(startError))
     } finally {
       setBusy(false)
     }
@@ -239,7 +260,9 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
           <div className="grid content-start gap-2 text-sm">
             <span>{r.stepOpen(platform.name)}</span>
             <span>{r.stepSend}</span>
-            <code className="w-fit rounded bg-(--ui-surface-tertiary,transparent) px-2 py-1 font-mono">{link.command}</code>
+            <code className="w-fit rounded bg-(--ui-surface-tertiary,transparent) px-2 py-1 font-mono">
+              {link.command}
+            </code>
             <div className="flex flex-wrap gap-2">
               {openUrl && (
                 <Button onClick={() => openExternalLink(openUrl)} size="sm">

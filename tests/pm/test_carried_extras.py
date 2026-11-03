@@ -106,8 +106,9 @@ def test_a_carried_extra_that_fails_for_the_moment_is_retried_by_the_next_update
         return _Venv.apply(package, enabled, **inputs)
 
     package.apply = apply
-    with pytest.raises(InstallError, match=r"\['matrix'\].*could not be prepared"):
+    with pytest.raises(InstallError, match=r"\['matrix'\].*could not be prepared") as refused:
         install.sync_venv(["all", "fal", "matrix"], explicit=True, carried=["fal", "matrix"])
+    assert "hermes pm install --without matrix" in refused.value.remedy
     assert _recorded() is None
     assert extras.declined_extras() == frozenset()
 

@@ -243,15 +243,15 @@ def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, 
 
 def test_borrowing_launch_install_layout_is_readable_but_never_changed(tmp_path):
     """A temp-HERMES_HOME launch borrows the owning root's dependency store, so its probes
-    (``installs/<key>/facts.json``, the PM tool store, the managed node runtime, the package
-    caches) and the ``.pkg`` stat a namespace import makes beside them must not fail the run —
-    while the same root's USER state stays refused, and nothing in the layout may be changed."""
+    (``installs/<key>/facts.json``, the managed node runtime, the package caches) and the
+    ``.pkg`` stat a namespace import makes beside them must not fail the run — while the same
+    root's USER state stays refused, nothing in the layout may be changed, and the tool store
+    stays guarded (a PATH entry under the home is command lookup, not a read exemption)."""
     from tests.home_io_guard import HomeIOGuard
 
     root = tmp_path / "home"
     (root / "installs" / "abc123").mkdir(parents=True)
     (root / "installs" / "abc123" / "facts.json").write_text("{}", encoding="utf-8")
-    (root / "tools" / "ripgrep" / "bin").mkdir(parents=True)
     (root / "node" / "bin").mkdir(parents=True)
     (root / "node" / "bin" / "node").write_text("", encoding="utf-8")
     (root / "uv-cache").mkdir()
@@ -266,7 +266,6 @@ def test_borrowing_launch_install_layout_is_readable_but_never_changed(tmp_path)
 
     guard = HomeIOGuard(lambda: [root])
     guard.check(root / "installs" / "abc123" / "facts.json")  # borrow read
-    guard.check(root / "tools" / "ripgrep" / "bin", metadata=True)
     guard.check(root / "node" / "bin" / "node", metadata=True)
     guard.check(root / "uv-cache", metadata=True)
     guard.check(root / "discord.pkg", metadata=True)  # pkgutil.extend_path probe
@@ -277,6 +276,7 @@ def test_borrowing_launch_install_layout_is_readable_but_never_changed(tmp_path)
         lambda: guard.check(root / "node" / "bin" / "node", destructive=True),
         lambda: guard.check(root / "discord.pkg", destructive=True),
         lambda: guard.check(root / "discord.pkg"),  # a real read of the marker is not a probe
+        lambda: guard.check(root / "tools" / "uv" / "uv"),  # tool store: PATH lookup only
         lambda: guard.check(root / "config.yaml"),
         lambda: guard.check(root / "memories" / "MEMORY.md"),
         lambda: guard.check(root / "memories", metadata=True),
@@ -314,3 +314,48 @@ def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+def test_linked_worktree_git_dir_is_checkout_metadata(tmp_path):
+    """A linked worktree's ``.git`` FILE names a git dir outside the checkout; recovery reads the
+    interrupted-pull marker there at import, so that dir is checkout metadata like an in-root
+    ``.git``. An ordinary clone's ``.git`` directory adds nothing."""
+    from tests import home_io_guard
+
+    main_repo = tmp_path / ".hermes" / "hermes-agent"
+    git_dir = main_repo / ".git" / "worktrees" / "wt"
+    git_dir.mkdir(parents=True)
+    worktree = tmp_path / ".hermes" / "worktrees" / "wt"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+
+    assert home_io_guard._checkout_git_dir(worktree) == {git_dir.resolve()}
+    assert home_io_guard._checkout_git_dir(main_repo) == set()
+    assert home_io_guard._checkout_git_dir(tmp_path / "absent") == set()
+
+
+def test_worktree_git_dir_reads_are_allowed_but_changes_are_not(tmp_path, monkeypatch):
+    """The resolved worktree git dir sits inside the guarded home yet holds only the checkout's
+    metadata: its interrupted-pull marker is readable, never writable, and user state beside it
+    stays refused."""
+    from tests import home_io_guard
+
+    home = tmp_path / "home"
+    git_dir = home / "hermes-agent" / ".git" / "worktrees" / "wt"
+    git_dir.mkdir(parents=True)
+    marker = git_dir / "hermes-update-pull"
+    marker.write_text("", encoding="utf-8")
+    (home / "config.yaml").write_text("model: real", encoding="utf-8")
+    monkeypatch.setattr(
+        home_io_guard, "_CHECKOUT_GIT_DIRS",
+        frozenset({os.path.normcase(os.fspath(git_dir))}),
+    )
+
+    guard = home_io_guard.HomeIOGuard(lambda: [home])
+    guard.check(marker)  # interrupted_pull_marker() at import
+    for refused in (
+        lambda: guard.check(marker, destructive=True),
+        lambda: guard.check(home / "config.yaml"),
+    ):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            refused()

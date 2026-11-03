@@ -9,6 +9,13 @@ would have: its own session and process group, the per-file environment, the
 exit code pytest returns. Product code and tests/conftest.py are never
 preloaded, so every file still imports them fresh.
 
+One difference remains: /proc/<pid>/environ shows the environment a process
+was exec'd with, and a child here was never exec'd. A daemon a test forks
+without exec, in a session of its own, therefore carries neither the per-file
+temp root the runner's leftover sweep looks for nor the file's process group,
+and outlives the file. Daemons started through exec (subprocess) are still
+found.
+
 This module must stay importable on its own (the fork server unpickles ``run``
 by name) and import nothing from the product.
 """
@@ -20,15 +27,8 @@ import sys
 import tempfile
 
 
-def run(
-    file: str,
-    pytest_args: list[str],
-    repo_root: str,
-    env: dict[str, str],
-    out_path: str,
-    sys_path: list[str],
-    argv0: str,
-) -> None:
+def run(*, argv: list[str], cwd: str, env: dict[str, str], sys_path: list[str], out_path: str) -> None:
+    """Run ``pytest.main(argv[1:])`` as ``python -m pytest`` would, then exit with its code."""
     # First, before anything can spawn: a session of our own, so the runner's
     # killpg(pid) takes out every process this file starts and nothing else.
     os.setsid()  # windows-footgun: ok — the fork server is Linux-only
@@ -36,17 +36,36 @@ def run(
     os.dup2(fd, 1)
     os.dup2(fd, 2)
     os.close(fd)
-    os.chdir(repo_root)
+    os.chdir(cwd)
     os.environ.clear()
     os.environ.update(env)
     # gettempdir() caches its answer, and a preloaded module may have asked
     # in the server; this file's TMPDIR must win.
     tempfile.tempdir = None
     sys.path[:] = sys_path
-    sys.argv[:] = [argv0, file, *pytest_args]
+    sys.argv[:] = argv
+    _become_main_process()
 
     import pytest
 
     # multiprocessing's fork-server child runs atexit handlers on the way out,
     # as a real interpreter exit would; sys.exit carries pytest's code.
-    sys.exit(int(pytest.main([file, *pytest_args])))
+    sys.exit(int(pytest.main(argv[1:])))
+
+
+def _become_main_process() -> None:
+    """Drop what makes this process the fork server's child to multiprocessing.
+
+    A test's own Process, Pool or spawn context must see what it sees under
+    ``python -m pytest``: a main process with no parent, its own temp dir, and
+    pytest as ``__main__`` (a spawned grandchild re-imports ``__main__``).
+    """
+    import multiprocessing.process as mp_process
+    import pytest.__main__
+
+    current = mp_process.current_process()
+    current.name = "MainProcess"
+    current._config.pop("tempdir", None)  # the runner's /tmp/pymp-*; a new one lands in TMPDIR
+    mp_process._parent_process = None
+    # As in any process that imports multiprocessing, __mp_main__ is __main__.
+    sys.modules["__main__"] = sys.modules["__mp_main__"] = pytest.__main__

@@ -57,7 +57,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 # The CI lane selector owns the platforms() spec resolver; share it so the
 # "skipped on this host" note and the lanes can never disagree.
@@ -641,13 +641,12 @@ _fork_server_checked = False
 _fork_lock = threading.Lock()
 
 
-class _ForkServer:
+class _ForkServer(NamedTuple):
     """The run's fork-server context plus what each child sets up (run_tests_fork_child)."""
 
-    def __init__(self, ctx, sys_path: list[str], argv0: str):
-        self.ctx = ctx
-        self.sys_path = sys_path
-        self.argv0 = argv0
+    ctx: Any
+    sys_path: list[str]
+    argv0: str
 
 
 def _start_fork_server(repo_root: Path) -> _ForkServer:
@@ -655,7 +654,8 @@ def _start_fork_server(repo_root: Path) -> _ForkServer:
     import multiprocessing
 
     ctx = multiprocessing.get_context("forkserver")
-    ctx.set_forkserver_preload(list(_FORK_PRELOAD))
+    # "__main__" (this script) too: otherwise every child re-runs it as __mp_main__.
+    ctx.set_forkserver_preload(["__main__", *_FORK_PRELOAD])
     # What ``python -m pytest`` would put on sys.path: the cwd first, then the
     # interpreter's own entries (never this script's directory).
     base = json.loads(subprocess.run(
@@ -665,6 +665,11 @@ def _start_fork_server(repo_root: Path) -> _ForkServer:
     import pytest
 
     return _ForkServer(ctx, [str(repo_root), *base], str(Path(pytest.__file__).with_name("__main__.py")))
+
+
+def _start_forked(proc) -> None:
+    with _fork_lock:
+        proc.start()
 
 
 def _forked_exit_status(proc, timeout: float | None) -> int | None:
@@ -704,11 +709,14 @@ class _ForkedPytest:
         os.close(fd)
         self._proc = server.ctx.Process(
             target=run_tests_fork_child.run,
-            args=(str(file), list(pytest_args), str(repo_root), env, self._out,
-                  server.sys_path, server.argv0),
+            kwargs=dict(argv=[server.argv0, str(file), *pytest_args], cwd=str(repo_root), env=env,
+                        sys_path=server.sys_path, out_path=self._out),
         )
-        with _fork_lock:
-            self._proc.start()
+        try:
+            _start_forked(self._proc)
+        except BaseException:
+            os.unlink(self._out)
+            raise
         self.pid = self._proc.pid
         self.returncode: int | None = None
 
@@ -726,6 +734,8 @@ class _ForkedPytest:
     def kill(self) -> None:
         import signal as _signal
 
+        if self.returncode is not None:
+            return  # reaped: the pid may already belong to another process
         try:
             os.kill(self.pid, _signal.SIGKILL)  # windows-footgun: ok (Linux only)
         except (ProcessLookupError, OSError):
@@ -834,7 +844,7 @@ def _run_one_file_once(
 
     if rc not in (0, 5) and not output.strip():
         output = f"pytest child exited {rc} (0x{rc & 0xffffffff:08x}) with no output: {file}\n"
-    elif rc not in (0, 5, 124):
+    elif rc > 1 and rc not in (5, 124):
         # A file can pass every test and still exit non-zero; without the
         # status the failure dump shows only a green pytest summary.
         output += f"(pytest child exit status {rc})\n"
@@ -1077,6 +1087,14 @@ def _save_durations(
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+#: Estimate for a file with no cached duration (roughly the P50 from profiling).
+_DEFAULT_FILE_DURATION = 2.0
+
+
+def _estimated_duration(file: Path, durations: dict[str, float], repo_root: Path) -> float:
+    return float(durations.get(_format_file(file, repo_root), _DEFAULT_FILE_DURATION))
+
+
 def _compute_lpt_slices(
     files: list[Path],
     slice_count: int,
@@ -1089,8 +1107,7 @@ def _compute_lpt_slices(
     file to the slice with the smallest accumulated time so far. This
     minimizes the makespan (max slice duration) and keeps CI jobs balanced.
 
-    Files with no cached duration get a default estimate of 2.0s (roughly
-    the P50 from profiling). This means first-time runs (no cache) still
+    Files with no cached duration get _DEFAULT_FILE_DURATION. This means first-time runs (no cache) still
     get reasonable distribution, and new files don't all land in one slice.
 
     Returns a list of N file-lists, one per slice (0-indexed).
@@ -1098,11 +1115,9 @@ def _compute_lpt_slices(
     if slice_count < 2:
         return [files]
 
-    default_dur = 2.0
     file_durs: list[tuple[Path, float]] = []
     for f in files:
-        rel = _format_file(f, repo_root)
-        dur = durations.get(rel, default_dur)
+        dur = _estimated_duration(f, durations, repo_root)
         file_durs.append((f, dur))
 
     # Sort longest first (LPT).
@@ -1129,15 +1144,12 @@ def _longest_first(
     The pool starts files in submission order, so a slow file submitted late
     runs alone at the end while the other workers sit idle. Starting the slow
     ones first leaves only short files for the tail. Files without a cached
-    duration get the same 2.0s estimate _compute_lpt_slices uses. Ties keep
-    their original order, so an empty cache leaves the order unchanged.
+    duration get _DEFAULT_FILE_DURATION. Ties keep their original order, so an
+    empty cache leaves the order unchanged.
     """
     if not durations:
-        return files
-    return sorted(
-        files,
-        key=lambda f: -float(durations.get(_format_file(f, repo_root), 2.0)),
-    )
+        return files  # skip a path resolve per file when there is nothing to sort by
+    return sorted(files, key=lambda f: -_estimated_duration(f, durations, repo_root))
 
 
 def _slice_files(
@@ -1169,13 +1181,9 @@ def _slice_files(
     bucket_files = _compute_lpt_slices(sorted(files), slice_count, {}, repo_root)
 
     target = bucket_files[slice_index - 1]
-    target_dur = sum(
-        durations.get(_format_file(f, repo_root), 2.0) for f in target
-    )
+    target_dur = sum(_estimated_duration(f, durations, repo_root) for f in target)
     total_dur = sum(
-        durations.get(_format_file(f, repo_root), 2.0)
-        for bucket in bucket_files
-        for f in bucket
+        _estimated_duration(f, durations, repo_root) for bucket in bucket_files for f in bucket
     )
     print(
         f"Slice {slice_index}/{slice_count}: {len(target)} files "

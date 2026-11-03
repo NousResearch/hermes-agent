@@ -45,9 +45,7 @@ def _make_adapter():
     adapter._set_status_indicator = AsyncMock()
     adapter._release_platform_lock = lambda: None
     adapter._text_batch_delay_seconds = 0.1  # fast for tests
-    # Existing tests assert dispatch at delay+ε; keep sibling-media hold off
-    # unless a test enables it explicitly.
-    adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0
+    # Lone text must not wait on a download. Tests that need the cap set it.
     adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
     adapter._active_sessions = {}
     adapter._pending_messages = {}
@@ -629,7 +627,6 @@ class TestSiblingMediaAbsorb:
         """Comment must not start its own turn once sibling media absorbs it."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.4
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
         comment = _make_event("Додай у календар")
         media = _make_event("forwarded caption", message_type=MessageType.VIDEO)
@@ -651,13 +648,12 @@ class TestSiblingMediaAbsorb:
 
     @pytest.mark.asyncio
     async def test_short_text_still_flushes_when_no_sibling_media(self):
-        """Grace must not swallow a lone short message if no media arrives."""
+        """A lone short message flushes at the normal delay, with no extra grace."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.15
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 0
         adapter._enqueue_text_event(_make_event("ok"))
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.12)
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "ok"
 
@@ -666,7 +662,6 @@ class TestSiblingMediaAbsorb:
         """A later short text must not sit behind a download that cannot absorb it."""
         adapter = _make_adapter()
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.05
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
         original = _make_event("first")
         media = _make_event("caption", message_type=MessageType.VIDEO)
@@ -729,7 +724,6 @@ class TestSiblingMediaAbsorb:
         adapter._is_user_authorized_from_message = lambda _msg: True
         adapter._should_process_message = lambda _msg, is_command=False: True
         adapter._text_batch_delay_seconds = 0.05
-        adapter._TEXT_SIBLING_MEDIA_GRACE_S = 0.4
         adapter._TEXT_MEDIA_INFLIGHT_CAP_S = 2.0
 
         comment = _make_event("Додай у календар", chat_id="12345", user_id="1")

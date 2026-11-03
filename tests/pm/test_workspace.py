@@ -240,6 +240,33 @@ def test_plugin_extras_named_only_for_another_platform_do_not_constrain_the_lock
     assert locked["base-dep"] == "1.0" and "chosen-dep" in locked
 
 
+def test_sources_of_pruned_plugin_extras_and_groups_leave_with_them(layout):
+    """A source qualified by a dropped extra or group would name something the snapshot no
+    longer declares, and uv refuses the whole workspace for it; runtime sources survive."""
+    import json
+    import tomllib
+
+    tmp, core, plugin, _ = layout
+    wheel = json.dumps((tmp / "wheels" / "other_dep-1.0-py3-none-any.whl").as_posix())
+    chosen = json.dumps((tmp / "wheels" / "chosen_dep-1.0-py3-none-any.whl").as_posix())
+    metadata = plugin / "pyproject.toml"
+    metadata.write_text(metadata.read_text() +
+        '\n[project.optional-dependencies]\nfeature=["other-dep==1.0"]\ndev=["other-dep==1.0"]\n'
+        'lint=["chosen-dep==1.0"]\n[dependency-groups]\ntest=["chosen-dep==1.0"]\n'
+        f'[tool.uv.sources]\nother-dep=[{{path={wheel},extra="feature"}},{{path={wheel},extra="dev"}}]\n'
+        f'chosen-dep=[{{path={chosen},extra="lint"}},{{path={chosen},group="test"}}]\n'
+        f'member-dep={{path={json.dumps((tmp / "wheels" / "member_dep-1.0-py3-none-any.whl").as_posix())}}}\n')
+    root = tmp / "workspace"
+    ws.lock_and_sync([plugin], ["feature"], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(tmp / "env"))
+    snapshot = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())
+    sources = snapshot["tool"]["uv"]["sources"]
+    assert sources["other-dep"] == [{"path": json.loads(wheel), "extra": "feature"}]
+    assert "chosen-dep" not in sources and "path" in sources["member-dep"]
+    locked = {p["name"] for p in tomllib.loads((root / "uv.lock").read_text())["package"]}
+    assert {"other-dep", "member-dep"} <= locked
+
+
 def test_base_self_reference_gated_on_a_selected_extra_keeps_its_extra(layout):
     """``plugin[feature]; extra == 'runtime'`` in the base dependencies installs ``feature``
     whenever ``runtime`` is installed, so its pins must stay in the snapshot."""

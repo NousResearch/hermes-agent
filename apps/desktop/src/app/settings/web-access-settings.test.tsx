@@ -428,6 +428,25 @@ describe('WebAccessSettings while Start runs', () => {
     expect(await screen.findByText('Restarting the gateway to serve the web app.')).toBeTruthy()
   })
 
+  it('shows a Start restarting in a pane opened after its request answered, until the gateway serves it', async () => {
+    // Start saved the config and asked for a restart; the old gateway still answers, serving no
+    // web app. That is a Start under way, not a saved change waiting for someone to restart it.
+    renderPane({
+      ...SERVING,
+      gateway: OFF.gateway,
+      start_progress: { started_at: Date.now() / 1000 - 40, step: 'restarting' }
+    })
+
+    expect(await screen.findByText('Restarting the gateway to serve the web app.')).toBeTruthy()
+    expect(screen.getByText('40s elapsed')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Restart gateway' }).hasAttribute('disabled')).toBe(true)
+
+    mocked.getWebAccessStatus.mockResolvedValue({ ...SERVING, start_progress: null })
+    vi.advanceTimersByTime(1000)
+
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+  })
+
   it('says a Start is getting ready while another Web Access change goes first', async () => {
     renderPane({ ...IDLE, start_progress: { started_at: Date.now() / 1000, step: 'preparing' } })
 

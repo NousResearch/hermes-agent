@@ -1,10 +1,12 @@
-"""A Start's record covers the whole Start, from the moment it is asked for.
+"""A Start's record covers the whole Start, not just its request.
 
 ``start_progress`` on ``/api/webapp-access/status`` names the step a Start is on. It is reported
-from the Start's arrival, ``preparing`` while another Web Access change holds the backend's one
-change lock, so a pane opened meanwhile shows the Start under way instead of offering Start (and
-that gateway restarting twice), and its clock counts from when it was asked for. Each Start keeps
-its own record, so one Start ending cannot hide another. Review of #148408 (yoniebans).
+from the moment the Start is asked for, ``preparing`` while another Web Access change holds the
+backend's one change lock, until the restart it asked for has put a gateway serving the new config
+in place, that restart failed, or the pane's own wait for it has run out. A pane opened at any point
+in between shows the Start running and keeps its controls disabled instead of offering Start or
+Restart gateway. Each Start keeps its own record, so one Start ending cannot hide another.
+Review of #148408 (teknium1, yoniebans).
 """
 
 from __future__ import annotations
@@ -189,4 +191,51 @@ def test_one_start_ending_leaves_the_start_queued_behind_it_on_the_same_gateway(
 
     builds.finish_one()
     _joined(first, second)
+    assert _progress(client) is None
+
+
+def test_a_start_is_reported_restarting_until_the_restarted_gateway_serves_it(client, nous, gateway, instant_build):
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    port = answer["port"]
+    # The pane keeps Start's answer as the status it shows: where the backend answering is the
+    # gateway being restarted, no status read succeeds until the new one is up, so the answer
+    # itself says the Start is restarting.
+    assert answer["start_progress"]["step"] == "restarting"
+
+    # The request answered; the old gateway still serves no Webapp.
+    assert _progress(client) == answer["start_progress"]
+
+    gateway["now"] = {"state": "serving", "url": f"http://192.168.1.50:{port}", "reason": None}
+    assert _progress(client) is None
+
+
+@pytest.mark.parametrize("ending", ["restart failed", "followed as long as the pane waits", "stopped"])
+def test_a_followed_restart_is_no_longer_reported_once_it_cannot_serve_the_start(
+        client, nous, gateway, instant_build, monkeypatch, ending):
+    from hermes_cli.web_routers import webapp_access as routes
+
+    if ending == "followed as long as the pane waits":
+        monkeypatch.setattr(routes, "_RESTART_FOLLOW_SECONDS", 0.0)
+    assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
+
+    if ending == "restart failed":
+        assert _progress(client)["step"] == "restarting"
+        gateway["failure"] = {"pid": RESTART_PID, "exit_code": 1, "reason": "port 9187 is in use"}
+    elif ending == "stopped":
+        assert _progress(client)["step"] == "restarting"
+        gateway["restart"] = {**gateway["restart"], "restart_pid": RESTART_PID + 1}
+        assert client.post("/api/webapp-access/stop").status_code == 200
+
+    assert _progress(client) is None
+
+
+def test_a_refused_restart_ends_the_start_with_its_request(client, nous, gateway, instant_build):
+    gateway["restart"] = {"restart_started": False, "restart_error": "a chat is running", "restart_busy": True}
+
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+
+    assert response.status_code == 200 and response.json()["restart_started"] is False
+    assert response.json()["start_progress"] is None
     assert _progress(client) is None

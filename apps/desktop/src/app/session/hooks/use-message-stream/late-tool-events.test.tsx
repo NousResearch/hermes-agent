@@ -210,6 +210,20 @@ describe('tool events for a part that already exists on a sealed message', () =>
     expect(state.streamId).toBeNull()
   })
 
+  it('keeps one row when a copy of a settled call start arrives before its late completion', () => {
+    event('message.start', 850)
+    event('tool.start', 851, { args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_settle_copy' })
+    event('message.complete', 852, { text: 'first turn done' })
+    // No turn is live, so this start is a copy of the settled call's, not a new call.
+    event('tool.start', 853, { args: { command: 'echo step1' }, name: 'terminal', tool_id: 'call_settle_copy' })
+    event('tool.complete', 854, { name: 'terminal', result: 'ok', tool_id: 'call_settle_copy' })
+
+    const rows = toolRows('call_settle_copy')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].part).toMatchObject({ result: 'ok' })
+    expect(stream.state(SID).streamId).toBeNull()
+  })
+
   it('keeps the sealed tool row but ignores progress arriving after Stop', () => {
     event('message.start', 1000)
     event('tool.start', 1001, { args: { command: 'echo interrupted' }, name: 'terminal', tool_id: 'call_stopped' })

@@ -783,7 +783,7 @@ def _make_run_env(env: dict) -> dict:
     from agent.session_client_env import toolchain_environ
     run_env = _scrubbed_env(
         [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
-        frozenset(),
+        _plugin_terminal_env_strip_keys(),
         lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI

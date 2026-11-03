@@ -27,6 +27,7 @@ import {
   listGroupNodeId,
   toggleWorkspaceNodeCollapsed
 } from '@/store/layout'
+import type { AgentProfileRoute } from '@/store/profile'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
 
@@ -115,7 +116,7 @@ interface SidebarSessionsSectionProps {
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
-  onNewSessionInWorkspace?: (path: null | string) => void
+  onNewSessionInWorkspace?: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a new session as a tile at a drop target (drag from a project "+"). */
   onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean

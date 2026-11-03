@@ -1,10 +1,10 @@
 import type { McpTestResult } from '@/hermes'
 
 // ---------------------------------------------------------------------------
-// Shared MCP probe cache. Extracted from mcp-tab.tsx so the MCP page and the
-// background health checker (store/mcp-health.ts) share ONE cache: a probe is
-// a REAL connect/disconnect (stdio servers get spawned!), so neither surface
-// may re-probe what the other just learned.
+// Shared MCP probe cache for the MCP surfaces: a probe is a REAL
+// connect/disconnect (stdio servers get spawned!), so no surface may re-probe
+// what another just learned. The background health checker never probes; it
+// reads the backend's cached runtime state (store/mcp-health.ts).
 // ---------------------------------------------------------------------------
 
 export const NEEDS_AUTH_RE = /\b(401|unauthorized|forbidden|invalid[_ ]?token|authentication|oauth)\b/i
@@ -31,13 +31,4 @@ export function freshProbe(key: string, now = Date.now()): McpTestResult | null 
   const cached = probeCache.get(key)
 
   return cached && now - cached.at < PROBE_TTL_MS ? cached.result : null
-}
-
-/** Classify a finished probe the way the MCP page's status dot does. */
-export function classifyProbe(result: McpTestResult): 'error' | 'needs-auth' | 'ok' {
-  if (result.ok) {
-    return 'ok'
-  }
-
-  return NEEDS_AUTH_RE.test(result.error ?? '') ? 'needs-auth' : 'error'
 }

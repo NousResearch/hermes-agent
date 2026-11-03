@@ -490,6 +490,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        _load_daybreak = getattr(runner, "_load_daybreak", None)  # absent on minimal test runners
+        agent.daybreak = callable(_load_daybreak) and _load_daybreak(ctx.source) is True
         self._merge_turn_request_overrides(agent, turn_route)
         from gateway.session_surface import arm_surface_turn
         # auxiliary.voice_chat route (a voice note, or an admission committed as a voice turn) and

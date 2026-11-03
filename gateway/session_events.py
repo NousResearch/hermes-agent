@@ -3,6 +3,7 @@ from copy import deepcopy
 import logging
 import threading
 import uuid
+import weakref
 
 from tui_gateway import event_replay
 from tui_gateway.transport import FanoutTransport
@@ -15,6 +16,9 @@ class SessionEvents:
         # A private lifetime key prevents two profiles (or legacy TUI owners)
         # with the same persisted ID from reading each other's replay.
         self._key = uuid.uuid4().hex
+        # Nothing but this object can name the key, so its ring and counters go when it does (a
+        # retired or replaced LiveSession), instead of waiting for the shared cache's FIFO cap.
+        weakref.finalize(self, event_replay.release_key, self._key, blocking=False).atexit = False
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
         self._public_id = None
@@ -25,6 +29,12 @@ class SessionEvents:
         # Set by the authority that attaches transports: retires the subscription of a
         # peer whose bounded backlog overflowed, so it cannot linger looking subscribed.
         self.on_overflow = None
+
+    def release(self):
+        """The session ended with no viewer left (it may stay resumable): free its replay frames
+        now. A later publish or attach finds them gone and starts a new epoch, as after eviction."""
+        with self.lock:
+            event_replay.release_key(self._key)
 
     def watermark(self):
         with self.lock:

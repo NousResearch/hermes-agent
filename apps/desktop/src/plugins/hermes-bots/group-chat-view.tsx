@@ -40,7 +40,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupDrivenByDesktop, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import {
@@ -90,6 +90,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
+import { stickyGroupEngine } from './group-engine'
 import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
@@ -119,7 +120,7 @@ import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
-import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeaker, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -227,6 +228,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
           sessionOwners: room.sessionOwners || {},
           members: Array.isArray(room.members) ? room.members : [],
           roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+          ...stickyGroupEngine(room),
           image: room.image || null,
           syncRevision: Math.max(0, Number(room.syncRevision || 0))
         }
@@ -589,10 +591,17 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const record: GroupChatRoom | undefined = useValue($groupChats)[props.group]
   const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group, props.origin ?? 'name')
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
+
+  // Created across machines: no gateway here can own the room, so this Desktop
+  // drives it, even after a membership edit leaves every bot on one machine.
+  if (canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && groupDrivenByDesktop(record, props.members, connectionId)) {
+    return <LegacyGroupChatWorkspace {...props} />
+  }
 
   return <GroupExecutionGate {...props} />
 }
@@ -702,11 +711,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  // A former member's line is labelled from the live roster (renderEntry).
+  const liveRoster: RosterRow[] = useValue($lastRoster)
 
-  const room: GroupChatRoom = rooms[group] || {
-    log: [],
-    running: false
-  }
+  const room: GroupChatRoom = rooms[group] || { log: [], running: false }
 
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
@@ -1351,28 +1359,16 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
+    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta, liveRoster)
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
-    // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    // carry their @name-device handle); a former member as its own machine names it.
+    const speaker = groupTranscriptSpeaker(entry, members, liveRoster)
+    const member = members.find(bot => bot === speaker) ?? null
 
-    const display = isUser
-      ? b.group.you
-      : displayName(
-          member || {
-            name: entry.from.name
-          },
-          meta
-        )
+    const display = isUser || !speaker ? b.group.you : displayName(speaker, meta)
 
     const entryKey = `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey

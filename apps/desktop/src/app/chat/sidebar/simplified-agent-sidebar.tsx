@@ -36,6 +36,7 @@ import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
 import { useSimplifiedAgents } from './use-simplified-agents'
+import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
 import { useSimplifiedSessionSearch } from './use-simplified-session-search'
 
 import type { ChatSidebar } from './index'
@@ -67,10 +68,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     [sessions, messaging, cron, removed]
   )
 
-  const pinned = useMemo(() => simplifiedPins(all, pinIds, unconfirmed), [all, pinIds, unconfirmed])
-
-  const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))
-
   const matches = (row: (typeof all)[number]) =>
     !query.trim() ||
     sessionMatchesSearch(row, query.trim()) ||
@@ -87,10 +84,14 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   )
 
   const agents = useSimplifiedAgents(rows)
+  const pinWrites = useSimplifiedPinWrites(agents.owner, props.onRetrySessions)
+  const pinned = simplifiedPins(all, pinIds, unconfirmed, pinWrites.value)
+  const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))
 
   const shared = {
     activeSessionId,
     pinnedIds,
+    pinPending: pinWrites.pending,
     onResumeSession: props.onResumeSession,
     onDeleteSession: props.onDeleteSession,
     onArchiveSession: props.onArchiveSession,
@@ -105,6 +106,12 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     const scope = { connectionId: row.connection_id || ambientOwnerConnectionId(), profile: row.profile || 'default' }
 
     try {
+      if (field === 'pinned') {
+        await pinWrites.setPinned(row, value)
+
+        return
+      }
+
       await mutateSessionHttp(row.id, 'PATCH', { [field]: value }, scope)
       await props.onRetrySessions()
     } catch (error) {

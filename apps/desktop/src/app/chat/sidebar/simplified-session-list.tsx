@@ -29,6 +29,7 @@ interface SimplifiedSessionListProps {
   sessions: SessionInfo[]
   activeSessionId: string | null
   pinnedIds: ReadonlySet<string>
+  pinPending?: (row: SessionInfo) => boolean
   ambiguousIds: ReadonlySet<string>
   onResumeSession: (id: string, row?: SessionInfo) => void
   onDeleteSession: (id: string) => void
@@ -126,7 +127,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             onArchive={() => props.onArchiveSession(row.id)}
             onBranch={() => props.onBranchSession(row.id)}
             onDelete={() => props.onDeleteSession(row.id)}
-            onPin={() => props.onUpdate(row, 'pinned', !pinned)}
+            onPin={props.pinPending?.(row) ? undefined : () => props.onUpdate(row, 'pinned', !pinned)}
             onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
             pinned={pinned}
             profile={row.profile}

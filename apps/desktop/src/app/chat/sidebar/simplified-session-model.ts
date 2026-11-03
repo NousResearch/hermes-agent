@@ -17,7 +17,12 @@ export function ambiguousSessionIds(rows: readonly SessionInfo[]): Set<string> {
 }
 
 /** Backend pins are authoritative; a legacy bare-id hint cannot choose between owners. */
-export function simplifiedPins(rows: readonly SessionInfo[], pinIds: readonly string[], pending: ReadonlySet<string>) {
+export function simplifiedPins(
+  rows: readonly SessionInfo[],
+  pinIds: readonly string[],
+  pending: ReadonlySet<string>,
+  pinOverride?: (row: SessionInfo) => boolean | undefined
+) {
   const ambiguous = ambiguousSessionIds(rows)
 
   const rank = (row: SessionInfo) => {
@@ -28,6 +33,12 @@ export function simplifiedPins(rows: readonly SessionInfo[], pinIds: readonly st
 
   return rows
     .filter(row => {
+      const override = pinOverride?.(row)
+
+      if (override !== undefined) {
+        return override
+      }
+
       const local = pinIds.includes(sessionPinId(row)) && !ambiguous.has(row.id)
 
       if (pending.has(row.id) || pending.has(sessionPinId(row))) {

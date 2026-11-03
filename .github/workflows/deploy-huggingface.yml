@@ -1,0 +1,31 @@
+name: Sync to Hugging Face
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A shallow checkout cannot be pushed into a new remote.
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::error::Add HF_TOKEN (a Hugging Face token with write access) in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          # The Space starts with its own initial commit, so force-push HEAD to main.
+          git push --force "https://cxxa4673:${HF_TOKEN}@huggingface.co/spaces/cxxa4673/hermes-agent.git" HEAD:refs/heads/main

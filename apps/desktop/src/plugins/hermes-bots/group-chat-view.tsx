@@ -40,7 +40,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupCreationSource, groupExecutionMode, groupNeedsDesktopCourier } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import type { CanonicalGroupOrigin } from './canonical-group-registry'
 import {
@@ -593,6 +593,11 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
   // The in-panel fallback has no tab to close, so leaving deselects the room, as in the legacy view.
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack ?? (() => $groupChatWorkspace.set(null))} visible={props.visible} />}
+
+  // Members on another machine: no gateway here can own the room, so this Desktop drives it.
+  if (canonicalGroupKeyRoute(props.group, props.origin ?? 'name') === null && groupNeedsDesktopCourier(props.members, connectionId)) {
+    return <LegacyGroupChatWorkspace {...props} />
+  }
 
   return <GroupExecutionGate {...props} />
 }

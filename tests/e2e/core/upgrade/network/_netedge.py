@@ -53,6 +53,7 @@ def netns_usable() -> bool:
             [shutil.which("bwrap") or "bwrap", "--dev-bind", "/", "/", "--unshare-net", "--unshare-pid",
              "--proc", "/proc", "--die-with-parent", sys.executable, "-I", "-c", probe],
             capture_output=True, text=True, timeout=30,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -85,7 +86,7 @@ class TestCA:
         directory.mkdir(parents=True, exist_ok=True)
         self._key = ec.generate_private_key(ec.SECP256R1())
         name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Hermes E2E TLS Inspection Root")])
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         self._cert = (
             x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(self._key.public_key()).serial_number(x509.random_serial_number())
@@ -136,7 +137,7 @@ class TestCA:
     def _leaf_context(self, host: str) -> ssl.SSLContext:
         x509, hashes, ser, ec, oid = self._x509, self._hashes, self._ser, self._ec, self._oid
         key = ec.generate_private_key(ec.SECP256R1())
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         try:
             san = x509.IPAddress(ipaddress.ip_address(host))
         except ValueError:
@@ -256,7 +257,7 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
         }
         if req.headers.get("content-encoding", "").lower() == "gzip":
             body = gzip.decompress(body)
-        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
+        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300, check=False)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:
             head, _, payload = cp.stdout.partition(b"\n\n")
@@ -291,7 +292,7 @@ class _SiteHandler(http.server.BaseHTTPRequestHandler):
     site_host: str
     hits: list[Hit]
 
-    def log_message(self, format, *args) -> None:  # noqa: A002 - quiet
+    def log_message(self, format, *args) -> None:
         pass
 
     def _read_body(self) -> bytes:

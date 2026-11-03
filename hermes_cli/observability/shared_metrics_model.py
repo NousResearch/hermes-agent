@@ -166,9 +166,13 @@ def record_tool_call_quality(agent: Any, tool_calls: Iterable[Any], repaired_ids
         if not tool_calls or not enabled():
             return
         from .shared_metrics_signals import tool_unavailable_fields
+        from .shared_metrics_connectors import tool_batch_fields
         route = model_route(getattr(agent, "provider", None), getattr(agent, "model", None))
         valid_names = getattr(agent, "valid_tool_names", None) or frozenset()
         required = _required_params(getattr(agent, "tools", None))
+        tool_calls = list(tool_calls)
+        if (batch := tool_batch_fields(route, tool_calls)) is not None:
+            record_process_mark(contract.TOOL_BATCH_MARK, batch)
         for tc in tool_calls:
             fn = tc.function
             issue = tool_call_issue(

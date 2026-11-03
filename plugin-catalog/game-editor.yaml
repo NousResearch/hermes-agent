@@ -1,0 +1,24 @@
+name: game-editor
+repo: https://github.com/TakeshiTGAL/hermes-plugin-game-editor
+sha: 3a2b23e8a60714b4346b3d8f7c9c2a12b29718a8
+version: "1.2.3"
+requires_hermes: ">=0.21.6"
+description: "In the Godot 4 project open in your editor, it places assets into the scene, plays the game, and the next plan fixes each error from its file and line. Disclosure — Needs Godot 4.7 or later, the Godot AI 4.x add-on, and uv. The first start downloads godot-ai==4.3.0 from pypi.org and files.pythonhosted.org. There is no API key. The editor is reached only on 127.0.0.1. A server this plugin starts sends no telemetry. The add-on follows godot_ai/telemetry_enabled (on by default) and can send usage to godot-ai-telemetry-v2-pudmurzsnq-uw.a.run.app. plan_change sends only the session list. apply_plan asks once. A plan that deletes, overwrites, drops unsaved work, writes outside the project or runs code it wrote is not made when what is lost exceeds 1,700 characters, and otherwise runs only after confirm_risky_plan. Play and tests ask once and run the project's code. Tools are on by default on every surface, including the gateway, so anyone who can message Hermes there can ask and approve. This plugin keeps no user list of its own. Cron, hermes chat -q and unattended runs decline. Data stays in <HERMES_HOME>/plugin-data/agent-plugin-game-editor-<id> after removal. Stop with hermes plugins disable game-editor, or hermes tools for one surface. macOS only."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-game-editor
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - mcp__game_editor__scene_look
+    - mcp__game_editor__script_look
+    - mcp__game_editor__file_look
+    - mcp__game_editor__project_look
+    - mcp__game_editor__change_guide
+    - mcp__game_editor__plan_change
+    - mcp__game_editor__apply_plan
+    - mcp__game_editor__confirm_risky_plan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

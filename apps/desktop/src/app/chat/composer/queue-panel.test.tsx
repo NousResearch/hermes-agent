@@ -13,7 +13,7 @@ const entry = (id: string, text: string): QueuedPromptEntry => ({
   text
 })
 
-function renderPanel(entries: QueuedPromptEntry[]) {
+function renderPanel(entries: QueuedPromptEntry[], onDiscardLost?: (id: string) => void) {
   return render(
     <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
       <QueuePanel
@@ -21,6 +21,7 @@ function renderPanel(entries: QueuedPromptEntry[]) {
         editingId={null}
         entries={entries}
         onDelete={vi.fn()}
+        onDiscardLost={onDiscardLost}
         onEdit={vi.fn()}
         onResume={vi.fn()}
         onSendNow={vi.fn()}
@@ -78,5 +79,43 @@ describe('QueuePanel expandable previews', () => {
 
     fireEvent.click(collapse)
     expect(screen.getByRole('button', { name: /expand/i }).getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+// #134889 NF2: after the gateway is killed mid-turn, owner recovery fences the turn `unknown` and
+// pauses the FIFO behind it. The Discard choice lived inside the collapsed queue section, so the
+// chat showed only "1 Queued" (then "2 Queued" for a follow-up) with no reason and no action.
+describe('QueuePanel lost turn', () => {
+  it('shows the lost turn and its Discard without expanding, and names the pause', async () => {
+    const onDiscardLost = vi.fn()
+    renderPanel([{ ...entry('lost', 'doomed turn'), serverStatus: 'unknown' }, entry('next', 'follow up')], onDiscardLost)
+
+    expect(await screen.findByText('Turn lost during restart')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /2 queued — paused/i })).toBeTruthy()
+    // Only the lost row is previewed while collapsed; the healthy follow-up stays inside the section.
+    expect(screen.queryByText('follow up')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(onDiscardLost).toHaveBeenCalledWith('lost')
+  })
+
+  it('opens when a queued row turns lost after the panel mounted', async () => {
+    const view = renderPanel([entry('a', 'first')])
+    expect(view.queryByText('Turn lost during restart')).toBeNull()
+    view.rerender(
+      <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
+        <QueuePanel
+          busy={false}
+          editingId={null}
+          entries={[{ ...entry('a', 'first'), serverStatus: 'unknown' }]}
+          onDelete={vi.fn()}
+          onDiscardLost={vi.fn()}
+          onEdit={vi.fn()}
+          onResume={vi.fn()}
+          onSendNow={vi.fn()}
+          parked={false}
+        />
+      </I18nProvider>
+    )
+    expect(await screen.findByText('Turn lost during restart')).toBeTruthy()
   })
 })

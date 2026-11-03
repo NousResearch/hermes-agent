@@ -67,7 +67,7 @@ def _reset_auxiliary_provider_state():
 
 def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     kwargs = dict(
         api_key="test-key",
@@ -358,6 +358,43 @@ class TestBuildApiKwargsNousPortal:
         extra = kwargs.get("extra_body", {})
         assert extra.get("tags") == nous_portal_tags(session_id=agent.session_id)
 
+    @pytest.mark.parametrize("data_use,provider", [
+        (None, None),
+        (["no_training"], {"data_collection": "deny"}),
+        (["zero_retention"], {"data_collection": "deny", "zdr": True}),
+    ])
+    def test_connector_data_use_asks_for_a_no_training_route_and_never_reaches_the_wire(
+            self, monkeypatch, data_use, provider):
+        agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1", model="gpt-5")
+        tool = {"role": "tool", "tool_call_id": "c1", "content": "inbox"}
+        messages = [
+            {"role": "user", "content": "read my mail"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{}"}}]},
+            {**tool, **({"data_use": data_use} if data_use else {})},
+        ]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["extra_body"].get("provider") == provider
+        assert kwargs["messages"][-1] == tool
+
+    def test_connector_data_use_is_not_sent_to_other_providers(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        messages = [{"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "", "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {"name": "tool_call", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "provider" not in kwargs.get("extra_body", {})
+        assert "data_use" not in kwargs["messages"][-1]
+
+    def test_auxiliary_nous_call_carrying_a_connector_result_asks_for_a_no_training_route(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        messages = [{"role": "user", "content": "title this"},
+                    {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]}]
+        kwargs = _build_call_kwargs(provider="nous", model="hermes-4", messages=messages)
+        assert kwargs["extra_body"]["provider"] == {"data_collection": "deny"}
+
 
 
 class TestBuildApiKwargsCustomEndpoint:
@@ -567,7 +604,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = _normalize_codex_response(response)
+        msg, _reason = _normalize_codex_response(response)
         assert msg.codex_reasoning_items is not None
         assert len(msg.codex_reasoning_items) == 1
         assert msg.codex_reasoning_items[0]["encrypted_content"] == "gAAAA_secret_blob_123"
@@ -592,7 +629,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = _normalize_codex_response(response)
+        msg, _reason = _normalize_codex_response(response)
         assert msg.codex_message_items is not None
         assert len(msg.codex_message_items) == 2
         assert msg.codex_message_items[0]["id"] == "msg_abc"
@@ -713,7 +750,7 @@ class TestAuxiliaryClientProviderPriority:
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import _OPENROUTER_MODEL, get_text_auxiliary_client
         with patch("agent.auxiliary_client.OpenAI") as mock:
-            client, model = get_text_auxiliary_client()
+            _client, model = get_text_auxiliary_client()
         assert model == _OPENROUTER_MODEL
         assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
 
@@ -725,9 +762,9 @@ class TestAuxiliaryClientProviderPriority:
             "scope": "inference:invoke",
         }
         with patch("agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
-             patch("agent.auxiliary_client.OpenAI") as mock, \
+             patch("agent.auxiliary_client.OpenAI"), \
              patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
-            client, model = get_text_auxiliary_client()
+            _client, model = get_text_auxiliary_client()
         assert model == _NOUS_MODEL
 
     def test_custom_endpoint_when_no_nous(self, monkeypatch):
@@ -744,7 +781,7 @@ class TestAuxiliaryClientProviderPriority:
              patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("http://localhost:1234/v1", "local-key", "openai-compatible")), \
              patch("agent.auxiliary_client.OpenAI") as mock:
-            client, model = get_text_auxiliary_client()
+            _client, _model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
     def test_codex_not_in_auto_fallback(self, monkeypatch):

@@ -37,19 +37,19 @@ print(json.dumps({'pattern_guard':a.check_dangerous_command(cmd,'local',approval
 # execution and marker contents, never invoke a host shutdown binary.
 marker=home/'marker'
 prefix=r+'(){ printf executed > "$MARKER"; }; '
-p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',prefix+cmd],env={'PATH':'/usr/bin:/bin','HOME':str(home),'MARKER':str(marker)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5)
+p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',prefix+cmd],env={'PATH':'/usr/bin:/bin','HOME':str(home),'MARKER':str(marker)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5, check=False)
 assert marker.read_text(encoding='utf-8')=='executed'
 print(json.dumps({'case':'newline safe execution','exit':p.returncode,'marker':marker.read_text(encoding='utf-8'),'stdout':p.stdout,'stderr':p.stderr}))
 # Prove the benign backtick argument really is well-formed and matches input.
 f=home/'f';f.write_text('needle\n', encoding='utf-8')
 cmd='grep -e `printf needle` '+str(f)
-p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',cmd],env={'PATH':'/usr/bin:/bin','HOME':str(home)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5)
+p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',cmd],env={'PATH':'/usr/bin:/bin','HOME':str(home)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5, check=False)
 assert p.returncode==0 and p.stdout=='needle\n'
 print(json.dumps({'case':'backtick argument','command':cmd,'baseline':(b.detect_hardline_command(cmd) if b else None),'head':d.detect_hardline_command(cmd),'tokens':d._shell_tokens_with_spans(cmd,0),'exit':p.returncode,'stdout':p.stdout}))
 # Reporter's exact spelling, fixture makes the sed address meaningful.
 with tempfile.TemporaryDirectory() as tmp:
     Path(tmp,'f').write_text('X\ny\nz\nw\n', encoding='utf-8')
     cmd='sed -n "$(grep -n X f | cut -d: -f1),+3p" f'
-    p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',cmd],cwd=tmp,env={'PATH':'/usr/bin:/bin','HOME':str(home)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5)
+    p=subprocess.run(['/bin/bash','--noprofile','--norc','-c',cmd],cwd=tmp,env={'PATH':'/usr/bin:/bin','HOME':str(home)},capture_output=True,text=True, encoding='utf-8', errors='replace',timeout=5, check=False)
     assert p.returncode==0 and p.stdout=='X\ny\nz\nw\n'
     print(json.dumps({'case':'reported real fixture','baseline':(b.detect_hardline_command(cmd) if b else None),'head':d.detect_hardline_command(cmd),'exit':p.returncode,'stdout':p.stdout}))

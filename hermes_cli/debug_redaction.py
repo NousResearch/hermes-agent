@@ -29,12 +29,15 @@ _RAW_URL_PARAM_RE = re.compile(
     r"(?P<sep>[?#&;])(?P<key>[A-Za-z0-9_.~+%\-]+)="
     r"(?P<value>[^?#&;\s\"'<>]*)"
 )
+# ``%25`` prefixes the double-encoded forms (``%253F``/``%2526``/``%253D``) that a
+# URL nested inside an already-encoded redirect value carries.
+_ENCODED_URL_SEP = r"%(?:25)?(?:3f|23|26|3b)"
 _ENCODED_URL_PARAM_RE = re.compile(
-    r"(?P<sep>%3[fF]|%23|%26|%3[bB])"
-    r"(?P<key>(?:(?!%3[dD]|%3[fF]|%23|%26|%3[bB])[^\s\"'<>]){1,160}?)"
-    r"(?P<eq>%3[dD]|=)"
+    rf"(?P<sep>{_ENCODED_URL_SEP})"
+    rf"(?P<key>(?:(?!%(?:25)?3d|{_ENCODED_URL_SEP})[^\s\"'<>]){{1,160}}?)"
+    r"(?P<eq>%(?:25)?3d|=)"
     r"(?P<value>.*?)"
-    r"(?=(?:%3[fF]|%26|%23|%3[bB])|[\s\"'<>]|$)",
+    rf"(?={_ENCODED_URL_SEP}|[\s\"'<>]|$)",
     re.IGNORECASE,
 )
 
@@ -51,13 +54,30 @@ _QUOTED_HEADER_RE = re.compile(
     r"(?P<quote>['\"])(?P<value>.*?)(?P=quote)",
     re.IGNORECASE,
 )
+# A key may carry inner colons (``sk-abc:xyz``, ``user:pass``); a trailing colon
+# is prose punctuation (``see: docs``). A letters-only word (``docs``, ``Note``,
+# ``HTTP``) is prose rather than a key: keys mix case, digits or symbols. The
+# word test is case-sensitive even inside the IGNORECASE regexes below. A
+# single-case run of 20+ letters is no English word, so it is a key.
+_KEY_CHARS = r"A-Za-z0-9._~+/\-"
+# One key-end boundary shared by "is it a key" and "is it a word" so they cannot drift.
+_KEY_END = rf"(?![{_KEY_CHARS}=]|:[{_KEY_CHARS}])"
+_KEY = rf"[{_KEY_CHARS}]+(?::[{_KEY_CHARS}]+)*=*{_KEY_END}"
+_NOT_WORD = rf"(?!(?-i:[A-Z]?[a-z]{{1,19}}|[A-Z]{{1,19}}){_KEY_END})"
+# agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
+# keeps the key, so ``***`` is a scheme too and the key is the value when it
+# is 8+ key chars (any case, letters-only included: fail closed), key-shaped
+# (not a word; 4+ chars before any colon, or 6+ mixing letters and digits) or
+# a short word ending the header (``Basic short``). Shorter prose after a
+# masked value stays.
+_SCHEME = (
+    r"(?:Bearer|Basic|Digest)\s+|\*\*\*[ \t]+"
+    rf"(?=[{_KEY_CHARS}]{{8,}}=*(?![{_KEY_CHARS}=])|{_NOT_WORD}(?=[^\s:]{{4}}|(?=\S*[A-Za-z])(?=\S*[0-9])\S{{6}}){_KEY}|[A-Za-z]{{4,7}}[ \t]*(?:[\r\n'\",;}}\]]|$))"
+    rf"(?!(?:{_HEADER_NAME_PATTERN})\b\s*[:=])"
+)
 _BARE_HEADER_RE = re.compile(
     rf"(?P<prefix>\b(?:{_HEADER_NAME_PATTERN})\b\s*[:=]\s*)"
-    # agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
-    # keeps the key, so ``***`` before a same-line token-shaped value (not prose
-    # and not another secret header) is a scheme too, and the key is the value.
-    r"(?P<value>(?>(?:(?:Bearer|Basic|Digest)\s+|\*\*\*[ \t]+(?=[A-Za-z0-9._~+/-]{8,}=*(?![A-Za-z0-9._~+/=-]))"
-    rf"(?!(?:{_HEADER_NAME_PATTERN})\b\s*[:=]))?)(?!\[REDACTED\])[^\s,}}\]]+)",
+    rf"(?P<value>(?>(?:{_SCHEME})?)(?!\[REDACTED\])[^\s,}}\]]+)",
     re.IGNORECASE,
 )
 
@@ -91,11 +111,19 @@ _HEADER_ARGV_RE = re.compile(
 )
 _PLAIN_HEADER_ARG_RE = re.compile(
     rf"(?P<prefix>--header\s+(?:{_HEADER_NAME_PATTERN})\s+)"
-    r"(?>(?:(?:Bearer|Basic|Digest)\s+)?)(?!\[REDACTED\])(?P<value>[^\s,}\]]+)",
+    rf"(?>(?:{_SCHEME})?)(?!\[REDACTED\])(?P<value>[^\s,}}\]]+)",
     re.IGNORECASE,
 )
 _SUPPORT_BEARER_RE = re.compile(
-    r"(?P<prefix>\bBearer\s+)[A-Za-z0-9._~+/-]{8,}=*",
+    # Free text has no header boundary to stop at: consume the whole value,
+    # inner ``=`` padding included (``abcd1234==x``), not just a key-shaped prefix.
+    # An RFC 6750/7235 challenge (``Bearer realm="api"``, ``Bearer error=...``)
+    # is auth-params, not a token: only a known param name stays, so a key-shaped
+    # ``<letters>="..."`` is still scrubbed (fail closed).
+    rf"(?P<prefix>\bBearer\s+|\bBasic\s+{_NOT_WORD})"
+    r"(?!(?:realm|scope|error|error_description|error_uri)=)"
+    rf"(?=[^\s]{{8}})"
+    rf"[{_KEY_CHARS}=]+(?::[{_KEY_CHARS}=]+)*",
     re.IGNORECASE,
 )
 
@@ -112,8 +140,9 @@ def _redact_url_params(text: str) -> str:
     def _encoded_sub(match: re.Match[str]) -> str:
         if _decoded_compact_name(match.group("key")) not in _SENSITIVE_URL_PARAM_NAMES:
             return match.group(0)
-        replacement = "%2A%2A%2A" if match.group("eq").lower() == "%3d" else "***"
-        return f"{match.group('sep')}{match.group('key')}{match.group('eq')}{replacement}"
+        eq = match.group("eq")
+        star = f"{eq[:-2]}2A" if eq != "=" else "*"  # %2A, or %252A when double-encoded
+        return f"{match.group('sep')}{match.group('key')}{eq}{star * 3}"
 
     # Running until stable handles a raw URL nested inside another query value
     # without recursive parsing. The pass cap keeps malformed input bounded.

@@ -22,10 +22,10 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as hermes_main
-import hermes_cli.main_web_build as main_web_build
-import hermes_cli.main_install_repair as main_install_repair
+from hermes_cli import main_web_build
+from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
-import hermes_cli.update_cmd_fleet as update_cmd_fleet
+from hermes_cli import update_cmd_fleet
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation
@@ -54,7 +54,11 @@ def _make_up_to_date_side_effect(sha="abc123"):
     return side_effect
 
 
-def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
+# Full object names: the pull refuses a target that does not resolve to one (F17).
+PRE_SHA, POST_SHA = "abc123" + "0" * 34, "def456" + "0" * 34
+
+
+def _make_head_moved_side_effect(pre_sha=PRE_SHA, post_sha=POST_SHA):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
     advanced = False
 
@@ -70,6 +74,9 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
         if "rev-list" in joined:
             return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
 
+        if "rev-parse -q --verify" in joined:  # the pull's resolved target
+            return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
+
         if joined.endswith("rev-parse HEAD"):
             return SimpleNamespace(returncode=0, stdout=f"{post_sha if advanced else pre_sha}\n", stderr="")
 
@@ -84,6 +91,13 @@ def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Isolate machine maintenance while exercising interrupted fleet updates."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
+    # The update's git (the commit point's target resolve, the move itself) goes through the custody
+    # runner; off Windows it calls subprocess.run, on Windows a job-bound Popen the fake above
+    # would miss. Fake the runner itself so the seam holds on every OS.
+    from hermes_cli import update_custody
+
+    monkeypatch.setattr(update_custody, "run",
+                        lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
@@ -168,7 +182,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         "hermes_cli.update_inventory.collect_runtime_inventory",
-        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: {}),
+        lambda: SimpleNamespace(runtimes=[], to_dict=dict),
     )
     # The restart phase imports discovery fns fresh after
     # _purge_stale_hermes_modules (the update reloads code in-place), so
@@ -412,8 +426,9 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     ``hermes-gateway.service``) and an unmanaged ``serve`` on the same
     default profile. The serve survives the update as the SAME process, so
     the update must (1) warn, (2) reconcile it as ``unaccounted`` instead of
-    borrowing the gateway's restart, and (3) exit 1 with a ``partial``
-    receipt — not print a clean success."""
+    borrowing the gateway's restart, and (3) under contract C3 (the code is
+    committed) end ``success`` with an owed ``gateway_restart`` follow-up and
+    the restart obligation still armed — never a silent clean success."""
     from hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
@@ -448,7 +463,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     # verifier polls its full no-rows window, ~2 min of wall clock).
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
@@ -460,18 +475,24 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
         lambda **_k: [{"pid": 5555, "purpose": "serve", "create_time": 1000.0}],
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(args)
-    assert excinfo.value.code == 1
+    # Was SystemExit(1): the committed update no longer fails (contract C3).
+    hermes_main.cmd_update(args)
 
     out = capsys.readouterr().out
+    # (1) still warned, unchanged.
     assert "pid 5555" in out and "pre-update code" in out
     assert "Planned runtimes the restart phase never touched" in out
     assert "serve [default] pid 5555" in out
+    assert "follow-up 'gateway_restart'" in out
 
     latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(latest.read_text(encoding="utf-8"))
-    assert receipt["outcome"] == "partial"
+    # (3) was "partial": a success that names the owed restart.
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
+    from hermes_cli import update_cmd_fleet
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    # (2) the reconciliation verdict is unchanged.
     by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
     assert by_pid == {4444: "restarted", 5555: "unaccounted"}
 
@@ -517,7 +538,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
     # The gateway leg is healthy on the new code; only the Desktop serve is left.
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
-        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": "def456",
+        lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
     # Same incarnation still alive: the Desktop serve genuinely survived on pre-update code.
@@ -552,12 +573,14 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
 
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", _interrupt)
 
-    with pytest.raises(KeyboardInterrupt):
+    # Was KeyboardInterrupt: Ctrl-C after the commit point exits 130 as an interrupt, not a failure.
+    with pytest.raises(SystemExit) as exc:
         hermes_main.cmd_update(args)
 
+    assert exc.value.code == 130
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     record = json.loads(host_obligation.host_obligation_path().read_text(encoding="utf-8"))
-    assert record["expected_sha"] == "def456"
+    assert record["expected_sha"] == POST_SHA
 
 
 def test_startup_warn_prints_when_marker_present(capsys):

@@ -1,0 +1,12 @@
+name: Sync to Hugging Face
+on: [push]
+jobs:
+sync_to_hub:
+runs-on: ubuntu-latest
+steps:
+- uses: actions/checkout@v3
+- name: Push to hub
+env:
+HF_TOKEN: ${{ secrets.HF_TOKEN }}
+run: |
+git push https://cxxa4673:$HF_TOKEN@huggingface.co/spaces/cxxa4673/hermes-agent main

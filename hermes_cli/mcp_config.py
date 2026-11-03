@@ -217,7 +217,7 @@ def _get_mcp_servers(config: Optional[dict] = None) -> dict[str, dict]:
 
 def record_mcp_install(source: str, name: Optional[str], outcome: str, *, failure_class: Optional[str] = None,
                        error: Optional[BaseException] = None) -> None:
-    """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom).
+    """One shared-metrics extension install for an MCP server added by hand (``name`` is None: custom).
     A failed one names its ``failure_class`` or passes the raised ``error`` (classified by its type)."""
     from hermes_cli.observability.shared_metrics_events import record_extension_install
 

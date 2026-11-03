@@ -310,36 +310,3 @@ def _assert_noninteractive(call: dict):
     assert call.get("stdin") is subprocess.DEVNULL or "input" in call, call["argv"]
     env = call.get("env")
     assert env is not None and env.get("GIT_TERMINAL_PROMPT") == "0", call["argv"]
-
-
-
-
-
-
-
-
-def test_mcp_catalog_git_install_runs_noninteractively(monkeypatch, tmp_path):
-    from hermes_cli import mcp_catalog
-
-    calls = _capture_run(monkeypatch, mcp_catalog)
-    monkeypatch.setattr(mcp_catalog.shutil, "which", lambda name: "/usr/bin/git")
-    monkeypatch.setattr(mcp_catalog, "_install_root", lambda: tmp_path)
-
-    entry = mcp_catalog.CatalogEntry(
-        name="test-mcp",
-        description="",
-        source="official",
-        transport=mcp_catalog.TransportSpec(type="stdio", command="python"),
-        auth=mcp_catalog.AuthSpec(type="none"),
-        install=mcp_catalog.InstallSpec(
-            type="git",
-            url="https://github.com/example/mcp.git",
-            ref="main",
-            bootstrap=[],
-        ),
-    )
-    mcp_catalog._do_git_install(entry)
-    assert calls
-    for call in calls:
-        if call["argv"][0].endswith("git") or "git" in call["argv"][0]:
-            _assert_noninteractive(call)

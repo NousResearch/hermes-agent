@@ -159,14 +159,6 @@ let
   # strings instead of raw i18n keys (#23943 / #27632 / #35374).
   bundledLocales = lib.cleanSource ../locales;
 
-  # Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
-  # case as locales: not a Python package, so it's symlinked into the store and
-  # exposed via HERMES_OPTIONAL_MCPS.
-  bundledOptionalMcps = lib.cleanSourceWith {
-    src = ../optional-mcps;
-    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
-  };
-
   # Tools come from pm/lock.json, the same builds `hermes pm install`
   # provisions elsewhere. git and openssh are nixpkgs': the lock pins them for
   # win32 only. hermesNpmLib.nodejs is the pinned node with the pinned npm.
@@ -225,7 +217,6 @@ let
         optional-skills = toString bundledOptionalSkills;
         plugins = toString bundledPlugins;
         locales = toString bundledLocales;
-        optional-mcps = toString bundledOptionalMcps;
       };
       frontends = {
         tui = "${hermesTui}/lib/hermes-tui";

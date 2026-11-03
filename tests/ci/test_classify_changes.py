@@ -275,14 +275,6 @@ CASES = {
     ".pth file → scan": (["evil.pth"], _lanes(python=True, scan=True)),
     "setup.py → scan": (["setup.py"], _lanes(python=True, scan=True, docker=True, nix=True, e2e_upgrade=True)),
     # Files CODEOWNERS owns carry no lane of their own: they only route as code.
-    "mcp catalog manifest → python only": (
-        ["optional-mcps/foo/manifest.yaml"],
-        _lanes(python=True),
-    ),
-    "mcp_catalog.py → python + scan": (
-        ["hermes_cli/mcp_catalog.py"],
-        _lanes(python=True, scan=True),
-    ),
     "eslint config → frontend": (
         ["apps/desktop/eslint.config.mjs"],
         _lanes(frontend=True),

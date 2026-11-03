@@ -1,7 +1,7 @@
 """Public-name catalogs for shared metrics: the only non-enum names a package may carry.
 
 Every set here is something Nous itself publishes (slash-command registry, bundled and optional
-skills, optional-mcps/ and plugin-catalog/ entries, built-in auxiliary tasks, shipped locales).
+skills and plugin-catalog/ entries, built-in auxiliary tasks, shipped locales).
 A name outside its set is reported as ``custom`` so user-defined identities never leave the machine.
 Loaders are cached: the catalogs only change with the installed Hermes version.
 """
@@ -48,17 +48,6 @@ def bundled_skill_names() -> frozenset[str]:
     return _skill_dir_names(get_bundled_skills_dir(_REPO_ROOT / "skills")) | _skill_dir_names(
         get_optional_skills_dir(_REPO_ROOT / "optional-skills")
     )
-
-
-@functools.cache
-def mcp_catalog_names() -> frozenset[str]:
-    from hermes_constants import get_optional_mcps_dir
-
-    root = get_optional_mcps_dir(_REPO_ROOT / "optional-mcps")
-    try:
-        return frozenset(p.name.lower() for p in root.iterdir() if p.is_dir())
-    except OSError:
-        return frozenset()
 
 
 @functools.cache
@@ -235,7 +224,6 @@ def skill_metric_name(raw: object) -> str:
 
 _EXTENSION_CATALOGS = {
     "skill": bundled_skill_names,
-    "mcp_server": mcp_catalog_names,
     "plugin": plugin_catalog_names,
 }
 

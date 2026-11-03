@@ -31,7 +31,6 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
         "HERMES_NODE": str(original_home / "node"),
         "HERMES_PROFILE": "live", "HERMES_REAL_HOME": str(original_home),
         "HERMES_BUNDLED_SKILLS": str(original_home / "skills"),
-        "HERMES_OPTIONAL_MCPS": str(original_home / "mcps"),
         "VIRTUAL_ENV": str(original_home / "venv"),
         "PYTHONHOME": str(original_home / "python-home"),
         "PYTHONPATH": str(original_home / "site"),
@@ -63,7 +62,7 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
     assert environment["HERMES_PYTHON_SRC_ROOT"] == str(source)
     for key in ("HERMES_INSTALL_ROOT", "HERMES_PAYLOAD_ROOT", "HERMES_PAYLOAD_TAG",
                 "HERMES_BUILD_COMMIT", "HERMES_SITE", "HERMES_PROFILE", "HERMES_REAL_HOME",
-                "HERMES_PYTHON", "HERMES_NODE", "HERMES_BUNDLED_SKILLS", "HERMES_OPTIONAL_MCPS",
+                "HERMES_PYTHON", "HERMES_NODE", "HERMES_BUNDLED_SKILLS",
                 "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
         assert key not in environment
     assert environment["SIGNING_TOKEN"] == inherited["SIGNING_TOKEN"]

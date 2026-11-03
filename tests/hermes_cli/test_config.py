@@ -1315,7 +1315,6 @@ class TestEnvWriteDenylist:
         [
             "HERMES_CONFIG_PATH",
             "HERMES_ENV_PATH",
-            "HERMES_OPTIONAL_MCPS",
             "HERMES_COPILOT_ACP_COMMAND",
             "HERMES_COPILOT_ACP_ARGS",
             "HERMES_YOLO_MODE",
@@ -1393,25 +1392,11 @@ class TestEnvWriteDenylist:
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
-    def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
-        """The writer gate must not migrate or ignore operator-owned .env state."""
-        from hermes_cli.config import invalidate_env_cache
-
-        catalog = tmp_path / "custom-mcp-catalog"
-        (tmp_path / ".env").write_text(
-            f"HERMES_OPTIONAL_MCPS={catalog}\n",
-            encoding="utf-8",
-        )
-        invalidate_env_cache()
-
-        assert load_env()["HERMES_OPTIONAL_MCPS"] == str(catalog)
-
     @pytest.mark.parametrize(
         ("key", "expected"),
         [
             ("Path", "PATH"),
             ("Hermes_Yolo_Mode", "HERMES_YOLO_MODE"),
-            ("Hermes_Optional_Mcps", "HERMES_OPTIONAL_MCPS"),
             ("Hermes_Copilot_Acp_Command", "HERMES_COPILOT_ACP_COMMAND"),
             ("Hermes_Copilot_Acp_Args", "HERMES_COPILOT_ACP_ARGS"),
         ],
@@ -1439,7 +1424,6 @@ class TestEnvWriteDenylist:
         "protected_key",
         [
             "Hermes_Yolo_Mode",
-            "Hermes_Optional_Mcps",
             "Hermes_Copilot_Acp_Command",
             "Hermes_Copilot_Acp_Args",
         ],

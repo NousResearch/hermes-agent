@@ -186,12 +186,12 @@ Then a gate step in `ci.yaml` rewrites the result:
 
 | Lane | Selected on a PR when the diff touches… (summary; see `classify_changes.py`) |
 |---|---|
-| `python` | anything not provably irrelevant to Python (includes `skills/`, `website/docs/`, `website/scripts/`, `website/static/oauth/`) |
+| `python` | anything not provably irrelevant to Python (includes `skills/`, `apps/docs/content/`, `apps/docs/scripts/`, `apps/docs/public/oauth/`, the model-catalog copies) |
 | `python_prod` | as `python`, excluding `tests/` |
-| `frontend` | `ui-tui/`, `web/`, `apps/`, `tests-js/`, root pnpm manifests (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`), the WhatsApp bridge, JS under `scripts/build/` |
+| `frontend` | `ui-tui/`, `web/`, `apps/` (except `apps/docs/`), `tests-js/`, root pnpm manifests (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`), the WhatsApp bridge, JS under `scripts/build/` |
 | `rust` | `.rs`, Cargo files, bootstrap-installer crate paths |
 | `catalog` | `plugin-catalog/*.yaml`, `contributors/emails/` (a diff with only these runs catalog tests **instead of** the Python suite) |
-| `site` | the Docusaurus site |
+| `site` | the Fumadocs docs app (`apps/docs/`), the legacy `website/` model-catalog copy, `skills/`, `optional-skills/` |
 | `bootstrap` | `install.sh` and its pin fragments and stamp |
 | `desktop_updater` | `scripts/desktop-update/` and its Windows hand-off tests |
 | `remote_backends` | the SSH/Docker terminal backends, the terminal tool, their real-backend tests |
@@ -350,7 +350,7 @@ branch protection.
 |---|---|---|
 | `js-autofix.yml`, **auto-fix lint issues & formatting** | `push: main` touching `*.js/cjs/mjs/ts/tsx` or npm manifests; `workflow_dispatch` | `generate-patch` (no write access) runs `eslint --fix`. `apply-patch` (write access, never runs repo code) runs only when there are fixes. It pushes `bot/js-autofix` and opens an auto-merge PR. |
 | `archive-inputs.yml`, **Archive pinned PM inputs** | `push: main` on `pm/lock.json`, `pm/artifact-mirror.json`, `scripts/termux/runtime_libs.json`, its script, itself; `workflow_dispatch`; `workflow_call(sha)` | Verifies every pinned HTTP input and archives it to R2 (env `release-signing`). The archive step is skipped with a notice when R2 secrets are missing. |
-| `deploy-site.yml`, **Deploy Site** | `push: main` on `website/**`, `skills/**`, `optional-skills/**`, `plugin-catalog/**`, itself; `release: published`; `workflow_dispatch` (`skills_index_run_id`, `rebuild_skills_index`) | `deploy-docs` (GitHub Pages, upstream repo only) runs on every trigger. `deploy-vercel` (Vercel hook) runs only on `release` or dispatch, **not** on path pushes. Shared `pages` group, queued. |
+| `deploy-site.yml`, **Deploy Site** | `push: main` on `apps/docs/**`, `website/**`, `skills/**`, `optional-skills/**`, `plugin-catalog/**`, itself; `release: published`; `workflow_dispatch` (`skills_index_run_id`, `rebuild_skills_index`) | `deploy-docs` (GitHub Pages, upstream repo only) runs on every trigger. `deploy-vercel` (Vercel hook) runs only on `release` or dispatch, **not** on path pushes. Shared `pages` group, queued. |
 | `skills-index.yml`, **Build Skills Index** | `schedule` 06:00 and 18:00 UTC; `push: main` on its script or itself; `workflow_dispatch` | `build-index` runs on the upstream repo only. `trigger-deploy` dispatches `deploy-site.yml` with the new index, and only on schedule or dispatch (not on the path push). |
 
 ---
@@ -378,7 +378,7 @@ There are three release paths, and none of them starts from a tag push:
 | Tests | native smokes of each bundle | full CI (strict) + Docker + Nix + PM bundle + install/update E2E + signed upgrade acceptance, per the claim's lanes | native smokes |
 | Publishes | canary feeds, canary GitHub prerelease | Docker versioned tag → `stable`/`latest`, R2 stable feeds, App Installer, Store, APT, GitHub release | commit/channel pages under R2; never a feed or Store |
 
-Long-form reference: `website/docs/developer-guide/stable-releases.md`.
+Long-form reference: `apps/docs/content/en/developer-guide/stable-releases.md`.
 
 ### Canary releases
 

@@ -243,6 +243,45 @@ export interface Translations {
     };
   };
 
+  /** Optional while existing locales adopt the extended sessions-page strings. */
+  sessionsUi?: {
+    contextHandoff: string;
+    toolCallNamed: string;
+    localSource: string;
+    renameSession: string;
+    exportSession: string;
+    exportSessionJson: string;
+    sessionTitle: string;
+    saveTitle: string;
+    cancelRename: string;
+    anyChatSource: string;
+    anyAutomationSource: string;
+    chatSources: string;
+    automationSources: string;
+    noSources: string;
+    sourceCount: string;
+    pruneOldSessions: string;
+    pruneDescription: string;
+    olderThanDays: string;
+    prune: string;
+    sessionRenamed: string;
+    sessionRenameFailed: string;
+    sessionExportFailed: string;
+    validNumberOfDays: string;
+    sessionsPruneFailed: string;
+    importExportedSessions: string;
+    importExportedSessionsHint: string;
+    importSessions: string;
+    total: string;
+    activeInStore: string;
+    archived: string;
+    messages: string;
+    sources: string;
+    apiServer: string;
+    toolSource: string;
+    vulcanDelegate: string;
+  };
+
   // ── Files page ──
   /** Optional while existing locales adopt the files-page strings. */
   files?: {

@@ -4,7 +4,7 @@ import type { ComposerTranslations } from './types_composer'
 // inside the 2,000-line code-health target (the `<locale>_<topic>.ts` pattern
 // `ar.ts`/`ar_chat.ts` already uses). Moved verbatim.
 export const enComposer: ComposerTranslations = {
-  quoteAddToChat: 'Add to chat',
+  quoteAddToChat: 'Quote',
   message: 'Message',
   wakingProfile: profile => `Waking up ${profile}…`,
   placeholderStarting: 'Starting Hermes...',

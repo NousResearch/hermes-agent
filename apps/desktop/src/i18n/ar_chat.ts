@@ -2,7 +2,7 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arChat = {
   composer: {
-    quoteAddToChat: 'إضافة للمحادثة',
+    quoteAddToChat: 'اقتباس',
     message: 'الرسالة',
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',

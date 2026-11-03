@@ -4,7 +4,7 @@ import type { TranslationOverrides } from './define-locale'
 // inside the 2,000-line code-health target (the `<locale>_<topic>.ts` pattern
 // `ar.ts`/`ar_chat.ts` already uses). Moved verbatim.
 export const esComposer: TranslationOverrides['composer'] = {
-  quoteAddToChat: 'Añadir al chat',
+  quoteAddToChat: 'Citar',
   message: 'Mensaje',
   wakingProfile: profile => `Despertando ${profile}…`,
   placeholderStarting: 'Iniciando Hermes...',

@@ -74,3 +74,19 @@ def test_stamp_uses_built_commit_even_with_dispatch_sha_and_refuses_mismatch(tmp
     result = run('--commit', feature, override={'HERMES_BUILD_COMMIT': '', 'HERMES_PAYLOAD_TAG': 'v1.2.3'})
     assert result.returncode == 0, result.stderr
     assert json.loads(out.read_text(encoding='utf-8'))['tag'] == 'v1.2.3'
+    # A commit build that runs the release pipeline carries its own claim tag and stays a commit
+    # build: source commit-build, so every updater refuses it.
+    claim = 'commit.20261026T180000Z-v0.28.0'
+    result = run('--base-version', '0.28.0+commit.20261026T180000Z', override={'HERMES_PAYLOAD_TAG': claim})
+    assert result.returncode == 0, result.stderr
+    data = json.loads(out.read_text(encoding='utf-8'))
+    assert data['tag'] == claim and data['source'] == 'commit-build' and data['commit'] == feature
+    assert data['updateMechanism'] == 'external'
+    stamped = out.read_bytes()
+    # Any other tag still conflicts with a commit build, and a commit claim never stamps without
+    # the commit identity (it would read as an ordinary release).
+    for override in ({'HERMES_PAYLOAD_TAG': 'canary.20261026T180000Z-v0.28.0'},
+                     {'HERMES_BUILD_COMMIT': '', 'HERMES_PAYLOAD_TAG': claim}):
+        result = run(override=override)
+        assert result.returncode != 0, override
+        assert out.read_bytes() == stamped

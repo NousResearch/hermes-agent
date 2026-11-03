@@ -542,17 +542,18 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    # A stable release never runs the canary's publication job.
+    # A stable release never runs the canary's or the commit build's publication job.
+    others = {"publish-canary", "publish-commit"}
     off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
-           "candidates-termux", "termux-checks", "publish-canary"}
+           "candidates-termux", "termux-checks", *others}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
     everything = stable.gate_expectations(required, lane_set.NAMES)
-    assert {name for name, result in everything.items() if result == "skipped"} == {"publish-canary"}
+    assert {name for name, result in everything.items() if result == "skipped"} == others
     intel = stable.gate_expectations(required, lane_set.select(with_=["macos-intel"]))
     assert {name for name, result in intel.items() if result == "skipped"} == \
-        {"candidates-termux", "termux-checks", "publish-canary"}
+        {"candidates-termux", "termux-checks", *others}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \

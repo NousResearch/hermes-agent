@@ -80,8 +80,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from scripts.termux.deb_version import release_version_for_tag
-# A release tag names its version (X.Y.Z or X.Y.Z+canary.<stamp>); never strip the
-# leading v, a canary tag starts with its kind. A tagless build reads the checkout.
+# A release tag names its version (X.Y.Z, X.Y.Z+canary.<stamp> or X.Y.Z+commit.<stamp>); never
+# strip the leading v, canary and commit tags start with their kind. A tagless build reads the checkout.
 if sys.argv[4]:
     version = release_version_for_tag(sys.argv[4])
 else:
@@ -93,7 +93,13 @@ PY
     if [ -n "$RELEASE_COMMIT" ]; then
         DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
         export HERMES_PAYLOAD_TAG="$TAG"
-        unset HERMES_BUILD_COMMIT
+        # A commit build's claim (commit.<stamp>-vX.Y.Z) keeps the commit identity: its stamp says
+        # source commit-build, so the installed package refuses updates.
+        if [ "$(python3 "$HERE/deb_version.py" --channel "$TAG")" = commit ]; then
+            export HERMES_BUILD_COMMIT="$COMMIT"
+        else
+            unset HERMES_BUILD_COMMIT
+        fi
     else
         DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
         export HERMES_PAYLOAD_TAG=""

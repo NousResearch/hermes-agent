@@ -613,6 +613,7 @@ def prune_old_canaries(args) -> None:
         date = _canary_date(tag)
         if date is not None and date < cutoff:
             doomed.append(tag)
+    _prune_old_commit_claims(args, push_remote)
     if not doomed:
         print("✓ No canaries older than 14 days.")
         return
@@ -637,6 +638,32 @@ def prune_old_canaries(args) -> None:
         print("Run the same command with --publish to delete the tags above.")
 
 
+def _prune_old_commit_claims(args, push_remote: str) -> None:
+    """Delete commit build claim tags older than 90 days (r2.COMMIT_KEEP_DAYS, the window their
+    claim archives keep). They own no GitHub release, so only the remote tag goes. Dated by the
+    tag's own UTC stamp; anything that does not parse is kept."""
+    from hermes_cli.update_channel import commit_timestamp
+    from scripts.releases.r2 import COMMIT_KEEP_DAYS
+
+    cutoff = (datetime.now(UTC) - timedelta(days=COMMIT_KEEP_DAYS)).strftime("%Y%m%d")
+    tags = git("tag", "--list", "commit.*", "--sort=-creatordate")
+    doomed = [tag for tag in (tags.split("\n") if tags else [])
+              if (stamp := commit_timestamp(tag)) is not None and stamp[:8] < cutoff]
+    if not doomed:
+        print(f"✓ No commit build claims older than {COMMIT_KEEP_DAYS} days.")
+        return
+    for tag in doomed:
+        if not args.publish:
+            print(f"Would delete {tag}")
+            continue
+        result = git_result("push", push_remote, "--delete", f"refs/tags/{tag}")
+        if result.returncode == 0:
+            git_result("tag", "-d", tag)
+            print(f"✓ Deleted {tag}")
+        else:
+            print(f"⚠ Could not delete {tag}: {result.stderr.strip()}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
     parser.add_argument("--canary", action="store_true",
@@ -646,20 +673,23 @@ def main():
                              "--only/--with/--without (starting from every lane but upgrade) "
                              "and --require-green/--no-require-green")
     parser.add_argument("--only", action="append", metavar="LANES",
-                        help="--canary: start from exactly these lanes (comma-separated, repeatable)")
+                        help="--canary/--build-commit: start from exactly these lanes (comma-separated, repeatable)")
     parser.add_argument("--with", dest="with_lanes", action="append", metavar="LANES",
-                        help="--canary: also build or test these lanes")
+                        help="--canary/--build-commit: also build or test these lanes")
     parser.add_argument("--without", dest="without_lanes", action="append", metavar="LANES",
-                        help="--canary: do not build or test these lanes")
+                        help="--canary/--build-commit: do not build or test these lanes")
     parser.add_argument("--require-green", action=argparse.BooleanOptionalAction, default=True,
                         help="Hold publication until every suite passes (default). "
                              "--no-require-green still waits for suites to finish, but permits their failures "
                              "when the candidate is built and smoked; stable releases always require green")
     parser.add_argument("--build-commit", type=str, metavar="REV",
-                        help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
-                             "Add --publish to dispatch without a tag or release. The same "
-                             "direct dispatch runs from any GitHub remote; add --channel NAME "
-                             "to publish into an updatable R2 channel instead of a one-off.")
+                        help="Build an exact pushed commit through the Stable Release pipeline: "
+                             "claims commit.<YYYYMMDDTHHMMSSZ>-v<version> on REV and dispatches it "
+                             "(add --publish; otherwise a dry run that creates nothing). It publishes "
+                             "nowhere; its builds page is releases/tag/<claim>/index.html. Takes "
+                             "--only/--with/--without (starting from the stable default minus "
+                             "upgrade, install-e2e and windows-store) and --[no-]require-green. Add "
+                             "--channel NAME to publish into an updatable R2 channel instead.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")
@@ -667,7 +697,8 @@ def main():
                         help="Clear an inherited variable at desktop launch, even when set. "
                              "Uses an explicit empty value; repeat for multiple variables.")
     parser.add_argument("--prune-canaries", action="store_true",
-                        help="Delete canary releases+tags older than 14 days")
+                        help="Delete canary releases+tags older than 14 days and commit build "
+                             "claim tags older than 90 days")
     parser.add_argument("--publish", action="store_true",
                         help="Actually create the tag and GitHub release (otherwise dry run)")
     parser.add_argument("--remote", type=str,
@@ -733,9 +764,13 @@ def main():
             parser.error("stable releases always require green; --no-require-green is for --canary")
         stable_commands[args.command](args)
         return
-    if not args.canary and (args.only or args.with_lanes or args.without_lanes or not args.require_green):
-        parser.error("--only/--with/--without/--no-require-green need --canary or the release command")
+    if not (args.canary or args.build_commit is not None) and (
+            args.only or args.with_lanes or args.without_lanes or not args.require_green):
+        parser.error("--only/--with/--without/--no-require-green need --canary, --build-commit "
+                     "or the release command")
     if validate_arguments(parser, args):
+        if args.only or args.with_lanes or args.without_lanes or not args.require_green:
+            parser.error("channel builds do not take --only/--with/--without/--no-require-green yet")
         cmd_channel(args)
         return
     if (args.bundle_env or args.bundle_unset) and args.build_commit is None:

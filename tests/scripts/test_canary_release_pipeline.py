@@ -66,7 +66,7 @@ def test_a_canary_claim_runs_its_claimed_lanes_from_its_tag_stamp_on_main_only()
     assert stable.check_claim(env, _git()) == {
         "claim_tag": CANARY, "tag": CANARY, "version": VERSION, "attempt": None, "commit": COMMIT,
         "claim_object": TAG_OBJECT, "autopublish": True, "lanes": lane_set.CANARY,
-        "require_green": True, "claim_epoch": epoch, "policy": "canary",
+        "require_green": True, "bundle_env": {}, "claim_epoch": epoch, "policy": "canary",
     }
     # The canary's tag is its payload tag and archive alike.
     assert stable.stable_context({**env, "RELEASE_TAG": CANARY}, _git())[:2] == (CANARY, COMMIT)

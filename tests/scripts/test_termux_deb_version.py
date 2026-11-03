@@ -36,6 +36,8 @@ def test_apt_readers_accept_bom_and_keep_archive_bytes(tmp_path, bom):
     ("v126.8.31", "126.8.31-1", "stable"),
     ("v1.234.567", "1.234.567-1", "stable"),
     ("canary.20260831T120000Z-v0.20.6", "0.20.6~canary.20260831T120000Z-1", "canary"),
+    # A commit build's archived APT suite is hermes-commit; it is never published to a feed.
+    ("commit.20260831T120000Z-v0.20.6", "0.20.6~commit.20260831T120000Z-1", "commit"),
 ])
 def test_tag_mapping(tag, version, channel):
     assert deb_version_for_tag(tag) == version
@@ -102,6 +104,7 @@ def _release_commit_version_heredoc() -> str:
 @pytest.mark.parametrize("tag,version", [
     ("v1.2.3", "1.2.3"),
     ("canary.20261021T064100Z-v1.2.3", "1.2.3+canary.20261021T064100Z"),
+    ("commit.20261021T064100Z-v1.2.3", "1.2.3+commit.20261021T064100Z"),
 ])
 def test_a_pinned_commit_build_stamps_the_tags_release_version(tag, version):
     """The install stamp's base/display version is the tag's release version, never the tag with

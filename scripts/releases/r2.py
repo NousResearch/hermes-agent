@@ -449,9 +449,13 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 # ---------------------------------------------------------------------------
 
 def channel_for_tag(tag: str) -> str:
-    """Return the release channel encoded by a canonical tag."""
-    from hermes_cli.update_channel import is_canary_tag
+    """Return the release channel encoded by a canonical tag.
 
+    A commit build publishes to no channel; asking for its channel is a bug, never ``stable``."""
+    from hermes_cli.update_channel import is_canary_tag, is_commit_tag
+
+    if is_commit_tag(tag):
+        raise ValueError(f"Commit builds publish to no release channel: {tag!r}")
     return "canary" if is_canary_tag(tag) else "stable"
 
 
@@ -831,6 +835,28 @@ _CANARY_KEY_RES = (
 )
 
 
+# A commit build's claim archive (releases/tag/commit.<stamp>-vX.Y.Z/...) is kept this long, dated
+# by the claim stamp in its key; the legacy tagless commit-build prefix (releases/commit/<sha>/)
+# carries no date, so its objects age out by upload time instead.
+COMMIT_KEEP_DAYS = 90
+_COMMIT_KEY_RE = re.compile(r"^releases/tag/commit\.(20\d{6})T\d{6}Z-v\d+\.\d+\.\d+/")
+
+
+def commit_doomed_keys(keys: list[str], cutoff: str, last_modified: dict[str, float],
+                       cutoff_ms: float) -> list[str]:
+    """Commit build objects past their keep window: claim archives whose stamp date is before
+    ``cutoff`` (YYYYMMDD), and legacy releases/commit/<sha>/ objects uploaded before ``cutoff_ms``."""
+    doomed = []
+    for key in keys:
+        match = _COMMIT_KEY_RE.match(key)
+        if match is not None:
+            if match[1] < cutoff:
+                doomed.append(key)
+        elif key.startswith("releases/commit/") and last_modified.get(key, cutoff_ms) < cutoff_ms:
+            doomed.append(key)
+    return doomed
+
+
 def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
     """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
     doomed = []
@@ -990,11 +1016,15 @@ def prune(
     protected.update(live_pool_keys(
         keys, lambda key: get_object(creds, base, bucket, key, now, fetcher=fetcher)))
 
+    # Commit builds keep 90 days whatever the canary window (keep_days) is.
+    commit_window = max(keep_days, COMMIT_KEEP_DAYS) * 86400
+    commit_cutoff_date = time.strftime("%Y%m%d", time.gmtime(current - commit_window))
     doomed = [
         key
         for key in [
             *canary_doomed_keys(keys, cutoff_date),
             *stale_feed_bundle_keys(keys, feed_xml_by_dir, last_modified, cutoff_ms),
+            *commit_doomed_keys(keys, commit_cutoff_date, last_modified, current - commit_window),
         ]
         if key not in protected
     ]

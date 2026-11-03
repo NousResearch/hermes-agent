@@ -105,6 +105,7 @@ def test_pool_subdir_rejects_non_attempt_refs(tmp_path, subdir):
 
 
 CANARY_CLAIM = "canary.20261021T064100Z-v0.21.5"
+COMMIT_CLAIM = "commit.20261021T064100Z-v0.21.5"
 
 
 def test_a_canary_claim_keys_the_canary_pool(tmp_path):
@@ -119,7 +120,9 @@ def test_a_canary_claim_keys_the_canary_pool(tmp_path):
     assert (out / key).is_file()
 
 
-@pytest.mark.parametrize("subdir,suite", [(CANARY_CLAIM, "hermes-stable"), ("rc.1-v0.21.5", "hermes-canary")])
+@pytest.mark.parametrize("subdir,suite", [(CANARY_CLAIM, "hermes-stable"), ("rc.1-v0.21.5", "hermes-canary"),
+                                          (COMMIT_CLAIM, "hermes-stable"), (COMMIT_CLAIM, "hermes-canary"),
+                                          (CANARY_CLAIM, "hermes-commit")])
 def test_a_claim_stages_only_its_own_suite(tmp_path, subdir, suite):
     pool = tmp_path / "pool-in"
     pool.mkdir()
@@ -129,7 +132,7 @@ def test_a_claim_stages_only_its_own_suite(tmp_path, subdir, suite):
     assert not list((tmp_path / "repo").rglob("*.deb"))
 
 
-@pytest.mark.parametrize("claim", ["rc.1-v0.21.5", CANARY_CLAIM])
+@pytest.mark.parametrize("claim", ["rc.1-v0.21.5", CANARY_CLAIM, COMMIT_CLAIM])
 def test_the_candidate_workflow_stages_each_claim_into_its_channel(tmp_path, claim):
     """The Termux candidate job's own arguments, for a stable attempt and a canary claim.
 

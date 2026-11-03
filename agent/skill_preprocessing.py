@@ -21,21 +21,26 @@ _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 _INLINE_SHELL_MAX_OUTPUT = 4000
 
 
-def has_preprocessable_tokens(content: str) -> bool:
+def has_preprocessable_tokens(content: str, skills_cfg: dict) -> bool:
     """True if *content* contains anything the preprocessor would rewrite.
 
-    Matches exactly the tokens preprocessing recognizes: the two supported
-    template variables (``${HERMES_SKILL_DIR}`` / ``${HERMES_SESSION_ID}``,
-    see ``_SKILL_TEMPLATE_RE``) and inline-shell snippets (``!`cmd```, see
-    ``_INLINE_SHELL_RE``). Ordinary shell parameter expansion such as
-    ``${HOME}`` does NOT count — the preprocessor never touches it, so a
-    preprocessing failure changes nothing about it.
+    *skills_cfg* is the resolved ``skills`` config section — the same dict
+    ``preprocess_skill_content`` reads — so the gates here match what
+    preprocessing would actually do: the two supported template variables
+    (``${HERMES_SKILL_DIR}`` / ``${HERMES_SESSION_ID}``, see
+    ``_SKILL_TEMPLATE_RE``) count only when ``template_vars`` is enabled
+    (default true), and inline-shell snippets (``!`cmd```, see
+    ``_INLINE_SHELL_RE``) count only when ``inline_shell`` is enabled
+    (default false). Ordinary shell parameter expansion such as ``${HOME}``
+    never counts: the preprocessor does not touch it, so a preprocessing
+    failure changes nothing about it. A non-dict config is treated as "no
+    preprocessing configured" instead of being guessed at.
     """
-    if not content:
+    if not content or not isinstance(skills_cfg, dict):
         return False
-    return bool(
-        _SKILL_TEMPLATE_RE.search(content) or _INLINE_SHELL_RE.search(content)
-    )
+    if skills_cfg.get("template_vars", True) and _SKILL_TEMPLATE_RE.search(content):
+        return True
+    return bool(skills_cfg.get("inline_shell", False) and _INLINE_SHELL_RE.search(content))
 
 
 def load_skills_config() -> dict:

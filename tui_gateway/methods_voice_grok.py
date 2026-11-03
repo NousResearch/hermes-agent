@@ -28,6 +28,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 # Emitter inventory for the wire-completeness oracle (tests/tui_gateway/contracts/
 # test_generated.py imports this, the _CHANGE_WATCHES/_CHILD_DELTA_EVENTS precedent):
@@ -43,6 +44,7 @@ GROK_LIVE_EVENTS = frozenset({
 
 # One live xAI session per Hermes session; wake-word mic-lease owners per session (SPEC §6).
 _grok_bridges_lock = threading.Lock()
+_grok_start_lock = threading.Lock()
 _grok_bridges: dict = {}        # session_id -> GrokLiveBridge
 _grok_wake_owners: dict = {}    # session_id -> transport that paused the wake detector
 # session_id -> transport of the client that opened this voice bridge (fresh-draft routing:
@@ -71,33 +73,30 @@ def _grok_emit_for(session_id: str, transport=None):
             return
         frame = _event_frame(event, session_id, payload)
         from tui_gateway.event_replay import _stamp_event
-        from tui_gateway.transport import current_transport
         _stamp_event(frame)
         with _grok_bridges_lock:
             t = _grok_client_transports.get(session_id)
-        t = t or transport or current_transport()
+        t = t or transport
         if t is not None:
             t.write(frame)
 
     def _sink(event_type: str, payload: dict) -> None:
-        if event_type == "voice.grok.audio":
-            _routed(session_id, "voice.grok.audio", payload)
-        elif event_type == "voice.grok.transcript":
-            _routed(session_id, "voice.grok.transcript", payload)
-        elif event_type == "voice.grok.state":
-            _routed(session_id, "voice.grok.state", payload)
-        elif event_type == "voice.grok.delegation":
-            _routed(session_id, "voice.grok.delegation", payload)
+        # The closure keeps the original id so a bridge can survive a fresh-draft
+        # rekey. Resolve it at emission time and canonicalize the payload too;
+        # otherwise the envelope and payload can keep the abandoned synthetic id.
+        routed_id = _grok_key_of(session_id)
+        payload = {**payload, "session_id": routed_id}
+        if event_type in GROK_LIVE_EVENTS:
+            _routed(routed_id, event_type, payload)
         else:
             logger.warning("voice.grok: bridge emitted undeclared event %r — dropped", event_type)
     return _sink
 
 
-def _grok_refresh_client_transport(session_id: str, transport) -> None:
-    """Latest caller transport wins (reconnect / renderer reload re-keys where events go)."""
+def _grok_owns(session_id: str, transport) -> bool:
+    """Only the client that opened a voice bridge may control or receive it."""
     with _grok_bridges_lock:
-        if session_id in _grok_client_transports:
-            _grok_client_transports[session_id] = transport
+        return _grok_client_transports.get(session_id) is transport
 
 
 def _grok_key_of(session_id: str) -> str:
@@ -106,20 +105,67 @@ def _grok_key_of(session_id: str) -> str:
         return _grok_alias.get(session_id, session_id)
 
 
+def _grok_take_bridge(sid: str, expected=None):
+    """Remove one bridge and all of its routing/lease state atomically."""
+    with _grok_bridges_lock:
+        if expected is not None and _grok_bridges.get(sid) is not expected:
+            return None, None
+        bridge = _grok_bridges.pop(sid, None)
+        owner = _grok_wake_owners.pop(sid, None)
+        _grok_client_transports.pop(sid, None)
+    with _grok_alias_lock:
+        for alias, target in list(_grok_alias.items()):
+            if alias == sid or target == sid:
+                _grok_alias.pop(alias, None)
+    return bridge, owner
+
+
+def _grok_resume_wake(owner, context: str) -> None:
+    if owner is None:
+        return
+    try:
+        _wake_resume_if_owner(owner)
+    except Exception as e:
+        logger.debug("voice.grok: %s wake resume failed (best-effort): %s", context, e)
+
+
+def drop_grok_bridges_for_transport(transport) -> None:
+    """Stop voice sessions owned by a disconnected renderer and release their mic leases."""
+    with _grok_bridges_lock:
+        sids = [sid for sid, owner in _grok_client_transports.items() if owner is transport]
+    for sid in sids:
+        bridge, owner = _grok_take_bridge(sid)
+        _grok_resume_wake(owner, "disconnect")
+        if bridge is not None:
+            try:
+                bridge.stop(timeout=2.0)
+            except Exception:
+                logger.debug("voice.grok: disconnect bridge stop failed", exc_info=True)
+
+
 def _grok_get_bridge(session_id: str):
-    """The live bridge for ``session_id``; a dead one (error/idle after fatal) is reaped so the
-    next ``voice.grok.start`` creates a fresh bridge instead of reusing a corpse."""
+    """Return the live bridge for ``session_id`` and fully reap a dead one.
+
+    Reaping must release the wake-word lease and routing/alias state as well as
+    the bridge object; otherwise a failed xAI session can hold the microphone
+    indefinitely and poison the next start.
+    """
     sid = _grok_key_of(session_id)
     with _grok_bridges_lock:
         bridge = _grok_bridges.get(sid)
-    if bridge is not None and not bridge.alive:
-        with _grok_bridges_lock:
-            _grok_bridges.pop(sid, None)
-        return None
-    return bridge
+    if bridge is None or bridge.alive:
+        return bridge
+
+    with _grok_bridges_lock:
+        if _grok_bridges.get(sid) is not bridge:
+            return _grok_bridges.get(sid)
+    _removed, owner = _grok_take_bridge(sid, expected=bridge)
+    _grok_resume_wake(owner, "dead-bridge")
+    return None
 
 
 @method("voice.grok.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Non-secret Grok-Live readiness verdict — mirrors ``GET /api/audio/voice-live-grok/status``
     for TUI/desktop-over-gateway parity (SPEC §11). Never carries the credential."""
@@ -131,6 +177,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("voice.grok.start")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Open (or reuse) the backend xAI realtime session for ``session_id``. Fail-fast when no
     credential resolves (SPEC §8/§9: an explicit start failure is reported, never retried); the
@@ -144,43 +191,64 @@ def _(rid, params: dict) -> dict:
     if not session_id:
         return _err(rid, 4001, "voice.grok.start requires session_id")
     try:
-        from tools.voice_live_grok import _grok_live_section, resolve_grok_live_status
+        from tools.voice_live_grok import _grok_live_section, _resolve_grok_credentials, resolve_grok_live_status
         status = resolve_grok_live_status()
     except Exception as e:
         return _err(rid, 5026, str(e))
     if not status.get("available"):
         return _ok(rid, {"started": False, "reason": status.get("reason")})
-    # Mic lease (SPEC §6): the same pause path voice.record uses before opening the mic.
+    live_config = _grok_live_section()
+    credential = _resolve_grok_credentials(live_config)
+    if not credential:
+        return _ok(rid, {"started": False, "reason": status.get("reason")})
+    # Serialize check/create/start so a double-click cannot orphan a second xAI
+    # thread. The caller transport is fixed for the lifetime of the bridge.
     transport = _caller_transport()
-    if _grok_get_bridge(session_id) is not None:
+    sid = _grok_key_of(session_id)
+    target = _sessions.get(sid)
+    target_transport = target.get("transport") if isinstance(target, dict) else None
+    if target_transport is not None and target_transport is not transport:
+        return _err(rid, 4021, "chat session is owned by another client")
+    with _grok_start_lock:
+        if _grok_get_bridge(sid) is not None:
+            if not _grok_owns(sid, transport):
+                return _err(rid, 4021, "voice bridge is owned by another client")
+            return _ok(rid, {"started": True, "reused": True})
+        # Mic lease (SPEC §6): the same pause path voice.record uses before opening the mic.
+        wake_paused = False
+        try:
+            from tools.wake_word import pause_listening
+            wake_paused = bool(pause_listening(owner=transport))
+            if wake_paused:
+                with _grok_bridges_lock:
+                    _grok_wake_owners[sid] = transport
+        except Exception as e:
+            logger.debug("voice.grok.start: wake pause failed (best-effort): %s", e)
+        from tools.voice_live_grok_bridge import GrokLiveBridge
+        bridge = GrokLiveBridge(session_id=sid, emit=_grok_emit_for(sid, transport),
+                                live_config=live_config, credential=credential)
         with _grok_bridges_lock:
-            _grok_client_transports[session_id] = transport
-        return _ok(rid, {"started": True, "reused": True})
-    try:
-        from tools.wake_word import pause_listening
-        if pause_listening(owner=transport):
+            _grok_bridges[sid] = bridge
+            _grok_client_transports[sid] = transport
+        try:
+            bridge.start()
+        except Exception as e:
             with _grok_bridges_lock:
-                _grok_wake_owners[session_id] = transport
-    except Exception as e:
-        logger.debug("voice.grok.start: wake pause failed (best-effort): %s", e)
-    from tools.voice_live_grok_bridge import GrokLiveBridge
-    bridge = GrokLiveBridge(session_id=session_id, emit=_grok_emit_for(session_id, transport),
-                            live_config=_grok_live_section())
-    with _grok_bridges_lock:
-        _grok_bridges[session_id] = bridge
-        _grok_client_transports[session_id] = transport
-    try:
-        bridge.start()
-    except Exception as e:
-        with _grok_bridges_lock:
-            _grok_bridges.pop(session_id, None)
-            _grok_client_transports.pop(session_id, None)
-        return _err(rid, 5026, str(e))
-    logger.info("voice.grok.start: bridge starting for session=%s", session_id)
+                _grok_bridges.pop(sid, None)
+                _grok_client_transports.pop(sid, None)
+                owner = _grok_wake_owners.pop(sid, None)
+            if owner is not None:
+                try:
+                    _wake_resume_if_owner(owner)
+                except Exception:
+                    logger.debug("voice.grok.start: wake rollback failed", exc_info=True)
+            return _err(rid, 5026, str(e))
+    logger.info("voice.grok.start: bridge starting for session=%s", sid)
     return _ok(rid, {"started": True, "state": "connecting"})
 
 
 @method("voice.grok.stop")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """User-initiated stop: close the xAI session (cancelling any pending reconnect) and hand
     the mic back to the wake-word detector. Symmetric with gpt-live's ``end()`` (SPEC §9)."""
@@ -189,25 +257,18 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4001, "voice.grok.stop requires session_id")
     sid = _grok_key_of(session_id)
     with _grok_bridges_lock:
-        bridge = _grok_bridges.pop(sid, None)
-        owner = _grok_wake_owners.pop(sid, None)
-        _grok_client_transports.pop(sid, None)
-    with _grok_alias_lock:
-        _grok_alias.pop(session_id, None)
-        stale = [k for k, v in _grok_alias.items() if v == sid]
-        for k in stale:
-            _grok_alias.pop(k, None)
-    if owner is not None:
-        try:
-            _wake_resume_if_owner(owner)
-        except Exception as e:
-            logger.debug("voice.grok.stop: wake resume failed (best-effort): %s", e)
+        bridge = _grok_bridges.get(sid)
+        if bridge is not None and _grok_client_transports.get(sid) is not _caller_transport():
+            return _err(rid, 4021, "voice bridge is owned by another client")
+    bridge, owner = _grok_take_bridge(sid, expected=bridge)
+    _grok_resume_wake(owner, "stop")
     if bridge is None:
         return _ok(rid, {"stopped": False, "reason": "not_running"})
     return _ok(rid, {"stopped": bool(bridge.stop())})
 
 
 @method("voice.grok.audio")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """One ~100ms upstream mic chunk (base64 PCM16 mono 24kHz) → relay toward xAI. The AEC gate
     and mute decision live server-side in the bridge (SPEC §7); backpressure drops, never
@@ -227,26 +288,33 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"accepted": False, "reason": "empty"})
     if len(pcm) > 96000:  # soft cap: 2s of 24 kHz int16 mono (a legit chunk is ~4.8KB)
         return _err(rid, 4001, "pcm frame too large")
-    bridge = _grok_get_bridge(session_id)
+    sid = _grok_key_of(session_id)
+    bridge = _grok_get_bridge(sid)
     if bridge is None:
         return _ok(rid, {"accepted": False, "reason": "not_running"})
-    _grok_refresh_client_transport(_grok_key_of(session_id), _caller_transport())
+    if not _grok_owns(sid, _caller_transport()):
+        return _err(rid, 4021, "voice bridge is owned by another client")
     return _ok(rid, bridge.send_mic(pcm))
 
 
 @method("voice.grok.mute")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Explicit mute toggle — independent of the AEC half-duplex gate (SPEC §4.1/§7)."""
     session_id = str(params.get("session_id") or "").strip()
     if not session_id:
         return _err(rid, 4001, "voice.grok.mute requires session_id")
-    bridge = _grok_get_bridge(session_id)
+    sid = _grok_key_of(session_id)
+    bridge = _grok_get_bridge(sid)
     if bridge is None:
         return _err(rid, 4021, "no live grok-live session for session_id")
+    if not _grok_owns(sid, _caller_transport()):
+        return _err(rid, 4021, "voice bridge is owned by another client")
     return _ok(rid, {"muted": bridge.set_muted(bool(params.get("muted")))})
 
 
 @method("voice.grok.speak")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Renderer-submits design (SPEC §5 revised): the renderer is the sole ``prompt.submit``
     caller, so IT knows when the Hermes turn settled — and pulls the spoken reply through here.
@@ -258,16 +326,20 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4001, "voice.grok.speak requires session_id")
     if not text.strip():
         return _ok(rid, {"spoken": False, "reason": "empty"})
-    bridge = _grok_get_bridge(session_id)
+    sid = _grok_key_of(session_id)
+    bridge = _grok_get_bridge(sid)
     if bridge is None:
         logger.info("voice.grok.speak: not_running session=%s chars=%d", session_id, len(text))
         return _ok(rid, {"spoken": False, "reason": "not_running"})
+    if not _grok_owns(sid, _caller_transport()):
+        return _err(rid, 4021, "voice bridge is owned by another client")
     spoken = bool(bridge.speak_reply(text))
     logger.info("voice.grok.speak: session=%s spoken=%s chars=%d", session_id, spoken, len(text))
     return _ok(rid, {"spoken": spoken})
 
 
 @method("voice.grok.rekey")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Fresh-draft completion: the renderer learned the chat's real Hermes session id (its
     submit minted it) and re-keys the bridge so events/delegation route by session from now
@@ -276,17 +348,30 @@ def _(rid, params: dict) -> dict:
     to_id = str(params.get("to_session_id") or "").strip()
     if not from_id or not to_id or from_id == to_id:
         return _err(rid, 4001, "voice.grok.rekey requires distinct from_session_id/to_session_id")
+    transport = _caller_transport()
+    target = _sessions.get(to_id)
+    if not isinstance(target, dict) or target.get("transport") is not transport:
+        return _err(rid, 4021, "target chat session is not owned by this client")
     with _grok_bridges_lock:
-        bridge = _grok_bridges.get(_grok_key_of(from_id))
+        old_key = _grok_key_of(from_id)
+        bridge = _grok_bridges.get(old_key)
         if bridge is None:
             return _ok(rid, {"rekeyed": False, "reason": "not_running"})
-        old_key = _grok_key_of(from_id)
+        if _grok_client_transports.get(old_key) is not transport:
+            return _err(rid, 4021, "voice bridge is owned by another client")
         if old_key != to_id:
+            if to_id in _grok_bridges:
+                return _ok(rid, {"rekeyed": False, "reason": "target_already_running"})
             _grok_bridges[to_id] = _grok_bridges.pop(old_key)
-            _grok_client_transports[to_id] = _grok_client_transports.pop(old_key, None)
-            _grok_wake_owners[to_id] = _grok_wake_owners.pop(old_key, None)
+            _grok_client_transports[to_id] = _grok_client_transports.pop(old_key)
+            wake_owner = _grok_wake_owners.pop(old_key, None)
+            if wake_owner is not None:
+                _grok_wake_owners[to_id] = wake_owner
             with _grok_alias_lock:
                 _grok_alias[from_id] = to_id
+    # Status and any payload created by the bridge itself must adopt the real id
+    # too; moving only the registry leaves future events on the synthetic id.
+    bridge.rekey(to_id)
     logger.info("voice.grok.rekey: bridge %s -> session=%s", from_id, to_id)
     return _ok(rid, {"rekeyed": True})
 

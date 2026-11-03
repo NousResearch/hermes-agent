@@ -12,10 +12,9 @@ is the injectable ``delegation_sink`` — the actual ``prompt.submit`` call is s
 t_f7cae076's; this module owns accumulation, the settle flush and the ``voice.grok.delegation``
 event only.
 
-Ported from the proven standalone reference (``/home/ericio/grok_live_voice.py``, live on this
-box 2026-09-15): same wire contract, VAD/session config, playback-echo gate and 5s reconnect —
-minus PortAudio (the renderer owns mic/speaker) and minus the local function-tool bridge
-(decision #6: v1 ships zero local function tools).
+Ported from the proven standalone reference: same wire contract, VAD/session config,
+playback-echo gate and 5s reconnect — minus PortAudio (the renderer owns mic/speaker)
+and minus the local function-tool bridge (v1 ships zero local function tools).
 
 Threading model: one daemon thread owns one asyncio loop; the RPC-facing methods
 (:meth:`GrokLiveBridge.send_mic`, :meth:`set_muted`, :meth:`stop`, :meth:`status`) are
@@ -65,7 +64,7 @@ def realtime_url(model: str) -> str:
     return f"{XAI_REALTIME_URL}?model={model}"
 
 
-def session_update_payload(live: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def session_update_payload(live: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The ``session.update`` frame, built from the ``voice.grok_live`` config section
     (SPEC §4.2): server VAD, PCM16 24kHz binary transport in/out, persona instructions — and
     NO ``tools`` array (decision #6: zero local function tools in v1)."""
@@ -120,10 +119,10 @@ class _PlaybackGate:
         return self._clock() < self._until
 
 
-def _merge_turns(fragments: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def _merge_turns(fragments: list[dict[str, str]]) -> list[dict[str, str]]:
     """Consecutive same-speaker fragments merge — mirrors ``delegationPrompt()`` in
     apps/desktop/.../use-voice-live-conversation.ts exactly (SPEC §5 step 1)."""
-    turns: List[Dict[str, str]] = []
+    turns: list[dict[str, str]] = []
     for fragment in fragments:
         if turns and turns[-1]["speaker"] == fragment["speaker"]:
             turns[-1]["text"] += fragment["text"]
@@ -132,7 +131,7 @@ def _merge_turns(fragments: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return turns
 
 
-def build_delegation(fragments: List[Dict[str, str]]) -> Dict[str, str]:
+def build_delegation(fragments: list[dict[str, str]]) -> dict[str, str]:
     """``{context, prompt}`` from the recent spoken exchange — the server-side mirror of the
     renderer's ``delegationPrompt()``: last user turn is the prompt, the full recent exchange
     (whitespace-collapsed, ``User:`` / ``Voice assistant:`` lines) is the context."""
@@ -174,8 +173,9 @@ class GrokLiveBridge:
         self,
         *,
         session_id: str,
-        emit: Callable[[str, Dict[str, Any]], None],
-        live_config: Optional[Dict[str, Any]] = None,
+        emit: Callable[[str, dict[str, Any]], None],
+        live_config: Optional[dict[str, Any]] = None,
+        credential: Optional[str] = None,
         connect_factory: Optional[Callable[..., Any]] = None,
         reconnect_delay_s: float = RECONNECT_DELAY_S,
         settle_s: float = UTTERANCE_SETTLE_S,
@@ -186,6 +186,7 @@ class GrokLiveBridge:
         self.session_id = session_id
         self._emit = emit
         self._live = dict(live_config or {})
+        self._credential = credential
         self._connect_factory = connect_factory or self._default_connect
         self._reconnect_delay_s = reconnect_delay_s
         self._settle_s = settle_s
@@ -212,8 +213,8 @@ class GrokLiveBridge:
 
         # Delegation accumulation (SPEC §5): utterance items of the current user turn +
         # the recent merged exchange for context.
-        self._utterance_items: Dict[str, str] = {}
-        self._exchange: List[Dict[str, str]] = []
+        self._utterance_items: dict[str, str] = {}
+        self._exchange: list[dict[str, str]] = []
         self._settle_task: Optional[asyncio.Task] = None
 
     # ── public, thread-safe API (called from RPC threads) ─────────────────────
@@ -233,14 +234,17 @@ class GrokLiveBridge:
         self._stop_requested.set()
         loop = self._loop
         if loop is not None:
-            loop.call_soon_threadsafe(self._cancel_task)
+            try:
+                loop.call_soon_threadsafe(self._cancel_task)
+            except RuntimeError:
+                pass  # loop closed concurrently; join below observes thread exit
         thread = self._thread
         if thread is not None:
             thread.join(timeout=timeout)
             return not thread.is_alive()
         return True
 
-    def send_mic(self, pcm: bytes) -> Dict[str, Any]:
+    def send_mic(self, pcm: bytes) -> dict[str, Any]:
         """Relay one upstream mic chunk (~100ms PCM16 24kHz) toward xAI. Drop-not-queue when
         the send side is backed up (>300ms of audio pending — stale live audio would desync
         the server VAD, SPEC §4.1 backpressure).
@@ -270,7 +274,10 @@ class GrokLiveBridge:
             if streak >= DEGRADED_DROP_STREAK and not already_degraded:
                 self._set_state("degraded", "upstream backpressure: mic audio dropped", overlay=True)
             return {"accepted": False, "dropped": True, "reason": "backpressure"}
-        loop.call_soon_threadsafe(mic_q.put_nowait, pcm)
+        try:
+            loop.call_soon_threadsafe(mic_q.put_nowait, pcm)
+        except RuntimeError:
+            return {"accepted": False, "reason": "not_running"}
         return {"accepted": True}
 
     def set_muted(self, muted: bool) -> bool:
@@ -303,7 +310,10 @@ class GrokLiveBridge:
                 "content": [{"type": "output_text", "text": text}],
             },
         })
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send_speak_frame(frame)))
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._send_speak_frame(frame)))
+        except RuntimeError:
+            return False
         return True
 
     async def _send_speak_frame(self, frame: str) -> None:
@@ -315,7 +325,12 @@ class GrokLiveBridge:
         except Exception:
             logger.debug("grok-live: speak_reply send failed", exc_info=True)
 
-    def status(self) -> Dict[str, Any]:
+    def rekey(self, session_id: str) -> None:
+        """Adopt the real chat id after a fresh draft's first submit."""
+        with self._state_lock:
+            self.session_id = session_id
+
+    def status(self) -> dict[str, Any]:
         with self._state_lock:
             return {
                 "session_id": self.session_id,
@@ -333,7 +348,7 @@ class GrokLiveBridge:
 
     # ── event emission helpers ────────────────────────────────────────────────
 
-    def _emit_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
         try:
             self._emit(event_type, payload)
         except Exception:
@@ -349,7 +364,7 @@ class GrokLiveBridge:
                 if state == self._state and reason is None:
                     return  # suppress duplicate transition spam
             self._state = state
-        payload: Dict[str, Any] = {"session_id": self.session_id, "state": state}
+        payload: dict[str, Any] = {"session_id": self.session_id, "state": state}
         if reason is not None:
             payload["reason"] = reason
         self._emit_event(EVENT_STATE, payload)
@@ -364,7 +379,7 @@ class GrokLiveBridge:
     # ── thread / loop plumbing ────────────────────────────────────────────────
 
     @staticmethod
-    def _default_connect(url: str, headers: Dict[str, str], open_timeout: float = 15.0):
+    def _default_connect(url: str, headers: dict[str, str], open_timeout: float = 15.0):
         import websockets
         # open_timeout must comfortably exceed xAI's opening handshake, measured
         # at 8-10s+ in Sep 2026 (it was <1s at launch). The library default of
@@ -458,6 +473,8 @@ class GrokLiveBridge:
         return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
     def _resolve_credential(self) -> str:
+        if self._credential:
+            return self._credential
         from tools.voice_live_grok import _resolve_grok_credentials
         return _resolve_grok_credentials(self._live)
 
@@ -476,6 +493,8 @@ class GrokLiveBridge:
 
         connect_cm = self._connect_factory(url, headers)
         async with connect_cm as ws:
+            if self._stop_requested.is_set():
+                return
             self._ws = ws
             await ws.send(json.dumps(session_update_payload(self._live)))
             mic_task = asyncio.create_task(self._mic_pump(ws))
@@ -593,7 +612,7 @@ class GrokLiveBridge:
         if self._base_state != "speaking":
             self._set_state("speaking")
 
-    def _handle_event(self, event: Dict[str, Any], handshake: asyncio.Event) -> None:
+    def _handle_event(self, event: dict[str, Any], handshake: asyncio.Event) -> None:
         etype = str(event.get("type") or "")
         if etype == "session.created":
             logger.info("grok-live: session.created (session=%s)", self.session_id)

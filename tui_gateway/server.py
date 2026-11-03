@@ -623,10 +623,16 @@ def register_live_transport(transport: Transport | None) -> None:
 
 
 def unregister_live_transport(transport: Transport | None) -> None:
-    """Stop tracking a transport (call on disconnect). Idempotent."""
+    """Stop tracking a transport and release transport-owned resources on disconnect."""
     with _live_transports_lock:
         _live_transports.discard(transport)
     _server_requests.forget(transport)
+    try:
+        # This helper is rebound onto server.py by methods_voice_grok.register;
+        # importing the split module here would clean a different registry copy.
+        globals()["drop_grok_bridges_for_transport"](transport)
+    except Exception:
+        logger.debug("grok-live transport cleanup failed", exc_info=True)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None, *, skip=frozenset()) -> None:

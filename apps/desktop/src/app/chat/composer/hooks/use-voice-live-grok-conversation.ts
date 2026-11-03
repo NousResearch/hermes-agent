@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { GrokVoiceSession } from '@/lib/voice-live-grok'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
-import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ConversationStatus } from './use-voice-conversation'
@@ -92,6 +92,9 @@ export function useVoiceLiveGrokConversation({
   const delegationRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
   const wasEnabledRef = useRef(enabled)
+  const mutedRef = useRef(false)
+  const delegationRequestRef = useRef(0)
+  const supersededResponseIdsRef = useRef(new Set<string>())
 
   const latest = useRef({
     activeToolLabel,
@@ -145,12 +148,15 @@ export function useVoiceLiveGrokConversation({
 
   const end = useCallback(async () => {
     startEpochRef.current += 1
+    delegationRequestRef.current += 1
     startingRef.current = false
 
     const session = sessionRef.current
     sessionRef.current = null
     setDelegation(null)
     session?.close()
+    mutedRef.current = false
+    supersededResponseIdsRef.current.clear()
     setMuted(false)
     setLevel(0)
     setStatus('idle')
@@ -205,34 +211,54 @@ export function useVoiceLiveGrokConversation({
         }
 
         // A newer request supersedes an in-flight turn: stop it so the answer
-        // the voice speaks is for what the user asked last.
-        if (busyRef.current) {
-          void latest.current.onInterrupt?.()
-        }
+        // the voice speaks is for what the user asked last. Remember the old
+        // assistant id as well: its final partial can arrive after consume.
+        const request = ++delegationRequestRef.current
+        void (async () => {
+          if (busyRef.current) {
+            const interruptedId = latest.current.pendingResponse()?.id
 
-        setDelegation(delegationId)
-        lastToolLabelRef.current = null
-        turnObservedRef.current = false
-        idleSinceRef.current = 0
-        submittedAtRef.current = Date.now()
-        latest.current.consumePendingResponse()
-        refreshStatus('thinking')
-        // THE single submit (renderer-submits design): exactly one Hermes turn
-        // per delegation, submitted like a typed message — which also lazily
-        // creates the chat session when this conversation started on a fresh
-        // draft. After it resolves, adopt the (possibly newly minted) chat id
-        // so the backend re-keys the voice bridge onto the real session.
-        void Promise.resolve(latest.current.onSubmit(prompt, context))
-          .then(() => {
-            if (sessionRef.current === session) {
-              session.useSessionId(latest.current.chatSessionId?.())
+            if (interruptedId) {
+              supersededResponseIdsRef.current.add(interruptedId)
             }
-          })
-          .catch(error => {
-            notifyError(error, voiceCopy.liveDelegationFailed)
-            setDelegation(null)
-            refreshStatus()
-          })
+
+            await latest.current.onInterrupt?.()
+            const interruptedDuringStop = latest.current.pendingResponse()?.id
+
+            if (interruptedDuringStop) {
+              supersededResponseIdsRef.current.add(interruptedDuringStop)
+            }
+          }
+
+          if (sessionRef.current !== session || delegationRequestRef.current !== request) {
+            return
+          }
+
+          setDelegation(delegationId)
+          lastToolLabelRef.current = null
+          turnObservedRef.current = false
+          idleSinceRef.current = 0
+          submittedAtRef.current = Date.now()
+          latest.current.consumePendingResponse()
+          refreshStatus('thinking')
+          // THE single submit (renderer-submits design): exactly one Hermes turn
+          // per delegation, submitted like a typed message — which also lazily
+          // creates the chat session when this conversation started on a fresh
+          // draft. After it resolves, adopt the (possibly newly minted) chat id.
+          await latest.current.onSubmit(prompt, context)
+
+          if (sessionRef.current === session && delegationRequestRef.current === request) {
+            session.useSessionId(latest.current.chatSessionId?.())
+          }
+        })().catch(error => {
+          if (delegationRequestRef.current !== request) {
+            return
+          }
+
+          notifyError(error, voiceCopy.liveDelegationFailed)
+          setDelegation(null)
+          refreshStatus()
+        })
       },
       onState: (state, reason) => {
         if (sessionRef.current !== session) {
@@ -250,6 +276,7 @@ export function useVoiceLiveGrokConversation({
 
     sessionRef.current = session
     startingRef.current = false
+    mutedRef.current = false
     setMuted(false)
     setStatus('thinking')
 
@@ -328,6 +355,12 @@ export function useVoiceLiveGrokConversation({
       const response = latest.current.pendingResponse()
 
       if (response) {
+        if (supersededResponseIdsRef.current.has(response.id)) {
+          latest.current.consumePendingResponse()
+
+          return
+        }
+
         turnObservedRef.current = true
         idleSinceRef.current = 0
 
@@ -372,12 +405,10 @@ export function useVoiceLiveGrokConversation({
   }, [activeDelegation, busy, refreshStatus, setDelegation, status])
 
   const toggleMute = useCallback(() => {
-    setMuted(value => {
-      const next = !value
-      sessionRef.current?.setMuted(next)
-
-      return next
-    })
+    const next = !mutedRef.current
+    mutedRef.current = next
+    sessionRef.current?.setMuted(next)
+    setMuted(next)
   }, [])
 
   /** No explicit turn boundary in full duplex; grok-live has no client-side

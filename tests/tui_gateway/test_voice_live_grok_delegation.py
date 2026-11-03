@@ -63,6 +63,14 @@ def registered_session():
 
 
 @pytest.fixture
+def target_session():
+    session = _session()
+    server._sessions["1d96782d"] = session
+    yield session
+    server._sessions.pop("1d96782d", None)
+
+
+@pytest.fixture
 def grok_rpc(monkeypatch):
     """Fake bridge class + available status; clean per-test bridge/transport registries."""
     class FakeBridge:
@@ -94,17 +102,22 @@ def grok_rpc(monkeypatch):
         def set_muted(self, muted):
             return bool(muted)
 
+        def rekey(self, session_id):
+            self.kwargs["session_id"] = session_id
+
         def speak_reply(self, text):
             self.spoken.append(text)
             return True
 
     FakeBridge.instances = []
     monkeypatch.setattr(bridge_module, "GrokLiveBridge", FakeBridge)
+    monkeypatch.setattr(grok_config, "_resolve_grok_credentials", lambda live=None: "test-token")
     monkeypatch.setattr(grok_config, "resolve_grok_live_status", lambda: {
         "mode": "grok-live", "available": True, "reason": None, "model": "m", "voice": "v"})
     import sys
     fake_wake = types.ModuleType("tools.wake_word")
-    fake_wake.pause_listening = lambda owner=None: False  # noqa: F841 — attribute on a stub module
+    fake_wake.pause_listening = lambda owner=None: False
+    fake_wake.resume_listening = lambda owner=None: True
     monkeypatch.setitem(sys.modules, "tools.wake_word", fake_wake)
     with server._grok_bridges_lock:
         server._grok_bridges.clear()
@@ -127,6 +140,16 @@ def _start(bridge_cls, sid, transport):
     token = transport_mod.bind_transport(transport)
     try:
         return server._methods["voice.grok.start"](1, {"session_id": sid})
+    finally:
+        transport_mod.reset_transport(token)
+
+
+def _call(name, params, transport):
+    """Call a follow-up RPC as the same client that opened the bridge."""
+    import tui_gateway.transport as transport_mod
+    token = transport_mod.bind_transport(transport)
+    try:
+        return server._methods[name](1, params)
     finally:
         transport_mod.reset_transport(token)
 
@@ -190,38 +213,37 @@ class TestFreshDraftRouting:
 
         assert len(transport.frames) == 2  # heard by the app, not dropped to stdio
 
-    def test_existing_chat_events_prefer_the_session_transport(self, grok_rpc, registered_session):
+    def test_existing_chat_events_use_registered_session_routing(self, grok_rpc, registered_session):
         session_transport = FakeTransport()
         registered_session["transport"] = session_transport
-        caller_transport = FakeTransport()
-        _start(grok_rpc, "sid", caller_transport)
+        _start(grok_rpc, "sid", session_transport)
 
         (bridge,) = grok_rpc.instances
         bridge.kwargs["emit"]("voice.grok.state", {"session_id": "sid", "state": "listening"})
 
         assert len(session_transport.frames) == 1  # byte-identical existing-chat routing
-        assert caller_transport.frames == []
 
-    def test_rekey_moves_the_bridge_onto_the_real_session_id(self, grok_rpc):
+    def test_rekey_moves_the_bridge_onto_the_real_session_id(self, grok_rpc, target_session):
         transport = FakeTransport()
+        target_session["transport"] = transport
         draft_id = "grok-live-1"
         _start(grok_rpc, draft_id, transport)
         (bridge,) = grok_rpc.instances
 
-        answer = server._methods["voice.grok.rekey"](
-            1, {"from_session_id": draft_id, "to_session_id": "1d96782d"})
+        answer = _call("voice.grok.rekey", {
+            "from_session_id": draft_id, "to_session_id": "1d96782d"}, transport)
         assert answer["result"]["rekeyed"] is True
         assert server._grok_bridges["1d96782d"] is bridge
         assert draft_id not in server._grok_bridges
 
         # The renderer keeps sending by its synthetic id; the alias resolves to the bridge.
         pcm = __import__("base64").b64encode(b"\x00" * 100).decode()
-        assert server._methods["voice.grok.audio"](
-            1, {"session_id": draft_id, "pcm_b64": pcm})["result"]["accepted"] is True
+        assert _call("voice.grok.audio", {
+            "session_id": draft_id, "pcm_b64": pcm}, transport)["result"]["accepted"] is True
         assert bridge.mic
 
         # Stopping by EITHER id tears the bridge down.
-        assert server._methods["voice.grok.stop"](1, {"session_id": draft_id})["result"]["stopped"] is True
+        assert _call("voice.grok.stop", {"session_id": draft_id}, transport)["result"]["stopped"] is True
         assert bridge.stopped
 
 
@@ -229,10 +251,11 @@ class TestSpeakIsPulled:
     """Invariant: the finished reply is spoken via voice.grok.speak (bridge.speak_reply)."""
 
     def test_speak_relays_the_reply_to_the_bridge(self, grok_rpc):
-        _start(grok_rpc, "s1", FakeTransport())
+        transport = FakeTransport()
+        _start(grok_rpc, "s1", transport)
         (bridge,) = grok_rpc.instances
-        answer = server._methods["voice.grok.speak"](
-            1, {"session_id": "s1", "text": "It's sunny and 22 degrees."})
+        answer = _call("voice.grok.speak", {
+            "session_id": "s1", "text": "It's sunny and 22 degrees."}, transport)
         assert answer["result"]["spoken"] is True
         assert bridge.spoken == ["It's sunny and 22 degrees."]
 
@@ -241,8 +264,9 @@ class TestSpeakIsPulled:
         assert answer["result"] == {"spoken": False, "reason": "not_running"}
 
     def test_speak_ignores_empty_text(self, grok_rpc):
-        _start(grok_rpc, "s1", FakeTransport())
+        transport = FakeTransport()
+        _start(grok_rpc, "s1", transport)
         (bridge,) = grok_rpc.instances
-        answer = server._methods["voice.grok.speak"](1, {"session_id": "s1", "text": "  "})
+        answer = _call("voice.grok.speak", {"session_id": "s1", "text": "  "}, transport)
         assert answer["result"]["spoken"] is False
         assert bridge.spoken == []

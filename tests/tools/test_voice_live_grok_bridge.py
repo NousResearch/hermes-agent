@@ -330,7 +330,7 @@ def test_send_mic_before_handshake_parks_in_lead_in_then_drains(credential, harn
     """Connect-time audio is buffered (bounded), not dropped, and reaches xAI once
     the session is established — the wake-word user speaks from the moment the
     bridge starts, often during xAI's slow opening handshake."""
-    events, make = harness
+    _events, make = harness
     connector = FakeConnector()
     bridge = make(connect_factory=connector)
     bridge.start()
@@ -355,6 +355,7 @@ def test_backpressure_drops_never_queues_and_surfaces_degraded(credential, harne
     ws.send_gate = asyncio.Event()  # xAI leg is stuck: the pump parks inside send()
 
     bridge.send_mic(b"\x01\x00" * 2400)  # pump takes it and blocks in send()
+    wait_for(lambda: bridge._mic_q.qsize() == 0)
     for _ in range(3):  # fill the 300ms queue (3 x 100ms chunks)
         assert bridge.send_mic(b"\x02\x00" * 2400) == {"accepted": True}
     wait_for(lambda: bridge._mic_q.qsize() == 3)
@@ -380,7 +381,7 @@ def test_backpressure_drops_never_queues_and_surfaces_degraded(credential, harne
 def test_downstream_audio_relays_as_event_and_drives_speaking_state(credential, harness):
     events, make = harness
     connector = FakeConnector()
-    bridge, ws = establish(connector, events, make)
+    _bridge, ws = establish(connector, events, make)
     ws.push(b"\x07\x00" * 2400)
     wait_for(lambda: any(t == EVENT_AUDIO for t, _ in events))
     audio = next(p for t, p in events if t == EVENT_AUDIO)
@@ -394,7 +395,7 @@ def test_downstream_audio_relays_as_event_and_drives_speaking_state(credential, 
 def test_base64_delta_event_shape_also_relays(credential, harness):
     events, make = harness
     connector = FakeConnector()
-    bridge, ws = establish(connector, events, make)
+    _bridge, ws = establish(connector, events, make)
     payload = b"\x08\x00" * 2400
     ws.push_event({"type": "response.output_audio.delta",
                    "delta": base64.b64encode(payload).decode()})
@@ -421,7 +422,7 @@ def test_function_call_events_are_logged_and_ignored(credential, harness):
 def test_utterance_settles_into_a_delegation_event_with_prompt_and_context(credential, harness):
     events, make = harness
     connector = FakeConnector()
-    bridge, ws = establish(connector, events, make)
+    _bridge, ws = establish(connector, events, make)
     ws.push_event({"type": "conversation.item.input_audio_transcription.updated",
                    "item_id": "i1", "delta": "what's "})
     ws.push_event({"type": "conversation.item.input_audio_transcription.updated",
@@ -447,7 +448,7 @@ def test_completed_transcript_finalizes_the_item_and_assistant_turns_join_contex
         credential, harness):
     events, make = harness
     connector = FakeConnector()
-    bridge, ws = establish(connector, events, make)
+    _bridge, ws = establish(connector, events, make)
     ws.push_event({"type": "response.output_audio_transcript.done",
                    "item_id": "a1", "transcript": "It is noon."})
     ws.push_event({"type": "conversation.item.input_audio_transcription.completed",
@@ -464,7 +465,7 @@ def test_completed_transcript_finalizes_the_item_and_assistant_turns_join_contex
 def test_silence_flush_without_transcript_emits_no_delegation(credential, harness):
     events, make = harness
     connector = FakeConnector()
-    bridge, ws = establish(connector, events, make)
+    _bridge, ws = establish(connector, events, make)
     ws.push_event({"type": "input_audio_buffer.speech_stopped"})
     time.sleep(0.15)
     assert not any(t == EVENT_DELEGATION for t, _ in events)

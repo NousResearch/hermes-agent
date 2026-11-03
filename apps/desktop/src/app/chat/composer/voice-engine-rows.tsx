@@ -20,11 +20,9 @@ import { $voiceLiveGrokStatus, $voiceLiveStatus, selectedVoiceChatMode, setVoice
  * the checked row tells them which one the next press starts. Rendered inside
  * whichever menu the layout has room for (the folded voice menu, or the
  * right-click menu on the start button), so the same rows appear in both.
- * Hidden while the backend has not answered the gpt-live status or predates
- * the mode, so we never offer a switch the gateway would refuse with 4002.
- * The grok-live row is hidden independently on its own status predating
- * the mode — an older backend that only knows gpt-live must not show a row
- * for an engine it cannot start.
+ * Hidden until either backend status endpoint answers, so we never offer a
+ * switch before this gateway's capabilities are known. The two live rows are
+ * gated independently; an older backend may know only one of them.
  */
 export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
   const { t } = useI18n()
@@ -32,13 +30,13 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
   const status = useStore($voiceLiveStatus)
   const grokStatus = useStore($voiceLiveGrokStatus)
 
-  if (status === null) {
+  if (status === null && grokStatus === null) {
     return null
   }
 
-  const liveAvailable = status.available
+  const liveAvailable = status?.available ?? false
   const grokAvailable = grokStatus?.available ?? false
-  const selected = selectedVoiceChatMode(status)
+  const selected = selectedVoiceChatMode()
 
   return (
     <>
@@ -62,7 +60,7 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
             <span>{c.voiceEngineLive}</span>
             {liveAvailable ? null : (
               <span className="text-muted-foreground truncate text-xs">
-                {status.reason ?? c.voiceEngineLiveNeedsKey}
+                {status?.reason ?? c.voiceEngineLiveNeedsKey}
               </span>
             )}
           </span>
@@ -88,12 +86,13 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
 export function useVoiceEngineName(): null | string {
   const { t } = useI18n()
   const status = useStore($voiceLiveStatus)
+  const grokStatus = useStore($voiceLiveGrokStatus)
 
-  if (status === null) {
+  if (status === null && grokStatus === null) {
     return null
   }
 
-  const selected = selectedVoiceChatMode(status)
+  const selected = selectedVoiceChatMode()
 
   if (selected === 'gpt-live') {
     return t.composer.voiceEngineLiveShort

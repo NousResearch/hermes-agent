@@ -1,6 +1,8 @@
+import type { VoiceGrokStartResult } from '@hermes/shared'
+
 import { profileScoped } from '@/api/client'
 import { hermesApi } from '@/hermes'
-import { activeGateway } from '@/store/gateway'
+import { activeGateway, activeGatewayProfileKey } from '@/store/gateway'
 
 import { parseVoiceChatMode, type VoiceLiveStatus } from './voice-live'
 
@@ -162,9 +164,15 @@ export class GrokVoiceSession {
   private muted = false
   private offEvent: null | (() => void) = null
   private closeTimer: null | number = null
+  private gateway: ReturnType<typeof activeGateway> = null
+  private profile: string | null = null
+  private backendStopRequested = false
+  private eventSessionIds = new Set<string>()
+  private playbackSources = new Set<AudioBufferSourceNode>()
 
   constructor(private readonly handlers: GrokVoiceHandlers) {
     this.sessionId = `grok-live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    this.eventSessionIds.add(this.sessionId)
   }
 
   /**
@@ -179,14 +187,16 @@ export class GrokVoiceSession {
     if (sessionId && sessionId !== this.sessionId) {
       const previous = this.sessionId
       this.sessionId = sessionId
-      const gateway = activeGateway()
+      this.eventSessionIds.add(sessionId)
+      const gateway = this.gateway ?? activeGateway()
+      const profile = this.profile ?? activeGatewayProfileKey()
 
       // Post-start adoption (fresh draft whose submit minted the session): move the
       // backend's bridge onto the real id. Before start() there is no bridge yet —
       // setting this.sessionId is enough (start() keys the bridge by it).
       if (this.started && gateway && previous && previous !== sessionId) {
         void gateway
-          .request('voice.grok.rekey', { from_session_id: previous, to_session_id: sessionId })
+          .request('voice.grok.rekey', { from_session_id: previous, to_session_id: sessionId, profile })
           .catch(() => undefined)
       }
     }
@@ -199,10 +209,11 @@ export class GrokVoiceSession {
       return
     }
 
-    const gateway = activeGateway()
+    const gateway = this.gateway ?? activeGateway()
+    const profile = this.profile ?? activeGatewayProfileKey()
 
     void gateway
-      ?.request('voice.grok.speak', { session_id: this.sessionId, text })
+      ?.request('voice.grok.speak', { session_id: this.sessionId, text, profile })
       .catch(() => undefined)
   }
 
@@ -213,12 +224,21 @@ export class GrokVoiceSession {
       throw new Error('gateway not connected')
     }
 
+    this.gateway = gateway
+    this.profile = activeGatewayProfileKey()
+
     this.playbackContext = new (window.AudioContext ||
       (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)()
     this.playbackCursor = this.playbackContext.currentTime
 
+    if (this.playbackContext.state === 'suspended') {
+      await this.playbackContext.resume().catch(() => undefined)
+    }
+
     this.offEvent = gateway.onAny(event => {
-      if (event.payload && (event.payload as { session_id?: string }).session_id !== this.sessionId) {
+      const eventSessionId = (event.payload as { session_id?: string } | undefined)?.session_id
+
+      if (eventSessionId && !this.eventSessionIds.has(eventSessionId)) {
         return
       }
 
@@ -227,6 +247,14 @@ export class GrokVoiceSession {
           const payload = event.payload as { state?: string; reason?: string } | undefined
 
           this.handlers.onState(payload?.state ?? 'idle', payload?.reason)
+
+          if (payload?.state === 'listening' || payload?.state === 'thinking') {
+            this.flushPlayback()
+          }
+
+          if (payload?.state === 'error') {
+            this.finish(payload.reason ?? 'grok-live error')
+          }
 
           return
         }
@@ -248,6 +276,7 @@ export class GrokVoiceSession {
           const payload = event.payload as { delegation_id?: string; prompt?: string; context?: string } | undefined
 
           if (payload?.delegation_id) {
+            this.flushPlayback()
             this.handlers.onDelegation(payload.delegation_id, payload.prompt ?? '', payload.context ?? '')
           }
 
@@ -269,7 +298,15 @@ export class GrokVoiceSession {
       }
     })
 
-    await gateway.request('voice.grok.start', { session_id: this.sessionId })
+    const result = await gateway.request<VoiceGrokStartResult>('voice.grok.start', {
+      session_id: this.sessionId,
+      profile: this.profile
+    })
+
+    if (!result.started) {
+      throw new Error(result.reason ?? 'grok-live unavailable')
+    }
+
     this.started = true
 
     this.microphone = await navigator.mediaDevices.getUserMedia({
@@ -324,7 +361,7 @@ export class GrokVoiceSession {
   }
 
   private sendChunk(frame: Float32Array): void {
-    const gateway = activeGateway()
+    const gateway = this.gateway
 
     if (!gateway) {
       return
@@ -335,6 +372,7 @@ export class GrokVoiceSession {
     void gateway
       .request('voice.grok.audio', {
         pcm_b64: bytesToBase64(pcm),
+        profile: this.profile,
         seq: this.seq,
         session_id: this.sessionId
       })
@@ -354,17 +392,50 @@ export class GrokVoiceSession {
     const source = context.createBufferSource()
     source.buffer = buffer
     source.connect(context.destination)
+    this.playbackSources.add(source)
+    source.onended = () => this.playbackSources.delete(source)
 
     const startAt = Math.max(this.playbackCursor, context.currentTime)
     source.start(startAt)
     this.playbackCursor = startAt + buffer.duration
   }
 
+  private flushPlayback(): void {
+    for (const source of this.playbackSources) {
+      source.onended = null
+
+      try {
+        source.stop()
+      } catch {
+        // Already-ended sources are harmless during barge-in cleanup.
+      }
+    }
+
+    this.playbackSources.clear()
+
+    if (this.playbackContext) {
+      this.playbackCursor = this.playbackContext.currentTime
+    }
+  }
+
   setMuted(muted: boolean): void {
     this.muted = muted
-    const gateway = activeGateway()
+    void this.gateway
+      ?.request('voice.grok.mute', { muted, profile: this.profile, session_id: this.sessionId })
+      .catch(() => undefined)
+  }
 
-    void gateway?.request('voice.grok.mute', { muted, session_id: this.sessionId }).catch(() => undefined)
+  private requestBackendStop(): null | Promise<void> {
+    if (!this.gateway || !this.started || this.backendStopRequested) {
+      return null
+    }
+
+    this.backendStopRequested = true
+
+    return this.gateway
+      .request('voice.grok.stop', { profile: this.profile, session_id: this.sessionId })
+      .then(() => undefined)
+      .catch(() => undefined)
   }
 
   /** Graceful close: ask the backend to end the xAI session, tear down local
@@ -374,19 +445,17 @@ export class GrokVoiceSession {
       return
     }
 
-    const gateway = activeGateway()
+    const gateway = this.gateway
     const finish = () => this.finish('close_requested')
 
-    if (!gateway) {
+    if (!gateway || !this.started) {
       finish()
 
       return
     }
 
-    void gateway
-      .request('voice.grok.stop', { session_id: this.sessionId })
-      .catch(() => undefined)
-      .finally(finish)
+    const stop = this.requestBackendStop()
+    void stop?.finally(finish)
 
     this.closeTimer = window.setTimeout(finish, CLOSE_TIMEOUT_MS)
   }
@@ -397,6 +466,9 @@ export class GrokVoiceSession {
     }
 
     this.finalized = true
+    // Fatal upstream events and local start failures must release the backend
+    // reconnect loop and wake-word mic lease too, not just renderer audio.
+    void this.requestBackendStop()
 
     if (this.closeTimer) {
       window.clearTimeout(this.closeTimer)
@@ -405,6 +477,7 @@ export class GrokVoiceSession {
 
     this.offEvent?.()
     this.offEvent = null
+    this.flushPlayback()
     this.processor?.disconnect()
     this.processor = null
     void this.audioContext?.close().catch(() => undefined)
@@ -413,6 +486,10 @@ export class GrokVoiceSession {
     this.playbackContext = null
     this.microphone?.getTracks().forEach(track => track.stop())
     this.microphone = null
+    this.started = false
+    this.gateway = null
+    this.profile = null
+    this.eventSessionIds.clear()
     this.handlers.onClosed(reason)
   }
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setPrimaryGateway } from '@/store/gateway'
+import { $activeGatewayRoute, setPrimaryGateway } from '@/store/gateway'
 
 import { GrokVoiceSession } from './voice-live-grok'
 
@@ -14,18 +14,30 @@ interface Recorded {
 function fakeGateway() {
   const requests: Recorded[] = []
   let sink: ((event: { payload?: unknown; type: string }) => void) | null = null
+
   const gateway = {
     onAny: (handler: (event: { payload?: unknown; type: string }) => void) => {
       sink = handler
+
       return () => {
         sink = null
       }
     },
     request: vi.fn(async (method: string, params: Record<string, unknown>) => {
       requests.push({ method, params })
+
+      if (method === 'voice.grok.start') {
+        return { started: true, live: { model: 'grok-voice-latest', voice: 'eve' } }
+      }
+
+      if (method === 'voice.grok.stop') {
+        sink?.({ type: 'voice.grok.state', payload: { session_id: params.session_id, state: 'close_requested' } })
+      }
+
       return {}
     })
   }
+
   return {
     emit: (type: string, payload?: unknown) => sink?.({ payload, type }),
     gateway,
@@ -49,11 +61,11 @@ class FakeAudioContext {
   state = 'running'
 
   createBuffer(): unknown {
-    return { getChannelData: () => new Float32Array(0) }
+    return { duration: 0, getChannelData: () => new Float32Array(0) }
   }
 
   createBufferSource(): unknown {
-    return { connect: () => undefined, start: () => undefined }
+    return { connect: () => undefined, start: () => undefined, stop: vi.fn() }
   }
 
   createGain(): unknown {
@@ -65,12 +77,16 @@ class FakeAudioContext {
   }
 
   createScriptProcessor(): unknown {
-    return { connect: () => undefined }
+    return { connect: () => undefined, disconnect: () => undefined }
   }
 
   destination = {}
 
   resume(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  close(): Promise<void> {
     return Promise.resolve()
   }
 }
@@ -81,12 +97,13 @@ describe('GrokVoiceSession (renderer-submits design)', () => {
     Object.defineProperty(window, 'AudioContext', { configurable: true, value: FakeAudioContext })
     Object.defineProperty(window.navigator, 'mediaDevices', {
       configurable: true,
-      value: { getUserMedia: vi.fn(async () => ({}) as MediaStream) }
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream) }
     })
   })
 
   afterEach(() => {
     setPrimaryGateway(null)
+    $activeGatewayRoute.set('default')
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -99,6 +116,7 @@ describe('GrokVoiceSession (renderer-submits design)', () => {
     const voice = new GrokVoiceSession(makeHandlers((delegationId, prompt, context) => {
       delegations.push({ context, delegationId, prompt })
     }))
+
     voice.useSessionId('sid-1')
     await voice.start()
 
@@ -148,5 +166,75 @@ describe('GrokVoiceSession (renderer-submits design)', () => {
     // Empty text is a no-op, not an extra RPC.
     voice.speak('   ')
     expect(requests.filter(r => r.method === 'voice.grok.speak')).toHaveLength(1)
+  })
+
+  it('accepts old-id events while a fresh-draft rekey is in flight', async () => {
+    const { emit, gateway } = fakeGateway()
+    setPrimaryGateway(gateway as never)
+    const onTranscript = vi.fn()
+    const voice = new GrokVoiceSession({ ...makeHandlers(() => undefined), onTranscript })
+    voice.useSessionId('synthetic-1')
+    await voice.start()
+    voice.useSessionId('real-1')
+
+    emit('voice.grok.transcript', { session_id: 'synthetic-1', speaker: 'user', text: 'still routed' })
+    expect(onTranscript).toHaveBeenCalledWith({ speaker: 'user', text: 'still routed' })
+  })
+
+  it('finishes, stops the backend bridge, and releases local audio on a fatal error', async () => {
+    const { emit, gateway, requests } = fakeGateway()
+    setPrimaryGateway(gateway as never)
+    const onClosed = vi.fn()
+    const voice = new GrokVoiceSession({ ...makeHandlers(() => undefined), onClosed })
+    await voice.start()
+
+    emit('voice.grok.state', { session_id: voice.sessionId, state: 'error', reason: 'websocket failed' })
+    expect(onClosed).toHaveBeenCalledWith('websocket failed')
+    expect(requests.filter(request => request.method === 'voice.grok.stop')).toHaveLength(1)
+  })
+
+  it('stops an accepted backend start when microphone permission fails', async () => {
+    const { gateway, requests } = fakeGateway()
+    setPrimaryGateway(gateway as never)
+    Object.defineProperty(window.navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockRejectedValue(new Error('Permission denied')) }
+    })
+    const voice = new GrokVoiceSession(makeHandlers(() => undefined))
+
+    await expect(voice.start()).rejects.toThrow('Permission denied')
+    voice.close()
+
+    await vi.waitFor(() => {
+      expect(requests.filter(request => request.method === 'voice.grok.stop')).toHaveLength(1)
+    })
+  })
+
+  it('rejects a backend not-started response before opening the microphone', async () => {
+    const { gateway } = fakeGateway()
+    gateway.request = vi.fn(async () => ({ started: false, reason: 'no_xai_credential' })) as never
+    setPrimaryGateway(gateway as never)
+    const voice = new GrokVoiceSession(makeHandlers(() => undefined))
+
+    await expect(voice.start()).rejects.toThrow('no_xai_credential')
+    expect(window.navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled()
+  })
+
+  it('pins the starting profile for the whole session', async () => {
+    const { gateway, requests } = fakeGateway()
+    setPrimaryGateway(gateway as never, 'secondary')
+    $activeGatewayRoute.set('secondary')
+    const voice = new GrokVoiceSession(makeHandlers(() => undefined))
+    await voice.start()
+
+    setPrimaryGateway(gateway as never, 'default')
+    await voice.close()
+
+    const voiceRequests = requests.filter(request => request.method.startsWith('voice.grok.'))
+    expect(voiceRequests.length).toBeGreaterThan(0)
+
+    for (const request of voiceRequests) {
+      expect(request.params.profile).toBe('secondary')
+    }
   })
 })

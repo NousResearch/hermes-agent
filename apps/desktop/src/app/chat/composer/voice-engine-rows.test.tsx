@@ -40,8 +40,8 @@ describe('useVoiceEngineName', () => {
     expect(result.current).toBe('GPT-Live')
   })
 
-  it('names Grok Live when selected — the new third engine', () => {
-    $voiceLiveStatus.set({ available: true, mode: 'grok-live', model: 'grok-voice-latest', reason: null, voice: 'eve' })
+  it('names Grok Live when only its own backend status has answered', () => {
+    $voiceLiveGrokStatus.set({ available: true, mode: 'grok-live', model: 'grok-voice-latest', reason: null, voice: 'eve' })
 
     const { result } = renderHook(() => useVoiceEngineName(), { wrapper })
 

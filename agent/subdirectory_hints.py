@@ -273,10 +273,6 @@ class SubdirectoryHintTracker:
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
-        # Construct hint_path from working_dir to handle relative paths correctly
-        hint_path = self.working_dir / directory
-        self._loaded_dirs.add(hint_path)
-        if not self._within_working_dir(hint_path):
         self._loaded_dirs.add(directory)
         if self._home_is_working_dir or not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)

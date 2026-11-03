@@ -71,6 +71,14 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # final content, requiring the same extended stale timeout floor.
     ("deepseek-r1", 600),
     ("deepseek-reasoner", 600),
+    # Prefix entry: catches every v4 point release.  The explicit slugs
+    # below (deepseek-v4-flash / deepseek-v4-pro) stopped matching once the
+    # family moved to a dotted version (deepseek-v4.1-flash) — the literal
+    # slug needs a "-" after "v4", so "v4.1" silently lost its 600s floor
+    # and fell back to the 240/300s context-scaled default, killing healthy
+    # streams mid-think.  A bare "deepseek-v4" slug matches on the
+    # "."/"-" separator and covers future point releases too.
+    ("deepseek-v4", 600),
     ("deepseek-v4-flash", 600),
     ("deepseek-v4-pro", 600),
     # Qwen — QwQ reasoning + Qwen3 thinking variants.  QwQ-32B
@@ -216,9 +224,18 @@ def get_reasoning_stale_timeout_floor(model: object) -> Optional[float]:
     name = model.strip().lower()
     if not name:
         return None
-    # Strip aggregator prefix (everything before and including the
-    # last ``/``).  The wrapper regex anchors at start-of-string, so
-    # the slug identity is the bare model name.
-    if "/" in name:
-        name = name.rsplit("/", 1)[1]
-    return _match_any(name)
+    # Model identifiers arrive in several shapes:
+    #   "o3-mini"                                          (bare slug)
+    #   "openai/o3-mini"                                   (one aggregator prefix)
+    #   "cp-chat/deepseek-v4.1-flash/se-bdijhs/ru-drhf8e"  (multi-part
+    #        marketplace id: capability / model / seller / route)
+    # The reasoning slug can therefore sit in ANY slash-separated segment,
+    # not only the last one.  Matching only the last segment (the previous
+    # rsplit("/", 1)[1]) silently discarded the model name for multi-part
+    # ids, so those never received a reasoning floor.
+    segments = [s.strip() for s in name.split("/") if s.strip()]
+    for segment in segments or [name]:
+        floor = _match_any(segment)
+        if floor is not None:
+            return floor
+    return None

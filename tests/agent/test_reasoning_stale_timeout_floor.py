@@ -55,6 +55,18 @@ import pytest
     ("deepseek/deepseek-v4-flash", 600.0),
     ("deepseek/deepseek-v4-pro", 600.0),
     ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
+    # Dotted point releases (v4.1, v4.2, ...) — the bare "deepseek-v4"
+    # prefix entry must catch these; the literal "deepseek-v4-flash"
+    # slug does NOT match "deepseek-v4.1-flash" (needs "-" after "v4").
+    ("deepseek-v4.1-flash", 600.0),
+    ("deepseek-v4.2-flash", 600.0),
+    ("deepseek/deepseek-v4.1-pro", 600.0),
+    # Multi-part marketplace ids (capability / model / seller / route).
+    # The reasoning slug sits in a NON-final segment, so matching only
+    # the last "/"-segment (the old rsplit behavior) missed it entirely.
+    ("cp-chat/deepseek-v4.1-flash/se-bdijhs/ru-drhf8e", 600.0),
+    ("cp-chat/deepseek-v4-flash/se-abc123/ru-xyz789", 600.0),
+    ("vendor-x/deepseek/deepseek-v4-pro/route-1", 600.0),
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),
@@ -125,6 +137,25 @@ def test_reasoning_stale_timeout_floor_negative_cases(model):
         f"get_reasoning_stale_timeout_floor({model!r}) must return None "
         f"for non-reasoning models and start-of-slug-anchor traps."
     )
+
+
+def test_multi_part_marketplace_id_matches_non_final_segment():
+    """A multi-part id keeps its reasoning slug in a NON-final segment.
+
+    Regression: the resolver used to do ``name.rsplit("/", 1)[1]``, which
+    kept only the LAST segment.  For a marketplace id shaped
+    ``cp-chat/<model>/<seller>/<route>`` that discarded the model name
+    entirely, so the id never received its reasoning floor and healthy
+    streams were killed mid-think at the 240s/300s context-scaled default.
+    """
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    assert get_reasoning_stale_timeout_floor(
+        "cp-chat/deepseek-v4.1-flash/se-bdijhs/ru-drhf8e"
+    ) == 600.0
+    # A route/seller segment that looks like nothing must not break it.
+    assert get_reasoning_stale_timeout_floor(
+        "cp-chat/deepseek-v4.1-flash/se-bdijhs/ru-drhf8e"
+    ) == get_reasoning_stale_timeout_floor("deepseek-v4.1-flash")
 
 
 def test_longest_substring_wins_on_shared_prefix():

@@ -213,8 +213,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     # Mention rendering ---------------------------------------------------
     # WhatsApp bodies carry mentions as bare numeric ids (``@<lid>`` /
     # ``@<phone>``); the human-readable identity never appears inline. These
-    # power _clean_bot_mention_text's symmetric rewrite.
-    _MENTION_TOKEN_RE = re.compile(r"@(\d{5,})\b")
+    # power _clean_bot_mention_text's symmetric rewrite. The lookbehind keeps
+    # ``user@12345.example`` style text out of it.
+    _MENTION_TOKEN_RE = re.compile(r"(?<![\w.])@(\d{5,})\b")
     _MENTION_SELF_LABEL = "@you"
     _MENTION_OTHER_SUFFIX = " (another person)"
 
@@ -273,12 +274,15 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         if not text:
             return text
         bot_bare = {bid.split("@", 1)[0] for bid in self._bot_ids_from_message(data)} - {""}
+        mentioned_bare = {self._normalize_whatsapp_id(c).split("@", 1)[0] for c in data.get("mentionedIds") or []}
         names = self._mention_name_map(data)
 
         def _label(match: re.Match[str]) -> str:
             bare_id = match.group(1)
             if bare_id in bot_bare:
                 return self._MENTION_SELF_LABEL
+            if bare_id not in mentioned_bare:
+                return match.group(0)  # a number that merely looks like a mention
             name = names.get(bare_id)
             return f"@{name}" if name else f"@{bare_id}{self._MENTION_OTHER_SUFFIX}"
 

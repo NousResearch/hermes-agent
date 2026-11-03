@@ -364,6 +364,90 @@ export function appendMediaFailureNote(content, failures) {
   return content ? `${content}\n${note}` : note;
 }
 
+const isPersonJid = (jid) => /@(s\.whatsapp\.net|lid)$/.test(normalizeWhatsAppId(jid));
+const bareWhatsAppId = (jid) => normalizeWhatsAppId(jid).split('@')[0];
+
+/**
+ * Resolve mentioned ids to display labels from data WhatsApp actually delivers.
+ *
+ * groupMetadata() participants carry only id / phoneNumber / lid / username /
+ * admin (Baileys lib/Socket/groups.js extractGroupMetadata), never a display
+ * name. The name a linked device does receive is each inbound message's
+ * pushName, so labels are learned from traffic into bounded LRU maps keyed by
+ * the bare PN and LID forms Baileys reports for that sender (key.participant
+ * plus key.participantAlt / remoteJidAlt). Group metadata, fetched at most once
+ * per chat per TTL and only while a mention is still unresolved, adds the
+ * PN<->LID twins (a name learned under one form resolves a mention under the
+ * other) and the participant username as a fallback. Anything still unknown
+ * is omitted, never guessed: Python renders it as "another person".
+ */
+export function createMentionNameResolver({
+  fetchGroupMetadata,
+  limit = 2048,
+  metadataTtlMs = 5 * 60 * 1000,
+  now = Date.now,
+} = {}) {
+  const pushNames = new Map();
+  const usernames = new Map();
+  const twins = new Map();
+  const metadataFetchedAt = new Map();
+
+  const remember = (map, key, value) => {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > limit) map.delete(map.keys().next().value);
+  };
+  const learnIdentity = (jids, name, names) => {
+    const ids = jids.filter(isPersonJid).map(bareWhatsAppId);
+    if (ids.length === 2 && ids[0] !== ids[1]) {
+      remember(twins, ids[0], ids[1]);
+      remember(twins, ids[1], ids[0]);
+    }
+    const label = String(name || '').trim();
+    if (label) for (const id of ids) remember(names, id, label);
+  };
+  const labelFor = (id) => {
+    const twin = twins.get(id);
+    return pushNames.get(id) || pushNames.get(twin) || usernames.get(id) || usernames.get(twin) || '';
+  };
+
+  function learnMessage(msg) {
+    const key = msg?.key || {};
+    // The pushName on our own messages is the bot's, which Python labels itself.
+    if (key.fromMe) return;
+    learnIdentity(
+      [key.participant || key.remoteJid, key.participantAlt || key.remoteJidAlt],
+      msg?.pushName,
+      pushNames,
+    );
+  }
+
+  async function resolve(mentionedIds, chatId) {
+    const ids = mentionedIds.map(bareWhatsAppId).filter(Boolean);
+    const collect = () => Object.fromEntries(ids.map((id) => [id, labelFor(id)]).filter(([, label]) => label));
+    let names = collect();
+    const fetchedAt = metadataFetchedAt.get(chatId);
+    const fresh = fetchedAt !== undefined && now() - fetchedAt < metadataTtlMs;
+    if (Object.keys(names).length === ids.length || !String(chatId).endsWith('@g.us') || !fetchGroupMetadata || fresh) {
+      return names;
+    }
+    // Stamped before the round-trip so a failing chat is not re-queried on every mention.
+    remember(metadataFetchedAt, chatId, now());
+    try {
+      const metadata = await fetchGroupMetadata(chatId);
+      for (const participant of metadata?.participants || []) {
+        learnIdentity([participant.id, participant.phoneNumber || participant.lid], participant.username, usernames);
+      }
+      names = collect();
+    } catch (err) {
+      console.warn('[bridge] group metadata for mention names failed:', err.message);
+    }
+    return names;
+  }
+
+  return { learnMessage, resolve };
+}
+
 export async function extractBridgeEvent({
   msg,
   chatId,
@@ -380,19 +464,11 @@ export async function extractBridgeEvent({
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
   const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-  // Mentions arrive as opaque ids; the readable identity lives in group
-  // metadata. Resolve here so the agent can tell "tagged me" from "tagged
-  // someone else" instead of guessing from a bare number.
-  let mentionedNames = {};
-  if (mentionedIds.length && typeof resolveMentionNames === 'function') {
-    try {
-      const resolved = await resolveMentionNames(mentionedIds, chatId);
-      if (resolved && typeof resolved === 'object') mentionedNames = resolved;
-    } catch {
-      // Name resolution is best-effort: an unresolved mention degrades to
-      // "another person", which is still correct. Never drop the message.
-    }
-  }
+  // Mentions arrive as opaque ids; resolve them so the agent can tell "tagged me" from "tagged
+  // someone else" (createMentionNameResolver). Unresolved ids are simply absent.
+  const mentionedNames = mentionedIds.length && resolveMentionNames
+    ? await resolveMentionNames(mentionedIds, chatId)
+    : {};
   const quotedMessageId = contextInfo?.stanzaId || null;
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;

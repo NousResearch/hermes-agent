@@ -11,7 +11,12 @@ every message that tagged a third party and stayed silent on the one message
 that actually tagged it.
 
 These are behaviour contracts about the *relationship* between the mention
-metadata and the rendered text, not snapshots of exact wording.
+metadata and the rendered text, not snapshots of exact wording. They start at
+the bridge event boundary: ``mentionedNames`` is the bridge's output, and how
+the bridge fills it from real Baileys data (pushName + group metadata) is
+covered by ``scripts/whatsapp-bridge/bridge_helpers.mentions.test.mjs``. The
+common case where the bridge knows no name is covered here by the
+unresolved-mention tests, which inject nothing.
 """
 
 from unittest.mock import AsyncMock
@@ -143,7 +148,7 @@ def test_mention_detection_still_gates_on_bot_identity():
 
 
 def test_sender_name_resolves_a_self_referential_tag():
-    """Fallback path: no group metadata, but the sender tagged themselves."""
+    """Fallback path: the bridge resolved no name, but the sender tagged themselves."""
     adapter = _make_adapter()
     data = _msg(
         f"@{BOB_LID} that's me",
@@ -155,3 +160,11 @@ def test_sender_name_resolves_a_self_referential_tag():
 
     assert "Bob" in rendered
     assert BOB_LID not in rendered
+
+
+def test_number_that_is_not_a_mention_is_left_alone():
+    """Only ids WhatsApp reported as mentions are rewritten; plain numbers keep their text."""
+    adapter = _make_adapter()
+    data = _msg("order @1234567 shipped, mail ops@55555.example", mentioned_ids=[])
+
+    assert adapter._clean_bot_mention_text(data["body"], data) == data["body"]

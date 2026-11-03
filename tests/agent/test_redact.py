@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from agent.redact import is_secret_field_name, mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -465,6 +465,42 @@ class TestPythonReprFields:
 
         assert secret not in result
         assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
+        ["secretValue", "privateKey", "rawSecret", "secretInput", "keyMaterial", "accessToken"],
+    )
+    def test_camelcase_spelling_of_exact_secret_key_is_redacted(self, key):
+        """``secretValue`` (Infisical, Vault-style APIs) folds to ``secretvalue``, which
+        neither the exact set (``secret_value``) nor the suffix rule matched."""
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f"{{'{key}': '{secret}'}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize("key", ["secretValue", "accessToken", "rawSecret", "keyMaterial"])
+    def test_camelcase_json_field_in_prefixed_text_is_masked(self, key):
+        """MCP servers often return ``"Secret retrieved successfully: {json}"`` — not parseable as
+        JSON, so only the text pass sees the field."""
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f'Secret retrieved successfully: {{"secretKey": "DEMO", "{key}": "{secret}"}}'
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert '"secretKey": "DEMO"' in result
+
+    @pytest.mark.parametrize("key", ["secretValue", "privateKey", "client-secret", "keyMaterial"])
+    def test_is_secret_field_name_matches_camelcase_spellings(self, key):
+        assert is_secret_field_name(key)
+
+    @pytest.mark.parametrize("key", ["secretKey", "secretName", "secretComment", "secretary", "tokenCount"])
+    def test_is_secret_field_name_keeps_secret_metadata_names(self, key):
+        """Infisical's ``secretKey`` is the secret's NAME, not its value."""
+        assert not is_secret_field_name(key)
 
     @pytest.mark.parametrize(
         "key",

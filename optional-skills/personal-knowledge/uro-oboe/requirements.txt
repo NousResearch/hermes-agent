@@ -1,0 +1,14 @@
+# Episodic Memory Skill Dependencies
+
+# Core dependencies (auto-installed by Hermes on first skill load)
+faiss-cpu>=1.15.0
+sentence-transformers>=6.0.0
+numpy>=1.24.0
+
+# Standard library (no install needed)
+# sqlite3
+# pickle
+# json
+# datetime
+# pathlib
+# typing

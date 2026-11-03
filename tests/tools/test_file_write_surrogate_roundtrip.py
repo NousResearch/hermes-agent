@@ -24,6 +24,13 @@ from tools.environments.base_output import _pipe_stdin
 from tools.environments.local import LocalEnvironment, _find_bash, _quote_bash_path
 from tools.file_operations import ShellFileOperations
 
+# Host-agnostic: the bash-spawning tests go through the same _find_bash() /
+# _quote_bash_path() pair production uses. The marker is also the Windows lane's
+# import list — without a platforms() spec this file is green on Linux and never
+# imported on Windows, which is how the WSL-stub bug above stayed invisible.
+# Linux and Windows are the hosts it has been run on.
+pytestmark = pytest.mark.platforms("linux", "windows")
+
 
 @pytest.fixture(autouse=True)
 def _child_bash_off_the_real_home(monkeypatch):

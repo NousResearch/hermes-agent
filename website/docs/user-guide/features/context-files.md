@@ -13,15 +13,15 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
-| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | Git root → CWD chain at startup + subdirectories progressively |
+| **AGENTS.md** | Project instructions, conventions, architecture | Git root → CWD chain at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one automatic** project context type is loaded at startup (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 
 If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
@@ -48,7 +48,7 @@ Outside a git repository, only the working directory itself is checked — paren
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+At session start, Hermes loads the git root → working directory `AGENTS.md` chain into the system prompt (working directory only outside git). As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/
@@ -119,13 +119,33 @@ Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.
 
 This means your existing Cursor conventions automatically apply when using Hermes.
 
+## Configured External Files
+
+`context.external_files` adds files before automatic discovery, in declaration order. Entries are path strings or mappings with `path` and an optional `label`:
+
+```yaml
+context:
+  engine: compressor
+  ignore_hermes_md: true
+  external_files:
+    - path: /home/user/work/AGENTS.md
+      label: Workspace rules
+    - /home/user/shared/team-rules.md
+```
+
+Paths expand `~` and environment variables; relative paths resolve against the process working directory. Resolved paths, including symlink aliases, are deduplicated. Automatic discovery skips files already loaded externally, including `.cursorrules` and `.cursor/rules/*.mdc`. Other automatic files still follow the normal priority and AGENTS directory-chain rules.
+
+`context.ignore_hermes_md` defaults to `false`. Set it to `true` to skip automatic `.hermes.md` / `HERMES.md` discovery; explicitly configured files still load. `external_files` defaults to an empty list. Both settings share the existing `context` mapping with `engine` and `memory_trim`.
+
+External files use the same safe reads, security scan, and per-file head/tail truncation as project context. Missing, empty, or unreadable files are skipped. `.hermes.md` / `HERMES.md` frontmatter is stripped. Safe-worker mode skips all context loading; install-tree fallback suppression still protects automatic discovery. Changes take effect in a new conversation, preserving the current conversation's cached prompt.
+
 ## How Context Files Are Loaded
 
 ### At startup (system prompt)
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Load configured external files**, then discover the first automatic type: `.hermes.md` / `HERMES.md` (nearest match up to git root) → AGENTS directory chain (git root → working directory) → `CLAUDE.md` (working directory) → `.cursorrules` + `.cursor/rules/*.mdc` (working directory)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)

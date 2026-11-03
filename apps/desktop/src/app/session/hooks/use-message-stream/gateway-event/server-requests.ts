@@ -32,7 +32,8 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
-import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, lineageAliases } from '@/store/session'
+import { requestNamesActiveSession, type SessionRequestSource, visibleSessionIdentity } from '@/store/session-identity'
 import {
   $sessionStates,
   $sessionTiles,
@@ -70,13 +71,25 @@ const str = (v: unknown): string => (typeof v === 'string' ? v : '')
  *  yet has no stored id — the runtime's own pending tabs — never the focused
  *  session's tabs. Only an unscoped request (no id) falls through to the
  *  focused session (undefined). */
-const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
+const previewOwnerFor = (
+  sessionId: string,
+  deps: ServerRequestContext['deps'],
+  request: ScopedServerRequest
+): PreviewOwner | undefined =>
   sessionId
-    ? {
+    ? (visibleSessionIdentity({
+        activeSessionId: deps.activeSessionIdRef.current,
+        sessionId,
+        source: request,
+        storedIdForRuntimeId: runtimeId =>
+          deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ??
+          $sessionStates.get()[runtimeId]?.storedSessionId ??
+          undefined
+      }) ?? {
         profile: previewScopeForRuntime(sessionId),
         runtimeId: sessionId,
         sessionId: storedSessionIdForRuntimeId(sessionId)
-      }
+      })
     : undefined
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
@@ -126,59 +139,14 @@ const WINDOW_OWNED_REQUESTS = new Set([
  */
 const declineNotShown = (request: ScopedServerRequest) => request.decline?.('This window is not showing the session.')
 
-/**
- * Whether a request's `session_id` names the same conversation as the pane's
- * active session. The two sides are not always the same identity class: the
- * gateway stamps requests with the RUNTIME session id — which auto-compression
- * rotates mid-conversation — while the pane may hold the durable/lineage id it
- * navigated to, so plain equality refuses the very session on screen (#122062).
- * Compare through the stored id each side resolves to (an unknown id passes
- * through unchanged: it may already be a stored id), then through the lineage,
- * so a compression-rotated tip and its root still read as one conversation.
- * The lineage leg requires ONE session row to answer to both ids — branch
- * siblings share a root but are distinct conversations.
- */
-export function requestNamesActiveSession({
-  activeSessionId,
-  sessionId,
-  storedIdForRuntimeId = () => undefined
-}: {
-  activeSessionId: null | string
-  sessionId: string
-  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
-}): boolean {
-  if (!sessionId || !activeSessionId) {
-    return false
-  }
-
-  if (sessionId === activeSessionId) {
-    return true
-  }
-
-  const requestStoredId = storedIdForRuntimeId(sessionId) ?? sessionId
-  const activeStoredId = storedIdForRuntimeId(activeSessionId) ?? activeSessionId
-
-  if (requestStoredId === activeStoredId) {
-    return true
-  }
-
-  return $sessions
-    .get()
-    .some(
-      session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId)
-    )
-}
-
 /** This window hosts the session: it is the primary view or an open session tile. */
 export function windowHostsSession(
   sessionId: string,
   activeSessionId: null | string,
-  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined,
+  source?: SessionRequestSource
 ): boolean {
-  return (
-    requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
-  )
+  return Boolean(visibleSessionIdentity({ activeSessionId, sessionId, source, storedIdForRuntimeId }))
 }
 
 /**
@@ -236,12 +204,14 @@ export function previewSessionRoute({
   method,
   replayed,
   sessionId,
+  source,
   storedIdForRuntimeId
 }: {
   activeSessionId: null | string
   method?: string
   replayed: boolean | undefined
   sessionId: string
+  source?: SessionRequestSource
   storedIdForRuntimeId?: (runtimeId: string) => string | undefined
 }): PreviewSessionRoute {
   if (!sessionId) {
@@ -253,7 +223,7 @@ export function previewSessionRoute({
   if (
     method === 'window.read'
       ? windowReadClaimsSession(sessionId, activeSessionId)
-      : windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)
+      : windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId, source)
   ) {
     return 'run'
   }
@@ -520,14 +490,14 @@ const terminalRead: Handler = ({ request }) => {
   answerValue(request, readActiveTerminal({ count: num(request.params.count), start: num(request.params.start) }))
 }
 
-const previewRead: Handler = ({ request, sessionId }) => {
+const previewRead: Handler = ({ deps, request, sessionId }) => {
   // read_preview tool: the active preview tab's page text is async. Empty = nothing open.
   // The window that passes the session gate may be the chat window while the
   // live webview lives in the popped-out Browser renderer — forward there
   // first; a null (no pop-out answered) falls back to the legacy local read.
   // A local read sees only the tabs the requesting session can see.
   const opts = { count: num(request.params.count), start: num(request.params.start) }
-  const owner = previewOwnerFor(sessionId)
+  const owner = previewOwnerFor(sessionId, deps, request)
 
   // A browser host has no pop-out and no readable surface to forward to, so
   // asking would only wait out the pop-out timeout before the same answer.
@@ -559,7 +529,7 @@ const previewAct: Handler = ({ deps, isActiveSession, request, sessionId }) => {
 
   // The agent drives ITS session's page: with a tile focused, the primary's
   // agent must not reach into the tile's tabs (#73890).
-  const owner = previewOwnerFor(sessionId)
+  const owner = previewOwnerFor(sessionId, deps, request)
 
   // The keystroke loop has to be able to stop when this request is withdrawn
   // (tool timeout or turn interrupt). The local interrupted flag can flip
@@ -699,7 +669,7 @@ const tour: Handler = ({ deps, isActiveSession, request, sessionId }) => {
               title: p.title as never
             },
             p.surface === 'preview' ? 'preview' : 'app',
-            previewOwnerFor(sessionId)
+            previewOwnerFor(sessionId, deps, request)
           )
         )
 
@@ -831,6 +801,7 @@ export function handleServerRequest(
       method: request.method,
       replayed: request.replayed,
       sessionId,
+      source: request,
       storedIdForRuntimeId
     })
 
@@ -859,6 +830,7 @@ export function handleServerRequest(
             activeSessionId: deps.activeSessionIdRef.current,
             replayed: false,
             sessionId,
+            source: request,
             storedIdForRuntimeId
           }) === 'run'
         ) {
@@ -876,7 +848,7 @@ export function handleServerRequest(
     deps,
     request,
     sessionId,
-    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, source: request, storedIdForRuntimeId })
   })
 
   return true

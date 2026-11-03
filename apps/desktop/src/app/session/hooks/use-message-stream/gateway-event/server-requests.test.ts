@@ -9,11 +9,18 @@ import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
-import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
+import { requestNamesActiveSession } from '@/store/session-identity'
+import {
+  $sessionStates,
+  $sessionTiles,
+  dropSessionState,
+  publishSessionState,
+  recordSessionEventScope
+} from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
-import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
+import { handleServerRequest, previewSessionRoute } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
@@ -42,13 +49,19 @@ const deps = {
   upsertToolCall: () => undefined
 } as ServerRequestContext['deps']
 
-function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string, replayed?: boolean) {
+function deliver(
+  method: string,
+  params: Record<string, unknown>,
+  activeSessionId: null | string,
+  replayed?: boolean,
+  source = { profile: 'default' }
+) {
   const respond = vi.fn()
   const fail = vi.fn()
   const decline = vi.fn()
 
   const handled = handleServerRequest(
-    { decline, fail, id: 'srq-1', method, params, profile: 'default', replayed, respond },
+    { ...source, decline, fail, id: 'srq-1', method, params, replayed, respond },
     deps,
     activeSessionId
   )
@@ -208,6 +221,169 @@ describe('preview action request routing', () => {
         expect(respond).toHaveBeenCalledTimes(1)
         expect(decline).not.toHaveBeenCalled()
       }
+    } finally {
+      $sessionTiles.set([])
+    }
+  })
+
+  it('reads the owned preview when a visible tile is addressed by its stored id', async () => {
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+    openPreview(
+      { kind: 'url', label: 'tile', source: 'https://tile.example', url: 'https://tile.example' },
+      'stored-tile'
+    )
+    const tab = $previewTabs.get()[0]!
+
+    const unbind = registerPreviewPageReader(tab.id, async () => ({
+      text: 'VISIBLE_TILE_TEXT',
+      title: 'tile',
+      url: 'https://tile.example'
+    }))
+
+    try {
+      const { decline, respond } = deliver('preview.read', { session_id: 'stored-tile' }, 'main-runtime')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(decline).not.toHaveBeenCalled()
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ text: 'VISIBLE_TILE_TEXT' })
+    } finally {
+      unbind()
+      $sessionTiles.set([])
+      closeRightRail()
+    }
+  })
+
+  it.each([
+    ['main', 'profile'],
+    ['main', 'connection'],
+    ['main', 'untagged'],
+    ['tile', 'profile'],
+    ['tile', 'connection'],
+    ['tile', 'untagged']
+  ])('declines foreign %s alias reads from a different %s source', async (surface, mismatch) => {
+    const visibleRuntime = `${surface}-read-visible`
+    const foreignRuntime = `${surface}-read-foreign-${mismatch}`
+    const owner = { connectionId: 'read-visible', profile: 'default' }
+
+    const foreign =
+      mismatch === 'profile'
+        ? { connectionId: owner.connectionId, profile: 'foreign-profile' }
+        : { connectionId: 'read-foreign', profile: owner.profile }
+
+    const source = mismatch === 'untagged' ? { profile: 'default' } : foreign
+    const state = createClientSessionState('stored-collision')
+    const active = surface === 'main' ? visibleRuntime : 'unrelated-main'
+    deps.activeSessionIdRef.current = active
+
+    for (const runtime of [visibleRuntime, foreignRuntime]) {
+      publishSessionState(runtime, state)
+      deps.sessionStateByRuntimeIdRef.current.set(runtime, state)
+    }
+
+    recordSessionEventScope({ ...owner, session_id: visibleRuntime })
+    recordSessionEventScope({ ...foreign, session_id: foreignRuntime })
+
+    if (surface === 'tile') {
+      $sessionTiles.set([
+        { dir: 'right', runtimeId: visibleRuntime, storedSessionId: 'stored-collision', ownerRoute: owner }
+      ])
+    }
+
+    openPreview(
+      { kind: 'url', label: 'private', source: 'https://private.example', url: 'https://private.example' },
+      'stored-collision'
+    )
+
+    const reader = vi.fn(async () => ({
+      text: 'PRIVATE_SOURCE_TEXT',
+      title: 'private',
+      url: 'https://private.example'
+    }))
+
+    const unbind = registerPreviewPageReader($previewTabs.get()[0]!.id, reader)
+    const respond = vi.fn()
+    const decline = vi.fn()
+
+    try {
+      handleServerRequest(
+        {
+          ...source,
+          id: 'foreign-read',
+          method: 'preview.read',
+          params: { session_id: foreignRuntime },
+          respond,
+          decline,
+          fail: vi.fn()
+        },
+        deps,
+        active
+      )
+      expect(decline).toHaveBeenCalledTimes(1)
+      expect(respond).not.toHaveBeenCalled()
+      expect(reader).not.toHaveBeenCalled()
+
+      handleServerRequest(
+        {
+          ...owner,
+          id: 'visible-read',
+          method: 'preview.read',
+          params: { session_id: visibleRuntime },
+          respond,
+          decline,
+          fail: vi.fn()
+        },
+        deps,
+        active
+      )
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ text: 'PRIVATE_SOURCE_TEXT' })
+    } finally {
+      unbind()
+      dropSessionState(visibleRuntime)
+      dropSessionState(foreignRuntime)
+      $sessionStates.set({})
+      $sessionTiles.set([])
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      deps.activeSessionIdRef.current = null
+      closeRightRail()
+    }
+  })
+
+  it('declines a read naming a branch sibling of an open tile', () => {
+    setSessions([
+      { id: 'branch-a', _lineage_root_id: 'shared-root' } as SessionInfo,
+      { id: 'branch-b', _lineage_root_id: 'shared-root' } as SessionInfo
+    ])
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'branch-a' }])
+    deps.sessionStateByRuntimeIdRef.current.set('sibling-runtime', createClientSessionState('branch-b'))
+
+    try {
+      const { decline, respond } = deliver('preview.read', { session_id: 'sibling-runtime' }, 'main-runtime')
+
+      expect(decline).toHaveBeenCalledTimes(1)
+      expect(respond).not.toHaveBeenCalled()
+    } finally {
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      $sessionTiles.set([])
+      setSessions([])
+    }
+  })
+
+  it('still refuses a non-active tile action when the tile is addressed by its stored id', () => {
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+
+    try {
+      const { decline, respond } = deliver(
+        'preview.act',
+        { action: 'elements', session_id: 'stored-tile' },
+        'main-runtime'
+      )
+
+      expect(decline).not.toHaveBeenCalled()
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('the session the user is looking at'),
+        success: false
+      })
     } finally {
       $sessionTiles.set([])
     }
@@ -518,39 +694,42 @@ describe('preview requests act for the session that asked (#73890)', () => {
     }
   })
 
-  it("never answers a tile of another profile with the viewed profile's pinned page", async () => {
-    // Profile X's runtime stays open as a tile while the primary's profile
-    // (the bucket in view) has a pinned Browser.
-    $sessionTiles.set([
-      { dir: 'right', ownerProfile: 'prof-p1-x', runtimeId: 'rt-x', storedSessionId: 'stored-x' } as never
-    ])
-    publishSessionState('rt-x', createClientSessionState('stored-x'))
-    openPreview({ kind: 'url', label: 'y', source: 'https://y.example', url: 'https://y.example' }, 'stored-a')
-    const pin = $previewTabs.get()[0]!.id
-    setPreviewTabPinned(pin, true)
+  it.each(['rt-x', 'stored-x'])(
+    "never answers another profile's tile (%s) with the viewed profile's pinned page",
+    async sessionId => {
+      // Profile X's runtime stays open as a tile while the primary's profile
+      // (the bucket in view) has a pinned Browser.
+      $sessionTiles.set([
+        { dir: 'right', ownerProfile: 'prof-p1-x', runtimeId: 'rt-x', storedSessionId: 'stored-x' } as never
+      ])
+      publishSessionState('rt-x', createClientSessionState('stored-x'))
+      openPreview({ kind: 'url', label: 'y', source: 'https://y.example', url: 'https://y.example' }, 'stored-a')
+      const pin = $previewTabs.get()[0]!.id
+      setPreviewTabPinned(pin, true)
 
-    const unbind = registerPreviewPageReader(pin, async () => ({
-      text: 'PROFILE_Y_PRIVATE_TEXT',
-      title: 'y',
-      url: 'https://y.example'
-    }))
+      const unbind = registerPreviewPageReader(pin, async () => ({
+        text: 'PROFILE_Y_PRIVATE_TEXT',
+        title: 'y',
+        url: 'https://y.example'
+      }))
 
-    try {
-      const fromX = deliver('preview.read', { session_id: 'rt-x' }, 'rt-a')
+      try {
+        const fromX = deliver('preview.read', { session_id: sessionId }, 'rt-a', undefined, { profile: 'prof-p1-x' })
 
-      await vi.waitFor(() => expect(fromX.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-      expect(fromX.respond.mock.calls[0][0].value).toBe('')
+        await vi.waitFor(() => expect(fromX.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+        expect(fromX.respond.mock.calls[0][0].value).toBe('')
 
-      // Control: the pin's own profile still reads it.
-      const fromA = deliver('preview.read', { session_id: 'rt-a' }, 'rt-a')
+        // Control: the pin's own profile still reads it.
+        const fromA = deliver('preview.read', { session_id: 'rt-a' }, 'rt-a')
 
-      await vi.waitFor(() => expect(fromA.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-      expect(JSON.parse(fromA.respond.mock.calls[0][0].value)).toMatchObject({ text: 'PROFILE_Y_PRIVATE_TEXT' })
-    } finally {
-      unbind()
-      dropSessionState('rt-x')
+        await vi.waitFor(() => expect(fromA.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+        expect(JSON.parse(fromA.respond.mock.calls[0][0].value)).toMatchObject({ text: 'PROFILE_Y_PRIVATE_TEXT' })
+      } finally {
+        unbind()
+        dropSessionState('rt-x')
+      }
     }
-  })
+  )
 
   it('reads no tab for a requester whose stored id is not bound yet, never the focused one', async () => {
     // A fresh primary runtime whose stored id has not arrived; tile B focused.

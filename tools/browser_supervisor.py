@@ -314,6 +314,31 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         except Exception as exc:
             return _err(exc)
 
+    def page_origins(self, *, timeout: float = 10.0) -> list[str]:
+        """Origins (``scheme://host[:port]``, never full URLs) of the open http(s) page tabs, in tab
+        order without duplicates; ``[]`` when the targets cannot be read."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return []
+        from agent.vault_store import VaultError, normalize_origin
+        try:
+            reply = _schedule(self._cdp("Target.getTargets", timeout=timeout), loop, timeout=timeout + 1)
+        except Exception:
+            logger.debug("page_origins: Target.getTargets failed", exc_info=True)
+            return []
+        origins: list[str] = []
+        for t in reply.get("result", {}).get("targetInfos", []):
+            url = str(t.get("url") or "")
+            if t.get("type") != "page" or not url.startswith(("http://", "https://")):
+                continue
+            try:
+                origin = normalize_origin(url)
+            except VaultError:
+                continue
+            if origin not in origins:
+                origins.append(origin)
+        return origins
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:

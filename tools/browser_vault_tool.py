@@ -235,6 +235,18 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     return (origin or focused.get("url")) if focused.get("ok") else None
 
 
+def _open_tab_origins(task_id: str) -> list[str]:
+    """Origins of the open page tabs, for a refusal to name; ``[]`` when unknown."""
+    if _page_backend(task_id) is not None:
+        return []
+    try:
+        supervisor = _ensure_supervisor(task_id)
+        return list(supervisor.page_origins()) if supervisor is not None else []
+    except Exception:
+        logger.debug("could not list open tab origins", exc_info=True)
+        return []
+
+
 def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[str, Any]:
     """The origin guard every fill of a stored secret (password, one-time code, card, address) passes
     BEFORE the backend resolves any value: the page origin when it is one of the item's saved origins,
@@ -249,8 +261,12 @@ def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[s
     page_origin = next((o for o in (_focus_bound_origin(task_id, c, probe_kind) for c in allowed) if o), None)
     page_origin = page_origin or _current_page_origin(task_id)
     if not page_origin:
-        return {"success": False,
-                "error": "Could not determine the current page origin. Navigate to the login page first."}
+        # Origins only: tab URLs can carry paths and query strings (reset tokens, session ids).
+        tabs = _open_tab_origins(task_id)
+        seen = (f" Open tabs are on: {', '.join(tabs)}. If the sign-in page is one of these, add its origin to "
+                "the vault item's saved origins.") if tabs else " Open the login page and retry."
+        return {"success": False, "error_type": "no_bound_tab",
+                "error": f"No open tab is on the vault item's saved origin(s) ({', '.join(allowed)}).{seen}"}
     if page_origin not in allowed:
         return {"success": False, "error_type": "origin_mismatch",
                 "error": (f"Refused: current page origin ({page_origin}) does not match the vault item's bound "

@@ -64,7 +64,10 @@ it('reserves monitoring for background-only work and returns to working for dele
   expect(screen.queryByRole('img')).toBeNull()
   act(() => publishSessionState('runtime', idle))
   expect(screen.getByRole('img', { name: 'Watching CI' })).toBeTruthy()
-  expect(showsRunningArc(status())).toBe(false)
+  // Main keeps the running arc on a row whose work continues in the background;
+  // the monitoring icon is what tells it apart from a live turn.
+  expect(status()).toBe('background')
+  expect(showsRunningArc(status())).toBe(true)
 
   act(() => $subagentsBySession.set({ runtime: [child] }))
   expect(status()).toBe('working')

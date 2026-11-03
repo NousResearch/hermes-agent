@@ -50,7 +50,7 @@ export const zhHantSettings = {
       advancedOutput: '輸出限制',
       advancedDelegation: '子代理',
       advancedDesktop: '桌面與啟動',
-      gatewayConnection: '目前視窗',
+      gatewayConnection: '主要閘道',
       gatewayDevices: '已儲存的連線',
       gatewayManagedUpdates: '遠端更新',
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',

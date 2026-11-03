@@ -425,6 +425,8 @@ class McpServerRuntimeRow(Result):
     status: McpRuntimeStatus
     source: McpServerSource
     plugin: str | None = None
+    # Parked on a rejected OAuth credential (older backends omit it).
+    needs_auth: bool = False
 
 
 class McpServersStatusResult(Result):

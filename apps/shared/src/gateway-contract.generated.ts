@@ -857,6 +857,7 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   ultrafast?: boolean
+  daybreak?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
@@ -1905,19 +1906,20 @@ export interface BotRelayReplyParams {
 export interface I18nLanguagesResult {
   languages: LanguageOption[]
 }
-/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. */
+/** ``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or ``plugin:<name>`` — the highest layer that supplies the language. ``surfaces`` are the surfaces some layer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface, since picking it would only show English. */
 export interface LanguageOption {
   id: string
   endonym: string
   rtl: boolean
   source: string
+  surfaces: LocaleSurface[]
 }
+export type LocaleSurface = 'core' | 'tui' | 'desktop'
 export interface I18nCatalogParams {
   profile?: string | null
   lang: string
   surface?: LocaleSurface
 }
-export type LocaleSurface = 'core' | 'tui' | 'desktop'
 /** ``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the client merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request resolved to (``pt-BR`` → ``pt-br``; an unknown id resolves to ``en`` with an empty layer). */
 export interface I18nCatalogResult {
   lang: string
@@ -2387,6 +2389,14 @@ export interface FailedDelegation {
   error?: string | null
   dispatched_at?: number | null
   completed_at?: number | null
+}
+export interface SubagentRosterResult {
+  sessions?: SubagentRosterEntry[]
+}
+export interface SubagentRosterEntry {
+  session_id: string
+  subagents?: number
+  background?: number
 }
 export interface SubagentIdParams {
   session_id: string
@@ -4274,6 +4284,7 @@ export interface McpServerRuntimeRow {
   status: McpRuntimeStatus
   source: McpServerSource
   plugin?: string | null
+  needs_auth?: boolean
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
@@ -4719,6 +4730,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   source: string
   model?: string | null
   lazy: boolean
@@ -5053,6 +5065,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -6493,6 +6506,8 @@ export interface RpcMethods {
   'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session. */
+  'subagent.roster': { params: ProfileParams; result: SubagentRosterResult }
   /** Queue steering text into a live delegated child owned by this session. */
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
@@ -6784,6 +6799,7 @@ export const RPC_METHODS = [
   'spawn_tree.save',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.roster',
   'subagent.steer',
   'subagent.tail',
   'subscription.change',

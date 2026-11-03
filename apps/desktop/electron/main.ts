@@ -195,6 +195,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   registryDialConnectionId,
+  registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
   type ResolvedConnectionDescriptor,
@@ -223,7 +224,9 @@ import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
+  desktopConnectionRequestInheritsPrimary,
   type DesktopProfileRoute,
+  registerDesktopProfilePreferenceIpc,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch
 } from './desktop-profile'
@@ -326,7 +329,7 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
-import { applyLaunchProfileOverride } from './launch-profile'
+import { applyLaunchProfileOverride, parseLaunchProfile } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import {
@@ -348,6 +351,7 @@ import { parseNvidiaDriverMajor, parseNvidiaDriverVersion } from './linux-nvidia
 import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 import { relaunchIfNoSandboxCameTooLate } from './linux-sandbox-relaunch'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { localProfileIsLive } from './local-profile-liveness'
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
@@ -439,13 +443,11 @@ import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-off
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
-import {
-  createPrimaryRemoteConnection,
-  FirstRunSetupResetError,
-  runPrimaryBackendStartup
-} from './primary-backend-startup'
+import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
+import { joinPrimaryBoot, primaryBootRequest, primaryDialClaimKey, primaryProfileRestorable } from './primary-boot-join'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
+import { connectPrimaryRemote } from './primary-remote-startup'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -471,6 +473,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isNotFoundApiError,
   isRemoteSessionRequestPath,
   mergeRegistrySessionRows,
   type RegistrySessionSource,
@@ -478,6 +481,7 @@ import {
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
+  tagPrimaryAggregateRows,
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
@@ -510,6 +514,7 @@ import {
   probeCachedConnectionInstallId,
   rememberConnectionInstallId
 } from './registry-backend-identity'
+import { collectRegistrySessionSources } from './registry-session-sources'
 import { releaseHolderRetry } from './release-holder-consent'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -571,9 +576,11 @@ import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstra
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
+import { managedSshConfig, resolveSharedSshProfileBackend, sharedSshProfiles } from './ssh-shared-profile-backend'
 import { createSshTeardownTracker } from './ssh-teardown'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
+import { terminalGatewayTarget } from './terminal-gateway-target'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
@@ -661,12 +668,7 @@ import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
-import {
-  appliedPrimaryWindowRoute,
-  registrySshPoolScopeByConnectionId,
-  registrySshScopeForWindowRoute,
-  WindowConnectionRouteRegistry
-} from './window-connection-route'
+import { appliedPrimaryWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { isAppSized, registerWindowSizing } from './window-growth'
@@ -1399,7 +1401,7 @@ const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
 const WINDOW_BUTTON_POSITION = {
-  x: 24,
+  x: 12,
   y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
 }
 
@@ -3163,13 +3165,6 @@ function getVenvPython(venvRoot) {
 // normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
-function makeDashboardReadyFile() {
-  const dir = path.join(app.getPath('userData'), 'backend-ready')
-  fs.mkdirSync(dir, { recursive: true })
-
-  return path.join(dir, `dashboard-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.json`)
-}
-
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
 // install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
@@ -3295,10 +3290,6 @@ function resolveGhBinary() {
   _ghBinaryCache = selected || findOnPath('gh') || 'gh'
 
   return _ghBinaryCache
-}
-
-function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
 }
 
 // ─── Self-update (git-pull against the running backend's hermes root) ──────
@@ -9458,26 +9449,13 @@ function activeSshTerminalTarget(webContentsId?: number) {
   const windowRoute = typeof webContentsId === 'number' ? windowConnectionRoutes.get(webContentsId) : null
 
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    const scope = registrySshScopeForWindowRoute(windowRoute, readDesktopConnectionsRegistry())
+    const target = terminalGatewayTarget(
+      { connectionId: windowRoute.connectionId, profile: windowRoute.profile },
+      readDesktopConnectionsRegistry(),
+      sshConnections
+    )
 
-    if (!scope) {
-      return null
-    }
-
-    const state = sshConnections.get(scope)
-
-    if (state && state.ssh) {
-      return { ssh: state.ssh, scope }
-    }
-
-    // The pool's single writer publishes under the per-profile bootstrap key
-    // while stamping the entry with its registry connection id (#97345), so a
-    // composite-key miss must still resolve the live tunnel by that identity
-    // instead of reporting 'pending' forever.
-    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
-    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
-
-    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
+    return typeof target === 'string' && target !== 'pending' ? null : target
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -9517,8 +9495,12 @@ async function ensureTerminalBackend(webContentsId: number) {
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
+  // No window route: follow the primary, like a profile-less hermes:connection.
+  const inheritsPrimary = !windowRoute?.profile
 
-  return backendDialClaims.run(backendScopeKey(null, profile), () => ensureBackend(profile))
+  return backendDialClaims.run(primaryDialClaimKey(backendScopeKey(null, profile), inheritsPrimary), () =>
+    ensureBackend(profile, { inheritsPrimary })
+  )
 }
 
 // Loopback reach for the browser pane. Scoped to the SSH connection that
@@ -9562,8 +9544,7 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 
   if (!target || target === 'pending') {
-    // No SSH transport behind this renderer's gateway. Another window's
-    // forward must never be reused for this preview.
+    // No SSH transport behind this renderer's gateway. Another window's forward must never be reused for this preview.
     await resetPreviewReach(webContentsId)
 
     return rawUrl
@@ -9792,6 +9773,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      devServer: DEV_SERVER,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -10540,9 +10522,10 @@ async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
 
 async function ensureBackend(
   profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string } } = {}
+  opts: { inheritsPrimary?: boolean; passive?: boolean; request?: { method?: string; path?: string } } = {}
 ) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const request = primaryBootRequest(profile, primaryProfileKey(), opts.inheritsPrimary)
+  const key = request.key
   const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
@@ -10555,19 +10538,15 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    const connection = await startHermes(key)
-    setWslBridgeProfileState(key, connection.mode !== 'remote')
+    const joined = await joinPrimaryBoot(request, route, {
+      primaryKey: primaryProfileKey,
+      resolveRoute: next => resolveProfileBackendRoute(next, profileRouteOptions(next, opts.request)),
+      start: boot => startHermes(boot.key, boot.inheritsPrimary)
+    })
 
-    // A shared backend still owes the caller its profile scope, so renderer-side
-    // WebSocket, filesystem, and cache routing target the selected profile.
-    // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag. The
-    // unshared primary carries its own key too: a profile-less descriptor
-    // reads as "default" downstream, which breaks per-source profile memory
-    // (the primary IS "default" only when it actually booted as default).
-    return route.descriptorProfile
-      ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
-      : { ...connection, profile: key }
+    setWslBridgeProfileState(joined.key, joined.connection.mode !== 'remote')
+
+    return joined.descriptor
   }
 
   const existing = backendPool.get(key)
@@ -10634,15 +10613,7 @@ async function ensureRegistryBackend(
     }
 
     if (!resolvedRegistrySshConfig) {
-      resolvedRegistrySshConfig = normalizeSshConfig({
-        mode: 'ssh',
-        host: source.host,
-        user: source.user,
-        port: source.port,
-        keyPath: source.keyPath,
-        remoteHermesPath: source.remoteHermesPath,
-        remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-      })
+      resolvedRegistrySshConfig = managedSshConfig(source, profileKey)
     }
 
     return resolvedRegistrySshConfig
@@ -10755,6 +10726,18 @@ async function ensureRegistryBackend(
 
   const key = backendScopeKey(id, profile)
   const existing = backendPool.get(key)
+
+  // One remote `hermes serve` per SSH host: a named profile rides the default backend when it can.
+  const shared = existing ? null : await resolveSharedSshProfileBackend(source, profile, {
+    ensureDefault: (): Promise<any> => ensureRegistryBackend(id, 'default', managedUpdateCorrelation, { passive }),
+    listProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 })
+  })
+
+  if (shared) {
+    setWslBridgeProfileState(shared.profile, false)
+
+    return shared
+  }
 
   if (existing) {
     const connectionPromise = existing.connectionPromise
@@ -10960,20 +10943,6 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
       managedPrimaryRestoreOwners.delete(source.id)
     }
   }
-}
-
-function managedSshConfig(source, profile = '') {
-  const profileKey = String(profile ?? '').trim() || 'default'
-
-  return normalizeSshConfig({
-    mode: 'ssh',
-    host: source.host,
-    user: source.user,
-    port: source.port,
-    keyPath: source.keyPath,
-    remoteHermesPath: source.remoteHermesPath,
-    remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
-  })
 }
 
 async function captureManagedSshScopes(source) {
@@ -11753,7 +11722,7 @@ function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function startHermes(requestedProfile?: string) {
+async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -11819,16 +11788,15 @@ async function startHermes(requestedProfile?: string) {
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. An explicit profile-scoped caller names both.
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = requestedProfile
+  const launch = requestedProfile
     ? { argvProfile: requestedProfile, routingProfile: requestedProfile }
     : resolveLaunchProfile(readActiveDesktopProfile)
 
-  // Pin the routing table to the profile this primary actually boots as; a
-  // later hermes:profile:remember must not retarget requests mid-life.
-  primaryProfilePin.pin(primaryProfile)
+  const activeProfile = launch.argvProfile
+  let primaryProfile = launch.routingProfile
 
-  // Legacy path callers without an explicit profile belong to the primary
-  // window backend. Profile-scoped callers still pass their key directly.
+  // Keep routing and native paths on this attempt's effective launch profile.
+  primaryProfilePin.pin(primaryProfile)
   setActiveGatewayProfile(primaryProfile)
 
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
@@ -11837,29 +11805,28 @@ async function startHermes(requestedProfile?: string) {
   let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
-    const connectRemote = async remote => {
-      // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
-      // mint). If a newer attempt started meanwhile (e.g. the user switched
-      // remotes and Apply invalidated this attempt), bail before probing.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
-
-      // Second async boundary: the health probe itself can outlive the
-      // attempt. A late success here must not publish a stale descriptor.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-      updateBootProgress({
-        phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
-        progress: 94,
-        running: true,
-        error: null
+    const connectRemote = remote =>
+      connectPrimaryRemote(remote, {
+        profile: primaryProfile,
+        restoreRememberedProfile: () =>
+          primaryProfileRestorable(requestedProfile, inheritsPrimary, parseLaunchProfile(process.argv), readDesktopConnectionConfig()),
+        signal: localBackendLifecycle.signal,
+        assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+        advanceBootProgress,
+        waitForRemote: waitForRemoteHermes,
+        readProfiles: descriptor => getJsonForBackend(descriptor, '/api/profiles', { timeoutMs: 8_000 }),
+        readStatus: descriptor => getJsonForBackend(descriptor, '/api/status', { timeoutMs: 8_000 }),
+        connectionProfile: desktopProfilePreferences.connectionProfile,
+        // The machine-local preference stays: only this remote does not serve it.
+        onProfileRestored: profile => {
+          rememberLog(`[profile] remote primary does not serve "${primaryProfile}"; booting it as "${profile}"`)
+          primaryProfile = primaryProfilePin.pin(profile)
+          setActiveGatewayProfile(profile)
+        },
+        updateBootProgress,
+        logs: () => hermesLog.slice(-80),
+        windowState: getWindowState
       })
-
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
-    }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
@@ -14041,24 +14008,25 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (event, profile) => {
-  const route = resolveDesktopConnectionRequest(
-    profile,
-    windowConnectionRoutes.get(event.sender.id),
-    primaryProfileKey()
-  )
+  const source = windowConnectionRoutes.get(event.sender.id) ?? null
+  const route = resolveDesktopConnectionRequest(profile, source, primaryProfileKey())
 
-  return connectDesktopProfileRoute(route, event.sender)
+  // A profile-less request follows the primary even though the route carries its name.
+  return connectDesktopProfileRoute(route, event.sender, desktopConnectionRequestInheritsPrimary(profile, source))
 })
 
-async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents) {
+async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: Electron.WebContents, inherits = false) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
-  const scopeKey = backendScopeKey(route.connectionId, route.profile)
+  const inheritsPrimary = !route.connectionId && inherits
+  const scopeKey = primaryDialClaimKey(backendScopeKey(route.connectionId, route.profile), inheritsPrimary)
 
   const connection = await backendDialClaims.run(scopeKey, () =>
-    route.connectionId ? ensureRegistryBackend(route.connectionId, route.profile) : ensureBackend(route.profile)
+    route.connectionId
+      ? ensureRegistryBackend(route.connectionId, route.profile)
+      : ensureBackend(route.profile, { inheritsPrimary })
   )
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
@@ -15569,8 +15537,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
+registerDesktopProfilePreferenceIpc(ipcMain, desktopProfilePreferences, connectionId =>
+  readDesktopConnectionsRegistry().connections.some(connection => connection.id === connectionId)
+)
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 // Persistence-only sibling of hermes:profile:set: records the profile the
 // Desktop last used WITHOUT tearing down the backend or reloading the window.
@@ -15696,7 +15665,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined
     }
 
-    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+    return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, registryConnectionId)
   }
 
   // Batched sidebar slices. With no remote profiles the local batched endpoint
@@ -15725,9 +15694,9 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
 
     const [recents, cron, messaging] = await Promise.all([
-      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources),
-      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
+      fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(cronSp, remoteProfiles, registrySources, registryConnectionId),
+      fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources, registryConnectionId)
     ])
 
     return assembleSidebarSessionSlices(recents, cron, messaging)
@@ -15867,7 +15836,7 @@ async function remoteOwnerProfileForSession(sessionId: string) {
 // returns data (never `undefined`) so a batched caller can compose slices. A
 // specific local profile reads from the local primary; a remote-override profile
 // reads from its remote; 'all' merges every remote into the primary aggregate.
-async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null) {
+async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registrySources = null, pinnedConnectionId = null) {
   const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
   if (requested !== 'all') {
@@ -15878,7 +15847,7 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
     return fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile)
   }
 
-  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources)
+  return mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySources, pinnedConnectionId)
 }
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
@@ -15887,12 +15856,16 @@ async function fetchProfilesSessionSlice(searchParams, remoteProfiles, registryS
 // than breaking the sidebar. Connected registry gateways' sessions are spliced
 // in too (#88880) — the unified Sessions list shows EVERY connected gateway's
 // chats, tagged with connection_id + profile so opens route correctly.
-async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null) {
+async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registrySourcesOverride = null, pinned = null) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
   const order = searchParams.get('order') === 'created' ? 'started_at' : 'last_active'
 
   const base = (await fetchPrimaryProfileSessions(searchParams, fetchJsonForProfile, { prefixForMerge: true })) as any
+
+  if (pinned) {
+    await tagPrimaryAggregateRows(base, () => ensureBackend(null, { passive: true }), pinned)
+  }
 
   // Over-fetch each remote from offset 0 (limit+offset rows) so the merged window
   // is correct for this page — mirrors the primary's per-profile over-fetch.
@@ -15948,61 +15921,46 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
-// Every CONNECTED registry gateway as a session source: resolved descriptors
-// straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
-// shared host (any pooled scope's descriptor serves the cross-profile read).
-// The primary local connection is excluded for the legacy unpinned path — the
-// primary aggregate carries local rows there. A registry-pinned aggregate opts
-// in so forced-local backends remain visible when the legacy primary is remote.
+// Every CONNECTED registry gateway as a session source (see the module); never dials.
 async function pooledRegistrySessionSources(includeLocal = false): Promise<RegistrySessionSource[]> {
   const registry = readDesktopConnectionsRegistry()
-  const sources: RegistrySessionSource[] = []
 
-  for (const connection of registry.connections) {
-    if (connection.kind === 'local' && !includeLocal) {
-      continue
-    }
+  return collectRegistrySessionSources(
+    {
+      connections: registry.connections,
+      pool: backendPool.entries(),
+      scopePrefix: backendScopePrefix,
+      reusedPrimary: connectionId => reusedPrimarySshDescriptor(registry, connectionId),
+      installId: (connectionId, descriptor) => boundedInstallId(probeConnectionInstallId(connectionId, descriptor)),
+      sharedProfiles: sharedSshProfiles
+    },
+    includeLocal
+  )
+}
 
-    const prefix = backendScopePrefix(connection.id)
+// The running primary descriptor when it IS this registry SSH connection: its
+// registry routes reuse it rather than pooling a backend. Never starts one.
+async function reusedPrimarySshDescriptor(registry, connectionId: string) {
+  const pending = connectionId === registry.primary ? backendConnectionState.getPromise() : null
 
-    const pooled = [...backendPool.entries()].filter(
-      ([key, entry]) => key.startsWith(prefix) && entry.connectionPromise
-    )
-
-    if (pooled.length === 0) {
-      continue
-    }
-
-    const backends: Array<{ descriptor: unknown; profileLabel: null | string }> = []
-
-    const perProfile = connection.kind === 'ssh' || (includeLocal && connection.kind === 'local')
-
-    for (const [key, entry] of perProfile ? pooled : pooled.slice(0, 1)) {
-      try {
-        // Already-resolved for a connected backend; a still-dialing entry is
-        // skipped via the timeout guard rather than blocking the sidebar.
-        const descriptor = await Promise.race([
-          entry.connectionPromise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
-        ])
-
-        backends.push({
-          descriptor,
-          profileLabel: perProfile ? key.slice(prefix.length) || 'default' : null
-        })
-      } catch {
-        // Dead or still-connecting backend — contributes nothing this refresh.
-      }
-    }
-
-    if (backends.length) {
-      const backendId = await boundedInstallId(probeConnectionInstallId(connection.id, backends[0].descriptor))
-      sources.push({ backendId, backends, connectionId: connection.id, kind: connection.kind })
-    }
+  if (!pending) {
+    return null
   }
 
-  return sources
+  try {
+    const descriptor = await Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('pending')), 2_000))
+    ])
+
+    return descriptor?.mode === 'remote' &&
+      descriptor.remoteKind === 'ssh' &&
+      registrySourceOwnsPrimaryBackend(registry, connectionId, descriptor)
+      ? descriptor
+      : null
+  } catch {
+    return null
+  }
 }
 
 // RT-42: install_id of the backend the primary session aggregate reads (see the module).
@@ -16064,13 +16022,6 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
     stopPoolBackend(key),
     sshBootstrapCoordinator.cancelAndWait(key, () => teardownSshConnection(key))
   ])
-}
-
-// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
-// Session lookups are a probe ladder: "not on this profile" is a normal rung
-// outcome, not a failure.
-function isNotFoundApiError(error) {
-  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
 }
 
 async function handleHermesApiRequest(request) {
@@ -17127,7 +17078,12 @@ const terminalIpc = registerTerminalIpc({
   activeSshTerminalTarget,
   sshBinary: desktopSshBinary,
   ensureBackend: webContentsId => ensureTerminalBackend(webContentsId),
-  getSshConnectionState: scope => sshConnections.get(scope)
+  getSshConnectionState: scope => sshConnections.get(scope),
+  gatewayTarget: owner => terminalGatewayTarget(owner, readDesktopConnectionsRegistry(), sshConnections),
+  ensureGatewayBackend: owner =>
+    backendDialClaims.run(backendScopeKey(owner.connectionId, owner.profile), () =>
+      ensureRegistryBackend(owner.connectionId, owner.profile)
+    )
 })
 
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
@@ -17871,6 +17827,15 @@ app.whenReady().then(() => {
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
+  // Before the first profile read: a remembered local profile this HERMES_HOME
+  // no longer has would fail every boot with `Profile '<name>' does not exist`.
+  desktopProfilePreferences.forgetMissingLocalProfiles({
+    globalRemote: globalRemoteActive(),
+    hasRemoteOverride: profileHasRemoteOverride,
+    launchProfile: parseLaunchProfile(process.argv),
+    log: rememberLog,
+    profileExists: profile => localProfileIsLive(HERMES_HOME, profile)
+  })
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
   const primaryProfile = primaryProfileKey()

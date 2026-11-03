@@ -22,6 +22,8 @@ interface AgentPluginToggleProps {
   busy: boolean
   /** Render as the catalog card's labelled compact switch (main's CatalogSwitch). */
   catalog?: boolean
+  /** Shown state when it is more than the agent half's (a package reads On only when every half is). */
+  checked?: boolean
   /** Also called on every flip (the card switch drives the Desktop half with it). */
   onToggle?: (enable: boolean) => void
   /** Enable a unified Desktop half only after agent enablement succeeds. */
@@ -29,7 +31,16 @@ interface AgentPluginToggleProps {
 }
 
 /** Setup consent belongs to this scoped row, never the recovering live socket. */
-export function AgentPluginToggle({ row, profile, label, busy, catalog, onToggle, onEnabled }: AgentPluginToggleProps) {
+export function AgentPluginToggle({
+  row,
+  profile,
+  label,
+  busy,
+  catalog,
+  checked,
+  onToggle,
+  onEnabled
+}: AgentPluginToggleProps) {
   const { t } = useI18n()
   const p = t.settings.plugins.agent
   const { requestGateway, gateway } = useGatewayRequest()
@@ -60,7 +71,7 @@ export function AgentPluginToggle({ row, profile, label, busy, catalog, onToggle
     <>
       <Control
         aria-label={label}
-        checked={row.status === 'enabled'}
+        checked={checked ?? row.status === 'enabled'}
         disabled={!key || busy || setup !== null}
         onCheckedChange={enable => {
           if (!key) {

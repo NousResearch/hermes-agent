@@ -6,6 +6,17 @@ class ProcessSessionsMixin:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
+    def awaits_notification(self, session) -> bool:
+        """The agent still awaits this process: a notification is owed, or it runs armed for one
+        (``notify_on_complete``, or ``watch_patterns`` with no hit yet). A silent server is monitoring,
+        not active work; the Desktop live-work roster counts only these (``isAwaitedBackgroundWork``)."""
+        if self._notification_pending(session):
+            return True
+        if session.exited:
+            return False
+        watching = bool(session.watch_patterns) and not session._watch_disabled and session._watch_hits == 0
+        return bool(session.notify_on_complete) or watching
+
     def list_sessions(self, task_id: str | None = None, session_key: str | None = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server

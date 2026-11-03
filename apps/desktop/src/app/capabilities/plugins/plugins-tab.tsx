@@ -786,12 +786,17 @@ export const PluginsTab = memo(function PluginsTab({
       }
     }
 
+    // On only when every half it actuates is on: a package whose desktop half
+    // is off (pane missing) must not read On just because its agent half is.
+    const on = (!agent || agent.status === 'enabled') && (!desktop || desktop.status !== 'disabled')
+
     // The agent half always goes through the reviewed setup-consent toggle.
     if (agent) {
       return (
         <AgentPluginToggle
           busy={agentBusy(agent)}
           catalog
+          checked={on}
           label={pkg.name}
           onToggle={setDesktopEnabled}
           profile={scope}
@@ -803,7 +808,7 @@ export const PluginsTab = memo(function PluginsTab({
     return (
       <CatalogSwitch
         aria-label={pkg.name}
-        checked={desktop?.status !== 'disabled'}
+        checked={on}
         onCheckedChange={setDesktopEnabled}
         size="xs"
       />

@@ -720,7 +720,7 @@ export const en: Translations = {
       advancedOutput: 'Output limits',
       advancedDelegation: 'Subagents',
       advancedDesktop: 'Desktop & startup',
-      gatewayConnection: 'This window',
+      gatewayConnection: 'Primary gateway',
       gatewayDevices: 'Saved connections',
       gatewayManagedUpdates: 'Remote updates',
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
@@ -779,8 +779,6 @@ export const en: Translations = {
       openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
-      enable: 'Enable',
-      disable: 'Disable',
       failed: 'failed',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
       agent: {
@@ -1295,7 +1293,7 @@ export const en: Translations = {
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
       stagedNote:
-        'Switch gateways from Sessions. Profiles, chats, messaging, and cron jobs stay with their gateway; work on other gateways keeps running.',
+        'Every gateway stays connected. Profiles, chats, messaging, and cron jobs stay with their gateway, and Sessions can show all of them at once.',
       launchModeTitle: 'At startup, return to Sessions on the last-used gateway',
       launchModeDesc: 'When off, Sessions opens on the Primary gateway.',
       searchPlaceholder: 'Search gateways…',
@@ -2113,6 +2111,10 @@ export const en: Translations = {
     edit: 'Edit',
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
+    lock: 'Lock',
+    locked: 'Locked',
+    lockHint: "The agent can't change this skill while it's locked. You can still edit it yourself.",
+    unlockedHint: 'Lock to stop the agent from changing this skill. You can still edit it yourself.',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
@@ -2798,14 +2800,10 @@ export const en: Translations = {
       gateway: gateway => `Profiles on ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · unreachable`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,
+      switchTo: (name, gateway) => `Open ${name} on ${gateway}`,
       deleteOn: gateway => ` on ${gateway}`,
       localDevice: 'This device (local backend — installs Hermes if missing, otherwise opens a fresh session)',
-      switchDeviceTitle: 'Switch to This device?',
-      switchDeviceDesc:
-        'This opens a fresh session on this computer. The conversation you are in stays on the other gateway.',
-      switchDeviceConfirm: 'Switch',
-      installDeviceTitle: 'Switch to This device?',
+      installDeviceTitle: 'Install Hermes on This device?',
       installDeviceDesc:
         'This will install Hermes locally, then open a fresh session on this computer. Nothing is installed until you confirm.',
       installDeviceConfirm: 'Install locally',
@@ -4022,7 +4020,9 @@ export const en: Translations = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sends ${level} on this route`,
       updateFailed: 'Model option update failed',
-      fastFailed: 'Fast mode update failed'
+      fastFailed: 'Fast mode update failed',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak update failed'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4205,6 +4205,14 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalNewOn: 'New terminal on…',
+    terminalGatewayRemoved: 'Removed gateway',
+    terminalGatewayRemovedBody:
+      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody:
+      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
+    terminalDisconnectedBody:
+      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

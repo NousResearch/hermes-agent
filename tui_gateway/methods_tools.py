@@ -1491,7 +1491,7 @@ def _(rid, params: dict) -> dict:
     configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
-    safe = ("name", "transport", "tools", "connected", "disabled", "status")
+    safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
         {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",

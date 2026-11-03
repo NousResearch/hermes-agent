@@ -418,6 +418,32 @@ export interface Translations {
     installRequires: string;
     installing: string;
     install: string;
+    serverCount: string;
+    noServers: string;
+    browseCatalog: string;
+    disabled: string;
+    environmentVariable: string;
+    environmentVariables: string;
+    connectedNoTools: string;
+    tools: string;
+    connectionFailed: string;
+    authenticate: string;
+    authenticateWithOAuth: string;
+    enable: string;
+    disable: string;
+    testConnection: string;
+    delete: string;
+    catalogCount: string;
+    catalogDescription: string;
+    noCatalogEntries: string;
+    source: string;
+    authLabel: string;
+    installedLabel: string;
+    endpoint: string;
+    runs: string;
+    installsFrom: string;
+    bootstrapCommands: string;
+    setupNotes: string;
   };
 
   // ── Files page ──

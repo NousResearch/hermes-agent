@@ -127,6 +127,8 @@ jobs:
           extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
+          # EXPERIMENT (do not merge): measure a cold uv sync on arm64 against the 853 MB cache restore.
+          cache-python: ${{ runner.arch == 'ARM64' && 'false' || 'true' }}
 
       - name: Warm PowerShell's module analysis cache
         # Every PowerShell child a test spawns reads this cache (run_tests.sh forwards

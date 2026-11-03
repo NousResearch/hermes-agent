@@ -97,8 +97,8 @@ export const itSettings = {
       title: 'Plugin desktop',
       openFolder: 'Apri la cartella dei plugin desktop',
       rescan: 'Ripeti la ricerca',
-      disable: 'Disattiva',
-      enable: 'Attiva',
+
+
       reveal: 'Mostra nel gestore di file',
       failed: 'fallito',
       kinds: {
@@ -166,7 +166,13 @@ export const itSettings = {
           'Hermes ha smesso di attendere l’esito dell’installazione, ma è possibile che il plugin sia ancora in installazione. Chiudi questa finestra e aggiorna l’elenco dei plugin prima di reinstallarlo.',
         desktopFailed: 'Errore durante l’installazione del plugin desktop',
         missingEnv: (name, vars) =>
-          `${name} è installato, ma richiede una chiave per funzionare: ${vars}. Aggiungila ora o gli strumenti del plugin falliranno.`
+          `${name} è installato, ma richiede una chiave per funzionare: ${vars}. Aggiungila ora o gli strumenti del plugin falliranno.`,
+    installAnyway: 'Installa comunque',
+    legacyBackendConfirm: 'Questo backend è più vecchio di questa app, quindi non può garantire che la versione che hai esaminato sia quella installata: se il repository è cambiato da allora, si installa la versione più recente. Aggiorna il backend per avere questa garanzia.',
+    partialInstall: (sha) => sha ? `Solo una parte del plugin è installata: la metà agente è al commit ${sha}, ma la metà desktop non ha potuto seguire perché il repository è cambiato da quando l'hai esaminato. Attiva Reinstalla forzatamente in Avanzate per sostituire entrambe le metà con la versione mostrata, oppure Annulla per tenere solo la metà agente.` : "Solo una parte del plugin è installata: la metà agente è presente, ma la metà desktop non ha potuto seguire perché il repository è cambiato da quando l'hai esaminato. Attiva Reinstalla forzatamente in Avanzate per sostituire entrambe le metà con la versione mostrata, oppure Annulla per tenere solo la metà agente.",
+    sourceMoved: (sha) => sha ? `Il repository è cambiato da quando l'hai esaminato. Esamina la nuova versione (commit ${sha}) prima di installarla.` : "Il repository è cambiato da quando l'hai esaminato. Lettura della nuova versione…",
+
+
       }
     },
     vault: {
@@ -303,7 +309,22 @@ export const itSettings = {
       completionSoundTitle: 'Suono di completamento',
       completionSoundDesc:
         'Riproduce un suono quando termina il turno di un agente. Scegli un’impostazione predefinita e provala qui.',
-      completionSoundPreview: 'Anteprima'
+      completionSoundPreview: 'Anteprima',
+    browserPermission: {
+      states: {
+      default: 'Mostra avvisi da questo browser mentre la scheda è in background. Finché non dai il consenso, lampeggia solo il titolo della scheda.',
+      denied: 'Bloccato nelle impostazioni del sito di questo browser. Il titolo della scheda lampeggia comunque.',
+      granted: 'Consentito. Gli avvisi si mostrano mentre questa scheda è in background; lampeggia anche il titolo della scheda.',
+      insecure: 'Richiede HTTPS, come Tailscale serve. Su HTTP semplice lampeggia solo il titolo della scheda.',
+      unsupported: 'Questo browser non può mostrare notifiche. Il titolo della scheda lampeggia comunque.',
+
+    },
+    allow: 'Consenti',
+    title: 'Notifiche del browser',
+
+
+    },
+
     },
     sections: {
       model: 'Modello',
@@ -1251,7 +1272,76 @@ export const itSettings = {
       sshErrUpdateRequired: 'Aggiorna Hermes sull’host remoto prima di connetterti con Desktop SSH.',
       sshErrInteractiveAuth:
         'Tailscale SSH richiede una verifica interattiva nel browser. Esegui `ssh <host> true` nel terminale, completa la verifica e riprova; Hermes esegue SSH in modo non interattivo.',
-      sshErrUnknown: 'Connessione SSH non riuscita.'
+      sshErrUnknown: 'Connessione SSH non riuscita.',
+    webAccess: {
+      failed: 'Impossibile cambiare l\'accesso web',
+      intro: 'Apri Hermes su questo computer dal telefono o da un altro computer, con accesso tramite il tuo account Nous. Chiunque acceda può eseguire comandi su questo computer.',
+      lanUnencrypted: 'La connessione non è cifrata: altri sulla rete potrebbero leggere ciò che invii e ricevi.',
+      modeLan: 'Questa rete',
+      modeLanDetail: (url) => `I dispositivi sul tuo Wi-Fi aprono ${url}. Usalo solo su una rete di cui ti fidi.`,
+      modePublic: 'Il mio URL',
+      modePublicDetail: (port) => `Un indirizzo HTTPS che già gestisci, come Tailscale Serve o un tunnel, che inoltra a http://127.0.0.1:${port}.`,
+      needsNous: 'Accedi prima al tuo account Nous sotto Provider.',
+      noLan: 'Questo computer non ha un indirizzo di rete raggiungibile da altri dispositivi.',
+      notRunningDetail: 'Avvialo per aprire Hermes da un altro dispositivo.',
+      pendingOff: 'Disattivato, ma il gateway continua a servire la web app finché non si riavvia.',
+      pendingOn: 'Salvato. Il gateway serve la web app al prossimo riavvio.',
+      restartBusy: 'Salvato. Una chat è in esecuzione, quindi il gateway non si è riavviato. Scegli Riavvia gateway quando termina.',
+      restartFailed: 'Salvato, ma il gateway non si è potuto riavviare. Scegli Riavvia gateway per riprovare.',
+      restartFailedBecause: (reason) => `Il gateway non si è potuto riavviare: ${reason}`,
+      restartGateway: 'Riavvia gateway',
+      restartNeeded: 'Riavvio necessario',
+      running: 'In esecuzione',
+      runningLan: 'Apri questo indirizzo su un dispositivo sulla stessa rete.',
+      runningLocal: 'Solo questo computer può aprirlo. Fermalo, poi avvialo di nuovo per aprirlo da altri dispositivi.',
+      runningPublic: 'Servito tramite il tuo URL.',
+      start: 'Avvia',
+      startTimedOut: 'Il gateway non ha servito la web app entro 90 secondi.',
+      starting: 'Avvio',
+      stop: 'Ferma',
+      stopTimedOut: 'Il gateway non ha smesso di servire la web app entro 90 secondi.',
+      stopped: 'Fermato',
+      stopping: 'Arresto',
+      title: 'Accesso web',
+      unavailable: 'Non disponibile',
+      unavailableDetail: (reason) => `Il gateway non ha potuto servire la web app: ${reason}`,
+
     },
+    webappHostDesc: 'La Webapp usa sempre il host Hermes che la serve. Per cambiare gateway, accedi a Hermes Cloud o gestisci le connessioni salvate dall\'app desktop di Hermes.',
+    webappHostTitle: 'Host Hermes',
+
+
+
+    },
+    memoryLayers: {
+      status: {
+      missing: 'non installato',
+      needs_config: 'da configurare',
+      ready: 'pronto',
+      unavailable: 'non disponibile',
+
+    },
+    activeProvider: 'Provider di memoria attivo',
+    builtinDesc: 'MEMORY.md e USER.md sono la memoria di Hermes, separata da qualsiasi provider esterno. Entrambi si caricano nelle sessioni per impostazione predefinita; i toggle memoria e profilo utente in Impostazioni › Memoria e contesto disattivano ciascuno. Un provider si aggiunge a questo livello; non lo sostituisce.',
+    builtinLayer: 'Livello integrato',
+    builtinMemory: 'solo memoria integrata',
+    noProvider: 'Nessuno — solo memoria integrata',
+    noProviderDesc: 'Hermes usa solo il livello integrato sotto. Scegli un provider esterno sotto Impostazioni › Memoria e contesto per aggiungerne uno.',
+    off: 'Disattivato',
+    on: 'Attivato',
+    onByDefault: 'Attivato per impostazione predefinita',
+    onlyFile: (file) => `${file} solo`,
+    providerDesc: (name) => `${name} aggiunge il proprio richiamo a ogni sessione, sopra il livello integrato.`,
+    providerNotReadyDesc: (name) => `${name} è il provider salvato ma non aggiunge richiamo finché non è pronto. Il livello integrato funziona comunque.`,
+    providerUnknownDesc: (name) => `${name} è il provider salvato; Hermes non ha potuto leggere se è pronto.`,
+    retry: 'Riprova',
+    selectedDesc: (current) => `Non ancora attivo: le sessioni continuano a usare ${current} finché questa scelta non viene salvata.`,
+    selectedProvider: 'Provider di memoria selezionato',
+    statusUnavailable: 'Stato memoria non disponibile',
+    statusUnavailableDesc: 'Impossibile leggere quale provider di memoria è attivo o se è pronto.',
+
+
+    },
+
   }
 } satisfies TranslationOverrides

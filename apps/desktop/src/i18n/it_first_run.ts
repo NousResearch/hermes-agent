@@ -45,5 +45,7 @@ export const itFirstRun: FirstRunCopy = {
       'Apre una nuova chat di configurazione che ripercorre i passaggi del primo avvio con il modello attuale.',
     action: 'Esegui di nuovo',
     failed: 'Impossibile avviare la configurazione'
-  }
+  },
+  slashOffBody: 'Funzionano come al solito una volta completata la configurazione.',
+  slashOffTitle: 'I comandi slash sono disattivati durante la configurazione'
 }

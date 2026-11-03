@@ -542,7 +542,11 @@ export const itApp = {
       signInFailed: 'Impossibile accedere',
       signInToRemoteGateway: 'Accedi al gateway remoto',
       signInWithProvider: provider => `Accedi con ${provider}`,
-      identityProvider: 'il tuo provider di identità'
+      identityProvider: 'il tuo provider di identità',
+    webappDescription: 'Esegui hermes webapp su questo computer per autenticare questo browser.',
+    webappTitle: 'Accedi a Hermes',
+
+
     },
     updateHold: {
       title: 'Un aggiornamento precedente trattiene ancora Hermes',
@@ -658,7 +662,10 @@ export const itApp = {
       liveError: 'Voce live',
       liveDelegationFailed: 'Impossibile passare la richiesta a Hermes',
       liveUnavailable: reason =>
-        `La chat vocale GPT-Live non è disponibile: ${reason}. Verrà usata la conversione da voce a testo al suo posto.`
+        `La chat vocale GPT-Live non è disponibile: ${reason}. Verrà usata la conversione da voce a testo al suo posto.`,
+    microphoneNeedsHttps: 'Il microfono richiede una connessione sicura. Apri la Webapp via HTTPS, oppure tramite un tunnel SSH verso 127.0.0.1, per usarlo.',
+
+
     },
     native: {
       approvalTitle: 'Approvazione necessaria',
@@ -1208,10 +1215,7 @@ export const itApp = {
       switchTo: (name: string, gateway: string) => `Passa a ${name} su ${gateway}`,
       deleteOn: (gateway: string) => ` su ${gateway}`,
       localDevice: 'Questo dispositivo (backend locale: installa Hermes se manca; altrimenti apri una nuova sessione)',
-      switchDeviceTitle: 'Passare a questo dispositivo?',
-      switchDeviceDesc:
-        'Apre una nuova sessione su questo computer. La conversazione attuale resta sull’altro gateway.',
-      switchDeviceConfirm: 'Passa',
+
       installDeviceTitle: 'Passare a questo dispositivo?',
       installDeviceDesc:
         'Installerà Hermes in locale e poi aprirà una nuova sessione su questo computer. Nulla viene installato finché non confermi.',
@@ -1333,7 +1337,11 @@ export const itApp = {
     failedLoadSoul: 'Impossibile caricare SOUL.md',
     failedSaveSoul: 'Impossibile salvare SOUL.md',
     failedCreate: 'Impossibile creare il profilo',
-    failedRename: 'Impossibile rinominare il profilo'
+    failedRename: 'Impossibile rinominare il profilo',
+    exportNeedsHost: (name) => `Il browser non può salvare un archivio del profilo. Sul host Hermes, esegui: hermes profile export ${name}`,
+    notServedHere: 'Non disponibile qui',
+
+
   },
   cron: {
     close: 'Chiudi cron',
@@ -1475,7 +1483,27 @@ export const itApp = {
       failedLoad: 'Impossibile caricare i modelli',
       emptyTitle: 'Nessun modello disponibile',
       emptyDesc: 'Questo backend non offre modelli di automazione.'
-    }
+    },
+    control: {
+      catchUpChoices: {
+      default: 'Usa il predefinito',
+      run: 'Esegui una volta al ritorno',
+      skip: 'Ignorale',
+
+    },
+    catchUpHint: 'Cosa fare con le esecuzioni saltate mentre Hermes non era in esecuzione.',
+    catchUpLabel: 'Esecuzioni saltate',
+    failedStop: 'Impossibile fermare l\'esecuzione',
+    finishedFirst: 'Esecuzione terminata prima di poterla fermare',
+    lastCancelled: (reason) => reason ? `Ultima esecuzione annullata: ${reason}` : "Ultima esecuzione annullata",
+    nothingToStop: 'Nessuna esecuzione in corso',
+    stop: 'Ferma',
+    stopped: 'Esecuzione annullata',
+    stopping: 'Arresto…',
+
+
+    },
+
   },
   artifacts: {
     search: 'Cerca artefatti...',
@@ -1697,7 +1725,11 @@ export const itApp = {
         `Backend aggiornato, ma ancora in sospeso: ${steps}. Esegui di nuovo \`hermes update\` per completarli.`,
       noReturn:
         'Il backend non è tornato disponibile. L’aggiornamento potrebbe non essere stato completato; controlla l’host del backend.'
-    }
+    },
+    versionDetailsBackend: 'Backend connesso',
+    versionDetailsClient: 'Questo dispositivo',
+
+
   },
   install: {
     stageStates: {

@@ -5,6 +5,10 @@ import { itThemePicker } from './it_theme_picker'
 export const itAssistant = {
   skills: {
     tabSkills: 'Skills',
+    lock: 'Blocca',
+    locked: 'Bloccata',
+    lockHint: "L'agente non può modificare questa skill mentre è bloccata. Puoi comunque modificarla tu.",
+    unlockedHint: 'Blocca per impedire all\'agente di modificare questa skill. Puoi comunque modificarla tu.',
     tabToolsets: 'Set di strumenti',
     configuringProfile: 'Configurazione in corso:',
     all: 'Tutto',
@@ -157,7 +161,32 @@ export const itAssistant = {
         secretSet: '•••••••• (configurato)',
         secretStoredAs: (env: string) =>
           `Viene salvato nel .env del profilo come ${env}, mai in config.yaml; lascialo vuoto per conservare il valore attuale.`
-      }
+      },
+    folderAccess: {
+      hint: (name) => `${name} può leggere e modificare file in queste cartelle. La revoca ha effetto immediato.`,
+      loadFailed: (name) => `Impossibile caricare le cartelle condivise con ${name}.`,
+      pickerButton: 'Consenti accesso',
+      pickerTitle: (name) => `Scegli una cartella per ${name}`,
+      refusedProtected: (name) => `${name} non può usare quella cartella: contiene impostazioni, chiavi o dati dei plugin di Hermes. Scegli una cartella che non li contenga.`,
+      revoke: 'Revoca',
+      revokeFailed: (name) => `Impossibile revocare l'accesso alle cartelle per ${name}`,
+      revokeLabel: (path) => `Revoca accesso a ${path}`,
+      revoked: (name, path) => `${name} non può più usare ${path}.`,
+      title: 'Accesso alle cartelle',
+    },
+    previewScriptAccessLabel: 'Script della pagina',
+    previewScriptAccessNone: 'Chiede prima di eseguire script su una pagina',
+    previewScriptAllow: 'Consenti su questo sito',
+    previewScriptDeny: 'Non consentire',
+    previewScriptPromptBody: (plugin, origin) => `${plugin} vuole eseguire JavaScript nell'anteprima del Browser su ${origin}.`,
+    previewScriptPromptRevokeHint: 'Si applica solo a questo sito. Puoi revocarlo in Capacità ▸ Plugin.',
+    previewScriptPromptRisk: 'Gli script possono leggere e modificare tutto su quel sito, incluse le pagine degli account a cui sei connesso lì.',
+    previewScriptPromptTitle: (plugin) => `Consentire a ${plugin} di eseguire script su questa pagina?`,
+    previewScriptRevoke: (origin) => `Revoca accesso a ${origin}`,
+    previewScriptRevokeUnsaved: (plugin, origin) => `Impossibile salvare la modifica, quindi dura solo fino al riavvio di Hermes. ${plugin} è bloccato su ${origin} per ora.`,
+    previewScriptRevoked: (plugin, origin) => `${plugin} non può più eseguire script su ${origin}.`,
+
+
     },
     officialCatalog: 'Disponibili per l’installazione',
     officialPill: 'Ufficiale',
@@ -429,7 +458,28 @@ export const itAssistant = {
         usage_window: {
           title: 'Utilizzo incluso esaurito',
           body: 'L’utilizzo incluso del tuo piano è esaurito fino al ripristino. Aggiungi crediti in /topup per continuare.'
-        }
+        },
+    agent_init_failed: {
+      body: (provider) => `Hermes non è riuscito a connettersi a ${provider} per questa chat. Riprova; se il problema persiste, controlla il provider in Impostazioni.`,
+      title: 'Impossibile avviare questa chat',
+    },
+    launch_credentials_unavailable: {
+      body: 'Questa chat è stata avviata con una chiave API che nel frattempo è cambiata o stata rimossa, quindi il tuo messaggio non è stato inviato. Una chat aperta non passa mai da sola a una chiave diversa. Avvia una nuova sessione per usare la chiave attuale.',
+      title: 'La chiave API di questa chat è cambiata',
+    },
+    local_runtime_unavailable: {
+      body: 'Il server del modello locale non risponde ancora: potrebbe essere in avvio. Riprova tra un momento, oppure passa a un altro modello.',
+      bodyNoRetry: 'Il server del modello locale è spento. Avvialo dall\'app desktop di Hermes o con `hermes model` in un terminale, oppure passa a un altro modello.',
+      title: 'Impossibile raggiungere il server del modello locale',
+    },
+    session_read_only: {
+      body: 'È una cronologia che Hermes può mostrare ma non continuare, quindi il tuo messaggio non è stato eseguito. Avvia una nuova chat per inviarlo.',
+      title: 'Questa chat è in sola lettura',
+    },
+
+
+
+
       },
       errorAuthKinds: {
         api_key: {
@@ -445,8 +495,8 @@ export const itAssistant = {
       errorGenericProvider: 'Il servizio di IA',
       errorToastTitle: 'Hermes non è riuscito a completare la risposta',
       errorRetry: 'Riprova',
-      errorLimitResets: (time: string) => `Il limite verrà ripristinato alle ${time}`,
-      errorRetryAtReset: (time: string) => `Riprova quando il limite verrà ripristinato (${time})`,
+
+
       errorRetryScheduled: (time: string, wait: string) => `Nuovo tentativo alle ${time}, tra ${wait}`,
       errorRetryScheduledCancel: 'Annulla',
       errorStartNewSession: 'Avvia una nuova sessione',
@@ -470,7 +520,7 @@ export const itAssistant = {
       errorOpenLogs: 'Apri i log',
       errorOpenLogsFailed: 'Impossibile aprire la cartella dei log',
       errorOpenDesktopLogs: 'Apri i log di Desktop',
-      errorCopyDiagnostics: 'Copia i dettagli dell’errore',
+
       errorSendDiagnostics: 'Invia diagnostica',
       filesChanged: count => (count === 1 ? '1 file modificato' : `${count} file modificati`),
       reviewChanges: 'Rivedi',
@@ -494,7 +544,20 @@ export const itAssistant = {
       restoreNext: 'Ripristina checkpoint successivo',
       goForward: 'Avanti',
       sendEdited: 'Invia modifica',
-      attachingFile: 'Allegamento file…'
+      attachingFile: 'Allegamento file…',
+    errorChooseModelLink: 'Scegli un altro modello',
+    errorContinue: 'Continua',
+    errorCopyRaw: 'Copia errore',
+    errorDetailsCopy: 'Copia dettagli',
+    errorHideDetails: 'Nascondi dettagli errore',
+    errorOpenModelSettings: 'Apri impostazioni modello',
+    errorOpenProviderSettings: (provider) => `Apri impostazioni ${provider}`,
+    errorOpenSetupGuide: 'Apri guida di configurazione',
+    errorRateLimitResetBody: (provider, time) => `Hai raggiunto il limite di richieste di ${provider}. Si reimposta alle ${time}.`,
+    errorRetryAtResetShort: (time) => `Riprova alle ${time}`,
+    errorSetupGuideLink: 'Guida di configurazione',
+    errorStartNewChatLink: 'Avvia una nuova chat',
+
     },
     approval: {
       gatewayDisconnected:
@@ -816,7 +879,8 @@ export const itAssistant = {
       },
       skills: {
         title: 'Insegnagli una volta sola',
-        text: 'Le skill sono cartelle di istruzioni che Hermes carica quando il lavoro le richiede.'
+        text: 'Le skill sono cartelle di istruzioni che Hermes carica quando il lavoro le richiede.',
+
       },
       messaging: {
         title: 'Hermes lontano dal tuo desktop',

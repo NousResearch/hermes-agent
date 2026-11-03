@@ -28,7 +28,10 @@ export const itNotices = {
       'Questa chat è occupata: la modifica MCP si applica quando il turno in corso termina e MCP si ricarica, o alla riapertura della chat',
     mcpReloadUnavailable: servers => `Connessione non riuscita: ${servers}`,
     sessionCommands: itSessionCommands,
-    desktopCommands: itDesktopCommands
+    desktopCommands: itDesktopCommands,
+    restoredDraftAttachmentsDropped: 'Gli allegati del tuo messaggio non inviato non sono stati ripristinati. Allega di nuovo prima di inviare.',
+
+
   },
   keepAwakeOffer: {
     title: 'Il computer si è spento mentre Hermes lavorava',

@@ -274,9 +274,8 @@ export const itWorkspace = {
       resume: 'Riprendi',
       runNow: 'Esegui ora',
       memoryData: 'Dati di memoria',
-      memoryDataDesc: 'File di memoria integrati inclusi in ogni sessione',
-      memoryProvider: name => `Provider attivo: ${name}`,
-      builtinMemory: 'integrata',
+
+
       memoryFile: 'Memoria dell’agente (MEMORY.md)',
       userFile: 'Profilo utente (USER.md)',
       bytes: size => size,
@@ -494,7 +493,7 @@ export const itWorkspace = {
       backgroundRunning: 'Attività in background in esecuzione',
       draftSession: 'Bozza — non è ancora stato inviato nulla',
       handoffOrigin: platform => `Trasferito da ${platform}`,
-      continuationOrigin: 'Continuazione automatica: questa conversazione è stata compressa e proseguita',
+
       ownedByProfile: profile => `Profilo: ${profile}`,
       renamed: 'Rinominata',
       renameFailed: 'Impossibile rinominare',
@@ -942,7 +941,11 @@ export const itWorkspace = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `invia ${level} su questa rotta`,
       updateFailed: 'Impossibile aggiornare l’opzione del modello',
-      fastFailed: 'Impossibile aggiornare la modalità veloce'
+      fastFailed: 'Impossibile aggiornare la modalità veloce',
+    daybreak: 'Daybreak',
+    daybreakFailed: 'Aggiornamento Daybreak fallito',
+
+
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -1125,7 +1128,20 @@ export const itWorkspace = {
       'Per rispondere ai prompt, interrompi il comando in background ed eseguilo in un nuovo terminale. Il nuovo terminale apre una shell separata: non si connette a questo processo.',
     terminalCloseOthers: 'Chiudi le altre',
     terminalCloseAll: 'Chiudi tutto',
-    addToChat: 'Aggiungi alla chat'
+    addToChat: 'Aggiungi alla chat',
+    terminalDisconnectedBody: 'Terminale disconnesso. Premi Invio per avviare una nuova shell; lo scrollback è conservato.',
+    terminalDropControl: (paths) => `Questi nomi contengono caratteri di controllo che la shell interpreta come tasti: ${paths}`,
+    terminalDropControlTitle: 'Non digitato nel terminale',
+    terminalDropTooLarge: (names, limit) => `Ogni file può essere al massimo ${limit}. Non caricati: ${names}`,
+    terminalDropTooLargeTitle: 'Troppo grande da caricare',
+    terminalDropUnquotable: (shell, paths) => `Nessun modo sicuro per digitare questi nomi in ${shell}: ${paths}`,
+    terminalDropUploadFailed: (name) => `Impossibile caricare ${name}`,
+    terminalGatewayNoShellBody: 'Questo gateway non ha accesso alla shell, quindi questo terminale non può riaprirsi. Chiudi questa scheda.',
+    terminalGatewayRemoved: 'Gateway rimosso',
+    terminalGatewayRemovedBody: 'Il gateway su cui girava questo terminale è stato rimosso, quindi non può riaprirsi. Chiudi questa scheda.',
+    terminalNewOn: 'Nuovo terminale su…',
+
+
   },
   preview: {
     tab: 'Anteprima',
@@ -1244,7 +1260,10 @@ export const itWorkspace = {
       commentPlaceholder: 'Aggiungi un commento...',
       commentTitle: (n: number) => `Commento ${n}`,
       saveComment: 'Salva',
-      cancelComment: 'Annulla commento'
+      cancelComment: 'Annulla commento',
+    embeddedPreviewHint: 'Alcuni siti bloccano l\'anteprima incorporata. Apri la pagina originale in una scheda del browser.',
+
+
     }
   },
   interfaceMode: {
@@ -1311,7 +1330,10 @@ export const itWorkspace = {
     saveApply: 'Salva e applica',
     notExpressible: 'questo layout è intrecciato (a girandola) e non può ancora essere espresso come divisioni annidate',
     zoneCount: count => `${count} zone`,
-    tabCount: count => `${count} schede`
+    tabCount: count => `${count} schede`,
+    tabActions: (title) => `Azioni per ${title}`,
+
+
   },
   contextMenu: {
     link: {
@@ -1433,7 +1455,11 @@ export const itWorkspace = {
       timedOut:
         'Hermes non è riuscito a raggiungere la tua connessione di messaggistica. Avviala da Impostazioni → Messaggistica e riprova il trasferimento.',
       startMessaging: 'Avvia messaggistica'
-    }
+    },
+    attachFailed: 'Collegamento fallito',
+    dropFilesMore: (count) => `e altri ${count}`,
+
+
   },
   gatewayGroupOpen: {
     lookupFailed: 'Impossibile cercare questo gruppo sul gateway. Riprova.',

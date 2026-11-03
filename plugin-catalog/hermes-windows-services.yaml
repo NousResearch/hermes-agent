@@ -1,6 +1,6 @@
 name: hermes-windows-services
 repo: https://github.com/Yicheng-Mark/hermes-windows-plugins
-sha: e278adf4c2f78e10f34e0c0b6277bc8792e86474
+sha: 1d1027f864aa3c1388eac08e6eee84fb862fbe91
 subdir: windows-services
 description: >-
   Answer "what runs as a service on this machine, why did one fail, and what does it depend on"

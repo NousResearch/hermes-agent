@@ -424,6 +424,31 @@ class TestLongerMemberNameMention:
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stdout", ['{"error": "not found"}', "42"], ids=["json-object", "json-number"])
+    async def test_non_list_users_get_output_keeps_mention(self, adapter, stdout):
+        adapter._cli.responses[("users", "get")] = [(0, stdout, "")]
+        await self._poll(adapter, "@Chip hola")
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_p_tags_are_read_before_the_roster(self, adapter):
+        cli = adapter._cli
+        fillers = [f"{i:02x}" * 32 for i in range(_MENTION_LOOKUP_CAP)]
+        cli.responses[("channels", "members")] = [(0, json.dumps(_members(*fillers, CHIP_SALES_PUBKEY)), "")]
+        inner = cli.__call__
+
+        async def by_pubkey(args, *, input_text=None):  # only the p-tagged member has a longer name
+            code, out, err = await inner(args, input_text=input_text)
+            if args[:2] == ["users", "get"]:
+                hit = CHIP_SALES_PUBKEY in args
+                return 0, (json.dumps(_profile(CHIP_SALES_PUBKEY, "Chip Sales")) if hit else "[]"), ""
+            return code, out, err
+
+        adapter._run_cli = by_pubkey
+        await self._poll(adapter, "@Chip Sales hola", p_tags=[CHIP_SALES_PUBKEY])
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
     async def test_lookup_cli_failure_fails_open(self, adapter):
         cli = adapter._cli
         cli.responses[("channels", "members")] = [(1, "", "boom")]

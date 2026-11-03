@@ -747,7 +747,7 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return cached
         name = ""
         profiles = await self._cli_json(["users", "get", "--pubkey", pubkey], [])
-        if profiles and isinstance(p0 := profiles[0], dict):
+        if isinstance(profiles, list) and profiles and isinstance(p0 := profiles[0], dict):
             name = str(p0.get("display_name") or p0.get("name") or "").strip()
             if not name and isinstance(p0.get("content"), str):
                 if isinstance(prof := _json_or(p0["content"], {}), dict):

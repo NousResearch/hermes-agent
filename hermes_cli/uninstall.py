@@ -531,7 +531,9 @@ def remove_legacy_runtime_trees(hermes_home: Path) -> list[Path]:
     return removed
 
 
-def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
+def remove_windows_bin_launchers(
+    project_root: Path, *, windows: bool | None = None
+) -> list[Path]:
     """Delete the managed binary dir (the default Hermes root's ``bin``).
 
     The dir holds only hermes-owned launcher copies (the relocatable venv's
@@ -545,6 +547,10 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     against deletion but not rename, so removal falls back to renaming it
     aside with a non-executable suffix.
 
+    Only a checkout under the default root can stage these launchers, so
+    only that owner may remove them. Match the creation and migration gate
+    in ``_install_repair``; the checkout's directory name is irrelevant.
+
     *windows* is an injectable platform verdict for tests (same pattern as
     ``_install_repair.ensure_windows_bin_launchers``).
     """
@@ -553,8 +559,17 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     if not windows:
         return []
     try:
+        from hermes_cli._install_repair import _normalize_windows_path
         from hermes_constants import get_default_hermes_root
-        bin_dir = get_default_hermes_root() / "bin"
+
+        home = Path(get_default_hermes_root())
+        if _normalize_windows_path(Path(project_root).parent) != _normalize_windows_path(home):
+            log_info(
+                "Skipping Windows launcher cleanup: this checkout does not own "
+                "the managed binary directory"
+            )
+            return []
+        bin_dir = home / "bin"
     except Exception as e:
         log_warn(f"Could not locate the managed binary dir: {e}")
         return []
@@ -1035,7 +1050,8 @@ def _perform_uninstall(
          remove_hermes_env_vars_windows, "Removed User env var: {}", "No Hermes-set User env vars to remove"),
         (True, "Removing hermes command...", remove_wrapper_script, "Removed {}", "No wrapper script found"),
         (windows, "Removing Windows hermes launchers...",
-         remove_windows_bin_launchers, "Removed {}", "No Windows hermes launchers found"),
+         lambda: remove_windows_bin_launchers(project_root),
+         "Removed {}", "No owned Windows hermes launchers removed"),
         (True, "Removing Hermes-managed node/npm/npx symlinks...",
          lambda: remove_node_symlinks(hermes_home), "Removed {}", "No Hermes-managed node/npm/npx symlinks found"),
     ):

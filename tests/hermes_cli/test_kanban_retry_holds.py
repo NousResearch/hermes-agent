@@ -743,3 +743,47 @@ def test_reaper_keeps_the_workers_route_projection_on_the_closed_run(isolated_bo
     assert metadata["retry_provenance"]["actual_routes"] == [
         {"provider": "fallback-provider", "model": "fallback-model"},
     ]
+
+
+def test_hold_creation_failure_rolls_back_and_keeps_the_sticky_block(isolated_board, monkeypatch):
+    """A failure while parking the hold leaves no half-state and falls back to the existing block."""
+    conn = isolated_board
+    _dispatch_defaults(monkeypatch)
+    monkeypatch.setattr(config, "load_config_readonly", lambda: {
+        "kanban": {"protocol_violation_actions": {"default": {"jobseek-worker": "defer"}}},
+    })
+    real_append_event = kb._append_event
+    parking_attempts = []
+
+    def crash_while_parking(conn_, task_id, kind, *args, **kwargs):
+        if kind == "protocol_retry_held":
+            parking_attempts.append(task_id)
+            raise sqlite3.OperationalError("simulated crash while parking the hold")
+        return real_append_event(conn_, task_id, kind, *args, **kwargs)
+
+    monkeypatch.setattr(kb, "_append_event", crash_while_parking)
+    task_id = kb.create_task(conn, title="crash while parking", assignee="jobseek-worker")
+    spawned = []
+
+    def spawn(_task, _workspace):
+        pid = 99000 + len(spawned) + 1
+        spawned.append(pid)
+        return pid
+
+    kbd.dispatch_once(conn, spawn_fn=spawn, board="default", max_spawn=1)
+    for _ in range(3):
+        kbd._record_worker_exit(spawned[-1], _exited_status(0))
+        kbd.dispatch_once(conn, spawn_fn=spawn, board="default", max_spawn=1)
+
+    assert parking_attempts == [task_id]
+    assert kb.get_task(conn, task_id).status == "blocked"
+    assert len(spawned) == 3
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_retry_holds WHERE task_id=?", (task_id,),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='protocol_retry_held'", (task_id,),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='gave_up'", (task_id,),
+    ).fetchone()[0] == 1

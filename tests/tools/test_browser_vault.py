@@ -830,3 +830,134 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+@pytest.fixture
+def headless_session_file_backend(tmp_path, monkeypatch):
+    from agent.vault_backends import unlock
+    from tests.agent.test_vault_bitwarden_session_file import FakeBitwarden
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.delenv("BW_SESSION", raising=False)
+    fake = FakeBitwarden(tmp_path)
+    backend = fake.backend()
+    with patch("agent.vault_backends.enabled_backends", return_value=[backend]), \
+         patch("agent.vault_backends.base.enabled_backends", return_value=[backend]):
+        yield fake, backend
+    unlock.lock("bitwarden")
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(("state", "reason"), [
+    ("missing", "external_session_unavailable"),
+    ("rejected", "external_session_rejected"),
+    ("user-locked", "locked_by_user"),
+])
+def test_session_file_headless_locked_list_unlock_and_fill_expose_reason(
+    headless_session_file_backend, state, reason, caplog,
+):
+    from agent.vault_backends import unlock
+    from tools import browser_vault_tool
+    from tests.agent.test_vault_bitwarden_session_file import EXTERNAL, PASSWORD
+
+    fake, _backend = headless_session_file_backend
+    if state == "missing":
+        fake.session.unlink()
+    elif state == "rejected":
+        fake.accept("dummy-other-token")
+    else:
+        unlock.lock("bitwarden")
+    with patch("agent.vault_backends.unlock.get_unlock_prompt_callback") as prompt, \
+         patch.object(browser_vault_tool, "_eval_js_secret") as secret_eval:
+        listed = browser_vault_tool.browser_vault_list()
+        unlocked = browser_vault_tool.browser_vault_unlock("bitwarden")
+        filled = browser_vault_tool.browser_vault_fill("bw:abc", task_id="dummy-task")
+    out = json.loads(listed)
+    assert out["items"] == []
+    assert out["locked"] == [{"backend": "bitwarden", "display_name": "Bitwarden",
+                               "unlock": "unavailable_in_this_session", "reason": reason}]
+    for raw in (unlocked, filled):
+        refusal = json.loads(raw)
+        assert refusal["success"] is False
+        assert refusal["error_type"] == "unlock_unavailable"
+        assert refusal["reason"] == reason
+    assert EXTERNAL not in listed + unlocked + filled + caplog.text
+    assert PASSWORD not in listed + unlocked + filled + caplog.text
+    prompt.assert_not_called()
+    secret_eval.assert_not_called()
+    assert all(call["argv"][0] not in ("lock", "logout", "unlock") for call in fake.calls())
+
+
+@pytest.mark.platforms("posix")
+def test_session_file_headless_fill_uses_only_secret_eval_and_redacts_readback(
+    headless_session_file_backend, caplog,
+):
+    from agent import redact
+    from tools import browser_vault_tool
+    from tools.environments.local import build_subprocess_env
+    from tests.agent.test_vault_bitwarden_session_file import EXTERNAL, PASSWORD
+
+    fake, _backend = headless_session_file_backend
+    controls = [{"index": 0, "type": "password", "name": "pw", "label": "",
+                 "autocomplete": "current-password"}]
+    try:
+        with patch.object(browser_vault_tool, "_current_page_origin", return_value="https://example.com"), \
+             patch.object(browser_vault_tool, "_eval_js", return_value={
+                 "success": True, "result": json.dumps(controls)}) as normal_eval, \
+             patch.object(browser_vault_tool, "_eval_js_secret", return_value={
+                 "success": True, "result": json.dumps({"filled": 1})}) as secret_eval, \
+             patch("agent.vault_backends.unlock.get_unlock_prompt_callback") as prompt:
+            listed = browser_vault_tool.browser_vault_list()
+            raw = browser_vault_tool.browser_vault_fill("bw:abc", task_id="dummy-task")
+        assert [item["handle"] for item in json.loads(listed)["items"]] == ["bw:abc"]
+        out = json.loads(raw)
+        assert out["success"] is True
+        assert out["filled_fields"] == 1
+        assert out["origin"] == "https://example.com"
+        assert out["backend"] == "bitwarden"
+        prompt.assert_not_called()
+        assert secret_eval.call_count == 1
+        assert PASSWORD in secret_eval.call_args.args[1]
+        assert EXTERNAL not in str(secret_eval.call_args)
+        assert PASSWORD not in str(normal_eval.call_args_list)
+        assert EXTERNAL not in str(normal_eval.call_args_list)
+        assert EXTERNAL not in listed + raw + caplog.text
+        assert PASSWORD not in listed + raw + caplog.text
+        assert EXTERNAL not in os.environ.values()
+        assert EXTERNAL not in build_subprocess_env().values()
+        assert EXTERNAL not in build_subprocess_env(scrub_secrets=False).values()
+        assert PASSWORD not in redact.redact_sensitive_text("readback: " + PASSWORD)
+        assert all(call["argv"][0] != "unlock" for call in fake.calls())
+    finally:
+        redact.clear_vault_redaction_values()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("stage", ["metadata", "password"])
+def test_session_file_fill_propagates_unlock_required_reason_at_each_read(
+    headless_session_file_backend, stage,
+):
+    from agent.vault_backends.base import UnlockRequired
+    from tools import browser_vault_tool
+    from tests.agent.test_vault_bitwarden_session_file import EXTERNAL, PASSWORD
+
+    _fake, backend = headless_session_file_backend
+    assert backend.is_unlocked()
+    refusal = UnlockRequired(backend, reason="external_session_rejected")
+    method = "get_meta" if stage == "metadata" else "resolve_password"
+    controls = [{"index": 0, "type": "password", "name": "pw", "label": "",
+                 "autocomplete": "current-password"}]
+    with patch.object(backend, method, side_effect=refusal), \
+         patch.object(browser_vault_tool, "_current_page_origin", return_value="https://example.com"), \
+         patch.object(browser_vault_tool, "_eval_js", return_value={
+             "success": True, "result": json.dumps(controls)}), \
+         patch.object(browser_vault_tool, "_eval_js_secret") as secret_eval:
+        raw = browser_vault_tool.browser_vault_fill("bw:abc", task_id="dummy-task")
+    out = json.loads(raw)
+    assert out["success"] is False
+    assert out["error_type"] == "unlock_required"
+    assert out["reason"] == "external_session_rejected"
+    assert EXTERNAL not in raw and PASSWORD not in raw
+    secret_eval.assert_not_called()

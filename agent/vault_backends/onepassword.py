@@ -96,7 +96,7 @@ class OnePasswordLoginBackend(LoginBackend):
             # A service account never holds a session, so an auth failure there is not a lock to undo:
             # surface op's own error instead of an unlock prompt that reports "already unlocked".
             if not self._service_token and any(w in err.lower() for w in ("session", "sign in", "not signed in")):
-                _unlock.lock(self.name)
+                _unlock.invalidate_session_token(self.name, token)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
         return proc.stdout or ""

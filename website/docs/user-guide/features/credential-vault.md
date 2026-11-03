@@ -145,8 +145,9 @@ That is why keychain storage is opt-in rather than the default.
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
-Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+Unlock or save from an interactive session first, give 1Password a service
+account token (`OP_SERVICE_ACCOUNT_TOKEN`), or point Bitwarden at a session file
+kept by a service you run (below).
 
 ```yaml
 vault:
@@ -156,7 +157,70 @@ vault:
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
     enabled: false
+    session_file: ""        # opt-in: absolute path to an external BW_SESSION file; empty = off
 ```
+
+### Bitwarden session file (POSIX only)
+
+When something other than Hermes already keeps `bw` unlocked (for example a
+systemd service that runs `bw unlock` itself), set `vault.bitwarden.session_file`
+to a file that service writes the session key into. Hermes then fills Bitwarden
+logins without prompting, including from cron and messaging platforms.
+
+- Hermes re-reads the file on every use, so the service can rotate the key at
+  any time. The key goes only into the `BW_SESSION` of the one `bw` command that
+  needs it: never Hermes' own environment, its logs, tool results or argv.
+- The file must be a regular file (not a symlink, FIFO or device) owned by the
+  user Hermes runs as, with no group or world access (`0600`), at most 4 KiB,
+  holding one line. Anything else is refused.
+- A non-empty file is not trusted on sight: Hermes checks `bw status` reports
+  `unlocked` with that key, and re-checks whenever the file changes or `bw`
+  rejects it. The unlocked status shown for an unchanged file is therefore the
+  last check, not a fresh one: if the key is revoked without the file changing,
+  the next real `bw` command is refused, reports `external_session_rejected`
+  and the following status check asks `bw` again.
+- A session Hermes unlocked itself with your master password takes priority; a
+  broken session file never discards it.
+- Hermes never runs `bw lock` or `bw logout`. Whether other use of a shared
+  `bw` data directory can end the service's session is not verified; for
+  example, an interactive unlock there mints a new key, which may invalidate
+  the service's one.
+- Not supported on Windows: the setting reports `external_session_unavailable`
+  there instead of failing.
+
+Have the service write the file atomically, so Hermes never reads half a key:
+
+```bash
+umask 077
+install -d -m 0700 /run/hermes-vaultwarden          # e.g. systemd RuntimeDirectory=
+tmp=$(mktemp /run/hermes-vaultwarden/session.XXXXXX)
+printf '%s\n' "$BW_SESSION" > "$tmp"
+mv -f "$tmp" /run/hermes-vaultwarden/session        # rename is atomic
+```
+
+When the file cannot be used, `browser_vault` reports why under `reason`
+(only the category, never the key): `external_session_unavailable` (missing,
+empty, wrong type, owner or permissions, too large, invalid path, unsupported
+platform, or `bw` missing or timing out),
+`external_session_rejected` (`bw` says the key does not unlock the vault) or
+`locked_by_user` (see below).
+
+**Lock with a session file.** Lock (**Settings → Passwords & Logins**) drops the session
+Hermes unlocked and stops this Hermes process from using the session file for
+that profile. The fence lasts until you unlock Bitwarden interactively with your
+master password, turn the source off and on again, or Hermes restarts (including
+an automatic restart after a crash). It is not a persistent lock and does not lock the service's session;
+to keep Bitwarden locked across restarts, stop the service that writes the file.
+The 30-minute idle timeout, the end of the session that unlocked Bitwarden and a
+session `bw` rejects only drop the affected session and never set this fence, so
+the session file keeps working after them. Disabling Bitwarden as a source runs
+the same Lock; turning it back on in **Settings** lifts the fence, whether Lock or
+the disable set it. Turning on a source that is already on keeps the fence, as do
+a Lock pressed while the toggle is saving and a toggle whose change is not saved
+(a package-managed install or a setting your administrator pins), and
+`hermes vault sources --enable` runs in its own process, so it does not lift the
+fence of a running gateway. Lock stops later `bw` commands; one already running when you press it
+is not cancelled and finishes.
 
 ## What this does and does not guarantee
 
@@ -188,7 +252,10 @@ against a compromised right one.
 Password-manager session tokens (1Password, Bitwarden) stay in Hermes' memory
 only, are dropped after 30 idle minutes or on Lock, and are handed only to the
 single `op`/`bw` command that needs them, never to Hermes' own environment, the
-terminal tool or any other child process. They are kept out of reach of a plain
+terminal tool or any other child process. A Bitwarden
+[session file](#bitwarden-session-file-posix-only) key is read from disk for each
+use and Hermes does not cache it between uses (Python does not guarantee the
+freed memory is wiped); the file itself is protected only by its permissions. They are kept out of reach of a plain
 import, which stops casual access by other code in the process, but not a
 plugin determined to read Hermes' memory.
 

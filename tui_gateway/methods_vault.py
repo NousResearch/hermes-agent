@@ -78,17 +78,21 @@ def _(rid, params: dict) -> dict:
 @method("vault.source.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
+    """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling.
+    Re-enabling a disabled source lifts its Lock fence once the opt-out is gone from the persisted
+    config; enabling an enabled one keeps it. ``enabled`` in the result is the persisted state."""
     from agent.vault_backends.base import external_backend_classes
-    from agent.vault_backends.unlock import lock
-    from hermes_cli.config import _ensure_dict, load_config, save_config
+    from agent.vault_backends.unlock import begin_unlock, clear_user_fence, lock
+    from hermes_cli.config import _ensure_dict, load_config, load_config_readonly, save_config
 
     name = str(params.get("name") or "")
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
     enabled = bool(params.get("enabled"))
+    generation = begin_unlock(name)  # before the read: any Lock from here on keeps the fence
     cfg = load_config()
     section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
+    was_disabled = section.get("enabled") is False
     if enabled:
         section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
     else:
@@ -96,7 +100,13 @@ def _(rid, params: dict) -> dict:
     if not enabled:
         lock(name)
     save_config(cfg)
-    return _ok(rid, {"name": name, "enabled": enabled})
+    # save_config may persist nothing (managed install, managed-scope key): trust only the re-read.
+    vault = load_config_readonly().get("vault")
+    saved = vault.get(name) if isinstance(vault, dict) else None
+    now_enabled = not (isinstance(saved, dict) and saved.get("enabled") is False)
+    if enabled and was_disabled and now_enabled:
+        clear_user_fence(name, generation)
+    return _ok(rid, {"name": name, "enabled": now_enabled})
 
 
 @method("vault.unlock")

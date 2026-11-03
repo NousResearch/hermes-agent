@@ -15,8 +15,8 @@ CLI call and dropped; nothing is written to disk or env.
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the
 sudo-password callback. Headless contexts (cron, webhook, api_server,
-single-query) install none and the vault stays locked — the same posture
-approvals take where nobody can answer.
+single-query) install none and cannot mint an interactive token. An opt-in
+external session source may still authenticate without a prompt.
 """
 
 from __future__ import annotations
@@ -103,6 +103,9 @@ class _TokenOps(NamedTuple):
     lock_profile: Callable[[str, Optional[str]], None]
     release: Callable[[str], None]
     lock_everything: Callable[[], None]
+    is_fenced: Callable[[_Key], bool]
+    unfence: Callable[[_Key, int], bool]
+    invalidate: Callable[[_Key, str], None]
 
 
 def _token_store() -> _TokenOps:
@@ -120,6 +123,7 @@ def _token_store() -> _TokenOps:
     tokens: dict[_Key, _Token] = {}
     owners: dict[_Key, Optional[str]] = {}
     generations: dict[_Key, int] = {}
+    fences: set[_Key] = set()
     timer: Optional[threading.Timer] = None
 
     def forget(key: _Key) -> None:
@@ -178,19 +182,42 @@ def _token_store() -> _TokenOps:
             now = time.monotonic()
             tokens[key] = _Token(value, now)
             owners[key] = owner
+            fences.discard(key)
             arm(now)
             return True
 
     def lock_profile(home: str, backend: Optional[str]) -> None:
+        from agent.vault_backends.base import external_backend_classes
+
+        names = [backend] if backend is not None else [cls.name for cls in external_backend_classes()]
         with guard:
-            # Bump the generation for every key the lock names (not only the ones holding a token):
-            # an unlock that is still running for this backend must see the lock when it returns.
+            # Include managers with no token: an external source must not undo an acknowledged Lock.
             keys = {k for k in [*tokens, *owners, *generations] if k[0] == home and (backend is None or k[1] == backend)}
-            if backend is not None:
-                keys.add((home, backend))
+            keys.update((home, name) for name in names)
             for key in keys:
                 forget(key)
+                fences.add(key)
             settle()
+
+    def is_fenced(key: _Key) -> bool:
+        with guard:
+            return key in fences
+
+    def unfence(key: _Key, generation: int) -> bool:
+        with guard:
+            # A Lock since the caller's snapshot is the user's latest word: it must stay fenced.
+            if generation != generations.get(key, 0):
+                return False
+            fences.discard(key)
+            return True
+
+    def invalidate(key: _Key, value: str) -> None:
+        with guard:
+            token = tokens.get(key)
+            # A rejected in-flight call must not discard a newer interactive login.
+            if token is not None and token.value == value:
+                del tokens[key]
+                settle()
 
     def release(session_id: str) -> None:
         with guard:
@@ -204,7 +231,7 @@ def _token_store() -> _TokenOps:
                 forget(key)
             settle()
 
-    return _TokenOps(live, begin, commit, lock_profile, release, lock_everything)
+    return _TokenOps(live, begin, commit, lock_profile, release, lock_everything, is_fenced, unfence, invalidate)
 
 
 _tokens = _token_store()
@@ -226,8 +253,26 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
 
 
 def lock(backend: Optional[str] = None) -> None:
-    """Forget the current profile's session for one backend (or all of them when None)."""
+    """User Lock: drop this profile's tokens and fence external sources until an interactive unlock
+    (or the user re-enables a disabled source: ``clear_user_fence``)."""
     _tokens.lock_profile(_key("")[0], backend)
+
+
+def is_fenced(backend: str) -> bool:
+    """Whether this process's user Lock blocks the current profile's external source."""
+    return _tokens.is_fenced(_key(backend))
+
+
+def clear_user_fence(backend: str, generation: int) -> bool:
+    """The user re-enabled a disabled source: lift this profile's fence, keeping the lock generation.
+    ``generation`` is ``begin_unlock`` taken before reading the config; returns False (still fenced)
+    when a Lock happened since."""
+    return _tokens.unfence(_key(backend), generation)
+
+
+def invalidate_session_token(backend: str, token: str) -> None:
+    """Drop only the rejected token, preserving owners, lock generation and any user fence."""
+    _tokens.invalidate(_key(backend), token)
 
 
 def release_session(session_id: str) -> None:

@@ -1278,7 +1278,6 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
 
     # Context engine — how the context window is managed near the token limit. "compressor" =
@@ -2437,8 +2436,8 @@ DEFAULT_CONFIG = {
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault may draw from. The local
     # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
-    # External password managers are unlocked per session with a masked master-password prompt;
-    # headless sessions (cron, webhook, API) never prompt and see them as locked.
+    # External password managers use a masked master-password prompt or an opt-in external session;
+    # headless sessions (cron, webhook, API) never prompt.
     "vault": {
         "key_storage": "file",  # NEW vault's key: file (0600 vault.key) | keychain (OS; file if none). See `hermes vault key`.
         "onepassword": {  # detected managers are login sources unless the user opts out (enabled: false)
@@ -2451,6 +2450,7 @@ DEFAULT_CONFIG = {
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
+            "session_file": "",     # Opt-in absolute path to an external service's 0600 token file; empty = disabled.
         },
     },
     "secrets": {

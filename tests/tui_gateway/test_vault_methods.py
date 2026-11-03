@@ -175,3 +175,126 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
     set_multiplex_active(True)  # conftest resets the latch per test
     assert _sources_rows(home)["onepassword"]["enabled"] is True
+
+
+_FAKE_BW_STATUS = """#!/usr/bin/env python3
+import json, os, sys
+accepted = os.environ.get("BW_SESSION") == "dummy-toggle-external-session"
+print(json.dumps({"status": "unlocked" if accepted else "locked"}))
+"""
+
+
+@pytest.fixture
+def external_bitwarden(home, tmp_path, monkeypatch):
+    """Bitwarden with an opt-in session file and a fake ``bw`` that only answers ``status``."""
+    from agent.vault_backends import unlock
+
+    monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: True)
+    bw = tmp_path / "bw"
+    bw.write_text(_FAKE_BW_STATUS, encoding="utf-8")
+    bw.chmod(0o700)
+    session = tmp_path / "session"
+    session.write_text("dummy-toggle-external-session", encoding="utf-8")
+    session.chmod(0o600)
+    (home / "config.yaml").write_text(
+        f"vault:\n  bitwarden:\n    binary_path: {bw}\n    session_file: {session}\n", encoding="utf-8")
+    yield unlock
+    unlock.lock()
+
+
+def _bitwarden_usable(home) -> bool:
+    return _sources_rows(home)["bitwarden"]["unlocked"]
+
+
+def _toggle(enabled: bool) -> None:
+    _result(srv._methods["vault.source.set"](83, {"name": "bitwarden", "enabled": enabled}))
+
+
+@pytest.mark.platforms("posix")
+def test_reenabling_a_disabled_source_restores_its_external_session(home, external_bitwarden):
+    assert _bitwarden_usable(home)
+    _toggle(False)
+    assert external_bitwarden.is_fenced("bitwarden")
+    _toggle(True)
+    assert not external_bitwarden.is_fenced("bitwarden")
+    assert _bitwarden_usable(home)
+
+
+@pytest.mark.platforms("posix")
+def test_enabling_an_already_enabled_source_keeps_a_manual_lock(home, external_bitwarden):
+    _result(srv._methods["vault.lock"](84, {"name": "bitwarden"}))
+    _toggle(True)
+    assert external_bitwarden.is_fenced("bitwarden")
+    assert not _bitwarden_usable(home)
+    assert _sources_rows(home)["bitwarden"]["enabled"] is True
+
+
+@pytest.mark.platforms("posix")
+def test_disable_then_enable_after_a_manual_lock_restores_the_external_session(home, external_bitwarden):
+    _result(srv._methods["vault.lock"](85, {"name": "bitwarden"}))
+    _toggle(False)
+    _toggle(True)
+    assert not external_bitwarden.is_fenced("bitwarden")
+    assert _bitwarden_usable(home)
+
+
+@pytest.mark.platforms("posix")
+def test_failed_enable_save_keeps_the_source_fenced(home, external_bitwarden, monkeypatch):
+    _toggle(False)
+
+    def refuse(*args, **kwargs):
+        raise OSError("config.yaml is read-only")
+
+    with monkeypatch.context() as failing:
+        failing.setattr("hermes_cli.config.save_config", refuse)
+        with pytest.raises(OSError):
+            srv._methods["vault.source.set"](86, {"name": "bitwarden", "enabled": True})
+    assert external_bitwarden.is_fenced("bitwarden")
+    assert _sources_rows(home)["bitwarden"]["enabled"] is False
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("lock_params", [{}, {"name": "bitwarden"}])
+def test_a_lock_between_enable_save_and_clear_keeps_the_source_fenced(
+        home, external_bitwarden, monkeypatch, lock_params):
+    _toggle(False)
+    from hermes_cli import config
+    real_save = config.save_config
+    stale = []
+
+    def save_then_lock(cfg, **kwargs):
+        real_save(cfg, **kwargs)
+        stale.append(external_bitwarden.begin_unlock("bitwarden"))
+        _result(srv._methods["vault.lock"](88, lock_params))
+
+    monkeypatch.setattr(config, "save_config", save_then_lock)
+    _toggle(True)
+    assert external_bitwarden.is_fenced("bitwarden")
+    assert not _bitwarden_usable(home)
+    assert not external_bitwarden.store_session_token("bitwarden", "dummy-stale", stale[0])
+
+
+@pytest.mark.platforms("posix")
+def test_enable_that_does_not_persist_keeps_the_fence_and_reports_disabled(home, external_bitwarden, monkeypatch):
+    _toggle(False)
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: True)
+    out = _result(srv._methods["vault.source.set"](89, {"name": "bitwarden", "enabled": True}))
+    assert out["enabled"] is False
+    assert external_bitwarden.is_fenced("bitwarden")
+
+
+@pytest.mark.platforms("posix")
+def test_reenabling_bitwarden_leaves_other_backends_and_profiles_fenced(home, external_bitwarden, tmp_path, monkeypatch):
+    other_profile = tmp_path / "profile-b"
+    with monkeypatch.context() as other:
+        other.setenv("HERMES_HOME", str(other_profile))
+        external_bitwarden.lock()
+    _result(srv._methods["vault.lock"](87, {"name": "onepassword"}))
+    _toggle(False)
+    _toggle(True)
+    assert not external_bitwarden.is_fenced("bitwarden")
+    assert external_bitwarden.is_fenced("onepassword")
+    with monkeypatch.context() as other:
+        other.setenv("HERMES_HOME", str(other_profile))
+        assert external_bitwarden.is_fenced("bitwarden")
+        assert external_bitwarden.is_fenced("onepassword")

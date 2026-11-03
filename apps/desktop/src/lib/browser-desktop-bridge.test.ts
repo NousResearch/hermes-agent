@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+import { browserOpensWebappWindows } from '@/test/webapp-windows'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
@@ -329,7 +330,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(
@@ -395,7 +396,7 @@ describe('browser-hosted Desktop bridge', () => {
     // A gated host opens the window directly; a launch-link tab hands it a session first.
     win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const { open } = browserOpensWebappWindows()
 
     expect(installBrowserDesktopBridge()).toBe(true)
     await expect(win.hermesDesktop!.openSessionWindow('session-1', opts)).resolves.toEqual({ ok: true })
@@ -778,6 +779,120 @@ describe('browser-hosted Desktop bridge', () => {
     expect(stagedFile.type).toBe('text/plain')
   })
 
+  it('opens a 2 MB HTML page through srcdoc, byte-exact and inert to the wrapper, never through a frame URL', async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return 'blob:http://127.0.0.1:9119/large'
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    // Chromium will not navigate a frame to a URL over 2 MiB: the old data: carrier left this blank.
+    const page = `<!doctype html><p title="a&amp;b">"q" &lt;x&gt;</p><!-- "></iframe><script>parent.x=1</script> --><script>/*${'x'.repeat(2_000_000)}*/</script>`
+    await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
+    const wrapper = new DOMParser().parseFromString(await blobs[0]!.text(), 'text/html')
+    const frame = wrapper.querySelector('iframe')!
+
+    expect(wrapper.querySelectorAll('iframe, script')).toHaveLength(2)
+    expect(wrapper.querySelector('script')!.src).toContain('/assets/webapp-preview.js')
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.src).toContain('/assets/webapp-preview.html')
+    expect(frame.hasAttribute('srcdoc')).toBe(false)
+    expect(frame.getAttribute('data-preview-html')).toBe(
+      page.replace('<!doctype html>', '<!doctype html><base href="about:srcdoc">')
+    )
+  })
+
+  it('gives an HTML page without its own <base> an about:srcdoc base so #anchor links stay in the page', async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return `blob:http://127.0.0.1:9119/page-${blobs.length}`
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    const srcdocOf = async (page: string) => {
+      await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
+      const wrapper = new DOMParser().parseFromString(await blobs.at(-1)!.text(), 'text/html')
+
+      return wrapper.querySelector('iframe')!.getAttribute('data-preview-html')!
+    }
+
+    // Without a base of its own, the page inherits the wrapper's blob: URL and href="#sec" goes nowhere.
+    const bare = '<h1><a href="#sec">jump</a></h1><h2 id="sec">sec</h2>'
+    expect(await srcdocOf(bare)).toBe(`<base href="about:srcdoc">${bare}`)
+
+    // The base goes after the doctype, so the page is not pushed into quirks mode.
+    const standards = await srcdocOf(`<!DOCTYPE html>${bare}`)
+    expect(standards).toBe(`<!DOCTYPE html><base href="about:srcdoc">${bare}`)
+    const parsed = new DOMParser().parseFromString(standards, 'text/html')
+    expect(parsed.compatMode).toBe('CSS1Compat')
+    expect(parsed.querySelectorAll('base')).toHaveLength(1)
+    expect(parsed.querySelector('base')!.getAttribute('href')).toBe('about:srcdoc')
+
+    // A page that sets its own base keeps it, untouched.
+    const based = '<html><head><BASE href="https://example.com/docs/"></head><body><a href="#sec">x</a></body></html>'
+    expect(await srcdocOf(based)).toBe(based)
+  })
+
+  it('puts the about:srcdoc base inside the page\'s own <head>, so the head keeps its attributes', async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return `blob:http://127.0.0.1:9119/page-${blobs.length}`
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    const parsedSrcdocOf = async (page: string) => {
+      await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
+      const wrapper = new DOMParser().parseFromString(await blobs.at(-1)!.text(), 'text/html')
+      const srcdoc = wrapper.querySelector('iframe')!.getAttribute('data-preview-html')!
+
+      return { doc: new DOMParser().parseFromString(srcdoc, 'text/html'), srcdoc }
+    }
+
+    // A base before <head> would open an implicit head, and the authored tag's attributes would be lost.
+    const report = '<!DOCTYPE html><HTML lang="en"><Head id="report-assets" data-x="1"><title>r</title></Head><body><a href="#sec">x</a></body></HTML>'
+    const withHead = await parsedSrcdocOf(report)
+    expect(withHead.srcdoc).toBe(report.replace('data-x="1">', 'data-x="1"><base href="about:srcdoc">'))
+    expect(withHead.doc.compatMode).toBe('CSS1Compat')
+    expect(withHead.doc.head.id).toBe('report-assets')
+    expect(withHead.doc.head.dataset.x).toBe('1')
+    expect(withHead.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHead.doc.querySelector('base')!.parentElement).toBe(withHead.doc.head)
+    expect(withHead.doc.querySelector('base')!.getAttribute('href')).toBe('about:srcdoc')
+
+    // Without a <head>, the base goes right after <html>, which keeps its attributes too.
+    const headless = '<!doctype html><html lang="fr" data-theme="dark"><body><p>x</p></body></html>'
+    const withHtml = await parsedSrcdocOf(headless)
+    expect(withHtml.srcdoc).toBe(headless.replace('data-theme="dark">', 'data-theme="dark"><base href="about:srcdoc">'))
+    expect(withHtml.doc.documentElement.lang).toBe('fr')
+    expect(withHtml.doc.documentElement.dataset.theme).toBe('dark')
+    expect(withHtml.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHtml.doc.querySelector('base')!.parentElement).toBe(withHtml.doc.head)
+
+    // <header> is not a <head>: the base stays after the doctype.
+    const banner = '<!doctype html><header id="top"><h1>t</h1></header><p>x</p>'
+    const withHeader = await parsedSrcdocOf(banner)
+    expect(withHeader.srcdoc).toBe(banner.replace('<!doctype html>', '<!doctype html><base href="about:srcdoc">'))
+    expect(withHeader.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHeader.doc.querySelector('header')!.id).toBe('top')
+  })
+
   it('stages non-image buffers as browser-local object URLs', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
@@ -802,7 +917,8 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).toContain('sandbox="allow-scripts"')
     expect(wrapper).not.toContain('allow-same-origin')
     expect(wrapper).not.toContain('<h1>preview</h1>')
-    expect(wrapper).toContain('data:text/html;charset=utf-8;base64,PGgxPnByZXZpZXc8L2gxPg==')
+    expect(wrapper).toContain('data-preview-html="&lt;base href=&quot;about:srcdoc&quot;&gt;&lt;h1&gt;preview&lt;/h1&gt;"')
+    expect(wrapper).not.toMatch(/\ssrc="data:/)
 
     await win.hermesDesktop!.openPreviewInBrowser!(staged)
     expect(open).toHaveBeenCalledExactlyOnceWith(staged, '_blank', 'noopener,noreferrer')

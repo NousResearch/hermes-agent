@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.i18n import t
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_text, sanitize_command_for_display
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
@@ -406,7 +406,9 @@ def _preview_todo_list(args: dict, _max_len: int) -> str:
 def _preview_shell(key: str):
     def _build(args: dict, max_len: int) -> str | None:
         command = args.get(key)
-        return None if command is None else _tail_trunc(summarize_shell_command(str(command)), max_len) or None
+        # Sanitize before summarizing: the spinner sits under the approval prompt and must not hide what it does.
+        return None if command is None else _tail_trunc(
+            summarize_shell_command(sanitize_command_for_display(str(command))), max_len) or None
     return _build
 
 
@@ -1264,7 +1266,10 @@ _CUTE_LINES = {
     "skills_list": lambda a, r: _cute_row("📚", "skills", t("display.cute.skills_list", category=a.get("category") or t("display.cute.skills_all"))),
     "skill_view": _cute_skill_view,
     "image_generate": lambda a, r: _cute_row("🎨", "create", _cute_trunc(a.get("prompt", ""))),
-    "text_to_speech": lambda a, r: _cute_row("🔊", "speak", _cute_trunc(a.get("text", ""))),
+    "text_to_speech": lambda a, r: (
+        _cute_row("🗣️ ", "voices", _cute_trunc((a.get("find_voices") or {}).get("query") or "browse"))
+        if isinstance(a.get("find_voices"), dict)
+        else _cute_row("🔊", "speak", _cute_trunc(a.get("text", "")))),
     "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
     "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,

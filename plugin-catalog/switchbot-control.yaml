@@ -1,21 +1,22 @@
 name: switchbot-control
 repo: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control
-sha: f6083c6b25b9d9bd274e6dc6e483b5e1d522b7ee
-description: 'SwitchBot OpenAPI v1.1, personal use. No Plug Mini on/off. Locks off unless enabled. setPosition only Curtain/Curtain3 (0=open). Disclosure — Controls real devices through the SwitchBot cloud API (api.switch-bot.com) using your SWITCHBOT_TOKEN and SWITCHBOT_SECRET. Each call reads SWITCHBOT_TOKEN and SWITCHBOT_SECRET for the active profile, and an HTTP proxy set in the environment is not used. Every command asks for Hermes approval and is refused under cron, yolo, approvals off and unattended sessions. Lock and door devices stay refused unless you turn on safety_devices. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a command and approve it. Answering "always" adds an unused line to config.yaml each time. The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule. Not tested on real devices. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off.'
+sha: f0ecbf266ee528fa0db895e222ade31135461ca0
+description: 'SwitchBot OpenAPI v1.1, personal use. The watch does not report Plug Mini on or off. A command can still turn a Plug Mini on or off. The published card sentence ("No Plug Mini on/off.") does not describe a command on this pin. Locks off unless enabled. When safety_devices is on, each lock or door command asks again. setPosition only Curtain/Curtain3 (0=open). Disclosure — Controls real devices through the SwitchBot cloud API (api.switch-bot.com) using your SWITCHBOT_TOKEN and SWITCHBOT_SECRET. Each call reads SWITCHBOT_TOKEN and SWITCHBOT_SECRET for the active profile, and an HTTP proxy set in the environment is not used. On this pin, yolo and approvals off skip the prompt only when a person can answer. A cron job, hermes -q, and a webhook cannot send a command, even after always. Each watch run costs 0 tokens. The unmanned run holds no tools. schedule writes a script under HERMES_HOME/scripts and creates the job with hermes cron create --no-agent --script. Empty stdout sends nothing. A 0.1.x job stays a model turn until the next schedule. That turn allows switchbot_devices, switchbot_watch, tool_search, tool_describe, and tool_call, and blocks every other tool. The script drops every other profile .env key. If hermes cron fails, unschedule still removes the script and says the job was not removed. hermes cron create has no per-job tool list, which does not matter here because the unmanned run holds no tools. switchbot_command is a separate toolset. A cron turn hides it and refuses it, even after always. The published lines ("Every command asks for Hermes approval and is refused under cron, yolo, approvals off and unattended sessions."), (Answering "always" adds an unused line to config.yaml each time.), and ("The optional watch is a cron job (a model turn every 5 minutes by default) that stays after uninstall until you run unschedule.") are not this pin. Lock and door devices stay refused unless you turn on safety_devices. When they are enabled, each of those commands asks again, so always does not cover the next one. The plugin has no user list of its own: anyone you allow on your Hermes gateway can request a command and approve it. Tools are on for every surface, including gateways. Turn a toolset off per surface with hermes tools. On this pin, answering always in an interactive chat covers the same device id, command, and parameter, and it does not send from cron, hermes -q, or a webhook. The optional watch is a no-agent cron script (every 5 minutes by default, 0 tokens a run) that stays after uninstall. While the plugin is installed, remove that job with hermes switchbot-control unschedule. After uninstall that command is gone, so remove the job with hermes cron remove. Not tested on real devices. Saved files are under <HERMES_HOME>/plugin-data/switchbot-control for the active profile. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
-requires_hermes: '>=0.21.4'
+requires_hermes: '>=0.21.6'
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-switchbot-control#readme
-version: 0.1.2
-image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-switchbot-control/f6083c6b25b9d9bd274e6dc6e483b5e1d522b7ee/assets/catalog-banner.png
+version: "0.2.2"
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-switchbot-control/f0ecbf266ee528fa0db895e222ade31135461ca0/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:
   - switchbot_devices
   - switchbot_command
   - switchbot_watch
-  provides_hooks: []
+  provides_hooks:
+  - pre_tool_call
   provides_middleware: []
   requires_env:
   - SWITCHBOT_TOKEN

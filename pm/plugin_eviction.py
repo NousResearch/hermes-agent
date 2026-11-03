@@ -15,9 +15,9 @@ cost an enabled one its place.
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
 interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
 tooling failure could be the moment, so the plugin gets one retry before it is disabled.
-requires_hermes is judged against a version identity that can lag (a checkout without its
-release tags), so a misfit there only sits out: config is untouched, boot skips it the same
-way, and it rejoins when the verdict flips. A secondary profile whose config cannot be read
+requires_hermes and a plugin's own requirement on hermes-agent are judged against a version
+identity that can lag (a checkout without its release tags), so a misfit there only sits out:
+config is untouched, boot skips it the same way, and it rejoins when the verdict flips. A secondary profile whose config cannot be read
 sits out until its config is fixed.
 """
 from __future__ import annotations
@@ -51,10 +51,11 @@ def _interpreter_version() -> str:
     return probe.stdout.strip()
 
 
-def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Path, str], dict[Path, str]]:
+def static_verdicts(entries: list[Entry], python_version: str,
+                    extras: list[str]) -> tuple[dict[Path, str], dict[Path, str]]:
     """``(disable, sit out)`` reasons found without a resolver, keyed by resolved dir."""
-    from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
+    from pm.workspace import hermes_fit_error
 
     reasons: dict[Path, str] = {}
     waiting: dict[Path, str] = {}
@@ -67,8 +68,8 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
         except (OSError, ValueError, TypeError) as exc:
             reasons[key] = f"its dependency declaration is invalid: {exc}"
             continue
-        # Mirrors enabled_member_dirs, so the recorded stamp is the one boot expects.
-        hermes = requires_hermes_error(declaration.manifest)
+        # Mirrors build_member_dirs, so the recorded stamp is the one boot expects.
+        hermes = hermes_fit_error(declaration, extras)
         if hermes:
             waiting[key] = hermes
             continue
@@ -206,7 +207,7 @@ class PluginEviction:
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
         for home, changes in by_home.items():
             path = home / "config.yaml"
-            previous = read_bytes_or_none(path)
+            previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
             yaml = roundtrip_yaml()
             config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
             # read_home_selection already proved plugins is a mapping and the lists are lists.
@@ -264,6 +265,7 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     and re-enabled when they fit.
     """
     from pm import receipt
+    from pm.install import _target_selection
     from pm.plugins_state import dependency_homes, read_home_selection
     from pm.publication import selection_snapshot
     from pm.workspace import enabled_plugin_entries
@@ -277,10 +279,13 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
     recorded = recorded_evictions()
-    reasons, waiting = static_verdicts([*entries, *recorded], _interpreter_version())
-    update = _EvictingUpdate(package, facts, fact, dict(extras=extras, shipped=shipped, frozen=frozen),
-                             explicit=explicit, configs=configs, entries=entries, recorded=recorded,
-                             reasons=reasons, waiting=waiting)
+    selection = dict(extras=extras, shipped=shipped, frozen=frozen)
+    # Core's extras with no plugin: what every build of this update selects, so the static
+    # verdicts judge plugin extras under the same selection boot's currency check reads.
+    base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
+    reasons, waiting = static_verdicts([*entries, *recorded], _interpreter_version(), base)
+    update = _EvictingUpdate(package, facts, fact, selection, base=base, explicit=explicit, configs=configs,
+                             entries=entries, recorded=recorded, reasons=reasons, waiting=waiting)
     update.run()
     notices += _outcome_notices(entries, recorded, reasons, waiting, update.joined)
     for message in notices:
@@ -291,10 +296,9 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
 class _EvictingUpdate:
     """One update's build: the enabled plugins first, then the recorded ones that are due."""
 
-    def __init__(self, package, facts, fact: dict, selection: dict, *, explicit: bool, configs,
+    def __init__(self, package, facts, fact: dict, selection: dict, *, base: list[str], explicit: bool, configs,
                  entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
                  waiting: dict[Path, str]):
-        from pm.install import _target_selection
         from pm.workspace import _is_member_candidate
 
         self.package, self.facts, self.fact, self.selection = package, facts, fact, selection
@@ -302,7 +306,7 @@ class _EvictingUpdate:
         self.retrying = list(recorded)
         self.tried: dict[Path, str] = {}
         self.verdicts: list[Path] = []  # disabled on a verdict about the plugin: fingerprinted at commit
-        self.base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
+        self.base = base
 
         def fits(plugin_dir: Path) -> bool:
             return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting

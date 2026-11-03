@@ -33,7 +33,7 @@
     "inputs": [
       "profile_url"
     ],
-    "notes": "Address-anchored property/reverse-address site. Only pursue an opt-out if the scan found a publicly displayed resident NAME for the subject (see match_signal_notes); a bare public property record is not personal PII and is not removable. If the subject's personal profile IS shown, submit the profile URL to the opt-out endpoint and confirm the live flow in a residential browser before the first submission, then set last_verified.",
+    "notes": "Address-anchored property/reverse-address site. Only pursue an opt-out if the scan found a publicly displayed resident NAME for the subject (see match_signal_notes); a bare public property record is not personal PII and is not removable. If the subject's personal profile IS shown, submit the profile URL to the opt-out endpoint and confirm the live flow in a residential browser before the first submission, then set last_verified. DEFUNCT since 2026-08-27: domain dead per the same NJ Daniel's Law final judgment (Atlas Data Privacy Corp, 2026-08-27). Excluded from all planning/scanning/re-checks; close any open case as not_found citing this record.",
     "quirks": [
       "Distinguish 'address exists in a public property DB' (non-removable) from 'the subject's personal profile is displayed' (removable). Only the latter is an actionable exposure.",
       "'View full report' is a paywall/signup, not proof of a public listing.",
@@ -42,7 +42,11 @@
     "est_processing_days": 3,
     "reappearance_risk": "low"
   },
-  "last_verified": null,
+  "last_verified": "2026-10-26",
   "source": "curated",
-  "confidence": "documented"
+  "confidence": "documented",
+  "defunct": {
+    "since": "2026-08-27",
+    "evidence": "domain dead per the same NJ Daniel's Law final judgment (Atlas Data Privacy Corp, 2026-08-27)"
+  }
 }

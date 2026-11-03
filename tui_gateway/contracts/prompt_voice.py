@@ -51,6 +51,7 @@ class PromptSubmitParams(SessionParams):
     turn_author: JsonValue | None = Field(default=None, exclude=True, alias="_turn_author")
     hosted_terminal_callback: JsonValue | None = Field(
         default=None, exclude=True, alias="_hosted_terminal_callback")
+    hosted_images: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_images")
 
 
 class PromptSubmitStatus(WireEnum):

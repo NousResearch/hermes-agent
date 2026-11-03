@@ -164,6 +164,52 @@ describe('WebAccessSettings', () => {
     expect(JSON.stringify(toast)).not.toMatch(/Refusing|interrupt|Couldn't change/)
   })
 
+  // `hermes config set webapp.*` (or another window) changes the status while the pane is open.
+  const EDITED_ELSEWHERE: WebAccessStatus = { ...OFF, enabled: true, mode: 'public', public_url: 'https://hermes.example.org' }
+
+  it('picks up a web access change saved elsewhere when the window regains focus', async () => {
+    renderPane(OFF)
+    expect(await screen.findByText('Stopped')).toBeTruthy()
+    mocked.getWebAccessStatus.mockResolvedValue(EDITED_ELSEWHERE)
+
+    fireEvent.focus(window)
+
+    expect(await screen.findByText('Restart needed')).toBeTruthy()
+    // The address choice follows the saved config, not the one the pane opened with.
+    expect(screen.getByDisplayValue('https://hermes.example.org')).toBeTruthy()
+  })
+
+  it('keeps an unsaved address choice through a refetch that changes nothing', async () => {
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))
+    fireEvent.change(screen.getByPlaceholderText('https://hermes.example.com'), {
+      target: { value: 'https://typed.example.net' }
+    })
+    mocked.getWebAccessStatus.mockClear()
+
+    fireEvent.focus(window)
+
+    await waitFor(() => expect(mocked.getWebAccessStatus).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(screen.getByDisplayValue('https://typed.example.net')).toBeTruthy()
+  })
+
+  it('keeps reading the status while the pane stays open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+
+    try {
+      renderPane(OFF)
+      expect(await screen.findByText('Stopped')).toBeTruthy()
+      mocked.getWebAccessStatus.mockResolvedValue(EDITED_ELSEWHERE)
+
+      vi.advanceTimersByTime(30_000)
+
+      expect(await screen.findByText('Restart needed')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows nothing and asks nothing where the settings nav hides it', async () => {
     // `?tab=web-access` in the Webapp: the nav has no Web Access entry there.
     platform.browserHosted = true
@@ -245,10 +291,154 @@ describe('WebAccessSettings', () => {
     expect(toast.message).toBe("The gateway didn't stop serving the web app within 90 seconds.")
   })
 
+  it('names the cause when the restart exits without replacing the gateway', async () => {
+    // The restart answered `restart_started` with its pid, then exited at once: the old gateway keeps
+    // serving the old config. An older restart's failure (another pid) is not this one's.
+    const pending: WebAccessStatus = { ...OFF, enabled: true, mode: 'lan' }
+    const failure = (pid: number, reason: string) => ({ exit_code: 1, pid, reason })
+    mocked.startWebAccess.mockResolvedValue({ ...pending, restart_pid: 4242, restart_started: true })
+    renderPane(OFF)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    mocked.getWebAccessStatus
+      .mockResolvedValueOnce({ ...pending, restart_failure: failure(1111, 'an older restart') })
+      .mockResolvedValue({ ...pending, restart_failure: failure(4242, 'run `hermes pm repair`') })
+
+    fireEvent.click(start)
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1), { timeout: 8000 })
+    const [toast] = $notifications.get()
+    expect(toast.kind).toBe('error')
+    expect(toast.message).toBe("The gateway couldn't restart: run `hermes pm repair`")
+  }, 15_000)
+
+  it('names the cause when a Stop restart fails while the gateway could not serve the web app', async () => {
+    // Saved `enabled: false` reads as applied at once (the gateway serves nothing), but the restart
+    // the user asked for exited.
+    const unavailable: WebAccessStatus = { ...OFF, gateway: { reason: 'port 9120 is in use', state: 'unavailable', url: null } }
+    mocked.stopWebAccess.mockResolvedValue({ ...unavailable, restart_pid: 7, restart_started: true })
+    renderPane({ ...unavailable, enabled: true, mode: 'lan' })
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    mocked.getWebAccessStatus.mockResolvedValue({
+      ...unavailable,
+      restart_failure: { exit_code: 1, pid: 7, reason: 'run `hermes pm repair`' }
+    })
+
+    fireEvent.click(stop)
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1), { timeout: 8000 })
+    expect($notifications.get()[0].message).toBe("The gateway couldn't restart: run `hermes pm repair`")
+  }, 15_000)
+
+  it('shows no LAN address under My own URL while the URL is empty', async () => {
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))
+
+    expect(screen.queryByText(/192\.168\.1\.50/)).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('https://hermes.example.com'), {
+      target: { value: 'https://hermes.tail.ts.net' }
+    })
+
+    expect(screen.getByText('https://hermes.tail.ts.net')).toBeTruthy()
+  })
+
   it('says that network access is not encrypted', async () => {
     // LAN mode is plain HTTP: anyone on the network can read the traffic.
     renderPane(OFF)
 
     expect(await screen.findByText(/The connection is not encrypted/)).toBeTruthy()
+  })
+})
+
+describe('WebAccessSettings while Start runs', () => {
+  // A backend that reports a Start in flight answers `start_progress` (null when none runs).
+  const IDLE: WebAccessStatus = { ...OFF, start_progress: null }
+
+  const building = (secondsAgo = 0): WebAccessStatus => ({
+    ...IDLE,
+    start_progress: { started_at: Date.now() / 1000 - secondsAgo, step: 'building' }
+  })
+
+  // The progress poll and the elapsed clock run only while the window is viewed. `Date` is pinned:
+  // the statuses and the elapsed clock both read it, so a runner pause cannot move the label.
+  beforeEach(() => {
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
+    vi.useFakeTimers({ now: new Date('2026-11-03T12:00:00Z'), toFake: ['Date', 'setInterval', 'clearInterval'] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.mocked(globalThis.document.hasFocus).mockRestore()
+  })
+
+  it('says which step Start is on and how long it has run while it builds', async () => {
+    // The build can take minutes: Start's request answers only when it is done.
+    mocked.startWebAccess.mockReturnValue(new Promise(() => {}))
+    renderPane(IDLE)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    mocked.getWebAccessStatus.mockResolvedValue(building())
+
+    fireEvent.click(start)
+
+    expect(await screen.findByText('Building the web app. This can take a few minutes.')).toBeTruthy()
+    expect(screen.getByText('Starting')).toBeTruthy()
+    expect(screen.getByText(/\d+s elapsed/)).toBeTruthy()
+
+    mocked.getWebAccessStatus.mockResolvedValue({
+      ...IDLE,
+      start_progress: { started_at: Date.now() / 1000, step: 'registering' }
+    })
+    vi.advanceTimersByTime(1000)
+
+    expect(await screen.findByText('Setting up Nous sign-in for this address.')).toBeTruthy()
+  })
+
+  it('shows a Start already running when the pane opens during it, and its result when it ends', async () => {
+    // Another window started web access, or this pane was closed and reopened while it built.
+    renderPane(building(125))
+
+    expect(await screen.findByText('Building the web app. This can take a few minutes.')).toBeTruthy()
+    expect(screen.getByText('2:05 elapsed')).toBeTruthy()
+    expect(screen.getByText('Starting')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start' }).hasAttribute('disabled')).toBe(true)
+
+    mocked.getWebAccessStatus.mockResolvedValue({ ...SERVING, start_progress: null })
+    vi.advanceTimersByTime(1000)
+
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+    expect(screen.queryByText(/elapsed/)).toBeNull()
+    expect(mocked.startWebAccess).not.toHaveBeenCalled()
+  })
+
+  it('says the gateway is restarting once Start has saved the change', async () => {
+    mocked.startWebAccess.mockResolvedValue({
+      ...OFF,
+      enabled: true,
+      mode: 'lan',
+      restart_pid: 9,
+      restart_started: true
+    })
+    renderPane(IDLE)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    // The restarting gateway has not answered yet.
+    mocked.getWebAccessStatus.mockReturnValue(new Promise<WebAccessStatus>(() => {}))
+
+    fireEvent.click(start)
+
+    expect(await screen.findByText('Restarting the gateway to serve the web app.')).toBeTruthy()
+  })
+
+  it('describes the Start of a backend that reports no step without polling it for one', async () => {
+    // A backend older than `start_progress`: its status never carries the field.
+    mocked.startWebAccess.mockReturnValue(new Promise(() => {}))
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+
+    expect(await screen.findByText('Getting the web app ready. Building it can take a few minutes.')).toBeTruthy()
+    const calls = mocked.getWebAccessStatus.mock.calls.length
+    vi.advanceTimersByTime(3000)
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(mocked.getWebAccessStatus.mock.calls.length).toBe(calls)
   })
 })

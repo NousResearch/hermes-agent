@@ -16,6 +16,19 @@ export interface WebAccessStatus {
   nous_signed_in: boolean
   port: number
   public_url: string
+  /** The newest restart of this gateway exited without replacing it; `pid` is the `restart_pid` that
+   *  restart answered, `reason` the last line it wrote (or its exit code). */
+  restart_failure?: null | { exit_code: number; pid: number; reason: string }
+  /** The Start this backend is running for the gateway, else null; absent from a backend older than
+   *  this field. */
+  start_progress?: null | WebAccessStartProgress
+}
+
+/** A Start in flight: the step it is on, and when it began (epoch seconds). Building the bundle can
+ *  take minutes. */
+export interface WebAccessStartProgress {
+  started_at: number
+  step: 'building' | 'registering' | 'restarting'
 }
 
 /** Start/stop save the config and restart the gateway; a refused restart keeps the config.
@@ -23,6 +36,7 @@ export interface WebAccessStatus {
 export interface WebAccessChange extends WebAccessStatus {
   restart_busy?: boolean
   restart_error?: string
+  restart_pid?: number
   restart_started: boolean
 }
 

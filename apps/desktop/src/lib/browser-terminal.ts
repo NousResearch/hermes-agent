@@ -47,6 +47,11 @@ interface TerminalState {
 }
 
 const META = '\u0000HERMES_TERMINAL_META:'
+// 4410 also ends a shell the server closed (expiry, a deleted profile, shutdown); only a shell
+// that exited by itself (`exit`, Ctrl-D) carries this reason (pty_session.WS_CLOSE_PROCESS_EXITED_REASON).
+const PROCESS_EXITED_REASON = 'Process exited'
+// The signal of a dial refused that way (the shell exited while no tab was attached): a process exit.
+const EXITED = 'exited'
 const MAX_RETRIES = 5
 const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
@@ -66,6 +71,14 @@ class TerminalConnectionError extends Error {
 function settleOpen(state: TerminalState): void {
   if (isStableOpen(state.openedAt)) {state.retry = 0}
   state.openedAt = null
+}
+
+/** A trimmed replay can start mid-way through a full-screen program's output, and an
+ * unchanged size sends no SIGWINCH: step one row away first so the program redraws. The server
+ * holds the step back until the program has answered the step (web_host_terminal_sessions._resize). */
+function sendResumeSize(socket: WebSocket, state: TerminalState, trimmed?: boolean): void {
+  if (trimmed) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows > 1 ? state.rows - 1 : state.rows + 1}]`)}
+  socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)
 }
 
 async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTerminalOptions['websocketUrl']): Promise<boolean> {
@@ -210,7 +223,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
           handshakeComplete = true
 
           // Resume query dimensions do not resize an existing server PTY.
-          if (resuming) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)}
+          if (resuming) {sendResumeSize(socket, state, meta.truncated)}
           setStatus(state, 'open')
           state.openedAt = Date.now()
 
@@ -247,11 +260,12 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
       if (!current()) {return}
       settleOpen(state)
       const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
+      const exited = event.code === 4410 && event.reason === PROCESS_EXITED_REASON
 
       if (signal === 'expired') {forget(state)}
 
       if (!handshakeComplete) {
-        fail(new TerminalConnectionError(event.reason || `Host terminal closed (${event.code})`, signal))
+        fail(new TerminalConnectionError(event.reason || `Host terminal closed (${event.code})`, exited ? EXITED : signal))
 
         return
       }
@@ -260,6 +274,9 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
 
       if (!state.terminalId) {
         finish(state, event.code === 4410 ? null : 'disconnected')
+      } else if (exited) {
+        // The shell ended: report a process exit, which closes the tab as in native Desktop.
+        finish(state, null)
       } else if (signal !== 'disconnected') {
         finish(state, signal)
       } else {
@@ -360,6 +377,8 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         // A 401 from the ticket route: signed out, and every further attempt would be refused.
         if (isGatewayReauthRequired(error)) {
           finish(state, 'signed-out')
+        } else if (error instanceof TerminalConnectionError && error.signal === EXITED) {
+          finish(state, null)
         } else if (error instanceof TerminalConnectionError && error.signal !== 'disconnected') {
           finish(state, error.signal)
         } else {

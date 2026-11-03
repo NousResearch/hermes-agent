@@ -1,7 +1,9 @@
 """Owner-issued admission reservations never weaken idle public registration."""
+import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
@@ -14,7 +16,8 @@ from hermes_state_runtime import (admit_session_input, begin_runtime_epoch, clai
 
 def hello(process):
     """A direct child's self-introduction (no launcher: chain length 0)."""
-    return {'type': 'hello', 'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'ancestors': [os.getpid()]}
+    from hermes_cli.process_identity import worker_birth
+    return {'type': 'hello', 'pid': process.pid, 'birth': worker_birth(psutil.Process(process.pid)), 'ancestors': [os.getpid()]}
 
 
 def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path):
@@ -119,7 +122,7 @@ async def test_input_queued_behind_a_live_worker_is_released_then_runs_when_it_f
     connection = SimpleNamespace(authority=authority, actor=actor)
     ref = SessionRef('p', 'owned')
     scope = {'profile_id': 'p', 'session_id': 'owned', 'execution_id': 'compute', 'generation': 0,
-             'pid': process.pid, 'birth': psutil.Process(process.pid).create_time(), 'secret': 'w' * 32}
+             'pid': process.pid, 'birth': hello(process)['birth'], 'secret': 'w' * 32}
     try:
         registered = await worker_request(connection, ref, scope | {'kind': 'compute'}, operation='register')
         # Native ingress waits on the admission it committed; a blocked FIFO must answer it.
@@ -208,6 +211,39 @@ def test_process_fingerprints_survive_a_clock_step_on_macos(stale_psutil_boot_re
         process.stdin.close()
         process.wait(timeout=5)
 
+
+
+@pytest.mark.platforms("linux")
+def test_reservation_survives_a_boot_time_reanchor_on_linux(tmp_path, monkeypatch):
+    """KB-12: Linux psutil's ``create_time()`` adds the ``/proc/stat`` btime it re-reads on every
+    call, and WSL2 re-anchors btime after host sleep, so the owner read a live worker's birth
+    shifted from the one the worker reported and refused every managed worker."""
+    from gateway.session_worker_reservation import reserve_admission_worker
+    code = 'import json, sys; from agent.managed_worker import hello; print(json.dumps(hello()), flush=True); sys.stdin.read()'
+    process = subprocess.Popen([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    db = SessionDB(tmp_path / 'state.db')
+    try:
+        frame = {'type': 'hello', **json.loads(process.stdout.readline())}  # the real worker's hello
+        reported = psutil.Process(process.pid).create_time()
+        boot = psutil.boot_time()
+        monkeypatch.setattr(psutil._pslinux, 'boot_time', lambda: boot + 3600)
+        assert psutil.Process(process.pid).create_time() != reported  # the re-anchor is real
+        db.create_session('owned', 'cli')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        authority = SimpleNamespace(db=db, epoch=epoch, profile_id=str(tmp_path), _require_admission_open=lambda: None)
+        admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
+        claim_session_input(db, epoch=epoch, session_id='owned')
+        kwargs = dict(admission_id=admitted['admission_id'], process=process, principal_id='human')
+        with pytest.raises(Exception, match='permission_denied'):  # a forged birth still fails
+            reserve_admission_worker(authority, hello=frame | {'birth': frame['birth'] + 1}, **kwargs)
+        scope = reserve_admission_worker(authority, hello=frame, **kwargs)
+        assert scope['pid'] == process.pid and scope['birth'] == frame['birth']
+    finally:
+        process.stdin.close()
+        process.wait(timeout=10)
+        process.stdout.close()
+        db.close()
 
 def test_process_birth_is_create_time_where_psutil_applies_no_reference():
     """Linux and Windows read ``create_time()`` unchanged, so every stored fingerprint and ledger

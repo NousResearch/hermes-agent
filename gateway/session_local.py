@@ -24,11 +24,21 @@ class LocalSessionAdapter(BasePlatformAdapter):
     def __init__(self, authority):
         super().__init__(PlatformConfig(enabled=True), Platform.LOCAL)
         self.authority = authority
+        # Built outside ``_create_adapter``: without its runner a push wake skips the authority FIFO
+        # and falls to a message handler this adapter never has (``deliver_wake``).
+        self.gateway_runner = getattr(authority, 'runner', None)
         self.sources = {}
         self.policies = {}
 
+    @staticmethod
+    def _source_key(source):
+        # A conversation its chat moved past keeps the chat's id, which every other one of that chat
+        # shares: its own key names it (gateway/session_detached.py).
+        from gateway.session_detached import detached_route_of
+        return detached_route_of(source) or source.chat_id
+
     def authorize_source(self, source):
-        saved = self.sources.get(source.chat_id)
+        saved = self.sources.get(self._source_key(source))
         if saved is None:
             return False
         original, identity = saved
@@ -40,7 +50,24 @@ class LocalSessionAdapter(BasePlatformAdapter):
         return source.platform, source.chat_id, source.user_id, source.profile, source.chat_type
 
     def register_source(self, source):
-        self.sources[source.chat_id] = source, self._identity(source)
+        self.sources[self._source_key(source)] = source, self._identity(source)
+
+    def kept_source(self, source):
+        """The object this route was admitted with when *source* is that same source: a closed
+        conversation retired from memory comes back with it, so the results its background work
+        still holds pass ``authorize_source`` (an identity check)."""
+        saved = self.sources.get(self._source_key(source))
+        return saved[0] if saved is not None and saved[0].to_dict() == source.to_dict() else source
+
+    def forget(self, source, route):
+        """A deleted conversation's admission source, frozen policy and post-delivery slot (a local
+        route names one conversation; a detached copy keeps only its own key, its chat's stays)."""
+        key = self._source_key(source)
+        if self.sources.get(key, (None,))[0] is source:
+            del self.sources[key]
+        if key == source.chat_id and source.platform == Platform.LOCAL:
+            self.policies.pop(key, None)
+            self._post_delivery_callbacks.pop(route, None)
 
     async def connect(self, *, is_reconnect=False):
         return True
@@ -112,6 +139,17 @@ class LocalSessionAdapter(BasePlatformAdapter):
         if started is not None and 'local_automation_v1' in started['payload']:
             return 'Clarification is unavailable: no viewer can answer this chat'
         return None
+
+
+def forget_live_session(authority, session_id, live):
+    """What the local adapter and the authority keyed by a deleted live session."""
+    authority.launch_sources.pop(session_id, None)
+    if live.source is None or live.source.platform != Platform.LOCAL:
+        return
+    from gateway.session_local_recovery import local_adapter_map
+    local = local_adapter_map(authority).get(Platform.LOCAL)
+    if local is not None:
+        local.forget(live.source, live.route)
 
 
 def authorize_local_source(runner, source):

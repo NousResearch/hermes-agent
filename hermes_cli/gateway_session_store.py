@@ -164,7 +164,7 @@ class GatewaySessionStore:
         ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
         from agent.session_source import CLI_FAMILY_SOURCES, create_surface, session_source_for
         params = _creation_policy(launch or {})
-        params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+        params["cwd"] = _launch_cwd()
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = create_surface(session_source_for("cli"))
         # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
@@ -486,6 +486,23 @@ def _creation_policy(launch):
     return policy
 
 
+def _launch_cwd():
+    """``session.create``'s ``cwd``, a host folder the owner checks on its own host. TERMINAL_CWD is the
+    folder this CLI has selected (``-w``, ``/worktree new`` and ``/resume`` all move it). A local backend
+    sends it as is, as on main. A docker/ssh one sends it when it is a host directory or the recorded
+    ``-w`` tree (a vanished tree is then refused as on main, not swapped for the checkout); otherwise
+    it is a path inside the sandbox, so the launch dir is sent and the backend keeps its own cwd
+    (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
+    ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
+    terminal_cwd = os.getenv("TERMINAL_CWD")
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
+    recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
+    if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
+        return os.path.realpath(terminal_cwd)
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    return os.path.realpath(terminal_cwd if terminal_cwd and (local or os.path.isdir(terminal_cwd)) else os.getcwd())
+
+
 def _classic_only_policy(launch):
     """Main's `--run-budget` and `-v`, which the thin client refuses."""
     policy = {}
@@ -542,7 +559,7 @@ def create_titled_session(title):
     (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
     "could not be created" copy)."""
     params = _creation_policy({})
-    params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
+    params["cwd"] = _launch_cwd()
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:

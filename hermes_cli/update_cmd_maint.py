@@ -846,15 +846,14 @@ def _sync_profiles_after_update() -> None:
                 except Exception as pe:
                     print(f"  {p.name}: error ({pe})")
 
-    # Backfill .env for profiles created before .env seeding (copy the default's) so they
-    # keep the credentials they were effectively using.
+    # Seed the placeholder .env into any named profile lacking one (never a copy of the default's).
     with suppress(Exception):
         # See #44792.
         from hermes_cli.profiles import backfill_profile_envs
         backfilled = backfill_profile_envs(quiet=True)
         if backfilled:
             print()
-            print(f"→ Seeded .env for {len(backfilled)} profile(s) (copied from default): {', '.join(backfilled)}")
+            print(f"→ Seeded .env for {len(backfilled)} profile(s) (empty placeholder): {', '.join(backfilled)}")
 
     with suppress(Exception):
         from plugins.memory import import_provider_module
@@ -1028,6 +1027,10 @@ def _run_post_update_maintenance(
     except (OSError, subprocess.SubprocessError) as exc:
         detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
         print(f"  ⚠ Could not refresh release history ({detail[0]}); the version label may be stale or unknown until the next update")
+    # Keeps every later version lookup off a full history walk; detached, so it never delays this run.
+    with _best_effort('Commit-graph refresh failed to start: %s'):
+        from hermes_cli.git_commit_graph import spawn_commit_graph_refresh
+        spawn_commit_graph_refresh(Path(_m().PROJECT_ROOT))
 
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):

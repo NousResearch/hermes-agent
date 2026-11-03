@@ -887,6 +887,9 @@ class _CodexResponseAssembler:
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    # An assistant answer message item was announced (output_item.added, not commentary/analysis): its text deltas
+    # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
+    saw_answer_item_added = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
@@ -900,6 +903,9 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: dict[str, dict[str, Any]] = {}
         self.announced_output_order: dict[str, tuple] = {}
+        # Phase per announced message item id: a delta that names its item keeps that item's phase even after a
+        # later item (a function call) was announced, so commentary is never fused into the answer text.
+        self.message_phases: dict[str, str | None] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -908,11 +914,15 @@ class _CodexResponseAssembler:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
+        if item_type == "message" and self.active_message_phase not in ("commentary", "analysis"):
+            self.saw_answer_item_added = True
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
+        if item_id and item_type == "message":
+            self.message_phases[item_id] = self.active_message_phase
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
@@ -931,12 +941,13 @@ class _CodexResponseAssembler:
             return
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
+        phase = self.message_phases.get(str(_event_field(event, "item_id", "") or ""), self.active_message_phase)
+        if phase == "commentary":
             self.commentary_text_deltas.append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -959,7 +970,7 @@ class _CodexResponseAssembler:
     def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
         if item_id in self.pending_function_calls:
             return item_id
-        # Copilot rotates opaque item IDs between SSE events. The response-local
+        # Some Responses backends rotate opaque item IDs between SSE events. The response-local
         # output_index still identifies the call, including index zero.
         if output_index is not None:
             return next((key for key, pending in self.pending_function_calls.items()
@@ -1101,10 +1112,21 @@ class _CodexResponseAssembler:
         # Successful completion orders all output, even when no calls remain pending.
         # Done items stay authoritative; only successful streams settle missing done events.
         output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
-        # With only plain text deltas (no tool calls), synthesize one message item.
-        if not output and self.text_deltas and not self.has_tool_calls:
+        # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
+        # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
+        # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
+        # The recovery needs a terminal frame: a stream cut mid-turn (no terminal, a call still pending) must raise
+        # below and retry, never end the turn on the cut-off sentence with the call silently lost.
+        if self.text_deltas and (
+                (not output and not self.has_tool_calls)
+                or (self.saw_terminal and self.saw_answer_item_added and not any(
+                    _event_field(item, "type", "") == "message"
+                    and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
+            message = SimpleNamespace(type="message", role="assistant", status="completed", content=content)
+            first_call = next((i for i, item in enumerate(output)
+                               if "function_call" in str(_event_field(item, "type", ""))), len(output))
+            output.insert(first_call, message)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")

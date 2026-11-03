@@ -67,8 +67,6 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |

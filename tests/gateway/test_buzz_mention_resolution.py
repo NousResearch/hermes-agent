@@ -474,6 +474,22 @@ class TestLongerMemberNameMention:
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["raises", "null"])
+    async def test_roster_lookup_failure_keeps_mention(self, adapter, failure):
+        inner = adapter._run_cli
+
+        async def broken(args, *, input_text=None):
+            if args[:2] == ["channels", "members"]:
+                if failure == "raises":
+                    raise OSError("cannot spawn cli")
+                return 0, "null", ""
+            return await inner(args, input_text=input_text)
+
+        adapter._run_cli = broken
+        await self._poll(adapter, "@Chip hola")
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
     async def test_unauthorized_sender_triggers_no_name_lookups(self, adapter):
         adapter._allowed_pubkeys = {FIZZ_PUBKEY}
         adapter._reaction_only_pubkeys = set()

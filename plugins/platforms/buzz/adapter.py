@@ -1555,7 +1555,8 @@ class BuzzAdapter(BuzzCursorMixin, BasePlatformAdapter):
             return []
         tags = event.get("tags") if isinstance(event.get("tags"), list) else []
         pks = [str(t[1]).lower() for t in tags if isinstance(t, list) and len(t) > 1 and t[0] == "p"]
-        roster = dict.fromkeys(await self._channel_member_pubkeys(channel_id))
+        (found,) = await asyncio.gather(self._channel_member_pubkeys(channel_id), return_exceptions=True)  # a failed roster read is an unknown roster
+        roster = dict.fromkeys([] if isinstance(found, BaseException) else found)
         pks = [pk for pk in pks if pk in roster or not roster]  # p-tags are sender-controlled and read before authorization
         budget = _MENTION_LOOKUP_CAP
         lookups = []

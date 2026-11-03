@@ -34,9 +34,8 @@
  */
 
 import { initAuthCreds, BufferJSON, proto } from '@whiskeysockets/baileys';
-import {
-  mkdir, open as fsOpen, readdir, readFile, rename, stat, unlink,
-} from 'fs/promises';
+import * as fsPromises from 'fs/promises';
+import { mkdir, readdir, readFile, stat, unlink } from 'fs/promises';
 import { dirname, join } from 'path';
 import { randomBytes } from 'crypto';
 
@@ -63,19 +62,49 @@ function createPathLocks() {
   };
 }
 
+// Codes Windows returns for open()/fsync() on a directory: it has no
+// directory fsync at all, and its rename is already durable once it returns.
+const WIN32_NO_DIR_FSYNC = new Set(['EISDIR', 'EPERM', 'EACCES']);
+
 /**
- * Write `contents` to `filePath` atomically.
+ * fsync a directory so a rename() inside it survives a crash.
+ *
+ * rename() only updates the directory entry, and that entry is itself
+ * buffered: without this, a crash right after the rename can bring back the
+ * old name (or nothing). On POSIX every failure propagates; only Windows,
+ * which cannot open a directory for fsync, is exempt.
+ */
+async function syncDirectory(dir, fs) {
+  let handle = null;
+  try {
+    handle = await fs.open(dir, 'r');
+    await handle.sync();
+  } catch (err) {
+    if (process.platform === 'win32' && WIN32_NO_DIR_FSYNC.has(err?.code)) return;
+    throw err;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Write `contents` to `filePath` atomically and durably.
  *
  * The temp file MUST live in the same directory as the target: rename() is
  * only atomic within a single filesystem, and /tmp is frequently a different
- * mount. On any failure the temp file is removed and the original is left
- * exactly as it was.
+ * mount. If anything fails before the rename, the temp file is removed and the
+ * original is left exactly as it was. If the rename landed but the directory
+ * fsync failed, the rejection carries `replaced: true`: the new contents are in
+ * place but a crash could still revert them.
+ *
+ * `fs` is the `fs/promises` subset used (open/rename/unlink); tests pass a
+ * wrapper to observe call order or inject ENOSPC.
  */
-export async function writeFileAtomic(filePath, contents) {
+export async function writeFileAtomic(filePath, contents, { fs = fsPromises } = {}) {
   const tmpPath = `${filePath}${TMP_PREFIX}${process.pid}-${randomBytes(6).toString('hex')}`;
   let handle = null;
   try {
-    handle = await fsOpen(tmpPath, 'wx', 0o600);
+    handle = await fs.open(tmpPath, 'wx', 0o600);
     await handle.writeFile(contents, 'utf8');
     // fsync before the rename: rename only orders the directory entry, so
     // without this a crash can leave the new name pointing at unflushed
@@ -83,31 +112,57 @@ export async function writeFileAtomic(filePath, contents) {
     await handle.sync();
     await handle.close();
     handle = null;
-    await rename(tmpPath, filePath);
-    // rename() only orders the DIRECTORY ENTRY, and that entry is itself
-    // buffered: a crash right after the rename can lose it, leaving the old
-    // name or nothing at all. fsync the parent directory so the replacement
-    // is durable, not just atomic. Best-effort — some filesystems reject a
-    // directory fsync, and failing here would undo a rename that already
-    // succeeded.
-    let dirHandle = null;
-    try {
-      dirHandle = await fsOpen(dirname(filePath), 'r');
-      await dirHandle.sync();
-    } catch {
-      /* directory fsync unsupported — the rename still landed */
-    } finally {
-      if (dirHandle) {
-        try { await dirHandle.close(); } catch {}
-      }
-    }
+    await fs.rename(tmpPath, filePath);
   } catch (err) {
-    if (handle) {
-      try { await handle.close(); } catch {}
-    }
-    try { await unlink(tmpPath); } catch {}
+    if (handle) await handle.close().catch(() => {});
+    await fs.unlink(tmpPath).catch(() => {});
     throw err;
   }
+  try {
+    await syncDirectory(dirname(filePath), fs);
+  } catch (err) {
+    throw Object.assign(
+      new Error(
+        `${filePath} was replaced but its directory could not be fsynced ` +
+        `(${err?.code || err?.message || err}); a crash may revert it`,
+        { cause: err },
+      ),
+      { code: err?.code, replaced: true },
+    );
+  }
+}
+
+/**
+ * Route `saveCreds()` failures instead of leaving them unhandled.
+ *
+ * Baileys emits `creds.update` and the bridge cannot await the save inside
+ * that event handler, so a rejected save would otherwise be an unhandled
+ * rejection, which terminates Node. `save()` never rejects: it resolves
+ * `true`/`false` and reports a failure through `onFailure(err, message)`.
+ * `settled()` resolves with the outcome of the most recent save, which wrote
+ * the full current creds (saves on one path are serialized).
+ */
+export function createCredsSaver(saveCreds, { onFailure = (_err, message) => console.error(message) } = {}) {
+  let latest = Promise.resolve(true);
+  const save = () => {
+    latest = Promise.resolve()
+      .then(saveCreds)
+      .then(
+        () => true,
+        (err) => {
+          const reason = err?.code ? `${err.code}: ${err.message}` : (err?.message || String(err));
+          const message = err?.replaced
+            ? `WhatsApp creds were written but are not confirmed durable (${reason}). ` +
+              'A crash before the next successful save may revert to the previous creds.'
+            : `WhatsApp creds save failed (${reason}). creds.json on disk is unchanged ` +
+              '(previous state preserved); the next creds.update retries the save.';
+          onFailure(err, message);
+          return false;
+        },
+      );
+    return latest;
+  };
+  return { save, settled: () => latest };
 }
 
 /** Remove temp files orphaned by a crash or a failed write. */

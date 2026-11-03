@@ -17,7 +17,9 @@ import { mkdtempSync, readFileSync, writeFileSync, statSync, readdirSync, rmSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { writeFileAtomic, useAtomicMultiFileAuthState } from './auth_state.js';
+import * as realFs from 'node:fs/promises';
+
+import { createCredsSaver, writeFileAtomic, useAtomicMultiFileAuthState } from './auth_state.js';
 
 const HERE = import.meta.dirname;
 // RLIMIT_FSIZE via `ulimit -f` is POSIX-only. The bridge itself is
@@ -213,7 +215,7 @@ test('sweep removes only real temp files, not keys whose id contains .tmp-', asy
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('a failed saveCreds rejects (caller must catch) and leaves creds intact', async () => {
+test('a failed saveCreds rejects (caller must catch) and leaves creds intact', async (t) => {
   const dir = freshDir();
   const { saveCreds } = await useAtomicMultiFileAuthState(dir);
   await saveCreds();
@@ -223,11 +225,128 @@ test('a failed saveCreds rejects (caller must catch) and leaves creds intact', a
   const { chmodSync } = await import('node:fs');
   chmodSync(dir, 0o500);
   try {
+    // root (or a user-namespace root) bypasses directory permissions, so the
+    // read-only directory would not deny anything; the ENOSPC test below
+    // covers the same contract by injection.
+    try {
+      writeFileSync(join(dir, 'probe'), '');
+      t.skip('directory permissions are not enforced for this user');
+      return;
+    } catch { /* writes are denied: the scenario is real */ }
     await assert.rejects(() => saveCreds(), 'a failed write must reject, not resolve silently');
   } finally {
     chmodSync(dir, 0o700);
   }
   assert.equal(readFileSync(join(dir, 'creds.json'), 'utf8'), original,
     'the previous credentials must survive a failed save');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── Durability of the rename, and routing of a failed save ───────────────
+
+/**
+ * Wrap the real fs/promises so a test can see the order of operations, and
+ * optionally make one step fail the way the kernel would.
+ */
+function recordingFs({ failWrite, failDirSync } = {}) {
+  const calls = [];
+  const wrapHandle = (handle, label) => ({
+    writeFile: async (data, enc) => {
+      calls.push(`${label}:writeFile`);
+      if (failWrite) {
+        await handle.writeFile(String(data).slice(0, 16), enc); // a partial write, then the disk is full
+        throw Object.assign(new Error('no space left on device'), { code: failWrite });
+      }
+      return handle.writeFile(data, enc);
+    },
+    sync: async () => {
+      calls.push(`${label}:sync`);
+      if (label === 'dir' && failDirSync) {
+        throw Object.assign(new Error('input/output error'), { code: failDirSync });
+      }
+      return handle.sync();
+    },
+    close: async () => { calls.push(`${label}:close`); return handle.close(); },
+  });
+  return {
+    calls,
+    open: async (p, flags, mode) => {
+      const label = flags === 'r' ? 'dir' : 'tmp';
+      calls.push(`${label}:open:${p}`);
+      return wrapHandle(await realFs.open(p, flags, mode), label);
+    },
+    rename: async (from, to) => { calls.push('rename'); return realFs.rename(from, to); },
+    unlink: async (p) => { calls.push('unlink'); return realFs.unlink(p); },
+  };
+}
+
+test('the parent directory is fsynced after the rename', { skip: !POSIX }, async () => {
+  const dir = freshDir();
+  const target = join(dir, 'creds.json');
+  const fs = recordingFs();
+  await writeFileAtomic(target, '{"a":1}', { fs });
+
+  const renameAt = fs.calls.indexOf('rename');
+  const dirOpenAt = fs.calls.indexOf(`dir:open:${dir}`);
+  const dirSyncAt = fs.calls.indexOf('dir:sync');
+  assert.ok(renameAt >= 0, 'rename must happen');
+  assert.ok(dirOpenAt > renameAt, 'the directory is opened after the rename');
+  assert.ok(dirSyncAt > dirOpenAt, 'and fsynced');
+  assert.ok(fs.calls.indexOf('dir:close') > dirSyncAt, 'and its fd closed');
+  assert.ok(fs.calls.indexOf('tmp:sync') < renameAt, 'the temp file is fsynced before the rename');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('a failed directory fsync rejects on POSIX instead of being skipped', { skip: !POSIX }, async () => {
+  const dir = freshDir();
+  const target = join(dir, 'creds.json');
+  writeFileSync(target, '{"old":true}');
+  await assert.rejects(
+    () => writeFileAtomic(target, '{"new":true}', { fs: recordingFs({ failDirSync: 'EIO' }) }),
+    (err) => err.code === 'EIO' && err.replaced === true,
+  );
+  // The rename itself landed; the rejection reports that durability is unconfirmed.
+  assert.equal(readFileSync(target, 'utf8'), '{"new":true}');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('directory fsync on Windows is tolerated (no directory fsync there)', { skip: POSIX }, async () => {
+  const dir = freshDir();
+  await writeFileAtomic(join(dir, 'creds.json'), '{"a":1}');
+  assert.equal(readFileSync(join(dir, 'creds.json'), 'utf8'), '{"a":1}');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('ENOSPC mid-write: save is routed, no unhandled rejection, old creds intact', async () => {
+  const dir = freshDir();
+  const target = join(dir, 'creds.json');
+  const original = JSON.stringify({ me: 'real-identity' });
+  writeFileSync(target, original);
+
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const failures = [];
+  try {
+    const saver = createCredsSaver(
+      () => writeFileAtomic(target, JSON.stringify({ me: 'next' }), { fs: recordingFs({ failWrite: 'ENOSPC' }) }),
+      { onFailure: (err, message) => failures.push({ code: err.code, message }) },
+    );
+    // Fire-and-forget, exactly like the creds.update handler.
+    saver.save();
+    assert.equal(await saver.settled(), false);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  assert.deepEqual(unhandled, [], 'a failed save must not surface as an unhandled rejection');
+  assert.equal(failures.length, 1, 'the failure must be reported once');
+  assert.equal(failures[0].code, 'ENOSPC');
+  assert.match(failures[0].message, /ENOSPC/);
+  assert.match(failures[0].message, /unchanged/);
+  assert.equal(readFileSync(target, 'utf8'), original, 'previous creds must stay intact');
+  assert.deepEqual(readdirSync(dir), ['creds.json'], 'no partial temp file may be left behind');
   rmSync(dir, { recursive: true, force: true });
 });

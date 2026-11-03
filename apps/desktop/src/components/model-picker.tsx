@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { armMarquee, disarmMarquee } from '@/lib/marquee'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
@@ -386,8 +387,14 @@ function ModelResults({
               }}
               value={`${provider.slug}:${model}`}
             >
-              <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
-                <HighlightMatches foldSeparators query={search} text={model} />
+              <span
+                className={cn('hover-marquee min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}
+                onPointerEnter={armMarquee}
+                onPointerLeave={disarmMarquee}
+              >
+                <span className="hover-marquee-inner">
+                  <HighlightMatches foldSeparators query={search} text={model} />
+                </span>
               </span>
               {loadProgress && (
                 <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>

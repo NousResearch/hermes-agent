@@ -18,6 +18,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
+import { armMarquee, disarmMarquee } from '@/lib/marquee'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
@@ -85,31 +86,6 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
 }
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
-
-// Hover marquee (card title): measure the actual overflow on pointerenter and
-// arm the CSS animation only when there is some — CSS can't detect overflow on
-// its own, and animating a non-overflowing title would wiggle for nothing.
-// Distance-proportional duration keeps the scroll speed constant across short
-// and long overflows. State lives in DOM attributes, not React state: hover
-// must not re-render a memoized row.
-const MARQUEE_PX_PER_SECOND = 80
-
-function armMarquee(event: React.PointerEvent<HTMLElement>) {
-  const el = event.currentTarget
-  const distance = el.scrollWidth - el.clientWidth
-
-  if (distance > 2) {
-    // The keyframes spend 65% of the cycle travelling (10%→75%); scale the
-    // duration so the travel segment itself moves at the target speed.
-    el.style.setProperty('--marquee-d', `${distance}px`)
-    el.style.setProperty('--marquee-t', `${Math.max(1, distance / MARQUEE_PX_PER_SECOND / 0.65)}s`)
-    el.dataset.marquee = 'true'
-  }
-}
-
-function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
-  delete event.currentTarget.dataset.marquee
-}
 
 // The last thing in the trailing slot hands its place to the ⋯ button on hover,
 // and is never narrower than the button that has to cover it. A PR chip is the

@@ -38,6 +38,12 @@ def _literal_pid(word: str) -> str | None:
     return (match.group(1).lstrip("0") or "0") if match else None
 
 
+def _sends_nothing(signal: str) -> bool:
+    """Signal 0 (``0``, ``00``, ``SIG0``): kill only checks that the process exists."""
+    number = signal.strip().upper().removeprefix("SIG").removeprefix("+")
+    return bool(number) and not number.strip("0")
+
+
 def _kill_option(arg: str, following: list[str]) -> tuple[str | None, int] | None:
     """Parse one kill option -> ``(signal or None, words consumed)``; ``None`` means this
     invocation sends no signal at all."""
@@ -75,10 +81,18 @@ def kill_argv_signals_pid(argv: list[str], pid: str, *, shell_builtin: bool) -> 
             if parsed is None:
                 return False
             if parsed[0] is not None:
+                # A second signal option has no single reading (kill(1) builds and `time kill` differ
+                # on which one wins), so a non-zero one among them counts.
+                term = term or (signal is not None and not (_sends_nothing(signal) and _sends_nothing(parsed[0])))
                 # Bash's builtin takes one signal: later words (`--help`, `-0`) are operands.
                 signal, options = parsed[0], not shell_builtin
             index += parsed[1]
             continue
+        if not options and shell_builtin and signal is not None and not pids and arg.startswith("-"):
+            # Bash 3.2 (macOS /bin/bash) still reads a later signal option where newer bash takes it
+            # as an operand: `kill -0 -s TERM PID` sends TERM there, so a later signal option counts.
+            later = _kill_option(arg, argv[index + 1:index + 2]) if len(arg) > 1 and not arg.startswith("--") else None
+            term = term or (later is not None and later[0] is not None and not _sends_nothing(later[0]))
         literal = _literal_pid(arg)
         if literal is not None:
             pids.add(literal)
@@ -86,5 +100,4 @@ def kill_argv_signals_pid(argv: list[str], pid: str, *, shell_builtin: bool) -> 
             # `kill PID -0` or `/bin/kill PID -l` has already signalled PID.
             options = False
         index += 1
-    number = (signal or "TERM").strip().upper().removeprefix("SIG").removeprefix("+")
-    return pid in pids and (term or not (number and not number.strip("0")))
+    return pid in pids and (term or not _sends_nothing(signal or "TERM"))

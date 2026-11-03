@@ -30,7 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command,
+    detect_hardline_command, is_pid_bound_key,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -415,7 +415,7 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        if choice == "always" and not is_pid_bound_key(key):
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -587,6 +587,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     pending["description"] = description
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
+    elif any(is_pid_bound_key(key) for key in pattern_keys or [pattern_key]):
+        pending["allow_permanent"] = False  # the self-kill key names this PID
     submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
@@ -608,6 +610,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     }
     if smart_denied:
         result.update(smart_denied=True, allow_permanent=False)
+    elif "allow_permanent" in pending:
+        result["allow_permanent"] = False
     return result
 
 
@@ -848,7 +852,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    # A PID-bound key (own-process kill) stops matching after a restart: offer once/session only.
+    allow_permanent = not smart_denied and not any(is_pid_bound_key(key) for key in pattern_keys or [pattern_key])
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -897,7 +902,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
+                "allow_permanent": allow_permanent,
                 "allow_session": not smart_denied,
             }
             if smart_denied:

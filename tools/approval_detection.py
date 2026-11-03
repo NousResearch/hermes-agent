@@ -735,6 +735,12 @@ _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-s
 _SELF_KILL_DESCRIPTION = "kill own Hermes process (self-termination, PID {pid})"
 
 
+def is_pid_bound_key(pattern_key: str) -> bool:
+    """A self-kill key names this process's PID, so it means nothing after a restart: it can be
+    approved once or for the session, but must never land in the permanent allowlist."""
+    return isinstance(pattern_key, str) and pattern_key.startswith(_SELF_KILL_DESCRIPTION.split("{", 1)[0])
+
+
 def _command_parser_limit_exceeded(command: str) -> bool:
     """Bound all parser work before normalization/tokenization. Separator counting is deliberately
     conservative: quoted separators over-count, but crossing the ceiling fails closed rather than

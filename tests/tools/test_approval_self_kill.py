@@ -260,6 +260,13 @@ class TestApprovalClassificationTable:
             ("kill {pid}", "self-kill"),
             ("env -S 'printf ok'", None),
             ("kill -0 {pid}", None),
+            # Bash 3.2 (macOS /bin/bash) still reads a later signal option after `-0`.
+            ("kill -0 -s TERM {pid}", "self-kill"),
+            # Two signal options have no single reading, so the terminating one counts.
+            ("time kill -TERM -s0 {pid}", "self-kill"),
+            # Every signal option zero: still only an existence check.
+            ("kill -0 -s 0 {pid}", None),
+            ("time kill -0 -s0 {pid}", None),
         ],
     )
     def test_command_classification(self, template, expected):
@@ -309,3 +316,33 @@ class TestSelfPidGuardBackendScope:
 
         assert trailing_amp_background_command("sleep 1 &", env_type) == "sleep 1"
         assert observed == [("sleep 1 &", protected), ("sleep 1", protected)]
+
+
+class TestSelfKillApprovalScope:
+    """The self-kill key names this PID, so an "always" answer must not write it to the allowlist."""
+
+    def test_always_choice_keeps_a_pid_bound_key_to_the_session(self, monkeypatch):
+        dangerous, key, _ = detect_dangerous_command(f"kill {os.getpid()}")
+        assert dangerous is True
+        session, permanent = [], []
+        monkeypatch.setattr(approval_module, "approve_session", lambda _s, k: session.append(k))
+        monkeypatch.setattr(approval_module, "approve_permanent", lambda k: permanent.append(k))
+        monkeypatch.setattr(approval_module, "save_permanent_allowlist", lambda _g: None)
+
+        approval_module._persist_choice("sess", "always", [key, "recursive delete"])
+
+        assert session == [key, "recursive delete"]
+        assert permanent == ["recursive delete"]
+
+    def test_pending_fallback_does_not_offer_always_for_a_pid_bound_key(self, monkeypatch):
+        _, key, desc = detect_dangerous_command(f"kill {os.getpid()}")
+        submitted = []
+        monkeypatch.setattr(approval_module, "submit_pending", lambda _s, entry: submitted.append(entry))
+
+        result = approval_module._pending_result(
+            approval_module._COMMAND_GATE, "sess", command=f"kill {os.getpid()}", description=desc,
+            pattern_key=key, pattern_keys=[key], body=None, smart_denied=False)
+
+        assert submitted[0]["allow_permanent"] is False
+        assert result["allow_permanent"] is False
+        assert result["status"] == "pending_approval"

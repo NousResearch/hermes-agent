@@ -33,6 +33,15 @@ def test_stale_google_transitives_are_reported_missing(monkeypatch):
     assert {"google-auth", "httplib2", "pyasn1"} <= stale
 
 
+def test_pyasn1_below_the_decoder_dos_fixes_is_reported_missing(monkeypatch):
+    """0.6.4 has four open decoder DoS advisories (GHSA-2qm8-x737-gmw5 and siblings, fixed in 0.6.5). An
+    install left on it is repaired, not accepted, by the runtime check that guards the Google Chat adapter."""
+    pins = dict(spec.split("==") for spec in oauth._REQUIRED_PACKAGES)
+    monkeypatch.setattr(oauth, "_distribution_version", {**pins, "pyasn1": "0.6.4"}.__getitem__)
+
+    assert [spec.split("==")[0] for spec in oauth._missing_required_packages()] == ["pyasn1"]
+
+
 def test_installer_repairs_stale_transitives_through_pm(monkeypatch, capsys):
     states = iter([["google-auth==2.55.1", "httplib2==0.32.0", "pyasn1==0.6.4"], []])
     monkeypatch.setattr(oauth, "_missing_required_packages", lambda: next(states))

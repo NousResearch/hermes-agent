@@ -34,7 +34,9 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from agent.adaptive_context import init_adaptive_context
 from agent.agent_init_compression_notice import _emit_compression_summary
+from agent.agent_init_model_warning import _warn_nonagentic_hermes_model
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -1943,25 +1945,6 @@ def _enforce_minimum_context(agent):
         )
 
 
-def _warn_nonagentic_hermes_model(agent):
-    # Nous Hermes 3/4 are chat models, not tool-call-tuned. cli.py show_banner() already
-    # warns on the CLI, so skip platform=="cli"; non-quiet non-CLI surfaces still get it.
-    if agent.quiet_mode or (agent.platform or "cli") == "cli":
-        return
-    with suppress(Exception):
-        from hermes_cli.model_switch import _check_hermes_model_warning
-        _hermes_warn = _check_hermes_model_warning(agent.model or "")
-        if _hermes_warn:
-            _user_msg = (
-                "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
-                "lack reliable tool-calling for agent workflows (delegation, "
-                "cron, proactive tools). Consider an agentic model instead "
-                "(Claude, GPT, Gemini, Qwen-Coder, etc.)."
-            )
-            agent._emit_warning(_user_msg)
-            _ra().logger.warning(_hermes_warn)
-
-
 def _inject_context_engine_tools(agent):
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
@@ -2203,6 +2186,7 @@ def init_agent(
     _warn_nonagentic_hermes_model(agent)
     _inject_context_engine_tools(agent)
     _init_usage_state(agent)
+    init_adaptive_context(agent, _agent_cfg)
     _clamp_compressor_to_ollama_num_ctx(agent)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)

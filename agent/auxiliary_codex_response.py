@@ -9,6 +9,55 @@ from types import SimpleNamespace
 from typing import Any, List, Optional, Tuple
 
 
+def _reported_fields(value: Any) -> Optional[dict[str, Any]]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_unset=True)
+    return dict(vars(value))
+
+
+class _CodexCompletionProvenance:
+    """Retain supplier metadata separately from the stream assembler's defaults."""
+
+    def __init__(self, on_event):
+        self.response = None
+        self._on_event = on_event
+
+    def on_event(self, event):
+        from agent.auxiliary_client import _field
+
+        if _field(event, "type") in {
+            "response.completed", "response.incomplete", "response.failed", "response.cancelled",
+        }:
+            self.response = _field(event, "response")
+        self._on_event(event)
+
+    def completion(self, text_parts, tool_calls, finish_reason):
+        from agent.auxiliary_client import _field
+
+        fields = _reported_fields(_field(self.response, "usage"))
+        usage = None
+        if fields is not None:
+            for chat_key, responses_key in (
+                ("prompt_tokens", "input_tokens"), ("completion_tokens", "output_tokens"),
+            ):
+                if responses_key in fields:
+                    fields[chat_key] = fields[responses_key]
+            usage = SimpleNamespace(**fields)
+        message = SimpleNamespace(
+            role="assistant", content="".join(text_parts).strip() or None, tool_calls=tool_calls or None,
+        )
+        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
+        return SimpleNamespace(
+            choices=[choice], id=_field(self.response, "id"), model=_field(self.response, "model"),
+            status=_field(self.response, "status"),
+            incomplete_details=_reported_fields(_field(self.response, "incomplete_details")), usage=usage,
+        )
+
+
 def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
 ) -> tuple[list[str], list[Any], Any, str]:

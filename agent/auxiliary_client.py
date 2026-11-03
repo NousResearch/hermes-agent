@@ -1561,6 +1561,8 @@ class _CodexCompletionsAdapter:
         issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
+        from agent.auxiliary_codex_response import _CodexCompletionProvenance
+        provenance = _CodexCompletionProvenance(guard.on_event)
         try:
             guard.start()
             from agent.codex_runtime import _consume_codex_event_stream
@@ -1578,9 +1580,10 @@ class _CodexCompletionsAdapter:
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
                     final = event_stream
+                    provenance.response = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=issuer_model, on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=provenance.on_event
                     )
             finally:
                 guard.release_stream(event_stream)
@@ -1588,7 +1591,7 @@ class _CodexCompletionsAdapter:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
             from agent.auxiliary_codex_response import _parse_codex_final_response
 
-            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+            text_parts, tool_calls_raw, _usage, finish_reason = _parse_codex_final_response(
                 final, issuer_kind=issuer_kind, issuer_model=issuer_model,
             )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
@@ -1602,13 +1605,7 @@ class _CodexCompletionsAdapter:
             raise
         finally:
             guard.finish()
-        # Shape the result like chat.completions.
-        message = SimpleNamespace(
-            role="assistant", content="".join(text_parts).strip() or None,
-            tool_calls=tool_calls_raw or None,
-        )
-        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return provenance.completion(text_parts, tool_calls_raw, finish_reason)
 
 
 class _ChatShim:

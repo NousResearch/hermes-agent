@@ -55,15 +55,15 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
       {logText ? (
         <details className="text-xs text-muted-foreground" onToggle={revealTail}>
           <summary className="cursor-pointer select-none text-center">{t.updates.technicalDetails}</summary>
-          <div className="relative mt-2">
+          <div className="mt-2 grid gap-1">
+            <CopyButton appearance="inline" className="justify-self-end" text={logText} />
             <pre
-              className="max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-border/70 bg-muted/35 px-3 py-2 pr-8 font-mono text-[0.6875rem] leading-4"
+              className="max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-border/70 bg-muted/35 px-3 py-2 font-mono text-[0.6875rem] leading-4"
               data-selectable-text="true"
               ref={logRef}
             >
               {logText}
             </pre>
-            <CopyButton appearance="inline" className="absolute right-1.5 top-1.5" text={logText} />
           </div>
         </details>
       ) : null}

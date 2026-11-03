@@ -542,6 +542,34 @@ export function toolEventOwnerMessageId(
     : toolCallOwnerMessageId(messages, payload, phase)
 }
 
+const isQueuedPromptRow = (message: ChatMessage) => message.role === 'user' && message.id.startsWith('user-queued-')
+
+/**
+ * True while a projected queued prompt still waits for a later turn.
+ *
+ * Resume projects the queued prompt below the running turn's rows, and it
+ * stays on screen after its own turn starts, until history replaces it. The
+ * next `message.start` after it is drawn is that prompt's turn starting, so
+ * `markQueuedPromptStarted` records it on the row. Until then the row belongs
+ * to a later turn, whatever the running turn has drawn above or below it.
+ */
+export function queuedPromptAwaitsNextTurn(messages: ChatMessage[]): boolean {
+  const queued = messages.findLast(isQueuedPromptRow)
+
+  return Boolean(queued && !queued.queuedTurnStarted)
+}
+
+/** Record that the queued prompt's turn has started (on `message.start`). */
+export function markQueuedPromptStarted(messages: ChatMessage[]): ChatMessage[] {
+  const queuedIndex = messages.findLastIndex(isQueuedPromptRow)
+
+  if (queuedIndex < 0 || messages[queuedIndex].queuedTurnStarted) {
+    return messages
+  }
+
+  return messages.map((message, index) => (index === queuedIndex ? { ...message, queuedTurnStarted: true } : message))
+}
+
 /**
  * True when a tool event is another copy of a call this turn already finished.
  *
@@ -556,9 +584,9 @@ export function toolEventOwnerMessageId(
  * matches the finished part's content: a start carries exactly the same
  * arguments (the same keys, ignoring the ones the event itself adds), a
  * completion the same result. The search stops at the newest user message;
- * a projected queued prompt is passed over only while it still belongs to the
- * next turn (`queuedIsNextTurn`, the rule `completeAssistantMessage` uses). A
- * later turn that reuses an id with the same arguments gets its own row.
+ * a projected queued prompt is passed over only while it still waits for a
+ * later turn (`queuedPromptAwaitsNextTurn`). A later turn that reuses an id
+ * with the same arguments gets its own row.
  *
  * Content can't tell one case apart: an older constant-id backend running the
  * same command twice in one turn. Its second call is hidden while it runs,
@@ -589,10 +617,7 @@ export function isRedeliveredToolEvent(
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
 
-    if (
-      message.id === ownerId ||
-      (message.role === 'user' && !(queuedIsNextTurn && message.id.startsWith('user-queued-')))
-    ) {
+    if (message.id === ownerId || (message.role === 'user' && !(queuedIsNextTurn && isQueuedPromptRow(message)))) {
       return false
     }
 

@@ -17,6 +17,7 @@ import {
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
+  queuedPromptAwaitsNextTurn,
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
@@ -640,10 +641,11 @@ export function useMessageStream({
           eventTarget: state => toolEventOwnerMessageId(state.messages, payload, phase, state.turnLive),
           // A copy of a call this turn already finished (re-delivered start or
           // completion) would otherwise draw that call a second time. A queued
-          // prompt row is the next turn's only while this turn has a response.
+          // prompt row is passed over only until its own turn starts; from then
+          // on it is that turn's boundary.
           skip: state =>
             isRedeliveredToolEvent(state.messages, payload, phase, {
-              queuedIsNextTurn: Boolean(state.streamId || state.sawAssistantPayload || state.interimBoundaryPending)
+              queuedIsNextTurn: queuedPromptAwaitsNextTurn(state.messages)
             })
         },
         occurredAt

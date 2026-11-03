@@ -3,7 +3,7 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type GatewayEventPayload, markQueuedPromptStarted } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -200,6 +200,9 @@ function handleMessageStart(ctx: GatewayEventContext): boolean {
 
     return {
       ...state,
+      // A projected queued prompt drawn before this start is this turn's
+      // prompt from here on, even while its row is still on screen.
+      messages: markQueuedPromptStarted(state.messages),
       busy: true,
       awaitingResponse: true,
       sawAssistantPayload: false,

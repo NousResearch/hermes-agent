@@ -7,6 +7,8 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
@@ -254,6 +256,9 @@ class RoomContext(Result):
 
     purpose: str
     notes: str
+    #: ``everyone`` (every member answers an unaddressed message) or ``lead`` (the lead assigns it).
+    routing: Literal["everyone", "lead"] = "everyone"
+    lead_member_id: str = ""
 
 
 class GroupsStateResult(Result):
@@ -302,6 +307,9 @@ class GroupsContextParams(RoomParams):
     event_id: str
     purpose: str
     notes: str
+    #: Omitted routing fields keep the room's current routing.
+    routing: Literal["everyone", "lead"] | None = None
+    lead_member_id: str | None = None
 
 
 class GroupsContextResult(Result):

@@ -114,7 +114,8 @@ def test_purpose_and_notes_ride_the_user_turn_prompt_and_freeze_per_discussion(r
     # An edit after the discussion opened applies from the next message: the planned turn is unchanged.
     context.set_room_context(room_db, room_id=ROOM_ID, event_id="ctx-2", purpose="Something else", notes="")
     assert _plan(room_db, before_seq=message["seq"]).task.identity == first.task.identity
-    assert context.room_context(room_db, room_id=ROOM_ID) == {"purpose": "Something else", "notes": ""}
+    assert context.room_context(room_db, room_id=ROOM_ID) == {
+        "purpose": "Something else", "notes": "", "routing": "everyone", "lead_member_id": ""}
 
 
 def test_room_without_context_keeps_the_existing_prompt(room_db: Path):

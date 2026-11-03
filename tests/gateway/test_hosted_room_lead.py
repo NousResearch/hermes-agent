@@ -1,0 +1,161 @@
+"""Opt-in lead routing in hosted Group Chats, through the real room store and Discussion policy."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from gateway import hosted_room_context as context
+from gateway import hosted_room_discussion as discussion
+from gateway import hosted_rooms
+
+ROOM_ID = "room-lead"
+PROFILES = ("ada", "linus", "grace")
+MEMBERS = [{"member_id": f"member-{p}", "profile": p, "handle": p} for p in PROFILES]
+
+
+@pytest.fixture
+def room_db(tmp_path: Path) -> Path:
+    db = tmp_path / "state.db"
+    hosted_rooms.create_room(db, room_id=ROOM_ID, name="Kernel", members=MEMBERS, authority_gateway_id=hosted_rooms.local_authority_gateway_id(), now=1)
+    return db
+
+
+def _room(db: Path) -> dict:
+    room = hosted_rooms.room_state(db, room_id=ROOM_ID)
+    room["members"] = MEMBERS
+    return room
+
+
+def _events(db: Path) -> list[dict]:
+    return hosted_rooms.read_events(db, room_id=ROOM_ID, limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
+
+
+def _plan(db: Path, source_seq: int) -> discussion.DiscussionDecision:
+    return discussion.plan_next_task(
+        _room(db), _events(db), local_profiles=PROFILES,
+        room_context=context.room_context(db, room_id=ROOM_ID, before_seq=source_seq))
+
+
+def _say(db: Path, text: str, *, event_id: str = "u1", thread_id: str = "t1") -> int:
+    return hosted_rooms.append_event(
+        db, room_id=ROOM_ID, event_id=event_id, kind="message.user", actor={"kind": "user", "id": "desktop"},
+        payload={"text": text, "thread_id": thread_id}, authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)["seq"]
+
+
+def _finish(db: Path, decision: discussion.DiscussionDecision, text: str, status: str = "settled") -> list[dict]:
+    result = {"text": text} if status == "settled" else {"error": text}
+    plan = discussion.plan_publication(
+        _room(db), _events(db), decision.task, status=status, result=result, local_profiles=PROFILES)
+    return [hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID)) for event in plan.events]
+
+
+def _lead_room(db: Path) -> None:
+    context.set_room_context(
+        db, room_id=ROOM_ID, event_id="ctx", purpose="Kernel work", notes="linus: scheduler; grace: compiler",
+        routing="lead", lead_member_id="member-ada")
+
+
+def test_unaddressed_message_wakes_only_who_the_lead_picks(room_db: Path):
+    _lead_room(room_db)
+    seq = _say(room_db, "The build is slow, can someone look?")
+
+    routing = _plan(room_db, seq)
+    assert (routing.status, routing.reason, routing.task.member.handle) == ("task", "lead_routing", "ada")
+    assert routing.task.seen_through_seq < seq
+    assert '{"assign": ["handle"]}' in routing.task.payload["prompt"]
+    assert "linus: scheduler" in routing.task.payload["prompt"]
+
+    published = _finish(room_db, routing, 'Sure: {"assign": ["@Linus"]}')
+    assignment = published[0]
+    assert assignment["kind"] == "room.assignment"
+    assert assignment["payload"]["member_ids"] == ["member-linus"]
+    assert assignment["payload"]["lead_member_id"] == "member-ada" and assignment["payload"]["fallback"] is False
+    # The routing answer itself is never a visible reply.
+    assert [event["kind"] for event in published] == ["room.assignment", "turn.settled"]
+    assert published[1]["payload"]["passed"] is True
+
+    turn = _plan(room_db, seq)
+    assert (turn.reason, turn.task.member.handle) == ("member_turn", "linus")
+    assert "The room lead @ada gave the user's message to you." in turn.task.payload["prompt"]
+    assert "User (user): The build is slow" in turn.task.payload["prompt"]
+    _finish(room_db, turn, "On it: the scheduler is thrashing.")
+    assert (_plan(room_db, seq).status, _plan(room_db, seq).reason) == ("settled", "silent_round")
+
+
+@pytest.mark.parametrize("answer", ["Linus should take it", '{"assign": ["@all"]}', '{"assign": []}', "(pass)"])
+def test_a_routing_answer_naming_no_member_wakes_the_lead_alone_never_everyone(room_db: Path, answer: str):
+    _lead_room(room_db)
+    seq = _say(room_db, "Anyone?")
+
+    assignment = _finish(room_db, _plan(room_db, seq), answer)[0]
+    assert assignment["payload"]["member_ids"] == ["member-ada"] and assignment["payload"]["fallback"] is True
+    # The lead's routing receipt does not consume its own round-0 turn.
+    turn = _plan(room_db, seq)
+    assert turn.task.member.handle == "ada" and turn.task.seen_through_seq >= seq
+    _finish(room_db, turn, "(pass)")
+    assert _plan(room_db, seq).status == "settled"
+
+
+def test_a_failed_routing_turn_falls_back_to_the_lead(room_db: Path):
+    _lead_room(room_db)
+    seq = _say(room_db, "Anyone?")
+
+    published = _finish(room_db, _plan(room_db, seq), "provider down", status="failed")
+    assert [event["kind"] for event in published] == ["room.assignment", "turn.failed"]
+    assert _plan(room_db, seq).task.member.handle == "ada"
+
+
+@pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
+def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
+    _lead_room(room_db)
+    seq = _say(room_db, text)
+
+    decision = _plan(room_db, seq)
+    assert (decision.reason, decision.task.member.handle) == ("member_turn", first)
+    assert decision.task.seen_through_seq >= seq
+
+
+def test_scheduled_posts_and_thread_replies_keep_their_resolution(room_db: Path):
+    _lead_room(room_db)
+    post = context.post_scheduled_message(
+        room_db, room_id=ROOM_ID, job_id="job1", job_name="Nightly", run_key="r1", text="all green")
+    settled = _plan(room_db, post["seq"])
+    assert settled.status == "settled"
+    hosted_rooms.append_event(  # what the room service records for a settled discussion
+        room_db, room_id=ROOM_ID, event_id="activity-1", kind="room.activity",
+        actor={"kind": "gateway", "id": hosted_rooms.local_authority_gateway_id()},
+        payload={"status": "settled", "reason_code": settled.reason, "thread_id": settled.thread_id,
+                 "discussion_event_id": settled.discussion_event_id},
+        authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)
+
+    first = _say(room_db, "@linus kick it", event_id="u1", thread_id="t2")
+    _finish(room_db, _plan(room_db, first), "Kicked.")
+    reply = _say(room_db, "thanks, anything else?", event_id="u2", thread_id="t2")
+    decision = _plan(room_db, reply)
+    # A reply inside a thread addresses everyone, as before: no routing turn.
+    assert (decision.reason, decision.task.member.handle) == ("member_turn", "ada")
+    assert decision.task.seen_through_seq >= reply
+
+
+def test_everyone_routing_plans_exactly_as_a_room_without_settings(room_db: Path):
+    _say(room_db, "hello")
+    plans = [discussion.plan_next_task(_room(room_db), _events(room_db), local_profiles=PROFILES, room_context=value)
+             for value in (None, {"purpose": "", "notes": "", "routing": "everyone", "lead_member_id": ""})]
+
+    assert plans[0].task.identity == plans[1].task.identity and plans[0].task.member.handle == "ada"
+
+
+def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db: Path):
+    with pytest.raises(hosted_rooms.HostedRoomError):
+        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead",
+                                 lead_member_id="member-nobody")
+    with pytest.raises(hosted_rooms.HostedRoomError):
+        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead")
+    _lead_room(room_db)
+
+    # An older Desktop saves purpose/notes only: the room stays a lead room.
+    context.set_room_context(room_db, room_id=ROOM_ID, event_id="c2", purpose="New purpose", notes="")
+    assert context.room_context(room_db, room_id=ROOM_ID) == {
+        "purpose": "New purpose", "notes": "", "routing": "lead", "lead_member_id": "member-ada"}

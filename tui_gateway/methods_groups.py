@@ -529,8 +529,8 @@ _passthrough(
     code=5117, room_code=4117, params=("room_id", "event_id", "name"), wrap="room")
 _passthrough(
     "groups.context", "gateway.hosted_room_context", "set_room_context",
-    """Set one hosted room's purpose and shared notes (both included in every member's turn prompt).""",
-    code=5121, room_code=4125, params=("room_id", "event_id", "purpose", "notes"))
+    """Set one hosted room's purpose, shared notes and routing (``everyone`` or ``lead``).""",
+    code=5121, room_code=4125, params=("room_id", "event_id", "purpose", "notes", "routing", "lead_member_id"))
 _passthrough(
     "groups.log", "gateway.hosted_rooms", "read_events",
     """Return a monotonic room-log delta after ``since_seq``.""",

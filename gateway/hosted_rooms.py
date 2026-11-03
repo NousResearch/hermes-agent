@@ -50,7 +50,7 @@ _CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.d
 _EVENT_KINDS_BY_ACTOR = {
     "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
     "gateway": frozenset({
-        "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
+        "member.unavailable", "room.activity", "room.assignment", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
         "authority.claimed", "authority.lost", "room.context_set", "room.created", "room.disbanded",

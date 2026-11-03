@@ -135,6 +135,143 @@ describe('a re-delivered event for a call this turn already finished', () => {
     expect(found[1]).toMatchObject({ completedAt: 112, timestamp: 111 })
   })
 
+  // Turn A finishes the delegation; turn B is the queued prompt, started while
+  // its projected row is still on screen.
+  function startQueuedTurn() {
+    dispatch('none')
+    event('message.complete', 106, { text: TEXT })
+    act(() => {
+      const state = stream.state(SID)
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `user-queued-${SID}`, parts: [{ text: 'next', type: 'text' }], role: 'user', timestamp: 107 }
+        ]
+      })
+    })
+    event('message.start', 110)
+  }
+
+  const expectTurnBRow = () => {
+    const messages = stream.state(SID).messages ?? []
+    const queuedIndex = messages.findIndex(message => message.id === `user-queued-${SID}`)
+
+    const found = (messages ?? []).flatMap((message, messageIndex) =>
+      message.parts.flatMap(part =>
+        part.type === 'tool-call' && part.toolCallId === CALL ? [{ messageIndex, part }] : []
+      )
+    )
+
+    expect(found).toHaveLength(2)
+    // Turn A's card is untouched, above the queued prompt.
+    expect(found[0].messageIndex).toBeLessThan(queuedIndex)
+    expect(found[0].part).toMatchObject({ completedAt: 104.5, result, timestamp: 103 })
+    // Turn B's own card sits below it.
+    expect(found[1].messageIndex).toBeGreaterThan(queuedIndex)
+
+    return found[1].part
+  }
+
+  it("draws turn B its own card when it reuses turn A's call after assistant text", () => {
+    startQueuedTurn()
+    event('message.delta', 111, { text: 'Dispatching again.' })
+    start(112)
+    complete(113)
+
+    expect(expectTurnBRow()).toMatchObject({ completedAt: 113, result, timestamp: 112 })
+  })
+
+  it("keeps turn B's card running when its start arrives after assistant text", () => {
+    startQueuedTurn()
+    event('message.delta', 111, { text: 'Dispatching again.' })
+    start(112)
+
+    const part = expectTurnBRow() as { completedAt?: number; result?: unknown }
+    expect(part.result).toBeUndefined()
+    expect(part.completedAt).toBeUndefined()
+  })
+
+  it('draws turn B its own card when only its completion follows assistant text', () => {
+    startQueuedTurn()
+    event('message.delta', 111, { text: 'Dispatching again.' })
+    complete(113)
+
+    expect(expectTurnBRow()).toMatchObject({ completedAt: 113, result })
+  })
+
+  it("still draws a copy of turn B's call once after assistant text", () => {
+    startQueuedTurn()
+    event('message.delta', 111, { text: 'Dispatching again.' })
+    start(112)
+    complete(113)
+    start(114)
+    complete(115)
+
+    expect(expectTurnBRow()).toMatchObject({ completedAt: 113, result, timestamp: 112 })
+  })
+
+  it('draws turn B its own card after an interim seal ends its live bubble', () => {
+    startQueuedTurn()
+    event('message.delta', 111, { text: 'Dispatching again.' })
+    event('message.interim', 111.5, { text: 'Dispatching again.' })
+    start(112)
+    complete(113)
+
+    expect(expectTurnBRow()).toMatchObject({ completedAt: 113, result, timestamp: 112 })
+  })
+
+  it("draws the running turn's copy once after an interim seal while a later prompt is queued", () => {
+    dispatch('after-tools')
+    act(() => {
+      const state = stream.state(SID)
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `user-queued-${SID}`, parts: [{ text: 'next', type: 'text' }], role: 'user', timestamp: 106 }
+        ]
+      })
+    })
+    start(107)
+    complete(108)
+
+    expect(rows()).toHaveLength(1)
+  })
+
+  const projectQueuedPrompt = (timestamp: number) =>
+    act(() => {
+      const state = stream.state(SID)
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `user-queued-${SID}`, parts: [{ text: 'next', type: 'text' }], role: 'user', timestamp }
+        ]
+      })
+    })
+
+  it("draws the running turn's copy once when its reply after an interim is drawn below the queued prompt", () => {
+    dispatch('after-tools')
+    projectQueuedPrompt(106)
+    // The running turn keeps talking; with its bubble sealed, the text lands below the queued row.
+    event('message.delta', 107, { text: 'Still working.' })
+    start(108)
+    complete(109)
+
+    expect(rows()).toHaveLength(1)
+  })
+
+  it('draws a copy once when it arrives after the turn ends but before the queued prompt starts', () => {
+    dispatch('none')
+    projectQueuedPrompt(106)
+    event('message.complete', 107, { text: TEXT })
+    start(108)
+    complete(109)
+
+    expect(rows()).toHaveLength(1)
+  })
+
   it("draws a todo read once when its start arrives again after the completion's snapshot", () => {
     const todos = [{ content: 'ship it', id: '1', status: 'pending' }]
     event('message.start', 160)

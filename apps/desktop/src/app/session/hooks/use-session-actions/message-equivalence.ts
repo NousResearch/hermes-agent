@@ -40,6 +40,9 @@ const COMPARED_FIELDS = [
   'branchGroupId',
   'interim',
   'interrupted',
+  // Not painted, but the view's copy can seed session state again (resume
+  // reads $messages), so a started queued turn must reach it.
+  'queuedTurnStarted',
   'reactions',
   'timestamp',
   'completedAt',

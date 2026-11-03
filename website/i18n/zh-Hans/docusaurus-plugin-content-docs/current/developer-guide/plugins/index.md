@@ -276,7 +276,7 @@ def register(ctx):
 - `ctx.register_hook()` 订阅生命周期事件
 - `ctx.register_cli_command()` 注册 CLI 子命令（例如 `hermes my-plugin <subcommand>`）
 - `ctx.register_command()` 注册会话内斜杠命令（例如在 CLI / 网关聊天中输入 `/myplugin <args>`）——详见下方[注册斜杠命令](#注册斜杠命令)
-- `ctx.dispatch_tool(name, arguments)` ——以父代理的上下文（审批、凭证、task_id 自动连接）调用任意其他工具（内置或来自其他插件）。适用于需要直接调用 `terminal`、`read_file` 或其他工具的斜杠命令处理器，效果等同于模型直接调用。
+- `ctx.dispatch_tool(tool_name, args)` ——以父代理的上下文（审批、凭证、task_id 自动连接）调用任意其他工具（内置或来自其他插件）。适用于需要直接调用 `terminal`、`read_file` 或其他工具的斜杠命令处理器，效果等同于模型直接调用。
 - 如果此函数崩溃，插件将被禁用，但 Hermes 继续正常运行
 
 **`dispatch_tool` 示例——执行工具的斜杠命令：**
@@ -746,7 +746,7 @@ def register(ctx):
 
 ### 从斜杠命令分发工具
 
-需要编排工具的斜杠命令处理器（生成子代理 `delegate_task`、调用 `file_edit` 等）应使用 `ctx.dispatch_tool()`，而非深入框架内部。父代理上下文（工作区提示、spinner、模型继承）会自动连接。
+需要编排工具的斜杠命令处理器（生成子代理 `delegate_task`、调用 `write_file` 等）应使用 `ctx.dispatch_tool()`，而非深入框架内部。父代理上下文（工作区提示、spinner、模型继承）会自动连接。
 
 ```python
 def register(ctx):
@@ -767,13 +767,13 @@ def register(ctx):
     )
 ```
 
-**签名：** `ctx.dispatch_tool(name: str, args: dict, *, parent_agent=None) -> str`
+**签名：** `ctx.dispatch_tool(tool_name: str, args: dict, **kwargs) -> str`
 
 | 参数 | 类型 | 描述 |
 |-----------|------|-------------|
-| `name` | `str` | 工具注册表中的工具名称（例如 `"delegate_task"`、`"file_edit"`） |
+| `tool_name` | `str` | 工具注册表中的工具名称（例如 `"delegate_task"`、`"write_file"`） |
 | `args` | `dict` | 工具参数，与模型发送的格式相同 |
-| `parent_agent` | `Agent \| None` | 可选覆盖。省略时从当前 CLI 代理解析（网关模式下优雅降级） |
+| `parent_agent=` | `Agent \| None` | 可选的关键字覆盖（经 `**kwargs` 传入）。省略时从当前 CLI 代理解析（网关模式下优雅降级） |
 
 **运行时行为：**
 

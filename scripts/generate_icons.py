@@ -116,8 +116,7 @@ except ImportError:
 # on the runtime dependencies without the application package installed
 # (Docker, bundles). tests/scripts/test_icon_flavors.py pins it to the canonical one.
 _CANARY_TAG_RE = re.compile(
-    r"^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-    r"\+canary\.20\d{6}T\d{6}Z$"
+    r"^canary\.(?P<stamp>20\d{6}T\d{6}Z)-v(?P<core>(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$"
 )
 
 # The nous dark background (#0d1117) — fixed dark tile/background everywhere.

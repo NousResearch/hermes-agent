@@ -74,8 +74,30 @@ export function contentTypeFor(filename) {
 }
 
 const VERSION_CORE = '(?:0|[1-9]\\d{0,2})\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)'
-const CANARY_TAG_RE = new RegExp(`^v(${VERSION_CORE})\\+canary\\.(20\\d{6}T\\d{6}Z)$`)
-const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
+// canary.<stamp>-v<stable> (hermes_cli/update_channel.py _CANARY_TAG_RE): group 1 is the stamp,
+// group 2 the stable core. A canary's version is <stable>+canary.<stamp> (releaseVersion).
+export const CANARY_TAG_RE = new RegExp(`^canary\\.(20\\d{6}T\\d{6}Z)-v(${VERSION_CORE})$`)
+export const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
+
+/** The version a stable or canary tag publishes (update_channel.release_version). Never strip a
+ * leading `v`: a canary tag starts with its kind.
+ * @param {string} tag @returns {string | null}
+ */
+export function releaseVersion(tag) {
+  const value = String(tag || '')
+  if (STABLE_TAG_RE.test(value)) return value.slice(1)
+  const canary = CANARY_TAG_RE.exec(value)
+  return canary ? `${canary[2]}+canary.${canary[1]}` : null
+}
+
+/** releaseVersion for a tag already admitted as a release tag; throws on anything else.
+ * @param {string} tag @returns {string}
+ */
+export function requireReleaseVersion(tag) {
+  const version = releaseVersion(tag)
+  if (version === null) throw new Error(`Invalid release tag: ${tag}`)
+  return version
+}
 
 /**
  * @param {string} stamp YYYYMMDDTHHMMSSZ
@@ -144,7 +166,7 @@ export function nativeQuad(ref, epochSeconds) {
 function releaseEpoch(tag, gitRoot) {
   const canary = CANARY_TAG_RE.exec(tag)
   if (canary) {
-    const stamp = canary[2]
+    const stamp = canary[1]
     const epoch = stampToEpoch(stamp)
     const compact = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').replace(/\.000Z$/, '')
     const expected = `${compact.slice(0, 8)}T${compact.slice(8)}Z`
@@ -180,10 +202,13 @@ function releaseEpoch(tag, gitRoot) {
   return Number(timestamp)
 }
 
-/** @param {string} tag @param {string} gitRoot */
+/** The Store package version: the Store reserves revision zero, so every Store package uses the
+ * stable ``year.hourOfYear.secondOfHour.0`` scheme of its build time. A canary's Store bundle is
+ * built and staged to prove its packaging but never submitted; it still carries a Store-valid quad.
+ * @param {string} tag @param {string} gitRoot */
 export function storePackageVersion(tag, gitRoot) {
   if (!CANARY_TAG_RE.test(tag) && !STABLE_TAG_RE.test(tag)) throw new Error('A Store build requires an exact release tag')
-  return nativeQuad(tag, releaseEpoch(tag, gitRoot))
+  return storePackageVersionAt(releaseEpoch(tag, gitRoot))
 }
 
 /** The custom template controls package identity, not executable VERSIONINFO.
@@ -259,20 +284,20 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     return { identity, version: `${version}.0`, fileVersion: version, name: identity.artifactNamePascal }
   }
   if (identity.store) {
-    return { identity, version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
-      fileVersion: String(tag).slice(1), name: identity.artifactNamePascal }
+    return { identity, version: storePackageVersion(String(tag), repoRoot),
+      fileVersion: requireReleaseVersion(String(tag)), name: identity.artifactNamePascal }
   }
   if (CANARY_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {
     return {
       identity,
       version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
-      fileVersion: String(tag).slice(1),
+      fileVersion: requireReleaseVersion(String(tag)),
       name: identity.artifactNamePascal,
     }
   }
   if (tag) throw new Error(`Invalid release tag: ${tag}`)
   // Release builds override Electron's version without rewriting package.json.
-  const version = tag ? tag.slice(1) : pkg.version
+  const version = pkg.version
   return {
     identity,
     version: `${version}.0`,

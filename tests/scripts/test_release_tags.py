@@ -50,10 +50,10 @@ def test_canary_tag_order_and_remote_selection(release_repo):
     assert release.get_last_canary_tag() is None
     for tag in ('v2026.7.7', 'v2026.7.20'):
         git('tag', tag)
-    for tag in ('v0.9.0', 'v0.20.0', 'v0.19.0', 'v0.20.0+canary.20260818T090000Z',
-                'v0.20.0+canary.20260818T171500Z'):
+    for tag in ('v0.9.0', 'v0.20.0', 'v0.19.0', 'canary.20260818T090000Z-v0.20.0',
+                'canary.20260818T171500Z-v0.20.0'):
         git('tag', tag)
-    assert release.get_last_canary_tag() == 'v0.20.0+canary.20260818T171500Z'
+    assert release.get_last_canary_tag() == 'canary.20260818T171500Z-v0.20.0'
     with pytest.raises(SystemExit, match='no git remotes'):
         release.resolve_push_remote(None)
     git('remote', 'add', 'origin', 'https://github.com/o/r')

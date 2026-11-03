@@ -255,7 +255,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
     new = candidates("v1.2.4", "b" * 40, "2" * 64, archive="rc.1-v1.2.4")
     require_stable_identity(new["tag"], new["commit"])
-    for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc", "rc.1-v1.2.4"):
+    for tag in ("canary.20260907T143420Z-v1.2.4", "v1.2.4-rc", "rc.1-v1.2.4"):
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"])
     transitions = plan_transitions(old, new, BASE)
@@ -446,8 +446,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         # A claim cut before lanes existed reads as the lane set that gated the same jobs.
-        "autopublish": False, "lanes": lane_set.DEFAULT,
-        "claim_epoch": 1_790_000_000,
+        "autopublish": False, "lanes": lane_set.DEFAULT, "require_green": True,
+        "claim_epoch": 1_790_000_000, "policy": "stable",
     }
     # The metadata binds the attempt its ref names.
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
@@ -542,15 +542,17 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
+    # A stable release never runs the canary's publication job.
     off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
-           "candidates-termux", "termux-checks"}
+           "candidates-termux", "termux-checks", "publish-canary"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
-    assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
+    everything = stable.gate_expectations(required, lane_set.NAMES)
+    assert {name for name, result in everything.items() if result == "skipped"} == {"publish-canary"}
     intel = stable.gate_expectations(required, lane_set.select(with_=["macos-intel"]))
     assert {name for name, result in intel.items() if result == "skipped"} == \
-        {"candidates-termux", "termux-checks"}
+        {"candidates-termux", "termux-checks", "publish-canary"}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \

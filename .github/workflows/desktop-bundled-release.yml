@@ -144,7 +144,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to bundle (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ). Must exist on the repo.'
+        description: 'Release tag to bundle (vX.Y.Z or canary.YYYYMMDDTHHMMSSZ-vX.Y.Z). Must exist on the repo.'
         required: false
         type: string
         default: ''
@@ -401,56 +401,14 @@ jobs:
               python -m scripts.releases.stable verify
               exit 0
               ;;
-            '') [[ "$TAG" == *+canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
-            *) echo 'Unknown release phase' >&2; exit 1 ;;
-          esac
-          case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*+canary.20[0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
-              echo "canary tag: $TAG"
-              ;;
-            v[0-9]*.[0-9]*.[0-9]*)
-              echo "tag: $TAG"
-              PYVER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -1)
-              if [ "$TAG" != "v$PYVER" ]; then
-                echo "::error::tag $TAG does not match pyproject.toml version $PYVER"
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::'$TAG' is not a release tag (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ)"
+            '')
+              # Every release tag runs the one Stable Release pipeline: release.py release for a
+              # stable claim, release.py --canary (canary-release.yml) for a canary.
+              echo '::error::Release tags build and publish through Stable Release, not a direct dispatch' >&2
               exit 1
               ;;
+            *) echo 'Unknown release phase' >&2; exit 1 ;;
           esac
-          SHA="$(git rev-parse --verify "$TAG^{commit}")"
-          if [ -z "$SHA" ]; then
-            echo "::error::could not resolve $TAG to a commit"
-            exit 1
-          fi
-          # A correctly-shaped tag on an unreviewed commit is NOT a valid
-          # build input for a release-signing workflow: only a commit that
-          # is already an ancestor of origin/main may be built.
-          git fetch origin main
-          if ! git merge-base --is-ancestor "$SHA" origin/main; then
-            echo "::error::tag $TAG (${SHA:0:12}) is not an ancestor of origin/main — refusing to build from an unreviewed commit"
-            exit 1
-          fi
-          echo "tag $TAG resolves to $SHA (on origin/main)"
-          TAG_OBJECT="$(git rev-parse --verify "$TAG^{tag}")" || {
-            echo "::error::$TAG must be an annotated tag"; exit 1;
-          }
-          echo "tag-object=$TAG_OBJECT" >> "$GITHUB_OUTPUT"
-          case "$TAG" in
-            *+canary.*)
-              echo "channel=canary" >> "$GITHUB_OUTPUT"
-              python - "$TAG" >> "$GITHUB_OUTPUT" <<'PY'
-          import datetime as dt, sys
-          instant = dt.datetime.strptime(sys.argv[1].split("+canary.", 1)[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.UTC)
-          print(f"release-epoch={int(instant.timestamp())}")
-          PY
-              ;;
-            *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
-          esac
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   # ── Windows builders (REAL) ───────────────────────────────────────────────
   # Windows assembly and publication depend on these native Windows legs.
@@ -663,12 +621,15 @@ jobs:
           AZURE_TOKEN_CREDENTIALS: prod
           SKIP_SIGNED: ${{ inputs.skip-signed }}
           SKIP_STORE: ${{ inputs.skip-store }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
         run: |
           if ($env:SKIP_SIGNED -ne 'true') {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
+          # A canary candidate (the Stable Release pipeline in canary mode) builds the Store package
+          # like any candidate; only the legacy direct canary dispatch leaves it out.
+          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and ($env:RELEASE_PHASE -eq 'candidate' -or $env:HERMES_PAYLOAD_TAG -notlike "canary.*")) {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -733,7 +694,7 @@ jobs:
         # A Store-only candidate has no signed package to describe, so no metadata.
         run: |
           args=(--include '*.msix')
-          if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; }; then
+          if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
@@ -1141,7 +1102,7 @@ jobs:
         # Per-arch feed inputs stay in the tag archive until both legs pass.
         run: |
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
@@ -2450,7 +2411,8 @@ jobs:
     # publication pass switches it to Immediate, so a run whose stable-publish fails
     # leaves a held submission no customer sees, never a live build.
     needs: [validate]
-    if: inputs.release-phase == 'publish' && inputs.skip-store != true
+    # Never a canary: a canary builds and stages its Store bundle but only stable submits one.
+    if: inputs.release-phase == 'publish' && inputs.skip-store != true && !startsWith(inputs.tag, 'canary.')
     # The Store is not a release gate: a failed submission leaves the release publishable
     # and the summary names the Store package for a manual Partner Center upload.
     continue-on-error: true
@@ -2546,72 +2508,3 @@ jobs:
                                             windows_smokes_with_bundle=os.environ.get('WINDOWS_SMOKES_WITH_BUNDLE') == 'true'))
           PY
 
-  publish-canary:
-    name: Publish the canary release
-    needs:
-      [
-        validate,
-        build-win32-x64,
-        build-win32-arm64,
-        build-darwin-arm64,
-        build-darwin-x64,
-        build-linux-x64,
-        build-linux-arm64,
-        builds-table,
-        assemble-win32-bundle,
-        smoke-darwin-arm64,
-        smoke-darwin-x64,
-        smoke-win32-arm64,
-        smoke-win32-x64,
-        publish-win32-updater,
-        publish-darwin-updater
-      ]
-    if: |
-      always()
-      && inputs.build_commit == '' && inputs.channel == ''
-      && inputs.upload_release == true
-      && contains(inputs.tag, '+canary.')
-      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
-      && needs.validate.outputs.win32-bundle == 'true'
-      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
-      && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
-      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
-      && needs.build-linux-x64.result == 'success' && needs.build-linux-arm64.result == 'success'
-      && needs.builds-table.result == 'success'
-      && needs.assemble-win32-bundle.result == 'success'
-      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
-      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
-      && needs.publish-win32-updater.result == 'success'
-      && needs.publish-darwin-updater.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    environment: release-signing
-    steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-          fetch-depth: 0
-          filter: blob:none
-      - uses: ./.github/actions/setup-pm
-        with:
-          cache-python: false
-      - name: Set up the native identity reader
-        uses: ./.github/actions/setup-pm
-        with:
-          toolchain: node
-          cache-python: false
-      # The controller rechecks native job results and exact remote tag custody,
-      # publishes and reads back the prerelease, then advances R2.
-      - name: Publish the admitted canary and advance its protected head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_TAG_OBJECT: ${{ needs.validate.outputs.tag-object }}
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-          RELEASE_NEEDS: ${{ toJSON(needs) }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-        run: python -m scripts.releases.channel_releases canary

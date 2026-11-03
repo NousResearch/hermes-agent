@@ -9,7 +9,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { resolve, join, relative, posix } from "path"
 import productIdentity from "../product-identity.cjs"
-import { channelBuildRequest } from "../../../scripts/msix-shared.mjs"
+import { channelBuildRequest, releaseVersion } from "../../../scripts/msix-shared.mjs"
 import { validateBundleEnvironment } from "./bundle-env.mjs"
 import { execFileSync } from "child_process"
 
@@ -218,7 +218,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   if (commitBuild && env.HERMES_PAYLOAD_TAG) {
     throw new Error('Commit builds cannot also set a release tag')
   }
-  const version = env.HERMES_PAYLOAD_VERSION || (env.HERMES_PAYLOAD_TAG || '').replace(/^v/, '') || null
+  const version = env.HERMES_PAYLOAD_VERSION || releaseVersion(env.HERMES_PAYLOAD_TAG) || null
   // The bundle's baked runtime defaults/clears, recorded as data so the smoke
   // driver can predict the app's resolved Hermes home without reimplementing
   // the banner. Only commit bundles carry one, but the field is harmless when

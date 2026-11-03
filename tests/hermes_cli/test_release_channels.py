@@ -201,11 +201,13 @@ def test_legacy_bootstrap_uses_real_archive_keys_and_source_main_has_no_bundle()
         preview = pub.create("temporary")
         request = pub.allocate("temporary", "a" * 40, "2.0.0")
         manifest, _ = seed_manifest(pub, request, objects)
-        for name, policy, tag in [("stable", "stable-release", "v2.0.0"), ("canary", "canary-release", "v2.1.0+canary.20260913T000100Z")]:
+        from hermes_cli.update_channel import release_version
+
+        for name, policy, tag in [("stable", "stable-release", "v2.0.0"), ("canary", "canary-release", "canary.20260913T000100Z-v2.1.0")]:
             legacy = deepcopy(manifest)
             legacy["request"].update(channel=name, buildId=("a" if name == "stable" else "b") * 32,
-                                     releaseTag=tag, version=tag[1:], windowsVersion="2.0.0.0" if name == "stable" else "2.1.0.10")
-            legacy["packages"][0].update(version=tag[1:])
+                                     releaseTag=tag, version=release_version(tag), windowsVersion="2.0.0.0" if name == "stable" else "2.1.0.10")
+            legacy["packages"][0].update(version=release_version(tag))
             legacy["packages"][0]["artifact"]["key"] = f"releases/tag/{tag}/actual.zip"
             legacy["packages"][0]["feed"]["key"] = f"releases/tag/{tag}/stable-mac.yml"
             record = dict(preview, name=name, policy=policy, nextSequence=2,

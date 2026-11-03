@@ -10,6 +10,8 @@ from urllib.request import urlopen
 
 import pytest
 
+from hermes_cli.update_channel import release_version
+
 from tests.scripts.test_release_r2 import r2_server
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -35,10 +37,12 @@ def release_body(monkeypatch):
     return state
 
 
-@pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260818T101010Z'])
+@pytest.mark.parametrize('tag', ['v1.2.3', 'canary.20260818T101010Z-v1.2.3'])
 def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server, release_body, tag):
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
-    version = tag[1:]
+    from hermes_cli.update_channel import release_version
+
+    version = release_version(tag)
     prefix = f'releases/tag/{tag}/'
     visible = [f'HermesBundled-{version}-mac-arm64.dmg', f'HermesBundled-{version}-win-x64.msix',
                f'HermesBundled-{version}-win-arm64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
@@ -76,7 +80,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     for url in expected:
         with urlopen(url, timeout=5) as response:
             assert response.read() == unquote(url.rsplit('/', 1)[1]).encode()
-    channel_key = 'releases/canary/index.html' if '+canary.' in tag else 'releases/stable/index.html'
+    channel_key = 'releases/canary/index.html' if tag.startswith('canary.') else 'releases/stable/index.html'
     assert r2_server.store[channel_key][0].decode() == page
     render()
     assert release_body['body'] == body
@@ -97,7 +101,7 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
     # A release that does not serve the channel (--only windows,docker) renders its own page and
     # table but leaves the shared downloads page alone; the same page is replaced without the flag.
     release_body['body'] = rbt.MARKER
-    older = rbt.render_page('v1.2.3+canary.20200101T000000Z' if '+canary.' in tag else 'v0.0.1', {}, base).encode()
+    older = rbt.render_page('canary.20200101T000000Z-v1.2.3' if tag.startswith('canary.') else 'v0.0.1', {}, base).encode()
     r2_server.store[channel_key] = (older, '"e"')
     render('--no-channel-page')
     assert r2_server.store[channel_key][0] == older
@@ -109,9 +113,9 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
 @pytest.mark.parametrize('asset_present', [False, True])
 @pytest.mark.parametrize('result', ['failure', 'cancelled', 'skipped'])
 def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_server, release_body, asset_present, result):
-    tag = 'v1.2.3+canary.20260818T101010Z'
+    tag = 'canary.20260818T101010Z-v1.2.3'
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
-    key = f'releases/tag/{tag}/HermesBundled-{tag[1:]}-win-x64.msix'
+    key = f'releases/tag/{tag}/HermesBundled-{release_version(tag)}-win-x64.msix'
     r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
     if asset_present:
         r2_server.store[key] = (b'transport fixture', '"e"')
@@ -135,7 +139,7 @@ def test_attempt_page_warns_and_canary_page_does_not():
                 'package version, so an installed attempt is not replaced by the published 1.2.3.')
     page = rbt.render_page('rc.1-v1.2.3', {}, base)
     assert sentence in page
-    for tag in ('v1.2.3', 'v1.2.3+canary.20260818T101010Z', 'abandoned-rc.1-v1.2.3'):
+    for tag in ('v1.2.3', 'canary.20260818T101010Z-v1.2.3', 'abandoned-rc.1-v1.2.3'):
         assert sentence not in rbt.render_page(tag, {}, base)
 
 
@@ -160,9 +164,9 @@ def test_attempt_archive_objects_are_listed_by_their_plain_version(monkeypatch):
 
 @pytest.mark.parametrize('current,tag,allowed', [
     (None, 'v1.2.3', True), ('garbage', 'v1.2.3', True),
-    ('v1.2.3', 'v1.2.3+canary.20260818T101010Z', False),
-    ('v1.2.3+canary.20260818T101010Z', 'v1.2.3+canary.20260818T101009Z', False),
-    ('v1.2.3+canary.20260818T101010Z', 'v1.2.3+canary.20260818T101011Z', True),
+    ('v1.2.3', 'canary.20260818T101010Z-v1.2.3', False),
+    ('canary.20260818T101010Z-v1.2.3', 'canary.20260818T101009Z-v1.2.3', False),
+    ('canary.20260818T101010Z-v1.2.3', 'canary.20260818T101011Z-v1.2.3', True),
 ])
 def test_channel_order_boundaries(current, tag, allowed):
     page = rbt.render_page(current, {}, 'https://cdn.example') if current and current != 'garbage' else current

@@ -184,7 +184,7 @@ def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path,
 
 
 def test_canary_publisher_consumes_staged_bytes_and_writes_pointer_last(tmp_path, r2_server):
-    tag = 'v0.28.1+canary.20260818T101010Z'
+    tag = 'canary.20260818T101010Z-v0.28.1'
     env = {**transport_env(tmp_path, r2_server), 'HERMES_DESKTOP_VARIANT': 'bundled',
            'HERMES_PAYLOAD_TAG': tag, 'RELEASE_TAG': tag}
     # Use the real assembly identity derivation with a stable base available.

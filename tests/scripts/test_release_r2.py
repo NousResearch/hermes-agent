@@ -307,11 +307,11 @@ def test_referenced_feed_bundle_filenames_reads_main_package_only():
 def test_feed_referenced_keys_protects_bundle_and_absolute_tag_uris():
     tag_feed = CANARY_FEED_XML.replace(
         'Uri="https://r2.example/releases/win32/canary/HermesBundled-0.27.2.9-win.msixbundle"',
-        'Uri="https://r2.example/releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix"',
+        'Uri="https://r2.example/releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix"',
     )
     keys = feed_referenced_keys("releases/win32/canary", tag_feed)
     assert "releases/win32/canary/HermesBundled-0.27.2-win-x64.msix" in keys
-    assert "releases/tag/v0.27.2+canary.20260829T000000Z/HermesBundled-0.27.2-win-x64.msix" in keys
+    assert "releases/tag/canary.20260829T000000Z-v0.27.2/HermesBundled-0.27.2-win-x64.msix" in keys
 
 
 CANARY_DIR = "releases/win32/canary"
@@ -678,13 +678,13 @@ def test_list_cli_paginates_and_decodes_keys(r2_server, capsys):
     b'<Foo Uri="https://x/old.msixbundle" />', b'<MainPackage Uri="https://x/old.msixbundle" />',
     b'<AppInstaller><MainBundle Uri="https://x/old.msixbundle" />'])
 def test_real_prune_retention_and_second_feed_failure(r2_server, capsys, bad_feed):
-    tag_reference = 'releases/tag/v0.27.2+canary.20260801T000000Z/live.msixbundle'
+    tag_reference = 'releases/tag/canary.20260801T000000Z-v0.27.2/live.msixbundle'
     second = f'<AppInstaller><MainBundle Uri="https://cdn.example/{tag_reference}" /></AppInstaller>'
-    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/v0.27.2+canary.20260801T000000Z/old.zip'}
+    doomed = {f'{CANARY_DIR}/old.msixbundle', 'releases/tag/canary.20260801T000000Z-v0.27.2/old.zip'}
     kept = {f'{CANARY_DIR}/HermesBundled-0.27.2.9-win.msixbundle', f'{CANARY_DIR}/live.msixbundle',
             f'{CANARY_DIR}/fresh.msixbundle', f'{CANARY_DIR}/unknown.msixbundle', tag_reference,
             'releases/win32/stable/old.msixbundle', 'releases/unknown/old.msixbundle',
-            'releases/tag/v0.28.0/old.zip', 'releases/tag/v0.28.0+canary.20260904T000000Z/today.zip'}
+            'releases/tag/v0.28.0/old.zip', 'releases/tag/canary.20260904T000000Z-v0.28.0/today.zip'}
     r2_server.store.update({key: (b'artifact', '"e"') for key in doomed | kept})
     r2_server.store[f'{CANARY_DIR}/canary.appinstaller'] = (CANARY_FEED_XML.encode(), '"e"')
     r2_server.store[f'{CANARY_DIR}/second.appinstaller'] = (second.encode() if bad_feed is None else bad_feed, '"e"')

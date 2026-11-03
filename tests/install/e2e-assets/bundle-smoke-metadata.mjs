@@ -4,7 +4,7 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { OUT_OF_STORE_PUBLISHER, channelBuildRequest } from '../../../scripts/msix-shared.mjs'
+import { OUT_OF_STORE_PUBLISHER, channelBuildRequest, releaseVersion } from '../../../scripts/msix-shared.mjs'
 import { codesignTeam, channelStampAssertions } from './mac-bundled-manifest.cjs'
 
 const identityModule = fileURLToPath(new URL('../../../apps/desktop/product-identity.cjs', import.meta.url))
@@ -18,7 +18,7 @@ function admitChannelRequest(request, commit, tag) {
 
 export function bundleIdentity(commit, tag = '', channelRequest = null) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected exact full lowercase commit SHA')
-  if (tag && !/^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/.test(tag)) throw new Error('Invalid release tag')
+  if (tag && !releaseVersion(tag)) throw new Error('Invalid release tag')
   if (channelRequest !== null) {
     const request = admitChannelRequest(channelRequest, commit, tag)
     return { appId: request.identity.appId, msixIdentity: request.identity.msixAppIdWithOrg,
@@ -58,7 +58,7 @@ export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRe
 
 function legacyBundleVersion(stamp, tag) {
   if (stamp.channelBuild != null) throw new Error('Unexpected stamp.channelBuild without an admitted request')
-  const version = tag ? tag.slice(1) : stamp.displayVersion
+  const version = tag ? releaseVersion(tag) : stamp.displayVersion
   if (!tag && !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('stamp.displayVersion must be a commit-build semver')
   return version
 }

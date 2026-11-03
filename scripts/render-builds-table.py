@@ -495,13 +495,13 @@ def supersedes(existing_page: str | None, tag: str) -> bool:
     recorded = recorded_build(existing_page)
     if not recorded:
         return True
-    from hermes_cli.update_channel import canary_timestamp, is_canary_tag
-    if is_canary_tag(recorded) != is_canary_tag(tag):
+    from hermes_cli.update_channel import canary_timestamp, published_canary_timestamp
+    recorded_stamp = published_canary_timestamp(recorded)
+    tag_stamp = canary_timestamp(tag)
+    if (recorded_stamp is not None) != (tag_stamp is not None):
         return False
-    if is_canary_tag(tag):
-        recorded_stamp = canary_timestamp(recorded)
-        tag_stamp = canary_timestamp(tag)
-        return recorded_stamp is not None and tag_stamp is not None and recorded_stamp <= tag_stamp
+    if tag_stamp is not None:
+        return recorded_stamp <= tag_stamp
     try:
         return semver.compare(recorded.lstrip("v"), tag.lstrip("v")) <= 0
     except ValueError:
@@ -560,7 +560,9 @@ def r2_object_names(tag: str) -> list[str]:
 
     keys = r2_object_names_under(f"releases/tag/{tag}/")
     parsed = parse_attempt_ref(tag)
-    return filter_names_for_version(keys, parsed[0] if parsed else tag.lstrip("v"))
+    from hermes_cli.update_channel import release_version
+
+    return filter_names_for_version(keys, parsed[0] if parsed else (release_version(tag) or tag.lstrip("v")))
 
 
 def splice(body: str, block: str) -> str:

@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from . import r2 as r2_module
 from .semver import compare, is_release_version
-from hermes_cli.update_channel import canary_timestamp, is_canary_tag
+from hermes_cli.update_channel import canary_timestamp, is_canary_tag, published_canary_timestamp
 
 ARCHES = ("arm64", "x64")
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")
@@ -57,9 +57,9 @@ def parse_mac_feed(text: str) -> dict[str, Any]:
 
 
 _MAC_URL_PATTERN = re.compile(
-    # Attempt refs (rc.N-vX.Y.Z) key the stable archive; plain and canary
-    # vX.Y.Z[+canary...] tags key the rest.
-    r"^/releases/tag/(?:v|rc\.[1-9]\d*-v)[0-9A-Za-z.+-]+/[0-9A-Za-z._+-]+\.(zip|dmg)$"
+    # Attempt refs (rc.N-vX.Y.Z) key the stable archive, canary tags
+    # (canary.<stamp>-vX.Y.Z) a canary's, plain vX.Y.Z tags the rest.
+    r"^/releases/tag/(?:v|rc\.[1-9]\d*-v|canary\.20\d{6}T\d{6}Z-v)[0-9A-Za-z.+-]+/[0-9A-Za-z._+-]+\.(zip|dmg)$"
 )
 
 
@@ -90,7 +90,9 @@ def merge_mac_feeds(legs: dict[str, str], tag: str, light: bool = False,
     arches = tuple(arch for arch in ARCHES if arch in arches)
     import hermes_yaml as yaml  # lazy
 
-    version = tag[1:] if isinstance(tag, str) and tag.startswith("v") else ""
+    from hermes_cli.update_channel import release_version
+
+    version = release_version(tag) or ""
     if not is_release_version(version):
         raise ValueError("Invalid macOS release tag")
     selection = _darwin_feed("canary" if is_canary_tag(tag) else "stable", light)
@@ -151,7 +153,7 @@ def publish_mac_feed(
         next_feed = parse_mac_feed(plan["text"])
         old_url = str(old_feed["files"][0]["url"])
         old_tag = old_url.split("/releases/tag/", 1)[1].split("/", 1)[0]
-        old_canary = canary_timestamp(old_tag)
+        old_canary = published_canary_timestamp(old_tag)
         next_canary = canary_timestamp(plan.get("tag"))
         order = (
             (next_canary > old_canary) - (next_canary < old_canary)

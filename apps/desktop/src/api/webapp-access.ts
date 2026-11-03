@@ -25,7 +25,8 @@ export interface WebAccessStatus {
 }
 
 /** A Start in flight: the step it is on, and when it was asked for (epoch seconds). `preparing`
- *  while another Web Access change goes first. Building the bundle can take minutes. */
+ *  while another Web Access change goes first; `restarting` until the restarted gateway serves the
+ *  config, also after the Start's request has answered. Building the bundle can take minutes. */
 export interface WebAccessStartProgress {
   started_at: number
   step: 'building' | 'preparing' | 'registering' | 'restarting'

@@ -390,3 +390,15 @@ def access_status() -> dict:
         "public_url": settings.public_url,
         "nous_signed_in": nous_signed_in(),
     }
+
+
+def serves_config(status: dict) -> bool:
+    """Whether the gateway in *status* (:func:`access_status`) serves the Webapp its config turns
+    on, on the configured port, so it has restarted onto that config. The pane decides the same way."""
+    gateway = status["gateway"]
+    if not status["enabled"] or gateway.get("state") != "serving" or not gateway.get("url"):
+        return False
+    try:
+        return urlsplit(gateway["url"]).port == status["port"]
+    except ValueError:  # an address with no readable port is not one this config names
+        return False

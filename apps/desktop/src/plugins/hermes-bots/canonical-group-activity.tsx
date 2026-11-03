@@ -4,7 +4,7 @@ import type { CanonicalGroupEvent } from './canonical-group-history'
 import type { CanonicalRoomMember } from './canonical-groups'
 import { RoomBotAvatar } from './group-room-avatar'
 import { formatElapsed, isBusyStatus, memberOutcomes, memberStatus, type MemberStatus, type RoomCycle, roomCycle, type RoomLogEvent, type RoomMemberActivity } from './group-room-status'
-import { MemberStatusChip, RoomCycleFooter, type RoomStatusLabels, RoomTypingRow } from './group-room-ui'
+import { MemberStatusChip, ROOM_AVATAR_SIZE, RoomCycleFooter, type RoomStatusLabels, RoomTypingRow } from './group-room-ui'
 
 /** `groups.state` driver fields that say who is answering. */
 export interface CanonicalDriverActivity {
@@ -70,7 +70,7 @@ export function CanonicalGroupTyping({ members = [], labels, statuses }: {
     const status = statusOf(statuses, member)
 
     return isBusyStatus(status)
-      ? <RoomTypingRow avatar={<RoomBotAvatar name={avatarName(member)} />} key={member.member_id} labels={labels}
+      ? <RoomTypingRow avatar={<RoomBotAvatar name={avatarName(member)} size={ROOM_AVATAR_SIZE} />} key={member.member_id} labels={labels}
         name={canonicalMemberName(member)} status={status as BusyStatus} />
       : null
   })}</>

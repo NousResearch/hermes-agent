@@ -47,12 +47,12 @@ export interface RoomStatusLabels {
 }
 
 const STATUS_TONE: Record<MemberStatus['kind'], string> = {
-  idle: 'text-(--ui-text-quaternary)',
+  idle: 'text-(--ui-text-tertiary)',
   queued: 'text-(--ui-text-tertiary)',
   working: 'text-(--ui-accent)',
   stalled: 'text-(--ui-warning,var(--ui-text-secondary))',
   replied: 'text-(--ui-text-tertiary)',
-  passed: 'text-(--ui-text-quaternary)',
+  passed: 'text-(--ui-text-tertiary)',
   failed: 'text-destructive',
   cancelled: 'text-(--ui-text-tertiary)',
   unavailable: 'text-destructive'
@@ -70,13 +70,14 @@ const STATUS_WORD: Record<MemberStatus['kind'], keyof RoomStatusLabels> = {
   unavailable: 'statusUnavailable'
 }
 
-/** `terminal · 1m20s`, `no progress for 2m05s`, `failed · rate_limited`, `passed`. */
+/** One grammar for every member: a status word or the tool, then time.
+ *  `terminal · 1m20s`, `working · 12s`, `no progress for 2m05s`, `failed · rate_limited`, `idle`. */
 export function memberStatusText(status: MemberStatus, labels: RoomStatusLabels): string {
   if (status.kind === 'working' || status.kind === 'stalled') {
-    const parts = [status.tool, status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined].filter(Boolean)
+    const elapsed = status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : undefined
     const lead = status.kind === 'stalled' ? fill(labels.statusStalled, { time: formatElapsed(status.quietS ?? 0) }) : ''
 
-    return [lead, ...parts].filter(Boolean).join(' · ') || labels.statusWorking
+    return [lead, status.tool || (lead ? '' : labels.statusWorking), elapsed].filter(Boolean).join(' · ')
   }
 
   const word = labels[STATUS_WORD[status.kind]]
@@ -93,68 +94,77 @@ export function MemberStatusChip({ avatar, badge, labels, name, phase, status }:
   const detail = 'detail' in status && status.detail ? status.detail : undefined
 
   return <Tip label={detail ? `${name} · ${detail}` : `${name} · ${text}`}>
-    <li className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-(--chrome-action-hover) py-0.5 pl-0.5 pr-2 text-[0.6875rem]"
+    <li className="inline-flex h-6 min-w-0 items-center gap-1.5 rounded-full bg-(--ui-bg-quaternary) pl-0.5 pr-2.5 text-xs"
       data-member-status={status.kind} data-phase={phase} tabIndex={0}>
       <span className="shrink-0">{avatar}</span>
       <span className="shrink-0 font-medium text-foreground">{name}</span>
       {badge && <span className="shrink-0 rounded-sm bg-(--ui-accent)/15 px-1 text-[0.625rem] font-medium text-(--ui-accent)" data-member-badge="">{badge}</span>}
+      <span aria-hidden="true" className="text-(--ui-text-quaternary)">·</span>
       {busy && <span aria-hidden="true" className={STATUS_TONE[status.kind]}><GlyphSpinner /></span>}
-      <span className={cn('min-w-0 truncate', STATUS_TONE[status.kind])}>{text}</span>
+      <span className={cn('min-w-0 truncate tabular-nums', STATUS_TONE[status.kind])}>{text}</span>
     </li>
   </Tip>
 }
 
-/** One transcript row: avatar, name and time over the markdown body, like the main thread.
- *  The user's own rows wear the main chat's user-bubble fill. */
+/** Avatar column width shared by message, typing and notice rows, so every body starts on one edge. */
+export const ROOM_AVATAR_SIZE = 28
+const AVATAR_COLUMN = 'w-7 shrink-0'
+
+/** One transcript row: avatar, name and time over the body, like a chat thread. Members'
+ *  bodies read like the main thread's assistant answer (bare markdown); the user's own body
+ *  sits in the main thread's user bubble (`--dt-user-bubble` fill, transcript hairline). */
 export function RoomMessage({ actions, author, avatar, children, isUser = false, timestampMs }: {
   actions?: ReactNode; author?: ReactNode; avatar?: ReactNode; children: ReactNode; isUser?: boolean; timestampMs?: number
 }) {
-  return <div className={cn('group/room-message flex items-start gap-2.5 px-3 py-2', isUser && 'rounded-xl bg-(--dt-user-bubble)')}
-    data-room-message={isUser ? 'user' : 'member'}>
-    {avatar && <div className="mt-0.5 shrink-0">{avatar}</div>}
+  return <div className="group/room-message flex items-start gap-3 py-2" data-room-message={isUser ? 'user' : 'member'}>
+    <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
     <div className="min-w-0 flex-1">
       <div className="flex min-h-5 items-center gap-2">
-        {author && <span className="truncate text-xs font-semibold text-foreground">{author}</span>}
+        {author && <span className="truncate text-[0.8125rem] font-semibold text-foreground">{author}</span>}
         {typeof timestampMs === 'number' && Number.isFinite(timestampMs) &&
-          <time className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs)}</time>}
+          <time className="shrink-0 text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)" dateTime={new Date(timestampMs).toISOString()}>{relativeTime(timestampMs)}</time>}
         {actions && <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/room-message:opacity-100 focus-within:opacity-100">{actions}</div>}
       </div>
-      <div className="wrap-anywhere min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap" data-selectable-text="true">
+      <div className={cn('wrap-anywhere mt-0.5 min-w-0 text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground [&_pre]:whitespace-pre-wrap',
+        isUser && 'w-fit max-w-full rounded-xl border border-(--ui-stroke-tertiary) bg-(--dt-user-bubble) px-3 py-2')} data-selectable-text="true">
         {children}
       </div>
     </div>
   </div>
 }
 
+/** A one-line notice in the transcript (a failed turn, Stop), on the message rows' left edge. */
+export function RoomNoticeRow({ avatar, children, kind }: { avatar?: ReactNode; children: ReactNode; kind: string }) {
+  return <div className="flex min-w-0 items-center gap-3 py-1" data-room-notice={kind}>
+    <div className={cn(AVATAR_COLUMN, 'flex justify-end')}>{avatar}</div>
+    <div className="flex min-w-0 flex-1 items-center gap-2 text-xs">{children}</div>
+  </div>
+}
+
 /** A compact centred activity row between messages (handoffs, notices). */
 export function RoomActivityRow({ children, icon = 'arrow-small-right', tone }: { children: ReactNode; icon?: string; tone?: string }) {
-  return <div className={cn('flex items-center justify-center gap-1.5 px-3 py-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', tone)} data-room-activity="">
+  return <div className={cn('flex items-center justify-center gap-1.5 py-1 text-xs text-(--ui-text-tertiary)', tone)} data-room-activity="">
     <Codicon className="shrink-0" name={icon} size="0.8125rem" />
     <span className="wrap-anywhere">{children}</span>
   </div>
 }
 
-/** The typing-style placeholder a working member gets at the end of the transcript. */
+/** The in-progress message a working member gets at the end of the transcript: its avatar on
+ *  the message rows' edge, then typing dots and the chip's own words (`scout · terminal · 7s`). */
 export function RoomTypingRow({ avatar, labels, name, status }: {
   avatar: ReactNode; labels: RoomStatusLabels; name: string; status: Extract<MemberStatus, { kind: 'stalled' | 'working' }>
 }) {
   const line = status.tool ? fill(labels.typingTool, { name, tool: status.tool }) : fill(labels.typing, { name })
 
-  const tail = status.kind === 'stalled'
-    ? fill(labels.statusStalled, { time: formatElapsed(status.quietS ?? 0) })
-    : status.elapsedS !== undefined ? formatElapsed(status.elapsedS) : ''
-
-  return <div className="flex items-start gap-2.5 px-3 py-2" data-room-typing={status.kind}>
-    <div className="mt-0.5 shrink-0">{avatar}</div>
-    <div className="min-w-0">
-      {/* The line already names the member; a separate name label would repeat it. */}
-      <div className="inline-flex items-center gap-2 rounded-2xl bg-(--chrome-action-hover) px-3 py-1.5">
-        <span aria-hidden="true" className="inline-flex gap-1">
-          {[0, 160, 320].map(delay => <span className="size-1.5 animate-pulse rounded-full bg-(--ui-text-tertiary)" key={delay} style={{ animationDelay: `${delay}ms` }} />)}
-        </span>
-        <span className="text-xs text-(--ui-text-secondary)">{line}</span>
-        {tail && <span className={cn('text-[0.6875rem]', status.kind === 'stalled' ? STATUS_TONE.stalled : 'text-(--ui-text-quaternary)')}>{tail}</span>}
-      </div>
+  return <div className="flex items-start gap-3 py-2" data-room-typing={status.kind} title={line}>
+    <div className={cn(AVATAR_COLUMN, 'mt-0.5')}>{avatar}</div>
+    <div className="inline-flex min-w-0 items-center gap-2 rounded-2xl bg-(--ui-bg-quaternary) px-3 py-1.5">
+      <span aria-hidden="true" className="inline-flex shrink-0 gap-1">
+        {[0, 160, 320].map(delay => <span className="size-1.5 animate-pulse rounded-full bg-(--ui-text-secondary)" key={delay} style={{ animationDelay: `${delay}ms` }} />)}
+      </span>
+      <span className={cn('min-w-0 truncate text-xs tabular-nums', status.kind === 'stalled' ? STATUS_TONE.stalled : 'text-(--ui-text-secondary)')}>
+        {`${name} · ${memberStatusText(status, labels)}`}
+      </span>
     </div>
   </div>
 }
@@ -175,9 +185,12 @@ export function RoomCycleFooter({ cycle, labels, text, working }: {
 }) {
   if (!cycle) {return null}
 
-  return <div className="flex items-center justify-center gap-1.5 px-3 py-1 text-[0.6875rem] text-(--ui-text-quaternary)" data-room-cycle={cycle.kind} role="status">
-    {cycle.kind === 'working' && <span aria-hidden="true"><GlyphSpinner /></span>}
-    <span>{text ?? roomCycleText(cycle, labels, working)}</span>
+  // A slim strip docked on the composer (RoomComposer `status`), not a line floating in the transcript.
+  return <div className="flex min-w-0 items-center gap-1.5 px-2 pb-1.5 text-xs text-(--ui-text-tertiary)" data-room-cycle={cycle.kind} role="status">
+    {cycle.kind === 'working'
+      ? <span aria-hidden="true" className="text-(--ui-accent)"><GlyphSpinner /></span>
+      : <Codicon className="shrink-0" name={cycle.kind === 'settled' ? 'check' : 'circle-slash'} size="0.75rem" />}
+    <span className="min-w-0 truncate">{text ?? roomCycleText(cycle, labels, working)}</span>
   </div>
 }
 
@@ -187,18 +200,20 @@ export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopL
   backLabel?: string; children?: ReactNode; onBack?: () => void; onStop?: () => void; onTitle?: () => void
   stopLabel: string; title: ReactNode; titleExpanded?: boolean; titleLabel?: string; trailing?: ReactNode; working: boolean
 }) {
-  return <header className="flex min-w-0 flex-col gap-1.5 border-b border-(--ui-stroke-tertiary) px-3 py-2">
+  // Inner column matches the transcript and composer (max-w-3xl) so every left edge lines up.
+  return <header className="shrink-0 border-b border-(--ui-stroke-tertiary) px-4 pb-2.5 pt-2">
+    <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-2">
     <div className="flex min-w-0 items-center gap-1">
       {onBack && <Tip label={backLabel}>
         <Button aria-label={backLabel} className="text-(--ui-text-tertiary)" onClick={onBack} size="icon-sm" variant="ghost"><Codicon name="arrow-left" /></Button>
       </Tip>}
       {onTitle
         ? <Tip label={titleLabel}>
-          <Button aria-expanded={titleExpanded} aria-label={titleLabel} className="min-w-0 gap-1 text-sm font-semibold text-foreground" onClick={onTitle} size="inline" variant="text">
-            <span className="truncate">{title}</span><Codicon className="shrink-0 text-(--ui-text-tertiary)" name={titleExpanded ? 'chevron-left' : 'chevron-right'} size="0.75rem" />
+          <Button aria-expanded={titleExpanded} aria-label={titleLabel} className="min-w-0 rounded-md px-1 text-[0.9375rem] font-semibold text-foreground hover:bg-(--chrome-action-hover)" onClick={onTitle} size="inline" variant="text">
+            <span className="truncate">{title}</span>
           </Button>
         </Tip>
-        : <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">{title}</h2>}
+        : <h2 className="min-w-0 truncate px-1 text-[0.9375rem] font-semibold text-foreground">{title}</h2>}
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         {working && onStop && <Tip label={stopLabel}>
           <Button aria-label={stopLabel} className="text-(--ui-accent)" onClick={onStop} size="icon-sm" variant="ghost"><Codicon name="debug-stop" /></Button>
@@ -207,6 +222,7 @@ export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopL
       </div>
     </div>
     {children}
+    </div>
   </header>
 }
 
@@ -224,10 +240,13 @@ export function AvatarStack({ avatars, max = 4 }: { avatars: { key: string; node
  *  the round primary send on the right. Enter sends (the input owns that). `attach` renders
  *  straight into the surface grid: its parts pick `ROOM_COMPOSER_AREAS` (the attach button,
  *  the pending-file chips). */
-export function RoomComposer({ above, attach, canSend, children, onSubmit, sendLabel, ...form }: {
+export function RoomComposer({ above, attach, canSend, children, onSubmit, sendLabel, status, ...form }: {
   above?: ReactNode; attach?: ReactNode; canSend: boolean; children: ReactNode; onSubmit: () => void; sendLabel: string
+  /** The room's slim status strip (round, who works), docked on the surface's top edge. */
+  status?: ReactNode
 } & Omit<ComponentProps<'form'>, 'onSubmit'>) {
-  return <form {...form} className={cn('px-3 pb-3 pt-1', form.className)} onSubmit={(event: FormEvent) => { event.preventDefault(); onSubmit() }}>
+  return <form {...form} className={cn('pb-3 pt-1', form.className)} onSubmit={(event: FormEvent) => { event.preventDefault(); onSubmit() }}>
+    {status}
     <div className={cn('relative isolate rounded-2xl', composerSurfaceRing)} data-slot="room-composer-surface">
       <div aria-hidden className={composerInputBacking} />
       <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-end gap-x-(--composer-control-gap) gap-y-1 px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) [grid-template-areas:'reply_reply_reply''files_files_files''attach_input_send']">

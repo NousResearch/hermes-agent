@@ -234,8 +234,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         <Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="xs" variant="ghost">{labels.refresh}</Button></div>}
       {error && <div className="px-3 py-1.5 text-xs text-destructive" role="alert">{error}</div>}
       {state && !driver && <p className="px-3 py-1.5 text-xs text-(--ui-text-tertiary)">{labels.driverUnavailable}</p>}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" ref={scroller} role="log">
-        <div className="mx-auto grid w-full max-w-3xl grid-cols-[minmax(0,1fr)] gap-0.5 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4" ref={scroller} role="log">
+        {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} events={events} members={members} onReply={replyTo} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
@@ -255,8 +256,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
           </div>}
         </div>
       </div>
-      <CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />
       {restoredPending && <p className="px-4 pb-1 text-[0.6875rem] text-(--ui-text-tertiary)" role="status">{labels.restoredPendingSend}</p>}
+      <div className="px-4">
       <RoomComposer
         above={reply && <RoomReplyChip cancelLabel={labels.cancelReply} label={fill(labels.replyingTo, { name: reply.name })}
           onCancel={() => setReply(null)} quote={reply.quote} />}
@@ -267,10 +268,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
         onDrop={event => attachTransfer(event, event.dataTransfer)}
         onPaste={event => attachTransfer(event, event.clipboardData)}
         onSubmit={send}
-        sendLabel={pending ? labels.retry : labels.send}>
+        sendLabel={pending ? labels.retry : labels.send}
+        status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
         <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
           members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} value={draft} />
       </RoomComposer>
+      </div>
     </div>
     {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses} />}
   </section>

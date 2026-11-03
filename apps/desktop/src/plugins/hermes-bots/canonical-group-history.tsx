@@ -6,7 +6,7 @@ import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonica
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 import { roomHandoffs, type RoomLogEvent } from './group-room-status'
-import { fill, RoomActivityRow, RoomMessage } from './group-room-ui'
+import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
 
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
@@ -200,11 +200,10 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   const member = roster.get(memberId ?? '')
 
   if (notice) {
-    return <div className="flex min-w-0 items-center gap-2 px-3 py-1" data-room-notice={event.kind}>
-      {member && avatarFor?.(member.profile || member.handle, 16)}
-      {author && <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-secondary)">{author}</span>}
+    return <RoomNoticeRow avatar={member && avatarFor?.(member.profile || member.handle, 16)} kind={event.kind}>
+      {author && <span className="shrink-0 font-medium text-(--ui-text-secondary)">{author}</span>}
       <EventBody event={event} notice={notice} />
-    </div>
+    </RoomNoticeRow>
   }
 
   return <MessageRow author={author} avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} member={member} memberId={memberId} onReply={onReply} />
@@ -218,7 +217,7 @@ function MessageRow({ author, avatarFor, binding, disabled, event, member, membe
   const isUser = event.actor?.kind !== 'member'
   const text = event.payload.text || event.payload.content || ''
   const canReply = !!onReply && !!text && (!!member || typeof event.payload.thread_id === 'string')
-  const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', 24)
+  const face = isUser ? undefined : avatarFor?.(member?.profile || member?.handle || memberId || author || 'bot', ROOM_AVATAR_SIZE)
 
   return <RoomMessage actions={canReply ? <ReplyAction author={author ?? ''} event={event} member={isUser ? undefined : member} onReply={onReply!} text={text} /> : undefined}
     author={author} avatar={face} isUser={isUser} timestampMs={eventTimeMs(event.created_at)}>

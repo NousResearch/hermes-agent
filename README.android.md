@@ -32,16 +32,17 @@ Do not add `pip install hermes-agent` to the Android build as a workaround: the 
 
 - A supported desktop build environment (building directly on an Android tablet is not currently documented as supported).
 - JDK 17, Android SDK platform 34, and Android build-tools 34.0.0.
-- Android Gradle plugin and Gradle wrapper versions compatible with Chaquopy 17.1.
+- Android Gradle plugin and Gradle 8.10.2 (the repository's wrapper distribution).
+- The repository currently omits `gradle-wrapper.jar`; the build script uses an installed Gradle 8.10.2 as a fallback. GitHub Actions provisions that exact version automatically.
 - An Android-compatible Python dependency strategy.
 
-From a desktop terminal, run:
+From a desktop terminal with Gradle 8.10.2 installed, run:
 
 ```bash
-cd android
-./gradlew tasks
-./gradlew assembleDebug --stacktrace
+bash scripts/build_android_apk.sh --debug
 ```
+
+The script uses the Gradle wrapper when its JAR is present, otherwise it requires the exact installed Gradle 8.10.2 distribution.
 
 These are validation commands, not a claim that the current project builds. Do not publish a release until the build, install, startup, and core interaction have been tested on a real device or emulator.
 

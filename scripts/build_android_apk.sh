@@ -8,6 +8,7 @@ ANDROID_DIR="$REPO_ROOT/android"
 BUILD_TOOLS_VERSION="34.0.0"
 ANDROID_SDK_VERSION="34"
 JDK_VERSION=17
+GRADLE_VERSION_REQUIRED="8.10.2"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 log() { printf '%b\n' "${GREEN}[+] ${1}${NC}"; }
@@ -95,6 +96,22 @@ if [[ ! -d "$ANDROID_HOME/platform-tools" || ! -d "$ANDROID_HOME/platforms/andro
     (( SDK_STATUS == 0 )) || { error "sdkmanager failed to install required components"; exit 1; }
 fi
 
+GRADLE_CMD=()
+if [[ -f "$ANDROID_DIR/gradle/wrapper/gradle-wrapper.jar" ]]; then
+    GRADLE_CMD=("$ANDROID_DIR/gradlew")
+elif command -v gradle >/dev/null 2>&1; then
+    GRADLE_VERSION_OUTPUT="$(gradle --version | grep -m 1 "^Gradle " | cut -d " " -f 2)"
+    [[ "$GRADLE_VERSION_OUTPUT" == "$GRADLE_VERSION_REQUIRED" ]] || {
+        error "Gradle wrapper JAR is missing; Gradle $GRADLE_VERSION_REQUIRED is required (found: ${GRADLE_VERSION_OUTPUT:-unknown})."
+        exit 1
+    }
+    warn "Gradle wrapper JAR is missing; using the installed Gradle $GRADLE_VERSION_REQUIRED."
+    GRADLE_CMD=("$(command -v gradle)")
+else
+    error "Gradle wrapper JAR is missing and Gradle $GRADLE_VERSION_REQUIRED is not installed. Restore android/gradle/wrapper/gradle-wrapper.jar or install Gradle $GRADLE_VERSION_REQUIRED."
+    exit 1
+fi
+
 if [[ "$BUILD_TYPE" == release ]]; then
     KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-$ANDROID_DIR/app/keystore/hermes-release.keystore}"
     [[ -f "$KEYSTORE_PATH" ]] || {
@@ -115,18 +132,18 @@ chmod +x ./gradlew
 
 if [[ "$CLEAN" == true ]]; then
     log "Cleaning previous build..."
-    ./gradlew clean --no-daemon
+    "${GRADLE_CMD[@]}" clean --no-daemon
 fi
 
 GRADLE_ARGS=(-PandroidVersionName="$VERSION" -PandroidVersionCode="$VERSION_CODE" --stacktrace --no-daemon)
 if [[ "$BUILD_TYPE" == debug ]]; then
     log "Building debug APK..."
-    ./gradlew "${GRADLE_ARGS[@]}" assembleDebug
+    "${GRADLE_CMD[@]}" "${GRADLE_ARGS[@]}" assembleDebug
     APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
     APK_NAME="Hermes-Agent-${VERSION}-debug.apk"
 else
     log "Building release APK..."
-    ./gradlew "${GRADLE_ARGS[@]}" assembleRelease
+    "${GRADLE_CMD[@]}" "${GRADLE_ARGS[@]}" assembleRelease
     APK_PATH="app/build/outputs/apk/release/app-release.apk"
     APK_NAME="Hermes-Agent-${VERSION}-release.apk"
 fi

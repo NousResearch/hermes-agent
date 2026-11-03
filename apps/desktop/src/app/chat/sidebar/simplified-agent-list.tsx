@@ -11,6 +11,7 @@ import { RowButton } from '@/components/ui/row-button'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
+import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
@@ -85,7 +86,14 @@ export function SimplifiedAgentList({
         const selected = connectionId === (activeConnection ?? owner)
 
         return (
-          <div className="shrink-0" key={gatewayId}>
+          <div
+            className={cn(
+              'shrink-0 rounded-md',
+              selected && 'bg-(--ui-bg-quaternary) shadow-[inset_0_0_0_1px_var(--ui-stroke-secondary)]',
+              selected && open && 'pb-1'
+            )}
+            key={gatewayId}
+          >
             <SimplifiedGatewayHeader
               connectionId={connectionId}
               fallbackLabel={group[0].gateway}

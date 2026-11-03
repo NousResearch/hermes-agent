@@ -548,6 +548,14 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
+/** Prose split off a directive paragraph keeps its soft line breaks: the
+ *  newlines `paragraphPlainText` read back from `<br>` go back to `<br>`. */
+function withLineBreaks(text: string): ReactNode {
+  const lines = text.split('\n')
+
+  return lines.length === 1 ? text : lines.flatMap((line, i) => (i === 0 ? [line] : [<br key={i} />, line]))
+}
+
 /**
  * Paragraph override. Almost always a plain `<p>` — but a paragraph that is
  * exactly one `::name{...}` directive claimed by a plugin renders as that
@@ -582,7 +590,7 @@ function MarkdownParagraph({
             <TranscriptDirectiveLeaf key={index} streaming={streaming} text={segment.source} />
           ) : (
             <p className={paragraphClass} key={index} {...props}>
-              {segment.text.trim()}
+              {withLineBreaks(segment.text.trim())}
             </p>
           )
         )}

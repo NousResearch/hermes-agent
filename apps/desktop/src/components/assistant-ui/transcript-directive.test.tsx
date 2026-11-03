@@ -26,6 +26,13 @@ describe('paragraphPlainText', () => {
     expect(paragraphPlainText(null)).toBeNull()
     expect(paragraphPlainText([])).toBeNull()
   })
+
+  it('reads a soft line break back as the newline it was written as', () => {
+    expect(paragraphPlainText(['::preview{file="a.html"}', <br key="b" />, '::preview{file="b.html"}'])).toBe(
+      '::preview{file="a.html"}\n::preview{file="b.html"}'
+    )
+    expect(paragraphPlainText([<br key="b" />])).toBeNull()
+  })
 })
 
 describe('TranscriptDirectiveLeaf', () => {

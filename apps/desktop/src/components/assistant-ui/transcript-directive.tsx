@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { FC, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { isValidElement, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { type Contribution, useContributions } from '@/contrib'
@@ -24,15 +24,28 @@ import {
  * other contribution area.
  */
 
+/** A `<br>` child: the line break remark-soft-breaks makes of a single
+ *  newline. It is a line break, not markup. */
+function isLineBreak(child: ReactNode): boolean {
+  return isValidElement(child) && child.type === 'br'
+}
+
 /** Extract the paragraph's text when it is text-only — directives never carry
- *  inline markup, so any non-string child disqualifies the paragraph. */
+ *  inline markup, so any other element child disqualifies the paragraph. A
+ *  soft line break reads back as the newline it was written as, so directives
+ *  stacked on consecutive lines still resolve (they used to render as raw
+ *  text). */
 export function paragraphPlainText(children: ReactNode): string | null {
   if (typeof children === 'string') {
     return children
   }
 
-  if (Array.isArray(children) && children.length > 0 && children.every(child => typeof child === 'string')) {
-    return children.join('')
+  if (
+    Array.isArray(children) &&
+    children.some(child => typeof child === 'string') &&
+    children.every(child => typeof child === 'string' || isLineBreak(child))
+  ) {
+    return children.map(child => (typeof child === 'string' ? child : '\n')).join('')
   }
 
   return null

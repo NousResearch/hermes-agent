@@ -43,3 +43,17 @@ test('unrecognized code languages stay readable rather than breaking the page', 
   const html = await render('```hermes-example-language\nkeep every byte\n```');
   assert.match(html, /keep every byte/);
 });
+
+test('colon-joined words keep both halves instead of an empty directive', async () => {
+  const html = await render('Cron runs at 9:00 AM every day. Use a 1:1 ratio; the tunnel listens on host:9090.');
+  assert.match(html, /9:00 AM every day/);
+  assert.match(html, /1:1 ratio/);
+  assert.match(html, /host:9090/);
+  assert.doesNotMatch(html, /<div><\/div>/);
+});
+
+test('a port inside a heading keeps its text and its deep-link anchor', async () => {
+  const html = await render('### "iron-proxy did not bind \\<bind-host\\>:9090 within 5s"');
+  assert.match(html, /bind-host&gt;:9090 within 5s/);
+  assert.match(html, /id="iron-proxy-did-not-bind-bind-host9090-within-5s"/);
+});

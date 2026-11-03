@@ -1,4 +1,4 @@
-"""Cron delivery: target resolution (origin/home/explicit/bot-chat), transcript mirroring and
+"""Cron delivery: target resolution (origin/home/explicit/bot-chat/room), transcript mirroring and
 session seeding, live-adapter / relay / standalone send lanes, and ``_deliver_result``.
 
 Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
@@ -24,35 +24,24 @@ logger = logging.getLogger("cron.scheduler")
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.
-_KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "dingtalk", "feishu",
-    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao"})
+# Plugin platforms are known through ``PlatformEntry.cron_deliver_env_var``; these rows have none:
+# ``webhook`` is core-only and ``wecom_callback`` (a ``wecom`` plugin sibling) delivers only to its
+# config.yaml ``home_channel``.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({"webhook", "wecom_callback"})
 
 # Gateway platforms whose adapter declares ``supports_async_delivery = False`` (request/response
 # only, ``send()`` is a stub) — a cron report can never reach them, so they are never a
 # deliver=origin destination.
 _NON_PUSH_ORIGIN_PLATFORMS = frozenset({"api_server"})
 
-# Platforms supporting a cron/notification home target -> env var used by gateway config.
-_HOME_TARGET_ENV_VARS = {
-    "matrix": "MATRIX_HOME_ROOM",
-    "telegram": "TELEGRAM_HOME_CHANNEL",
-    "discord": "DISCORD_HOME_CHANNEL",
-    "slack": "SLACK_HOME_CHANNEL",
-    "signal": "SIGNAL_HOME_CHANNEL",
-    "mattermost": "MATTERMOST_HOME_CHANNEL",
-    "sms": "SMS_HOME_CHANNEL",
-    "email": "EMAIL_HOME_ADDRESS",
-    "dingtalk": "DINGTALK_HOME_CHANNEL",
-    "feishu": "FEISHU_HOME_CHANNEL",
-    "wecom": "WECOM_HOME_CHANNEL",
-    "weixin": "WEIXIN_HOME_CHANNEL",
-    "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
-    "qqbot": "QQBOT_HOME_CHANNEL",
-    "whatsapp": "WHATSAPP_HOME_CHANNEL",
-    "whatsapp_cloud": "WHATSAPP_CLOUD_HOME_CHANNEL"}
+# Home-target platforms tried first, in this order, by ``deliver=origin`` with no origin (first
+# platform with a home chat wins) and ``deliver=all``; their env var is the plugin's
+# ``cron_deliver_env_var``. Other plugin platforms follow by name (a fresh process loads deferred
+# entries in name order, so this is the order they had when they trailed a static table).
+_HOME_TARGET_PRIORITY = (
+    "matrix", "telegram", "discord", "slack", "signal", "mattermost", "sms", "email", "dingtalk",
+    "feishu", "wecom", "weixin", "bluebubbles", "qqbot", "whatsapp", "whatsapp_cloud",
+)
 
 # Back-compat: primary env var -> previous name, consulted when the primary is unset.
 _LEGACY_HOME_TARGET_ENV_VARS = {"QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL"}
@@ -421,9 +410,8 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
-    """Env var name for a platform's cron home channel (built-in table, then plugin registry)."""
-    name = platform_name.lower()
-    return _HOME_TARGET_ENV_VARS.get(name) or _plugin_cron_env_var(name)
+    """Env var name for a platform's cron home channel (``PlatformEntry.cron_deliver_env_var``)."""
+    return _plugin_cron_env_var(platform_name.lower())
 
 
 def _get_config_home_channel(platform_name: str):
@@ -512,15 +500,14 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
 
 
 def _iter_home_target_platforms():
-    """Iterate built-in + plugin platform names that expose a home channel."""
-    yield from _HOME_TARGET_ENV_VARS
+    """Iterate plugin platform names that expose a home channel, ``_HOME_TARGET_PRIORITY`` first."""
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            if entry.cron_deliver_env_var and entry.name not in _HOME_TARGET_ENV_VARS:
-                yield entry.name
+        named = [e.name for e in platform_registry.plugin_entries() if e.cron_deliver_env_var]
+        yield from (n for n in _HOME_TARGET_PRIORITY if n in named)
+        yield from (n for n in named if n not in _HOME_TARGET_PRIORITY)  # registry order, as before
 
 
 def _relay_fronted_delivery_platforms(connected: set) -> set:
@@ -615,6 +602,9 @@ def _resolve_single_delivery_target(
     origin = _resolve_origin(job)
     if deliver_value == "local":
         return None
+    room_address = parse_room_deliver_token(deliver_value)
+    if room_address is not None:
+        return resolve_room_target(job, room_address)
     # Must precede the generic platform:chat_id split so the profile name isn't parsed as chat_id.
     bot_chat_profile = parse_bot_chat_deliver_token(deliver_value)
     if bot_chat_profile is not None:
@@ -962,8 +952,12 @@ def _send_media_via_adapter(
                 method, path_kw = "send_image_file", "image_path"
             else:
                 method, path_kw = "send_document", "file_path"
+            # The voice sender decides bubble vs music-file from ``is_voice`` (Telegram
+            # transcodes non-Opus only when it is set), matching the gateway dispatch
+            # in BasePlatformAdapter._send_one.
+            extra = {"is_voice": _is_voice} if method == "send_voice" else {}
             coro = getattr(adapter, method)(
-                chat_id=chat_id, metadata=metadata, **{path_kw: media_path})
+                chat_id=chat_id, metadata=metadata, **{path_kw: media_path}, **extra)
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
                 _note_target_error(
@@ -975,7 +969,12 @@ def _send_media_via_adapter(
             except TimeoutError:
                 future.cancel()
                 raise
-            if result and not getattr(result, "success", True):
+            raw = getattr(result, "raw_response", None)
+            if result and getattr(result, "success", False) and isinstance(raw, dict) and raw.get("ambiguous"):
+                # Sent but the ack was lost: possibly delivered, so never an error (a re-run
+                # would duplicate it); _live_send_media records the target as unverified.
+                job["_media_ack_lost"] = True
+            elif result and not getattr(result, "success", True):
                 _note_target_error(
                     job_ref,
                     f"media send failed for {media_path}: {getattr(result, 'error', 'unknown')}",
@@ -1379,7 +1378,8 @@ def _live_send_text(
 
 
 def _live_send_media(
-    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> None:
+    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list,
+    unverified_targets: list) -> None:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
@@ -1394,6 +1394,8 @@ def _live_send_media(
         t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
         platform=t.platform,
     )
+    if t.job.pop("_media_ack_lost", False) and t.where not in unverified_targets:
+        unverified_targets.append(t.where)
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
     for _me in _media_errors:
         delivery_errors.append(f"{_me} (target {t.where})")
@@ -1485,7 +1487,7 @@ def _deliver_via_live_adapter(
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors)
+            _live_send_media(t, media_metadata, media_files, delivery_errors, unverified_targets)
         elif timed_out and media_files:
             _note_target_error(
                 job,
@@ -1797,7 +1799,7 @@ def _deliver_result(
     external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
     if (external_execution and adapters is None
             and external_execution == str(job.get("execution_id") or "")
-            and any(target["platform"] != BOT_CHAT_PLATFORM for target in targets)):
+            and any(target["platform"] not in (BOT_CHAT_PLATFORM, ROOM_PLATFORM) for target in targets)):
         from cron.delivery_queue import enqueue_and_wait
 
         _record_delivery_verification(job, [])
@@ -1901,6 +1903,19 @@ def _deliver_result(
                 if receipt and receipt["status"] == "ambiguous":
                     unverified_targets.append(bot_chat_error)
             continue
+        if target["platform"] == ROOM_PLATFORM:
+            room_error = deliver_to_room(job, content, target["chat_id"], for_failure=for_failure)
+            if room_error:
+                delivery_errors.append(room_error)
+            continue
+        if target["platform"] == "local":
+            from gateway.session_cron import deliver_to_local_chat
+            from hermes_constants import get_hermes_home
+            local_error = deliver_to_local_chat(get_hermes_home(), target["chat_id"],
+                                                cleaned_delivery_content, diagnostic=for_failure)
+            if local_error:
+                delivery_errors.append(local_error)
+            continue
 
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,
@@ -1931,6 +1946,8 @@ def _deliver_result(
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched
+from cron.scheduler_delivery_room import (
+    ROOM_PLATFORM, deliver_to_room, parse_room_deliver_token, resolve_room_target)
 from cron import scheduler_delivery_origin as _origin
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script

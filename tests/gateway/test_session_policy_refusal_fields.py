@@ -214,13 +214,18 @@ def test_a_bypass_launch_without_a_model_names_the_model():
 
 
 @pytest.mark.parametrize('name', ['deadserver', 'mcp-deadserver'])
-def test_an_explicit_pick_of_a_disabled_mcp_server_is_refused_by_name(tmp_path, name):
+@pytest.mark.parametrize('entry, why', [
+    ({'enabled': False}, 'is disabled in config'),
+    (None, 'has no usable config entry'),  # `mcp_servers: {deadserver: null}` is not a disabled server
+])
+def test_an_explicit_pick_of_a_disabled_mcp_server_is_refused_by_name(tmp_path, name, entry, why):
     """A disabled server matched no allowlist entry and fell through to every enabled server; main
-    refused it (it never registers), and so does this, by name."""
-    servers = {'deadserver': {'command': str(tmp_path / 'absent'), 'enabled': False},
-               'other': {'command': str(tmp_path / 'absent')}}
+    refused it (it never registers), and so does this, by name and by why it cannot run."""
+    if isinstance(entry, dict):
+        entry = {'command': str(tmp_path / 'absent'), **entry}
+    servers = {'deadserver': entry, 'other': {'command': str(tmp_path / 'absent')}}
     refusal = _refusal({'cwd': str(tmp_path), 'toolsets': ['terminal', name]}, {**_CFG, 'mcp_servers': servers})
-    assert refusal.field == 'toolsets' and "'deadserver' is disabled" in refusal.detail
+    assert refusal.field == 'toolsets' and f"'deadserver' {why}" in refusal.detail, refusal.detail
 
 
 def test_a_server_literally_named_mcp_prefix_keeps_its_own_name(tmp_path):

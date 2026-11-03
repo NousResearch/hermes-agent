@@ -129,7 +129,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
@@ -328,7 +328,10 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
+            function_name, args,
+            caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+        )
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)

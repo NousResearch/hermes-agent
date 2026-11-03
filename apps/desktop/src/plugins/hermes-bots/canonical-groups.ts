@@ -1,4 +1,4 @@
-import { host } from '@hermes/plugin-sdk'
+import { host, randomUuid } from '@hermes/plugin-sdk'
 
 import type { GroupMember } from './types'
 
@@ -9,6 +9,7 @@ export interface CanonicalGroupRoute {
 
 export interface CanonicalGroupBinding extends CanonicalGroupRoute {
   roomId: string
+  roomName?: string
 }
 
 export interface CanonicalRoomMember {
@@ -18,6 +19,19 @@ export interface CanonicalRoomMember {
   display_name?: string
   target?: Record<string, unknown>
 }
+
+export interface CanonicalRoomContext {
+  purpose: string
+  notes: string
+  /** Absent on runtimes without lead routing (they behave as `everyone`). */
+  routing?: 'everyone' | 'lead'
+  lead_member_id?: string
+}
+
+/** The backend's cap on shared notes (UTF-8 bytes after trimming; `validate_context`). */
+export const MAX_ROOM_NOTES_BYTES = 4096
+
+export const roomNotesBytes = (notes: string) => new TextEncoder().encode(notes.trim()).length
 
 export interface CanonicalRoom {
   room_id: string
@@ -137,7 +151,7 @@ export async function createCanonicalGroup(
   })
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
-    room_id: crypto.randomUUID(), name, members: roster
+    room_id: randomUuid(), name, members: roster
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }

@@ -22,8 +22,9 @@ async def bot(tmp_path, monkeypatch):
     from hermes_state import SessionDB
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    # A following Bot Chat reads the profile config by path.
     monkeypatch.setattr(run, '_load_gateway_config',
-                        lambda: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
+                        lambda *_path: {'platform_toolsets': {'cli': []}, 'model': {'default': 'fixture'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = SessionDB(db_path=tmp_path / 'state.db')
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,

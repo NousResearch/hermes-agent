@@ -57,7 +57,7 @@ terminal.resize         clipboard.paste         image.attach
 
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
 
-Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents; browser-controller results still require the connection that registered that controller. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
+Within one authenticated gateway, resuming or activating a live session attaches another event subscriber rather than replacing the previous connection. Streaming and terminal events go to all attached clients; disconnecting one client does not end a session another client is viewing. Existing submit exclusivity and configured busy-input policy remain in force. Attached clients can steer the session's subagents. This does not enable independent gateway processes to write the same session, nor does it imply durable prompt admission across an owner restart.
 
 ### Model overrides on `session.create`
 
@@ -141,8 +141,6 @@ POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool bounda
 POST /v1/runs/{id}/resolve-unknown Acknowledge an exact restart-unknown admission
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
-POST /v1/browser-control/register Register a browser controller
-GET  /v1/browser-control/ws       Browser-controller WebSocket
 GET  /v1/models                  Lists hermes-agent
 GET  /api/model/options          Provider-aware picker inventory
 GET  /health, /health/detailed
@@ -150,10 +148,8 @@ GET  /health, /health/detailed
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
 
-Browser extensions can opt into the disabled-by-default controller protocol to
-drive the exact browser session that opened the Hermes conversation. The API
-and dashboard transports share one principal-bound broker and one explicit
-capability allowlist; see [Browser-extension control](../user-guide/features/api-server#browser-extension-control).
+The browser-extension controller protocol has been removed; to let Hermes drive a browser you
+already run, use `browser.cdp_url` or `/browser connect` — see [Browser-extension control (removed)](../user-guide/features/api-server#browser-extension-control-removed).
 
 ### Model catalog surfaces
 

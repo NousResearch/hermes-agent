@@ -169,17 +169,18 @@ def webhook_command(args):
         return
     if not _is_webhook_enabled():
         print(_setup_hint())
-        return
+        return 1
     handler = _ACTIONS.get(sub)
     if handler is not None:
-        handler(args)
+        # A refusal returns 1 so scripts can tell no route was written (#139332).
+        return handler(args)
 
 
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
         print(f"Error: Invalid name '{name}'. Use lowercase alphanumeric with hyphens/underscores.")
-        return
+        return 1
 
     subs = _load_subscriptions()
     expected = subs.get(name, _MISSING_SUBSCRIPTION)
@@ -195,10 +196,10 @@ def _cmd_subscribe(args):
             validate_profile_name(profile)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return
+            return 1
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
-            return
+            return 1
     existing_profile = existing.get("profile", "default")
     profile_changed = is_update and profile != existing_profile
     if profile_changed and args.secret and args.secret == existing.get("secret"):
@@ -206,7 +207,7 @@ def _cmd_subscribe(args):
             "Error: Rebinding a webhook route requires a new HMAC secret. "
             "Omit --secret to generate one automatically, or provide a different secret."
         )
-        return
+        return 1
     secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
@@ -227,27 +228,27 @@ def _cmd_subscribe(args):
                 "--cron-job fires an existing cron job (which handles its own "
                 "delivery)."
             )
-            return
+            return 1
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
-            return
+            return 1
         route["deliver_only"] = True
     if getattr(args, "mirror_to_session", False):
         route["mirror_to_session"] = True
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
-        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        from cron.jobs import AmbiguousJobReference
         try:
-            job = resolve_job_ref(cron_job)
+            job = _resolve_route_cron_job(profile, cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
-            return
+            return 1
         if job is None:
             print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
-            return
+            return 1
         route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
@@ -258,7 +259,7 @@ def _cmd_subscribe(args):
         route = _replace_subscription(name, route, expected)
     except SubscriptionMutationConflict as exc:
         print(f"Error: {exc}")
-        return
+        return 1
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
@@ -280,6 +281,18 @@ def _cmd_subscribe(args):
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
+
+
+def _resolve_route_cron_job(profile: str, reference: str):
+    """Match runtime routing without changing the caller's subscription/config home."""
+    from cron.jobs import resolve_job_ref, use_cron_store
+    from hermes_cli.profiles import get_profile_dir
+
+    # Bare/default routes execute in the ambient home, including standalone installs.
+    if profile == "default":
+        return resolve_job_ref(reference)
+    with use_cron_store(get_profile_dir(profile)):
+        return resolve_job_ref(reference)
 
 
 def _cmd_list(args):

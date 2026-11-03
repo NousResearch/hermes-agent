@@ -1,0 +1,15 @@
+name: github-copilot
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: 346cfe972f72b6a966e84c1004cf8742554b193d
+subdir: github-copilot
+description: "GitHub Copilot model providers for Hermes: `copilot` (the Copilot API with your Copilot subscription: GPT, Claude, Gemini and Grok models, sign in with `hermes auth add copilot` or COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN) and `copilot-acp` (drives your installed GitHub Copilot CLI over ACP). Moved out of Hermes core; profiles that used Copilot get it installed automatically. A Hermes Labs plugin: built by Nous Research, not supported. Disclosure — signs in with GitHub's device-code flow using the Copilot editor OAuth app, exchanges your GitHub token for a short-lived Copilot token at api.github.com and sends your prompts to api.githubcopilot.com (or models.github.ai); it calls GitHub only for profiles that chose Copilot, never runs `gh` or reads other tools' token files, and caches the exchanged token in <HERMES_HOME>/.copilot_jwt.json. copilot-acp runs your local `copilot` CLI."
+maintainer: NousResearch
+tier: community
+category: models
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, PlanGauge, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -142,6 +142,9 @@ class MessageStartPayload(Payload):
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    #: ``stream_segments.TurnSegments`` identity of the prompt turn; a client that sees the same id again is
+    #: looking at a re-sent frame of the turn it already has, not a new turn.
+    turn_id: str | None = None
 
 
 event("message.start", MessageStartPayload,
@@ -161,9 +164,15 @@ class StreamDeltaPayload(Payload):
 class MessageDeltaPayload(StreamDeltaPayload):
     """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
     reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
-    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
+    closes the classic CLI's reply box. Every other viewer ignores an empty chunk.
+
+    A prompt turn stamps ``turn_id`` + ``segment`` (interim seals before it) + ``offset`` (UTF-16 code
+    units of that segment already sent): a client drops a re-sent chunk it already applied."""
 
     text: str | None
+    turn_id: str | None = None
+    segment: int | None = None
+    offset: int | None = None
 
 
 event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
@@ -177,6 +186,9 @@ class MessageInterimPayload(Payload):
 
     text: str
     already_streamed: bool
+    #: The turn and segment this seal closes; a re-sent seal of a closed segment is not a new bubble.
+    turn_id: str | None = None
+    segment: int | None = None
 
 
 event("message.interim", MessageInterimPayload,
@@ -191,9 +203,40 @@ class TurnStatus(WireEnum):
     interrupted = "interrupted"
 
 
+class UsageLimitSuggestion(Payload):
+    """``agent/plan_limits.py::ModelSuggestion`` — a recommended model that still works past the limit."""
+
+    model: str
+    label: str
+    note: str                    # "free" | "included"
+    provider: str = "nous"
+
+
+class UsageLimitCredits(Payload):
+    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
+    ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance)."""
+
+    action: str
+
+
+class UsageLimit(Payload):
+    """``agent/plan_limits.py::LimitHit`` — a usage-window plan's limit: what ran out, when it resets, and
+    the one-click ways on (switch to a recommended model, use / add credits)."""
+
+    gauge_id: str
+    scope: str
+    limit_name: str
+    resets_at_ms: int | None = None
+    message: str
+    suggestions: list[UsageLimitSuggestion] = Field(default_factory=list)
+    credits: UsageLimitCredits | None = None
+    current_model: str = ""
+
+
 class ErrorSurface(Payload):
     """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint,
-    + ``resets_at`` epoch seconds when the provider named when its limit lifts)."""
+    + ``resets_at`` epoch seconds when the provider named when its limit lifts, + ``usage_limit`` on a
+    usage-window plan's limit)."""
 
     layer: str
     code: str
@@ -201,6 +244,7 @@ class ErrorSurface(Payload):
     provider: str | None = None
     model: str | None = None
     resets_at: float | None = None
+    usage_limit: UsageLimit | None = None
     model_config = Payload.model_config | {"extra": "allow"}
 
 
@@ -272,9 +316,13 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 
 
 class SessionUsagePayload(Payload):
-    """``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative
-    counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:
-    published after every API call and at turn end, what main's classic CLI read off its agent."""
+    """``usage``: the status-bar view (``server._get_usage``), sent by the embedded backend's ticker
+    (``server._start_usage_ticker``) and by a canonical local viewer's gateway after every API call
+    and at turn end (``gateway/session_usage.py::usage_frame``). Read this.
+
+    Deprecated: the top-level session-cumulative counters (``usage_stats``, the ``session.stats``
+    dict) that the gateway frame also carries. They are kept for existing readers; new readers use
+    ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them."""
 
     usage: Usage | None = None
     input_tokens: int | None = None
@@ -300,6 +348,7 @@ class SessionUsagePayload(Payload):
     model: str | None = None
     provider: str | None = None
     fallback_model: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
@@ -405,6 +454,21 @@ class ToolOutputRiskPayload(Payload):
 event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified as risky (prompt-injection / secret findings).")
 
 
+class ToolProgressPayload(Payload):
+    """``agent.tool_progress_relay.tool_progress_payload`` — an MCP server's
+    ``notifications/progress`` for a running call, throttled to one per 500 ms per call."""
+
+    tool_id: str
+    name: str
+    progress: float
+    total: float | None = None
+    percent: int | None = None
+    message: str | None = None
+
+
+event("tool.progress", ToolProgressPayload, doc="Live progress of a running tool call (MCP notifications/progress).")
+
+
 class TodoUpdatedPayload(Payload):
     """``tool_progress._normalize_todo_state`` — full task snapshot."""
 
@@ -420,7 +484,9 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 class NotificationShowPayload(Payload):
     """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
-    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent."""
+    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.
+    ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows
+    it in the toast's expandable body, the Ink TUI prints it into the transcript."""
 
     text: str
     level: str
@@ -428,6 +494,7 @@ class NotificationShowPayload(Payload):
     ttl_ms: int | None = None
     key: str | None = None
     id: str | None = None
+    detail: str | None = None
 
 
 class NotificationClearPayload(Payload):
@@ -705,31 +772,6 @@ class BrowserProgressPayload(Payload):
 event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / install progress line.")
 
 
-# ── browser controller (gateway/browser_control_broker frames re-enveloped as events) ─────────
-
-
-class BrowserControllerCommandPayload(Payload):
-    """``gateway/browser_control_broker.py`` FRAME_COMMAND params."""
-
-    command_id: str
-    action: str
-    arguments: dict[str, JsonValue]
-    controller_id: str | None = None
-    browser_profile_id: str | None = None
-    tool_call_id: str | None = None
-
-
-class BrowserControllerCancelPayload(Payload):
-    """``gateway/browser_control_broker.py::_cancel_frame``."""
-
-    command_id: str
-    tool_call_id: str | None = None
-
-
-event("browser.controller.command", BrowserControllerCommandPayload, doc="Dispatch one browser action to the attached controller.")
-event("browser.controller.cancel", BrowserControllerCancelPayload, doc="Withdraw a pending controller command.")
-
-
 # ── voice ─────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -820,12 +862,13 @@ event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the 
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
 event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
+event("skills.changed", ChangeSignalPayload,
+      doc="A skill root moved (installed/removed elsewhere); refetch commands.catalog from the gateway.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
-    "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
+    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
     "ErrorSurface", "FreeTierChallengePayload", "GatewayReadyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
@@ -837,7 +880,8 @@ __all__ = [
     "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
     "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
     "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolStartPayload",
+    "ToolGeneratingPayload", "ToolLabel", "ToolLabelKind", "ToolOutputRiskPayload", "ToolProgressPayload",
+    "ToolStartPayload",
     "TurnStatus", "VoicePartialPayload", "VoiceStatusPayload",
     "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

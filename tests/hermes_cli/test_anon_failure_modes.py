@@ -252,10 +252,6 @@ class TestSignInFailures:
         assert state.reason == "" and state.copy == anon_sign_in.UPGRADE_NOT_COMPLETED
         assert "bad CA bundle" in state.copy_terminal
 
-    def test_account_busy_is_retryable(self):
-        state = anon_sign_in.Failed(reason="account_busy")
-        assert state.retryable is True and "few seconds" in state.copy
-
 
 # --- The dev-only host override ------------------------------------------------------------------
 

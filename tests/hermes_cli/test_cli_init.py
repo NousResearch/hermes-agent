@@ -759,51 +759,23 @@ class TestRootLevelProviderOverride:
 
 
 class TestPluginToolsetStartupValidation:
-    """A toolset that is merely *not registered yet* must not be reported as unknown.
+    """Plugin toolsets are only known where plugins load (the gateway), so the CLI's toolset init
+    neither probes plugins nor judges names (#71650, PLG-7): the gateway refuses an unknown picked
+    name at session.create and reports a stale profile one with the session
+    (tests/hermes_cli/test_cli_profile_toolsets.py)."""
 
-    Plugins register their toolsets during background discovery, while the CLI validates
-    the configured list during construction -- i.e. before that thread has landed. Judging
-    by the live registry alone therefore flags every configured plugin toolset as a typo on
-    every launch, including one-shot/quiet runs whose stdout is machine-parsed.
-    """
-
-    @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def test_init_probes_no_plugins_and_keeps_the_list(self, monkeypatch):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
-        monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
-        monkeypatch.setattr(
-            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
-            lambda: set(plugin_keys),
-        )
-        stub._init_toolsets(list(toolsets))
-        return stub, printed
-
-    def test_plugin_toolset_not_yet_registered_is_not_flagged(self, monkeypatch):
-        stub, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stack"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
+        for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
+            monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
+        stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []
-        # The configured list is kept verbatim; only the false warning is silenced.
-        assert stub.enabled_toolsets == ["terminal", "voice_stack"]
-
-    def test_real_typo_still_warns(self, monkeypatch):
-        _, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stak"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
-        assert len(printed) == 1
-        assert "voice_stak" in printed[0]
-        assert "voice_stack" not in printed[0]
+        assert stub.enabled_toolsets == ["terminal", "voice_stack", "voice_stak"]
 
 
 

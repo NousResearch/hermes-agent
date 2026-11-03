@@ -614,6 +614,8 @@ def test_source_filter_includes_gateway_local_rows_that_surface_created(db):
 def test_source_filter_on_a_db_without_created_source(db):
     """A DB an older writer left behind (read-only opens skip migrations) still filters by label."""
     _label(db, "legacy-cli", "cli", "cli")
+    # SQLite refuses DROP COLUMN while an index references the column.
+    db._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
     db._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
     db._conn.commit()
     assert InsightsEngine(db).generate(days=30, source="cli")["overview"]["total_sessions"] == 1

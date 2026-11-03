@@ -128,7 +128,10 @@ export function SimplifiedAgentList({
       }
 
       setSettingsScope(agent.profile)
-      navigate(`${SETTINGS_ROUTE}?tab=config:model`)
+      const params = new URLSearchParams({ agent: agent.profile })
+
+      if (agent.connectionId) {params.set('connection', agent.connectionId)}
+      navigate(`${SETTINGS_ROUTE}?${params}`)
     } catch (error) {
       notifyError(error, t.errors.genericFailure)
     } finally {

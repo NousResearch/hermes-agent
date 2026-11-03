@@ -236,3 +236,30 @@ def test_payload2_marker_reseeds_a_volume_marked_by_the_old_seed(payload_cache_w
 
     assert poisoned.is_symlink()
     assert marker.read_text(encoding="utf-8") == current
+
+
+def test_seed_publishes_archives_before_the_links_into_them(payload_cache_with_wheel_link, monkeypatch):
+    """A wheel link published before its ``archive-v0/`` bucket points at nothing: another
+    profile's uv meets a dead entry, and a seed that dies in between leaves it until the retry.
+    The payload root lists in no particular order, so the seed must put ``archive-v0`` first."""
+    machine = payload_cache_with_wheel_link
+    listing = Path.iterdir
+
+    def wheels_first(self):
+        entries = list(listing(self))
+        return iter(sorted(entries, key=lambda e: e.name, reverse=True) if self.name == "uv-cache" else entries)
+
+    copy_file = packages._copy_seed_file
+
+    def archive_copy_fails(src, dst):
+        if "archive-v0" in Path(src).parts:
+            raise OSError("disk full")
+        return copy_file(src, dst)
+
+    monkeypatch.setattr(Path, "iterdir", wheels_first)
+    monkeypatch.setattr(packages, "_copy_seed_file", archive_copy_fails)
+
+    packages.uv_cache_dir()
+
+    assert not _seeded_link(machine).is_symlink(), "a wheel link was published before its archive"
+    assert not (machine / ".seeded").exists()

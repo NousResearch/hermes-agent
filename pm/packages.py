@@ -375,7 +375,7 @@ def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
 
 
 def _seed_tree(src: Path, dst: Path) -> None:
-    """Merge one payload bucket, preserving uv's link entries and publication order.
+    """Merge one payload bucket, preserving uv's link entries.
 
     ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
     links, and following them is exactly the bug this walker replaced.
@@ -441,7 +441,9 @@ def uv_cache_dir() -> Path:
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
-                for entry in payload_cache.iterdir():
+                # archive-v0 first: a wheel link published before its bucket points at nothing,
+                # for another profile's uv and, if the seed dies there, until the retry.
+                for entry in sorted(payload_cache.iterdir(), key=lambda entry: entry.name != "archive-v0"):
                     if entry.name == ".seeded":
                         continue
                     dest = seeded / entry.name

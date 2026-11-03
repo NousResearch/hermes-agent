@@ -66,7 +66,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
         <RowButton
           aria-current={selected ? 'page' : undefined}
           className={cn(
-            'flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring [@media(hover:none)]:pr-8',
+            'flex min-h-8.5 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring [@media(hover:none)]:pr-8',
             selected && 'bg-(--chrome-action-hover)'
           )}
           onClick={event => {

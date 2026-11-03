@@ -62,7 +62,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
 
   const button = (
     <RowButton
-      className="flex min-h-9 w-full items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
+      className="flex min-h-8.5 w-full items-center gap-2 rounded-sm px-2 text-left text-xs font-medium hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
       onClick={() => {
         recordAction('session.new', 'click')
 

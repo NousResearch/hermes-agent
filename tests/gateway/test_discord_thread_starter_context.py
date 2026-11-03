@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 import agent.context_references as context_references
-import gateway.session_context_refs as session_context_refs
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
@@ -96,7 +95,7 @@ def expansion(monkeypatch, tmp_path):
     monkeypatch.setattr(context_references, "_default_url_fetcher", fetch)
     monkeypatch.setattr(context_references, "_expand_git_reference",
                         lambda ref, *a, **k: (calls.git.append(ref.raw), (None, "GIT OUTPUT"))[1])
-    monkeypatch.setattr(session_context_refs, "_inbound_cwd", lambda runner, source: str(tmp_path))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     runner = _runner()
     runner._inbound_model_context_length = AsyncMock(return_value=200_000)
     return runner, calls

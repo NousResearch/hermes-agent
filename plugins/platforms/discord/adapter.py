@@ -585,8 +585,8 @@ def _fence_own_post(post: Any) -> str:
     """*post* as quoted data: a fixed label, every line (attachment names too) prefixed with
     ``> ``, a fixed closing line. ``splitlines`` breaks on every line boundary Python knows
     (``\r``, ``\u2028``, ``\x85`` …), so no line of the post can pass for a gateway marker or
-    a speaker line. A post with nothing to quote (embeds only) gets a fixed placeholder line,
-    never "" (a transient lookup failure)."""
+    a speaker line. A post with nothing to quote (embeds only) gets a fixed placeholder line:
+    ``_fetch_own_post`` keeps "" for a transient lookup failure."""
     text = (getattr(post, "clean_content", None) or getattr(post, "content", "") or "").strip()
     files = [f for f in (getattr(a, "filename", "") for a in (getattr(post, "attachments", None) or [])) if f]
     if files:
@@ -2628,7 +2628,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         me = getattr(self._client, "user", None)
         mine = starter is not None and me is not None and str(getattr(starter.author, "id", "")) == str(me.id)
         post = _fence_own_post(starter) if mine else None
-        bounded_put(self._own_posts, thread_id, post, 200)
+        bounded_put(self._own_posts, thread_id, post, ThreadParticipationTracker._MAX_TRACKED)
         return post
 
     async def _own_post_context(self, thread: Any) -> str:

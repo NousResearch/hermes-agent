@@ -1701,7 +1701,7 @@ platform_toolsets:
 #       safety_ratio: 0.85
 #   gemini:
 #     model: "gemini-3.1-flash-tts-preview"
-#     voice: "Kore"
+#     voice: "Kore"           # 30 prebuilt voices or custom Voice Design ID (voice_...)
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
 #   xai:

@@ -27,7 +27,6 @@ export const esSidebarRow: NonNullable<TranslationOverrides['sidebar']>['row'] =
   activity: 'Supervisión',
   draftSession: 'Borrador — aún no se ha enviado nada',
   handoffOrigin: platform => `Transferido desde ${platform}`,
-  continuationOrigin: 'Continuación automática: esta conversación fue comprimida y continuada',
   ownedByProfile: profile => `Perfil: ${profile}`,
   renamed: 'Renombrada',
   renameFailed: 'No se pudo renombrar',

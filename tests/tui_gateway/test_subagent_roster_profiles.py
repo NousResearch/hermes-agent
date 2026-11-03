@@ -43,7 +43,8 @@ def two_profiles(tmp_path, monkeypatch):
 
     def spawn(pid, *, parent="", key=ROUTE):
         from tools.process_registry import ProcessSession
-        procs[pid] = ProcessSession(id=pid, command="sleep 90", session_key=key, parent_session_id=parent)
+        procs[pid] = ProcessSession(id=pid, command="sleep 90", session_key=key, parent_session_id=parent,
+                                      notify_on_complete=True)
 
     def roster(profile=None):
         params = {"profile": profile} if profile else {}

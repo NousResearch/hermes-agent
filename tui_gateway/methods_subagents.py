@@ -64,8 +64,8 @@ def _(rid, params):
 
 
 def _live_work_owners():
-    """``(kind, owner candidates)`` for every live top-level child and running background process in this
-    process. A child names its durable conversation (``owner_agent_session_id``, the spine completion delivery
+    """``(kind, owner candidates)`` for every live top-level child and every background process the agent still
+    awaits (``awaits_notification``: a silent server is monitoring, not work) in this process. A child names its durable conversation (``owner_agent_session_id``, the spine completion delivery
     routes by). A process names the conversation that spawned it (``parent_session_id``, from
     ``HERMES_SESSION_ID``) and its routing ``session_key``, which on the gateway path is a route
     (``agent:main:local:dm:...``), never a stored id."""
@@ -77,7 +77,7 @@ def _live_work_owners():
                   for r in _active_subagents.values() if not r.get("depth")]
     for entry in process_registry.list_sessions():
         proc = process_registry.get(entry.get("session_id"))
-        if proc is not None and not getattr(proc, "exited", True):
+        if proc is not None and process_registry.awaits_notification(proc):
             owners.append(("background", (str(getattr(proc, "parent_session_id", "") or ""),
                                           str(getattr(proc, "session_key", "") or ""))))
     return owners

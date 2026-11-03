@@ -171,23 +171,25 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
+def _notif_unowned_event(sid: str, evt: dict, deferred) -> bool:
     """Dispose of an addressed event this session cannot prove it owns (never adopt an orphan): park it for its
     owner's return (``notification_park``). One the park refuses: a delegation is dropped at WARNING with its offer
     cleared (``return_completion_offer``; the row stays pending) or, during a shutdown drain, goes onto ``deferred``
-    to be requeued; anything else drops."""
+    to be requeued; anything else drops. True when the event is retained (parked or deferred), False for a drop,
+    which the caller settles."""
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
     origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
     from tui_gateway import notification_park
     if notification_park.park(evt):
         logger.debug("Parked unowned %s notification (origin=%r key=%r) until its owner returns",
                      evt_type, origin, key)
-    elif deferred is not None:
+        return True
+    if deferred is not None:
         if is_delegation:
             deferred.append(evt)
-        else:
-            logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
-                         evt_type, origin, key)
+            return True
+        logger.debug("Dropping unowned %s notification during shutdown drain (origin=%r key=%r)",
+                     evt_type, origin, key)
     else:
         # A durable replay stays pending: hand it back so the orphan sweep re-offers it once its owner
         # is live (#97202), and keep that retry out of WARNING.
@@ -198,6 +200,7 @@ def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
         if is_delegation:
             from tools.async_delegation import return_completion_offer
             return_completion_offer(evt)
+    return False
 
 
 # A retried notice the canonical ledger refuses (SESSION_NOT_OWNED persists while a gateway owns the
@@ -639,7 +642,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
             time.sleep(0.1)
         return True
     if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
-        _notif_unowned_event(sid, evt, deferred)
+        if not _notif_unowned_event(sid, evt, deferred):
+            registry.settle_notification(evt)  # a drop, not a requeue
         return True
     owner = str(evt.get("owner_task_id") or evt.get("task_id") or "")
     if not is_delegation and owner.startswith("sa-") and not registry._surface_child_process_notifications():

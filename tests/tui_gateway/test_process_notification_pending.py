@@ -205,6 +205,14 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
         server._notif_handle_ready("pending-ui", session, [evt], set(), registry,
                                    format_process_notification, [])
         session["session_key"] = "pending-owner"
+        if settlement == "orphan":
+            # Parked for its owner's return, so still owed; the park letting go of it is the drop.
+            from tui_gateway import notification_park
+            assert notification_park.parked() == [evt]
+            assert rows()[proc.id]["notification_pending"] is True
+            with notification_park._lock:
+                notification_park._parked[:] = [(0.0, held) for _deadline, held in notification_park._parked]
+            assert notification_park.claim(lambda _evt: False) == []
 
     settlement_handlers = {
         "cli": settle_cli,

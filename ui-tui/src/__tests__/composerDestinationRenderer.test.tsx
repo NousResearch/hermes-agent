@@ -90,14 +90,17 @@ it('discards stale image, drop fallback and collapse completions without changin
     try {
       let pending: unknown
 
-      if (mode === 'image') {h.composer.actions.attachImagePath('/shot.png')}
-      else if (mode === 'clipboard') {h.composer.actions.attachClipboardImage()}
-      else
-        {pending = h.composer.actions.handleTextPaste({
+      if (mode === 'image') {
+        h.composer.actions.attachImagePath('/shot.png')
+      } else if (mode === 'clipboard') {
+        h.composer.actions.attachClipboardImage()
+      } else {
+        pending = h.composer.actions.handleTextPaste({
           text: mode === 'drop' ? '/file.txt' : 'long paste',
           value: '',
           cursor: 0
-        })}
+        })
+      }
 
       await Promise.resolve()
       const tokens = h.composer.refs.tokensRef.current.map(t => ({ ...t }))

@@ -1,6 +1,7 @@
 """Tests for _detect_file_drop — file path detection that prevents
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
+import os
 
 import pytest
 
@@ -182,6 +183,26 @@ class TestEscapedSpaces:
 
         assert result is not None
         assert result["path"] == image
+
+    # Explorer hands the desktop app a UNC path (\\server\share\...) for files dragged
+    # off a NAS or mapped network location; folder names there routinely contain
+    # spaces, so the path must be recognized as a whole rather than split at the first
+    # space. ``\\?\C:\...`` is a real UNC-form path to a local file, so this exercises
+    # the same prefix without needing a network share on the CI runner.
+    @pytest.mark.platforms("windows")
+    def test_windows_unc_path_with_spaces(self, tmp_path):
+        folder = tmp_path / "5 PURCHASE ORDERS"
+        folder.mkdir()
+        doc = folder / "PO 384 window order.pdf"
+        doc.write_bytes(b"%PDF-1.4\n")
+        unc = "\\\\?\\" + str(doc)
+
+        result = _detect_file_drop(unc)
+
+        assert result is not None
+        assert os.path.samefile(result["path"], doc)
+        assert result["is_image"] is False
+        assert result["remainder"] == ""
 
 
 # ---------------------------------------------------------------------------

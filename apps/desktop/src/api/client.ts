@@ -9,9 +9,9 @@ import {
 import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
-import { TimeoutError } from '@/lib/with-timeout'
 
 import { CanonicalDesktopProtocol, canonicalProfile, canonicalPromptParams, canonicalSessionKey, openGatewaySocket, recordCanonicalOwner, splitRewindSubmit } from './canonical-protocol'
+import { DialReadiness, GATEWAY_NOT_CONNECTED_MESSAGE, remainingRequestBudget } from './dial-readiness'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -36,7 +36,7 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
-export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
+export { GATEWAY_NOT_CONNECTED_MESSAGE }
 
 // Canonical shared prompts (`gateway/session_pending_controls.py`) travel as
 // `approval.request` / `clarify.request` EVENTS keyed by `prompt_id` and are
@@ -88,65 +88,12 @@ function requestDeadline(timeoutMs: number | undefined): number {
   return budget > 0 ? Date.now() + budget : Number.POSITIVE_INFINITY
 }
 
-function remainingRequestBudget(deadline: number, signal?: AbortSignal): number {
-  signal?.throwIfAborted()
-
-  if (deadline === Number.POSITIVE_INFINITY) { return 0 }
-  const remaining = deadline - Date.now()
-
-  if (remaining <= 0) { throw new Error('Hermes gateway request timed out') }
-
-  return remaining
-}
-
-// A public dial counts its readiness wait inside the shared client's 15 s connect budget, so a
-// peer that opens but never sends `gateway.ready` fails as fast as one that never opens.
-const GATEWAY_READINESS_TIMEOUT_MS = 15_000
-
 export type GatewaySessionWire = 'canonical' | 'legacy'
-
-// One dial's session-wire readiness. A native dial is canonical by provenance and ready at once;
-// a public dial is ready at the first `gateway.ready` its own socket delivers.
-interface DialReadiness {
-  generation: number
-  opened: boolean
-  promise: Promise<void>
-  ready: boolean
-  reject: (error: Error) => void
-  resolve: () => void
-  settled: boolean
-  timer?: ReturnType<typeof setTimeout>
-}
-
-function dialReadiness(generation: number, ready: boolean): DialReadiness {
-  let resolve = () => {}
-
-  let reject: (error: Error) => void = () => {}
-
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-
-  // connect() awaits it after the transport; a failure first seen there must not be unhandled.
-  promise.catch(() => {})
-  const readiness = { generation, opened: false, promise, ready: false, reject, resolve, settled: false }
-
-  if (ready) {
-    readiness.ready = readiness.settled = true
-    resolve()
-  }
-
-  return readiness
-}
 
 export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private nativeDial = false
-  private readiness = dialReadiness(0, true)
-  // State listeners told `open` before readiness are held until the wire is known: an open
-  // socket that never becomes ready is not a healthy connection to reconnect ladders.
-  private readonly heldOpens = new Set<(state: ConnectionState) => void>()
+  private readonly readiness = new DialReadiness(() => super.connectionState === 'open')
   private readonly protocol = new CanonicalDesktopProtocol()
   private readonly promptHandlers = new Set<ServerRequestHandler>()
   // A stored ID can exist in several profile islands (for example after import).
@@ -234,7 +181,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override close(): void {
-    this.failReadiness()
+    this.readiness.fail()
     this.connectionGeneration++
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
@@ -393,19 +340,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
   }
 
   override onState(handler: (state: ConnectionState) => void): () => void {
-    const off = super.onState(state => {
-      if (state === 'open' && !this.readiness.ready) {
-        this.heldOpens.add(handler)
-
-        return
-      }
-
-      this.heldOpens.delete(handler)
-      handler(state)
-    })
+    const { deliver, release } = this.readiness.hold(handler)
+    const off = super.onState(deliver)
 
     return () => {
-      this.heldOpens.delete(handler)
+      release()
       off()
     }
   }
@@ -424,72 +363,18 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
 
-    const readiness = dialReadiness(generation, this.nativeDial)
-    this.readiness = readiness
-
-    if (!readiness.settled) {
-      readiness.timer = setTimeout(() => this.settleReadiness(readiness, new TimeoutError('Hermes gateway protocol readiness timed out')), GATEWAY_READINESS_TIMEOUT_MS)
-    }
+    const ready = this.readiness.begin(generation, this.nativeDial)
 
     try {
       // The transport's own rejection names a dial that never opened (#41566); readiness only
       // speaks for a socket that did.
       await super.connect(wsUrl)
-      await readiness.promise
+      await ready
     } catch (error) {
-      this.settleReadiness(readiness, error instanceof Error ? error : new Error(GATEWAY_NOT_CONNECTED_MESSAGE))
+      this.readiness.failDial(ready, error instanceof Error ? error : new Error(GATEWAY_NOT_CONNECTED_MESSAGE))
 
       if (generation === this.connectionGeneration) { this.invalidate('Hermes gateway protocol negotiation failed') }
       throw error
-    }
-  }
-
-  // The first `gateway.ready` of the current dial selects its wire; a later one on the same socket
-  // cannot flip it. Runs before any subscriber sees the frame.
-  private adoptReadyFrame(payload: { session_authority?: unknown } | undefined): void {
-    const readiness = this.readiness
-
-    if (readiness.settled || readiness.generation !== this.connectionGeneration) { return }
-    this.canonical = payload?.session_authority === true
-    this.settleReadiness(readiness)
-  }
-
-  // Registered first in the constructor, so it sees every transition before any subscriber, and
-  // a subscriber's redial from its `closed` handler starts after the old dial has failed.
-  private trackReadinessTransport(state: ConnectionState): void {
-    if (state === 'open') { this.readiness.opened = true }
-
-    if (state === 'closed' || state === 'error') { this.failReadiness() }
-  }
-
-  // One text whoever closed the socket; it names the closed connection, as the transport does.
-  private failReadiness(): void {
-    const readiness = this.readiness
-
-    this.settleReadiness(readiness, new Error(readiness.opened ? 'Hermes gateway connection closed before protocol readiness' : GATEWAY_NOT_CONNECTED_MESSAGE))
-  }
-
-  private settleReadiness(readiness: DialReadiness, error?: Error): void {
-    if (readiness.settled) { return }
-    readiness.settled = true
-    clearTimeout(readiness.timer)
-
-    if (error) {
-      this.heldOpens.clear()
-      readiness.reject(error)
-
-      return
-    }
-
-    readiness.ready = true
-    readiness.resolve()
-
-    // Rechecked per handler: an earlier one may unsubscribe a later one, or close or redial the
-    // client. A handler that already heard `closed` has left the held set.
-    for (const handler of [...this.heldOpens]) {
-      if (this.readiness !== readiness || super.connectionState !== 'open') { return }
-
-      if (this.heldOpens.delete(handler)) { handler('open') }
     }
   }
 
@@ -534,40 +419,15 @@ export class HermesGateway extends JsonRpcGatewayClient {
     return params
   }
 
-  // A public dial learns its wire from gateway.ready; a request made before then waits for it,
-  // inside its own deadline and abort signal. A failed dial answers as the transport would: not
-  // connected, which the request layer's reconnect and the connectors' retry key on.
-  private async awaitProtocolReady(method: string, timeoutMs: number | undefined, deadline: number, signal?: AbortSignal): Promise<void> {
-    remainingRequestBudget(deadline, signal)
-    const stops: Array<() => void> = []
-
-    const exits = new Promise<never>((_, reject) => {
-      if (signal) {
-        const onAbort = () => reject(signal.reason)
-        signal.addEventListener('abort', onAbort, { once: true })
-        stops.push(() => signal.removeEventListener('abort', onAbort))
-      }
-
-      if (deadline !== Number.POSITIVE_INFINITY) {
-        // The channel's own timeout text, which callers match (`plugins.manage`'s timedOut).
-        const seconds = Math.round((timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS) / 1000)
-        const timer = setTimeout(() => reject(new Error(`request timed out after ${seconds}s: ${method}`)), Math.max(0, deadline - Date.now()))
-        stops.push(() => clearTimeout(timer))
-      }
-    })
-
-    const ready = this.readiness.promise.catch(() => { throw new Error(GATEWAY_NOT_CONNECTED_MESSAGE) })
-
-    try { await Promise.race([ready, exits]) } finally { for (const stop of stops) { stop() } }
-  }
-
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     const generation = this.connectionGeneration
     const deadline = requestDeadline(timeoutMs)
 
     // Once readiness has settled (always, on a native dial) a request sends at once, as on main.
     if (!this.readiness.ready) {
-      await this.awaitProtocolReady(method, timeoutMs, deadline, signal)
+      // The channel's own timeout text, which callers match (`plugins.manage`'s timedOut).
+      const seconds = Math.round((timeoutMs ?? DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS) / 1000)
+      await this.readiness.wait(deadline, signal, () => new Error(`request timed out after ${seconds}s: ${method}`))
       this.requireConnectionGeneration(generation)
     }
 
@@ -725,8 +585,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
     })
     // The wire follows the peer's explicit advertisement, read before any subscriber runs; a
     // native dial is canonical by provenance.
-    super.on('gateway.ready', event => this.adoptReadyFrame(event.payload))
-    super.onState(state => this.trackReadinessTransport(state))
+    super.on('gateway.ready', event => this.readiness.adoptReady(this.connectionGeneration, () => {
+      this.canonical = event.payload?.session_authority === true
+    }))
+    super.onState(state => this.readiness.trackTransport(state))
     this.onEvent(event => {
       if (!this.canonical) { return }
 

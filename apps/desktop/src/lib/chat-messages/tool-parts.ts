@@ -448,7 +448,9 @@ export const hasUnresolvedToolCall = (message: ChatMessage) =>
  *   a session-wide `interimBoundaryPending` bit that can belong to a different
  *   bubble. A sealed-no-result part on a settled prior turn (`pending` and
  *   `interim` both false) is history, so the new call seeds its own bubble
- *   instead of clobbering the prior turn's row.
+ *   instead of clobbering the prior turn's row. So is an `interim` row at or
+ *   above `turnAnchorId` (the newest row when this turn's `message.start`
+ *   arrived): the seal belonged to an earlier turn, and `interim` outlives it.
  *
  * Newest-first among unresolved parts: interim boundaries append bubbles, so
  * the owner of an in-flight call is the most recent message that carries the
@@ -457,13 +459,16 @@ export const hasUnresolvedToolCall = (message: ChatMessage) =>
 export function toolCallOwnerMessageId(
   messages: ChatMessage[],
   payload: GatewayEventPayload | undefined,
-  phase: 'running' | 'complete'
+  phase: 'running' | 'complete',
+  turnAnchorId?: null | string
 ): string | null {
   const stableId = toolId(payload)
 
   if (!stableId) {
     return null
   }
+
+  const anchorIndex = turnAnchorId ? messages.findIndex(message => message.id === turnAnchorId) : -1
 
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex]
@@ -483,7 +488,9 @@ export function toolCallOwnerMessageId(
       // (`pending`/`interim` both false) is history, not the new call's owner;
       // a session-wide boundary bit is deliberately not consulted, since it
       // can be raised by a different bubble than the candidate row.
-      if (phase === 'running' && part.completedAt !== undefined && !(message.pending || message.interim)) {
+      const inFlight = message.pending || (message.interim && messageIndex > anchorIndex)
+
+      if (phase === 'running' && part.completedAt !== undefined && !inFlight) {
         continue
       }
 
@@ -524,10 +531,11 @@ export function toolEventOwnerMessageId(
   messages: ChatMessage[],
   payload: GatewayEventPayload | undefined,
   phase: 'running' | 'complete',
-  turnLive: boolean
+  turnLive: boolean,
+  turnAnchorId?: null | string
 ): string | null {
   if (turnLive || phase === 'complete') {
-    return toolCallOwnerMessageId(messages, payload, phase)
+    return toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
   }
 
   const settledId = toolCallOwnerMessageId(messages, payload, 'complete')
@@ -539,7 +547,7 @@ export function toolEventOwnerMessageId(
 
   return settledPart?.type === 'tool-call' && sameCallArgs(settledPart.args, payload)
     ? settledId
-    : toolCallOwnerMessageId(messages, payload, phase)
+    : toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
 }
 
 const isQueuedPromptRow = (message: ChatMessage) => message.role === 'user' && message.id.startsWith('user-queued-')
@@ -597,7 +605,7 @@ export function isRedeliveredToolEvent(
   messages: ChatMessage[],
   payload: GatewayEventPayload | undefined,
   phase: 'running' | 'complete',
-  { queuedIsNextTurn = false }: { queuedIsNextTurn?: boolean } = {}
+  { queuedIsNextTurn = false, turnAnchorId }: { queuedIsNextTurn?: boolean; turnAnchorId?: null | string } = {}
 ): boolean {
   const stableId = toolId(payload)
 
@@ -607,7 +615,7 @@ export function isRedeliveredToolEvent(
 
   // A call still waiting on this event wins only when it is newer than the
   // finished match: an older turn's sealed row must not take the copy.
-  const ownerId = toolCallOwnerMessageId(messages, payload, phase)
+  const ownerId = toolCallOwnerMessageId(messages, payload, phase, turnAnchorId)
 
   const repeats = (part: Extract<ChatMessagePart, { type: 'tool-call' }>) =>
     phase === 'complete'

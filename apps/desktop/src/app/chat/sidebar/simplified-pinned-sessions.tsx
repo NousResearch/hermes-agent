@@ -18,7 +18,7 @@ export function SimplifiedPinnedSessions({
   const [allPinsOpen, setAllPinsOpen] = useState(false)
 
   return (
-    <section aria-label={t.sidebar.pinned} className="flex min-h-0 max-h-[25%] shrink-0 flex-col">
+    <section aria-label={t.sidebar.pinned} className="flex min-h-0 max-h-[max(15rem,25vh)] shrink-0 flex-col">
       <RowButton
         aria-expanded={pinsOpen}
         className="flex w-full shrink-0 items-center rounded-sm text-left hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
@@ -35,18 +35,18 @@ export function SimplifiedPinnedSessions({
         <div className="min-h-0 overflow-y-auto">
           <SimplifiedSessionList
             {...props}
-            sessions={allPinsOpen || searching ? props.sessions : props.sessions.slice(0, 3)}
+            sessions={allPinsOpen || searching ? props.sessions : props.sessions.slice(0, 5)}
             showAgent
           />
         </div>
       )}
-      {pinsOpen && !searching && props.sessions.length > 3 && (
+      {pinsOpen && !searching && props.sessions.length > 5 && (
         <RowButton
           aria-expanded={allPinsOpen}
           className="min-h-7 shrink-0 rounded-sm px-2 text-left text-xs text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)"
           onClick={() => setAllPinsOpen(!allPinsOpen)}
         >
-          {allPinsOpen ? t.common.collapse : t.sidebar.showMoreIn(props.sessions.length - 3, t.sidebar.pinned)}
+          {allPinsOpen ? t.common.collapse : t.sidebar.showMoreIn(props.sessions.length - 5, t.sidebar.pinned)}
         </RowButton>
       )}
     </section>

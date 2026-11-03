@@ -21,7 +21,9 @@ let stream: MessageStreamHarness
 const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
   act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
 
-const start = (timestamp: number) => event('tool.start', timestamp, { args, name: 'delegate_task', tool_id: CALL })
+// The gateway's real `tool.start` always carries `context` beside the args.
+const start = (timestamp: number) =>
+  event('tool.start', timestamp, { args, context: goals[0], name: 'delegate_task', tool_id: CALL })
 
 const complete = (timestamp: number) =>
   event('tool.complete', timestamp, { name: 'delegate_task', result, tool_id: CALL })
@@ -81,6 +83,62 @@ describe('a re-delivered event for a call this turn already finished', () => {
     expect(found).toHaveLength(1)
     expect(found[0]).toMatchObject({ completedAt: 103, result: 'page output' })
     expect(stream.state(SID).streamId).toBeNull()
+  })
+
+  it('draws an argless call once when its start arrives again', () => {
+    event('message.start', 150)
+    event('tool.start', 151, { context: '', name: 'browser_snapshot', tool_id: 'call_snap' })
+    event('tool.complete', 152, { args: {}, name: 'browser_snapshot', result: 'tree', tool_id: 'call_snap' })
+    event('tool.start', 153, { context: '', name: 'browser_snapshot', tool_id: 'call_snap' })
+
+    expect(rows('call_snap')).toHaveLength(1)
+  })
+
+  it('draws the copy once while a queued prompt for the next turn is projected', () => {
+    dispatch('none')
+    act(() => {
+      const state = stream.state(SID)
+      stream.states.set(SID, {
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `user-queued-${SID}`, parts: [{ text: 'next', type: 'text' }], role: 'user', timestamp: 106 }
+        ]
+      })
+    })
+    start(107)
+    complete(108)
+
+    expect(rows()).toHaveLength(1)
+  })
+
+  it("routes a completion's copy to the current call, not an older turn's sealed row", () => {
+    event('message.start', 600)
+    event('tool.start', 601, { args: { command: 'echo A' }, name: 'terminal', tool_id: 'call_lost' })
+    event('message.complete', 602, { text: 'first turn done' })
+    event('message.start', 700)
+    event('tool.start', 701, { args: { command: 'echo B' }, name: 'terminal', tool_id: 'call_lost' })
+    event('tool.complete', 702, { name: 'terminal', result: 'B out', tool_id: 'call_lost' })
+    event('tool.complete', 703, { name: 'terminal', result: 'B out', tool_id: 'call_lost' })
+
+    const found = rows('call_lost')
+    expect(found).toHaveLength(2)
+    expect(found[0]).toMatchObject({ args: { command: 'echo A' } })
+    expect((found[0] as { result?: unknown }).result).toBeUndefined()
+    expect(found[1]).toMatchObject({ args: { command: 'echo B' }, completedAt: 702, result: 'B out' })
+  })
+
+  it('still draws a constant-id call that drops an optional argument as its own row', () => {
+    event('message.start', 250)
+    event('tool.start', 251, { args: { command: 'ls', workdir: '/a' }, name: 'terminal', tool_id: 'call_opt' })
+    event('tool.complete', 252, { name: 'terminal', result: 'a', tool_id: 'call_opt' })
+    event('tool.start', 253, { args: { command: 'ls' }, name: 'terminal', tool_id: 'call_opt' })
+
+    const found = rows('call_opt')
+    expect(found).toHaveLength(2)
+    expect(found[0]).toMatchObject({ args: { command: 'ls', workdir: '/a' } })
+    expect(found[1].args).toEqual(expect.not.objectContaining({ workdir: expect.anything() }))
+    expect(found[1]).toMatchObject({ args: { command: 'ls' } })
   })
 
   it('still draws a constant-id call with different arguments in the same turn as its own row', () => {

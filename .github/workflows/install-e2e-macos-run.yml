@@ -229,6 +229,18 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
+      # The runner is Apple Silicon and no Intel macOS bundle ships, so an x64
+      # pair would only reach app launch (or Rosetta) before failing.
+      - name: Reject an unsupported bundle architecture
+        shell: bash
+        env:
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+        run: |
+          if [ "$BUNDLE_ARCH" != arm64 ]; then
+            echo "::error::unsupported macOS bundle architecture '$BUNDLE_ARCH': only arm64 bundles are built and tested"
+            exit 1
+          fi
+
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}

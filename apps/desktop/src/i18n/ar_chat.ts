@@ -2,6 +2,9 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arChat = {
   composer: {
+    addFilesAndActions: 'إضافة ملفات وإجراءات',
+    actionsLabel: 'إجراءات',
+    createAutomation: 'إنشاء أتمتة…',
     message: 'الرسالة',
     wakingProfile: profile => `جار إيقاظ ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
@@ -211,6 +214,9 @@ export const arChat = {
     dismiss: 'تجاهل',
     exit: code => `خروج ${code}`,
     control: {
+      editGoal: 'تعديل الهدف',
+      editLoop: 'تعديل الحلقة',
+      editHeartbeat: 'تعديل النبض',
       goalActiveTurns: (turn, maxTurns) => `الجولة ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} جولات`,
       goalTurn: turn => `الجولة ${turn}`,

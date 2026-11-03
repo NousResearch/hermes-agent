@@ -15,7 +15,16 @@ import {
 import { Kbd } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
+import {
+  Clipboard,
+  FileText,
+  FolderOpen,
+  type IconComponent,
+  ImageIcon,
+  Link,
+  MessageSquareText,
+  Zap
+} from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { useComposerAttachmentProviders } from './contrib'
@@ -28,6 +37,7 @@ export function ContextMenu({
   state,
   onInsertText,
   onOpenUrlDialog,
+  onCreateAutomation,
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
@@ -86,6 +96,16 @@ export function ContextMenu({
           </ContextMenuItem>
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
             {c.url}
+          </ContextMenuItem>
+
+          <DropdownMenuSeparator />
+
+          <DropdownMenuLabel className="px-2 pb-0.5 pt-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
+            {c.actionsLabel}
+          </DropdownMenuLabel>
+
+          <ContextMenuItem icon={Zap} onSelect={onCreateAutomation}>
+            {c.createAutomation}
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
@@ -187,6 +207,7 @@ interface ContextMenuItemProps {
 interface ContextMenuProps {
   onInsertText: (text: string) => void
   onOpenUrlDialog: () => void
+  onCreateAutomation?: () => void
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void
   onPickFolders?: () => void

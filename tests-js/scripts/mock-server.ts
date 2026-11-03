@@ -48,6 +48,13 @@ holdFirstCompletionContaining?: string
 /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
 verificationWritePath?: string
 /**
+ * When a goal-judge aux call carries this marker in its goal text, return a
+ * deterministic DONE verdict. Lets criteria-driven Goal completion be proven
+ * in a packaged test (a fresh goal plus criteria, judge says done, no extra
+ * automatic continuation fires) without a real LLM.
+ */
+goalJudgeDoneForPrompt?: string
+/**
  * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
  *
  * Without it that process is a bare `sleep 5`, which races the agent turn and
@@ -77,6 +84,9 @@ export interface MockServer {
   receivedPrompts: string[]
   /** The `model` field of every chat completion request, in arrival order. */
   receivedModels: string[]
+  /** User-prompt text of every goal-judge aux call (see `isGoalJudgeCall`). Lets
+   *  tests assert the judge actually received a committed completion criterion. */
+  receivedJudgeEvaluations: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -532,7 +542,13 @@ export function groupScriptedLine(userText: string, history: string[] = []): str
  * notification waking the same chat) carry a different last user message and
  * fall through to the canned reply.
  */
-export function directToolCallTurn(userText: string, messages: any[]): ScriptedTurn | null {
+export function directToolCallTurn(userText: string, messages: any[], judgeDone = false): ScriptedTurn | null {
+  // A criteria-driven Goal judge gets its deterministic verdict through this same early
+  // return, so the request handler does not grow a branch of its own for it.
+  if (judgeDone) {
+    return { text: JSON.stringify({ verdict: 'done', reason: 'E2E judge: completion criteria met' }) }
+  }
+
   const match = /E2E_CALL\(([a-z_][a-z0-9_]*)\)\[(\{.*\})\]/s.exec(userText)
 
   if (!match) {
@@ -611,10 +627,47 @@ function describeForLog(value: unknown): string {
  *
  * @returns a handle with `port`, `url`, received user prompts, and `close()`.
  */
+const GOAL_JUDGE_SYSTEM_MARKER = 'You are a strict judge evaluating whether'
+
+/**
+ * Records a goal-judge aux call and decides whether it should answer DONE.
+ *
+ * The judge is an aux LLM call whose system message is the strict-judge prompt. When
+ * `doneForPrompt` is set and that goal text is present in the request, answering DONE makes
+ * criteria-driven Goal completion deterministic in a packaged test — no real model, and no
+ * continuation turn afterwards. The judge's own user prompt is recorded so a test can prove it
+ * saw a committed completion criterion.
+ */
+function recordGoalJudgeCall(
+  messages: Array<{ role?: string; content?: unknown }>,
+  lastUserMessage: { content?: unknown } | undefined,
+  requestJson: unknown,
+  { doneForPrompt, received }: { doneForPrompt?: string; received: string[] },
+): boolean {
+  const isGoalJudgeCall = messages.some(
+    message =>
+      message?.role === 'system' &&
+      typeof message?.content === 'string' &&
+      message.content.includes(GOAL_JUDGE_SYSTEM_MARKER),
+  )
+
+  if (!isGoalJudgeCall) {
+    return false
+  }
+
+  if (typeof lastUserMessage?.content === 'string') {
+    received.push(lastUserMessage.content)
+  }
+
+  return Boolean(doneForPrompt) && JSON.stringify(requestJson).includes(doneForPrompt!)
+}
+
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
     const receivedModels: string[] = []
+    // User-prompt text of every goal-judge aux call that reached this mock.
+    const receivedJudgeEvaluations: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -739,6 +792,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
           const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
 
+          const isJudgeDone = recordGoalJudgeCall(messages, lastUserMessage, parsed, {
+            doneForPrompt: options.goalJudgeDoneForPrompt,
+            received: receivedJudgeEvaluations,
+          })
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
@@ -937,7 +994,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const directCall = directToolCallTurn(userText, messages)
+          const directCall = directToolCallTurn(userText, messages, isJudgeDone)
 
           if (directCall !== null) {
             if (stream) {
@@ -948,6 +1005,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
             return
           }
+
 
           const groupLine = groupScriptedLine(
             userText,
@@ -1025,6 +1083,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         url,
         receivedPrompts,
         receivedModels,
+        receivedJudgeEvaluations,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

@@ -223,11 +223,16 @@ async def approvals(connection, ref, params, *, ack=False):
                            'allow_permanent': 'always' in prompt['choices']} for _, prompt in pending]}
 
 
-async def read(connection, ref, params, *, kind):
+async def read(connection, ref, params, *, kind) -> dict:
     fields = {'session_id', 'profile'} | ({'subagent_id'} if kind == 'tail' else set())
+    if kind == 'control':
+        # Desktop negotiates the loop floor on its own read; the broadcast event never carries it.
+        fields = fields | {'include_loop_min_interval'}
     if (set(params) - fields or not isinstance(ref.session_id, str) or not ref.session_id
             or (kind == 'tail' and (not isinstance(params.get('subagent_id'), str)
-                                   or not params['subagent_id']))):
+                                   or not params['subagent_id']))
+            or (params.get('include_loop_min_interval') is not None
+                and type(params['include_loop_min_interval']) is not bool)):
         raise RuntimeStoreError('invalid_params')
     authority = connection.authority
     # Cold adoption belongs to session.resume, never an ancillary poll.
@@ -258,7 +263,8 @@ def _project(authority, ref, params, kind):
     if kind == 'control':
         # Persisted per session id, never the route's live objects: readable after a messaging
         # route moved on to another conversation.
-        return {'control': control_snapshot(authority, ref)}
+        return {'control': control_snapshot(authority, ref, include_loop_min_interval=(
+            params.get('include_loop_min_interval') is True))}
     _require_current_route(authority, ref)
     agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
     if kind == 'subagents':
@@ -469,9 +475,9 @@ def physical_target(authority, ref):
     return ref.session_id
 
 
-def control_snapshot(authority, ref):
+def control_snapshot(authority, ref, *, include_loop_min_interval=False):
     from hermes_cli.goals import GoalState
-    from hermes_cli.loops import LoopState
+    from hermes_cli.loops import LoopState, min_interval_seconds
     from hermes_cli.heartbeat import HeartbeatState
     # These pure serializers don't bind/import the legacy server. In particular
     # do not reuse _snapshot_control: its manager loader can write on a read.
@@ -497,9 +503,13 @@ def control_snapshot(authority, ref):
     loop = _safe_loop_snapshot(loop_state, deferred_by_goal=bool(
         deferred and loop_state and loop_state.status == 'active'))
     heartbeat = _safe_heartbeat_snapshot(heartbeat_state)
-    return {'goal': goal, 'loop': loop, 'heartbeat': heartbeat,
-            'revision': _snapshot_revision(goal, loop, heartbeat),
-            'updated_at': _snapshot_updated_at(*states)}
+    control = {'goal': goal, 'loop': loop, 'heartbeat': heartbeat,
+               'revision': _snapshot_revision(goal, loop, heartbeat),
+               'updated_at': _snapshot_updated_at(*states)}
+    if include_loop_min_interval:
+        # The floor is the OWNING profile's config: dispatch already entered its runtime scope.
+        control['loop_min_interval_seconds'] = min_interval_seconds()
+    return control
 
 
 def _has_fallback_evicted_ancestor(agent, target_sids, expected_db, route, registry):

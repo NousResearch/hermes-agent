@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from pathlib import Path
+from typing import Any
 
 from hermes_state_runtime import RuntimeStoreError
 
@@ -52,7 +53,8 @@ def _max_turns(runner):
     return DEFAULT_MAX_TURNS
 
 
-def _manager(runner, kind, target):
+def manager(runner, kind, target) -> Any:
+    """The owning session's manager for *kind* (``session.automation`` and the control edits)."""
     if kind == "goal":
         from hermes_cli.goals import GoalManager
         return GoalManager(session_id=target, default_max_turns=_max_turns(runner))
@@ -115,7 +117,7 @@ _NOT_SPECIAL = object()
 
 def invoke(runner, kind, target, call, args, kwargs) -> dict:
     """Run one call against ``target``'s persisted state: ``{state, value}`` or ``{state, error}``."""
-    mgr = _manager(runner, kind, target)
+    mgr = manager(runner, kind, target)
     out: dict
     try:
         value = _special(mgr, kind, target, call, args, kwargs)

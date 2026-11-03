@@ -3016,6 +3016,9 @@ export interface Translations extends NoticeTranslations {
     themeTryPre: string
     themeTryPost: string
     attachLabel: string
+    addFilesAndActions: string
+    actionsLabel: string
+    createAutomation: string
     files: string
     folder: string
     images: string
@@ -3029,6 +3032,58 @@ export interface Translations extends NoticeTranslations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+  }
+
+  automationComposer: {
+    kickoffFailure: string
+    manageExisting: string
+    noSession: string
+    unavailable: string
+    advanced: string
+    title: string
+    editTitle: string
+    goalLabel: string
+    loopLabel: string
+    heartbeatLabel: string
+    goalPromptLabel: string
+    goalPromptPlaceholder: string
+    goalCriteriaLabel: string
+    goalCriteriaPlaceholder: string
+    addCriterion: string
+    removeCriterion: (index: number) => string
+    maxTurnsLabel: string
+    maxTurnsOptional: string
+    loopPromptLabel: string
+    loopPromptPlaceholder: string
+    intervalLabel: string
+    intervalSeconds: string
+    loopMinIntervalError: (min: number) => string
+    runLimitLabel: string
+    runLimitOptional: string
+    stopConditionLabel: string
+    stopConditionOptional: string
+    stopConditionPlaceholder: string
+    heartbeatPromptLabel: string
+    heartbeatPromptPlaceholder: string
+    startGoal: string
+    startLoop: string
+    createHeartbeat: string
+    saveGoal: string
+    saveLoop: string
+    saveHeartbeat: string
+    firstRunGoal: string
+    firstRunLoop: string
+    firstRunHeartbeat: string
+    idleLoop: string
+    idleHeartbeat: string
+    sessionScope: (title: string) => string
+    cronLink: string
+    cronExplain: string
+    duplicateError: string
+    submitError: string
+    pauseGoal: string
+    pauseLoop: string
+    pauseHeartbeat: string
   }
 
   statusStack: {
@@ -3053,6 +3108,7 @@ export interface Translations extends NoticeTranslations {
       goalDoneTurns: (turns: number) => string
       goalTurn: (turn: number) => string
       goalActions: string
+      editGoal: string
       viewDetails: string
       addCriterion: string
       addCriterionDialogTitle: string
@@ -3101,6 +3157,7 @@ export interface Translations extends NoticeTranslations {
       loopEveryHours: (hours: number) => string
       loopSelfPaced: string
       loopActions: string
+      editLoop: string
       pauseLoop: string
       resumeLoop: string
       stopLoop: string
@@ -3120,6 +3177,7 @@ export interface Translations extends NoticeTranslations {
       heartbeatNext: (time: string) => string
       dueWaitingForIdle: string
       heartbeatActions: string
+      editHeartbeat: string
       pauseHeartbeat: string
       resumeHeartbeat: string
       clearHeartbeat: string

@@ -40,7 +40,10 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
   async function save(event: React.FormEvent) {
     event.preventDefault()
 
-    if (saving) {return}
+    if (saving) {
+      return
+    }
+
     setSaving(true)
     setError('')
 
@@ -67,11 +70,13 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
   return (
     <Dialog
       onOpenChange={open => {
-        if (!open) {onClose()}
+        if (!open && !saving) {
+          onClose()
+        }
       }}
       open
     >
-      <DialogContent>
+      <DialogContent showCloseButton={!saving}>
         <DialogHeader>
           <DialogTitle>{job ? c.routines : c.addRoutine}</DialogTitle>
           <DialogDescription>
@@ -79,47 +84,49 @@ export function RoutineDialog({ owner, job, onClose, onSaved }: RoutineDialogPro
             {!job && ` · ${c.localDelivery}`}
           </DialogDescription>
         </DialogHeader>
-        <form className="grid gap-4" onSubmit={save}>
-          <label className="grid gap-1 text-xs">
-            {c.name}
-            <Input onChange={event => setName(event.target.value)} value={name} />
-          </label>
-          <label className="grid gap-1 text-xs">
-            {c.schedule}
-            <Input
-              onChange={event => setSchedule(event.target.value)}
-              placeholder="0 9 * * *"
-              required
-              value={schedule}
-            />
-          </label>
-          {script ? (
-            <p className="text-xs text-muted-foreground">{c.scriptRoutine}</p>
-          ) : (
+        <form aria-busy={saving} onSubmit={save}>
+          <fieldset className="grid gap-4" disabled={saving}>
             <label className="grid gap-1 text-xs">
-              {c.prompt}
-              <Textarea onChange={event => setPrompt(event.target.value)} required value={prompt} />
+              {c.name}
+              <Input onChange={event => setName(event.target.value)} value={name} />
             </label>
-          )}
-          {job && (
-            <label className="flex items-center gap-2 text-xs">
-              <Checkbox checked={enabled} onCheckedChange={value => setEnabled(value === true)} />
-              {c.enabled}
+            <label className="grid gap-1 text-xs">
+              {c.schedule}
+              <Input
+                onChange={event => setSchedule(event.target.value)}
+                placeholder="0 9 * * *"
+                required
+                value={schedule}
+              />
             </label>
-          )}
-          {error && (
-            <p className="text-xs text-destructive" role="alert">
-              {error}
-            </p>
-          )}
-          <DialogFooter>
-            <Button onClick={onClose} type="button" variant="secondary">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={saving} type="submit">
-              {t.common.save}
-            </Button>
-          </DialogFooter>
+            {script ? (
+              <p className="text-xs text-muted-foreground">{c.scriptRoutine}</p>
+            ) : (
+              <label className="grid gap-1 text-xs">
+                {c.prompt}
+                <Textarea onChange={event => setPrompt(event.target.value)} required value={prompt} />
+              </label>
+            )}
+            {job && (
+              <label className="flex items-center gap-2 text-xs">
+                <Checkbox checked={enabled} onCheckedChange={value => setEnabled(value === true)} />
+                {c.enabled}
+              </label>
+            )}
+            {error && (
+              <p className="text-xs text-destructive" role="alert">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button disabled={saving} onClick={onClose} type="button" variant="secondary">
+                {t.common.cancel}
+              </Button>
+              <Button loading={saving} type="submit">
+                {t.common.save}
+              </Button>
+            </DialogFooter>
+          </fieldset>
         </form>
       </DialogContent>
     </Dialog>

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { lazy, Suspense } from 'react'
 import { useLocation } from 'react-router'
 
+import { PageLoader } from '@/components/page-loader'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { SettingsView as ClassicSettingsView } from '../settings'
@@ -17,10 +18,12 @@ export function SettingsView(props: SettingsPageProps) {
   const profile = params.get('agent')
   const connectionId = params.get('connection') || undefined
 
-  if (!enabled || !profile) {return <ClassicSettingsView {...props} />}
+  if (!enabled || !profile) {
+    return <ClassicSettingsView {...props} />
+  }
 
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageLoader />}>
       <AgentSettingsView {...props} key={JSON.stringify([connectionId, profile])} owner={{ connectionId, profile }} />
     </Suspense>
   )

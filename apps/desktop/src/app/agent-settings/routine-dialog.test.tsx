@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import * as client from '@/api/client'
@@ -56,4 +56,35 @@ it('edits script routine metadata without overwriting its script or resending a 
   expect(request).toHaveBeenCalledWith(
     expect.objectContaining({ body: { updates: { name: 'Renamed', enabled: true } } })
   )
+})
+
+it('keeps an in-flight save visible and restores editing after failure', async () => {
+  let reject!: (reason: Error) => void
+  vi.spyOn(client, 'hermesApi').mockImplementation(
+    () =>
+      new Promise((_resolve, fail) => {
+        reject = fail
+      })
+  )
+  const close = vi.fn()
+  const saved = vi.fn()
+  render(<RoutineDialog onClose={close} onSaved={saved} owner={{ connectionId: 'remote', profile: 'research' }} />)
+  fireEvent.change(screen.getByLabelText('Schedule'), { target: { value: '0 9 * * *' } })
+  fireEvent.change(screen.getByLabelText('Prompt'), { target: { value: 'Review my notes' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getByLabelText('Prompt').closest('fieldset')?.disabled).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  fireEvent.keyDown(window.document, { key: 'Escape' })
+  expect(close).not.toHaveBeenCalled()
+  await act(async () => {
+    reject(new Error('Save failed'))
+  })
+  expect(screen.getByRole('alert').textContent).toContain('Save failed')
+  expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false)
+  expect(screen.getByLabelText('Prompt').closest('fieldset')?.disabled).toBe(false)
+  expect(saved).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(close).toHaveBeenCalledOnce()
 })

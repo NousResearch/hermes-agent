@@ -87,7 +87,9 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
             explicit_provider=_config_provider or "")
         if not r.success:
             return
-        if cli.agent:
+        # A gateway /new already opened the next session on the profile's default (``session.create``
+        # without a model); the stand-in still points at the ended session, which a switch would rewrite.
+        if cli.agent and not getattr(cli, "_gateway_session_open", False):
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
                 base_url=r.base_url, api_mode=r.api_mode,
@@ -133,6 +135,81 @@ def _apply_new_session_title(cli, title: str) -> Optional[str]:
     return sanitized
 
 
+def _print_save_refusal(error) -> None:
+    """A gateway's ``/save`` refusal: ``not_found`` (no stored conversation yet) is main's nothing-to-save."""
+    print(t("cli.session.save_nothing") if str(error) == "not_found" else t("cli.session.save_failed", error=error))
+
+
+def _export_on_gateway(connection, session_id, fmt, filename, redact):
+    """The owner's ``/save`` rendering of its stored row (``session.export``: the snapshot ``hermes
+    sessions export`` writes, with title, metadata and archived rows), never this process's
+    in-memory history. Nothing is written on the gateway host, so a remote owner's disk is never
+    taken for this machine's. None when refused (printed), and also None when an older gateway
+    without ``session.export`` was handed to ``_save_on_older_gateway`` (which may save on the
+    gateway host and prints its own outcome)."""
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+    try:
+        content = (connection.call("session.export", session_id=session_id, format=fmt,
+                                   redact=redact) or {}).get("content")
+    except GatewayClientError as e:
+        if not (isinstance(e, GatewayRPCError) and (e.code == -32601 or str(e) == "unknown_method")):
+            _print_save_refusal(e)
+            return None
+        _save_on_older_gateway(connection, session_id, fmt, filename, redact)
+        return None
+    if not isinstance(content, str):
+        print(t("cli.session.save_failed", error="the gateway returned no export"))
+        return None
+    return content
+
+
+def _save_on_older_gateway(connection, session_id, fmt, filename, redact):
+    """An owner without ``session.export``: its ``session.save`` writes default-named, unredacted
+    JSON on the gateway host, so only a plain ``/save json`` may use it (as Desktop does)."""
+    from hermes_cli.gateway_client import GatewayClientError
+    if redact or fmt != "json" or filename:
+        print("(._.) This gateway predates this CLI: only a plain /save json works until it restarts "
+              "(it saves on the gateway host).")
+        return
+    try:
+        saved = (connection.call("session.save", session_id=session_id) or {}).get("file")
+    except GatewayClientError as e:
+        _print_save_refusal(e)
+        return
+    print(f"(^_^)v Conversation saved on the gateway host: {saved}" if saved
+          else t("cli.session.save_failed", error="the gateway returned no file"))
+
+
+def _write_save(session_id, fmt, filename, render):
+    """Write a ``/save`` export on this machine: ``filename`` as typed (relative to the cwd), else
+    ``sessions/saved/hermes_conversation_<ts>.<fmt>`` under this CLI's home."""
+    from cli import datetime
+    saved_dir = get_hermes_home() / "sessions" / "saved"
+    try:
+        saved_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print(t("cli.session.save_dir_failed", path=saved_dir, error=e))
+        return
+    if filename:
+        path = Path(filename).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
+
+    try:
+        content = render()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        label = {"json": "JSON", "md": t("cli.session.format_markdown"), "html": "HTML"}[fmt]
+        print(t("cli.session.save_ok", path=path, label=label))
+        if session_id:
+            print(f"       {t('cli.session.save_resume_hint', session_id=session_id)}")
+    except Exception as e:  # health: allow BLE001 -- /save's user boundary (main's, moved here): any render/write failure is printed
+        print(t("cli.session.save_failed", error=e))
+
+
 class CLISessionMixin:
     """Session lifecycle for the interactive CLI: new/resume/save, undo/retry rewinds, yolo
     persistence, manual compression, and exit summary."""
@@ -167,22 +244,11 @@ class CLISessionMixin:
         _dim_notice(self, msg, quiet)
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
-        """Re-enable YOLO bypass on resume when the session row's ``model_config.yolo_mode``
-        says so — the in-memory ``tools.approval._session_yolo`` set starts empty in a fresh
-        process. No-op when already active or when the process was launched with ``--yolo``."""
-        try:
-            from hermes_state import SessionDB
-            from tools.approval import (
-                _YOLO_MODE_FROZEN, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if _YOLO_MODE_FROZEN or not SessionDB.session_yolo_enabled(session_meta):
-            return
-        session_key = self.session_id or "default"
-        if is_session_yolo_enabled(session_key):
-            return
-        enable_session_yolo(session_key)
-        _dim_notice(self, t("cli.session.yolo_restored"), quiet)
+        """Re-arm the session row's persisted /yolo on every resume path (``tools.approval_yolo``)."""
+        from hermes_state import SessionDB
+        from tools.approval_yolo import restore_session_yolo
+        if restore_session_yolo(self.session_id or "default", SessionDB.session_yolo_enabled(session_meta)):
+            _dim_notice(self, t("cli.session.yolo_restored"), quiet)
 
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
@@ -211,9 +277,14 @@ class CLISessionMixin:
     def _show_status(self):
         """Show compact startup status line."""
         from cli import get_tool_definitions
+        from hermes_cli.gateway_tools_notify import gateway_store
+        store = gateway_store(self)  # a gateway session's tools are the gateway's: never enumerated here
+        inventory = store.banner_inventory() if store is not None else None
         # Avoid pulling the full tool registry into the bare Termux prompt path.
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
+        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1" or (store is not None and inventory is None):
             tool_status = t("cli.session.status_tools_deferred")
+        elif inventory is not None:
+            tool_status = t("cli.session.status_tools_count", count=len(inventory["tools"] or []))
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
                                          disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
@@ -295,13 +366,6 @@ class CLISessionMixin:
             ctx_label = None
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            if free_tier_route():
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         optional = ((t("cli.session.label_reasoning"), reasoning_label),
                     (t("cli.session.label_approvals"), approval_label),
                     (t("cli.session.label_context"), ctx_label))
@@ -441,7 +505,10 @@ class CLISessionMixin:
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
-                finalize_session(**context)
+                from cli import _cli_visible_print
+                from hermes_cli.lifecycle import session_end_messages
+                for message in session_end_messages(finalize_session(**context)):
+                    _cli_visible_print(message)
             else:
                 invoke_hook(event_type, **context)
 
@@ -506,7 +573,9 @@ class CLISessionMixin:
                 # rotation) so /new never blocks on the LLM-bound call.
                 _boundary_snapshot = self._launch_session_boundary_memory_flush(
                     list(self.conversation_history), session_id=old_session_id)
-            self._notify_session_boundary("on_session_finalize")
+            from hermes_cli.cli_shutdown import _gateway_owns_session_end
+            if not _gateway_owns_session_end(self.agent):  # the gateway finalizes at end_session below
+                self._notify_session_boundary("on_session_finalize")
 
         if self._session_db and old_session_id:
             # /new can arrive mid-turn before _flush_messages_to_session_db() ran — flush
@@ -526,7 +595,8 @@ class CLISessionMixin:
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
-        self.session_id = new_session_id(self.session_start)
+        # The gateway's new session; getattr: tests drive new_session unbound (main's mint then).
+        self.session_id = getattr(self, "_new_session_id", lambda now: new_session_id(now))(self.session_start)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -586,7 +656,9 @@ class CLISessionMixin:
                     _mm.on_session_switch(
                         self.session_id, parent_session_id=old_session_id or "",
                         reset=True, reason="new_session")
-            self._notify_session_boundary("on_session_reset")
+            from hermes_cli.cli_shutdown import _gateway_owns_session_end
+            if not _gateway_owns_session_end(self.agent):  # the gateway resets when end_session closes it
+                self._notify_session_boundary("on_session_reset")
 
         if not silent:
             if title:
@@ -629,9 +701,8 @@ class CLISessionMixin:
         the live session stays resumable regardless. ``redact`` runs the force-mode secret
         redaction pass before writing.
         """
-        from cli import datetime
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, normalize_save_format, render_session_for_save)
+            SAVE_USAGE, load_save_snapshot, normalize_save_format, render_session_for_save)
 
         parts = cmd.split()[1:]
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -647,6 +718,16 @@ class CLISessionMixin:
             print(SAVE_USAGE)
             return
         filename = parts[1] if len(parts) > 1 else None
+        from hermes_cli.gateway_tools_notify import gateway_store
+        store = gateway_store(self)
+        if store is not None:  # the gateway owns the session: it renders its stored row, this machine writes it
+            if not self.conversation_history:  # as Ink: nothing said yet, nothing exported
+                print(t("cli.session.save_nothing"))
+                return
+            content = _export_on_gateway(store.connection, self.session_id, fmt, filename, redact)
+            if content is not None:
+                _write_save(self.session_id, fmt, filename, lambda: content)
+            return
 
         # Prefer the durable DB row (metadata + tool calls); fall back to in-memory history.
         # getattr: test doubles may not carry _session_db / session_id.
@@ -654,8 +735,12 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
+            from hermes_state import SessionExportTooLargeError
             try:
-                session_data = _db.export_session(_sid, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
+                session_data = load_save_snapshot(_db, _sid, fmt)
+            except SessionExportTooLargeError as e:
+                print(f"(._.) {e}")
+                return
             except Exception:
                 session_data = None
         if not session_data:
@@ -669,36 +754,7 @@ class CLISessionMixin:
             from hermes_cli.session_export_md import redact_session_data
 
             session_data = redact_session_data(session_data)
-
-        saved_dir = get_hermes_home() / "sessions" / "saved"
-        try:
-            saved_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(t("cli.session.save_dir_failed", path=saved_dir, error=e))
-            return
-        if filename:
-            path = Path(filename).expanduser()
-            if not path.is_absolute():
-                path = Path.cwd() / path
-        else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            path = saved_dir / f"hermes_conversation_{timestamp}.{fmt}"
-
-        try:
-            content = render_session_for_save(session_data, fmt)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            label = {"json": "JSON", "md": t("cli.session.format_markdown"), "html": "HTML"}[fmt]
-            print(t("cli.session.save_ok", path=path, label=label))
-            # #76354 review F5: the worker thread also rebound the session ContextVar inside its own
-            # (copied) context, which the caller never sees — and get_session_env() prefers an already-bound
-            # ContextVar over os.environ. Rebind in the CALLER's context so post-compression
-            # tools/subprocesses on this thread resolve HERMES_SESSION_ID to the child id after an
-            # out-of-place rotation (idempotent when no rotation happened).
-            if self.session_id:
-                print(f"       {t('cli.session.save_resume_hint', session_id=self.session_id)}")
-        except Exception as e:
-            print(t("cli.session.save_failed", error=e))
+        _write_save(self.session_id, fmt, filename, lambda: render_session_for_save(session_data, fmt))
 
     def _publish_truncated_history(self, truncated: list, *, invalidate_prompt: bool) -> None:
         """Install a rewound history and mirror it onto the agent (flush index reset so the
@@ -727,7 +783,7 @@ class CLISessionMixin:
 
         from agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text)
-        from agent.memory_manager import sanitize_context
+        from agent.memory_context import sanitize_context
 
         warm_history = list(self.conversation_history)
         user_indices = _user_turn_indices(warm_history)
@@ -848,26 +904,6 @@ class CLISessionMixin:
 
             write_breadcrumb(self.session_id)
 
-    def _transfer_session_yolo(self, old_session_id: str, new_session_id: str) -> None:
-        """Move YOLO bypass state to a new session key when ``self.session_id`` is reassigned
-        mid-run (/branch, auto-compression rotation) — ``_session_yolo`` is keyed by id, so
-        without this the toggle silently reverts. Mirrors tui_gateway's rename path."""
-        if not old_session_id or not new_session_id or old_session_id == new_session_id:
-            return
-        try:
-            from tools.approval import (
-                disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
-        except Exception:
-            return
-        if is_session_yolo_enabled(old_session_id):
-            enable_session_yolo(new_session_id)
-            disable_session_yolo(old_session_id)
-            # Carry the persisted flag onto the continuation row so a later --resume restores
-            # it too. getattr: tests call this unbound against a minimal stand-in.
-            _persist = getattr(self, "_persist_session_yolo", None)
-            if _persist:
-                _persist(new_session_id, True)
-
     def _is_session_yolo_active(self) -> bool:
         """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
         (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
@@ -892,8 +928,7 @@ class CLISessionMixin:
         """
         from cli import _cprint
         from hermes_cli.colors import Colors as _Colors
-        from tools.approval import (
-            _YOLO_MODE_FROZEN, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled)
+        from tools.approval import _YOLO_MODE_FROZEN
 
         # A frozen process-level bypass short-circuits the approval gate ahead of the session
         # check — toggling "OFF" would be a false safety claim. Say so instead.
@@ -902,31 +937,17 @@ class CLISessionMixin:
             _cprint(f"  {t('cli.session.yolo_locked', state=state)}")
             return
 
+        from tools.approval_yolo import toggle_session_yolo
         session_key = self.session_id or "default"
-        # getattr: tests call this unbound against a minimal stand-in; persistence is best-effort.
-        _persist = getattr(self, "_persist_session_yolo", None)
-        if is_session_yolo_enabled(session_key):
-            disable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, False)
-            state = f"{_Colors.BOLD}{_Colors.RED}{t('cli.shared.label_off_upper')}{_Colors.RESET}"
-            _cprint(f"  {t('cli.session.yolo_off', state=state)}")
-        else:
-            enable_session_yolo(session_key)
-            if _persist:
-                _persist(session_key, True)
+        db = getattr(self, "_session_db", None)  # getattr: tests call this unbound against a stand-in
+        # The row is created lazily on the first turn; until then with_session_yolo records the toggle.
+        persist = (lambda on: db.set_session_yolo(session_key, on)) if db and session_key != "default" else None
+        if toggle_session_yolo(session_key, persist=persist):
             state = f"{_Colors.BOLD}{_Colors.GREEN}{t('cli.shared.label_on_upper')}{_Colors.RESET}"
             _cprint(f"  {t('cli.session.yolo_on', state=state)}")
-
-    def _persist_session_yolo(self, session_key: str, enabled: bool) -> None:
-        """Persist the YOLO flag to the session row so --resume restores it. Best-effort; the
-        in-memory toggle is authoritative. Skipped without a store or before the row exists
-        (rows are created lazily on the first turn)."""
-        db = getattr(self, "_session_db", None)
-        if db is None or not session_key or session_key == "default":
-            return
-        with contextlib.suppress(Exception):
-            db.set_session_yolo(session_key, enabled)
+        else:
+            state = f"{_Colors.BOLD}{_Colors.RED}{t('cli.shared.label_off_upper')}{_Colors.RESET}"
+            _cprint(f"  {t('cli.session.yolo_off', state=state)}")
 
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression.
@@ -981,6 +1002,8 @@ class CLISessionMixin:
                 # generation point at the live continuation, not the ended parent.
                 agent_sid = getattr(self.agent, "session_id", None)
                 if agent_sid and agent_sid != self.session_id:
+                    from tools.approval_yolo import transfer_session_yolo
+                    transfer_session_yolo(self.session_id, agent_sid)
                     self.session_id = self.agent.session_id
                     self._write_terminal_breadcrumb()
                     self._pending_title = None
@@ -998,7 +1021,8 @@ class CLISessionMixin:
                     print(f"     {summary['note']}")
             except Exception as e:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
-                print(f"  {t('cli.session.compress_failed', error=e)}")
+                from hermes_cli.cli_chat_error_copy import refusal_text
+                print(f"  {t('cli.session.compress_failed', error=refusal_text(e))}")
 
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify
@@ -1143,6 +1167,11 @@ class CLISessionMixin:
             # Honors NO_COLOR/dumb terminals by skipping silently when there's no real console.
             self._clear_terminal_on_exit()
         print()
+        import cli as _cli_module
+        # Plugin on_session_finalize messages from _run_cleanup: printed after the clear so they survive.
+        for message in _cli_module._session_end_messages:
+            print(message)
+        _cli_module._session_end_messages.clear()
         msg_count = len(self.conversation_history)
         if not msg_count:
             try:

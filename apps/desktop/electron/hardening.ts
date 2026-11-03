@@ -595,6 +595,37 @@ async function readFileDataUrlForIpc(
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }
 
+/** True when a read failed because the file (or its parent) is not on disk.
+ *  Preview reads routinely race a file's lifecycle — a restored preview tab or
+ *  a transcript reference can point at something that was deleted, moved, or
+ *  lived in a cleared /tmp. Those are expected outcomes, not crashes: IPC
+ *  handlers should answer them with a structured error result instead of
+ *  rejecting (Electron logs every rejected handler as a stack trace even when
+ *  the renderer handles the rejection gracefully). Everything else still
+ *  throws as before. */
+function isMissingFileError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false
+  }
+
+  const code = (error as { code?: unknown }).code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** The structured "file is not on disk" IPC answer built from a caught read
+ *  error. Shared by every handler that converts expected absence into data
+ *  (preview text/image reads, attachment reads, file watches) so all of them
+ *  answer with the same shape. */
+function missingFileResult(requestedPath: unknown, error: unknown) {
+  return {
+    ok: false as const,
+    error: (error as NodeJS.ErrnoException).code || 'ENOENT',
+    message: error instanceof Error ? error.message : 'File does not exist.',
+    path: String(requestedPath ?? '')
+  }
+}
+
 export {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -607,6 +638,8 @@ export {
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   rejectUnsafePathSyntax,
   resolveDirectoryForIpc,

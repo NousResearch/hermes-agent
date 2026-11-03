@@ -10,11 +10,43 @@ from hermes_cli.release_channels import ChannelError, build_prefix, canonical_js
 from scripts.bundles.release_artifacts import single, validate_windows_bundle, write_appinstaller
 
 
-def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str) -> tuple[dict, list[Path]]:
+ALL_TARGETS = tuple((platform, arch) for platform in ("macos", "windows") for arch in ("arm64", "x64"))
+
+
+def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
+    """sha512 per artifact from the receipt-bound per-arch electron feed (``<arch>-*-mac.yml``)."""
+    import hermes_yaml as yaml
+
+    leg = single(name for name in files if name.startswith(f"{arch}-") and name.endswith("-mac.yml"))
+    if not (root / leg).is_file():
+        raise ChannelError(f"Missing receipt-bound macOS feed leg: {leg}")
+    feed = yaml.safe_load((root / leg).read_text(encoding="utf-8-sig"))
+    digests = {}
+    for entry in feed.get("files", []):
+        name = str(entry.get("url", ""))
+        if name not in files or entry.get("size") != files[name]["size"]:
+            raise ChannelError(f"macOS feed leg {leg} disagrees with its receipts: {name}")
+        digests[name] = str(entry["sha512"])
+    return digests
+
+
+def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
+             targets=ALL_TARGETS, local_bytes: bool = True) -> tuple[dict, list[Path]]:
+    """``targets`` defaults to every native target. A stable release that did not
+    opt into macOS Intel passes the three it built; arm64 macOS and both Windows
+    arches are always required.
+
+    ``local_bytes=False`` trusts the receipts instead of downloaded packages:
+    every artifact is bound by its receipt sha256 (and was validated when the
+    candidate was accepted), the macOS sha512s come from the receipt-bound
+    per-arch feed legs, and no multi-GB package needs to be on disk."""
     files = native["files"]
     rows = native["packages"]
-    if sorted((row["platform"], row["arch"]) for row in rows) != [
-            (platform, arch) for platform in ("macos", "windows") for arch in ("arm64", "x64")]:
+    targets = sorted(targets)
+    if not {("macos", "arm64"), ("windows", "arm64"), ("windows", "x64")} <= set(targets) \
+            or not set(targets) <= set(ALL_TARGETS):
+        raise ChannelError("Native targets must include macOS arm64 and both Windows architectures")
+    if sorted((row["platform"], row["arch"]) for row in rows) != targets:
         raise ChannelError("Native metadata must cover both platforms and architectures")
     prefix = build_prefix(request["buildId"])
     base = request["publicBase"]
@@ -22,13 +54,14 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str) -
     if windows[0]["applicationId"] != request["identity"]["appNamePascal"]:
         raise ChannelError("Windows application identity mismatch")
     bundle_name = single(name for name in files if name.endswith(".msixbundle") and not name.startswith("Store-"))
-    validate_windows_bundle(root / bundle_name, windows)
+    if local_bytes:
+        validate_windows_bundle(root / bundle_name, windows)
     packages, mac_files = [], []
     for row in rows:
         mac = row["platform"] == "macos"
         filename = row["filename"] if mac else bundle_name
         receipt = files.get(filename)
-        if receipt is None or not (root / filename).is_file():
+        if receipt is None or (local_bytes and not (root / filename).is_file()):
             raise ChannelError("Missing receipt-bound native artifact")
         signing = "teamId" if mac else "publisher"
         packages.append({"platform": "darwin" if mac else "win32", "arch": row["arch"], "variant": "bundled",
@@ -37,11 +70,18 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str) -
                          "feed": {"key": prefix + ("darwin/stable-mac.yml" if mac else "win32/stable.appinstaller"),
                                   "channel": "stable"}})
         if mac:
+            leg_digests = None if local_bytes else _leg_sha512(root, files, row["arch"])
             for name in (filename, filename.removesuffix(".zip") + ".dmg"):
-                if any(item not in files or not (root / item).is_file() for item in (name, name + ".blockmap")):
+                if any(item not in files or (local_bytes and not (root / item).is_file())
+                       for item in (name, name + ".blockmap")):
                     raise ChannelError("Missing receipt-bound macOS package or blockmap")
-                with (root / name).open("rb") as stream:
-                    digest = base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode("ascii")
+                if leg_digests is not None:
+                    if name not in leg_digests:
+                        raise ChannelError(f"macOS feed leg has no sha512 for {name}")
+                    digest = leg_digests[name]
+                else:
+                    with (root / name).open("rb") as stream:
+                        digest = base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode("ascii")
                 mac_files.append({"url": f"{base}/{artifact_prefix}{name}", "sha512": digest, "size": files[name]["size"]})
     manifest = {"schema": 1, "request": request, "packages": packages}
     if all(row.get("receiverProtocol") == 1 for row in rows):

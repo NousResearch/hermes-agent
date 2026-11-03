@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-import hermes_cli.auth as auth
+from hermes_cli import auth
 
 @pytest.fixture
 def store_file(tmp_path):

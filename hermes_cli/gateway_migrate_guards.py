@@ -37,6 +37,19 @@ def _pid_uid(pid: int) -> Optional[int]:
     return None
 
 
+def pid_is_other_users(pid: int) -> bool:
+    """True when *pid* is owned by another Unix user than this non-root caller.
+
+    Gateway process scans match argv host-wide, so without this a second account's gateway (users
+    isolate credentials by UID) became a ``restart --all`` SIGTERM target and "unfolded profile"
+    advice. Root keeps the host-wide view (``sudo … --system`` over a ``User=`` unit), as does
+    Windows (no ``geteuid``); an unknown owner is not called foreign.
+    """
+    my_uid = os.geteuid() if hasattr(os, "geteuid") else 0
+    owner = _pid_uid(pid) if my_uid else None
+    return owner is not None and owner != my_uid
+
+
 def _system_unit_uid(unit_path: Path) -> Optional[int]:
     """uid a system unit runs as: its ``User=`` (root when absent); None when the name is unknown."""
     from hermes_cli.gateway import _read_systemd_user_from_unit
@@ -158,6 +171,21 @@ def auto_migration_blockers(plan: MigrationPlan) -> list[str]:
 
 
 # --------------------------------------------------------------------------- opt-out
+
+
+def masked_default_unit(default_home: Path) -> Optional[Path]:
+    """The default profile's systemd unit when the operator MASKED it (``systemctl mask`` links it to
+    ``/dev/null``), else None. A masked survivor cannot be enabled at boot, and masking is a deliberate
+    "never start this", so the update hook reads it as an opt-out instead of refusing (#139324)."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_migrate import _home_env
+    with _home_env(default_home):
+        units = [gw.get_systemd_unit_path(system=system) for system in (False, True)]
+    for unit in units:
+        with contextlib.suppress(OSError):
+            if unit.is_symlink() and os.path.realpath(unit) == os.devnull:
+                return unit
+    return None
 
 
 def auto_migration_opted_out(default_home: Path) -> bool:

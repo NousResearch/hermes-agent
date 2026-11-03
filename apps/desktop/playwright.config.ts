@@ -38,6 +38,8 @@ export default defineConfig({
    * per test gives us headroom without masking real hangs. */
   timeout: 90_000,
   retries: process.env.CI ? 1 : 0,
+  /* A stray `test.only` must never let CI report a partial green run. */
+  forbidOnly: !!process.env.CI,
   /* Each test gets its own worker so the Electron process is fully isolated. */
   fullyParallel: false,
   reporter: reporters,

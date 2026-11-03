@@ -40,7 +40,7 @@ def test_ambient_uv_config_does_not_affect_pm_venv_sync(tmp_path, monkeypatch):
         monkeypatch.setenv(key, value)
     before = dict(os.environ)
     raw = subprocess.run([uv, "lock", "--check"], cwd=project,
-                         capture_output=True, text=True, timeout=30)
+                         capture_output=True, text=True, timeout=30, check=False)
     assert raw.returncode != 0, "negative control: raw poisoned environment must fail"
     environment = managed_environment(tmp_path / "candidate", offline=True)
     environment.create()

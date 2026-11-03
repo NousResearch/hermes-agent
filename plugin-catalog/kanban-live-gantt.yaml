@@ -1,0 +1,24 @@
+# Community catalog entry — kanban-live-gantt
+#
+# Owner-submitted: the PR author (`ningfangbin`) owns and maintains the repo below.
+# Exact-SHA pin (40-hex) at tag v0.1.3. No self-updating code: the desktop half ships
+# as static files under `desktop/plugin.js` and never fetches, downloads or replaces
+# plugin code — its only network calls are same-origin requests to its own backend
+# under /api/plugins/<name>/. Fork of kanban-gantt (GPL-3.0): credits + change notice
+# in the README and in the source headers.
+name: kanban-live-gantt
+repo: https://github.com/ningfangbin/hermes-kanban-live-gantt
+sha: 7081f6376226b6f1c65be3e4e27ae8fb5950e062   # tag v0.1.3
+description: "Live, now-centered Gantt timeline for the Hermes kanban boards — a slidable, persisted 72 h window (default now -24h -> now +48h; drag to move, drag the ends to resize), free wheel zoom down to hour ticks, a now line, status filtering, an optional done lane, and lifecycle rendering (dashed waiting vs solid run spans at real durations). Fork of kanban-gantt (GPL-3.0). Disclosure — the backend can transition, reassign, comment on and permanently delete kanban tasks on any board (Desktop asks for confirmation before deletes); local SQLite only, no network."
+maintainer: ningfangbin
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/ningfangbin/hermes-kanban-live-gantt#readme
+version: "0.1.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

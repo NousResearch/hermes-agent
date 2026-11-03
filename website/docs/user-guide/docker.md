@@ -86,6 +86,8 @@ This behavior applies to the s6-based image only. Earlier (tini-based) images st
 See the [Where the logs go](#where-the-logs-go) section below for the full routing map (per-profile gateways, dashboard, boot reconciler, container-wide `docker logs`).
 :::
 
+The TUI uses this same supervised gateway as its local backend, including when no messaging platform is configured. An interactive `--tui` launch starts the registered s6 gateway automatically and waits for it to become ready. Normal named profiles attach to the root gateway that serves them. Profiles explicitly configured with `gateway.standalone: true` use their own registered slot. Client startup does not install a service or bypass s6 with an unmanaged process.
+
 :::note Tool-loop hard stops for unattended gateways
 Unattended gateway and cron sessions enable tool-loop hard stops by default through `non_interactive_hard_stop_enabled`. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only. To opt an unattended deployment out in the profile's `config.yaml`:
 
@@ -176,6 +178,33 @@ An unauthenticated public dashboard was the entry point for the June 2026 MCP-co
 :::
 
 Running the dashboard as a separate container **is** supported when that container shares the host PID and network namespace (e.g. `network_mode: host`, as the repo's own `docker-compose.yml` does — see its `dashboard` service). Its gateway-liveness detection requires a shared PID namespace with the gateway process, so the limitation only applies to dashboards run in isolated bridge-network containers without a shared PID namespace.
+
+## Running the Webapp
+
+The image ships the [Webapp](./desktop.md) (Hermes Desktop in a browser) prebuilt; the gateway serves it on its own port when the mounted `config.yaml` turns it on (see [Configuration → Webapp](./configuration.md#webapp)):
+
+```yaml
+webapp:
+  enabled: true
+  host: 0.0.0.0
+  port: 9120
+  public_url: "http://localhost:9120"  # the address your browser opens
+```
+
+Publish the port and configure a sign-in provider, as for the dashboard:
+
+```sh
+docker run -d \
+  --name hermes \
+  --restart unless-stopped \
+  -v ~/.hermes:/opt/data \
+  -p 9120:9120 \
+  -e HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin \
+  -e HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="$(openssl rand -hex 16)" \
+  nousresearch/hermes-agent gateway run
+```
+
+A non-loopback `host` needs one of the [dashboard's auth providers](#running-the-dashboard), and the listener refuses to start without one. Without `public_url`, links printed by `hermes webapp` inside the container use the container's own address, not the published one.
 
 ## Running interactively (CLI chat)
 
@@ -358,6 +387,10 @@ The s6 container has four distinct log surfaces, and "why isn't my gateway showi
 | **Boot reconciler** (records which profile gateways were restored on each container start) | `${HERMES_HOME}/logs/container-boot.log` (append-only audit log) | `tail -F ~/.hermes/logs/container-boot.log` |
 | **Generic Hermes logs** (`agent.log`, `errors.log`) | `${HERMES_HOME}/logs/` (profile-aware) | `docker exec hermes hermes logs --follow [--level WARNING] [--session <id>]` |
 
+For an interactive container with terminal input and output (such as `docker run -it ... --tui` or `bash`), the foreground command owns the terminal. The entrypoint defaults to `S6_LOGGING=2` and `S6_CMD_USE_TERMINAL=1` so supervised gateway and dashboard output does not overwrite that screen. Their console output goes to s6's rotated catch-all log at `/run/uncaught-logs/current` inside the container. The per-profile gateway file logs and normal Hermes logs remain available at the paths above. The catch-all directory is runtime storage, so it does not survive a container restart or removal.
+
+Headless containers keep forwarding service output to `docker logs`. Explicit `S6_LOGGING` and `S6_CMD_USE_TERMINAL` settings take precedence over these interactive defaults.
+
 Two practical consequences worth knowing:
 
 - The file copy at `logs/gateways/<profile>/current` is what survives container restarts. `docker logs` only retains output from the current container's lifetime (and is wiped on `docker rm`); the rotated files persist on the bind-mounted volume.
@@ -531,7 +564,8 @@ The image uses Debian 13.4 and includes:
 - s6-overlay for supervision and zombie-process cleanup.
 
 Chromium is staged through PM, not `npx playwright install`. The build records
-its resolved executable in `/etc/hermes/agent-browser-executable-path`.
+its resolved executable in `/etc/hermes/chromium-executable-path`, which Hermes
+reads when it launches the browser.
 `PLAYWRIGHT_BROWSERS_PATH` names `/opt/hermes/tools`, outside the data mount.
 
 Every image, including the unsuffixed (non-`-desktop`) tags, carries the full
@@ -616,7 +650,7 @@ Each profile created with `hermes profile create <name>` automatically gets an s
 - `docker restart`, image upgrades (`docker compose up -d --force-recreate`), and unexpected exits preserve running gateways: the cont-init reconciler reads `$HERMES_HOME/profiles/<name>/gateway_state.json` and brings the slot back up if the last recorded state was `running`. Only an explicit `hermes gateway stop` records `stopped` and keeps the gateway down across the restart; the container/s6 SIGTERM sent on a restart or upgrade is treated as "still running" and auto-starts.
 - Per-profile gateway logs persist under `$HERMES_HOME/logs/gateways/<profile>/current` (rotated by `s6-log`), and the reconciler's actions are appended to `$HERMES_HOME/logs/container-boot.log` per boot. See [Where the logs go](#where-the-logs-go) for the full routing map.
 
-`hermes status` inside the container reports `Manager: s6 (container supervisor)`. Use `/command/s6-svstat /run/service/gateway-<name>` for the raw supervisor view (note `/command/` is on PATH for supervision-tree processes only; pass the absolute path when calling from `docker exec`).
+`hermes status --full` inside the container reports `Manager: s6 (container supervisor)`. Use `/command/s6-svstat /run/service/gateway-<name>` for the raw supervisor view (note `/command/` is on PATH for supervision-tree processes only; pass the absolute path when calling from `docker exec`).
 
 ## Upgrading
 
@@ -916,7 +950,7 @@ docker exec -u root hermes chmod 0755 /opt/hermes
 
 ### Browser tools not working
 
-Playwright needs shared memory. Add `--shm-size=1g` to your Docker run command:
+Chromium needs shared memory. Add `--shm-size=1g` to your Docker run command:
 
 ```sh
 docker run -d \

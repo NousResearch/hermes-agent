@@ -116,6 +116,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { ROOM_COMPOSER_AREAS, ROOM_COMPOSER_INPUT_CLASS, RoomComposer } from './group-room-ui'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -1627,32 +1628,23 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           <div aria-hidden key={'bottom-sentinel'} ref={bottomSentinelRef} />
         </div>
       </div>
-      <div className="border-t border-(--ui-stroke-secondary) p-2">
-        <form
-          className="grid gap-0"
-          onSubmit={event => {
-            event.preventDefault()
-            submit()
-          }}
-        >
-          {attachmentRow(null)}
-          <div className="flex items-center gap-1.5">
-            <GroupMentionInput
-              aria-label={b.group.messageRoom(group)}
-              members={members}
-              onChange={setDraft}
-              onPaste={event => pasteImages(null, event)}
-              onSubmitDraft={submit}
-              placeholder={b.group.newThreadPlaceholder(group)}
-              value={draft}
-            />
-            {attachButton(null)}
-            <Button disabled={!draft.trim() && !imagesFor(null).length} size="sm" type="submit">
-              {b.group.newThread}
-            </Button>
-          </div>
-        </form>
-      </div>
+      <RoomComposer
+        above={attachmentRow(null)}
+        attach={<div className={ROOM_COMPOSER_AREAS.button}>{attachButton(null)}</div>}
+        canSend={Boolean(draft.trim() || imagesFor(null).length)}
+        onSubmit={submit}
+        sendLabel={b.group.newThread}>
+        <GroupMentionInput
+          aria-label={b.group.messageRoom(group)}
+          className={ROOM_COMPOSER_INPUT_CLASS}
+          members={members}
+          onChange={setDraft}
+          onPaste={event => pasteImages(null, event)}
+          onSubmitDraft={submit}
+          placeholder={b.group.newThreadPlaceholder(group)}
+          value={draft}
+        />
+      </RoomComposer>
       <GroupChatSettingsDialog
         group={group}
         members={members}

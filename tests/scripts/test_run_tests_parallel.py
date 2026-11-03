@@ -830,6 +830,23 @@ _FORK_PROBE = textwrap.dedent("""
 
     OUT = Path({out!r})
 
+    def _worker_facts(parent_tmpdir):
+        return {{
+            "tmpdir_is_parents": os.environ.get("TMPDIR") == parent_tmpdir,
+            "gettempdir_under_parents": tempfile.gettempdir().startswith(parent_tmpdir),
+            "own_pid": os.getpid() != int(os.environ["PROBE_PARENT_PID"]),
+        }}
+
+    def _nested_workers():
+        # A test's own workers, as a real suite starts them: spawn, and the default.
+        os.environ["PROBE_PARENT_PID"] = str(os.getpid())
+        facts = {{}}
+        for method in ("spawn", None):
+            ctx = multiprocessing.get_context(method)
+            with ctx.Pool(1) as pool:
+                facts[method or "default"] = pool.apply(_worker_facts, (os.environ["TMPDIR"],))
+        return facts
+
     def test_child_starts_like_a_fresh_pytest_process():
         atexit.register(lambda: (OUT.parent / ("atexit-" + OUT.name)).write_text("ran"))
         OUT.write_text(json.dumps({{
@@ -848,6 +865,7 @@ _FORK_PROBE = textwrap.dedent("""
             "main_module": sys.modules["__main__"].__spec__.name,
             "mp_main_is_main": sys.modules.get("__mp_main__") is sys.modules["__main__"],
             "mp_tempdir_in_tmpdir": multiprocessing.util.get_temp_dir().startswith(os.environ["TMPDIR"]),
+            "nested_workers": _nested_workers(),
         }}))
 
     def test_failure_is_reported():
@@ -881,6 +899,9 @@ def test_fork_server_child_matches_a_fresh_pytest_subprocess(tmp_path: Path, mon
         facts["sys_path"] = [p.replace(str(tmp_path), "<tmp>").replace(f"probe{fork}", "probe") for p in facts["sys_path"]]
         seen[fork] = facts
     assert seen["1"] == seen[""], seen
+    # A test's own workers start, see the file's TMPDIR, and return their result.
+    worker = {"tmpdir_is_parents": True, "gettempdir_under_parents": True, "own_pid": True}
+    assert seen["1"]["nested_workers"] == {"spawn": worker, "default": worker}, seen["1"]
     assert seen["1"]["own_session"] and seen["1"]["product_preloaded"] == []
     assert seen["1"]["forkserver_env"] is None  # the runner consumes it; tests never see it
 

@@ -92,6 +92,16 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
           <span className="min-w-0 flex-1 truncate" title={title}>
             {title}
           </span>
+          {pinned && !props.showAgent && (
+            <span
+              aria-label={t.sidebar.pinned}
+              className="shrink-0 text-(--ui-text-tertiary)"
+              role="img"
+              title={t.sidebar.pinned}
+            >
+              <Codicon name="pin" size={12} />
+            </span>
+          )}
           <span
             aria-label={props.showAgent ? `${t.simplifiedAgents.agents}: ${row.profile || 'default'}` : undefined}
             className={cn(
@@ -141,5 +151,11 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
     )
   }
 
-  return <div className="flex flex-col gap-px">{props.sessions.map(renderRow)}</div>
+  const ordered = props.showAgent
+    ? props.sessions
+    : [...props.sessions].sort(
+        (a, b) => Number(props.pinnedIds.has(sessionRowKey(b))) - Number(props.pinnedIds.has(sessionRowKey(a)))
+      )
+
+  return <div className="flex flex-col gap-px">{ordered.map(renderRow)}</div>
 }

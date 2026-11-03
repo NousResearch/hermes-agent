@@ -428,6 +428,13 @@ describe('WebAccessSettings while Start runs', () => {
     expect(await screen.findByText('Restarting the gateway to serve the web app.')).toBeTruthy()
   })
 
+  it('says a Start is getting ready while another Web Access change goes first', async () => {
+    renderPane({ ...IDLE, start_progress: { started_at: Date.now() / 1000, step: 'preparing' } })
+
+    expect(await screen.findByText('Getting the web app ready. Building it can take a few minutes.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Start' }).hasAttribute('disabled')).toBe(true)
+  })
+
   it('describes the Start of a backend that reports no step without polling it for one', async () => {
     // A backend older than `start_progress`: its status never carries the field.
     mocked.startWebAccess.mockReturnValue(new Promise(() => {}))

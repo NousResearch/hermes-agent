@@ -9,6 +9,7 @@ import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timesta
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -123,27 +124,32 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
         </RowButton>
         {/* shortcut: legacy actions accept bare IDs; restore menus for twins when those actions accept owners. */}
         {!props.ambiguousIds.has(row.id) && (
-          <SessionActionsMenu
-            onArchive={() => props.onArchiveSession(row.id)}
-            onBranch={() => props.onBranchSession(row.id)}
-            onDelete={() => props.onDeleteSession(row.id)}
-            onPin={props.pinPending?.(row) ? undefined : () => props.onUpdate(row, 'pinned', !pinned)}
-            onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
-            pinned={pinned}
-            profile={row.profile}
-            sessionId={row.id}
-            title={title}
-            unread={row.unread === true}
-          >
-            <Button
-              aria-label={t.sidebar.row.sessionActions}
-              className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
-              size="icon-xs"
-              variant="ghost"
+          <Tooltip>
+            <SessionActionsMenu
+              onArchive={() => props.onArchiveSession(row.id)}
+              onBranch={() => props.onBranchSession(row.id)}
+              onDelete={() => props.onDeleteSession(row.id)}
+              onPin={props.pinPending?.(row) ? undefined : () => props.onUpdate(row, 'pinned', !pinned)}
+              onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
+              pinned={pinned}
+              profile={row.profile}
+              sessionId={row.id}
+              title={title}
+              unread={row.unread === true}
             >
-              <Codicon name="kebab-vertical" />
-            </Button>
-          </SessionActionsMenu>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={`${t.sidebar.row.sessionActions}: ${title}`}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="kebab-vertical" />
+                </Button>
+              </TooltipTrigger>
+            </SessionActionsMenu>
+            <TooltipContent>{t.sidebar.row.sessionActions}</TooltipContent>
+          </Tooltip>
         )}
       </div>
     )

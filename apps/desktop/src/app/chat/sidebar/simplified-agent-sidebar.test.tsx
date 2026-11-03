@@ -7,6 +7,7 @@ import { $apiRequestScope } from '@/api/client'
 import * as apiClient from '@/api/client'
 import * as sessionsApi from '@/api/sessions'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $pinnedSessionIds, $sidebarPinsOpen, $sidebarRecentsOpen } from '@/store/layout'
@@ -55,24 +56,26 @@ function Route() {
 function mount(overrides: Partial<ComponentProps<typeof SimplifiedAgentSidebar>> = {}) {
   return render(
     <MemoryRouter>
-      <SidebarProvider>
-        <SimplifiedAgentSidebar
-          currentView="chat"
-          onArchiveSession={noop}
-          onBranchSession={noop}
-          onDeleteSession={noop}
-          onLoadMoreSessions={noop}
-          onManageCronJob={noop}
-          onNavigate={navigate}
-          onNewSessionInWorkspace={noop}
-          onNewSessionSplit={noop}
-          onResumeSession={resume}
-          onRetrySessions={noop}
-          onTriggerCronJob={async () => {}}
-          {...overrides}
-        />
-        <Route />
-      </SidebarProvider>
+      <RootTooltipProvider>
+        <SidebarProvider>
+          <SimplifiedAgentSidebar
+            currentView="chat"
+            onArchiveSession={noop}
+            onBranchSession={noop}
+            onDeleteSession={noop}
+            onLoadMoreSessions={noop}
+            onManageCronJob={noop}
+            onNavigate={navigate}
+            onNewSessionInWorkspace={noop}
+            onNewSessionSplit={noop}
+            onResumeSession={resume}
+            onRetrySessions={noop}
+            onTriggerCronJob={async () => {}}
+            {...overrides}
+          />
+          <Route />
+        </SidebarProvider>
+      </RootTooltipProvider>
     </MemoryRouter>
   )
 }
@@ -106,6 +109,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   setSimplifiedAgentMode(false)
   $sessions.set([])
   $apiRequestScope.set({ connectionId: null, profile: null })
@@ -253,7 +257,7 @@ it('offers Unpin under the agent as well as in Pinned, keeping the owning profil
       .getByRole('button', { name: /Agent settings: Research/ })
       .closest('[role=group]') as HTMLElement
 
-    fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
+    fireEvent.keyDown(within(research).getByRole('button', { name: /^Session actions:/ }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: /Unpin/ }))
     expect(screen.getAllByText('Pinned plan')).toHaveLength(1)
     expect(within(research).getByText('Pinned plan')).toBeTruthy()
@@ -357,8 +361,8 @@ it('marks only the active gateway and updates its status when the live connectio
   expect(within(alpha).getByText('Offline')).toBeTruthy()
   act(() => $gatewayState.set('connecting'))
   expect(within(alpha).getByText('Connecting')).toBeTruthy()
-  const alphaToggle = within(alpha).getByRole('button', { name: 'Alpha' })
-  const betaToggle = within(beta).getByRole('button', { name: 'Beta' })
+  const alphaToggle = within(alpha).getByRole('button', { name: 'Collapse: Alpha' })
+  const betaToggle = within(beta).getByRole('button', { name: 'Collapse: Beta' })
   fireEvent.click(alphaToggle)
   fireEvent.click(betaToggle)
   fireEvent.click(screen.getByText('Pinned plan'))
@@ -369,8 +373,8 @@ it('marks only the active gateway and updates its status when the live connectio
 
 it('preserves manual agent expansion when selecting chats and only reveals a pinned chat owner', () => {
   mount()
-  const research = screen.getByRole('button', { name: 'Research', expanded: true })
-  const defaultAgent = screen.getByRole('button', { name: 'default', expanded: true })
+  const research = screen.getByRole('button', { name: 'Collapse: Research', expanded: true })
+  const defaultAgent = screen.getByRole('button', { name: 'Collapse: default', expanded: true })
   fireEvent.click(research)
   fireEvent.click(screen.getByText('Regular chat'))
   act(() => {
@@ -433,7 +437,7 @@ it('keeps a newly pinned search result visible after clearing search, before the
       .getByRole('button', { name: /Agent settings: Research/ })
       .closest('[role=group]') as HTMLElement
 
-    fireEvent.keyDown(within(research).getByRole('button', { name: 'Session actions' }), { key: 'Enter' })
+    fireEvent.keyDown(within(research).getByRole('button', { name: /^Session actions:/ }), { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: /^Pin$/ }))
     expect(screen.getAllByText('Older plan')).toHaveLength(2)
     fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
@@ -451,4 +455,33 @@ it('keeps a newly pinned search result visible after clearing search, before the
   } finally {
     vi.restoreAllMocks()
   }
+})
+
+it('previews three pins, lets users reveal the rest, and searches beyond the preview', async () => {
+  $sessions.set(
+    Array.from({ length: 6 }, (_, index) =>
+      makeSessionInfo({
+        id: `pin-${index}`,
+        title: `Saved ${index}`,
+        profile: 'research',
+        pinned: true,
+        last_active: 100 - index
+      })
+    )
+  )
+  vi.spyOn(apiClient, 'hermesApi').mockResolvedValue({ results: [] })
+  mount()
+  const pins = within(screen.getByRole('region', { name: 'Pinned' }))
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(3)
+  expect(screen.getAllByText('Saved 5')).toHaveLength(1)
+  fireEvent.click(pins.getByRole('button', { name: 'Show 3 more in Pinned' }))
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(6)
+  fireEvent.click(pins.getByRole('button', { name: 'Collapse' }))
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(3)
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'Saved 5' } })
+  expect(pins.getByText('Saved 5')).toBeTruthy()
+  fireEvent.click(pins.getByText('Saved 5'))
+  expect(resume).toHaveBeenCalledWith('pin-5', expect.objectContaining({ profile: 'research' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+  expect(pins.getAllByText(/^Saved /)).toHaveLength(3)
 })

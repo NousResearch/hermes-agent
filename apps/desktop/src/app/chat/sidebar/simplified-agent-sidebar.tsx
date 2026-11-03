@@ -3,15 +3,12 @@ import { type ComponentProps, useMemo, useState } from 'react'
 
 import { ambientOwnerConnectionId } from '@/api/client'
 import { mutateSessionHttp } from '@/api/sessions'
-import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
-import { Codicon } from '@/components/ui/codicon'
-import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { $pinnedSessionIds, $sidebarPinsOpen, setSidebarPinsOpen } from '@/store/layout'
+import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $newChatProfile } from '@/store/profile'
 import {
@@ -33,6 +30,7 @@ import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
 import { SimplifiedNewSession } from './simplified-new-session'
+import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
@@ -52,7 +50,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const removed = useStore($removedSessionIds)
   const pinIds = useStore($pinnedSessionIds)
   const unconfirmed = useStore($unconfirmedPinWrites)
-  const pinsOpen = useStore($sidebarPinsOpen)
   const activeSessionId = useStore($focusedStoredSessionId)
   const loading = useStore($sessionsLoading)
   const error = useStore($sessionsLoadError)
@@ -177,41 +174,23 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             {t.errors.genericFailure}
           </p>
         )}
-        <section className="max-h-[25%] shrink-0 overflow-y-auto">
-          <RowButton
-            aria-expanded={pinsOpen}
-            className="flex w-full items-center rounded-sm text-left hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
-            onClick={() => setSidebarPinsOpen(!pinsOpen)}
-          >
-            <SidebarPanelLabel className="flex-1 px-2 py-2 [&>span:first-child]:mx-1">
-              {t.sidebar.pinned}
-            </SidebarPanelLabel>
-            <Codicon
-              className="mr-2 text-(--ui-text-tertiary)"
-              name={pinsOpen ? 'chevron-down' : 'chevron-right'}
-              size={12}
-            />
-          </RowButton>
-          {pinsOpen && (
-            <SimplifiedSessionList
-              {...shared}
-              onResumeSession={(id, row) => {
-                if (row) {
-                  const owner = row.connection_id || agents.owner
-                  setExpanded(current => ({
-                    ...current,
-                    [JSON.stringify(['gateway', owner])]: true,
-                    [JSON.stringify([owner, row.profile || 'default'])]: true
-                  }))
-                }
+        <SimplifiedPinnedSessions
+          {...shared}
+          onResumeSession={(id, row) => {
+            if (row) {
+              const owner = row.connection_id || agents.owner
+              setExpanded(current => ({
+                ...current,
+                [JSON.stringify(['gateway', owner])]: true,
+                [JSON.stringify([owner, row.profile || 'default'])]: true
+              }))
+            }
 
-                props.onResumeSession(id, row)
-              }}
-              sessions={pinned.filter(matches)}
-              showAgent
-            />
-          )}
-        </section>
+            props.onResumeSession(id, row)
+          }}
+          searching={Boolean(query.trim())}
+          sessions={pinned.filter(matches)}
+        />
         <SimplifiedAgentList
           agents={agents}
           expanded={expanded}

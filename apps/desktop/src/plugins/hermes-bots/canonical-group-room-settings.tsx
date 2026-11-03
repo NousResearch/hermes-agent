@@ -17,8 +17,8 @@ export interface CanonicalGroupRoomSettingsProps {
 export const roomDeliveryTarget = (binding: CanonicalGroupBinding) =>
   `room:${binding.roomId}${binding.profile ? `@${binding.profile}` : ''}`
 
-/** Self-contained room purpose + shared notes: the purpose line, a settings button and its dialog.
- *  Mount it anywhere in the room view (header, details panel); it owns its own `groups.context` save. */
+/** Self-contained room purpose + shared notes: a captioned purpose, a settings button and its dialog,
+ *  stacked for the Group details panel; it owns its own `groups.context` save. */
 export function CanonicalGroupRoomSettings({ binding, context, disabled = false, onSaved }: CanonicalGroupRoomSettingsProps) {
   const labels = useCanonicalGroupLabels()
   const [draft, setDraft] = useState<CanonicalRoomContext | null>(null)
@@ -49,9 +49,10 @@ export function CanonicalGroupRoomSettings({ binding, context, disabled = false,
     }
   }
 
-  return <div className="flex min-w-0 items-center gap-1">
-    {context?.purpose && <p className="min-w-0 truncate text-xs text-(--ui-text-secondary)" title={context.purpose}>{context.purpose}</p>}
-    <Button disabled={disabled || !context} onClick={open} size="xs" variant="ghost">{labels.roomSettings}</Button>
+  return <div className="grid min-w-0 gap-1.5">
+    <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">{labels.purposeLabel}</span>
+    {context?.purpose && <p className="line-clamp-3 text-xs text-foreground" title={context.purpose}>{context.purpose}</p>}
+    <Button className="justify-self-start" disabled={disabled || !context} onClick={open} size="sm" variant="outline">{labels.roomSettings}</Button>
     {draft && <Dialog onOpenChange={value => !value && !saving && setDraft(null)} open>
       <DialogContent className="max-w-md">
         <DialogHeader><DialogTitle>{labels.roomSettings}</DialogTitle></DialogHeader>

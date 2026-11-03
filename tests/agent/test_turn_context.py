@@ -541,3 +541,56 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+# ── display_metadata persistence (Task C, issue #79214 sibling) ───────────────
+#
+# Upstream nested `display_metadata` inside the `display_kind` check, so a
+# normal user message (no display_kind) silently dropped its attribution.
+# The fix un-nests: every message persists derived source metadata unless the
+# caller supplied its own. Assert (1) a plain message now carries
+# display_metadata, (2) a CLI message gets minimal platform+origin only,
+# (3) a caller-supplied payload wins over the derivation.
+
+
+def test_display_metadata_derived_for_plain_message():
+    agent = _FakeAgent()
+    agent._chat_id = "100000001"
+    agent._chat_name = "Test Chat"
+    agent._user_name = "testuser"
+    agent._chat_type = "group"
+    agent.platform = "telegram"
+
+    ctx = _build(agent, user_message="hello from the group")
+    row = ctx.messages[-1]
+    assert "display_metadata" in row
+    meta = row["display_metadata"]
+    assert meta["chat_id"] == "100000001"
+    assert meta["chat_name"] == "Test Chat"
+    assert meta["user_name"] == "testuser"
+    assert meta["chat_type"] == "group"
+    assert meta["platform"] == "telegram"
+    assert meta["origin"] in ("text", "voice")
+
+
+def test_display_metadata_minimal_for_cli_without_chat_source():
+    agent = _FakeAgent()  # platform="cli", no chat_id/name/user set
+    ctx = _build(agent, user_message="hi")
+    # platform is always known → minimal annotation, no chat-specific fields.
+    meta = ctx.messages[-1].get("display_metadata", {})
+    assert meta.get("platform") == "cli"
+    assert meta.get("origin") in ("text", "voice")
+    assert "chat_id" not in meta
+    assert "user_name" not in meta
+    assert "chat_name" not in meta
+
+
+def test_display_metadata_caller_payload_wins():
+    agent = _FakeAgent()
+    agent._chat_id = "100000001"
+    custom = {"chat_id": "override", "origin": "voice"}
+    ctx = _build(
+        agent,
+        user_message="hi",
+        persist_user_display_metadata=custom,
+    )
+    assert ctx.messages[-1]["display_metadata"] == custom
+

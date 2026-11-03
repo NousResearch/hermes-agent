@@ -11,8 +11,11 @@ delivered the text, it goes out as a trailing message via ``send_trailing_footer
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
@@ -118,3 +121,28 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)
+
+
+def build_plugin_footer(*, model: Optional[str], context_tokens: int,
+                        context_length: Optional[int], cwd: Optional[str] = None,
+                        turn_seconds: Optional[float] = None,
+                        platform_key: str | None = None) -> str:
+    """Plugin-contributed footer block for the final gateway reply.
+
+    Thin wrapper over ``lifecycle.collect_render_blocks("footer", ...)``: the
+    shared render-transform machinery lives in one place, so this call site only
+    names its section and payload. Returns "" when no plugin registers the hook,
+    and never raises — the caller appends the result itself, so a broken plugin
+    must not abort the reply.
+    """
+    from hermes_cli.lifecycle import collect_render_blocks
+
+    return collect_render_blocks(
+        "footer",
+        model=model,
+        context_tokens=context_tokens,
+        context_length=context_length,
+        cwd=cwd,
+        turn_seconds=turn_seconds,
+        platform_key=platform_key,
+    )

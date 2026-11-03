@@ -207,6 +207,7 @@ class PeerRunsHTTPClient:
 
     def __init__(
         self, *, base_url: str, api_key: str, timeout_seconds: float = 30,
+        total_deadline: bool = False,
         receipt_db_path: Path | str | None = None, poll_min_seconds: float = 0.1,
         poll_max_seconds: float = 2.0, clock: Callable[[], float] = time.monotonic) -> None:
         base_url, self.transport_security = validate_room_link_url(base_url)
@@ -214,6 +215,7 @@ class PeerRunsHTTPClient:
             raise ValueError("peer API key is missing or too short")
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
+        self.total_deadline = total_deadline
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None
         if poll_min_seconds <= 0 or poll_max_seconds < poll_min_seconds:
             raise ValueError("peer polling bounds are invalid")
@@ -281,6 +283,8 @@ class PeerRunsHTTPClient:
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
         from hermes_cli.urllib_security import open_credentialed_url
+        if self.total_deadline:
+            from tui_gateway.hosted_room_peer_deadline import open_peer_url as open_credentialed_url
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
             f"{self.base_url}{path}", method=method,

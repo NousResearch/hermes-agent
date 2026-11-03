@@ -377,9 +377,10 @@ class HostedRoomService:
             key = {k: str(owed[k]) for k in ("room_id", "member_id", "grant_digest")}
             try:
                 client = self._revoke_clients.get(key["grant_digest"]) or PeerRunsHTTPClient(
-                    base_url=str(owed["target_url"]), api_key="", timeout_seconds=_OWED_REVOKE_TIMEOUT_SECONDS)
+                    base_url=str(owed["target_url"]), api_key="", timeout_seconds=_OWED_REVOKE_TIMEOUT_SECONDS,
+                    total_deadline=True)
                 client.revoke_grant(grant=str(owed["grant"]))
-            except (RuntimeError, ValueError, OSError) as exc:
+            except Exception as exc:  # health: allow BLE001 -- every transport fault retains debt with backoff and records an error
                 if not (isinstance(exc, PeerRunsHTTPError) and _grant_revoke_is_terminal(exc)):
                     delay = min(_OWED_REVOKE_MAX_RETRY_SECONDS,
                                 _OWED_REVOKE_FIRST_RETRY_SECONDS * 2 ** min(int(owed["attempts"]), 20))

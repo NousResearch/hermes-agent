@@ -98,6 +98,17 @@ export interface LockedBoundaryAxes {
   row?: boolean
 }
 
+function boundarySideLocked(paneIds: string[], horizontal: boolean, overrides: TrackContext['overrides']): boolean {
+  const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
+
+  return paneIds.some(id => Boolean(overrides[id]?.[lockKey]))
+}
+
+function minimumTrackSize(declared: string | undefined, toolZone: boolean): number | string {
+  // Restored tools retain the sash's floor even while they are flex tracks.
+  return declared ?? (toolZone ? `${MIN_PANE_PX}px` : 0)
+}
+
 export function TreeSplit({
   lockedBoundaries,
   leftEdge = false,
@@ -596,7 +607,7 @@ export function TreeSplit({
       }
 
       const setOverride = horizontal ? setPaneWidthOverride : setPaneHeightOverride
-      const lockKey = horizontal ? 'widthLocked' : 'heightLocked'
+
       const boundarySides = (
         [
           [node.children[aIndex], 'end'],
@@ -611,7 +622,7 @@ export function TreeSplit({
       // Resetting either side would move this seam. A locked owner makes the
       // whole boundary immutable, so preserve its captured override and leave
       // the unlocked neighbor alone as well.
-      if (boundarySides.some(side => side.paneIds.some(id => Boolean(overrides[id]?.[lockKey])))) {
+      if (boundarySides.some(side => boundarySideLocked(side.paneIds, horizontal, overrides))) {
         return
       }
 
@@ -832,9 +843,9 @@ export function TreeSplit({
                       // floor must match the 80px floor used by the sash.
                       // Otherwise a tiny remembered weight redraws Terminal as
                       // a 0px edge sliver before the user can grab its divider.
-                      minWidth: horizontal ? (sizing?.minWidth ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
+                      minWidth: horizontal ? minimumTrackSize(sizing?.minWidth, toolZone) : 0,
                       maxWidth: horizontal && !absorbs ? sizing?.maxWidth : undefined,
-                      minHeight: !horizontal ? (sizing?.minHeight ?? (toolZone ? `${MIN_PANE_PX}px` : 0)) : 0,
+                      minHeight: !horizontal ? minimumTrackSize(sizing?.minHeight, toolZone) : 0,
                       maxHeight: horizontal || absorbs ? undefined : sizing?.maxHeight
                     }
             }

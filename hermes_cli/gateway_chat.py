@@ -9,7 +9,8 @@ from pathlib import Path
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_cli.gateway_client import RESUME_KEY_MISMATCH, GatewayClientError, connect_gateway
+from hermes_cli.gateway_connection import RESUME_REFUSALS
 
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
@@ -133,8 +134,7 @@ async def _resume(client, args, **params):
         return await client.rpc("session.resume", **params, **({"api_key": key} if key else {}))
     except GatewayClientError as exc:
         if key and str(exc) == "admission_conflict":
-            raise GatewayClientError("--api-key on resume must be the key this session was launched with "
-                                     "(a session launched without --api-key keeps its profile credentials).") from None
+            raise GatewayClientError(RESUME_KEY_MISMATCH) from None
         raise
 
 
@@ -147,7 +147,7 @@ async def _resume_latest(client, args):
         try:
             return await _resume(client, args, session_id=crumb)
         except GatewayClientError as exc:
-            if str(exc) not in {"not_found", "permission_denied"}:
+            if str(exc) not in RESUME_REFUSALS:
                 raise
     workspace = await asyncio.to_thread(_workspace_key, _caller_cwd(args))
     try:
@@ -199,7 +199,8 @@ async def run_gateway_chat(args, emitter=None):
             # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
             # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
             sources = contract.get("sources", [])
-            source = getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli")
+            from agent.session_source import create_surface
+            source = create_surface(getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli"))
             if source not in sources:
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
@@ -267,7 +268,7 @@ def resume_policy_error(keys):
 
 def exit_on_resume_refusal(exc):
     """A refused resume is a usage error on every classic path (interactive startup's copy): ``Error:``, exit 2."""
-    if isinstance(exc, GatewayClientError) and str(exc).startswith(_RESUME_POLICY_MISMATCH):
+    if isinstance(exc, GatewayClientError) and str(exc).startswith((_RESUME_POLICY_MISMATCH, RESUME_KEY_MISMATCH)):
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 
@@ -290,7 +291,8 @@ def _requested_policy(args):
         if not policy["skills"]:
             policy.pop("skills")
     if getattr(args, "source", None):
-        policy["source"] = args.source
+        from agent.session_source import create_surface
+        policy["source"] = create_surface(args.source)
     return policy
 
 

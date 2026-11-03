@@ -649,6 +649,15 @@ slack:
   # Opt-in; default off. Env: SLACK_THREAD_REQUIRE_MENTION.
   thread_require_mention: false
 
+  # Let a bare silence marker stand on unaddressed replies in a channel
+  # thread the bot follows. Without it, when a human in that thread talks
+  # to someone else without @mentioning them and the model answers with
+  # only [SILENT], Hermes posts the "model returned only a silence marker"
+  # notice instead. DMs (1:1 and group), @mentions of the bot, and flat
+  # (reply_in_thread: false) channels are unaffected.
+  # Opt-in; default off. Env: SLACK_THREAD_FOLLOWUP_SILENCE.
+  thread_followup_silence: false
+
   # Per-channel force-mention override — the opposite direction of
   # free_response_channels. Channels listed here ALWAYS require an
   # explicit @mention, even when require_mention is false globally.
@@ -676,7 +685,7 @@ Set this to `true` when the bot follows busy threads (via thread auto-engagement
 :::
 
 :::note Silence markers on messages not addressed to the bot
-When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. On Slack the token is allowed to stand when the message opened by @mentioning someone else, or was an unmentioned top-level message in a `free_response_channels` channel that starts its own thread (the default `reply_in_thread: true`). A 1:1 DM, a mention of the bot, a command, a reaction trigger, or a plain follow-up in a conversation the bot is part of (a thread, or a `reply_in_thread: false` channel) still gets the notice.
+When the bot answers a human message with only a [silence token](index.md#intentional-silence-tokens), Hermes normally posts a short notice instead so a question never goes unanswered. On Slack the token is allowed to stand when the message opened by @mentioning someone else, or was an unmentioned top-level message in a `free_response_channels` channel that starts its own thread (the default `reply_in_thread: true`). A 1:1 DM, a mention of the bot, a command, a reaction trigger, or a plain follow-up in a conversation the bot is part of (a thread, or a `reply_in_thread: false` channel) still gets the notice. Set `thread_followup_silence: true` to let the token stand on unaddressed replies in a channel thread too, for threads where people often talk to each other without @mentioning; DMs (1:1 and group), mentions of the bot, and flat channels keep the notice.
 :::
 
 :::info

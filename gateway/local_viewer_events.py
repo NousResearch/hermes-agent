@@ -135,6 +135,10 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
         _publish_subagent(turn, event_type, _subagent_payload(
             event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
         return
+    if event_type == "tool.progress":
+        from agent.tool_progress_relay import tool_progress_payload
+        turn._publish_execution(event_type, tool_progress_payload(name, preview, kwargs))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn
@@ -165,6 +169,20 @@ def restore(agent, previous: dict | None) -> None:
         local_desktop_ui.release(token)
     for name, value in previous.items():
         setattr(agent, name, value)
+
+
+def publish_control_if_changed(turn) -> None:
+    """Agent thread, after each tool: a tool (a plugin adding goal criteria, parking the goal) can move
+    automation state mid-turn, so viewers' cards repaint now instead of at turn end. Scheduled on the
+    gateway loop, which takes the publish ticket in order with the slash commands' publishes; the snapshot
+    (three state.db meta reads on the shared connection lock) is read in a worker thread, because one read
+    per tool across every running session saturated the loop. Revision-gated: other tools publish nothing."""
+    from gateway.session_control_actions import publish_async
+    authority, canonical_id, _generation = turn._approval_owner
+
+    async def republish():
+        await publish_async(authority, canonical_id, only_if_changed=True)
+    turn._schedule(republish(), "session.control.update after a tool")
 
 
 def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:

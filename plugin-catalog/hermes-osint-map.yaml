@@ -1,0 +1,28 @@
+name: hermes-osint-map
+title: Hermes OSINT Map
+repo: https://github.com/Adolanium/hermes-osint-map
+sha: 51343fdbccf63974c2db56244ed34ca3a15c5421
+description: "A live situational-awareness globe in Hermes Desktop: earthquakes (USGS), disaster alerts (GDACS), natural events (NASA EONET), US severe weather (NWS), military and nearby aircraft (adsb.lol), satellites propagated live from CelesTrak elements, GDELT news incidents, official traffic cameras (Transport for London, Singapore LTA) and shipping chokepoints on a dithered 3D globe, with satellite orbits, aircraft tracks and live camera stills, country dossiers (World Bank facts, events, headlines), NOAA space weather, markets, a feed of events, headlines and alerts, and a passive recon toolkit (DNS, RDAP, TLS, security headers, CT subdomains, CVE with CISA KEV, IP, GitHub, MAC). Five agent tools (osint_situation, osint_events, osint_country, osint_recon, osint_news) answer from the same sources in any chat, and the page's Brief me, Ask Hermes and dossier buttons open a chat that uses them. No keys needed; an optional TWELVEDATA_API_KEY (plugin setting, read through Hermes's secret scope) adds equities and commodities. Unofficial; not affiliated with any data provider. Disclosure — the gateway fetches public data from fixed hosts (earthquake.usgs.gov, eonet.gsfc.nasa.gov, gdacs.org, api.weather.gov, data.gdeltproject.org, api.adsb.lol, celestrak.org, services.swpc.noaa.gov, api.tfl.gov.uk and api.data.gov.sg (camera lists), and camera stills from TfL's JamCams bucket on s3-eu-west-1.amazonaws.com and images.data.gov.sg, fetched only by camera id for a camera the user opens, api.worldbank.org, the BBC, Al Jazeera, DW, Guardian and France 24 RSS feeds, api.coingecko.com, and api.twelvedata.com with the key in a header when set), cached and only while the page is open or a tool is called, with a hermes-osint-map User-Agent; recon sends the domain, IP, CVE id, GitHub name or MAC prefix the user or agent enters to dns.google, rdap.org, crt.sh, cve.circl.lu, cisa.gov, ipwho.is, api.github.com and api.macvendors.com, and the TLS and headers lookups connect directly to the host named, refusing private, loopback, link-local, CGNAT and other internal addresses on every redirect, on ports 443/8443 (TLS) and 80/443/8080/8443 (headers) only; GDELT incidents are machine-coded from news coverage and labelled as such; the page keeps its layer choices in Desktop plugin storage; no files written, no shell commands, no background processes, no telemetry."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Adolanium/hermes-osint-map#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/screenshot-overview.webp
+  - https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/screenshot-satellite.webp
+  - https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/screenshot-dossier.webp
+  - https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/screenshot-aircraft.webp
+  - https://raw.githubusercontent.com/Adolanium/hermes-osint-map/51343fdbccf63974c2db56244ed34ca3a15c5421/assets/screenshot-recon.webp
+capabilities:
+  provides_tools:
+    - osint_situation
+    - osint_events
+    - osint_country
+    - osint_recon
+    - osint_news
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

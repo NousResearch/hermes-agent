@@ -1,0 +1,30 @@
+name: elevenlabs-sound-effects
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: e4e40398c4d46f86dba3bbdcbfa5ef02d2675988
+subdir: elevenlabs-sound-effects
+title: ElevenLabs Sound Effects
+description: 'ElevenLabs sound effects for Hermes: one tool, elevenlabs_sound_effect, that turns a text
+  description ("glass shattering on a tile floor", "90s hip-hop drum loop, 90 BPM") into an audio file,
+  0.5 to 30 seconds, optionally a seamless loop, and sends it to you in chat. Bundles a sound-design skill
+  with a local ffmpeg script (trim, loudness, mono, loop fixing, game variation packs) and, in Hermes Desktop,
+  an inline sound card and a sound library tab. Model, audio format and endpoint are plugin settings.
+  Disclosure: uses your ElevenLabs API key (ELEVENLABS_API_KEY, the same key as Hermes''s ElevenLabs voice;
+  a restricted key needs the Sound Effects permission); every call is a paid generation billed to your
+  ElevenLabs account. Only the sound description and its parameters are sent, to api.elevenlabs.io (or the
+  data-residency endpoint you set). Files are written to cache/generated/audio under the Hermes home and
+  never overwritten. One Python dependency (httpx, already part of Hermes).'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.22.0"
+version: "1.2.0"
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/e4e40398c4d46f86dba3bbdcbfa5ef02d2675988/assets/elevenlabs-sound-effects.jpg
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/elevenlabs-sound-effects
+platforms: []
+capabilities:
+  provides_tools:
+    - elevenlabs_sound_effect
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ELEVENLABS_API_KEY

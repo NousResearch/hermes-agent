@@ -145,7 +145,7 @@ def source_checkout(tmp_path, monkeypatch):
     scripts = root / "scripts" / "build"
     scripts.mkdir(parents=True)
     repository = Path(__file__).resolve().parents[2]
-    for name in ("node-deps.mjs", "freshness.mjs", "frontend-common.mjs"):
+    for name in ("node-deps.mjs", "electron-runtime.mjs", "freshness.mjs", "frontend-common.mjs"):
         shutil.copy2(repository / "scripts/build" / name, scripts / name)
     (root / ".gitignore").write_text("node_modules/\n**/dist/\n", encoding="utf-8")
     return root, acquired
@@ -418,3 +418,84 @@ def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypat
     receipt_current["value"] = True
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
     assert not reused()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_update_rebuilds_the_webapp_bundle_a_home_serves(tmp_path, monkeypatch, enabled):
+    """``hermes update`` rebuilds ``apps/desktop/dist-webapp``, with the function ``hermes webapp``
+    uses, when any home sharing this install has ``webapp.enabled``: that home's gateway serves the
+    bundle as built, so an old one would talk to the updated backend. Otherwise it is left alone."""
+    import hermes_cli.left_core_migration as left_core
+    import hermes_cli.main_install_repair as install_repair
+    import hermes_cli.memory_provider_migration as memory_migration
+    from hermes_cli import update_stage, webapp
+    from hermes_cli.source_build import build_update_products
+    from pm import plugins_state
+
+    root = tmp_path / "checkout"
+    (root / "apps/desktop/scripts").mkdir(parents=True)
+    (root / "apps/desktop/scripts/build-webapp.mjs").write_text("", encoding="utf-8")
+    homes = [tmp_path / "default", tmp_path / "profiles" / "work"]
+    for home in homes:
+        home.mkdir(parents=True)
+    (homes[1] / "config.yaml").write_text(f"webapp:\n  enabled: {str(enabled).lower()}\n", encoding="utf-8")
+    builds = []
+    monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps", lambda _root: None)
+    monkeypatch.setattr(memory_migration, "migrate_all_homes", list)
+    monkeypatch.setattr(left_core, "migrate_all_homes", list)
+    monkeypatch.setattr(update_stage, "publish_stage", lambda _stage: None)
+    monkeypatch.setattr(plugins_state, "dependency_homes", lambda: homes)
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer",
+                        lambda project_root, **options: builds.append((project_root, options)))
+
+    build_update_products(root, desktop=False)
+
+    assert builds == ([(root, {"explicit": True})] if enabled else [])
+
+
+@pytest.mark.parametrize("built", [True, False])
+def test_a_failed_webapp_rebuild_in_update_marks_the_served_bundle_out_of_date(tmp_path, monkeypatch, capsys, built):
+    """When ``hermes update`` cannot rebuild the Webapp bundle a home serves, the previous bundle
+    stays on disk but is marked out of date: its gateway reports the Webapp unavailable and says to
+    run ``hermes webapp`` (which rebuilds it) instead of serving it against the updated backend. The
+    update still reports the failure. With no bundle built there is nothing to mark."""
+    import hermes_cli.left_core_migration as left_core
+    import hermes_cli.main_install_repair as install_repair
+    import hermes_cli.memory_provider_migration as memory_migration
+    from gateway.webapp_listener import NOT_BUILT, bundle_missing_reason
+    from hermes_cli import update_stage, webapp
+    from hermes_cli.source_build import ProductBuildError, build_update_products
+    from pm import plugins_state
+
+    root = tmp_path / "checkout"
+    (root / "apps/desktop/scripts").mkdir(parents=True)
+    (root / "apps/desktop/scripts/build-webapp.mjs").write_text("", encoding="utf-8")
+    dist = webapp.webapp_dist_dir(root)
+    dist.mkdir()
+    if built:
+        (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    home = tmp_path / "default"
+    home.mkdir()
+    (home / "config.yaml").write_text("webapp:\n  enabled: true\n", encoding="utf-8")
+    monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps", lambda _root: None)
+    monkeypatch.setattr(memory_migration, "migrate_all_homes", list)
+    monkeypatch.setattr(left_core, "migrate_all_homes", list)
+    monkeypatch.setattr(update_stage, "publish_stage", lambda _stage: None)
+    monkeypatch.setattr(plugins_state, "dependency_homes", lambda: [home])
+
+    def fail(_project_root, **_options):
+        raise webapp.WebappBuildError("Browser-hosted Desktop build failed: npm ci exited 1")
+
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", fail)
+    before = sorted(root.rglob("*"))
+
+    with pytest.raises(ProductBuildError, match="Webapp build"):
+        build_update_products(root, desktop=False)
+
+    reason = bundle_missing_reason(dist)
+    assert reason is not None and reason.startswith(NOT_BUILT) and "hermes webapp" in reason
+    if built:
+        assert (dist / "index.html").read_text(encoding="utf-8") == "<!doctype html>"
+        assert "hermes webapp" in capsys.readouterr().out
+    else:
+        assert sorted(root.rglob("*")) == before

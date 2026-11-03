@@ -41,6 +41,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
+import { DelegationModelProviderField } from "@/components/DelegationModelProviderField";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -419,12 +420,50 @@ export default function ConfigPage() {
             </div>
           )}
           <div className="py-1">
-            <AutoField
-              schemaKey={key}
-              schema={s}
-              value={getNestedValue(config, key)}
-              onChange={(v) => setConfig(setNestedValue(config, key, v))}
-            />
+            {key === "delegation.model" ? (
+              /* The picker owns both `delegation.model` and
+                 `delegation.provider` rendering and writes — skip the
+                 generic AutoField here and write both keys atomically on
+                 every change so we never persist a half-pair. */
+              <DelegationModelProviderField
+                config={config}
+                onChange={next => {
+                  // Single merged update — both `delegation.model` and
+                  // `delegation.provider` change in one `setConfig` call so
+                  // no transient invalid pair can be observed by a re-render
+                  // between two separate updates. A completed route
+                  // transition also drops a stale direct endpoint
+                  // (`base_url`/`api_key` take precedence in the resolver),
+                  // so Inherit/model-only/provider picks can't keep routing
+                  // to the old endpoint.
+                  setConfig(prev => {
+                    let merged: Record<string, unknown> =
+                      setNestedValue(
+                        setNestedValue(prev ?? {}, "delegation.model", next.model),
+                        "delegation.provider",
+                        next.provider,
+                      )
+                    if (next.resetDirectEndpoint) {
+                      merged = setNestedValue(merged, "delegation.base_url", "")
+                      merged = setNestedValue(merged, "delegation.api_key", "")
+                    }
+                    return merged
+                  })
+                }}
+              />
+            ) : key === "delegation.provider" ? (
+              /* `delegation.provider` is rendered inside the picker above.
+                 This branch exists so the AutoField for this key doesn't
+                 render a duplicate free-text input below it. */
+              null
+            ) : (
+              <AutoField
+                schemaKey={key}
+                schema={s}
+                value={getNestedValue(config, key)}
+                onChange={(v) => setConfig(setNestedValue(config, key, v))}
+              />
+            )}
           </div>
         </div>
       );

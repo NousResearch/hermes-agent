@@ -124,7 +124,10 @@ class HomeIOGuard:
             # tree merely to decide that the original path was forbidden.
             for root in roots:
                 if _within(absolute, root):
-                    self.refuse(value)
+                    if destructive:
+                        self.refuse(value)
+                    else:
+                        return
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
@@ -135,7 +138,10 @@ class HomeIOGuard:
                     return
             for root in roots:
                 if _within(resolved, root):
-                    self.refuse(value)
+                    if destructive:
+                        self.refuse(value)
+                    else:
+                        return
         finally:
             self.checking.active = False
 

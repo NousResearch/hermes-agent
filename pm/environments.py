@@ -156,7 +156,7 @@ def _payload_manifest(root: Path) -> dict | None:
     """
     try:
         manifest = json.loads((root.parent / "manifest.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, AssertionError):
         return None
     if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):
         return None

@@ -169,6 +169,18 @@ function UpdateChangeList({
   )
 }
 
+function overlayPhase(apply: UpdateApplyState): 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' {
+  if (apply.stage === 'manual' || apply.stage === 'guiSkew') {
+    return apply.stage
+  }
+
+  if (apply.applying || apply.stage === 'restart') {
+    return 'applying'
+  }
+
+  return apply.stage === 'error' ? 'error' : 'idle'
+}
+
 export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
@@ -197,16 +209,7 @@ export function UpdatesOverlay() {
   const behind = status?.behind ?? 0
   const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
-    apply.stage === 'manual'
-      ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+  const phase = overlayPhase(apply)
 
   // The error box's inline report belongs to the failure it was opened for.
   const dropInlineReport = () => {
@@ -241,7 +244,9 @@ export function UpdatesOverlay() {
       {/* This dialog has no inputs, so Radix's default autofocus would land on
           the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        bodyClassName="overflow-hidden p-0 gap-0"
+        // The error box grows (output, inline report notice): let the body
+        // scroll there so short windows still reach Upload.
+        bodyClassName={cn('p-0 gap-0', phase !== 'error' && 'overflow-hidden')}
         className="max-w-sm"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}

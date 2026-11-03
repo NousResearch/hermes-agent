@@ -87,6 +87,9 @@ export function UpdateErrorReport({ log, message }: { log: readonly string[]; me
           <p className="font-medium text-destructive">{copy.failedTitle}</p>
           <p className="wrap-break-word text-muted-foreground">{report.error}</p>
           <p className="text-muted-foreground">{copy.failedHint}</p>
+          <Button className="justify-self-center" onClick={startReport} size="sm" variant="ghost">
+            {t.common.retry}
+          </Button>
         </div>
       ) : (
         <div className="grid gap-2">

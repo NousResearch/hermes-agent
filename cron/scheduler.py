@@ -2340,7 +2340,6 @@ class _CronRunScope:
         from gateway.session_context import set_session_vars, _VAR_MAP
         from tools.terminal_tool import record_session_cwd
 
-        self._var_map = _VAR_MAP
         # Resolve workdir BEFORE set_session_vars so it owns the _SESSION_CWD set/clear.
         self.workdir = _resolve_job_workdir(job, job_id)
         self._ctx_tokens = set_session_vars(
@@ -2361,8 +2360,9 @@ class _CronRunScope:
             async_delivery=False,
             cwd=self.workdir or "",
         )
-        for name in _CRON_DELIVERY_VARS:
-            _VAR_MAP[name].set("")
+        # Owned for the run (_reload_dotenv_and_publish_delivery_target overwrites); exit() resets.
+        self._delivery_tokens = [
+            (_VAR_MAP[name], _VAR_MAP[name].set("")) for name in _CRON_DELIVERY_VARS]
         # Workdir binds to the per-run task id (tool-layer cwd authority) instead of mutating
         # global TERMINAL_CWD; _SESSION_CWD above remains the prompt/context-file authority.
         self.task_id = f"cron:{job_id}:{execution_id or job.get('execution_id') or uuid.uuid4().hex}"
@@ -2399,8 +2399,8 @@ class _CronRunScope:
         if self._spend_token is not None:
             from tools.mcp_tool_costs import unbind_run
             unbind_run(self._spend_token)
-        for name in _CRON_DELIVERY_VARS:
-            self._var_map[name].set("")
+        for var, token in self._delivery_tokens:  # not set(""): that masks the caller's env fallback
+            var.reset(token)
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

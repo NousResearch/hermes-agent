@@ -105,8 +105,9 @@ class TestRunBackgroundTask:
         agent.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_successful_task_sends_result(self, monkeypatch):
-        """When the agent completes successfully, the result is sent."""
+    async def test_successful_task_sends_result(self):
+        """When the agent completes successfully, the result is sent. No fixtures:
+        test_grid_sweep_gateway_diagnostics calls this method directly."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -126,9 +127,6 @@ class TestRunBackgroundTask:
         from agent.agent_init import _init_prompt_cache_config
         import hermes_cli.config
 
-        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
-        monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
-        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
         cache_ttls = []
 
         def build_agent(**kwargs):
@@ -146,9 +144,13 @@ class TestRunBackgroundTask:
                 "max_file_size_mb": 3,
             }
         }
-        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+        with pytest.MonkeyPatch.context() as mp, \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("gateway.run._load_gateway_config", return_value=checkpoint_config), \
              patch("run_agent.AIAgent") as MockAgent:
+            mp.setattr(hermes_cli.config, "load_config_readonly", dict)
+            mp.delenv("HERMES_SESSION_SOURCE", raising=False)
+            mp.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()

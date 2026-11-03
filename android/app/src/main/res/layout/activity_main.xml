@@ -16,7 +16,7 @@
         <ImageView
             android:layout_width="104dp"
             android:layout_height="104dp"
-            android:src="@mipmap/ic_launcher"
+            android:src="@drawable/ic_launcher"
             android:layout_marginBottom="20dp"
             android:contentDescription="Hermes Agent" />
 

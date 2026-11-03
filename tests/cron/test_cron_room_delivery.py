@@ -79,3 +79,22 @@ def test_post_goes_to_the_session_store_when_its_gateway_owns_the_room(room_stor
 
     assert [p["payload"]["text"] for p in _posts(owned)] == ["Digest ready"]
     assert _posts(room_store) == []
+
+
+def test_room_a_profile_gateway_took_over_names_the_profile_remedy(room_store):
+    from gateway.hosted_room_replicas import demote_room
+    state = hosted_rooms.room_state(room_store, room_id=ROOM_ID)
+    demote_room(room_store, room_id=ROOM_ID, observed_gateway_id=state["authority_gateway_id"] + ":gateway-store",
+                observed_epoch=int(state["authority_epoch"]) + 1)
+
+    error = delivery._deliver_result(_job(), "x")
+
+    assert error and "managed by another gateway" in error and f"room:{ROOM_ID}@<that profile>" in error
+    assert _posts(room_store) == []
+
+
+def test_unknown_profile_target_says_so(room_store):
+    error = delivery._deliver_result(_job(deliver=f"room:{ROOM_ID}@nosuch"), "x")
+
+    assert error and "no profile named 'nosuch'" in error
+    assert _posts(room_store) == []

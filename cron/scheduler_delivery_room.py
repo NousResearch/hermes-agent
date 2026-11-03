@@ -70,12 +70,16 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
     """Post one cron output into a hosted room. None on success, else an error string."""
     from cron.scheduler_delivery import _redact_cron_payload
     from gateway.hosted_room_context import post_scheduled_message
+    from gateway.hosted_rooms import AuthorityConflictError
 
     target = f"room:{address}"
     match = _ROOM_TOKEN_RE.fullmatch(address)
     if match is None:
         return f"{target}: malformed room delivery target"
     room_id, profile = match.group("room"), match.group("profile")
+    from hermes_cli.profiles import profile_exists
+    if profile and not profile_exists(profile):
+        return f"{target}: no profile named {profile!r} on this machine (Room settings shows the exact target)"
     try:
         store = _find_room_store(room_id, profile)
         if store is None:
@@ -87,7 +91,18 @@ def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool 
             store, room_id=room_id, job_id=job_id,
             job_name=_redact_cron_payload(str(job.get("name") or job_id), "job name"),
             run_key=run_key, text=_redact_cron_payload(content, "room payload"), notice=for_failure)
-        logger.info("Job '%s': posted to Group Chat %s (seq %s)", job_id, room_id, event.get("seq"))
+        logger.info("Job '%s': %s Group Chat %s (seq %s)", job_id,
+                    "already posted this run to" if event.get("idempotent") else "posted to", room_id, event.get("seq"))
         return None
+    except AuthorityConflictError as exc:
+        return f"{target} delivery failed: {exc} {_profile_hint(room_id, profile)}"
     except (ValueError, OSError, sqlite3.Error) as exc:  # room/validation errors are ValueErrors
         return f"{target} delivery failed: {exc}"
+
+
+def _profile_hint(room_id: str, profile: Optional[str]) -> str:
+    """A room a profile's own gateway took over leaves only a fenced shared copy here, which answers "managed
+    by another gateway"; the remedy is naming the hosting profile so its session store is the one posted to."""
+    lead = f"@{profile} does not host it. " if profile else ""
+    return (f"{lead}If a profile's gateway hosts this room, deliver to room:{room_id}@<that profile> "
+            "(Room settings shows the exact target).")

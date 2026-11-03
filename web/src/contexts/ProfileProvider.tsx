@@ -6,7 +6,8 @@ import {
   type ReactNode,
 } from "react";
 import { useLocation, useSearchParams } from "react-router";
-import { api, setManagementProfile } from "@/lib/api";
+import { profileVisibleName } from "@hermes/shared";
+import { api, setManagementProfile, type ProfileInfo } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
 import {
   dashboardInitialProfile,
@@ -41,7 +42,16 @@ import {
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { pathname } = useLocation();
-  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profileDetails, setProfileDetails] = useState<ProfileInfo[]>([]);
+  const profiles = useMemo(
+    () => profileDetails.map((p) => p.name),
+    [profileDetails],
+  );
+  const profileLabel = useCallback(
+    (name: string) =>
+      profileVisibleName(profileDetails.find((p) => p.name === name) ?? { name }),
+    [profileDetails],
+  );
   const [currentProfile, setCurrentProfile] = useState("default");
   const bootstrapProfile = dashboardInitialProfile();
 
@@ -88,13 +98,26 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    let latestRequest = 0;
     const urlProfile = searchParams.get("profile");
 
-    Promise.all([api.getProfiles(), api.getActiveProfile()])
-      .then(([profilesRes, info]) => {
-        if (cancelled) return;
+    const loadProfiles = async () => {
+      const request = ++latestRequest;
+      const result = await api.getProfiles();
+      if (!cancelled && request === latestRequest) {
+        setProfileDetails(result.profiles);
+      }
+    };
+    // Names edited in another surface refresh without reapplying active-profile
+    // bootstrap: metadata changes must never change the management target.
+    const refreshLabels = () => {
+      void loadProfiles().catch(() => {});
+    };
+    window.addEventListener("focus", refreshLabels);
 
-        setProfiles(profilesRes.profiles.map((p) => p.name));
+    Promise.all([loadProfiles(), api.getActiveProfile()])
+      .then(([, info]) => {
+        if (cancelled) return;
 
         const current = info.current || "default";
         const active = info.active || "default";
@@ -119,6 +142,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", refreshLabels);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -141,8 +165,15 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ profile, currentProfile, profiles, setProfile }),
-    [profile, currentProfile, profiles, setProfile],
+    () => ({
+      profile,
+      currentProfile,
+      profiles,
+      profileDetails,
+      profileLabel,
+      setProfile,
+    }),
+    [profile, currentProfile, profiles, profileDetails, profileLabel, setProfile],
   );
 
   return (

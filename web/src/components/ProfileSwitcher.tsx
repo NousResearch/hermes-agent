@@ -16,16 +16,17 @@ import { cn } from "@/lib/utils";
  * fetchJSON ?profile= injection. Hidden when only one profile exists.
  */
 export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
-  const { profile, currentProfile, profiles, setProfile } = useProfileScope();
+  const { profile, currentProfile, profiles, profileLabel, setProfile } =
+    useProfileScope();
   const { t } = useI18n();
 
   const currentDashboardLabel = useMemo(
     () =>
       (t.app.currentProfileOption ?? "this dashboard ({name})").replace(
         "{name}",
-        currentProfile || "default",
+        profileLabel(currentProfile || "default"),
       ),
-    [currentProfile, t.app.currentProfileOption],
+    [currentProfile, profileLabel, t.app.currentProfileOption],
   );
 
   if (profiles.length < 2) return null;
@@ -62,20 +63,22 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
         )}
         id="hermes-profile-switcher"
         onValueChange={setProfile}
-        value={profile}
+        value={profile === currentProfile ? "" : profile}
       >
-        <SelectOption value="">{currentDashboardLabel}</SelectOption>
+        <SelectOption value="">
+          {currentDashboardLabel}
+        </SelectOption>
 
         {profiles
           .filter((name) => name !== currentProfile)
           .map((name) => (
             <SelectOption key={name} value={name}>
-              {name}
+              {profileLabel(name)}
             </SelectOption>
           ))}
       </Select>
 
-      {collapsed && <span className="sr-only">{managed}</span>}
+      {collapsed && <span className="sr-only">{profileLabel(managed)}</span>}
     </div>
   );
 }

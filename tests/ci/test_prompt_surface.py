@@ -15,6 +15,8 @@ import importlib.util
 import shutil
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location("prompt_surface", REPO / "scripts" / "ci" / "prompt_surface.py")
 assert _spec is not None and _spec.loader is not None
@@ -32,6 +34,7 @@ def _tree_differences(left: Path, right: Path) -> list[str]:
     return out
 
 
+@pytest.mark.platforms("linux", "macos")
 def test_committed_prompt_surface_is_current(tmp_path):
     rendered = tmp_path / "prompt_surface"
     assert prompt_surface.render(rendered) == 0

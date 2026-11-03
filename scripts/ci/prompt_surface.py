@@ -79,6 +79,11 @@ def _pin_environment() -> None:
     socket.socket.connect = refuse  # type: ignore[method-assign]
     socket.create_connection = refuse  # type: ignore[assignment]
     socket.getaddrinfo = refuse  # type: ignore[assignment]
+    # These modules select platform-specific data or backends at import time.
+    import sysconfig
+    import zoneinfo
+    import psutil
+    sysconfig.get_config_vars()
     sys.platform = "linux"  # skills index ``platforms:`` gate
 
     import hermes_time

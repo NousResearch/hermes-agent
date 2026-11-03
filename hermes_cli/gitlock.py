@@ -150,7 +150,14 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
     Removes only when older than the age floor AND no git process is running. Never raises: a lock we cannot
     stat/unlink is skipped (it may have been re-created between the age check and the unlink; skipping is safe).
     """
-    return _sweep_locks(Path(repo_root) / ".git", (*LOCK_NAMES, *OBJECT_STORE_LOCK_NAMES), min_age_seconds)
+    git_dir = Path(repo_root) / ".git"
+    return _sweep_stale(
+        git_dir, lambda: [*(git_dir / name for name in (*LOCK_NAMES, *OBJECT_STORE_LOCK_NAMES)),
+                          *ref_lock_files(git_dir)],
+        min_age_seconds=min_age_seconds, default_age=STALE_LOCK_MIN_AGE_SECONDS,
+        skip_msg="git process running; skipping stale-lock sweep",
+        log_removed=lambda p, _size: logger.info("Removed stale git lock %s", p),
+    )
 
 
 def clear_stale_object_store_locks(git_dir: Path) -> list[str]:
@@ -177,18 +184,48 @@ def release_dead_index_lock(repo_root: Path) -> bool:
     with psutil (:func:`_windows_git_in_checkout`). Whatever cannot be read keeps the lock. An
     interrupted tree move owns its own lock judgement, so its marker defers to that repair.
     """
-    from hermes_cli._early_recovery import _git_dir, _release_dead_index_lock, interrupted_pull_marker
+    return bool(_release_killed_update_locks(Path(repo_root), lambda git_dir: [git_dir / "index.lock"]))
 
-    root = Path(repo_root)
+
+def ref_lock_files(git_dir: Path) -> list[Path]:
+    """The lock files of git's ref transactions: ``packed-refs.lock`` and every ``refs/**/*.lock``."""
+    refs = git_dir / "refs"
+    return [git_dir / "packed-refs.lock", *(sorted(refs.rglob("*.lock")) if refs.is_dir() else ())]
+
+
+def release_dead_fetch_locks(repo_root: Path) -> list[str]:
+    """Drop the locks a killed update's fetch left, whatever their age: ``shallow.lock`` and the ref
+    locks (:func:`ref_lock_files`).
+
+    The update's ``git fetch`` dies with its tree (``taskkill /T /F``, the Linux parent-death signal),
+    so a kill inside its ref transaction strands ``refs/remotes/origin/<branch>.lock``. Git (2.51+)
+    then rejects that ref on every later fetch as "fetching ref refs/remotes/origin/main failed:
+    reference already exists" (its batched fetch files a lock it cannot create under that reason),
+    so no update could fetch again until a user found and deleted the file (the Windows crash cell
+    ``mid_fetch``). A shallow fetch (installer checkouts are ``--depth 1``) killed in its pack
+    transfer strands ``shallow.lock`` the same way ("File exists"); a live :class:`_ShallowLock`
+    holder keeps it open, so the proofs see it. The same two proofs as
+    :func:`release_dead_index_lock`; returns the removed paths.
+    """
+    return _release_killed_update_locks(Path(repo_root), lambda git_dir: [git_dir / "shallow.lock",
+                                                                        *ref_lock_files(git_dir)])
+
+
+def _release_killed_update_locks(root: Path, candidates: Callable[[Path], Iterable[Path]]) -> list[str]:
+    from hermes_cli._early_recovery import _git_dir, _release_dead_lock, interrupted_pull_marker
+
     git_dir = _git_dir(root)
-    lock = git_dir / "index.lock"
-    if not lock.exists() or interrupted_pull_marker(root).exists():
-        return False
-    if not _killed_update_owns(lock):
-        return False
-    if os.name == "nt" and _windows_git_in_checkout(root) is not False:
-        return False
-    return _release_dead_index_lock(git_dir, root, any_git=True)
+    if interrupted_pull_marker(root).exists():
+        return []
+    locks = [lock for lock in candidates(git_dir) if lock.exists() and _killed_update_owns(lock)]
+    if not locks or (os.name == "nt" and _windows_git_in_checkout(root) is not False):
+        return []
+    released: list[str] = []
+    for lock in locks:
+        if not _release_dead_lock(lock, root, any_git=True):
+            break  # a git works in the checkout: every lock stays
+        released.append(str(lock))
+    return released
 
 
 def _receipt_time(value: object) -> Optional[float]:
@@ -513,7 +550,9 @@ def _shallow_file_path(repo_root: Path) -> Optional[Path]:
 class _ShallowLock:
     """Git's own ``shallow.lock`` protocol, so a concurrent ``git fetch`` that
     writes ``.git/shallow`` between our read and our write is never clobbered:
-    the fetch fails fast on the lock and we re-read before writing."""
+    the fetch fails fast on the lock and we re-read before writing. The lock stays
+    open while held: this holder runs no git between its git calls, so the open fd
+    (an unlink refusal on Windows) is how :func:`release_dead_fetch_locks` sees it."""
 
     def __init__(self, shallow_path: Path):
         self._path = shallow_path
@@ -528,11 +567,16 @@ class _ShallowLock:
             raise RuntimeError(f"cannot create shallow lock: {exc}") from exc
         try:
             os.write(fd, b"hermes shallow maintenance\n")
-        finally:
+        except OSError as exc:
+            # A leaked fd would read as a live holder (and pin the file on Windows).
             os.close(fd)
+            self._lock_path.unlink(missing_ok=True)
+            raise RuntimeError(f"cannot write shallow lock: {exc}") from exc
+        self._fd = fd
         return self
 
     def __exit__(self, *exc_info) -> None:
+        os.close(self._fd)
         try:
             self._lock_path.unlink()
         except FileNotFoundError:

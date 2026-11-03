@@ -425,6 +425,8 @@ class McpServerRuntimeRow(Result):
     status: McpRuntimeStatus
     source: McpServerSource
     plugin: str | None = None
+    # Parked on a rejected OAuth credential (older backends omit it).
+    needs_auth: bool = False
 
 
 class McpServersStatusResult(Result):
@@ -630,8 +632,8 @@ class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no
     ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;
-    ``install_desktop``: ``identifier``/``repo`` (https only) or ``catalog_name`` + ``ref`` (the commit
-    ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
+    ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always
+    with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto
     the host that serves this client; ``remove_desktop``: ``name``
     (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
     that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose

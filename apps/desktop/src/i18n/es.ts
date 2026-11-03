@@ -721,7 +721,7 @@ export const esOverrides = {
       advancedOutput: 'Límites de salida',
       advancedDelegation: 'Subagentes',
       advancedDesktop: 'Escritorio e inicio',
-      gatewayConnection: 'Esta ventana',
+      gatewayConnection: 'Gateway principal',
       gatewayDevices: 'Conexiones guardadas',
       gatewayManagedUpdates: 'Actualizaciones remotas',
       gatewayManagedUpdatesUnavailable:
@@ -1618,7 +1618,7 @@ export const esOverrides = {
       intro:
         'Gestiona este dispositivo y cada gateway de Hermes al que puede llegar mediante conexiones remotas, SSH o Cloud.',
       stagedNote:
-        'Cambia de gateway desde Sesiones. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway; el trabajo en otros gateways sigue ejecutándose.',
+        'Todos los gateways permanecen conectados. Los perfiles, chats, mensajería y tareas cron se quedan con su gateway, y Sesiones puede mostrarlos todos a la vez.',
       launchModeTitle: 'Al iniciar, volver a Sesiones en el último gateway usado',
       launchModeDesc: 'Si está desactivado, Sesiones se abre en el gateway principal.',
       searchPlaceholder: 'Buscar gateways…',
@@ -2448,6 +2448,10 @@ export const esOverrides = {
     changesApplyNewSessions: 'Los cambios se aplican a las sesiones nuevas.',
     skillUpdated: 'Skill actualizado',
     edit: 'Editar',
+    lock: 'Bloquear',
+    locked: 'Bloqueado',
+    lockHint: 'El agente no puede cambiar este skill mientras esté bloqueado. Tú puedes seguir editándolo.',
+    unlockedHint: 'Bloquéalo para que el agente no pueda cambiar este skill. Tú puedes seguir editándolo.',
     archive: 'Archivar',
     skillArchivedTitle: 'Skill archivado',
     skillArchivedMessage: 'Puedes restaurarlo con hermes curator restore.',
@@ -3222,14 +3226,10 @@ export const esOverrides = {
       gateway: (gateway: string) => `Perfiles en ${gateway}`,
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
-      switchTo: (name: string, gateway: string) => `Cambiar a ${name} en ${gateway}`,
+      switchTo: (name: string, gateway: string) => `Abrir ${name} en ${gateway}`,
       deleteOn: (gateway: string) => ` en ${gateway}`,
       localDevice: 'Este dispositivo (backend local: instala Hermes si falta; si no, abre una sesión nueva)',
-      switchDeviceTitle: '¿Cambiar a este dispositivo?',
-      switchDeviceDesc:
-        'Esto abre una sesión nueva en este equipo. La conversación actual permanece en el otro gateway.',
-      switchDeviceConfirm: 'Cambiar',
-      installDeviceTitle: '¿Cambiar a este dispositivo?',
+      installDeviceTitle: '¿Instalar Hermes en este dispositivo?',
       installDeviceDesc:
         'Esto instalará Hermes localmente y luego abrirá una sesión nueva en este equipo. No se instala nada hasta que confirmes.',
       installDeviceConfirm: 'Instalar localmente',
@@ -4445,7 +4445,9 @@ export const esOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
       updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
+      fastFailed: 'No se pudo actualizar el modo rápido',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4618,6 +4620,14 @@ export const esOverrides = {
     terminalNew: 'Nueva terminal',
     terminalCloseOthers: 'Cerrar las demás',
     terminalCloseAll: 'Cerrar todo',
+    terminalNewOn: 'Nueva terminal en…',
+    terminalGatewayRemoved: 'Gateway eliminado',
+    terminalGatewayRemovedBody:
+      'Se eliminó el gateway donde se ejecutaba esta terminal, así que no puede reabrirse. Cierra esta pestaña.',
+    terminalGatewayNoShellBody:
+      'Este gateway no ofrece acceso a shell, así que esta terminal no puede reabrirse. Cierra esta pestaña.',
+    terminalDisconnectedBody:
+      'Terminal desconectada. Pulsa Intro para iniciar una nueva shell; el historial se conserva.',
     addToChat: 'Añadir al chat'
   },
   preview: {

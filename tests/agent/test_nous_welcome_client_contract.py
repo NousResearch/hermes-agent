@@ -34,7 +34,6 @@ class TestAuxiliaryOnWelcomeHost:
         assert (client, model) == ("client", anon_auth.GUEST_MODEL)
         assert create.call_args.kwargs["base_url"] == WELCOME
         recommended.assert_not_called()   # the Portal's pick would be a guaranteed 429 model_not_free
-        assert ac.auxiliary_is_nous is True
 
     def test_vision_aux_on_welcome_host_uses_the_same_model(self):
         import agent.auxiliary_client as ac

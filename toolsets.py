@@ -466,6 +466,12 @@ def session_disabled_toolsets(
     return [*(disabled or ()), *gated] if gated else disabled
 
 
+def tool_selection_key(enabled: Optional[list[str]], disabled: Optional[list[str]]) -> tuple:
+    """The toolset selection a tools[] snapshot was built from, order-free. Recorded next to the registry
+    generation: the tools[] freeze (``tools.mcp_tool_agent``) holds new tools back only while neither moved."""
+    return frozenset(enabled) if enabled is not None else None, frozenset(disabled or ())
+
+
 def agent_tool_drops(agent: Any) -> frozenset:
     """Tool names *agent* never carries, whatever its toolsets resolved to: the side-agent drops and
     the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""

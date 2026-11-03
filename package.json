@@ -53,7 +53,6 @@
     "lodash": "4.18.1",
     "protobufjs": "^8.7.1",
     "brace-expansion": "5.0.12",
-    "mermaid": "11.17.2",
     "dompurify": "3.4.17",
     "katex": "0.19.0",
     "ip-address": "10.7.4",

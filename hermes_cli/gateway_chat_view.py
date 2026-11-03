@@ -400,9 +400,10 @@ class GatewayChatView:
                 print('\n'.join(result['lines']))
                 return True
             if result.get('status') == 'noop':
-                # Nothing removable: main's report, nothing committed (gateway/session_mutation_compress.py).
+                # Nothing removable (gateway/session_mutation_compress.py), or a `/model reset` already
+                # on the configured default (its note): main's report, nothing committed.
                 self.mutations.acknowledge(original, operation, payload)
-                summary = result.get('summary') or {}
+                summary = result.get('summary') or {'note': result.get('note')}
                 print('\n'.join(filter(None, (summary.get('headline'), summary.get('token_line'), summary.get('note')))))
                 return True
             target = result.get('branched_session_id', original)

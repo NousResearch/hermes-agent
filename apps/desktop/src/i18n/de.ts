@@ -718,7 +718,7 @@ export const deOverrides = {
       advancedOutput: 'Ausgabelimits',
       advancedDelegation: 'Subagenten',
       advancedDesktop: 'Desktop & Start',
-      gatewayConnection: 'Dieses Fenster',
+      gatewayConnection: 'Primäres Gateway',
       gatewayDevices: 'Gespeicherte Verbindungen',
       gatewayManagedUpdates: 'Remote-Updates',
       gatewayManagedUpdatesUnavailable:
@@ -1619,7 +1619,7 @@ export const deOverrides = {
       intro:
         'Verwalten Sie dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
       stagedNote:
-        'Wechseln Sie Gateways über Sessions. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway; Arbeit auf anderen Gateways läuft weiter.',
+        'Jedes Gateway bleibt verbunden. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway, und Sessions kann alle gleichzeitig anzeigen.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Gateway zurückkehren',
       launchModeDesc: 'Wenn deaktiviert, öffnet Sessions auf dem primären Gateway.',
       searchPlaceholder: 'Gateways durchsuchen…',
@@ -2458,6 +2458,11 @@ export const deOverrides = {
     changesApplyNewSessions: 'Änderungen gelten für neue Sessions.',
     skillUpdated: 'Skill aktualisiert',
     edit: 'Bearbeiten',
+    lock: 'Sperren',
+    locked: 'Gesperrt',
+    lockHint:
+      'Der Agent kann diesen Skill nicht ändern, solange er gesperrt ist. Du kannst ihn weiterhin selbst bearbeiten.',
+    unlockedHint: 'Sperren, damit der Agent diesen Skill nicht ändert. Du kannst ihn weiterhin selbst bearbeiten.',
     archive: 'Archivieren',
     skillArchivedTitle: 'Skill archiviert',
     skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
@@ -3233,15 +3238,11 @@ export const deOverrides = {
       gateway: gateway => `Profile auf ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
+      switchTo: (name, gateway) => `${name} auf ${gateway} öffnen`,
       deleteOn: gateway => ` auf ${gateway}`,
       localDevice:
         'Dieses Gerät (lokales Backend — installiert Hermes, falls es fehlt, sonst öffnet es eine neue Sitzung)',
-      switchDeviceTitle: 'Zu diesem Gerät wechseln?',
-      switchDeviceDesc:
-        'Das öffnet eine neue Sitzung auf diesem Computer. Das aktuelle Gespräch bleibt auf dem anderen Gateway.',
-      switchDeviceConfirm: 'Wechseln',
-      installDeviceTitle: 'Zu diesem Gerät wechseln?',
+      installDeviceTitle: 'Hermes auf diesem Gerät installieren?',
       installDeviceDesc:
         'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
       installDeviceConfirm: 'Lokal installieren',
@@ -4460,7 +4461,9 @@ export const deOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `sendet ${level} auf dieser Route`,
       updateFailed: 'Aktualisierung der Modelloptie schlug fehl',
-      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl'
+      fastFailed: 'Aktualisierung des Schnell-Modus schlug fehl',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
       gateway: 'Gateway',
@@ -4633,6 +4636,14 @@ export const deOverrides = {
     terminalNew: 'Neues Terminal',
     terminalCloseOthers: 'Andere schließen',
     terminalCloseAll: 'Alle schließen',
+    terminalNewOn: 'Neues Terminal auf…',
+    terminalGatewayRemoved: 'Entfernter Gateway',
+    terminalGatewayRemovedBody:
+      'Der Gateway, auf dem dieses Terminal lief, wurde entfernt; es kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalGatewayNoShellBody:
+      'Dieser Gateway bietet keinen Shell-Zugang; dieses Terminal kann nicht wieder geöffnet werden. Schließe diesen Tab.',
+    terminalDisconnectedBody:
+      'Terminal getrennt. Drücke Enter, um eine neue Shell zu starten; der Verlauf bleibt erhalten.',
     addToChat: 'Zum Chat hinzufügen'
   },
   preview: {

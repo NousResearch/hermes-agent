@@ -305,7 +305,9 @@ def test_virtual_plugin_self_reference_installs_its_own_extra_after_the_rename(l
     root = tmp / "workspace"
     environment = managed_environment(tmp / "env")
     ws.lock_and_sync([plugin], [], root=root, source=core, seed_lock=None, environment=environment)
-    installed = {p.name.split("-")[0] for p in environment.destination.glob("lib/python*/site-packages/*.dist-info")}
+    from pm.environments import site_packages
+
+    installed = {p.name.split("-")[0] for p in site_packages(environment.destination).glob("*.dist-info")}
     assert "chosen_dep" in installed and "other_dep" not in installed
     project = tomllib.loads(next((root / "plugin-sources").iterdir()).joinpath("pyproject.toml").read_text())["project"]
     assert project["dependencies"] == ["member-dep==1.0", f"{project['name']}[Runtime]>=0"]

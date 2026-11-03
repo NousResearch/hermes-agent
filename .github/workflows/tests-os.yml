@@ -129,6 +129,13 @@ jobs:
           prune-python-cache: true
           save-tools-cache: ${{ (github.event_name != 'pull_request' || github.head_ref == 'exp/ci-mtab2') && 'true' || 'false' }}
 
+      - name: EXPERIMENT force a cold analysis cache (do not merge)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/psmac-cold"
+          echo "PSModuleAnalysisCachePath=$RUNNER_TEMP\\psmac-cold\\ModuleAnalysisCache" >> "$GITHUB_ENV"
+
       - name: Warm PowerShell's module analysis cache
         # The first cmdlet a fresh powershell.exe autoloads analyses every module on
         # PSModulePath (~22s on the arm64 images). A powershell.exe started from the

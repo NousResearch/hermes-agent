@@ -1,5 +1,6 @@
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, mergeUsage } from '@hermes/shared'
 
+import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
@@ -17,8 +18,13 @@ import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionStates } from '@/store/session-states'
+import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
+
+import { segmentStamp } from '../segment-identity'
 
 import type { GatewayEventContext } from './types'
 
@@ -29,11 +35,13 @@ function firstBillingLine(text: string): string {
 /**
  * A turn failed on a billing wall (out of credits / payment required). The
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
- * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * we cache it per-session, which drives the out-of-credits banner above the
+ * composer. A wall in a session that is NOT on screen also raises one sticky,
  * billing-specific toast — never the generic "Hermes error" — with a smart CTA
- * (Nous → in-app Settings → Billing, other providers → their billing page).
+ * (Nous → in-app Settings → Billing, other providers → their billing page); on
+ * screen the banner and the turn's card carry it, so no toast repeats them.
  */
-function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+function surfaceBillingBlock(sessionId: string, raw: unknown, toast: boolean): void {
   if (!raw || typeof raw !== 'object') {
     return
   }
@@ -45,6 +53,10 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
   }
 
   setBillingBlock(sessionId, block)
+
+  if (!toast) {
+    return
+  }
 
   const ctaCopy = {
     addCredits: translateNow('billingBlock.addCredits'),
@@ -115,6 +127,112 @@ function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
 
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
+/** The stamped completion of a messaging turn Desktop sent decides its unread dot. */
+function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefined, profile?: string) {
+  const storedId = $sessionStates.get()[runtimeId]?.storedSessionId ?? runtimeId
+  lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
+}
+
+/** message.start: arm the session for a new turn, unless it re-sends the current one. */
+function handleMessageStart(ctx: GatewayEventContext): boolean {
+  const { deps, payload, sessionId, isActiveEvent } = ctx
+  const { compactedTurnRef, flushQueuedDeltas, dropQueuedDeltas, nativeSubagentSessionsRef } = deps
+  const { sessionStateByRuntimeIdRef, updateSessionState } = deps
+
+  if (!sessionId) {
+    return true
+  }
+
+  const turnId = typeof payload?.turn_id === 'string' ? payload.turn_id : ''
+
+  // A re-sent start of the turn this session already has (reconnect replay,
+  // a superseded attempt) is not a new occurrence: resetting here would let
+  // the turn's re-sent segment paint as a second copy (#144609).
+  if (turnId && sessionStateByRuntimeIdRef.current.get(sessionId)?.streamTurnId === turnId) {
+    return true
+  }
+
+  // Turn-boundary orphan drop (#119543): when no turn is live, anything
+  // still queued belongs to a turn that already ended (a delta reordered
+  // behind its own complete or heartbeat). Flushing it would seed a bubble
+  // the new turn inherits, painting a stale duplicate of the previous
+  // reply. A still-live previous turn (steer) keeps the flush: those bytes
+  // are real output of the bubble on screen.
+  if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+    flushQueuedDeltas(sessionId)
+  } else {
+    dropQueuedDeltas(sessionId)
+  }
+
+  pruneFinishedSessionSubagents(sessionId)
+  setSessionCompacting(sessionId, false)
+  compactedTurnRef.current.delete(sessionId)
+  nativeSubagentSessionsRef.current.delete(sessionId)
+  // A fresh turn on this session optimistically clears its billing wall;
+  // if credits are still exhausted the next failure re-raises it.
+  clearBillingBlock(sessionId)
+
+  if (isActiveEvent) {
+    triggerHaptic('streamStart')
+  }
+
+  // Submit→accept latency: seedOptimistic armed the clock at Enter; this
+  // event is the backend accepting the turn. Debug-only visibility into
+  // how long the arm actually took (the "no progress box for seconds"
+  // complaint) — reads the pre-update cache, costs nothing when clean.
+  const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
+
+  if (typeof seededAt === 'number') {
+    console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
+  }
+
+  updateSessionState(sessionId, state => {
+    // If the user clicked Stop (cancelRun set interrupted=true), don't
+    // let a stale message.start from a chained turn (goal follow-up,
+    // completion drain) or an in-flight LLM response re-arm busy.
+    // The interrupt is user intent — the backend's cooperative cancel
+    // may not have propagated yet, so its events are stale. The turn's
+    // finally block will emit session.info with running=false to clear
+    // busy for real once the agent loop actually exits.
+    if (state.interrupted) {
+      return state
+    }
+
+    return {
+      ...state,
+      busy: true,
+      awaitingResponse: true,
+      sawAssistantPayload: false,
+      interrupted: false,
+      interimBoundaryPending: false,
+      // Backend accepted the turn — the no-payload settle gate below may
+      // now treat a running=false heartbeat as a real turn end.
+      turnLive: true,
+      // A new turn is a new occurrence: the previous turn's late terminal
+      // frame (#119569) can no longer claim its heartbeat-settled bubble.
+      heartbeatSettledStreamId: null,
+      streamTurnId: turnId || null,
+      // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
+      // here would hide the submit→accept round trip from the timer.
+      // Backend-originated turns (queue drain elsewhere, goal follow-up)
+      // have no seed and arm here.
+      turnStartedAt: state.turnStartedAt ?? Date.now()
+    }
+  })
+
+  if (isActiveEvent) {
+    // Belt-and-suspenders mirror of the ACTIVE session's per-session
+    // clock (the load-bearing mirror is the view-sync flush in
+    // use-session-state-cache). Mirror the seeded value, not Date.now():
+    // resetting to accept-time here would visibly snap the timer back
+    // after the submit-time seed above already started it.
+    setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
+  }
+
+  return true
+}
+
+// health: allow CC -- usage-window limit: one guard so the error card, not a second billing toast, says it; this event switch was over target on main
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -132,92 +250,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'message.start') {
-    if (!sessionId) {
-      return true
-    }
-
-    // Turn-boundary orphan drop (#119543): when no turn is live, anything
-    // still queued belongs to a turn that already ended (a delta reordered
-    // behind its own complete or heartbeat). Flushing it would seed a bubble
-    // the new turn inherits, painting a stale duplicate of the previous
-    // reply. A still-live previous turn (steer) keeps the flush: those bytes
-    // are real output of the bubble on screen.
-    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
-      flushQueuedDeltas(sessionId)
-    } else {
-      dropQueuedDeltas(sessionId)
-    }
-
-    pruneFinishedSessionSubagents(sessionId)
-    setSessionCompacting(sessionId, false)
-    compactedTurnRef.current.delete(sessionId)
-    nativeSubagentSessionsRef.current.delete(sessionId)
-    // A fresh turn on this session optimistically clears its billing wall;
-    // if credits are still exhausted the next failure re-raises it.
-    clearBillingBlock(sessionId)
-
-    if (isActiveEvent) {
-      triggerHaptic('streamStart')
-    }
-
-    // Submit→accept latency: seedOptimistic armed the clock at Enter; this
-    // event is the backend accepting the turn. Debug-only visibility into
-    // how long the arm actually took (the "no progress box for seconds"
-    // complaint) — reads the pre-update cache, costs nothing when clean.
-    const seededAt = sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt
-
-    if (typeof seededAt === 'number') {
-      console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
-    }
-
-    updateSessionState(sessionId, state => {
-      // If the user clicked Stop (cancelRun set interrupted=true), don't
-      // let a stale message.start from a chained turn (goal follow-up,
-      // completion drain) or an in-flight LLM response re-arm busy.
-      // The interrupt is user intent — the backend's cooperative cancel
-      // may not have propagated yet, so its events are stale. The turn's
-      // finally block will emit session.info with running=false to clear
-      // busy for real once the agent loop actually exits.
-      if (state.interrupted) {
-        return state
-      }
-
-      return {
-        ...state,
-        busy: true,
-        awaitingResponse: true,
-        sawAssistantPayload: false,
-        interrupted: false,
-        interimBoundaryPending: false,
-        // Backend accepted the turn — the no-payload settle gate below may
-        // now treat a running=false heartbeat as a real turn end.
-        turnLive: true,
-        // A new turn is a new occurrence: the previous turn's late terminal
-        // frame (#119569) can no longer claim its heartbeat-settled bubble.
-        heartbeatSettledStreamId: null,
-        // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
-        // here would hide the submit→accept round trip from the timer.
-        // Backend-originated turns (queue drain elsewhere, goal follow-up)
-        // have no seed and arm here.
-        turnStartedAt: state.turnStartedAt ?? Date.now()
-      }
-    })
-
-    if (isActiveEvent) {
-      // Belt-and-suspenders mirror of the ACTIVE session's per-session
-      // clock (the load-bearing mirror is the view-sync flush in
-      // use-session-state-cache). Mirror the seeded value, not Date.now():
-      // resetting to accept-time here would visibly snap the timer back
-      // after the submit-time seed above already started it.
-      setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
-    }
-
-    return true
+    return handleMessageStart(ctx)
   }
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, segmentStamp(payload))
     }
 
     return true
@@ -233,7 +271,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       const text = coerceGatewayText(payload?.text)
 
       if (text) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt)
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt, segmentStamp(payload))
       }
     }
 
@@ -373,9 +411,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)
+    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
+    // The view mirrors this runtime only while bound to it (settled-turns.ts).
+    noteTurnSettled(sessionId, deps.activeSessionIdRef.current === sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,
@@ -393,9 +434,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     // Structured billing wall forwarded by the gateway (out of credits /
-    // payment required) — cache it + raise a billing-specific toast.
-    if (payload?.billing) {
-      surfaceBillingBlock(sessionId, payload.billing)
+    // payment required) — cache it for the banner (toast only off screen). A window
+    // plan's limit is said once, by the turn's error card (its buttons are the
+    // ways on); a toast and banner would only repeat it.
+    const usageWindowWall = parseErrorSurface(payload?.error_surface)?.code === 'usage_window'
+
+    if (payload?.billing && !usageWindowWall) {
+      surfaceBillingBlock(sessionId, payload.billing, !isActiveEvent)
     }
 
     // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
@@ -427,11 +472,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // let a background tile's turn overwrite the primary's count.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: mergeUsage({ calls: 0, input: 0, output: 0, total: 0, ...state.usage }, payload.usage)
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => mergeUsage(current, payload.usage))
       }
     }
 

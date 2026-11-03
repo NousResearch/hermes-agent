@@ -164,6 +164,7 @@ jobs:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
+        id: update
         run: |
           set -euo pipefail
           tests/install/macos-desktop-e2e.sh --phase update \
@@ -172,6 +173,17 @@ jobs:
             --dmg-url '${{ inputs.dmg-url }}'
         env:
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      # Only the classifier's receipt (tests/install/KNOWN_FAILURES.md) turns
+      # a failed update into a non-red known-failure cell in the report.
+      - name: Upload known-failure receipt
+        if: steps.update.outputs.known_failure != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-e2e-known-${{ steps.update.outputs.known_failure }}--${{ inputs.leg-id }}
+          path: ${{ runner.temp }}/e2e-logs/known-failure.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Stop screen recording
         if: always()
@@ -217,7 +229,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}
 

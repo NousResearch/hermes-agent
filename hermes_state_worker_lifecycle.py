@@ -31,6 +31,11 @@ def worker_create(db, conn, session_id, payload):
     if config is not None and (not isinstance(config, dict) or set(config) - _CONSTRUCTOR_CONFIG):
         raise RuntimeStoreError('invalid_params')
     insert_session_row_in_transaction(db, conn, session_id, **payload)
+    if config:
+        # An owner-reserved child row already holds its lineage marker, so the keep-existing upsert
+        # would drop these facts; merge them beside it (keys are the constructor set only).
+        conn.execute("UPDATE sessions SET model_config=json_patch(model_config,?) WHERE id=? "
+                     "AND json_type(model_config,'$._delegate_from') IS NOT NULL", (json.dumps(config), session_id))
     return {'value': session_id}
 
 
@@ -171,11 +176,17 @@ def worker_message_api_content(db, conn, session_id, payload):
 
 def worker_user_content(db, conn, session_id, payload):
     """Rewrite ONE active user row of this session, same guards as ``SessionDB.set_user_message_content``."""
-    if set(payload) != {'row_id', 'content'}:
+    if set(payload) - {'display_metadata'} != {'row_id', 'content'}:
         raise RuntimeStoreError('invalid_params')
+    if 'display_metadata' not in payload:
+        return {'value': conn.execute(
+            "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
+            (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
     return {'value': conn.execute(
-        "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
-        (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
+        "UPDATE messages SET content=?, api_content=NULL, display_metadata=? "
+        "WHERE id=? AND session_id=? AND role='user' AND active=1",
+        (db._encode_content(payload['content']), db._encode_display_metadata(payload['display_metadata']),
+         _row_id(payload), session_id)).rowcount}
 
 
 WORKER_LIFECYCLE_HANDLERS = {
@@ -272,3 +283,6 @@ def insert_session_row_in_transaction(
         self._delete_unreferenced_system_prompts(conn)
     if parent_session_id:
         self._inherit_parent_session_metadata(conn, session_id)
+    # The upsert may have just filled a compression tip's created_source (update_token_counts).
+    from hermes_state_compression import stamp_compression_ancestors
+    stamp_compression_ancestors(conn, session_id)

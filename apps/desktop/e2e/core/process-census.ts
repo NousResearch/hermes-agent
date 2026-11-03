@@ -132,6 +132,32 @@ export function sandboxProcessesOf(hermesHome: string, exclude = process.pid): P
   return all.filter(proc => members.has(proc.pid) && proc.pid !== exclude)
 }
 
+/**
+ * Every live process whose executable lives under `dir` (Linux /proc only).
+ *
+ * The HERMES_HOME census cannot see Electron 44+ processes: Chromium's process-title
+ * rewrite zeroes the browser's and every child's /proc/<pid>/environ right after start
+ * (Electron 40 kept it readable). A packaged app's install directory names its processes
+ * just as precisely, whatever their environment shows.
+ */
+export function processesRunningFrom(dir: string): ProcInfo[] {
+  let root: string
+
+  try {
+    root = fs.realpathSync(dir) + path.sep
+  } catch {
+    return []
+  }
+
+  return listProcesses().filter(proc => {
+    try {
+      return proc.pid !== process.pid && fs.readlinkSync(`/proc/${proc.pid}/exe`).startsWith(root)
+    } catch {
+      return false
+    }
+  })
+}
+
 /** True while `pid` is still a live member of the sandbox (a recycled pid never matches). */
 export function isSandboxProcess(pid: number, hermesHome: string): boolean {
   return sandboxProcessesOf(hermesHome).some(proc => proc.pid === pid)

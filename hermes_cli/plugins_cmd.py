@@ -95,6 +95,13 @@ class PluginOperationError(Exception):
             self.failure_class = failure_class
 
 
+class PluginSourceMoved(PluginOperationError):
+    """The source is no longer at the commit the install dialog reviewed. Clients answer it by reading
+    the source again (``plugins.manage`` error ``data.reason == "source_moved"``), never by resending."""
+
+    failure_class = "clone_failed"
+
+
 class PluginScanBlocked(PluginOperationError):
     """Plugin failed the security scan and was not installed."""
 
@@ -882,11 +889,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
-    # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
+    # memory/, context_engine/, computer_use/, model-providers/ and config_backends/ load through dedicated
+    # paths, not the PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers", "config_backends"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

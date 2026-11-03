@@ -7,11 +7,15 @@ copy the values into ``extra``" — declared by each platform plugin as ``Platfo
 msgraph_webhook, relay) keep their small functions here.
 """
 
+import copy
 import logging
 import os
+from contextvars import ContextVar
 from typing import Optional
 
 from gateway.config import (
+    _BUILTIN_PLATFORM_VALUES,
+    _discovered_registry_entry,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -53,10 +57,15 @@ def _enable_credential_names(platform: Platform) -> tuple:
     return names
 
 
+# Set by builtin_platform_status: a status read for another profile must neither repeat the gateway's
+# operational logs on every dashboard poll nor use up its one-time warnings.
+_STATUS_READ: ContextVar[bool] = ContextVar("gateway_env_status_read", default=False)
+
+
 def _warn_explicit_disable_beats_env(platform: Platform) -> None:
     """One-time WARNING: ``platforms.<x>.enabled: false`` wins over env creds (which
     used to force-enable), so users relying on "creds in .env = on" learn why it went dark."""
-    if platform in _EXPLICIT_DISABLE_WARNED:
+    if platform in _EXPLICIT_DISABLE_WARNED or _STATUS_READ.get():
         return
     _EXPLICIT_DISABLE_WARNED.add(platform)
     names = _enable_credential_names(platform)
@@ -241,7 +250,7 @@ def _configured_plugin_entries(config: GatewayConfig) -> list:
         return []
 
 
-def _bundled_env_fallbacks(config: GatewayConfig, entries: list) -> list:
+def _bundled_env_fallbacks(config: GatewayConfig, entries: list, *, only: Optional[Platform] = None) -> list:
     """Env rows of bundled platforms with activation evidence but no registry entry (discovery
     suppressed or the plugin disabled), read from their ``gateway_env`` files; see
     ``gateway.platform_env.bundled_env_rows``. They only run the env steps, never the enable pass."""
@@ -249,7 +258,10 @@ def _bundled_env_fallbacks(config: GatewayConfig, entries: list) -> list:
     from gateway.platform_activation import activation_predicate
     from gateway.platform_env import _BUNDLED_ENV_SIBLINGS, bundled_env_rows
     have = {getattr(e, "name", "") for e in entries}
-    names = (set(Platform._scan_bundled_plugin_platforms()[0]) | set(_BUNDLED_ENV_SIBLINGS)) - have
+    if only is not None:  # bundled_env_rows() answers for one name without scanning every manifest
+        names = {only.value} - have
+    else:
+        names = (set(Platform._scan_bundled_plugin_platforms()[0]) | set(_BUNDLED_ENV_SIBLINGS)) - have
     if not names:
         return []
     wanted = activation_predicate(yaml_cfg={}, platform_names=config.platforms)
@@ -325,7 +337,9 @@ def _relay(config: GatewayConfig) -> None:
     for platform, platform_config in config.platforms.items():
         if platform in skip or not platform_config.enabled:
             continue
-        if platform_config.extra.get("_enabled_explicit"):
+        if _STATUS_READ.get():
+            pass  # status reads repeat this on every poll
+        elif platform_config.extra.get("_enabled_explicit"):
             logger.warning(
                 "Relay connector is configured via GATEWAY_RELAY_URL; "
                 "disabling directly-connected platform '%s' even though "
@@ -349,18 +363,83 @@ def _scrub_explicit_markers(config: GatewayConfig) -> None:
         platform_config.extra.pop("_enabled_explicit", None)
 
 
-def _apply_env_overrides(config: GatewayConfig) -> None:
+def _apply_env_overrides(config: GatewayConfig, *, only: Optional[Platform] = None) -> None:
     """Apply environment variable overrides to *config*.
 
     Order: plugin platforms' declared env rows, then the core-only rows (api_server, webhook,
     msgraph_webhook; each touches only its own platform), then the registry enable pass, relay
     disabling (needs every platform's final ``enabled``), and the marker scrub, which must be last.
+    ``only`` limits the plugin passes to that built-in platform's own entry and bundled env rows
+    (no per-call manifest scan; see ``builtin_platform_status``).
     """
-    entries = _configured_plugin_entries(config)
-    _apply_plugin_env_overrides(config, entries + _bundled_env_fallbacks(config, entries))
+    if only is None:
+        entries = _configured_plugin_entries(config)
+    else:
+        entry = _discovered_registry_entry(only)
+        entries = [entry] if entry is not None else []
+    _apply_plugin_env_overrides(config, entries + _bundled_env_fallbacks(config, entries, only=only))
     _api_server(config)
     _webhook(config)
     _msgraph_webhook(config)
     _enable_plugin_platforms_from_env(config, entries)
     _relay(config)
     _scrub_explicit_markers(config)
+
+
+def builtin_platform_status(platform_id: str, yaml_cfg: dict) -> Optional[tuple[bool, bool]]:
+    """``(enabled, connected)`` as the gateway decides them for one built-in platform of the profile
+    whose config.yaml is *yaml_cfg*, with env read through the bound secret scope; None for a
+    plugin-only id.
+
+    For judging one platform of a profile that is not the process's own (the dashboard's Channels
+    page): ``load_gateway_config()`` there enumerates that profile's platform plugins and constructs
+    ``Platform(<plugin id>)`` for them, process-wide pseudo-members every other profile then sees.
+    So only this platform's and the relay's blocks (the relay can disable it) go through the
+    loader's own steps (section merge, administrator-pinned keys, top-level bridge; see
+    ``load_yaml_layer``), which also record an explicit ``enabled`` for the env pass. The env pass's
+    logs and one-time warnings are held back.
+    """
+    if platform_id not in _BUILTIN_PLATFORM_VALUES:
+        return None
+    from gateway.config_loader import (
+        _apply_managed_extra, bridge_platform_shared_keys, merge_platform_sections, snapshot_authored_extra,
+    )
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    platform = Platform(platform_id)
+    names = {platform_id, Platform.RELAY.value}
+    top, nested = _platform_layers(yaml_cfg, names)
+    platforms = merge_platform_sections(top, nested, gw_data={})
+    authored = snapshot_authored_extra(platforms)  # no gateway.json layer here: the merge is config.yaml only
+    managed_top, managed_nested = _platform_layers(apply_managed_overlay({}), names)
+    _apply_managed_extra(authored, {**managed_top, "gateway": managed_nested}, platforms)
+    bridge_platform_shared_keys(top, nested["platforms"], {}, platforms, [platform, Platform.RELAY], authored=authored)
+    for block in platforms.values():
+        block.pop("home_channel", None)  # status needs none; HomeChannel.from_dict can raise or name another platform
+    config = GatewayConfig.from_dict({"platforms": platforms})
+    token = _STATUS_READ.set(True)
+    try:
+        _apply_env_overrides(config, only=platform)
+        platform_config = config.platforms.get(platform)
+        if platform_config is None:
+            return False, False
+        return bool(platform_config.enabled), config._is_platform_connected(platform, platform_config)
+    finally:
+        _STATUS_READ.reset(token)
+
+
+def _platform_layers(yaml_cfg: dict, names: set) -> tuple[dict, dict]:
+    """*yaml_cfg*'s platform blocks for *names* only, as the loader's two inputs: the root layer
+    (``platforms.<id>`` and top-level ``<id>:``) and the ``gateway:`` layer."""
+    gateway_section = yaml_cfg.get("gateway") if isinstance(yaml_cfg.get("gateway"), dict) else {}
+    top = {"platforms": _only_keys(yaml_cfg.get("platforms"), names), **_only_keys(yaml_cfg, names)}
+    nested = {"platforms": _only_keys(gateway_section.get("platforms"), names), **_only_keys(gateway_section, names)}
+    return top, nested
+
+
+def _only_keys(section, names: set) -> dict:
+    """Copies of *section*'s entries named in *names* (no others reach the loader's ``Platform(key)``
+    probes, and the merge and bridge, which write into blocks they reuse, never touch the caller's)."""
+    if not isinstance(section, dict):
+        return {}
+    return {key: copy.deepcopy(value) for key, value in section.items() if key in names}

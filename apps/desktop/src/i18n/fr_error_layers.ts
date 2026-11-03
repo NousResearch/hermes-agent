@@ -9,7 +9,7 @@ export const frErrorLayers: Pick<ThreadCopy, 'errorLayerBodies' | 'errorLayers'>
     billing: 'Crédits épuisés',
     disk: 'Disque plein',
     endpoint: 'Erreur du point de terminaison personnalisé',
-    gateway: 'Erreur du gateway',
+    gateway: "Impossible d'envoyer votre message",
     generic: 'Échec du tour',
     provider: 'Erreur du fournisseur',
     runtime: "Erreur d'exécution locale",

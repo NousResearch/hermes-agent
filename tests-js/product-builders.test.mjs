@@ -514,6 +514,8 @@ test('Webapp builds install privately and never disturb the native Desktop insta
     installs.push(options.install)
     expect(options.source).toBe(workspace)
     expect(options.env.npm_config_ignore_scripts).toBe('true')
+    // The browser bundle never runs Electron, so its binary is never downloaded.
+    expect(options.electron).toBe(false)
     // npm ci validates the whole locked graph, not only the compiled workspaces.
     expect(existsSync(path.join(workspace, 'web/package.json'))).toBe(true)
     if (!existsSync(path.join(workspace, 'node_modules/vite'))) dependency(workspace, '', 'vite')

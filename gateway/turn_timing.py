@@ -49,11 +49,12 @@ def start_handler_timing(event) -> None:
     event._turn_timing = TurnTiming(handler_start=time.monotonic())
 
 
-def finish_agent_timing(event, result, ended) -> None:
+def finish_agent_timing(event, result, ended) -> float:
     timing = getattr(event, "_turn_timing", None)
     if timing is not None:
         timing.agent_end = ended
         timing.agent_fields = result.get("turn_timing") or {}
+    return ended
 
 
 async def timed_hygiene(event, call, *args):

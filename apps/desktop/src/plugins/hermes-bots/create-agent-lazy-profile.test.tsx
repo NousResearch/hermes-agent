@@ -209,6 +209,27 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(1)
   })
 
+  it('saves the SOUL edited after the Capabilities tab created the profile', async () => {
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(mocks.skillsView.at(-1)).toMatchObject({ fixedProfile: 'inbox-triage' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'General' }))
+    fireEvent.change(screen.getByPlaceholderText(/Leave blank to auto-generate/), {
+      target: { value: 'You triage the inbox tersely.' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() =>
+      expect(mocks.request).toHaveBeenCalledWith('profiles.configure', {
+        name: 'inbox-triage',
+        soul: expect.stringContaining('You triage the inbox tersely.')
+      })
+    )
+    expect(createCalls()).toHaveLength(1)
+  })
+
   it('creates it once a name is typed AFTER the Capabilities tab was opened nameless', async () => {
     await renderDialog(true)
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: '' } })

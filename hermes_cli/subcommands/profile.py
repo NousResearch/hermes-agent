@@ -48,6 +48,14 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="One- or two-sentence description of what this profile is good at. "
              "Used by the kanban decomposer to route tasks based on role instead "
              "of profile name alone. Skip and add later via `hermes profile describe`.")
+    profile_create.add_argument(
+        "--from-prompt", metavar="TEXT", default=None,
+        help="Describe the bot in plain words: the auxiliary model drafts its title, description "
+             "and a sectioned SOUL.md (suggesting only skills/toolsets/MCP installed here), shows "
+             "the draft and asks before creating anything")
+    profile_create.add_argument(
+        "-y", "--yes", action="store_true",
+        help="With --from-prompt: create without the confirmation prompt (required when not a TTY)")
 
     profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
     profile_delete.add_argument("profile_name", help="Profile to delete")

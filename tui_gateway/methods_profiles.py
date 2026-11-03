@@ -12,6 +12,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 # ext -> mime; iteration order is the on-disk lookup order for assets.
 _ASSET_EXTS = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
@@ -354,33 +355,39 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
-        from agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
-        from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
-        disabled = {s.lower() for s in get_disabled_skills(cfg)}
-        skills_root = profile_dir / "skills"
-        installed = [
-            {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
-        toolsets_out, pinned_set = _describe_toolsets(cfg)
+        caps = _profile_capabilities(profile_dir, cfg)
         soul_path = profile_dir / "SOUL.md"
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
-        mcp_cfg = cfg.get("mcp_servers")
-        mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
-             "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
-            for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
-            if isinstance(entry, dict)
-        ], []) if isinstance(mcp_cfg, dict) else []
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
         return _ok(rid, {
             "name": name, "description": str(meta.get("description") or ""), "soul": soul,
             "model": {"provider": str(model_cfg.get("provider") or ""),
-                      "default": str(model_cfg.get("default") or "")},
-            "skills": installed, "toolsets": toolsets_out,
-            "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
+                      "default": str(model_cfg.get("default") or "")}, **caps})
+
+
+def _profile_capabilities(profile_dir, cfg) -> dict:
+    """Installed skills, toolsets and MCP servers with their ``enabled`` flags, as the editor shows
+    them. Call under ``profile_dir``'s scope (``cfg`` is its loaded config)."""
+    from agent.skill_utils import iter_skill_index_files
+    from hermes_cli.skills_config import get_disabled_skills
+    disabled = {s.lower() for s in get_disabled_skills(cfg)}
+    skills_root = profile_dir / "skills"
+    installed = [
+        {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
+        for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
+    toolsets_out, pinned_set = _describe_toolsets(cfg)
+    mcp_cfg = cfg.get("mcp_servers")
+    mcp_out = _try(lambda: [
+        {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
+         "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
+        for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
+        if isinstance(entry, dict)
+    ], []) if isinstance(mcp_cfg, dict) else []
+    return {"skills": installed, "toolsets": toolsets_out, "toolsets_pinned": pinned_set is not None,
+            "mcp_servers": mcp_out}
 
 
 @_profile_handler("profiles.configure", 5064)
@@ -407,6 +414,60 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied,
                      **({"confirm_required": True, "confirm_message": confirm_message}
                         if confirm_message is not None else {})})
+
+
+def _saved_draft_base(name, profile_dir) -> dict:
+    """An existing profile as a draft (edit mode): what ``profiles.draft`` revises and diffs
+    against — identity, the whole saved SOUL.md and the capabilities enabled now."""
+    split_soul = _lazy("hermes_cli.profile_draft", "split_soul")
+    soul_path = profile_dir / "SOUL.md"
+    soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
+    meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
+    ui_meta = _read_profile_yaml(profile_dir).get("ui_meta")
+    title = (_bots_title(ui_meta) if isinstance(ui_meta, dict) else None) or meta.get("display_name") or ""
+    with _hermes_home_scope(profile_dir):
+        caps = _profile_capabilities(profile_dir, _lazy("hermes_cli.config", "load_config")() or {})
+    enabled = {kind: [row["name"] for row in caps[kind] if row["enabled"]]
+               for kind in ("skills", "toolsets", "mcp_servers")}
+    return {"name": name, "title": str(title), "description": str(meta.get("description") or ""),
+            "soul": soul, "sections": split_soul(soul), **enabled}
+
+
+@method("profiles.draft")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Draft a bot from a description on the auxiliary model — writes nothing (the dialog saves
+    through ``profiles.create`` / ``profiles.configure``). Runs in the caller's profile scope so
+    the aux call bills that profile; the catalog is built under the target profile's scope. In
+    edit mode ``soul`` is the saved SOUL.md with only the changed sections rewritten."""
+    from hermes_cli import profile_draft
+    from hermes_cli.profiles import get_profile_dir
+    previous = None
+    current = params.get("current") if isinstance(params.get("current"), dict) else None
+    if str(params.get("name") or "").strip():
+        name, profile_dir, err = _resolve_profile(rid, params)
+        if err is not None:
+            return err
+        previous = _saved_draft_base(name, profile_dir)
+        current = current or previous
+    else:
+        try:
+            profile_dir = Path(get_profile_dir(str(params.get("source") or "default").strip() or "default"))
+        except ValueError as e:
+            return _err(rid, 4064, str(e))
+    with _hermes_home_scope(profile_dir):
+        catalog = profile_draft.build_catalog(profile_dir)
+    draft = profile_draft.draft_profile(
+        str(params.get("description") or ""), catalog=catalog,
+        current=current, note=str(params.get("note") or ""), only=str(params.get("only") or "").strip())
+    out = draft.to_wire()
+    if previous is not None:
+        out["previous"] = {**{k: previous[k] for k in ("title", "description", "soul", *profile_draft.CAPABILITY_KINDS)},
+                           "sections": [{"key": k, "title": t, "text": previous["sections"].get(k, "")}
+                                        for k, t in profile_draft.SECTIONS]}
+        if draft.ok:
+            out["soul"] = profile_draft.merge_sections(previous["soul"], draft.sections)
+    return _ok(rid, out)
 
 
 @_profile_handler("profiles.set_asset", 5065)

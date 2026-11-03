@@ -57,6 +57,7 @@ import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import type { CanonicalGroupRoute } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
+import { DraftPanel } from './draft-panel'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
@@ -79,6 +80,7 @@ import type {
   ProfileDescribeResponse
 } from './profile-config'
 import { CapabilitiesView, capabilitiesViewRoutesConnections, CheckList } from './profile-config'
+import { applyDraftCapabilities, type ProfileDraftResult, reviewedSoul } from './profile-draft'
 import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { HubSkillsSection } from './skills-hub'
@@ -158,12 +160,115 @@ function capabilityPayload(
   return payload
 }
 
+/** What a new bot WILL have: `source`'s skills / toolsets plus the full MCP
+ *  menu — the profile's configured servers and the bundled (installable)
+ *  catalog; configured entries win on name clash. */
+async function fetchCapabilityCatalog(
+  request: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
+  source: string
+): Promise<CapabilityCatalog> {
+  const [res, cat] = await Promise.all([
+    request<ProfileDescribeResponse>('profiles.describe', { name: source }),
+    request<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
+  ])
+
+  const configured = res.mcp_servers || []
+  const have = new Set(configured.map(m => m.name))
+  const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+
+  return {
+    source,
+    skills: res.skills || [],
+    toolsets: res.toolsets || [],
+    mcp: [
+      ...configured,
+      ...catalog.map(s => ({
+        name: s.name,
+        enabled: false,
+        fromCatalog: true,
+        installed: s.installed,
+        auth: s.auth,
+        requires: s.requires || [],
+        description: s.description || ''
+      }))
+    ]
+  }
+}
+
+/** "Create on": WHERE the new bot lives, plus the remote-target hint. Hidden
+ *  on single-connection setups — the active gateway is the only possible
+ *  home, exactly the old behavior. */
+function ConnectionSelect({
+  active,
+  connections,
+  onChange,
+  remoteLabel,
+  target
+}: {
+  active: string
+  connections: ConnectionRow[] | null
+  onChange: (value: string) => void
+  /** The picked remote connection's label; '' when the target is this gateway. */
+  remoteLabel: string
+  target: string
+}) {
+  const b = useBots()
+  const current = active || 'local'
+
+  if (!Array.isArray(connections) || connections.length <= 1) {
+    return null
+  }
+
+  return (
+    <>
+      {labeled(
+        b.editor.createOn,
+        <Select onValueChange={onChange} value={target || current}>
+          <SelectTrigger className="h-8 rounded-md">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {connections.map(connection => (
+              <SelectItem key={connection.id} value={connection.id}>
+                {connection.id === current
+                  ? b.editor.currentConnection(connection.label || connection.id)
+                  : connection.label || connection.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {remoteLabel ? (
+        <div className="text-[0.7rem] leading-5 text-(--ui-text-tertiary)">{b.editor.remoteHint(remoteLabel)}</div>
+      ) : null}
+    </>
+  )
+}
+
 /** Gateway RPC on a create target: `target` is a registry connection id (its
  *  default backend, no gateway switch) or '' for the active gateway. */
 function requestOnTarget<T>(target: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
   return target
     ? host.requestProfile({ connectionId: target, mode: 'remote', profile: 'default', targetProfile: 'default' }, method, params)
     : host.request(method, params)
+}
+
+/** Rewrite a created profile's SOUL.md; throws `failed` when the gateway reports the write failed
+ *  (`profiles.configure` resolves with `applied.soul: false` rather than rejecting). */
+async function writeSoul(
+  request: <T>(method: string, params?: Record<string, unknown>) => Promise<T>,
+  name: string,
+  soul: string,
+  failed: string
+) {
+  const saved = await request<null | { applied?: Record<string, boolean>; ok?: boolean }>('profiles.configure', {
+    name,
+    soul
+  })
+
+  if (saved?.ok === false || saved?.applied?.soul === false) {
+    throw new Error(failed)
+  }
 }
 
 /** Delete a draft profile the New Agent dialog minted, on the `target` it was
@@ -259,6 +364,9 @@ function useDraftProfile(
 ) {
   const draftGenRef = useRef(0)
   const draftTargetRef = useRef('')
+  // The SOUL.md the draft was created with: Create rewrites it when the
+  // identity was edited or regenerated after an early (Capabilities) create.
+  const createdSoulRef = useRef('')
 
   const discardDraft = () => {
     const draft = createdRef.current
@@ -277,7 +385,7 @@ function useDraftProfile(
     []
   )
 
-  return { discardDraft, draftGenRef, draftTargetRef }
+  return { createdSoulRef, discardDraft, draftGenRef, draftTargetRef }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
@@ -293,7 +401,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
-  const { discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
+  const { createdSoulRef, discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -306,6 +414,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
+  const [draft, setDraft] = useState<null | ProfileDraftResult>(null)
   const [noSkills, setNoSkills] = useState(false)
   const [shareAuth, setShareAuth] = useState(true)
   const [advTab, setAdvTab] = useState('general')
@@ -395,6 +504,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     setModel('')
     setProvider('')
     setSoul('')
+    setDraft(null)
     setNoSkills(false)
     setShareAuth(true)
     setAdvTab('general')
@@ -433,36 +543,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       return
     }
 
-    Promise.all([
-      requestForTarget<ProfileDescribeResponse>('profiles.describe', {
-        name: capSource
-      }),
-      requestForTarget<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
-    ])
-      .then(([res, cat]) => {
-        // Full MCP menu = the profile's configured servers + the bundled
-        // catalog (installable). Configured entries win on name clash.
-        const configured = res.mcp_servers || []
-        const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
-        setCaps({
-          source: capSource,
-          skills: res.skills || [],
-          toolsets: res.toolsets || [],
-          mcp: [
-            ...configured,
-            ...catalog.map(s => ({
-              name: s.name,
-              enabled: false,
-              fromCatalog: true,
-              installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
-            }))
-          ]
-        })
-      })
+    fetchCapabilityCatalog(requestForTarget, capSource)
+      .then(setCaps)
       .catch(() => setCapsFailed(true))
   }
 
@@ -487,6 +569,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         : prev
     )
   }
+
+  const soulForCreate = () =>
+    composeSoul({
+      name: slug,
+      title: botTitle,
+      description,
+      roster,
+      customSoul: reviewedSoul(soul, draft, botTitle, slug)
+    })
 
   // Materialize the profile exactly once. createdRef stores the finished slug
   // (its consumers — the taken check, draft discard on cancel, the MCP setup
@@ -514,6 +605,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
     const generation = draftGenRef.current
     const target = createTarget
+    const soulText = soulForCreate()
 
     const flight = singleFlight(flightRef, async () => {
       await requestForTarget('profiles.create', {
@@ -529,13 +621,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // profile, so refreshes can't invalidate each other. Older gateways
         // ignore the param and copy — still functional, just forked.
         share_auth: shareAuth,
-        soul: composeSoul({
-          name: slug,
-          title: botTitle,
-          description,
-          roster,
-          customSoul: soul
-        }),
+        soul: soulText,
         ...(model.trim() && provider.trim()
           ? {
               model: model.trim(),
@@ -558,6 +644,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       }
 
       createdRef.current = slug
+      createdSoulRef.current = soulText
       draftTargetRef.current = target
 
       // Apply capability picks from the Advanced tabs (best-effort; the
@@ -571,6 +658,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
             ...capPayload
           })
         }
+
+        await applyDraftCapabilities(requestForTarget, slug, draft)
       } catch {
         /* capability application is best-effort */
       }
@@ -634,6 +723,19 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     return flight
   }
 
+  const pickTarget = (value: string) => {
+    // A draft minted on the old home is not this bot anymore.
+    discardDraft()
+    setCreatedForCaps(null)
+    setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
+    // The capability catalog and clone list belong to the target backend —
+    // refetch for the new home. The live Capabilities tab re-pins to it via
+    // fixedConnection on builds that route it (staged checklists otherwise).
+    setCaps(null)
+    setCapsFailed(false)
+    setAdvTab('general')
+  }
+
   const submit = async () => {
     if (!valid || taken || busy) {
       return
@@ -650,6 +752,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         setError(b.bot.createFailed)
 
         return
+      }
+
+      // Created earlier for the Capabilities tab / MCP setup: save the
+      // identity reviewed since then, or the bot keeps the older SOUL.md.
+      const latestSoul = soulForCreate()
+
+      if (latestSoul !== createdSoulRef.current) {
+        await writeSoul(requestForTarget, slugCreated, latestSoul, b.editor.sectionsFailed('soul'))
+        createdSoulRef.current = latestSoul
       }
 
       // The intro turn is a real model call. Probe the new profile's route
@@ -761,6 +872,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           <DialogDescription>{b.editor.newDescription}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
+          <DraftPanel
+            draft={draft}
+            identity={{ setDescription, setName, setTitle }}
+            onDraft={setDraft}
+            request={requestForTarget}
+            source={capSource}
+          />
           <div className="flex justify-center py-1">
             <BotFace
               color={avatarColor(color, slug || 'agent')}
@@ -795,43 +913,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           {/* Multi-connection desktops choose WHERE the agent lives. Hidden */
           /* on single-connection setups — the active gateway is the only */
           /* possible home, exactly the old behavior. */}
-          {Array.isArray(connections) && connections.length > 1
-            ? labeled(
-                b.editor.createOn,
-                <Select
-                  onValueChange={value => {
-                    // A draft minted on the old home is not this bot anymore.
-                    discardDraft()
-                    setCreatedForCaps(null)
-                    setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
-                    // The capability catalog and clone list belong to the
-                    // target backend — refetch for the new home. The live
-                    // Capabilities tab re-pins to it via fixedConnection on
-                    // builds that route it (staged checklists otherwise).
-                    setCaps(null)
-                    setCapsFailed(false)
-                    setAdvTab('general')
-                  }}
-                  value={targetConnection || activeConnectionId || 'local'}
-                >
-                  <SelectTrigger className="h-8 rounded-md">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {connections.map(connection => (
-                      <SelectItem key={connection.id} value={connection.id}>
-                        {connection.id === (activeConnectionId || 'local')
-                          ? b.editor.currentConnection(connection.label || connection.id)
-                          : connection.label || connection.id}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )
-            : null}
-          {remoteTarget ? (
-            <div className="text-[0.7rem] leading-5 text-(--ui-text-tertiary)">{b.editor.remoteHint(targetLabel)}</div>
-          ) : null}
+          <ConnectionSelect
+            active={activeConnectionId}
+            connections={connections}
+            onChange={pickTarget}
+            remoteLabel={targetLabel}
+            target={targetConnection}
+          />
           {labeled(
             b.editor.title,
             <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />

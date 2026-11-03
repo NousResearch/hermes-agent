@@ -314,6 +314,65 @@ method("profiles.configure", params=ProfilesConfigureParams, result=ProfilesConf
        doc="Editor Save: apply any subset of a profile's sections and report each one.")
 
 
+class ProfileDraftSection(Result):
+    key: str
+    title: str
+    text: str = ""
+
+
+class ProfileDraftDropped(Result):
+    kind: str
+    name: str
+
+
+class ProfilesDraftParams(ProfileParams):
+    """``description`` = what the bot should be (or, with ``name``, the change to make). ``name``
+    = an existing profile to revise (edit mode); ``source`` = the profile whose installed skills
+    and MCP servers form the catalog for a new bot (default ``default``). ``current`` + ``note``
+    + ``only`` regenerate one part of an unsaved draft."""
+
+    description: str | None = None
+    name: str | None = None
+    source: str | None = None
+    current: dict[str, JsonValue] | None = None
+    note: str | None = None
+    only: str | None = None
+
+
+class ProfileDraftPrevious(Result):
+    title: str = ""
+    description: str = ""
+    soul: str = ""
+    sections: list[ProfileDraftSection] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    toolsets: list[str] = Field(default_factory=list)
+    mcp_servers: list[str] = Field(default_factory=list)
+
+
+class ProfilesDraftResult(Result):
+    """Nothing is written. ``dropped`` = suggested names absent from the target's catalog;
+    ``previous`` (edit mode) = the saved profile the draft is compared against, and ``soul`` is
+    that saved SOUL.md with only the changed sections rewritten."""
+
+    ok: bool
+    reason: str = ""
+    name: str = ""
+    title: str = ""
+    description: str = ""
+    soul: str = ""
+    sections: list[ProfileDraftSection] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+    toolsets: list[str] = Field(default_factory=list)
+    mcp_servers: list[str] = Field(default_factory=list)
+    dropped: list[ProfileDraftDropped] = Field(default_factory=list)
+    previous: ProfileDraftPrevious | None = None
+
+
+method("profiles.draft", params=ProfilesDraftParams, result=ProfilesDraftResult,
+       doc="Draft a bot (name, title, description, sectioned SOUL, catalog-checked capabilities) "
+           "from a description via the auxiliary model; writes nothing.")
+
+
 class ProfilesSetAssetParams(ProfileParams):
     """``data`` is a data URL or bare base64 (PNG/JPEG/WebP, sniffed); ``clear`` deletes instead."""
 

@@ -1,17 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { mutateSessionHttp } from '@/api/sessions'
 import type { SessionInfo } from '@/hermes'
+import { sessionPinId } from '@/store/session'
 
 import { sessionRowKey } from './simplified-session-identity'
 
-type PinWrite = { value: boolean; expiresAt: number | null }
+type PinWrite = { row: SessionInfo; value: boolean; expiresAt: number | null }
 
 /** Keep acknowledged pins visible while older list requests finish. */
 export function useSimplifiedPinWrites(owner: string | null, refresh: () => void | Promise<void>) {
   const [writes, setWrites] = useState<ReadonlyMap<string, PinWrite>>(new Map())
   const inflight = useRef(new Set<string>())
-  const keyFor = (row: SessionInfo) => sessionRowKey({ ...row, connection_id: row.connection_id || owner || undefined })
+
+  const keyFor = (row: SessionInfo) =>
+    sessionRowKey({ ...row, connection_id: row.connection_id || owner || undefined }, sessionPinId(row))
+
+  const rows = useMemo(
+    () => [...writes.values()].map(write => write.row).filter(row => row.connection_id || owner === null),
+    [writes, owner]
+  )
 
   useEffect(() => {
     const now = Date.now()
@@ -51,8 +59,9 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
     }
 
     const previous = writes.get(key)
+    const capturedRow = { ...row, connection_id: row.connection_id || owner || undefined }
     inflight.current.add(key)
-    setWrites(current => new Map(current).set(key, { value, expiresAt: null }))
+    setWrites(current => new Map(current).set(key, { row: capturedRow, value, expiresAt: null }))
 
     try {
       await mutateSessionHttp(
@@ -82,11 +91,12 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
     }
 
     // Hold through late list pages, then let server state win (same 10s window as classic pins).
-    setWrites(current => new Map(current).set(key, { value, expiresAt: Date.now() + 10_000 }))
+    setWrites(current => new Map(current).set(key, { row: capturedRow, value, expiresAt: Date.now() + 10_000 }))
     await refresh()
   }
 
   return {
+    rows,
     setPinned,
     value: (row: SessionInfo) => writes.get(keyFor(row))?.value,
     pending: (row: SessionInfo) => writes.get(keyFor(row))?.expiresAt === null

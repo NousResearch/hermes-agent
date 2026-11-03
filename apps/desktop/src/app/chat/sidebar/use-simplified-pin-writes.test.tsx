@@ -121,3 +121,15 @@ it('restores the last acknowledged pin if a quick unpin fails before the list ca
   expect(result.current.value(row)).toBe(true)
   expect(simplifiedPins([row], [], new Set(), result.current.value)).toHaveLength(1)
 })
+
+it('keeps a pin attached to the same conversation after compression replaces its session id', async () => {
+  vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({ ok: true })
+  const { result } = renderHook(() => useSimplifiedPinWrites('gateway-a', vi.fn()))
+  await act(async () => {
+    await result.current.setPinned(row, true)
+  })
+  const compressed = { ...row, id: 'new-tip', _lineage_root_id: row.id }
+  expect(result.current.value(compressed)).toBe(true)
+  expect(result.current.value({ ...compressed, profile: 'other' })).toBeUndefined()
+  expect(result.current.rows[0].connection_id).toBe('gateway-a')
+})

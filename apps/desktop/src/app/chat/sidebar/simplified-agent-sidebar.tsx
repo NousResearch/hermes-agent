@@ -22,7 +22,8 @@ import {
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoadError,
-  $sessionsLoading
+  $sessionsLoading,
+  sessionPinId
 } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
@@ -35,7 +36,7 @@ import { SimplifiedNewSession } from './simplified-new-session'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
-import { useSimplifiedAgents } from './use-simplified-agents'
+import { useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
 import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
 import { useSimplifiedSessionSearch } from './use-simplified-session-search'
 
@@ -43,6 +44,8 @@ import type { ChatSidebar } from './index'
 
 export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>) {
   const { t } = useI18n()
+  const owner = useSimplifiedOwner()
+  const pinWrites = useSimplifiedPinWrites(owner, props.onRetrySessions)
   const sessions = useStore($sessions)
   const messaging = useStore($messagingSessions)
   const cron = useStore($cronSessions)
@@ -62,13 +65,19 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
 
   const all = useMemo(
     () =>
-      [...new Map([...cron, ...messaging, ...sessions].map(row => [sessionRowKey(row), row])).values()]
+      [
+        ...new Map(
+          [...pinWrites.rows, ...cron, ...messaging, ...sessions]
+            .map(row => ({ ...row, connection_id: row.connection_id || owner || undefined }))
+            .map(row => [sessionRowKey(row, sessionPinId(row)), row])
+        ).values()
+      ]
         .filter(row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row)))
         .sort((a, b) => (b.last_active ?? b.started_at) - (a.last_active ?? a.started_at)),
-    [sessions, messaging, cron, removed]
+    [sessions, messaging, cron, removed, pinWrites.rows, owner]
   )
 
-  const matches = (row: (typeof all)[number]) =>
+  const matches = (row: SessionInfo) =>
     !query.trim() ||
     sessionMatchesSearch(row, query.trim()) ||
     (row.profile ?? 'default').toLowerCase().includes(query.trim().toLowerCase())
@@ -84,7 +93,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   )
 
   const agents = useSimplifiedAgents(rows)
-  const pinWrites = useSimplifiedPinWrites(agents.owner, props.onRetrySessions)
   const pinned = simplifiedPins(all, pinIds, unconfirmed, pinWrites.value)
   const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))
 
@@ -216,7 +224,12 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           searching={Boolean(query.trim())}
         />
         {loading && rows.length === 0 && <SidebarSessionSkeletons />}
-        {!loading && rows.length === 0 && (
+        {query.trim() && search.pending && (
+          <p className="px-2 py-3 text-xs text-(--ui-text-tertiary)" role="status">
+            {t.common.loading}
+          </p>
+        )}
+        {!loading && !search.pending && !search.failed && rows.length === 0 && (
           <p className="px-2 py-3 text-xs text-(--ui-text-tertiary)">
             {query ? t.sidebar.noMatch(query) : t.sidebar.noSessions}
           </p>

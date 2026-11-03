@@ -109,6 +109,13 @@ runs:
     - name: Cache verified PM tools
       id: tools-cache
       if: inputs.cache == 'true' && inputs.save-tools-cache == 'true'
+      # Git for Windows' etc/mtab is a Cygwin system-file symlink (a 38-byte
+      # file). actions/cache restores through Git's MSYS tar, which by default
+      # writes it back as a WSL reparse point that Python cannot open, so PM's
+      # digest check failed and every Windows job re-extracted Git (~21s).
+      # winsymlinks:sys restores the same system-file bytes PM recorded.
+      env:
+        MSYS: winsymlinks:sys
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.prepare.outputs.store }}
@@ -117,6 +124,9 @@ runs:
     - name: Restore verified PM tools without saving
       id: tools-cache-restore
       if: inputs.cache == 'true' && inputs.save-tools-cache == 'false'
+      # MSYS: see "Cache verified PM tools" above.
+      env:
+        MSYS: winsymlinks:sys
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.prepare.outputs.store }}

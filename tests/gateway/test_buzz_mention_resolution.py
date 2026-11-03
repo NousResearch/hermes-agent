@@ -332,6 +332,7 @@ class TestSendRecovery:
 
 CHIP_SALES_PUBKEY = "e" * 64
 SENDER_PUBKEY = "a" * 64
+CHIP_ING_PUBKEY = "f" * 64
 
 
 class TestLongerMemberNameMention:
@@ -433,3 +434,37 @@ class TestLongerMemberNameMention:
         }
         await adapter._handle_events(CHANNEL, adapter._channel_state[CHANNEL], [event])
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    def _two_longer_members(self, adapter):
+        cli = adapter._cli
+        cli.responses[("channels", "members")] = [(0, json.dumps(_members(SELF_PUBKEY, CHIP_SALES_PUBKEY, CHIP_ING_PUBKEY)), "")]
+        cli.script("users", "get", _profile(CHIP_ING_PUBKEY, "Chip Ing"))
+
+    @pytest.mark.asyncio
+    async def test_two_longer_names_do_not_wake_agent(self, adapter):
+        self._two_longer_members(adapter)
+        await self._poll(adapter, "@Chip Sales y @Chip Ing hola")
+        assert adapter._dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_bare_mention_after_two_longer_names_dispatches_intact(self, adapter):
+        self._two_longer_members(adapter)
+        await self._poll(adapter, "@Chip Sales, @Chip Ing y @Chip")
+        assert [d["text"] for d in adapter._dispatched] == ["@Chip Sales, @Chip Ing y @Chip"]
+
+    @pytest.mark.asyncio
+    async def test_p_tag_to_self_still_wakes_on_longer_name(self, adapter):
+        await self._poll(adapter, "@Chip Sales hola", p_tags=[SELF_PUBKEY])
+        assert [d["text"] for d in adapter._dispatched] == ["@Chip Sales hola"]
+
+    @pytest.mark.asyncio
+    async def test_punctuation_only_suffix_is_not_a_longer_name(self, adapter):
+        adapter._cli.responses[("users", "get")] = [(0, json.dumps(_profile(CHIP_SALES_PUBKEY, "Chip,")), "")]
+        await self._poll(adapter, "@Chip, hola")
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+
+    @pytest.mark.asyncio
+    async def test_p_tags_outside_roster_are_not_looked_up(self, adapter):
+        await self._poll(adapter, "@Chip hola", p_tags=[CHIP_ING_PUBKEY])
+        assert [d["text"] for d in adapter._dispatched] == ["hola"]
+        assert not any(c[0][:2] == ["users", "get"] and CHIP_ING_PUBKEY in c[0] for c in adapter._cli.calls)

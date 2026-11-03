@@ -8,10 +8,11 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { forgetCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
 import { GroupMentionInput } from './group-chat-parts'
 import { RoomBotAvatar } from './group-room-avatar'
 import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './group-room-ui'
@@ -19,7 +20,7 @@ import { fill, ROOM_COMPOSER_INPUT_CLASS, RoomComposer, RoomReplyChip } from './
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomReply { member?: CanonicalRoomMember; name: string; quote: string; thread?: string }
-interface RoomState { room: CanonicalRoom; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: CanonicalRoom; context?: CanonicalRoomContext | null; driver_status?: CanonicalDriverActivity & { pending_actions?: CanonicalPendingAction[] } }
 
 const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[], thread?: string) =>
   payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments) &&
@@ -284,6 +285,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </RoomComposer>
       </div>
     </div>
-    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses} />}
+    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
+      <CanonicalGroupRoomSettings binding={binding} context={state.context} disabled={busy} onSaved={refresh} />
+    </CanonicalGroupDetails>}
   </section>
 }

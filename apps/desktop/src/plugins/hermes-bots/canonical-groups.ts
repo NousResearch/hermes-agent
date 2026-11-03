@@ -20,6 +20,16 @@ export interface CanonicalRoomMember {
   target?: Record<string, unknown>
 }
 
+export interface CanonicalRoomContext {
+  purpose: string
+  notes: string
+}
+
+/** The backend's cap on shared notes (UTF-8 bytes after trimming; `validate_context`). */
+export const MAX_ROOM_NOTES_BYTES = 4096
+
+export const roomNotesBytes = (notes: string) => new TextEncoder().encode(notes.trim()).length
+
 export interface CanonicalRoom {
   room_id: string
   name: string

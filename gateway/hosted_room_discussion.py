@@ -19,6 +19,7 @@ from agent.prompt_builder import CONTROL_FRAME_OPENERS
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
+from gateway.hosted_room_context import scheduled_post_kind, validate_context
 from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 
@@ -555,10 +556,21 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
     return tuple((*members[shift:], *members[:shift]))
 
 
+def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
+    """The job label of a scheduler-authored ``message.user`` event, else None (the human wrote it)."""
+    if event is None or event.kind != "message.user" or scheduled_post_kind(event.actor) is None:
+        return None
+    return str(event.actor.get("display_name") or event.actor.get("id"))
+
+
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
-    if event.kind == "message.user":
+    if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
         return f"User (user): {event.payload['text']}"
+    # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
+    # control-frame relabel as a member reply; only the human's own lines stay verbatim.
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+    if event.kind == "message.user":
+        return f'Scheduled job "{job}" (automated post, not the user): {text}'
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
 
@@ -571,17 +583,30 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
     return prefix + suffix if prefix else suffix.strip()
 
 
+def _context_lines(context: Mapping[str, str] | None) -> list[str]:
+    """Room purpose and shared notes, rendered inside the user-role turn prompt (never the system prompt)."""
+    lines: list[str] = []
+    if context and context.get("purpose"):
+        lines.append(f"Room purpose (set by the user): {context['purpose']}")
+    if context and context.get("notes"):
+        lines += ["Room notes (shared with every member; the user keeps them in room settings):",
+                  *(f"  {line}" for line in context["notes"].splitlines())]
+    return [*lines, ""] if lines else []
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
-    seen_through_seq: int, reply_required: bool = False) -> str:
+    seen_through_seq: int, reply_required: bool = False, context: Mapping[str, str] | None = None,
+    addressed_by_job: str | None = None) -> str:
     delta = [event for event in messages if watermark < event.seq <= seen_through_seq][- MAX_DISCUSSION_DELTA_LINES:]
     peers = ", ".join(f"@{candidate.handle}" for candidate in room.members if candidate.member_id != member.member_id)
     opening = [
         f'[Discussion: "{room.name}"] You are @{member.handle}, one participant '
-        f"with {peers or 'no other members'} and the user.", "",
+        f"with {peers or 'no other members'} and the user.", "", *_context_lines(context),
         "New messages in this thread since your last turn (oldest first):"]
     participation = [
-        "- The user directly addressed you. Reply with your answer, result, or concrete blocker.",
+        (f'- The scheduled job "{addressed_by_job}" addressed you. Reply with your answer, result, or concrete blocker.'
+         if addressed_by_job else "- The user directly addressed you. Reply with your answer, result, or concrete blocker."),
         '- Do not return "(pass)". If you cannot proceed, explain why and what you need from the user.',
     ] if reply_required else [
         "- Reply with one conversational message only when you have something new worth adding.",
@@ -722,14 +747,29 @@ def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
     return selected, attachments
 
 
+def _first_round_responders(discussion: _ValidatedEvent, room: DiscussionRoom) -> tuple[DiscussionMember, ...]:
+    """The human's message with no mention addresses everyone. A scheduled post is only a message in the
+    room: it pulls in exactly the members it @mentions, and a failure notice pulls in nobody."""
+    scheduled = scheduled_post_kind(discussion.actor)
+    if scheduled == "notice":
+        return ()
+    return resolve_mentions((str(discussion.payload["text"]),), room.members, default_all=scheduled is None)
+
+
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
     freeze_input_context: bool = False,
     limits: DiscussionLimits = DiscussionLimits(),
+    room_context: Mapping[str, Any] | None = None,
 ) -> DiscussionDecision:
-    """Replay the complete room log and return at most one next member task."""
+    """Replay the complete room log and return at most one next member task. ``room_context`` is the
+    purpose/notes in force when the pending discussion opened (``hosted_room_context.room_context``)."""
     room = validate_room(room_value, local_profiles=local_profiles)
+    try:
+        context = validate_context(**{key: (room_context or {}).get(key, "") for key in ("purpose", "notes")})
+    except ValueError as exc:
+        raise DiscussionValidationError(str(exc)) from exc
     validated = _validated_events(events, room=room)
     if (discussion := _pending_discussion(validated)) is None:
         return DiscussionDecision(status="idle", reason="no_pending_user_event")
@@ -751,7 +791,7 @@ def plan_next_task(
         # watermark remains intact, so a peer cited later still receives the
         # complete bounded transcript delta without consuming turns meanwhile.
         responders = (
-            resolve_mentions((str(discussion.payload["text"]),), room.members) if round_index == 0
+            _first_round_responders(discussion, room) if round_index == 0
             else _unaddressed_member_mentions(discussion_messages, room))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
@@ -761,7 +801,7 @@ def plan_next_task(
             seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
-                seen_through_seq=seen_through_seq,
+                seen_through_seq=seen_through_seq, context=context, addressed_by_job=_scheduled_job(discussion),
                 reply_required=_requires_direct_reply(room, discussion, member, round_index))
             return decide("task", "member_turn", task=_make_task_plan(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,

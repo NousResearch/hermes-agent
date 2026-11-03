@@ -174,3 +174,49 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
     prompt, injected = _inject_context_from(job, "Next task")
     assert injected and "OLDER COMPLETE ANSWER" in prompt
     assert "## Prompt" not in prompt
+
+
+class TestFailedAgentRunsFallThrough:
+    """A failed agent run (## Prompt then ## Error, no ## Response) has no answer to carry."""
+
+    def test_failed_run_archive_falls_through_to_older_answer(self, cron_env, monkeypatch, cron_owner):
+        import os
+        from cron.jobs import create_job, save_job_output, OUTPUT_DIR
+        from cron.scheduler_prompt import _inject_context_from
+
+        class FailingAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                raise RuntimeError("provider exploded")
+
+        job = create_job(prompt="RETIRED-SKILL-RULE never reply", schedule="0 8 * * *",
+                         context_from="self")
+        _write_archive(cron_env, job["id"], "older.md",
+                       "# Cron Job: probe\n\n## Prompt\n\nold\n\n## Response\n\nOLDER-REAL-ANSWER\n")
+        os.utime(OUTPUT_DIR / job["id"] / "older.md", (1, 1))
+        monkeypatch.setattr(run_agent, "AIAgent", FailingAgent)
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                            lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
+        success, archive, _final, _error = cron.scheduler.run_job(job)
+        assert not success and "## Error" in archive
+        save_job_output(job["id"], archive)
+
+        prompt, injected = _inject_context_from(job, "Next task")
+
+        assert injected and "OLDER-REAL-ANSWER" in prompt
+        assert "RETIRED-SKILL-RULE" not in prompt and "## Error" not in prompt
+
+    def test_failed_script_archive_stays_whole(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
+        _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md",
+                       "# Cron Job: probe\n\n**Job ID:** x\n**Run Time:** now\n**Mode:** no_agent (script)\n"
+                       "**Status:** script failed\n\n## Prompt\n\nSCRIPT-STDERR-QUOTING-A-HEADING\n")
+
+        prompt, injected = _inject_context_from(job, "Report")
+
+        assert injected and "SCRIPT-STDERR-QUOTING-A-HEADING" in prompt

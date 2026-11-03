@@ -77,6 +77,12 @@ _PROMPT_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
 _RESPONSE_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
+# ``cron.scheduler._run_doc_header``: the ``## Prompt`` heading straight after the
+# ``**Schedule:**`` line. Script-mode headers carry ``**Mode:**`` instead, so a
+# quoted heading in their payload never matches.
+_AGENT_RUN_HEADER_RE = re.compile(
+    rf"\A# Cron Job: [^\n]*\n\n(?:\*\*[^\n]*\n)*\*\*Schedule:\*\* [^\n]*\n\n"
+    rf"(?:{re.escape(_PROMPT_FRAME)}\d+\n)?{re.escape(_PROMPT_HEADING)}")
 
 
 def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
@@ -102,8 +108,9 @@ def _archive_answer(archive: str) -> str | None:
     quoting it), so an early split would re-inject the prompt noise this
     extraction exists to drop.
     ``None`` marks "no usable answer" — a blank or silent response (any form the
-    delivery lane itself suppresses) — so the caller falls through to an older
-    archive instead of injecting prompt noise the job already has.
+    delivery lane itself suppresses), or a failed agent run with no response at
+    all — so the caller falls through to an older archive instead of injecting
+    prompt noise the job already has.
     """
     # New writers stamp the prompt length outside user-owned text. Jump past
     # that prompt instead of searching its quoted markers for a response frame.
@@ -119,7 +126,10 @@ def _archive_answer(archive: str) -> str | None:
             return None
         answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
     elif "## Response" not in archive:
-        return archive.strip()
+        # An agent run that failed before answering keeps its prompt and an
+        # ``## Error`` section; re-injecting that prompt feeds the next run its
+        # own (possibly retired) instructions as if they were output.
+        return None if _AGENT_RUN_HEADER_RE.match(archive) else archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):

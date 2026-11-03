@@ -33,15 +33,19 @@ const mocks = vi.hoisted(() => {
     gatewayState: makeAtom<'closed' | 'open'>('closed'),
     getHermesConfigRecord: vi.fn(),
     notify: vi.fn(),
-    setMcpServerEnabled: vi.fn().mockResolvedValue({ ok: true }),
-    testMcpServer: vi.fn()
+    mcpStatus: vi.fn(),
+    setMcpServerEnabled: vi.fn().mockResolvedValue({ ok: true })
   }
 })
 
 vi.mock('@/hermes', () => ({
   getHermesConfigRecord: mocks.getHermesConfigRecord,
-  setMcpServerEnabled: mocks.setMcpServerEnabled,
-  testMcpServer: mocks.testMcpServer
+  setMcpServerEnabled: mocks.setMcpServerEnabled
+}))
+
+vi.mock('@/store/gateway', () => ({
+  requestGatewayForProfile: (_profile: string, method: string) =>
+    method === 'mcp.servers.status' ? mocks.mcpStatus() : Promise.reject(new Error(`unexpected ${method}`))
 }))
 
 vi.mock('@/i18n', () => ({
@@ -64,9 +68,23 @@ vi.mock('@/store/session', () => ({
 
 const { shouldNotify, startMcpHealthChecker, stopMcpHealthChecker } = await import('./mcp-health')
 
-type Status = 'error' | 'needs-auth' | 'ok'
+type Status = 'error' | 'needs-auth' | 'offline' | 'ok'
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+const statusOf = (...rows: [name: string, status: string, needsAuth?: boolean][]) => ({
+  checked_at: 0,
+  servers: rows.map(([name, status, needsAuth]) => ({
+    connected: status === 'connected',
+    disabled: false,
+    name,
+    needs_auth: needsAuth ?? false,
+    source: 'config',
+    status,
+    tools: 0,
+    transport: 'http'
+  }))
+})
 
 afterEach(() => {
   stopMcpHealthChecker()
@@ -74,7 +92,7 @@ afterEach(() => {
   mocks.activeProfile.set('default')
   mocks.getHermesConfigRecord.mockReset()
   mocks.notify.mockReset()
-  mocks.testMcpServer.mockReset()
+  mocks.mcpStatus.mockReset()
   mocks.setMcpServerEnabled.mockClear()
 })
 
@@ -99,7 +117,8 @@ describe('shouldNotify', () => {
     ['needs-auth', 'error', true],
     ['error', 'needs-auth', true],
     ['needs-auth', 'ok', false],
-    ['error', 'ok', false]
+    ['error', 'ok', false],
+    ['ok', 'offline', false]
   ])('snoozed: previous=%s next=%s → notify=%s', (previous, next, expected) => {
     expect(shouldNotify(previous, next, now + DAY, now)).toBe(expected)
   })
@@ -120,7 +139,7 @@ describe('shouldNotify', () => {
 it('shows the toast with Sign in + Disable, then stays quiet for a day and re-nudges after it', async () => {
   const servers = { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp', auth: 'oauth' } } }
   mocks.getHermesConfigRecord.mockResolvedValue(servers)
-  mocks.testMcpServer.mockResolvedValue({ ok: false, error: 'OAuth: authorization required', tools: [] })
+  mocks.mcpStatus.mockResolvedValue(statusOf(['linear', 'failed', true]))
   window.localStorage.clear()
 
   let clock = 1_700_000_000_000
@@ -170,7 +189,7 @@ it('honors a persisted snooze in a fresh module session, then re-notifies after 
   try {
     window.localStorage.setItem(key, String(until))
     mocks.getHermesConfigRecord.mockResolvedValue(servers)
-    mocks.testMcpServer.mockResolvedValue({ ok: false, error: 'OAuth: authorization required', tools: [] })
+    mocks.mcpStatus.mockResolvedValue(statusOf(['linear', 'failed', true]))
 
     // A fresh import drops in-memory transition state, as a renderer restart does.
     vi.resetModules()
@@ -245,4 +264,24 @@ it('runs one follow-up when the active sweep fails through the handled config-er
   await flush()
   await flush()
   expect(mocks.getHermesConfigRecord).toHaveBeenCalledTimes(2)
+})
+
+it('never nags about a local server that is not running, but does about a failing remote one', async () => {
+  mocks.getHermesConfigRecord.mockResolvedValue({
+    mcp_servers: {
+      'unreal-engine': { url: 'http://127.0.0.1:8000/mcp' },
+      blender: { command: 'uvx', args: ['blender-mcp'] },
+      remote: { url: 'https://mcp.example.com/mcp' }
+    }
+  })
+  mocks.mcpStatus.mockResolvedValue(statusOf(['unreal-engine', 'failed'], ['blender', 'failed'], ['remote', 'failed']))
+  window.localStorage.clear()
+
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  await flush()
+
+  expect(mocks.notify).toHaveBeenCalledTimes(1)
+  expect(mocks.notify.mock.calls[0][0].id).toBe('mcp-health-default::remote')
 })

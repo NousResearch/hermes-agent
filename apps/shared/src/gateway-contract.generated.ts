@@ -4284,6 +4284,7 @@ export interface McpServerRuntimeRow {
   status: McpRuntimeStatus
   source: McpServerSource
   plugin?: string | null
+  needs_auth?: boolean
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */

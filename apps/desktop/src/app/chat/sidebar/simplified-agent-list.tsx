@@ -84,7 +84,7 @@ export function SimplifiedAgentList({
 
   return (
     <section aria-label={t.simplifiedAgents.agents} className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-      <SidebarPanelLabel className="px-2 py-2 [&>span:first-child]:mx-1">{t.simplifiedAgents.agents}</SidebarPanelLabel>
+      <SidebarPanelLabel className="px-2 py-2.5 [&>span:first-child]:mx-1">{t.simplifiedAgents.agents}</SidebarPanelLabel>
       {gateways.map(connectionId => {
         const group = sorted.filter(agent => agent.connectionId === connectionId)
         const gatewayId = JSON.stringify(['gateway', connectionId])
@@ -93,7 +93,7 @@ export function SimplifiedAgentList({
 
         return (
           <div className="shrink-0" key={gatewayId}>
-            <div className="grid min-h-8 grid-cols-[1rem_minmax(0,1fr)_1.5rem] items-center gap-2 px-2 text-xs text-(--ui-text-tertiary)">
+            <div className="grid min-h-9 grid-cols-[1rem_minmax(0,1fr)_1.5rem] items-center gap-2 px-2 text-xs text-(--ui-text-tertiary)">
               <span aria-hidden className="grid size-4 place-items-center">
                 <span className={`size-1.5 rounded-full ${reachable ? 'bg-green-500' : 'bg-(--ui-text-quaternary)'}`} />
               </span>
@@ -118,7 +118,7 @@ export function SimplifiedAgentList({
 
                 return (
                   <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                    <div className="group/agent grid min-h-8 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center rounded-sm px-2 hover:bg-(--chrome-action-hover) focus-within:bg-(--chrome-action-hover)">
+                    <div className="group/agent grid min-h-9 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center rounded-sm px-2 hover:bg-(--chrome-action-hover) focus-within:bg-(--chrome-action-hover)">
                       {group.length > 1 ? (
                         <Button
                           aria-expanded={agentOpen}
@@ -134,7 +134,7 @@ export function SimplifiedAgentList({
                       )}
                       <RowButton
                         aria-label={`${t.simplifiedAgents.settings}: ${agent.label} · ${agent.gateway}`}
-                        className="flex min-h-8 min-w-0 items-center gap-2 rounded-sm text-left text-xs font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
+                        className="flex min-h-9 min-w-0 items-center gap-2 rounded-sm text-left text-xs font-medium focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50"
                         disabled={pending !== null}
                         onClick={() => void openAgent(agent)}
                       >

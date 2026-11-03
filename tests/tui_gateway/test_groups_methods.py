@@ -10,6 +10,13 @@ import pytest
 from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
+from tui_gateway.hosted_room_service import HostedRoomService
+
+
+class _RouteService(HostedRoomService):
+    def __init__(self):
+        self.peer_route_lock = threading.Lock()
+        self._disbanding_rooms = set()
 
 
 @pytest.fixture
@@ -59,8 +66,6 @@ def _create_room():
             },
         )
     )["room"]
-
-
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
@@ -329,9 +334,8 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
                 "catalog": catalog,
             }
 
-    class FakeService:
+    class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
-        peer_route_lock = threading.Lock()
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -366,9 +370,8 @@ def test_reregistered_peer_route_keeps_its_trace_identity(home, monkeypatch):
     params, _ = _serve_peer_client(monkeypatch, room)
     catalog = params["catalog"]
 
-    class FakeService:
+    class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
-        peer_route_lock = threading.Lock()
 
         def register_peer_route(self, **kwargs):
             routes.append(kwargs["route"])
@@ -932,9 +935,8 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     _create_room()
     calls = []
 
-    class FakeService:
+    class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
-        peer_route_lock = threading.Lock()
 
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
@@ -952,9 +954,8 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
 def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
     _create_room()
 
-    class FakeService:
+    class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
-        peer_route_lock = threading.Lock()
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -978,9 +979,8 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     _create_room()
     calls = []
 
-    class FakeService:
+    class FakeService(_RouteService):
         db_path = hosted_rooms_default_db_path()
-        peer_route_lock = threading.Lock()
 
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))

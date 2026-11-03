@@ -118,7 +118,8 @@ def register(service, params):
     except (HostedRoomPeerError, TypeError, KeyError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
     try:
-        gateway_id, epoch = service._owned_authority(room_id)
+        with service.peer_route_lock:
+            gateway_id, epoch = service.route_authority(room_id)
         room, ended = service._room(room_id), None
     except RoomNotFoundError as exc:
         room, ended = service.ended_room(room_id), exc
@@ -158,7 +159,7 @@ def register(service, params):
     with service.peer_route_lock:
         # The probe took time: publish only while the room is still the one it was checked against.
         try:
-            refused = (None if service._owned_authority(room_id) == (gateway_id, epoch)
+            refused = (None if service.route_authority(room_id) == (gateway_id, epoch)
                        else RuntimeStoreError('peer_target_mismatch'))
         except HostedRoomError as exc:  # disbanded meanwhile
             refused = exc

@@ -330,6 +330,59 @@ test('gateway-owned room: working, settled, failure', async () => {
   fs.rmSync(sentinel, { force: true })
 })
 
+/** Each chip's member and status (`data-member-status`), and who the visible user messages are by. */
+const roomFacts = () => fixture!.page.evaluate(() => ({
+  chips: [...document.querySelectorAll('[data-member-status]')].filter(el => (el as HTMLElement).offsetParent !== null)
+    .map(el => `${(el as HTMLElement).innerText.replace(/\s+/g, ' ').trim()} [${el.getAttribute('data-member-status')}]`),
+  cycle: (document.querySelector('[data-room-cycle]') as HTMLElement | null)?.innerText ?? null,
+  userAuthors: [...document.querySelectorAll('[data-room-message="user"]')].map(el => (el as HTMLElement).innerText.split('\n')[0])
+}))
+
+test('gateway-owned room: a failure in one thread stays while another thread works', async () => {
+  test.setTimeout(600_000)
+  allowErrorBanners()
+  const sentinel = path.join(os.tmpdir(), `grn-nightly-${process.pid}-${Date.now()}`)
+  const threadA = 'Quick check before standup: @critic review the plan, @builder confirm the branch.'
+  const threadB = 'Separate topic: @scout how long does the nightly build take?'
+
+  fixture = await setupKeyedBackend({
+    groupScripts: {
+      'before standup': 'E2E_FAIL(critic) E2E_SAY(builder)[Branch `release/0.23` is up to date with main.]',
+      'nightly build take': [
+        `E2E_TOOL(scout)[terminal:echo NIGHTLY; until test -f ${sentinel}; do sleep 0.5; done]`,
+        'E2E_SAY(scout)[About 14 minutes end to end.]'
+      ].join(' ')
+    }
+  }, true)
+  await waitForAppReady(fixture, 120_000)
+  await sizeWindow()
+  const page = fixture.page
+  const room = 'Builder, Critic, Scout'
+  const label = 'Group message'
+
+  await createRoom(page, [['builder', 'Builder'], ['critic', 'Critic'], ['scout', 'Scout']], room)
+  await expect(page.getByRole('textbox', { name: label, exact: true }).filter({ visible: true })).toBeVisible({ timeout: 60_000 })
+  await sizeWindow()
+
+  await send(page, room, label, threadA)
+  const aSettled = await waitSettled(page, label, 180_000)
+  await capture('11-thread-a-failed', label, { settled: aSettled, ...(await roomFacts()) })
+
+  // A plain Send starts thread B; Scout's tool holds it open while we look at Critic's chip.
+  await send(page, room, label, threadB)
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes('nightly build')).length, { timeout: 90_000 }).toBeGreaterThan(0)
+  await expect.poll(async () => (await roomFacts()).chips.some(chip => /^scout/i.test(chip) && chip.endsWith('[working]')), { timeout: 60_000 }).toBe(true)
+  await page.waitForTimeout(3000)
+  const during = await roomFacts()
+  await capture('12-thread-b-working-a-failed', label, { phase: 'thread B: scout in terminal; thread A: critic failed', ...during })
+  probe('two-threads', during)
+
+  fs.writeFileSync(sentinel, 'go')
+  const bSettled = await waitSettled(page, label, 180_000)
+  await capture('13-two-threads-settled', label, { settled: bSettled, ...(await roomFacts()) })
+  fs.rmSync(sentinel, { force: true })
+})
+
 test('legacy Desktop-driven room: working and settled', async () => {
   test.setTimeout(400_000)
   allowErrorBanners()

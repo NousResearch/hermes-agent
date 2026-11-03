@@ -140,7 +140,9 @@ export async function writeFileAtomic(filePath, contents, { fs = fsPromises } = 
  * rejection, which terminates Node. `save()` never rejects: it resolves
  * `true`/`false` and reports a failure through `onFailure(err, message)`.
  * `settled()` resolves with the outcome of the most recent save, which wrote
- * the full current creds (saves on one path are serialized).
+ * the full current creds (saves on one path are serialized). `drain()` waits
+ * until no save is pending, including saves that start while it waits, so a
+ * shutdown does not exit between an accepted `creds.update` and its write.
  */
 export function createCredsSaver(saveCreds, { onFailure = (_err, message) => console.error(message) } = {}) {
   let latest = Promise.resolve(true);
@@ -162,7 +164,65 @@ export function createCredsSaver(saveCreds, { onFailure = (_err, message) => con
       );
     return latest;
   };
-  return { save, settled: () => latest };
+  const drain = async () => {
+    for (;;) {
+      const pending = latest;
+      await pending;
+      if (pending === latest) return;
+    }
+  };
+  return { save, settled: () => latest, drain };
+}
+
+/**
+ * Wait (bounded) for `saver` to drain. Resolves `true` when every pending save
+ * finished in time, `false` on timeout. A missing saver (no socket yet) is
+ * trivially drained.
+ */
+export async function drainCredsSaver(saver, timeoutMs) {
+  if (!saver) return true;
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([saver.drain().then(() => true), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Exit on SIGTERM/SIGINT only after the current creds saver drains (bounded).
+ *
+ * Node's default is to exit at once, so a `creds.update` accepted just before a
+ * stop could die mid-save: the atomic writer keeps the previous creds.json, but
+ * the newest creds never reach disk and the next start runs on stale state.
+ * Exits 0 once drained, 1 when `timeoutMs` passed first. `started()` lets the
+ * bridge stop scheduling reconnects once a shutdown is under way.
+ */
+export function exitAfterCredsDrain({
+  getSaver,
+  timeoutMs,
+  signals = ['SIGTERM', 'SIGINT'],
+  on = (signal, handler) => process.on(signal, handler),
+  exit = (code) => process.exit(code),
+  log = console.error,
+}) {
+  let started = false;
+  const shutdown = async (signal) => {
+    if (started) return;
+    started = true;
+    const drained = await drainCredsSaver(getSaver(), timeoutMs);
+    if (!drained) log(`⚠️  ${signal}: a creds save was still pending after ${timeoutMs}ms; exiting anyway.`);
+    exit(drained ? 0 : 1);
+  };
+  for (const signal of signals) {
+    on(signal, () => {
+      shutdown(signal);
+    });
+  }
+  return { started: () => started };
 }
 
 /** Remove temp files orphaned by a crash or a failed write. */

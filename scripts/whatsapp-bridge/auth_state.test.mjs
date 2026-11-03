@@ -19,7 +19,13 @@ import { join } from 'node:path';
 
 import * as realFs from 'node:fs/promises';
 
-import { createCredsSaver, writeFileAtomic, useAtomicMultiFileAuthState } from './auth_state.js';
+import {
+  createCredsSaver,
+  drainCredsSaver,
+  exitAfterCredsDrain,
+  useAtomicMultiFileAuthState,
+  writeFileAtomic,
+} from './auth_state.js';
 
 const HERE = import.meta.dirname;
 // RLIMIT_FSIZE via `ulimit -f` is POSIX-only. The bridge itself is
@@ -349,4 +355,87 @@ test('ENOSPC mid-write: save is routed, no unhandled rejection, old creds intact
   assert.equal(readFileSync(target, 'utf8'), original, 'previous creds must stay intact');
   assert.deepEqual(readdirSync(dir), ['creds.json'], 'no partial temp file may be left behind');
   rmSync(dir, { recursive: true, force: true });
+});
+
+// -- shutdown drain ----------------------------------------------------------
+// Ordering contract only: saveCreds is a controllable promise, the writer itself
+// is covered by the real-filesystem tests above.
+
+function deferredSaves() {
+  const pending = [];
+  const saveCreds = () => new Promise((resolve) => pending.push(resolve));
+  return { saveCreds, pending };
+}
+
+const ticks = (n = 5) => new Promise((resolve) => {
+  let left = n;
+  const step = () => (--left <= 0 ? resolve() : setImmediate(step));
+  setImmediate(step);
+});
+
+test('drain waits for a save that starts while it is already waiting', async () => {
+  const { saveCreds, pending } = deferredSaves();
+  const saver = createCredsSaver(saveCreds, { onFailure: () => {} });
+  saver.save();
+  let drained = false;
+  const draining = saver.drain().then(() => { drained = true; });
+  await ticks();
+  saver.save(); // a creds.update accepted mid-shutdown
+  await ticks();
+  pending[0]();
+  await ticks();
+  assert.equal(drained, false, 'drain returned while the second save was still pending');
+  pending[1]();
+  await draining;
+  assert.equal(drained, true);
+});
+
+test('drainCredsSaver is bounded: a hung save reports false instead of blocking', async () => {
+  const saver = createCredsSaver(() => new Promise(() => {}), { onFailure: () => {} });
+  saver.save();
+  assert.equal(await drainCredsSaver(saver, 20), false);
+  assert.equal(await drainCredsSaver(null, 20), true, 'no socket yet means nothing to drain');
+});
+
+test('SIGTERM exits 0 only after the accepted save lands, and only once', async () => {
+  const { saveCreds, pending } = deferredSaves();
+  const saver = createCredsSaver(saveCreds, { onFailure: () => {} });
+  const handlers = {};
+  const exits = [];
+  const shutdown = exitAfterCredsDrain({
+    getSaver: () => saver,
+    timeoutMs: 5000,
+    on: (signal, handler) => { handlers[signal] = handler; },
+    exit: (code) => exits.push(code),
+    log: () => {},
+  });
+  assert.deepEqual(Object.keys(handlers).sort(), ['SIGINT', 'SIGTERM']);
+  saver.save();
+  handlers.SIGTERM();
+  handlers.SIGINT(); // a second signal must not start a second exit path
+  await ticks();
+  assert.equal(shutdown.started(), true);
+  assert.deepEqual(exits, [], 'exited before the pending creds save finished');
+  pending[0]();
+  await ticks();
+  assert.deepEqual(exits, [0]);
+});
+
+test('SIGTERM with a wedged save exits 1 after the bound', async () => {
+  const saver = createCredsSaver(() => new Promise(() => {}), { onFailure: () => {} });
+  const handlers = {};
+  const exits = [];
+  const logs = [];
+  exitAfterCredsDrain({
+    getSaver: () => saver,
+    timeoutMs: 20,
+    on: (signal, handler) => { handlers[signal] = handler; },
+    exit: (code) => exits.push(code),
+    log: (line) => logs.push(line),
+  });
+  saver.save();
+  handlers.SIGTERM();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(exits, [1]);
+  assert.match(logs[0], /SIGTERM: a creds save was still pending after 20ms/);
 });

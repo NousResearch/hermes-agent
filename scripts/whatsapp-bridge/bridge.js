@@ -31,7 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
-import { createCredsSaver, useAtomicMultiFileAuthState } from './auth_state.js';
+import { createCredsSaver, exitAfterCredsDrain, useAtomicMultiFileAuthState } from './auth_state.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -392,6 +392,15 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+// The current socket's creds saver: SIGTERM/SIGINT drain an accepted save
+// before exiting, bounded so a wedged disk cannot hold the stop past the
+// adapter's grace.
+let activeCredsSaver = null;
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 3000;
+const shutdown = exitAfterCredsDrain({
+  getSaver: () => activeCredsSaver,
+  timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS,
+});
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -400,7 +409,7 @@ function emitPairEvent(event) {
   } catch {}
 }
 
-const scheduleReconnect = createReconnectScheduler(() => startSocket());
+const scheduleReconnect = createReconnectScheduler(() => (shutdown.started() ? undefined : startSocket()));
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
 async function startSocket() {
@@ -449,6 +458,7 @@ async function startSocket() {
       emitPairEvent({ event: 'auth_state_save_failed', session: SESSION_DIR, error: message });
     },
   });
+  activeCredsSaver = credsSaver;
   sock.ev.on('creds.update', () => {
     credsSaver.save();
     lidToPhone = buildLidMap();

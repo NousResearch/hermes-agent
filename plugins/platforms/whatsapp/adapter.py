@@ -108,6 +108,11 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
 # spawn used to die on EADDRINUSE while the port was still bound. Grace before SIGKILL, and
 # how long connect() waits for the port to actually come free after a kill.
 _SIGTERM_GRACE_S = 5.0
+# bridge.js drains an accepted creds save for up to 3s on SIGTERM before it exits. disconnect()
+# waits this long for that exit before escalating (it used to SIGKILL after a fixed 1s, cutting
+# the drain), and still returns inside the runner's 5s adapter-disconnect budget. Windows stops
+# the bridge with taskkill, which never reaches Node's SIGTERM handler, so it keeps the old 1s.
+_BRIDGE_STOP_GRACE_S = 1.0 if _IS_WINDOWS else 4.0
 _BRIDGE_PORT_FREE_TIMEOUT_S = 10.0
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)  # escalation paths below are POSIX-only
 
@@ -855,7 +860,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         else:
             try:
                 self._terminate_bridge(force=False)
-                await asyncio.sleep(1)
+                with suppress(subprocess.TimeoutExpired):
+                    await asyncio.to_thread(self._bridge_process.wait, _BRIDGE_STOP_GRACE_S)
                 if self._bridge_process.poll() is None:
                     self._terminate_bridge(force=True)
                     # SIGKILL/taskkill /F still takes a moment to be visible to poll(): an in-process

@@ -9,16 +9,27 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
+import pytest
 
 from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
 
 
+def test_disabled_by_default_when_key_absent():
+    enabled, per_tick = _resolve_auto_decompose_settings(lambda: {"kanban": {}})
+    assert enabled is False
+    assert per_tick == 3
 
 
-def test_disabled_when_flag_false():
-    enabled, _per_tick = _resolve_auto_decompose_settings(
-        lambda: {"kanban": {"auto_decompose": False}}
+def test_enabled_when_flag_explicitly_true():
+    enabled, per_tick = _resolve_auto_decompose_settings(
+        lambda: {"kanban": {"auto_decompose": True}}
+    )
+    assert enabled is True
+
+
+@pytest.mark.parametrize("value", [False, "true", "false", 1, 0, None, [], {}])
+def test_invalid_or_non_boolean_values_fail_closed(value):
+    enabled, _ = _resolve_auto_decompose_settings(
+        lambda: {"kanban": {"auto_decompose": value}}
     )
     assert enabled is False
-
-

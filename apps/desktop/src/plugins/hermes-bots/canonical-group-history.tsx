@@ -4,6 +4,7 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { ASSIGNMENT_EVENT_KIND, CanonicalGroupAssignmentRow } from './canonical-group-lead'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-status'
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
@@ -191,7 +192,9 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
   ])
 
   return <>{events.map(event => <Fragment key={event.seq}>
-    <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />
+    {event.kind === ASSIGNMENT_EVENT_KIND
+      ? <CanonicalGroupAssignmentRow event={event} members={members} />
+      : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>

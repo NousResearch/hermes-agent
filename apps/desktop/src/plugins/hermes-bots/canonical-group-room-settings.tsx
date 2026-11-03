@@ -2,14 +2,17 @@ import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 import { useState } from 'react'
 
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { CanonicalGroupLeadSetting } from './canonical-group-lead'
 import { canonicalGroupRequest, MAX_ROOM_NOTES_BYTES, roomNotesBytes } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalRoomContext } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalRoomContext, CanonicalRoomMember } from './canonical-groups'
 
 export interface CanonicalGroupRoomSettingsProps {
   binding: CanonicalGroupBinding
   /** `groups.state.context`; null/undefined while loading or on a runtime without room settings. */
   context?: CanonicalRoomContext | null
   disabled?: boolean
+  /** The room roster; when given (and the runtime reports routing), the dialog offers lead routing. */
+  members?: readonly CanonicalRoomMember[]
   /** Called after the backend accepted a save (the room view refreshes its state). */
   onSaved?: () => unknown
 }
@@ -19,7 +22,7 @@ export const roomDeliveryTarget = (binding: CanonicalGroupBinding) =>
 
 /** Self-contained room purpose + shared notes: a captioned purpose, a settings button and its dialog,
  *  stacked for the Group details panel; it owns its own `groups.context` save. */
-export function CanonicalGroupRoomSettings({ binding, context, disabled = false, onSaved }: CanonicalGroupRoomSettingsProps) {
+export function CanonicalGroupRoomSettings({ binding, context, disabled = false, members = [], onSaved }: CanonicalGroupRoomSettingsProps) {
   const labels = useCanonicalGroupLabels()
   const [draft, setDraft] = useState<CanonicalRoomContext | null>(null)
   // The draft is frozen while a save is in flight, so closing on success can never drop newer typing.
@@ -30,7 +33,7 @@ export function CanonicalGroupRoomSettings({ binding, context, disabled = false,
 
   const open = () => {
     setError('')
-    setDraft({ purpose: context?.purpose ?? '', notes: context?.notes ?? '' })
+    setDraft({ purpose: context?.purpose ?? '', notes: context?.notes ?? '', ...(context?.routing && { routing: context.routing, lead_member_id: context.lead_member_id ?? '' }) })
   }
 
   // A rejected save keeps the draft so the user can shorten it and retry.
@@ -64,6 +67,7 @@ export function CanonicalGroupRoomSettings({ binding, context, disabled = false,
             <Textarea className="min-h-24" disabled={saving} onChange={event => setDraft({ ...draft, notes: event.target.value })} placeholder={labels.notesPlaceholder} value={draft.notes} />
             <span className={notesOver ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'} data-testid="room-notes-bytes">{notesBytes} / {MAX_ROOM_NOTES_BYTES}</span>
           </label>
+          {draft.routing && <CanonicalGroupLeadSetting disabled={saving} draft={draft} members={members} onChange={setDraft} />}
           <p className="text-xs text-(--ui-text-secondary)">{labels.deliveryTarget} <code data-selectable-text="true">{roomDeliveryTarget(binding)}</code></p>
           {error && <p className="text-xs text-(--ui-accent)" role="alert">{error}</p>}
         </form>

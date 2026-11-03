@@ -286,7 +286,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </div>
     </div>
     {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
-      <CanonicalGroupRoomSettings binding={binding} context={state.context} disabled={busy} onSaved={refresh} />
+      <CanonicalGroupRoomSettings binding={binding} context={state.context} disabled={busy} members={state.room.members} onSaved={refresh} />
     </CanonicalGroupDetails>}
   </section>
 }

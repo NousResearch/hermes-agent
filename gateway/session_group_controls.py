@@ -34,7 +34,7 @@ _FIELDS = {
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
-    'groups.context': {'room_id', 'event_id', 'purpose', 'notes'},
+    'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},

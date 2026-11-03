@@ -15,10 +15,13 @@ from hermes_cli.middleware import LLMExecutionBlocked, run_llm_execution_middlew
 
 def _set_callbacks(monkeypatch, callbacks):
     # _run_execution_chain reads callbacks from _delivery_manager()._middleware and reports
-    # non-blocking callback failures via _report_hook_failure; stub just those two.
+    # non-blocking callback failures via _report_hook_failure; run_conversation also asks it whether a
+    # plugin holds the stream, so stub those too.
     manager = SimpleNamespace(
         _middleware={"llm_execution": list(callbacks)},
         _report_hook_failure=MagicMock(),
+        holds_stream=lambda: False,
+        held_transforms=lambda: (),
     )
     monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
 

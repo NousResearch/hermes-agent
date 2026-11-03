@@ -7,8 +7,10 @@ clone needs the retry.  Regression coverage for #117170, #117176, #117179 and #1
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -72,3 +74,61 @@ def test_non_permission_failures_propagate(tmp_path, monkeypatch):
 
     assert excinfo.value.errno == 39
     assert len(attempts) == 1  # no second attempt for a non-permission failure
+
+
+def test_ignore_errors_skips_what_it_cannot_delete_and_keeps_walking(tmp_path, monkeypatch):
+    """``ignore_errors`` keeps ``shutil.rmtree``'s best effort: an entry still refused after the
+    retry (a file another process holds open on Windows) is skipped and the rest still goes."""
+    root = tmp_path / "ws"
+    held = root / "a" / "held.bin"
+    held.parent.mkdir(parents=True)
+    held.write_text("held", encoding="utf-8")
+    (root / "b").mkdir()
+    (root / "b" / "work.txt").write_text("x", encoding="utf-8")
+    _read_only_object_dir(root)
+    real_unlink = os.unlink
+
+    def _unlink(path, *args, **kwargs):
+        if os.fspath(path).endswith("held.bin"):
+            raise PermissionError(errno.EACCES, "held by another process", os.fspath(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", _unlink)
+    rmtree_readonly(root, ignore_errors=True)
+
+    assert held.exists()
+    assert not (root / "b").exists()
+    assert not (root / ".git").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_never_chmods_the_target_of_a_symlink(tmp_path):
+    """POSIX ``chmod`` follows symlinks: retrying a link's unlink must not touch what it points at."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not ours", encoding="utf-8")
+    outside.chmod(0o444)
+    sealed = tmp_path / "ws" / "sealed"
+    sealed.mkdir(parents=True)
+    (sealed / "link").symlink_to(outside)
+    sealed.chmod(0o555)  # unlinking the symlink needs a writable parent
+
+    rmtree_readonly(tmp_path / "ws")
+
+    assert not (tmp_path / "ws").exists()
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o444
+
+
+@pytest.mark.platforms("posix")
+def test_unreadable_directory_is_skipped_not_retried(tmp_path):
+    """Only unlink/rmdir are retried: re-calling ``os.open`` with the path alone raised
+    ``TypeError`` straight through ``ignore_errors``."""
+    root = tmp_path / "ws"
+    locked = root / "locked"
+    locked.mkdir(parents=True)
+    (locked / "f.txt").write_text("x", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        rmtree_readonly(root, ignore_errors=True)
+    finally:
+        with suppress(FileNotFoundError):
+            locked.chmod(0o755)

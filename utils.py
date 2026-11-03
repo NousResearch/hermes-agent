@@ -348,21 +348,29 @@ def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
     loose object files read-only on Windows (``WinError 5``), and package
     installs (Nix store, deb/rpm) are copied ``r--r--r--`` into ``0555``
     directories on POSIX, where unlinking needs a writable *parent*.  Clear the
-    write bit on the failing path and on its parent, then retry the exact
-    operation that failed.  Only ``PermissionError`` is retried: every other
-    failure keeps ``shutil.rmtree``'s semantics (and ``ignore_errors``).
+    write bit on the failing path and on its parent, then retry the unlink or
+    rmdir that failed, once.  Only that ``PermissionError`` is retried: every
+    other failure keeps ``shutil.rmtree``'s semantics, and ``ignore_errors``
+    skips what is still left and keeps walking.  A symlink is never chmodded
+    (POSIX ``chmod`` follows it out of the tree).  A hard-linked file is: the
+    cleared bit is shared by its other names, but skipping it would leave the
+    tree behind for good when those names are being deleted too.
     """
 
     def _on_error(func, fpath, exc_info):
         # ``onerror`` (3.11) passes ``exc_info``, ``onexc`` (3.12+) the exception.
         exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
-        if not isinstance(exc, PermissionError):
-            raise exc
-        for candidate in (os.path.dirname(fpath), fpath):
-            if candidate:
-                with suppress(OSError):
-                    os.chmod(candidate, os.stat(candidate).st_mode | stat.S_IWUSR | stat.S_IXUSR)
-        func(fpath)
+        try:
+            if not isinstance(exc, PermissionError) or func not in (os.unlink, os.rmdir):
+                raise exc
+            for candidate in (os.path.dirname(fpath), fpath):
+                if candidate and not os.path.islink(candidate):
+                    with suppress(OSError):
+                        os.chmod(candidate, os.stat(candidate).st_mode | stat.S_IWUSR | stat.S_IXUSR)
+            func(fpath)
+        except OSError:
+            if not ignore_errors:
+                raise
 
     try:
         try:

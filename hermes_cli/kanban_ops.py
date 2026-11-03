@@ -304,7 +304,7 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
-    import shutil
+    from utils import rmtree_readonly
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     if event_days < 0 or log_days < 0:
@@ -339,7 +339,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
                 continue
             if kbw._defer_shared_workspace_cleanup(conn, row["id"], path):
                 continue
-            shutil.rmtree(path, ignore_errors=True)
+            rmtree_readonly(path, ignore_errors=True)
             if not path.exists():
                 removed_ws += 1
 

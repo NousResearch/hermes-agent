@@ -49,7 +49,7 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
                     return SimpleNamespace(
                         success=lambda: False,
                         code=99992402,
-                        msg="[99992402] field validation failed",
+                        msg="field validation failed",
                     )
                 return SimpleNamespace(
                     success=lambda: True,
@@ -63,8 +63,28 @@ class TestPostFallbackOnFieldValidationError(unittest.TestCase):
                 adapter.send(chat_id="oc_chat", content="这里有 **粗体** 文本。")
             )
 
-        self.assertTrue(result.success)
         self.assertEqual([r.request_body.msg_type for r in captured], ["post", "text"])
+        self.assertTrue(result.success)
+
+    def test_send_does_not_fall_back_for_an_unrelated_response_code(self):
+        adapter = self._make_adapter()
+        captured = []
+
+        class _MessageAPI:
+            def create(self, request):
+                captured.append(request)
+                return SimpleNamespace(
+                    success=lambda: False,
+                    code=123456,
+                    msg="field validation failed",
+                )
+
+        adapter._client = _fake_client(_MessageAPI())
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content="**bold** text"))
+
+        self.assertFalse(result.success)
+        self.assertEqual([r.request_body.msg_type for r in captured], ["post"])
 
     def test_send_falls_back_to_text_when_post_raises_99992402(self):
         adapter = self._make_adapter()

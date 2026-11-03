@@ -1696,7 +1696,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    and (
+                        getattr(response, "code", None) == 99992402
+                        or _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    )
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)

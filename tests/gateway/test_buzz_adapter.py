@@ -87,11 +87,9 @@ def _make_adapter(extra=None):
     adapter._self_npub = SELF_NPUB
     adapter._display_name = "Chip"
     adapter._private_key = "nsec1test"
-    # GatewayRunner installs this callback before intake starts. Attachment
-    # tests are authorized by default and override the callback at the boundary.
+    # GatewayRunner installs this callback before intake starts; attachment tests override it at the boundary.
     adapter.set_authorization_check(lambda *_args: True)
-    # Inbound tests that bypass the CLI have no roster to consult; longer-name lookup (deliberate, bounded: hex-only capped p-tags) is covered in test_buzz_mention_resolution.
-    adapter._longer_member_names = AsyncMock(return_value=[])
+    adapter._longer_member_names = AsyncMock(return_value=[])  # bounded pre-auth lookup: test_buzz_mention_resolution
     return adapter
 
 class _ScriptedCli:

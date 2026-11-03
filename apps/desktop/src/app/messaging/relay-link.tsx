@@ -18,6 +18,15 @@ import { Copy, ExternalLink, QrCode } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
 const POLL_MS = 3000
+// Consecutive poll failures before the panel stops waiting and shows the error.
+const MAX_POLL_ERRORS = 5
+
+/** A code that went inactive before it expired was used: the account may already have been linked. */
+function redeemedBeforeExpiry(link: RelayLinkCode): boolean {
+  const expiresAt = link.expires_at ? Date.parse(link.expires_at) : Number.NaN
+
+  return !Number.isFinite(expiresAt) || Date.now() < expiresAt
+}
 
 async function renderQr(payload: string): Promise<string> {
   // Lazy: the QR encoder is only needed while a code is on screen.
@@ -75,10 +84,12 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
 
     let cancelled = false
     let timer: null | number = null
+    let failures = 0
 
     const poll = async () => {
       try {
         const state = await getRelayLinkState(link.code)
+        failures = 0
 
         if (cancelled) {
           return
@@ -105,15 +116,27 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
           return
         }
 
-        if (after && after.length > linkedBefore.current) {
+        if (after && (after.length > linkedBefore.current || redeemedBeforeExpiry(link))) {
           notify({ kind: 'success', message: r.linked(platform.name) })
-        } else {
+        } else if (after) {
           setError(r.expired)
         }
-      } catch {
-        if (!cancelled) {
-          timer = window.setTimeout(() => void poll(), POLL_MS)
+      } catch (pollError) {
+        if (cancelled) {
+          return
         }
+
+        failures += 1
+
+        if (failures >= MAX_POLL_ERRORS || !redeemedBeforeExpiry(link)) {
+          setLink(null)
+          setQrDataUrl('')
+          setError(pollError instanceof Error ? pollError.message : String(pollError))
+
+          return
+        }
+
+        timer = window.setTimeout(() => void poll(), POLL_MS)
       }
     }
 

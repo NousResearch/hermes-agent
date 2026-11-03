@@ -85,6 +85,7 @@ def test_shared_bot_platforms_are_offered_as_account_links(client, monkeypatch):
     assert by_id["telegram"]["relay_fronted"] is True
     assert by_id["telegram"]["relay_exclusive"] is True
     assert by_id["slack"]["relay_fronted"] is False
+    assert by_id["slack"]["relay_exclusive"] is False
 
     monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
     telegram = _telegram(client)

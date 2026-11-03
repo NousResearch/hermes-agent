@@ -66,6 +66,10 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
         shutil.copy2(config_path, dest)  # config-reader: ok — file tooling, gated above
+        # copy2 carries the source mode over, so a config.yaml left 0644 by an editor would yield a
+        # world-readable copy of the user's credentials. Apply the same owner-only policy as config.yaml.
+        from hermes_cli.config import _secure_file
+        _secure_file(dest)
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

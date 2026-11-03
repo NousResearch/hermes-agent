@@ -14,8 +14,9 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_
 // /api/model/info resolves the live context window, which probes the configured
 // provider's /models endpoint. An unreachable provider must not hold the Model
 // Settings page hostage (the backend bounds the same probe; this is the client
-// side of that budget).
-const MODEL_INFO_REQUEST_TIMEOUT_MS = 5_000
+// side of that budget). Leave transport/dispatch headroom after the backend
+// completes its five-second probe; equal deadlines reject its valid fallback.
+const MODEL_INFO_REQUEST_TIMEOUT_MS = 10_000
 
 export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({

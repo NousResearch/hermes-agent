@@ -215,12 +215,15 @@ class PeerRouteStatus(Result):
 
 
 class RoomMemberActivity(Result):
-    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``started_at`` is when it
-    began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the
-    process running the turn."""
+    """One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and
+    ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running;
+    ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running
+    the turn."""
 
     member_id: str
     status: str
+    thread_id: str | None = None
+    round_index: int | None = None
     started_at: float | None = None
     tool: str | None = None
     progress_at: float | None = None

@@ -11,8 +11,9 @@ Two rules, one per failure that took a production gateway down:
   ``refuse_foreign_launchd_plist``.
 * **Live sessions.** ``gateway stop``/``restart`` name the turns, cron jobs or background delegations the
   gateway is running and ask y/N before interrupting them; ``-y``/``--yes`` (alias ``--interrupt``)
-  skips the question, and with no terminal to ask on they refuse. The in-band restart
-  drains turns, but its stop still interrupts every async delegation (``interrupt_all``), and a stop
+  skips the question, and with no terminal to ask on they refuse. Consent makes the restart interrupt
+  the work now instead of waiting for it (``gateway_restart_interrupt``); stop() still parks interrupted
+  chat sessions for resume, interrupts every async delegation (``interrupt_all``), and a stop
   ends the sessions outright.
 """
 
@@ -94,8 +95,9 @@ def _work_lines(verb: str, home: Path, work: dict[str, Any], flag_hint: str) -> 
     return lines
 
 
-def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = None, profile: Optional[str] = None) -> None:
+def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = None, profile: Optional[str] = None) -> bool:
     """Exit 1 naming the live work unless ``--interrupt`` was passed; with it, say what is interrupted.
+    True when there was live work and the operator agreed to interrupt it (``--yes`` or a yes answer).
     ``host_home``/``profile``: a served profile's stop/restart unserves only that profile in the host,
     so only its work counts."""
     if profile:
@@ -105,14 +107,14 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
     else:
         lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:
-        return
+        return False
     from hermes_cli.gateway import print_error, print_warning
 
     if getattr(args, "interrupt", False):
         print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"--yes: {verb} proceeds"))
         for line in lines[1:-2]:
             print(line)
-        return
+        return True
     if sys.stdin.isatty() and sys.stdout.isatty():
         from hermes_cli.cli_output import prompt_yes_no
 
@@ -120,7 +122,7 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
         for line in lines[1:-2]:
             print(line)
         if prompt_yes_no(f"Interrupt them and {verb} the gateway?", default=False):
-            return
+            return True
         print(f"  Cancelled: the gateway was not {'stopped' if verb == 'stop' else 'restarted'}.")
         sys.exit(1)
     print_error(lines[0])

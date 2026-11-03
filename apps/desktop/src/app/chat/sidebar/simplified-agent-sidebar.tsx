@@ -131,7 +131,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
       collapsible="none"
       data-tour="sessions-sidebar"
     >
-      <SidebarContent className="gap-2 overflow-hidden px-2.5 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+      <SidebarContent className="gap-3 overflow-hidden px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
         <SimplifiedNewSession
           onFallback={() => {
             $newChatProfile.set(null)
@@ -164,7 +164,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             className="flex w-full items-center rounded-sm text-left hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring"
             onClick={() => setSidebarPinsOpen(!pinsOpen)}
           >
-            <SidebarPanelLabel className="flex-1 px-2 py-2 [&>span:first-child]:mx-1">
+            <SidebarPanelLabel className="flex-1 px-2 py-2.5 [&>span:first-child]:mx-1">
               {t.sidebar.pinned}
             </SidebarPanelLabel>
             <Codicon className="mr-2 text-(--ui-text-tertiary)" name={pinsOpen ? 'chevron-down' : 'chevron-right'} />
@@ -173,7 +173,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
         </section>
         <SimplifiedAgentList
           renderSessions={agentSessions => (
-            <div className="mb-2 ml-8 border-l border-(--ui-stroke-secondary) pl-2">
+            <div className="mb-3 ml-8 mt-1 border-l border-(--ui-stroke-secondary) pl-2">
               <SimplifiedSessionList {...shared} sessions={agentSessions} />
             </div>
           )}

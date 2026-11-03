@@ -66,7 +66,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
         <RowButton
           aria-current={selected ? 'page' : undefined}
           className={cn(
-            'flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring [@media(hover:none)]:pr-8',
+            'flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-sm px-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring [@media(hover:none)]:pr-8',
             selected && 'bg-(--chrome-action-hover)'
           )}
           onClick={event => {
@@ -112,7 +112,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
           >
             <Button
               aria-label={t.sidebar.row.sessionActions}
-              className="absolute right-0 top-1 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+              className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
               size="icon-xs"
               variant="ghost"
             >

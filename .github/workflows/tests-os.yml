@@ -139,12 +139,13 @@ jobs:
           print(f"PROBE {sys.argv[2]} mtab islink={os.path.islink(p)} isjunction={os.path.isjunction(p)} attrs=0x{st.st_file_attributes:x} reparse_tag=0x{getattr(st, 'st_reparse_tag', 0):x} size={st.st_size} mode={stat.filemode(st.st_mode)}", flush=True)
           try:
               print("PROBE", sys.argv[2], "readlink", repr(os.readlink(p)), flush=True)
-          except OSError as e:
+          except (OSError, ValueError) as e:
               print("PROBE", sys.argv[2], "readlink failed", e, flush=True)
           r = subprocess.run(["fsutil", "reparsepoint", "query", p], capture_output=True, text=True)
           print("PROBE", sys.argv[2], "fsutil", (r.stdout + r.stderr).replace("\n", " | ")[:600], flush=True)
           PY
-          python "$RUNNER_TEMP/mtab.py" "$HERMES_RUNTIME_DIR\\git-2.53.0+3-win32-arm64\\etc\\mtab" restored
+          python "$RUNNER_TEMP/mtab.py" "$HERMES_RUNTIME_DIR\\git-2.53.0+3-win32-arm64\\etc\\mtab" restored || true
+          echo "PROBE tar: $(command -v tar) $(tar --version | head -1)"; echo "PROBE MSYS=${MSYS:-unset}"
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm

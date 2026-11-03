@@ -977,13 +977,14 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             try:
                 sync(extras)
             except Exception as failure:
-                from pm.carried_extras import BUILD_VERDICTS, failing_carried, record_left_out
+                from pm.carried_extras import BUILD_VERDICTS, failing_carried, record_left_out, refuse_transient
 
                 if not carried or not extras or not isinstance(failure, BUILD_VERDICTS):
                     raise
                 fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
                 failing = failing_carried(package, failure, extras=extras, carried=carried, fact=fact,
                                           shipped=shipped, frozen=frozen, explicit=explicit)
+                refuse_transient(failing, failure)
                 extras = [extra for extra in extras if extra not in failing]
                 sync(extras)
                 record_left_out(package, failing)

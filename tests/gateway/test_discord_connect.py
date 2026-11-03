@@ -944,3 +944,38 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
     adapter._skill_entries = []
     assert await _scan_leaves_loop_free(adapter.refresh_skill_group)
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
+    """Without libopus, find_library forks ldconfig/gcc/ld and finds nothing. connect() must run
+    the probe in a worker thread, and only once per process rather than on every reconnect."""
+    import threading
+    from plugins.platforms.discord import adapter_opus
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: FakeBot(intents=kw["intents"]))
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(sys.modules["discord"], "opus", SimpleNamespace(is_loaded=lambda: False))
+    monkeypatch.setattr(adapter_opus, "_probed", False)
+
+    probe_started, loop_ticked, loop_free = threading.Event(), threading.Event(), []
+
+    def _find_library(name):
+        probe_started.set()
+        # Only a free loop can set loop_ticked while this wait is in progress.
+        loop_free.append(loop_ticked.wait(timeout=1))
+
+    monkeypatch.setattr("ctypes.util.find_library", _find_library)
+    task = asyncio.create_task(adapter.connect())
+    await asyncio.to_thread(probe_started.wait, 1)
+    loop_ticked.set()
+    assert await task is True
+    await adapter.disconnect()
+    assert await adapter.connect(is_reconnect=True) is True
+    await adapter.disconnect()
+    assert loop_free == [True]

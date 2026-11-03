@@ -595,7 +595,22 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             try:
                 _run_kanban_goal_loop_chat(cli, response or "")
             except Exception as _goal_exc:
-                logger.debug("kanban goal loop failed: %s", _goal_exc)
+                logger.debug("kanban goal loop failed", exc_info=True)
+        # Kanban worker: a tool-guardrail halt ends the turn with a normal final
+        # response, so the worker would exit rc=0 with no terminal kanban call and
+        # the dispatcher would book a protocol violation and re-spawn the card into
+        # the SAME guardrail (t_d8d6c78f: three runs, three violations, gave_up).
+        # Record the halt as a terminal block instead — a headless worker has nobody
+        # to answer the guardrail's "send `continue`".
+        try:
+            from agent.kanban_guardrail_block import block_guardrail_halt
+
+            block_guardrail_halt(
+                getattr(cli, "_last_turn_result", None),
+                emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+            )
+        except Exception as _block_exc:
+            logger.debug("kanban guardrail block failed", exc_info=True)
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.

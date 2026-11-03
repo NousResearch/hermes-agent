@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import threading
+import time
+from typing import Any, cast
 
 import pytest
 
@@ -143,5 +146,174 @@ def test_max_lag_defaults_to_the_watchdog_interval(monkeypatch):
     watchdog, _calls = _watchdog(monkeypatch, lag_tolerance_seconds=1.0)
 
     assert watchdog._max_lag() == 20.0
+
+
+# ---------------------------------------------------------------------------
+# Off-loop feeder — regression for the 2026-11-03 00:12:07 UTC gateway stall.
+#
+# systemd's ``WatchdogSec`` fired while the gateway's main thread was in
+# ``Garbage-collecting``. The heartbeat that silences systemd was produced by an
+# ``asyncio`` task on that same main event loop, so a main-thread stall silenced the
+# watchdog and systemd SIGABRTed a gateway that was about to recover on its own.
+# ---------------------------------------------------------------------------
+
+
+def _fast_watchdog(monkeypatch, *, interval_usec: int = 400000, **kwargs):
+    """A watchdog whose systemd interval is short enough to observe beats in a test."""
+    calls: list[str] = []
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", str(interval_usec))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(
+        notify_mod, "notify", lambda message: calls.append(message) or True
+    )
+    return notify_mod.SystemdWatchdog(**kwargs), calls
+
+
+def _wait_until(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+@pytest.mark.asyncio
+async def test_feeder_thread_beats_without_the_event_loop_running(monkeypatch):
+    """The systemd heartbeat must not depend on the event loop making progress.
+
+    This is the regression in one assertion: the heartbeat is produced by a thread,
+    so a gateway whose loop is busy (or whose main thread is in a long GC pass) still
+    tells systemd it is alive.
+    """
+    watchdog, calls = _fast_watchdog(monkeypatch, interval_usec=200000)
+
+    assert watchdog.start() is True
+    try:
+        assert _wait_until(lambda: calls.count("WATCHDOG=1") >= 2), calls
+        assert watchdog.feeder_alive is True
+        assert watchdog.unhealthy is False
+    finally:
+        await watchdog.stop()
+
+
+@pytest.mark.asyncio
+async def test_main_thread_stall_does_not_silence_the_heartbeat(monkeypatch):
+    """A main-thread stall must not stop systemd's heartbeat.
+
+    The 2026-11-03 failure: the main thread was in ``Garbage-collecting`` and the
+    loop-driven watchdog task could not run, so ``WATCHDOG=1`` stopped and systemd
+    SIGABRTed the gateway. Here the main thread is held still while the feeder
+    thread must keep beating.
+    """
+    watchdog, calls = _fast_watchdog(monkeypatch, interval_usec=200000)
+
+    assert watchdog.start() is True
+    try:
+        assert _wait_until(lambda: calls.count("WATCHDOG=1") >= 1)
+        beats_before = calls.count("WATCHDOG=1")
+
+        # Hold the MAIN thread so the event loop cannot run a single callback —
+        # the same shape as a long GC pass in the main thread.
+        release = threading.Event()
+        held = threading.Event()
+
+        def _stall() -> None:
+            held.set()
+            release.wait(timeout=10.0)
+
+        stall = threading.Thread(target=_stall, daemon=True)
+        stall.start()
+        assert held.wait(timeout=5.0)
+
+        # The loop is now blocked; the feeder thread must still beat.
+        assert _wait_until(lambda: calls.count("WATCHDOG=1") > beats_before, timeout=5.0), calls
+        assert watchdog.unhealthy is False
+        release.set()
+        stall.join(timeout=5.0)
+    finally:
+        await watchdog.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_halts_the_feeder_thread(monkeypatch):
+    """``stop()`` must end the feeder thread so a restart never double-beats."""
+    watchdog, calls = _fast_watchdog(monkeypatch, interval_usec=200000)
+
+    assert watchdog.start() is True
+    assert _wait_until(lambda: calls.count("WATCHDOG=1") >= 1)
+
+    await watchdog.stop()
+
+    assert watchdog.feeder_alive is False
+    settled = calls.count("WATCHDOG=1")
+    time.sleep(0.3)
+    assert calls.count("WATCHDOG=1") == settled
+    assert calls[-1] == "STOPPING=1"
+
+
+@pytest.mark.asyncio
+async def test_feeder_stops_beating_when_the_process_cannot_run_it(monkeypatch):
+    """The systemd backstop must survive: a process that cannot run ANY Python thread
+    stops beating, and systemd then reclaims the unit.
+
+    This is the case the systemd watchdog exists for, and the off-loop feeder must not
+    weaken it. A thread blocked on a C call that holds the GIL cannot run the feeder
+    either, so the beat stops exactly as before the change.
+    """
+    watchdog, calls = _fast_watchdog(monkeypatch, interval_usec=200000)
+    assert watchdog.start() is True
+    assert _wait_until(lambda: calls.count("WATCHDOG=1") >= 1)
+
+    # Simulate the process being unable to make progress: the feeder cannot run.
+    watchdog._feeder_stop.set()
+    settled = calls.count("WATCHDOG=1")
+    time.sleep(0.3)
+
+    assert calls.count("WATCHDOG=1") == settled
+    await watchdog.stop()
+
+
+def test_loop_liveness_watchdog_is_the_loop_wedge_detector(monkeypatch):
+    """Loop-level wedge detection must remain owned by the off-loop loop-liveness
+    watchdog, which the systemd heartbeat no longer duplicates.
+
+    The systemd heartbeat is a PROCESS liveness contract; the loop-liveness watchdog
+    is the LOOP contract. Moving the heartbeat off the loop must not leave loop
+    wedges undetected, so the detector must still exist, must probe off the loop, and
+    must keep probing across misses.
+    """
+    from gateway import shutdown_watchdog
+
+    assert shutdown_watchdog.DEFAULT_LOOP_WATCHDOG_MAX_STRIKES >= 1
+    assert shutdown_watchdog.DEFAULT_LOOP_WATCHDOG_TIMEOUT_S > 0
+
+    scheduled: list[str] = []
+
+    class _WedgedLoop:
+        """A loop that accepts ``call_soon_threadsafe`` but never runs the callback —
+        i.e. a wedged loop."""
+
+        def call_soon_threadsafe(self, callback, *args):
+            scheduled.append("scheduled")
+            return None
+
+    handle = shutdown_watchdog.start_loop_liveness_watchdog(
+        cast(Any, _WedgedLoop()),
+        probe_interval=0.05,
+        probe_timeout=0.05,
+        max_strikes=2,
+        exit_code=75,
+    )
+    assert handle is not None
+    try:
+        # The detector probes off the loop and keeps probing across misses.
+        assert _wait_until(lambda: len(scheduled) >= 2, timeout=5.0), scheduled
+    finally:
+        handle.stop()
+        handle.join(timeout=5.0)
 
 

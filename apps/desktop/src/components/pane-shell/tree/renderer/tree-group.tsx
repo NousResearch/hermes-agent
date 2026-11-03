@@ -60,6 +60,7 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -99,6 +100,7 @@ import { CompactTabPicker } from './compact-tab-picker'
 import { startPaneDrag } from './drag-session'
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { PaneBody } from './pane-body'
+import { PaneSizeLock } from './pane-size-lock'
 import { usePanelTitlebar } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
@@ -110,6 +112,7 @@ import { useZoneHeaderLayout } from './zone-header-layout'
  *  tab's menu, so every tab in a strip answers a right-click the same way —
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
+
 function ZoneMenu({
   allowOpen,
   children,
@@ -283,6 +286,7 @@ function ZoneBodyMenu({ children, label, ...menu }: ZoneBodyMenuProps) {
 }
 
 interface EditVeilProps extends Omit<ZoneMenuProps, 'children'> {
+  children?: ReactNode
   label: string
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
   /** Where the zone's header ends. */
@@ -290,7 +294,7 @@ interface EditVeilProps extends Omit<ZoneMenuProps, 'children'> {
 }
 
 /** The edit-mode drag veil over a zone's body, carrying the zone menu. */
-function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
+function EditVeil({ children, label, onPointerDown, top, ...menu }: EditVeilProps) {
   return (
     <ZoneMenu {...menu}>
       <div
@@ -312,6 +316,7 @@ function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
         <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
           <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
           <span className="min-w-0 truncate">{label}</span>
+          {children}
         </span>
       </div>
     </ZoneMenu>
@@ -423,6 +428,7 @@ export function TreeGroup({
   const activeId = shown.includes(node.active)
     ? node.active
     : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
+
 
   const active = paneFor(activeId)
   const isEmpty = shown.length === 0
@@ -593,6 +599,8 @@ export function TreeGroup({
   // the zone and take the tab with it.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
 
+
+
   // Same menu on the header strip and the edit veil — one prop bag.
   const minimizeLabel = paneChrome(active).lifecycleKeepAlive ? t.preview.hide : t.zones.minimize
 
@@ -605,6 +613,23 @@ export function TreeGroup({
     stripVisible,
     tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane
+  }
+
+  const renderEditVeil = () => {
+    if (!editMode || dragging || isEmpty || node.minimized) {
+      return null
+    }
+
+    return (
+      <EditVeil
+        {...zoneMenu}
+        label={tabText(activeId)}
+        onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
+        top={topEdge ? topHeaderHeight : headerVisible ? tabStripHeight : 0}
+      >
+        <PaneSizeLock element={ref} nodeId={node.id} shown={shown} />
+      </EditVeil>
+    )
   }
 
   return (
@@ -1009,14 +1034,7 @@ export function TreeGroup({
       {/* Edit-mode veil: the BODY is a drag handle for the active pane. It
           starts below the header so tabs/headers stay directly interactive
           (drag any tab, right-click for the zone menu). */}
-      {editMode && !dragging && !isEmpty && !node.minimized && (
-        <EditVeil
-          {...zoneMenu}
-          label={tabText(activeId)}
-          onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
-          top={topEdge ? topHeaderHeight : headerVisible ? tabStripHeight : 0}
-        />
-      )}
+      {renderEditVeil()}
 
       {/* FancyZones drop overlay — its own component so the per-frame drop
           hint re-renders only this (tiny) node, not the whole zone. */}

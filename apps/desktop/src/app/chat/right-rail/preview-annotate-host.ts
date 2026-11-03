@@ -84,6 +84,8 @@ const padRect = (rect: { height: number; width: number; x: number; y: number }) 
   y: Math.max(0, rect.y - ANNOTATE_CROP_PAD)
 })
 
+let nextOverlaySession = 0
+
 /**
  * Build the guest install script by concatenation, never a template literal.
  * `annotateInPage.toString()` contains `${...}` (Vite leaves those in the
@@ -91,17 +93,44 @@ const padRect = (rect: { height: number; width: number; x: number; y: number }) 
  * interpolations in the host — `rect is not defined` — and Annotate looks
  * like a dead button.
  */
-export function overlayInstallScript(source: string): string {
-  return '(function(){var api=' + source + ';window.__hermesAnnotate=api;api.install();})()'
+export function overlayInstallScript(source: string, session = ++nextOverlaySession): string {
+  return (
+    '(function(){' +
+    `if ((window.__hermesAnnotateSession || 0) >= ${session}) return;` +
+    `window.__hermesAnnotateSession = ${session};` +
+    'if (window.__hermesAnnotate) window.__hermesAnnotate.teardown();' +
+    'var api=' + source + ';window.__hermesAnnotate=api;api.install();})()'
+  )
 }
 
-export async function installAnnotateOverlay(guest: PreviewAnnotateGuest): Promise<void> {
-  await guest.executeJavaScript(overlayInstallScript(annotateInPageSource()))
+export async function installAnnotateOverlay(guest: PreviewAnnotateGuest, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  const session = ++nextOverlaySession
+
+  const teardown = () => {
+    void teardownAnnotateOverlay(guest, session).catch(() => undefined)
+  }
+
+  signal.addEventListener('abort', teardown, { once: true })
+
+  try {
+    await guest.executeJavaScript(overlayInstallScript(annotateInPageSource(), session))
+    signal.throwIfAborted()
+  } catch (error) {
+    signal.removeEventListener('abort', teardown)
+    // Navigation may commit between abort cleanup and the queued install.
+    teardown()
+    throw error
+  }
 }
 
-export async function teardownAnnotateOverlay(guest: PreviewAnnotateGuest): Promise<void> {
+async function teardownAnnotateOverlay(guest: PreviewAnnotateGuest, session: number): Promise<void> {
   await guest.executeJavaScript(`
     (function () {
+      if ((window.__hermesAnnotateSession || 0) > ${session}) return;
+      // Retain ownership even before installation, so a cancelled queued
+      // script cannot resurrect its overlay or replace a newer session.
+      window.__hermesAnnotateSession = ${session};
       if (window.__hermesAnnotate && window.__hermesAnnotate.teardown) {
         window.__hermesAnnotate.teardown();
       }

@@ -55,7 +55,6 @@ import {
   installAnnotateOverlay,
   showAnnotateDraft,
   syncAnnotatePins,
-  teardownAnnotateOverlay,
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
@@ -473,35 +472,21 @@ export function PreviewPane({
 
   const annotateGuest = useCallback(() => createPreviewAnnotateGuest(webviewRef.current), [])
 
-  const stopAnnotate = useCallback(async () => {
+  const stopAnnotate = useCallback(() => {
     annotateLoopRef.current?.abort()
     setDraftNote('')
     setAnnotate(endAnnotateMode)
-    const guest = annotateGuest()
-
-    if (guest) {
-      await teardownAnnotateOverlay(guest).catch(() => undefined)
-    }
-  }, [annotateGuest])
+  }, [])
 
   // Not an atom mirror: the ref records the last conversation the annotate
   // stack was reset for, so the reset runs once per switch. Extracted into a
   // callback so the effect body carries no `.current` writes (lint contract).
-  const resetAnnotateForConversation = useCallback(
-    (sessionId: typeof selectedStoredSessionId) => {
-      annotateConversationRef.current = sessionId
-      annotateLoopRef.current?.abort()
-      setDraftNote('')
-      setAnnotate(emptyAnnotateSession())
-
-      const guest = annotateGuest()
-
-      if (guest) {
-        void teardownAnnotateOverlay(guest).catch(() => undefined)
-      }
-    },
-    [annotateGuest]
-  )
+  const resetAnnotateForConversation = useCallback((sessionId: typeof selectedStoredSessionId) => {
+    annotateConversationRef.current = sessionId
+    annotateLoopRef.current?.abort()
+    setDraftNote('')
+    setAnnotate(emptyAnnotateSession())
+  }, [])
 
   useEffect(() => {
     if (annotateConversationRef.current !== selectedStoredSessionId) {
@@ -609,8 +594,7 @@ export function PreviewPane({
     setAnnotate(beginAnnotateMode)
 
     try {
-      await installAnnotateOverlay(guest)
-      lifetime.signal.throwIfAborted()
+      await installAnnotateOverlay(guest, lifetime.signal)
       await syncAnnotatePins(
         guest,
         annotateRef.current.stack.pins.map(pin => ({
@@ -625,6 +609,7 @@ export function PreviewPane({
         return
       }
 
+      lifetime.abort()
       setAnnotate(endAnnotateMode)
       notifyError(error, copy.annotateFailed)
 
@@ -1403,12 +1388,6 @@ export function PreviewPane({
     }
 
     annotateLoopRef.current?.abort()
-    const guest = annotateGuest()
-
-    if (guest) {
-      void teardownAnnotateOverlay(guest).catch(() => undefined)
-    }
-
     setDraftNote('')
     setAnnotate(emptyAnnotateSession())
     setLoadError(null)
@@ -1423,7 +1402,7 @@ export function PreviewPane({
       })
       setLoading(false)
     })
-  }, [annotateGuest, consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
+  }, [consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
 
   return (
     <aside

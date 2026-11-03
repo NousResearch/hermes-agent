@@ -182,6 +182,9 @@ reopens the gesture-less forced-navigation class the advisory closed.
   viewport lookup, native capture and cleanup. Stop, conversation changes and
   committed document navigation abort that lifetime and fence late drafts.
   A cancelled load or download keeps the existing document's annotation session.
+  Overlay installation shares that abort lifetime; guest-side session ownership
+  fences queued installation and teardown so cancellation cannot leave an
+  invisible click interceptor or remove a replacement annotation session.
 - Approved plugin scripts deliberately retain the guest **and owner window**
   wake exemption for their entire pending result. A promise that never settles
   can therefore keep the hidden app at full timer cadence indefinitely. There

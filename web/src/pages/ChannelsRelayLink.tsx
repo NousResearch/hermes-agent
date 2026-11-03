@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, ExternalLink, Link2, Unlink } from "lucide-react";
+import { Copy, ExternalLink, Link2 } from "lucide-react";
 import * as QRCode from "qrcode";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -146,7 +146,7 @@ export function RelayLinkPanel({
           {accounts.map((account) => (
             <li key={account.platformUserId} className="flex items-center justify-between gap-2 text-sm">
               <span className="truncate">{accountLabel(account)}</span>
-              <Button ghost size="sm" onClick={() => void unlink(account)} prefix={<Unlink className="h-4 w-4" />}>
+              <Button ghost size="sm" onClick={() => void unlink(account)}>
                 Unlink
               </Button>
             </li>

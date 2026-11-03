@@ -1,0 +1,118 @@
+[
+  {
+    "id": "fs_e01",
+    "description": "Structured config string with key=value pairs",
+    "format_type": "clean_structured",
+    "facts": [
+      "auth service config: port=9000, tls=true, timeout=30s, max_connections=500"
+    ],
+    "query": "What port does the auth service run on?",
+    "gold_answer": "9000",
+    "difficulty": "easy"
+  },
+  {
+    "id": "fs_e02",
+    "description": "JSON-formatted fact stored and recalled",
+    "format_type": "clean_structured",
+    "facts": [
+      "{\"service\": \"payments\", \"provider\": \"Stripe\", \"webhook_secret\": \"whsec_abc123\", \"retry_limit\": 3}"
+    ],
+    "query": "What payment provider is configured for the payments service?",
+    "gold_answer": "Stripe",
+    "difficulty": "easy"
+  },
+  {
+    "id": "fs_e03",
+    "description": "YAML-style block fact stored and recalled",
+    "format_type": "clean_structured",
+    "facts": [
+      "database:\n  engine: PostgreSQL\n  version: 15\n  max_connections: 200\n  pool_size: 50"
+    ],
+    "query": "What database engine version is configured?",
+    "gold_answer": "PostgreSQL 15",
+    "difficulty": "easy"
+  },
+  {
+    "id": "fs_m01",
+    "description": "Query targets information not present in stored facts (refusal scenario)",
+    "format_type": "refusal",
+    "facts": [
+      "Production deploy region is us-east-1",
+      "Blue-green deploy cutover window starts at 02:00 UTC",
+      "Rollback takes approximately 5 minutes"
+    ],
+    "query": "What is the monthly billing cost for the production cluster?",
+    "gold_answer": "NONE",
+    "difficulty": "medium"
+  },
+  {
+    "id": "fs_m02",
+    "description": "Infrastructure facts stored but team headcount not present (refusal scenario)",
+    "format_type": "refusal",
+    "facts": [
+      "The Kubernetes cluster runs 12 nodes across 3 availability zones",
+      "Autoscaling triggers at 70 percent CPU utilization",
+      "The ingress controller is nginx with a 10 Gbps limit"
+    ],
+    "query": "How many engineers are on the platform team?",
+    "gold_answer": "NONE",
+    "difficulty": "medium"
+  },
+  {
+    "id": "fs_m03",
+    "description": "Key fact preceded by a format constraint directive",
+    "format_type": "constraint_start",
+    "facts": [
+      "[OUTPUT FORMAT: JSON only] The primary database port is 5432 and the replica port is 5433"
+    ],
+    "query": "What is the primary database port?",
+    "gold_answer": "5432",
+    "difficulty": "medium"
+  },
+  {
+    "id": "fs_m04",
+    "description": "Key fact followed by a format constraint directive",
+    "format_type": "constraint_end",
+    "facts": [
+      "The CI pipeline timeout is 45 minutes for full test suites. [RESPOND IN JSON FORMAT]"
+    ],
+    "query": "What is the CI pipeline timeout for full test suites?",
+    "gold_answer": "45 minutes",
+    "difficulty": "medium"
+  },
+  {
+    "id": "fs_h01",
+    "description": "Key information buried after a long multi-directive preamble",
+    "format_type": "constraint_start",
+    "facts": [
+      "IMPORTANT INSTRUCTIONS: Always respond using valid JSON. Do not include markdown. Escape all special characters. Validate schema before output. The TLS certificate renewal threshold is 30 days before expiry."
+    ],
+    "query": "When should TLS certificate renewal be triggered?",
+    "gold_answer": "30 days before expiry",
+    "difficulty": "hard"
+  },
+  {
+    "id": "fs_h02",
+    "description": "Key information precedes a complex multi-line format block",
+    "format_type": "constraint_end",
+    "facts": [
+      "The rate limiter uses a sliding window of 60 seconds with a cap of 500 requests per user. FORMAT REQUIREMENTS: output must be JSON, keys must be snake_case, values must be strings, arrays must be sorted alphabetically, nested objects must be flattened."
+    ],
+    "query": "What algorithm and window size does the rate limiter use?",
+    "gold_answer": "sliding window of 60 seconds",
+    "difficulty": "hard"
+  },
+  {
+    "id": "fs_h03",
+    "description": "Semantically close facts stored but exact answer not present (hard refusal)",
+    "format_type": "refusal",
+    "facts": [
+      "The object storage bucket is hosted in us-west-2",
+      "S3 transfer acceleration is enabled for uploads over 100 MB",
+      "Lifecycle rules archive objects to Glacier after 90 days"
+    ],
+    "query": "What is the S3 bucket name used for production assets?",
+    "gold_answer": "NONE",
+    "difficulty": "hard"
+  }
+]

@@ -1,0 +1,200 @@
+[
+  {
+    "id": "qg_01",
+    "description": "Repeated deployment queries should learn which facts matter",
+    "memories": [
+      {"content": "Production uses blue-green deployment", "category": "procedural"},
+      {"content": "The office wifi password is fish123", "category": "factual"},
+      {"content": "CI pipeline runs on GitHub Actions", "category": "procedural"},
+      {"content": "Lunch is at 12:30", "category": "factual"},
+      {"content": "Rollback procedure: revert last commit, redeploy", "category": "procedural"}
+    ],
+    "query": "How do we deploy?",
+    "gold_ids": [0, 4],
+    "rounds": 3,
+    "gold_answer": "blue-green deployment with rollback via revert and redeploy"
+  },
+  {
+    "id": "qg_02",
+    "description": "Database connection queries should prefer technical config over noise",
+    "memories": [
+      {"content": "Database host is db.prod.internal:5432", "category": "factual"},
+      {"content": "Team celebrates birthdays on Fridays", "category": "factual"},
+      {"content": "DB connection pool size is 20", "category": "factual"},
+      {"content": "Coffee is free in the kitchen", "category": "factual"},
+      {"content": "DB user is app_user, password in Vault at secret/db", "category": "procedural"}
+    ],
+    "query": "How do I connect to the database?",
+    "gold_ids": [0, 2, 4],
+    "rounds": 3,
+    "gold_answer": "DB host db.prod.internal:5432, pool size 20, credentials in Vault"
+  },
+  {
+    "id": "qg_03",
+    "description": "Security incident response: relevant procedures rise above noise",
+    "memories": [
+      {"content": "On security breach: isolate the affected node immediately", "category": "procedural"},
+      {"content": "The office has a standing desk policy", "category": "factual"},
+      {"content": "Security incidents must be reported to security@company.com", "category": "procedural"},
+      {"content": "Monthly newsletter goes out on the 1st", "category": "factual"},
+      {"content": "Incident log is maintained in Jira under SEC project", "category": "procedural"},
+      {"content": "Free snacks are in the pantry", "category": "factual"}
+    ],
+    "query": "What do I do during a security incident?",
+    "gold_ids": [0, 2, 4],
+    "rounds": 3,
+    "gold_answer": "isolate node, report to security@company.com, log in Jira SEC project"
+  },
+  {
+    "id": "qg_04",
+    "description": "API key rotation: technical procedures outrank social noise",
+    "memories": [
+      {"content": "API keys expire every 90 days", "category": "factual"},
+      {"content": "Key rotation script: scripts/rotate_keys.sh", "category": "procedural"},
+      {"content": "The parking lot is at B2 level", "category": "factual"},
+      {"content": "Old keys are invalidated 24h after rotation", "category": "procedural"},
+      {"content": "Next team outing is bowling night", "category": "factual"}
+    ],
+    "query": "How do I rotate API keys?",
+    "gold_ids": [0, 1, 3],
+    "rounds": 3,
+    "gold_answer": "keys expire every 90 days, run scripts/rotate_keys.sh, old keys invalidated after 24h"
+  },
+  {
+    "id": "qg_05",
+    "description": "On-call escalation: learn which escalation paths matter",
+    "memories": [
+      {"content": "Primary on-call is pinged via PagerDuty", "category": "procedural"},
+      {"content": "Escalation path: engineer -> lead -> VP Engineering", "category": "procedural"},
+      {"content": "PagerDuty team ID: team_prod_123", "category": "factual"},
+      {"content": "The kitchen has oat milk now", "category": "factual"},
+      {"content": "SLA for P1 incidents is 15 minutes response", "category": "factual"}
+    ],
+    "query": "How do I escalate a production incident?",
+    "gold_ids": [0, 1, 4],
+    "rounds": 3,
+    "gold_answer": "PagerDuty primary on-call, escalate engineer->lead->VP, P1 SLA is 15 minutes"
+  },
+  {
+    "id": "qg_06",
+    "description": "Code review process: technical workflow facts surface above trivia",
+    "memories": [
+      {"content": "PRs require two approvals before merge", "category": "procedural"},
+      {"content": "CI must be green before merging", "category": "procedural"},
+      {"content": "The printer is on the 3rd floor", "category": "factual"},
+      {"content": "Use squash-merge to keep history clean", "category": "procedural"},
+      {"content": "Free coffee tokens distributed monthly", "category": "factual"},
+      {"content": "Draft PRs are allowed and encouraged for early feedback", "category": "procedural"}
+    ],
+    "query": "What is the code review and merge process?",
+    "gold_ids": [0, 1, 3, 5],
+    "rounds": 3,
+    "gold_answer": "two approvals, CI green, squash-merge, draft PRs for early feedback"
+  },
+  {
+    "id": "qg_07",
+    "description": "Architecture decisions: important design facts outrank fluff",
+    "memories": [
+      {"content": "Service mesh uses Istio for inter-service communication", "category": "factual"},
+      {"content": "All services emit metrics to Prometheus", "category": "factual"},
+      {"content": "The CEO prefers morning meetings", "category": "factual"},
+      {"content": "Circuit breaker pattern is required for external calls", "category": "procedural"},
+      {"content": "Inter-service auth uses JWT with 1h TTL", "category": "factual"}
+    ],
+    "query": "How do services communicate and authenticate?",
+    "gold_ids": [0, 3, 4],
+    "rounds": 3,
+    "gold_answer": "Istio service mesh, circuit breaker for external calls, JWT auth with 1h TTL"
+  },
+  {
+    "id": "qg_08",
+    "description": "Testing requirements: relevant test policy rises above social facts",
+    "memories": [
+      {"content": "Unit test coverage must be >= 80%", "category": "procedural"},
+      {"content": "Integration tests run in Docker Compose environment", "category": "procedural"},
+      {"content": "Happy hour is every last Friday of the month", "category": "factual"},
+      {"content": "Flaky tests must be quarantined and fixed within one sprint", "category": "procedural"},
+      {"content": "Performance tests run nightly on staging", "category": "procedural"},
+      {"content": "The espresso machine was repaired last week", "category": "factual"}
+    ],
+    "query": "What are the testing requirements for a new feature?",
+    "gold_ids": [0, 1, 3, 4],
+    "rounds": 3,
+    "gold_answer": "80% unit coverage, integration in Docker, quarantine flaky tests, nightly perf tests"
+  },
+  {
+    "id": "qg_09",
+    "description": "Logging standards: technical log requirements beat irrelevant facts",
+    "memories": [
+      {"content": "Logs must use structured JSON format", "category": "procedural"},
+      {"content": "Log level should be INFO in production, DEBUG only in dev", "category": "procedural"},
+      {"content": "There is a foosball table in the games room", "category": "factual"},
+      {"content": "Sensitive data (PII, secrets) must never appear in logs", "category": "procedural"},
+      {"content": "Logs are shipped to Datadog with 30-day retention", "category": "factual"}
+    ],
+    "query": "What are the logging standards?",
+    "gold_ids": [0, 1, 3, 4],
+    "rounds": 3,
+    "gold_answer": "structured JSON, INFO in prod, no PII in logs, shipped to Datadog with 30-day retention"
+  },
+  {
+    "id": "qg_10",
+    "description": "Secrets management: vault/secrets facts rank above social noise",
+    "memories": [
+      {"content": "All secrets stored in HashiCorp Vault at vault.internal", "category": "factual"},
+      {"content": "Applications access secrets via VAULT_TOKEN env variable", "category": "procedural"},
+      {"content": "Team trivia night is every Wednesday", "category": "factual"},
+      {"content": "Never hardcode secrets in source code or configs", "category": "procedural"},
+      {"content": "Secret rotation triggers a graceful restart of affected services", "category": "procedural"}
+    ],
+    "query": "How should applications access secrets?",
+    "gold_ids": [0, 1, 3, 4],
+    "rounds": 3,
+    "gold_answer": "Vault at vault.internal, use VAULT_TOKEN, never hardcode, rotation triggers graceful restart"
+  },
+  {
+    "id": "qg_11",
+    "description": "Feature flags: relevant flag system docs surface over noise",
+    "memories": [
+      {"content": "Feature flags managed in LaunchDarkly", "category": "factual"},
+      {"content": "New features must be wrapped in a feature flag for gradual rollout", "category": "procedural"},
+      {"content": "The office dog is named Biscuit", "category": "factual"},
+      {"content": "Flag cleanup: remove flags within 2 weeks of full rollout", "category": "procedural"},
+      {"content": "Emergency kill switch available in LaunchDarkly dashboard", "category": "procedural"}
+    ],
+    "query": "How do we use feature flags?",
+    "gold_ids": [0, 1, 3, 4],
+    "rounds": 3,
+    "gold_answer": "LaunchDarkly, wrap new features, cleanup 2 weeks after full rollout, emergency kill switch"
+  },
+  {
+    "id": "qg_12",
+    "description": "Data migration procedures: procedural steps outrank trivia",
+    "memories": [
+      {"content": "Database migrations use Alembic, run with alembic upgrade head", "category": "procedural"},
+      {"content": "Always take a DB snapshot before running migrations in prod", "category": "procedural"},
+      {"content": "The team uses Notion for documentation", "category": "factual"},
+      {"content": "Migrations are tested on staging for 24h before prod", "category": "procedural"},
+      {"content": "There is a whiteboard in meeting room A", "category": "factual"}
+    ],
+    "query": "How do I run a database migration?",
+    "gold_ids": [0, 1, 3],
+    "rounds": 3,
+    "gold_answer": "Alembic upgrade head, snapshot DB first, test on staging for 24h before prod"
+  },
+  {
+    "id": "qg_13",
+    "description": "Monitoring and alerting: ops knowledge beats social chatter",
+    "memories": [
+      {"content": "Grafana dashboards at grafana.internal:3000", "category": "factual"},
+      {"content": "Alerts are routed via PagerDuty based on severity", "category": "factual"},
+      {"content": "Error rate > 1% triggers a P1 alert automatically", "category": "procedural"},
+      {"content": "The office has bean bags in the lounge", "category": "factual"},
+      {"content": "Runbooks for each alert are in the ops wiki", "category": "procedural"}
+    ],
+    "query": "How do I monitor production and respond to alerts?",
+    "gold_ids": [0, 1, 2, 4],
+    "rounds": 3,
+    "gold_answer": "Grafana at grafana.internal, PagerDuty routing, P1 on error rate > 1%, runbooks in ops wiki"
+  }
+]

@@ -36,10 +36,40 @@ export interface MessagingPlatform {
   ingress_url?: string | null;
   /** Switched off by the GATEWAY_RELAY_URL relay-exclusive rule, not by the user (absent on older backends). */
   disabled_by_relay?: boolean;
+  /** Team Gateway's shared bot carries this platform: setup links an account to it. */
+  relay_fronted?: boolean;
+  /** The relay owns this platform outright, so a direct bot would be switched off at every start. */
+  relay_exclusive?: boolean;
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;
     home_channel_set?: boolean;
   } | null;
   env_vars: MessagingPlatformEnvVar[];
+}
+
+export interface RelayLinkedAccount {
+  platformUserId: string;
+  handle?: string;
+  displayName?: string;
+  containerName?: string;
+}
+
+export interface RelayLinksResponse {
+  platforms: { platform: string; bot_url: string | null; accounts: RelayLinkedAccount[] }[];
+}
+
+export interface RelayLinkCode {
+  platform: string;
+  code: string;
+  /** The exact message to send the shared bot. */
+  command: string;
+  expires_at: string | null;
+  bot_url: string | null;
+}
+
+export interface RelayLinkCodeState {
+  /** pending = not redeemed yet; inactive = used or expired; refused = see reason. */
+  state: "pending" | "inactive" | "refused";
+  reason?: string | null;
 }

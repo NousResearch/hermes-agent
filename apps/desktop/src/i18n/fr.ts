@@ -2992,6 +2992,27 @@ export const frOverrides = {
       'Réessayez le redémarrage ; si le problème persiste, ouvrez les journaux et envoyez les diagnostics.',
     restartAgain: 'Redémarrer à nouveau',
     openLogs: 'Ouvrir les journaux',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Aucun jeton de bot requis',
+      intro: (platform: string) => `${platform} atteint cet agent via le bot Hermes partagé. Associez votre compte ${platform} et écrivez au bot pour parler à votre agent.`,
+      link: (platform: string) => `Associer ${platform}`,
+      linkAnother: (platform: string) => `Associer un autre compte ${platform}`,
+      linkedAccounts: 'Comptes associés',
+      unlink: 'Dissocier',
+      unlinkFailed: 'Impossible de dissocier ce compte',
+      stepOpen: (platform: string) => `1. Scannez le code avec votre téléphone ou ouvrez le bot dans ${platform}.`,
+      stepSend: '2. Envoyez ce message au bot depuis le compte à associer :',
+      open: (platform: string) => `Ouvrir ${platform}`,
+      copy: 'Copier le message',
+      copied: 'Copié',
+      copyFailed: (command: string) => `Échec de la copie. Tapez plutôt ${command}.`,
+      waiting: 'En attente du message dans le bot. Le code ne sert qu’une fois.',
+      linked: (platform: string) => `Compte ${platform} associé. Écrivez au bot pour parler à votre agent.`,
+      expired: 'Le code a expiré avant d’être utilisé. Demandez-en un nouveau et réessayez.',
+      refused: (platform: string) => `${platform} a refusé l’association. Demandez un nouveau code et réessayez.`,
+      qrAlt: (platform: string) => `Code QR du bot ${platform} partagé`
+    },
     telegramQr: {
       title: 'Choisissez comment connecter votre bot Telegram',
       subtitle:

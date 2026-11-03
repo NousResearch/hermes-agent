@@ -48,6 +48,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { AllowlistField } from './allowlist-field'
 import { PlatformAvatar } from './platform-icon'
+import { RelayLinkSetup } from './relay-link'
 import { TelegramQrSetup } from './telegram-qr-setup'
 
 interface MessagingViewProps extends React.ComponentProps<'section'> {
@@ -743,12 +744,7 @@ function PlatformDetail({
 }) {
   const { t } = useI18n()
   const m = t.messaging
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
-  const hiddenCount = advancedFields.length
+  const viaRelay = Boolean(platform.relay_exclusive)
 
   return (
     <>
@@ -757,9 +753,13 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            {viaRelay ? (
+              <SetupPill active>{m.relayLink.title}</SetupPill>
+            ) : (
+              <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            )}
             {/* Resting states earn no pill — only actionable ones. */}
-            {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
+            {!platform.configured && !viaRelay && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the
                 platform's whole story; only add the hint when it is not. */}
             {!platform.gateway_running && platform.state !== 'gateway_stopped' && (
@@ -835,6 +835,57 @@ function PlatformDetail({
         </section>
       )}
 
+      {platform.relay_fronted && (
+        <section>
+          <RelayLinkSetup platform={platform} />
+        </section>
+      )}
+
+      {/* Under an exclusive relay a direct bot is switched off at every start: the shared-bot link
+          above is the whole setup, so the credential sections would only lead nowhere (#141546). */}
+      {!platform.relay_exclusive && (
+        <DirectSetupSections
+          edits={edits}
+          onClear={onClear}
+          onEdit={onEdit}
+          onTelegramApplied={onTelegramApplied}
+          platform={platform}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+}
+
+function DirectSetupSections({
+  edits,
+  onClear,
+  onEdit,
+  onTelegramApplied,
+  platform,
+  saving,
+  scopeProfile
+}: {
+  edits: Record<string, string>
+  onClear: (key: string) => void
+  onEdit: (key: string, value: string) => void
+  onTelegramApplied: (result: TelegramOnboardingApplyResponse) => void
+  platform: MessagingPlatformInfo
+  saving: string | null
+  scopeProfile: string | undefined
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const requiredFields = platform.env_vars.filter(field => field.required)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const hiddenCount = advancedFields.length
+
+  return (
+    <>
       {platform.id === 'telegram' && (
         <section>
           <SectionTitle>{m.telegramQr.quickSetup}</SectionTitle>
@@ -962,6 +1013,11 @@ function PlatformActionBar({
   const { t } = useI18n()
   const m = t.messaging
   const isSavingEnv = saving === `env:${platform.id}`
+
+  // Under an exclusive relay the direct adapter never runs; the link panel is the whole setup.
+  if (platform.relay_exclusive) {
+    return null
+  }
 
   return (
     <>

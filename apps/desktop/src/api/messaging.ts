@@ -4,6 +4,9 @@ import type {
   MessagingPlatformUpdate,
   PairingResponse,
   PairingUser,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
   TelegramOnboardingApplyResponse,
   TelegramOnboardingStartResponse,
   TelegramOnboardingStatusResponse,
@@ -51,6 +54,33 @@ export function testMessagingPlatform(
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Team Gateway account links -----------------------------------------------
+// A relay-fronted instance reaches Telegram/Discord/Slack only through the shared bot; these mint
+// the one-time `/link <code>` that binds a chat account to this agent. The relay serves the
+// gateway's own profile, so these carry no profile scope.
+
+export function getRelayLinks(): Promise<RelayLinksResponse> {
+  return hermesApi<RelayLinksResponse>({ path: '/api/messaging/relay' })
+}
+
+export function requestRelayLink(platform: string): Promise<RelayLinkCode> {
+  return hermesApi<RelayLinkCode>({
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/link`,
+    method: 'POST'
+  })
+}
+
+export function getRelayLinkState(code: string): Promise<RelayLinkCodeState> {
+  return hermesApi<RelayLinkCodeState>({ path: `/api/messaging/relay/link/${encodeURIComponent(code)}` })
+}
+
+export function unlinkRelayAccount(platform: string, platformUserId: string): Promise<{ ok: boolean }> {
+  return hermesApi<{ ok: boolean }>({
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+    method: 'DELETE'
   })
 }
 

@@ -2973,6 +2973,27 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Sin token de bot',
+      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      link: (platform: string) => `Vincular ${platform}`,
+      linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
+      linkedAccounts: 'Cuentas vinculadas',
+      unlink: 'Desvincular',
+      unlinkFailed: 'No se pudo desvincular la cuenta',
+      stepOpen: (platform: string) => `1. Escanea el código con el móvil o abre el bot en ${platform}.`,
+      stepSend: '2. Envía al bot este mensaje desde la cuenta que quieres vincular:',
+      open: (platform: string) => `Abrir ${platform}`,
+      copy: 'Copiar mensaje',
+      copied: 'Copiado',
+      copyFailed: (command: string) => `No se pudo copiar. Escribe ${command}.`,
+      waiting: 'Esperando a que el bot vea tu mensaje. El código sirve una sola vez.',
+      linked: (platform: string) => `Cuenta de ${platform} vinculada. Escribe al bot para hablar con tu agente.`,
+      expired: 'El código caducó antes de usarse. Pide uno nuevo e inténtalo otra vez.',
+      refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
+      qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`
+    },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
       subtitle:

@@ -25,7 +25,8 @@ def client(monkeypatch, _isolate_hermes_home):
     home = get_hermes_home()
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    for var in ("TELEGRAM_BOT_TOKEN", "GATEWAY_RELAY_URL", "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS"):
+    for var in ("TELEGRAM_BOT_TOKEN", "GATEWAY_RELAY_URL", "GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS",
+                "GATEWAY_RELAY_PLATFORMS"):
         monkeypatch.delenv(var, raising=False)
     (home / ".env").write_text(f"TELEGRAM_BOT_TOKEN={_VALID_BOT_TOKEN}\n", encoding="utf-8")
     (home / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n", encoding="utf-8")
@@ -71,3 +72,21 @@ def test_user_disabled_platform_is_not_blamed_on_the_relay(client, monkeypatch):
     telegram = _telegram(client)
     assert telegram["state"] == "disabled"
     assert telegram["disabled_by_relay"] is False
+
+
+def test_shared_bot_platforms_are_offered_as_account_links(client, monkeypatch):
+    """#141546: on a relay-exclusive instance a platform the shared bot carries is set up by linking
+    an account to that bot; the opt-out keeps direct setup beside it; an uncarried one gets neither."""
+    monkeypatch.setenv("GATEWAY_RELAY_URL", "https://relay.example.test")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "telegram,discord")
+
+    resp = client.get("/api/messaging/platforms")
+    by_id = {p["id"]: p for p in resp.json()["platforms"]}
+    assert by_id["telegram"]["relay_fronted"] is True
+    assert by_id["telegram"]["relay_exclusive"] is True
+    assert by_id["slack"]["relay_fronted"] is False
+
+    monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
+    telegram = _telegram(client)
+    assert telegram["relay_fronted"] is True
+    assert telegram["relay_exclusive"] is False

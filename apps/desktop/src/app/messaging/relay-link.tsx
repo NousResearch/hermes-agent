@@ -1,0 +1,252 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { ErrorBanner } from '@/components/ui/error-state'
+import {
+  getRelayLinks,
+  getRelayLinkState,
+  type MessagingPlatformInfo,
+  type RelayLinkCode,
+  type RelayLinkedAccount,
+  requestRelayLink,
+  unlinkRelayAccount
+} from '@/hermes'
+import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
+import { Copy, ExternalLink, QrCode } from '@/lib/icons'
+import { notify, notifyError } from '@/store/notifications'
+
+const POLL_MS = 3000
+
+async function renderQr(payload: string): Promise<string> {
+  // Lazy: the QR encoder is only needed while a code is on screen.
+  const QRCode = await import('qrcode')
+
+  return QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 1, width: 192 })
+}
+
+function accountLabel(account: RelayLinkedAccount): string {
+  return account.displayName || (account.handle ? `@${account.handle.replace(/^@/, '')}` : '') || account.platformUserId
+}
+
+/**
+ * Team Gateway setup for a platform the relay's shared bot carries (#141546). On such an instance a
+ * bot of the user's own is switched off at every gateway start, so setup is linking the user's chat
+ * account to the shared bot: mint a one-time code, send `/link <code>` to the bot, done.
+ */
+export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }) {
+  const { t } = useI18n()
+  const r = t.messaging.relayLink
+  const [accounts, setAccounts] = useState<null | RelayLinkedAccount[]>(null)
+  const [botUrl, setBotUrl] = useState<null | string>(null)
+  const [link, setLink] = useState<null | RelayLinkCode>(null)
+  const [qrDataUrl, setQrDataUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  // Accounts linked when the code was minted: a redeemed code shows up as one more.
+  const linkedBefore = useRef(0)
+
+  const loadAccounts = useCallback(async () => {
+    try {
+      const response = await getRelayLinks()
+      const row = response.platforms.find(entry => entry.platform === platform.id)
+      setAccounts(row?.accounts ?? [])
+      setBotUrl(row?.bot_url ?? null)
+      setError('')
+
+      return row?.accounts ?? []
+    } catch (loadError) {
+      setAccounts(null)
+      setError(loadError instanceof Error ? loadError.message : String(loadError))
+
+      return null
+    }
+  }, [platform.id])
+
+  useEffect(() => {
+    void loadAccounts()
+  }, [loadAccounts])
+
+  useEffect(() => {
+    if (!link) {
+      return
+    }
+
+    let cancelled = false
+    let timer: null | number = null
+
+    const poll = async () => {
+      try {
+        const state = await getRelayLinkState(link.code)
+
+        if (cancelled) {
+          return
+        }
+
+        if (state.state === 'pending') {
+          timer = window.setTimeout(() => void poll(), POLL_MS)
+
+          return
+        }
+
+        setLink(null)
+        setQrDataUrl('')
+
+        if (state.state === 'refused') {
+          setError(r.refused(platform.name))
+
+          return
+        }
+
+        const after = await loadAccounts()
+
+        if (cancelled) {
+          return
+        }
+
+        if (after && after.length > linkedBefore.current) {
+          notify({ kind: 'success', message: r.linked(platform.name) })
+        } else {
+          setError(r.expired)
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void poll(), POLL_MS)
+        }
+      }
+    }
+
+    timer = window.setTimeout(() => void poll(), POLL_MS)
+
+    return () => {
+      cancelled = true
+
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [link, loadAccounts, platform.name, r])
+
+  const start = async () => {
+    setBusy(true)
+    setError('')
+
+    try {
+      const result = await requestRelayLink(platform.id)
+      linkedBefore.current = accounts?.length ?? 0
+      setLink(result)
+      const target = result.bot_url ?? botUrl
+      setQrDataUrl(target ? await renderQr(target) : '')
+    } catch (startError) {
+      setError(startError instanceof Error ? startError.message : String(startError))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const unlink = async (account: RelayLinkedAccount) => {
+    try {
+      await unlinkRelayAccount(platform.id, account.platformUserId)
+      await loadAccounts()
+    } catch (unlinkError) {
+      notifyError(unlinkError, r.unlinkFailed)
+    }
+  }
+
+  const copyCommand = async () => {
+    if (!link) {
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(link.command)
+      notify({ kind: 'success', message: r.copied })
+    } catch (copyError) {
+      notifyError(copyError, r.copyFailed(link.command))
+    }
+  }
+
+  const openUrl = link?.bot_url ?? botUrl
+
+  return (
+    <div
+      className="rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-surface-secondary,transparent) p-3"
+      data-testid={`relay-link-${platform.id}`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[length:var(--conversation-text-font-size)] font-medium">{r.title}</span>
+            <Badge variant="success">{r.badge}</Badge>
+          </div>
+          <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            {r.intro(platform.name)}
+          </p>
+        </div>
+        {!link && (
+          <Button disabled={busy} onClick={() => void start()} size="sm">
+            <QrCode />
+            {accounts && accounts.length > 0 ? r.linkAnother(platform.name) : r.link(platform.name)}
+          </Button>
+        )}
+      </div>
+
+      {accounts && accounts.length > 0 && (
+        <div className="mt-3 grid gap-1">
+          <span className="text-xs text-muted-foreground">{r.linkedAccounts}</span>
+          {accounts.map(account => (
+            <div className="flex items-center justify-between gap-2" key={account.platformUserId}>
+              <span className="truncate text-sm">{accountLabel(account)}</span>
+              <Button onClick={() => void unlink(account)} size="sm" variant="ghost">
+                {r.unlink}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <ErrorBanner className="mt-3">{error}</ErrorBanner>}
+
+      {link && (
+        <div className="mt-3 grid gap-4 border-t border-(--ui-stroke-secondary) pt-3 lg:grid-cols-[minmax(0,1fr)_200px]">
+          <div className="grid content-start gap-2 text-sm">
+            <span>{r.stepOpen(platform.name)}</span>
+            <span>{r.stepSend}</span>
+            <code className="w-fit rounded bg-(--ui-surface-tertiary,transparent) px-2 py-1 font-mono">{link.command}</code>
+            <div className="flex flex-wrap gap-2">
+              {openUrl && (
+                <Button onClick={() => openExternalLink(openUrl)} size="sm">
+                  <ExternalLink />
+                  {r.open(platform.name)}
+                </Button>
+              )}
+              <Button onClick={() => void copyCommand()} size="sm" variant="secondary">
+                <Copy />
+                {r.copy}
+              </Button>
+              <Button
+                onClick={() => {
+                  setLink(null)
+                  setQrDataUrl('')
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                {t.common.cancel}
+              </Button>
+            </div>
+            <span className="text-xs text-muted-foreground">{r.waiting}</span>
+          </div>
+          {qrDataUrl && (
+            <img
+              alt={r.qrAlt(platform.name)}
+              className="size-48 rounded-lg border border-(--ui-stroke-secondary) bg-white p-1"
+              src={qrDataUrl}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

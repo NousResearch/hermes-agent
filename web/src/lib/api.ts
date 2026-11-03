@@ -20,8 +20,20 @@ export type {
   WhatsAppOnboardingStartResponse,
   WhatsAppOnboardingStatusResponse,
 } from "./api-whatsapp";
-import type { MessagingPlatform } from "./api-messaging";
-export type { MessagingPlatform, MessagingPlatformEnvVar } from "./api-messaging";
+import type {
+  MessagingPlatform,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
+} from "./api-messaging";
+export type {
+  MessagingPlatform,
+  MessagingPlatformEnvVar,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinkedAccount,
+  RelayLinksResponse,
+} from "./api-messaging";
 import type {
   ManagedFileReadResponse,
   ManagedFilesResponse,
@@ -981,6 +993,18 @@ export const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
+    ),
+  getRelayLinks: () => fetchJSON<RelayLinksResponse>("/api/messaging/relay"),
+  requestRelayLink: (platform: string) =>
+    fetchJSON<RelayLinkCode>(`/api/messaging/relay/${encodeURIComponent(platform)}/link`, {
+      method: "POST",
+    }),
+  getRelayLinkState: (code: string) =>
+    fetchJSON<RelayLinkCodeState>(`/api/messaging/relay/link/${encodeURIComponent(code)}`),
+  unlinkRelayAccount: (platform: string, platformUserId: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+      { method: "DELETE" },
     ),
   testMessagingPlatform: (id: string) =>
     fetchJSON<MessagingPlatformTestResult>(

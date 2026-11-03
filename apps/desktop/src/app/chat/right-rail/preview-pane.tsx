@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { Codicon } from '@/components/ui/codicon'
 import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
@@ -19,6 +20,7 @@ import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocu
 import { isRemoteGateway } from '@/lib/media'
 import {
   addAnnotatePin,
+  type AnnotateMarkupTool,
   beginAnnotateMode,
   clearAnnotatePins,
   compactIdentity,
@@ -32,9 +34,11 @@ import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
+import { floatBrowserTab } from '@/store/browser-float'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
+  $floatingBrowserTabId,
   $previewServerRestart,
   commitBrowserTabLocation,
   failPreviewServerRestart,
@@ -47,18 +51,23 @@ import {
 import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
+import { START_SHORTCUTS, startShortcutAddress } from './preview-address'
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
   bindPreviewExecuteJavaScript,
   captureAnnotateCrop,
+  clearAnnotateMarkup,
   hideAnnotateDraft,
   installAnnotateOverlay,
   type PreviewAnnotateGuest,
+  setAnnotateMarkupTool,
   showAnnotateDraft,
   syncAnnotatePins,
   teardownAnnotateOverlay,
+  undoAnnotateMarkup,
   waitAnnotateEvent
 } from './preview-annotate-host'
+import { PreviewAnnotateTools } from './preview-annotate-tools'
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
 import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
@@ -271,7 +280,42 @@ function PreviewLoadError({
   )
 }
 
-/** The body of a tab that is not a web page: a generated artifact or a file. */
+/**
+ * The blank page's shortcuts: the dev servers a person is most often here to
+ * look at, one click instead of typing an address. They go through the same
+ * address parsing the bar uses, so a chip can never navigate somewhere the bar
+ * would have refused.
+ */
+function PreviewStartShortcuts({ onNavigate }: { onNavigate: (url: string) => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      aria-label={t.preview.web.blankPageShortcuts}
+      className="flex flex-wrap items-center justify-center gap-1.5"
+      role="group"
+    >
+      {START_SHORTCUTS.map(shortcut => (
+        <button
+          className="flex items-center gap-1 rounded-full border border-(--ui-stroke-tertiary) px-2.5 py-1 font-mono text-xs text-(--ui-text-secondary) transition-colors hover:border-(--ui-stroke-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+          key={shortcut}
+          onClick={() => {
+            const address = startShortcutAddress(shortcut)
+
+            if (address) {
+              onNavigate(address)
+            }
+          }}
+          type="button"
+        >
+          <Codicon className="opacity-60" name="server-environment" size={12} />
+          {shortcut}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function PreviewDocumentBody(props: ComponentProps<typeof LocalFilePreview>) {
   return props.target.kind === 'artifact' ? (
     <ArtifactPreview onClose={props.onClose} target={props.target} />
@@ -304,6 +348,7 @@ export function PreviewPane({
   const webviewRef = useRef<PreviewWebview | null>(null)
   const noteGuestReady = usePreviewGuestOffscreen(webviewRef, tabId)
   const previewServerRestart = useStore($previewServerRestart)
+  const floatingTabId = useStore($floatingBrowserTabId)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -321,6 +366,9 @@ export function PreviewPane({
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
+  // Which markup tool is armed in the guest. Null is the picker: a click picks
+  // an element or drags a comment area, exactly as before markup existed.
+  const [markupTool, setMarkupTool] = useState<AnnotateMarkupTool | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
   const annotateLoopRef = useRef(0)
@@ -512,6 +560,7 @@ export function PreviewPane({
     }
 
     setDraftNote('')
+    setMarkupTool(null)
     setAnnotate(endAnnotateMode)
   }, [annotateGuest])
 
@@ -565,7 +614,12 @@ export function PreviewPane({
         }))
       ).catch(() => undefined)
       await hideAnnotateDraft(guest).catch(() => undefined)
+      // The strokes belong to the comment that was just saved; the next pick
+      // starts on a clean page.
+      await clearAnnotateMarkup(guest).catch(() => undefined)
     }
+
+    setMarkupTool(null)
   }, [annotateGuest, draftNote])
 
   const cancelAnnotateDraft = useCallback(async () => {
@@ -576,7 +630,10 @@ export function PreviewPane({
 
     if (guest) {
       await hideAnnotateDraft(guest).catch(() => undefined)
+      await clearAnnotateMarkup(guest).catch(() => undefined)
     }
+
+    setMarkupTool(null)
   }, [annotateGuest])
 
   const flushComments = useCallback(async () => {
@@ -716,6 +773,49 @@ export function PreviewPane({
       void startAnnotate()
     }
   }, [startAnnotate, stopAnnotate])
+
+  /** Arm a markup tool in the guest; the page then draws instead of picking. */
+  const pickMarkupTool = useCallback(
+    (tool: AnnotateMarkupTool) => {
+      const guest = annotateGuest()
+
+      setMarkupTool(tool)
+
+      if (guest) {
+        void setAnnotateMarkupTool(guest, tool).catch(() => undefined)
+      }
+    },
+    [annotateGuest]
+  )
+
+  /** Hand the page back to the picker without leaving annotate mode. */
+  const pickWithPointer = useCallback(() => {
+    const guest = annotateGuest()
+
+    setMarkupTool(null)
+
+    if (guest) {
+      void setAnnotateMarkupTool(guest, null).catch(() => undefined)
+    }
+  }, [annotateGuest])
+
+  const undoMarkupStroke = useCallback(() => {
+    const guest = annotateGuest()
+
+    if (guest) {
+      void undoAnnotateMarkup(guest).catch(() => undefined)
+    }
+  }, [annotateGuest])
+
+  const dropMarkup = useCallback(() => {
+    const guest = annotateGuest()
+
+    setMarkupTool(null)
+
+    if (guest) {
+      void clearAnnotateMarkup(guest).catch(() => undefined)
+    }
+  }, [annotateGuest])
 
   const appendConsoleEntry = useCallback(
     (entry: Omit<ConsoleEntry, 'id'>) => {
@@ -1428,13 +1528,44 @@ export function PreviewPane({
     setHistory({ back: false, forward: false })
     setLoading(true)
     setCurrentUrl(nextUrl)
-    void navigation.loadURL?.(nextUrl)?.catch((error: unknown) => {
+
+    const report = (error: unknown) => {
       setLoadError({
         description: error instanceof Error ? error.message : copy.unreachableDescription,
         url: nextUrl
       })
       setLoading(false)
-    })
+    }
+
+    const load = () => {
+      try {
+        void navigation.loadURL?.(nextUrl)?.catch(report)
+
+        return true
+      } catch {
+        // `loadURL` THROWS (it does not reject) while the guest is attached but
+        // has not reached dom-ready — the state a pane spends its first frames
+        // in, and the one a float opening another pane lands in. Left uncaught
+        // it escapes this effect into the error boundary and takes the whole
+        // view down; the guest's own dom-ready is the cue to try again.
+        return false
+      }
+    }
+
+    if (!load()) {
+      webviewRef.current?.addEventListener(
+        'dom-ready',
+        () => {
+          try {
+            void navigation.loadURL?.(nextUrl)?.catch(report)
+          } catch {
+            // Still not ready: the element is already loading its own `src`,
+            // so the address the pane mounted with is on screen either way.
+          }
+        },
+        { once: true }
+      )
+    }
   }, [annotateGuest, consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
 
   return (
@@ -1494,35 +1625,43 @@ export function PreviewPane({
 
         {usesBrowserIframe && !isBlankPage && <PreviewBrowserFrameHint target={target} />}
 
-        {usesWebview && (
+        {(usesWebview || usesBrowserIframe) && (
           <PreviewBrowserBar
-            annotateMode={annotate.mode}
-            canGoBack={history.back}
-            canGoForward={history.forward}
-            commentCount={annotate.stack.pins.length}
-            consoleOpen={consoleOpen}
-            devToolsOpen={devtoolsOpen}
+            annotateMode={usesWebview && annotate.mode}
+            canGoBack={usesWebview && history.back}
+            canGoForward={usesWebview && history.forward}
+            commentCount={usesWebview ? annotate.stack.pins.length : 0}
+            consoleOpen={usesWebview && consoleOpen}
+            devToolsOpen={usesWebview && devtoolsOpen}
             loading={loading}
             onBack={goBack}
             onClose={onClose}
-            onFlushComments={() => void flushComments()}
+            onFloat={
+              !usesWebview || target.kind !== 'url' || isBrowserWindow() || !tabId || floatingTabId === tabId
+                ? undefined
+                : () => floatBrowserTab(tabId)
+            }
+            onFlushComments={usesWebview ? () => void flushComments() : undefined}
             onForward={goForward}
             onNavigate={navigateTo}
             onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
+              // The browser-hosted pane already offers this in the frame hint
+              // above the iframe; the bar's copy would be a second button for
+              // the same act, in the same column.
+              !usesWebview || isBrowserWindow() || canOpenBrowserWindow()
+                ? undefined
+                : () => void window.hermesDesktop?.openExternal(currentUrl)
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
+              !usesWebview || target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
                 ? undefined
                 : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
-            onToggleAnnotate={toggleAnnotate}
-            onToggleConsole={() => consoleState.setOpen(open => !open)}
-            onToggleDevTools={toggleDevTools}
+            onToggleAnnotate={usesWebview ? toggleAnnotate : undefined}
+            onToggleConsole={usesWebview ? () => consoleState.setOpen(open => !open) : undefined}
+            onToggleDevTools={usesWebview ? toggleDevTools : undefined}
             url={currentUrl}
           />
         )}
@@ -1562,7 +1701,12 @@ export function PreviewPane({
           )}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">
-              <PanelEmpty description={copy.blankPageBody} icon="globe" />
+              <PanelEmpty
+                action={<PreviewStartShortcuts onNavigate={navigateTo} />}
+                description={copy.blankPageBody}
+                icon="globe"
+                title={copy.blankPageTitle}
+              />
             </div>
           )}
           {isWebPreview && loadError && (
@@ -1574,6 +1718,16 @@ export function PreviewPane({
               restarting={restartingServer}
             />
           )}
+
+          {isWebPreview && annotate.mode ? (
+            <PreviewAnnotateTools
+              onClear={dropMarkup}
+              onPick={pickMarkupTool}
+              onPicker={pickWithPointer}
+              onUndo={undoMarkupStroke}
+              tool={markupTool}
+            />
+          ) : null}
 
           {isWebPreview && annotate.draft ? (
             <PreviewAnnotateCard

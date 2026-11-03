@@ -864,6 +864,7 @@
   "keybinds.actions.view.reopenTab": ["ja","zh-hant"],
   "keybinds.actions.view.selectionToComposer": ["ja","zh-hant"],
   "keybinds.actions.view.showBrowser": ["ja","zh-hant"],
+  "keybinds.actions.view.floatBrowser": ["ja","zh-hant"],
   "keybinds.actions.view.showFiles": ["ja","zh-hant"],
   "keybinds.actions.view.showTerminal": ["ja","zh-hant"],
   "keybinds.actions.view.tabSlot.1": ["ar","ja","ru","zh","zh-hant"],

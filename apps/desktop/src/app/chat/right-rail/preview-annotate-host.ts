@@ -6,6 +6,7 @@
 import {
   ANNOTATE_CROP_PAD,
   annotateInPageSource,
+  type AnnotateMarkupTool,
   type AnnotatePageEvent,
   type AnnotatePinChrome
 } from '@/lib/preview-annotate'
@@ -93,6 +94,31 @@ export async function hideAnnotateDraft(guest: PreviewAnnotateGuest): Promise<vo
   await guest.executeJavaScript(`
     window.__hermesAnnotate && window.__hermesAnnotate.hideDraft()
   `)
+}
+
+/** Arm a markup tool in the guest, or pass `null` to hand the page back to the picker. */
+export async function setAnnotateMarkupTool(
+  guest: PreviewAnnotateGuest,
+  tool: null | AnnotateMarkupTool
+): Promise<void> {
+  await guest.executeJavaScript(
+    tool
+      ? `window.__hermesAnnotate && window.__hermesAnnotate.beginMarkup(${JSON.stringify(tool)})`
+      : 'window.__hermesAnnotate && window.__hermesAnnotate.endMarkup()'
+  )
+}
+
+export async function undoAnnotateMarkup(guest: PreviewAnnotateGuest): Promise<void> {
+  await guest.executeJavaScript(`window.__hermesAnnotate && window.__hermesAnnotate.undoMarkup()`)
+}
+
+/**
+ * Forget every stroke. Called when a comment is saved or dropped and when a new
+ * pick starts: a circle belongs to the note it was drawn for, and the next crop
+ * must not inherit it.
+ */
+export async function clearAnnotateMarkup(guest: PreviewAnnotateGuest): Promise<void> {
+  await guest.executeJavaScript(`window.__hermesAnnotate && window.__hermesAnnotate.clearMarkup()`)
 }
 
 /** Guest calls are best-effort dressing: never let one fail the capture. */

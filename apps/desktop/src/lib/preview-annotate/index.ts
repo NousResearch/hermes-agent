@@ -6,6 +6,9 @@ export {
   annotateInPage,
   type AnnotateInPage,
   annotateInPageSource,
+  type AnnotateMarkupPoint,
+  type AnnotateMarkupStroke,
+  type AnnotateMarkupTool,
   type AnnotatePageEvent,
   type AnnotatePinChrome
 } from './in-page'

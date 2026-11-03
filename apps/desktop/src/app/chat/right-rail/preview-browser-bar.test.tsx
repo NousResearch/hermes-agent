@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { normalizePreviewAddress, PreviewBrowserBar } from './preview-browser-bar'
+import { PreviewBrowserBar } from './preview-browser-bar'
 
 const baseProps = {
   canGoBack: false,
@@ -33,49 +33,6 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   delete desktopWindow.hermesDesktop
-})
-
-describe('normalizePreviewAddress', () => {
-  it('passes through http and https URLs', () => {
-    expect(normalizePreviewAddress('https://example.com/path')).toBe('https://example.com/path')
-    expect(normalizePreviewAddress('http://localhost:3000/')).toBe('http://localhost:3000/')
-  })
-
-  it('gives a bare host https and a loopback host http', () => {
-    expect(normalizePreviewAddress('example.com')).toBe('https://example.com')
-    expect(normalizePreviewAddress('localhost:5173')).toBe('http://localhost:5173')
-    expect(normalizePreviewAddress('127.0.0.1:8080/app')).toBe('http://127.0.0.1:8080/app')
-  })
-
-  it('rejects empty input', () => {
-    expect(normalizePreviewAddress('')).toBeNull()
-    expect(normalizePreviewAddress('   ')).toBeNull()
-  })
-
-  // This is a browser: the schemes a browser navigates to all work, and the
-  // user already owns the machine, so `file://` is theirs to open.
-  it('passes through the other schemes a browser can navigate', () => {
-    expect(normalizePreviewAddress('about:blank')).toBe('about:blank')
-    expect(normalizePreviewAddress('file:///etc/hosts')).toBe('file:///etc/hosts')
-    expect(normalizePreviewAddress('view-source:https://example.com')).toBe('view-source:https://example.com')
-  })
-
-  // These EXECUTE in the guest partition instead of navigating it — an address
-  // bar is not an eval box, and no shipping browser honors them here either.
-  it('rejects script-bearing schemes', () => {
-    expect(normalizePreviewAddress('javascript:alert(1)')).toBeNull()
-    expect(normalizePreviewAddress('data:text/html,evil')).toBeNull()
-    expect(normalizePreviewAddress('JavaScript:alert(1)')).toBeNull()
-  })
-
-  it('rejects strings that are not addresses at all', () => {
-    expect(normalizePreviewAddress('://broken')).toBeNull()
-    expect(normalizePreviewAddress('http://')).toBeNull()
-  })
-
-  it('trims whitespace before validating', () => {
-    expect(normalizePreviewAddress('  https://example.com  ')).toBe('https://example.com')
-  })
 })
 
 describe('PreviewBrowserBar', () => {

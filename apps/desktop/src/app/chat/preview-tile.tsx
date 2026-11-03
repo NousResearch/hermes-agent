@@ -25,10 +25,12 @@ import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { translateNow } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
+import { browserDockSide } from '@/store/browser-float'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '@/store/layout'
 import {
   $browserPages,
   $dockedVisiblePreviewTabs,
+  $floatingBrowserTabId,
   $poppedBrowserTabIds,
   $previewTabs,
   $visiblePreviewTabs,
@@ -333,8 +335,9 @@ function keepsLiveBody(tabId: string): boolean {
 
 /** A tab whose session left the screen keeps its live body when it is a page
  *  still open in this profile's rail (`targetFor` reads it) and not popped
- *  out (the pop-out window owns that guest). */
-const retainHiddenPreview = (tabId: string) => keepsLiveBody(tabId) && !$poppedBrowserTabIds.get().has(tabId)
+ *  out or floating (the pop-out window or the float owns that guest). */
+const retainHiddenPreview = (tabId: string) =>
+  keepsLiveBody(tabId) && !$poppedBrowserTabIds.get().has(tabId) && $floatingBrowserTabId.get() !== tabId
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // Only the FOCUSED session's tabs (plus pins) are in the tree — switching
@@ -352,7 +355,9 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // along). Every SUBSEQUENT preview stacks into that zone as a center tab:
   // without the anchor each opened file split a new zone off the right edge
   // (#93610), turning three file opens into three ever-narrower columns.
-  dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : 'right'),
+  // A Browser docked back from the float opens its zone on the side it was
+  // docked to.
+  dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : (browserDockSide(tab.id) ?? 'right')),
   anchor: tab => existingPreviewAnchor(tab.id),
   minWidth: '22rem',
   title: previewTitle,

@@ -237,6 +237,9 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ⌘⇧L — "L" for location, the address-bar chord every browser shares. Plain
   // ⌘L is the terminal's selection shortcut, hence the shift.
   { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+l'] },
+  // ⌥⌘B — "B" for browser. Floats the Browser over the app; pressed again it
+  // minimises the float to its corner pill and brings it back.
+  { id: 'view.floatBrowser', category: 'view', defaults: ['mod+alt+b'] },
   // ⌘⇧H — "h" for HUD. Enters/leaves the chrome-free floating chat: the app
   // window steps aside and a composer + live reply float over whatever the
   // user is working in. Ships bound because the whole point is leaving the app

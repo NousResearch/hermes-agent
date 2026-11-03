@@ -19,7 +19,7 @@ describe('PreviewStatusRow', () => {
     vi.restoreAllMocks()
   })
 
-  it('opens remote non-HTML file artifacts in the in-app preview instead of the local browser bridge', async () => {
+  it('opens remote non-HTML file artifacts in the in-app preview on a plain click', async () => {
     const remotePath = '/home/agent/report.pdf'
     const openPreviewInBrowser = vi.fn(async () => undefined)
 
@@ -57,7 +57,7 @@ describe('PreviewStatusRow', () => {
     expect(openPreviewInBrowser).not.toHaveBeenCalled()
   })
 
-  it('keeps local file artifacts on the browser bridge', async () => {
+  it('opens local artifacts in the in-app preview on a plain click', async () => {
     const localPath = '/Users/alice/report.pdf'
     const openPreviewInBrowser = vi.fn(async () => undefined)
 
@@ -87,12 +87,49 @@ describe('PreviewStatusRow', () => {
     fireEvent.click(screen.getByText('report.pdf'))
 
     await waitFor(() => {
+      expect($previewTabs.get()).toEqual([
+        expect.objectContaining({ target: expect.objectContaining({ kind: 'file', path: localPath }) })
+      ])
+    })
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+
+  it('hands local file artifacts to the browser bridge on ⌘/Ctrl-click', async () => {
+    const localPath = '/Users/alice/report.pdf'
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+
+    $connection.set({ mode: 'local' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'file',
+          label: 'report.pdf',
+          path: localPath,
+          previewKind: 'binary',
+          source: localPath,
+          url: 'file:///Users/alice/report.pdf'
+        })),
+        openPreviewInBrowser
+      }
+    })
+
+    render(
+      <PreviewStatusRow
+        item={{ cwd: '/Users/alice', id: localPath, label: 'report.pdf', target: localPath }}
+        onDismiss={() => undefined}
+      />
+    )
+
+    fireEvent.click(screen.getByText('report.pdf'), { ctrlKey: true })
+
+    await waitFor(() => {
       expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///Users/alice/report.pdf')
     })
     expect($previewTabs.get()).toEqual([])
   })
 
-  it('keeps remote HTML on the staged browser-open path, not the in-app pane', async () => {
+  it('sends remote HTML through the staged browser-open path from the open-in-browser action', async () => {
     const remotePath = '/home/agent/index.html'
     const html = '<!doctype html><html><body>hi</body></html>'
     const dataUrl = `data:text/html;base64,${btoa(html)}`
@@ -124,7 +161,7 @@ describe('PreviewStatusRow', () => {
       />
     )
 
-    fireEvent.click(screen.getByText('index.html'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
 
     await waitFor(() => {
       expect(saveImageBuffer).toHaveBeenCalled()

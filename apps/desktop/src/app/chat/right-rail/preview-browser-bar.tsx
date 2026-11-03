@@ -12,6 +12,11 @@
  * THIS page, so they belong beside its address, not on the strip where they
  * were ambiguous the moment a second tab opened. They stay `PaneStripGlyph`
  * buttons, so a glyph here and a glyph on the strip are still the same button.
+ *
+ * On the browser-hosted build there is no Electron `<webview>`, only an iframe
+ * the renderer cannot read. The bar still navigates and reloads it, but back
+ * and forward stay disabled — a frame's history is its own, and this side can
+ * neither read nor walk it — and there is no guest console or DevTools to open.
  */
 
 import { useEffect, useState } from 'react'
@@ -24,6 +29,8 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
+
+import { normalizePreviewAddress } from './preview-address'
 
 interface PreviewBrowserBarProps {
   annotateMode?: boolean
@@ -40,61 +47,26 @@ interface PreviewBrowserBarProps {
   onForward: () => void
   onNavigate: (url: string) => void
   onOpenExternal?: () => void
+  /** Lift this Browser out of the layout into the floating window. */
+  onFloat?: () => void
   onPopIn?: () => void
   onPopOut?: () => void
   onReload: () => void
   onToggleAnnotate?: () => void
-  onToggleConsole: () => void
-  onToggleDevTools: () => void
+  /** Absent on the browser-hosted iframe: the frame is opaque to the renderer,
+   *  so there is no guest console or DevTools to open. */
+  onToggleConsole?: () => void
+  onToggleDevTools?: () => void
   /** The page's CURRENT address (it moves as the user navigates), not the
    *  target the tab was opened with. */
   url: string
 }
 
 /**
- * What the user typed, as something a webview can load — or `null` if it isn't
- * loadable. A bare host is the common case in an address bar, and here it is
- * usually a dev server, so loopback gets `http` (nothing is listening on 443
- * and there's no certificate) and anything else gets `https`.
- *
- * The blocklist is deliberately narrow: `javascript:` and `data:` execute in
- * the guest partition rather than navigating it, so an address bar is not the
- * place to reach them. Everything a browser normally loads — including
- * `about:blank` and `file://` — goes through, because this IS a browser and
- * the person typing already owns the machine it runs on.
+ * Address parsing lives in `preview-address` so the Browser's start page can
+ * share it; the bar re-exports it, since the bar is where it is used.
  */
-export function normalizePreviewAddress(value: string): null | string {
-  const address = value.trim()
-
-  if (!address) {
-    return null
-  }
-
-  // `://`, not a leading-scheme regex: `localhost:5173` and `example.com:8080`
-  // both match `scheme:` and would be read as an unknown protocol instead of a
-  // host and a port. `about:blank` has no `://` either, hence the explicit
-  // scheme test before the host guess.
-  const scheme = /^(about|blob|chrome|data|devtools|file|ftp|https?|javascript|view-source):/i.exec(address)?.[1]
-  const loopback = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(address)
-  const candidate = scheme ? address : `${loopback ? 'http' : 'https'}://${address}`
-
-  // Script-bearing schemes run INSIDE the page the user is looking at (or mint
-  // a document with an attacker-chosen body) — that's injection wearing a
-  // navigation's clothes, and no browser's address bar honors it either.
-  if (scheme && /^(data|javascript)$/i.test(scheme)) {
-    return null
-  }
-
-  try {
-    // A parse failure is the real filter for junk: `://broken`, `htp:/x`, and
-    // half-typed nonsense all land here.
-    new URL(candidate)
-
-    return candidate
-  } catch {
-    return null
-  }
-}
+export { normalizePreviewAddress }
 
 export function PreviewBrowserBar({
   annotateMode = false,
@@ -109,6 +81,7 @@ export function PreviewBrowserBar({
   onFlushComments,
   onForward,
   onNavigate,
+  onFloat,
   onOpenExternal,
   onPopIn,
   onPopOut,
@@ -246,6 +219,13 @@ export function PreviewBrowserBar({
           {copy.addComments(commentCount)}
         </button>
       ) : null}
+      {onFloat ? (
+        <PaneStripGlyph
+          icon={<Codicon name="multiple-windows" size="0.8125rem" />}
+          label={t.preview.float.float}
+          onSelect={onFloat}
+        />
+      ) : null}
       {onPopIn ? (
         <PaneStripGlyph
           icon={<Codicon name="screen-normal" size="0.8125rem" />}
@@ -265,18 +245,22 @@ export function PreviewBrowserBar({
           onSelect={onOpenExternal}
         />
       ) : null}
-      <PaneStripGlyph
-        active={consoleOpen}
-        icon={<Codicon name="terminal" size="0.8125rem" />}
-        label={consoleOpen ? copy.hideConsole : copy.showConsole}
-        onSelect={onToggleConsole}
-      />
-      <PaneStripGlyph
-        active={devToolsOpen}
-        icon={<Codicon name="bug" size="0.8125rem" />}
-        label={devToolsOpen ? copy.hideDevTools : copy.openDevTools}
-        onSelect={onToggleDevTools}
-      />
+      {onToggleConsole ? (
+        <PaneStripGlyph
+          active={consoleOpen}
+          icon={<Codicon name="terminal" size="0.8125rem" />}
+          label={consoleOpen ? copy.hideConsole : copy.showConsole}
+          onSelect={onToggleConsole}
+        />
+      ) : null}
+      {onToggleDevTools ? (
+        <PaneStripGlyph
+          active={devToolsOpen}
+          icon={<Codicon name="bug" size="0.8125rem" />}
+          label={devToolsOpen ? copy.hideDevTools : copy.openDevTools}
+          onSelect={onToggleDevTools}
+        />
+      ) : null}
       {/* The last glyph is the way OUT: a Browser that filled the layout has
           no strip ✕ in reach, and the only other close is asking the agent
           (#92500). Same verb the tab carries — the pane routes it. */}

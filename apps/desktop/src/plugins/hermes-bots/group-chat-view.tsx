@@ -711,11 +711,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
+  // A former member's line is labelled from the live roster (renderEntry).
+  const liveRoster: RosterRow[] = useValue($lastRoster)
 
-  const room: GroupChatRoom = rooms[group] || {
-    log: [],
-    running: false
-  }
+  const room: GroupChatRoom = rooms[group] || { log: [], running: false }
 
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
@@ -1360,9 +1359,6 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    // The room's `members` prop is derived from the live roster, so every
-    // roster paint re-renders this view; a plain read stays current.
-    const liveRoster = $lastRoster.get()
     const meta = groupTranscriptSpeakerMeta(entry, members, allMeta, liveRoster)
 
     // Match this speaker back to its member descriptor so display

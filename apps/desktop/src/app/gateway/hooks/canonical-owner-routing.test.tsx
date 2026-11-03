@@ -90,6 +90,8 @@ test('keeps canonical alpha events and questions on alpha while beta is foregrou
     const questions = vi.fn((_request: unknown) => true)
     render(<Harness handleGatewayEvent={events} handleServerRequest={questions} />)
     await flushAsync()
+    // Observe routing after the connection handshake has delivered gateway.ready.
+    events.mockClear()
     const socket = FakeWebSocket.instances[0]
 
     const emit = (data: object) => (socket as unknown as { emit: (type: string, ev: unknown) => void })

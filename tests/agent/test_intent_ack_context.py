@@ -1,12 +1,15 @@
 """Contextual clarification recovery preserves current intent and durable history."""
 
 from copy import deepcopy
+from itertools import pairwise
 import json
 
 import pytest
 
 from tests.agent import test_clarification_ack_stop as base
-from tests.agent.test_clarification_ack_stop import harness  # noqa: F401
+# pytest discovers fixtures by module attribute. Importing the fixture by name would be an
+# import binding that every `harness` parameter below shadows (F811); an assignment is not.
+harness = base.harness
 
 
 EDIT = "Please implement the panel highlight in the repository."
@@ -50,7 +53,7 @@ def _run(harness, request, answer, *, history=None, repeats=1, execute_before=Fa
     assert result.get("error") is None
     assert result["api_calls"] == len(sent)
     assert any(m.get("tool_call_id") == "clarification" for m in durable)
-    for old, new in zip(sent, sent[1:]):
+    for old, new in pairwise(sent):
         assert old["instructions"] == new["instructions"]
         assert old["tools"] == new["tools"]
         assert new["input"][:len(old["input"])] == old["input"]

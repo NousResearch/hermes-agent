@@ -9,6 +9,7 @@ completion, nor recover through a user's decline or intentional wait.
 """
 
 from copy import deepcopy
+from itertools import pairwise
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -126,7 +127,7 @@ def _run(harness, texts, *, answer=CORRECTION, resume=False, interrupt=False,
     assert result["api_calls"] == len(requests)
     assert result.get("error") is None
     # Every request preserves the already-cached prefix and tool surface verbatim.
-    for previous, request in zip(requests, requests[1:]):
+    for previous, request in pairwise(requests):
         assert request["instructions"] == requests[0]["instructions"]
         assert request["tools"] == requests[0]["tools"]
         assert request["input"][:len(previous["input"])] == previous["input"]
@@ -247,7 +248,7 @@ def test_conversational_resume_keeps_unstarted_task_context(harness, monkeypatch
     for rows in (result["messages"], durable):
         assert [m["content"] for m in rows if m["role"] == "user"] == [history[0]["content"], user]
         assert sum(m.get("tool_call_id") == "work" for m in rows) == (0 if live_work else 1)
-        assert all(a["role"] != b["role"] or a["role"] == "tool" for a, b in zip(rows, rows[1:]))
+        assert all(a["role"] != b["role"] or a["role"] == "tool" for a, b in pairwise(rows))
     if not live_work:
         assert requests[1] == requests[2]
     assert durable[-1]["content"] == result["final_response"]

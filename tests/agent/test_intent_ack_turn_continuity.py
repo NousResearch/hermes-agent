@@ -5,6 +5,7 @@ from #69779. Provider replies are scripted; the agent loop and tool dispatch are
 """
 
 import copy
+from itertools import pairwise
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -253,4 +254,4 @@ def test_real_loop_retries_without_rewriting_history_or_repeating_work(tmp_path,
         assert sent[ack_index] == sent[ack_index + 1]
     rows = result["messages"]
     assert [m["content"] for m in rows if m["role"] == "user"] == [HISTORY[0]["content"], REQUEST]
-    assert all(a["role"] != b["role"] or a["role"] == "tool" for a, b in zip(rows, rows[1:]))
+    assert all(a["role"] != b["role"] or a["role"] == "tool" for a, b in pairwise(rows))

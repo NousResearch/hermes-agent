@@ -103,6 +103,78 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
     return _join_truncated_parts([*parts, (final_response, False)]), True
 
 
+def _continuation_kind_for(
+    agent: Any, *, final_response: Any, finish_reason: Any, messages: Any, user_message: Any,
+    promoted: Any, codex_ack_continuations: int,
+) -> tuple[Optional[str], str, int]:
+    """Which bounded continuation (``stall`` / ``degenerate`` / ``ack``) a text-only stop takes, if any.
+
+    Returns ``(kind, stall_text, tool_rows)``. Precedence: an announced next action outranks the
+    fragment shape; the codex ack is last. All three share the same max-2 counter."""
+    from agent.agent_runtime_helpers import (
+        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
+        tool_results_this_turn, trailing_continue_intent,
+    )
+    from agent.intent_ack import has_current_turn_clarification, has_live_ack_work
+
+    _ack_mode = intent_ack_continuation_mode(agent)
+    # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
+    # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
+    # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
+    # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
+    # stalled model, and returning it as the answer aborts the tool loop while reporting
+    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
+    _stall_text = agent._strip_think_blocks(final_response or "")
+    # A visible tail after clarify is the same unstarted-work acknowledgment,
+    # not a second route around decline/live-work checks or transcript hygiene.
+    # Promoted reasoning and unrelated post-execution stalls retain their policy.
+    _clarification_ack = not promoted and has_current_turn_clarification(messages)
+    _tail_intent = trailing_continue_intent(_stall_text)
+    _stall_continue_intent = (
+        bool(getattr(agent, "_stall_guards", True))
+        and not _clarification_ack
+        and agent.valid_tool_names
+        and codex_ack_continuations < 2
+        and (
+            _tail_intent
+            or (bool(promoted) and promoted_reasoning_announces_action(_stall_text))
+        )
+    )
+    # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
+    # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
+    # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
+    _tool_rows = tool_results_this_turn(messages)
+    _degenerate_final = (
+        bool(getattr(agent, "_stall_guards", True))
+        and _ack_mode != "off"
+        and codex_ack_continuations < 2
+        and _tool_rows > 0
+        and looks_like_degenerate_final(_stall_text, user_message=user_message)
+    )
+    if _stall_continue_intent:
+        _continuation_kind_value = "stall"
+    elif _degenerate_final:
+        _continuation_kind_value = "degenerate"
+    elif (
+        (_ack_mode != "off" or (
+            _clarification_ack and _tail_intent and bool(getattr(agent, "_stall_guards", True))
+        ))
+        and finish_reason == "stop"
+        and not agent._interrupt_requested
+        and agent.valid_tool_names
+        and codex_ack_continuations < 2
+        and agent._looks_like_codex_intermediate_ack(
+            user_message=user_message, assistant_content=final_response, messages=messages,
+            require_workspace=(_ack_mode == "codex_only"),
+        )
+        and not has_live_ack_work(agent)
+    ):
+        _continuation_kind_value = "ack"
+    else:
+        _continuation_kind_value = None
+    return _continuation_kind_value, _stall_text, _tool_rows
+
+
 def finish_text_response(
     agent: Any, *, assistant_message: Any, response: Any, finish_reason: Any, messages: Any,
     api_messages: Any, conversation_history: Any, api_call_count: Any, user_message: Any,
@@ -213,68 +285,10 @@ def finish_text_response(
     # heal threshold, deliver the queued notice through the status/warning callback — the normal out-of-band
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
-    from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+    _continuation_kind, _stall_text, _tool_rows = _continuation_kind_for(
+        agent, final_response=final_response, finish_reason=finish_reason, messages=messages,
+        user_message=user_message, promoted=_promoted, codex_ack_continuations=codex_ack_continuations,
     )
-    from agent.intent_ack import has_current_turn_clarification, has_live_ack_work
-
-    _ack_mode = intent_ack_continuation_mode(agent)
-    # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an
-    # announced next action. Reuses the SAME bounded continuation counter (max 2 per turn).
-    # Promoted reasoning gets the broader first-person-plan tail detector: with tools offered
-    # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
-    # stalled model, and returning it as the answer aborts the tool loop while reporting
-    # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
-    _stall_text = agent._strip_think_blocks(final_response or "")
-    # A visible tail after clarify is the same unstarted-work acknowledgment,
-    # not a second route around decline/live-work checks or transcript hygiene.
-    # Promoted reasoning and unrelated post-execution stalls retain their policy.
-    _clarification_ack = not _promoted and has_current_turn_clarification(messages)
-    _tail_intent = trailing_continue_intent(_stall_text)
-    _stall_continue_intent = (
-        bool(getattr(agent, "_stall_guards", True))
-        and not _clarification_ack
-        and agent.valid_tool_names
-        and codex_ack_continuations < 2
-        and (
-            _tail_intent
-            or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
-        )
-    )
-    # Degenerate-final guard (#103483): the turn did real tool work and then stopped on a
-    # fragment. Same scope knob and the SAME bounded counter as the ack continuation; the nudge
-    # row itself closes the tool-work window, so a second fragment ends the turn as the answer.
-    _tool_rows = tool_results_this_turn(messages)
-    _degenerate_final = (
-        bool(getattr(agent, "_stall_guards", True))
-        and _ack_mode != "off"
-        and codex_ack_continuations < 2
-        and _tool_rows > 0
-        and looks_like_degenerate_final(_stall_text, user_message=user_message)
-    )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
-    if _stall_continue_intent:
-        _continuation_kind = "stall"
-    elif _degenerate_final:
-        _continuation_kind = "degenerate"
-    elif (
-        (_ack_mode != "off" or (
-            _clarification_ack and _tail_intent and bool(getattr(agent, "_stall_guards", True))
-        ))
-        and finish_reason == "stop"
-        and not agent._interrupt_requested
-        and agent.valid_tool_names
-        and codex_ack_continuations < 2
-        and agent._looks_like_codex_intermediate_ack(
-            user_message=user_message, assistant_content=final_response, messages=messages,
-            require_workspace=(_ack_mode == "codex_only"),
-        )
-        and not has_live_ack_work(agent)
-    ):
-        _continuation_kind = "ack"
-    else:
-        _continuation_kind = None
     if _continuation_kind:
         if _continuation_kind == "stall":
             logger.info(

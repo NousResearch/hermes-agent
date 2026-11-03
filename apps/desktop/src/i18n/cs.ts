@@ -3632,6 +3632,35 @@ export const csOverrides = {
     restartFailedManualDetail: 'Zkuste restart znovu; pokud opět selže, otevřete protokoly a odešlete diagnostiku.',
     restartAgain: 'Restartovat znovu',
     openLogs: 'Otevřít protokoly',
+    relayLink: {
+      title: 'Týmová brána',
+      badge: 'Bez tokenu bota',
+      intro: (platform: string) =>
+        `${platform} se k tomuto agentovi dostane přes sdíleného bota Hermes. Propojte s ním svůj účet ${platform} a napište botovi — budete mluvit se svým agentem.`,
+      link: (platform: string) => `Propojit ${platform}`,
+      linkAnother: (platform: string) => `Propojit další účet ${platform}`,
+      linkedAccounts: 'Propojené účty',
+      unlink: 'Odpojit',
+      unlinkFailed: 'Tento účet se nepodařilo odpojit',
+      stepOpen: (platform: string) => `1. Naskenujte kód telefonem, nebo otevřete bota v ${platform}.`,
+      stepSend: '2. Pošlete botovi tuto zprávu z účtu, který chcete propojit:',
+      open: (platform: string) => `Otevřít ${platform}`,
+      copy: 'Kopírovat zprávu',
+      copied: 'Zkopírováno',
+      copyFailed: (command: string) => `Kopírování selhalo. Napište místo toho ${command}.`,
+      waiting: 'Čeká se, až bot uvidí vaši zprávu. Kód platí jen jednou.',
+      linked: (platform: string) => `Účet ${platform} je propojen. Napište botovi — budete mluvit se svým agentem.`,
+      expired: 'Platnost kódu vypršela dřív, než se stihl použít. Získejte nový kód a zkuste to znovu.',
+      refused: (platform: string) => `${platform} propojení odmítl. Získejte nový kód a zkuste to znovu.`,
+      qrAlt: (platform: string) => `QR kód sdíleného bota ${platform}`,
+      managed: 'Spravuje Týmová brána',
+      managedNote: (platform: string) =>
+        `Zprávy na tomto nasazení zajišťuje Týmová brána, takže brána při každém startu vypne přímé připojení ${platform}. Aby běželo souběžně s relay, nastavte v prostředí brány GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true (přímé připojení brání škálování na nulu a může doručit zprávy dvakrát).`,
+      managedIntro: 'Účty tohoto agenta se propojují z portálu Nous.',
+      openPortal: 'Propojit účty na portálu Nous',
+      noNewAccount: (platform: string) =>
+        `Kód už není aktivní a žádný nový účet se neobjevil. Pokud váš účet ${platform} v seznamu není, získejte nový kód a zkuste to znovu.`
+    },
     telegramQr: {
       title: 'Zvolte způsob připojení bota Telegram',
       subtitle: 'Obě možnosti připojí bota, kterého ovládáte, a uloží jeho údaje pouze do této instalace Hermesu.',

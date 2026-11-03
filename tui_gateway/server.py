@@ -572,12 +572,18 @@ def write_json(obj: dict) -> bool:
     from tui_gateway.event_replay import _stamp_event, emit_frame_lock
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
     params = obj.get("params")
-    sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
+    # Always a str: the emit-lock key and the stamp key must agree, and a frame without a
+    # session id must not mint a ``None``-keyed entry.
+    sid = ((params or {}).get("session_id") or "") if isinstance(params, dict) else ""
     if obj.get("method") == "event":
         # Stamp and enqueue as one per-session critical section: concurrent callers
         # (parallel tool callbacks run on worker threads) must not let an earlier
         # seq leave after a later one — the client's watermark drops it silently.
-        with emit_frame_lock(sid):
+        # A session-less global event (skin.changed etc.) gets no seq and no ring entry
+        # (_stamp_event no-ops), so it has no per-session order to protect and takes no
+        # lock; a shared "" lock would only serialize unrelated global frames.
+        guard = emit_frame_lock(sid) if sid else contextlib.nullcontext()
+        with guard:
             _stamp_event(obj)
             project_room_member_activity(obj, _sessions)
             if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:

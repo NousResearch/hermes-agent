@@ -5,8 +5,8 @@ name: Docs Search Monitor
 # Algolia search key, then Vercel access controls), because nothing ever
 # exercised the deployed site.
 #
-# apps/docs/scripts/check-live-search.mjs reads the Algolia credentials from the
-# bundle the site is serving, queries Algolia with the site's Origin, opens the
+# apps/docs/scripts/check-live-search.mjs reads the deployed search-config.json,
+# queries Algolia with the site's Origin, opens the
 # top results, then types into the real search modal in headless Chromium.
 #
 # Runs every 6 hours and after every Deploy Site run. This workflow holds no
@@ -37,7 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          sparse-checkout: apps/docs/scripts
+          sparse-checkout: |
+            apps/docs/scripts
+            apps/docs/src/lib
           persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0

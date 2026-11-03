@@ -186,10 +186,17 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
 /** The per-Bot door ("Manage groups"): toggle ONE Bot's seat in a room. Writes
  *  the Bot's `groups[]` metadata and the room's stored descriptors together —
  *  unchecking a Bot here used to leave its stored descriptor behind, so the
- *  room still gave it a turn (#91329). */
+ *  room still gave it a turn (#91329). Like Manage members, it fails with
+ *  nothing changed when the Bot's machine is offline or the write misses it. */
 export async function setGroupMembership(bot: RosterRow, group: string, enabled: boolean) {
-  const previous = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
-  await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, $botMeta.get()), group, enabled))
+  const meta = $botMeta.get()
+  const previous = groupChatMemberBots(group, $lastRoster.get(), meta)
+
+  if (memberMachineOffline(bot, host.state.connectionId.get())) {
+    throw memberSaveFailed(bot, meta)
+  }
+
+  await writeMembershipChanges(group, [{ bot, enabled, previous: botGroups(botRosterMeta(bot, meta)) }], meta)
 
   if (!$groupChats.get()[group]) {
     // Metadata-only group (never opened as a room): no stored seats to reconcile.

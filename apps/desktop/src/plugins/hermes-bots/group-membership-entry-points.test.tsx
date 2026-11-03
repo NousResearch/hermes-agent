@@ -9,7 +9,8 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { $lastRoster } from './data'
+import { GroupDialog } from './create-dialog'
+import { $botMeta, $lastRoster } from './data'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { botsText } from './i18n'
 import { translateBots } from './i18n-test-helper'
@@ -109,6 +110,17 @@ it('Manage members will not uncheck a member whose machine is offline, and says 
   expect(row.hasAttribute('disabled')).toBe(true)
   fireEvent.click(row)
   expect(row.getAttribute('aria-checked')).toBe('true')
+})
+
+it('Manage groups disables every change for a bot whose machine is offline, and says why', () => {
+  const homelab: RosterRow = { ...remote('scout'), connectionLabel: 'Homelab', sourceReachable: false }
+  $lastRoster.set([alpha, beta, homelab])
+  $botMeta.set({ alpha: { groups: ['Core'] } })
+  render(<GroupDialog bot={homelab} onClose={vi.fn()} />)
+
+  expect(screen.getByTestId('group-dialog-locked').textContent).toBe(botsText().crossGateway.groupsOffline('Homelab', 'Scout'))
+  expect(screen.getByRole('checkbox').hasAttribute('disabled')).toBe(true)
+  expect(screen.getByRole('textbox').hasAttribute('disabled')).toBe(true)
 })
 
 function renderToolbar(roster: RosterRow[]) {

@@ -62,6 +62,10 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         if dest.is_symlink() or dest.exists():  # never write through a planted link
             return None
         shutil.copy2(config_path, dest)
+        try:
+            os.chmod(dest, 0o640)
+        except OSError:
+            pass
         for stale in [dest, *existing][keep:]:
             stale.unlink(missing_ok=True)
         return dest

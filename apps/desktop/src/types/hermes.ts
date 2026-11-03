@@ -384,6 +384,8 @@ export interface MessagingPlatformInfo {
   relay_fronted?: boolean
   /** The relay owns this platform outright, so a direct bot is switched off at every start. */
   relay_exclusive?: boolean
+  /** Team Gateway switches this platform's direct connection off at every gateway start. */
+  disabled_by_relay?: boolean
   state?: null | string
   updated_at?: null | string
 }

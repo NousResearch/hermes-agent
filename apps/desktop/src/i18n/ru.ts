@@ -1895,7 +1895,9 @@ export const ruOverrides = {
       linked: (platform: string) => `Аккаунт ${platform} привязан. Напишите боту, чтобы говорить с агентом.`,
       expired: 'Срок действия кода истёк до использования. Получите новый код и попробуйте снова.',
       refused: (platform: string) => `${platform} отклонил привязку. Получите новый код и попробуйте снова.`,
-      qrAlt: (platform: string) => `QR-код общего бота ${platform}`
+      qrAlt: (platform: string) => `QR-код общего бота ${platform}`,
+      managed: 'Под управлением Team Gateway',
+      managedNote: (platform: string) => `На этом экземпляре сообщения идут через Team Gateway, поэтому шлюз отключает прямое подключение ${platform} при каждом запуске. Чтобы использовать его вместе с ретранслятором, задайте GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true в окружении шлюза (прямое подключение не даёт экземпляру масштабироваться до нуля и может доставлять сообщения дважды).`
     },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',

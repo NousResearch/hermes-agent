@@ -2361,6 +2361,8 @@ export interface Translations extends NoticeTranslations {
       expired: string
       refused: (platform: string) => string
       qrAlt: (platform: string) => string
+      managed: string
+      managedNote: (platform: string) => string
     }
     telegramQr: {
       title: string

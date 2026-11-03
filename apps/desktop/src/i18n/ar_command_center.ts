@@ -215,7 +215,9 @@ export const arCommandCenter = {
       linked: (platform: string) => `تم ربط حساب ${platform}. راسل البوت للتحدث مع وكيلك.`,
       expired: 'انتهت صلاحية الرمز قبل استخدامه. احصل على رمز جديد وحاول مرة أخرى.',
       refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
-      qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`
+      qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
+      managed: 'تتم إدارته عبر Team Gateway',
+      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`
     },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',

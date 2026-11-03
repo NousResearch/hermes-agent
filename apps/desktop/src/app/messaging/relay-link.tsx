@@ -65,7 +65,13 @@ function accountLabel(account: RelayLinkedAccount): string {
  * bot of the user's own is switched off at every gateway start, so setup is linking the user's chat
  * account to the shared bot: mint a one-time code, send `/link <code>` to the bot, done.
  */
-export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }) {
+export function RelayLinkSetup({
+  platform,
+  scopeProfile
+}: {
+  platform: MessagingPlatformInfo
+  scopeProfile?: null | string
+}) {
   const { t } = useI18n()
   const r = t.messaging.relayLink
   const [accounts, setAccounts] = useState<null | RelayLinkedAccount[]>(null)
@@ -79,7 +85,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
 
   const loadAccounts = useCallback(async () => {
     try {
-      const response = await getRelayLinks()
+      const response = await getRelayLinks(scopeProfile)
       const row = response.platforms.find(entry => entry.platform === platform.id)
       setAccounts(row?.accounts ?? [])
       setBotUrl(row?.bot_url ?? null)
@@ -92,7 +98,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
 
       return null
     }
-  }, [platform.id])
+  }, [platform.id, scopeProfile])
 
   useEffect(() => {
     void loadAccounts()
@@ -109,7 +115,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
 
     const poll = async () => {
       try {
-        const state = await getRelayLinkState(link.code)
+        const state = await getRelayLinkState(link.code, scopeProfile)
         failures = 0
 
         if (cancelled) {
@@ -173,14 +179,14 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
         window.clearTimeout(timer)
       }
     }
-  }, [link, loadAccounts, platform.name, r])
+  }, [link, loadAccounts, platform.name, r, scopeProfile])
 
   const start = async () => {
     setBusy(true)
     setError('')
 
     try {
-      const result = await requestRelayLink(platform.id)
+      const result = await requestRelayLink(platform.id, scopeProfile)
       linkedBefore.current = accounts?.length ?? 0
       setLink(result)
       const target = result.bot_url ?? botUrl
@@ -194,7 +200,7 @@ export function RelayLinkSetup({ platform }: { platform: MessagingPlatformInfo }
 
   const unlink = async (account: RelayLinkedAccount) => {
     try {
-      await unlinkRelayAccount(platform.id, account.platformUserId)
+      await unlinkRelayAccount(platform.id, account.platformUserId, scopeProfile)
       await loadAccounts()
     } catch (unlinkError) {
       notifyError(unlinkError, r.unlinkFailed)

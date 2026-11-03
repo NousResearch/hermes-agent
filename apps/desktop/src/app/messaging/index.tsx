@@ -837,8 +837,14 @@ function PlatformDetail({
 
       {platform.relay_fronted && (
         <section>
-          <RelayLinkSetup key={platform.id} platform={platform} />
+          <RelayLinkSetup key={platform.id} platform={platform} scopeProfile={scopeProfile} />
         </section>
+      )}
+
+      {/* Not carried by the shared bot yet switched off at every start: say so instead of a toggle
+          that reverts (#141175). */}
+      {platform.disabled_by_relay && !platform.relay_exclusive && (
+        <p className="text-xs text-muted-foreground">{m.relayLink.managedNote(platform.name)}</p>
       )}
 
       {/* Under an exclusive relay a direct bot is switched off at every start: the shared-bot link
@@ -1025,11 +1031,11 @@ function PlatformActionBar({
         <Switch
           aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
           checked={platform.enabled}
-          disabled={saving === `enabled:${platform.id}`}
+          disabled={platform.disabled_by_relay || saving === `enabled:${platform.id}`}
           onCheckedChange={onToggle}
           size="xs"
         />
-        {platform.enabled ? m.enabled : m.disabled}
+        {platform.disabled_by_relay ? m.relayLink.managed : platform.enabled ? m.enabled : m.disabled}
       </label>
 
       <div className="ml-auto flex items-center gap-2">

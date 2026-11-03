@@ -2056,6 +2056,8 @@
     "messaging.relayLink.linkAnother",
     "messaging.relayLink.linked",
     "messaging.relayLink.linkedAccounts",
+    "messaging.relayLink.managed",
+    "messaging.relayLink.managedNote",
     "messaging.relayLink.open",
     "messaging.relayLink.qrAlt",
     "messaging.relayLink.refused",

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { resolveDocumentLink } from '../src/lib/content.mjs';
 import { documentHref } from '../src/lib/document-href.ts';
+import fragmentTranslations from '../src/lib/fragment-translations.json' with { type: 'json' };
 
 const translations = {
   '/guide': { install: '安装', advanced: null },
@@ -20,6 +23,22 @@ test('a missing translated section uses the exact English destination within the
   // English source shown at a zh-Hans fallback URL follows the same rule.
   assert.equal(documentHref('/guide#advanced', 'zh-Hans', '/docs/zh-Hans/en-only/', translations), '/guide#advanced');
   assert.equal(documentHref('/docs/guide/#advanced', 'zh-Hans', '/docs/zh-Hans/start/', translations), '/guide/#advanced');
+});
+
+test('extensionless configuration links reach the translated prompt-cache section', () => {
+  const contentDir = fileURLToPath(new URL('../content/', import.meta.url));
+  const source = fileURLToPath(new URL('../content/zh-Hans/user-guide/features/overview.md', import.meta.url));
+  const resolved = resolveDocumentLink(source, '../configuration#prompt-caching', contentDir);
+  assert.equal(documentHref(resolved, 'zh-Hans', '/docs/zh-Hans/user-guide/features/overview/', fragmentTranslations),
+    '/zh-Hans/user-guide/configuration#prompt-%E7%BC%93%E5%AD%98');
+});
+
+test('English fallback content retains a connector section omitted from Chinese', () => {
+  const contentDir = fileURLToPath(new URL('../content/', import.meta.url));
+  const source = fileURLToPath(new URL('../content/en/user-guide/features/tool-search.md', import.meta.url));
+  const resolved = resolveDocumentLink(source, './tool-gateway.mdx#multiple-connector-accounts', contentDir);
+  assert.equal(documentHref(resolved, 'zh-Hans', '/docs/zh-Hans/user-guide/features/tool-search/', fragmentTranslations),
+    '/user-guide/features/tool-gateway#multiple-connector-accounts');
 });
 
 test('ordinary pages, unknown fragments, explicit IDs and external links keep their handling', () => {

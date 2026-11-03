@@ -93,6 +93,7 @@
     "docker-backend": "docker-后端",
     "full-auxiliary-config-reference": "完整辅助配置参考",
     "openrouter-routing--pareto-code-for-auxiliary-tasks": "openrouter-路由和辅助任务的-pareto-code",
+    "prompt-caching": "prompt-缓存",
     "quick-commands": "快速命令",
     "skill-settings": "技能设置",
     "webapp": null
@@ -171,6 +172,9 @@
   },
   "/user-guide/features/spotify": {
     "running-over-ssh--in-a-headless-environment": "通过-ssh--在无头环境中运行"
+  },
+  "/user-guide/features/tool-gateway": {
+    "multiple-connector-accounts": null
   },
   "/user-guide/features/tools": {
     "terminal-backends": "终端后端"

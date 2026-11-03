@@ -162,6 +162,10 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        # A member requirement naming core (a selected extra's ``hermes-agent[x] @ git+…``)
+        # names a workspace member, which uv refuses without a source; root sources apply
+        # to every member, renamed virtual ones included.
+        uv_policy.setdefault("sources", {})[document["project"]["name"]] = {"workspace": True}
         _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:

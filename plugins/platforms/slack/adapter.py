@@ -292,11 +292,18 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Return the status setter.
+
+    Slack's Agent Sessions API (``agents.sessions.setStatus``, typed in
+    slack-sdk >= 3.44) declares ``status`` as a closed enum and rejects the
+    free-text status strings Hermes sends (``"is thinking..."``, live-status
+    phrases, ``typing_status_text``) with ``invalid_arguments`` ("must be a
+    valid enum value [json-pointer:/status]"). The legacy
+    ``assistant.threads.setStatus`` accepts arbitrary text, so keep using it
+    for the status line until the free-text path is mapped onto the new enum.
+    (Legacy is deprecated by Slack for Feb 2027; title/rename still prefers the
+    Agent Sessions API via ``_session_title_method``.)
+    """
     return client.assistant_threads_setStatus
 
 

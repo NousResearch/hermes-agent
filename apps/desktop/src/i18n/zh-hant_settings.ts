@@ -1019,6 +1019,13 @@ export const zhHantSettings = {
         restartFailedBecause: reason => `閘道無法重新啟動：${reason}`,
         startTimedOut: '閘道未能在 90 秒內提供網頁應用程式。',
         stopTimedOut: '閘道未能在 90 秒內停止提供網頁應用程式。',
+        startStages: {
+          preparing: '正在準備網頁應用程式。建置可能需要幾分鐘。',
+          building: '正在建置網頁應用程式，可能需要幾分鐘。',
+          registering: '正在為此位址設定 Nous 登入。',
+          restarting: '正在重新啟動閘道以提供網頁應用程式。'
+        },
+        startElapsed: time => `已經過 ${time}`,
         start: '啟動',
         stop: '停止',
         restartGateway: '重新啟動閘道',

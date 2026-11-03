@@ -6,6 +6,7 @@ boundaries on both sides of the @name, duplicate-name ambiguity, and the
 non-member / unresolvable-token publish retries.
 """
 
+import asyncio
 import json
 
 import pytest
@@ -530,3 +531,23 @@ class TestLongerMemberNameMention:
         await self._poll(adapter, "@Chip hola", p_tags=[CHIP_ING_PUBKEY])
         assert [d["text"] for d in adapter._dispatched] == ["hola"]
         assert not any(c[0][:2] == ["users", "get"] and CHIP_ING_PUBKEY in c[0] for c in adapter._cli.calls)
+
+    @pytest.mark.asyncio
+    async def test_longer_name_check_uses_the_lowercased_name(self, adapter):
+        # "İ".lower() is two characters, so slicing the original-case name by len(own) misses the suffix.
+        adapter._display_name = "Aİ"
+        other = "b" * 64
+        adapter._cli.responses[("channels", "members")] = [(0, json.dumps(_members(SELF_PUBKEY, other)), "")]
+        adapter._cli.responses[("users", "get")] = [(0, json.dumps(_profile(other, "Aİ7")), "")]
+        event = {"id": "e1", "pubkey": SENDER_PUBKEY, "content": "@Aİ7 hola", "created_at": 10, "kind": 9, "tags": [["h", CHANNEL]]}
+        assert await adapter._longer_member_names(CHANNEL, event) == ["aİ7".lower()]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_roster_read_propagates(self, adapter):
+        async def cancelled(channel_id):
+            raise asyncio.CancelledError
+
+        adapter._channel_member_pubkeys = cancelled
+        event = {"id": "e1", "pubkey": SENDER_PUBKEY, "content": "@Chip hola", "created_at": 10, "kind": 9, "tags": [["h", CHANNEL]]}
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._longer_member_names(CHANNEL, event)

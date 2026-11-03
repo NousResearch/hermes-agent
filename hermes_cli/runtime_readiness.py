@@ -5,6 +5,44 @@ contract whichever backend it reached: ``ok``/``provider``/``model``/``source``,
 failure (naming the configured pin, never the fallback chain's tail), ``free_tier_route`` on success.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def missing_credentials_suffix(provider) -> str:
+    """``" <hint>"`` from *provider*'s profile (``ProviderProfile.missing_credentials_hint``) for a
+    "No usable credentials found" message, else ``""``. Plugin boundary: a raising hook (or a plugin
+    host that is down) or a non-string answer yields ``""`` and is logged once per provider, so the
+    AuthError it decorates (and the fallback chain walking on it) is never replaced."""
+    from providers import get_provider_profile
+    name = str(provider or "").strip().lower()
+    profile = get_provider_profile(name) if name else None
+    if profile is None:
+        return ""
+    try:
+        hint = profile.missing_credentials_hint()
+    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+        if name not in _HINT_FAILURES_LOGGED:
+            _HINT_FAILURES_LOGGED.add(name)
+            logger.warning("%s missing_credentials_hint failed; showing the error without it", name, exc_info=True)
+        return ""
+    return f" {hint.strip()}" if isinstance(hint, str) and hint.strip() else ""
+
+
+_HINT_FAILURES_LOGGED: set[str] = set()
+
+
+def readiness_failure(exc) -> dict:
+    """``setup.runtime_check``'s answer when resolving the runtime raised *exc*.
+
+    ``error_code`` rides along only for a failure provider setup cannot repair, so a client keeps
+    the app open with the error instead of sending the user back through provider sign-in.
+    """
+    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+    code = {'error_code': exc.error_code} if isinstance(exc, LocalRuntimeUnavailableError) else {}
+    return {'ok': False, 'error': str(exc), **code}
+
 
 def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resolve=None):
     """ok/error verdict for the runtime a session would be built with.
@@ -52,7 +90,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     api_key_text = '' if callable(api_key) else str(api_key or '').strip()
     if not (callable(api_key) or api_key_text in {'aws-sdk', 'no-key-required'}
             or has_usable_secret(api_key_text) or bool(runtime.get('command'))):
-        return fail(f'No usable credentials found for {blamed}.', runtime.get('source'))
+        return fail(f'No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}', runtime.get('source'))
     from hermes_cli.anon_auth import route_is_welcome_host
     # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
     # on profile state: a paid Nous key beside a free-tier identity must not read as free.

@@ -1,11 +1,12 @@
 name: tinyfish
 repo: https://github.com/tinyfish-io/tinyfish-web-agent-integrations
-sha: 1172d9ceac8acda0b722f8d16ce8b27422a11906
+sha: 770a3765fa6249b1f6a6153ddaaf65b76bf8fdd4
 subdir: hermes
-description: "First-party TinyFish plugin: free Search and Fetch as a web provider, plus credit-gated remote Browser sessions and the tinyfish_agent web agent. Disclosure — sends search queries, URLs to fetch and tinyfish_agent goals with your TINYFISH_API_KEY to the TinyFish API (*.tinyfish.ai). Browser sessions and tinyfish_agent runs spend TinyFish credits. Under the default `request` policy each one goes through Hermes's approval prompt first (a session/always answer covers every later call; cron and unattended runs are denied unless you allow them). Setting `tinyfish.credit_policy.<feature>: allow` or YOLO skips the prompt. `hermes tinyfish setup` / `browser enable` (run by you) save the key to Hermes .env, set web.search_backend/extract_backend and browser.cloud_provider in config.yaml, enable the web/browser toolsets, and can install the agent-browser CLI after asking."
+description: "TinyFish: the web, built into Hermes. Free Search and Fetch power Hermes's own web_search and web_extract, and when a site needs clicks, forms or a login, a remote browser and the tinyfish_agent web agent handle it. Disclosure — sends search queries, URLs to fetch and tinyfish_agent goals with your TINYFISH_API_KEY to the TinyFish API (*.tinyfish.ai). Browser sessions and tinyfish_agent runs spend TinyFish credits. Under the default `request` policy each one goes through Hermes's approval prompt first (a session/always answer covers every later call; cron and unattended runs are denied unless you allow them). Setting `tinyfish.credit_policy.<feature>: allow` or YOLO skips the prompt. `hermes tinyfish setup` / `browser enable` (run by you) save the key to Hermes .env, set web.search_backend/extract_backend and browser.cloud_provider in config.yaml, enable the web/browser toolsets, and can install the agent-browser CLI after asking."
 maintainer: tinyfish-io
 title: TinyFish
-version: "0.2.2"
+version: "0.2.3"
+image: https://raw.githubusercontent.com/tinyfish-io/tinyfish-web-agent-integrations/770a3765fa6249b1f6a6153ddaaf65b76bf8fdd4/hermes/assets/banner.png
 tier: verified
 category: web
 requires_hermes: ">=0.19"

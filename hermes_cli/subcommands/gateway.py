@@ -149,6 +149,9 @@ def build_gateway_parser(
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _flag(gateway_restart, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="restart"))
+    _flag(gateway_restart, "--detach", help=(
+        "Without an installed service, start the replacement in the background (as `gateway ensure` "
+        "does) instead of in this terminal; used by apps that run the restart as a short-lived client"))
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

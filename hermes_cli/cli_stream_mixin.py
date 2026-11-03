@@ -273,9 +273,8 @@ class CLIStreamMixin:
             from hermes_cli.cli_modern_layout import reasoning_text_line, separator
             if not getattr(self, "_reasoning_box_opened", False):
                 self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
-                self._reasoning_buf, self._reasoning_full_text = "", ""
+                self._reasoning_buf = ""
                 _cprint("\n" + separator(False))
-            self._reasoning_full_text = getattr(self, "_reasoning_full_text", "") + text
             self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
             # Live, as classic: complete lines now, long partial lines force-flushed.
             while "\n" in self._reasoning_buf:
@@ -331,10 +330,9 @@ class CLIStreamMixin:
             if getattr(self, "_reasoning_buf", ""):
                 _cprint(reasoning_text_line(self._reasoning_buf))
             started = getattr(self, "_reasoning_started_at", 0.0)
-            _cprint(thought_line(time.monotonic() - started if started else None,
-                                 getattr(self, "_reasoning_full_text", "")))
+            _cprint(thought_line(time.monotonic() - started if started else None))
             _cprint(closing_separator(False))
-            self._reasoning_buf, self._reasoning_full_text, self._reasoning_box_opened = "", "", False
+            self._reasoning_buf, self._reasoning_box_opened = "", False
             if not getattr(self, "_stream_box_live", False):
                 self._release_held_status_lines()
             return
@@ -773,7 +771,7 @@ class CLIStreamMixin:
                 except Exception:
                     pass
             # "verbose" must commit the same line as "all": non-streaming calls (MoA aggregator,
-            # copilot-acp) never emit the "preparing" line, so nothing else builds history.
+            # ACP subprocess providers) never emit the "preparing" line, so nothing else builds history.
             if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
                 duration = kwargs.get("duration", 0.0)
                 # Pop stored args from tool.started for this function

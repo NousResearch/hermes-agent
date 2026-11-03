@@ -95,12 +95,12 @@ def _session_mutation_context(request, profile):
     if native is not None:
         subject = native['subject']
     elif session is not None:
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({"user_id": session.user_id,
+        from gateway.owner_identity import principal_subject
+        subject = principal_subject({"user_id": session.user_id,
             "provider": session.provider, "issuer": session.issuer})
     elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
-        from gateway.session_identity import authenticated_subject
-        subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})
+        from gateway.owner_identity import host_owner_subject
+        subject = host_owner_subject()
     else:
         raise HTTPException(status_code=401, detail='Unauthorized')
     authority = getattr(request.app.state, 'session_authority', None)
@@ -192,8 +192,12 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     dashboard`` is not the store owner, so the offline path's
     exclusive-maintenance reservation can never win and every write action
     dies on a bare 409 (#138915). The owner exposes the same revision-fenced
-    verb over the control socket; with no discoverable owner return None so the
-    caller falls back to the offline store.
+    verb over the control socket. With no endpoint the offline store's reservation
+    decides: no endpoint does not prove a live owner (a stale bad-mode socket, a parked
+    secondary read ``inaccessible`` with the lock free). When the reservation loses and
+    discovery read anything but ``absent`` (a control timeout, a profile mismatch, one
+    starting or draining), the edit answers 503 with discovery's reason rather than the
+    bare 409 (#144141).
 
     A dial, mint or RPC that dies on an endpoint discovery just identified is
     not owner-less (a slow first dial, or an owner restart between discovery
@@ -208,6 +212,7 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     the mutation when the forward acts as that account.
     """
     from fastapi import HTTPException
+    from gateway.runtime_ownership import OwnershipConflict
     from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     from hermes_cli.gateway_runtime_discovery import DiscoveryError
@@ -217,9 +222,17 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
     # Discovery is read-only and never starts a gateway.
     discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
-    endpoint = getattr(discovery, 'endpoint', None)
+    endpoint = discovery.endpoint
     if endpoint is None:
-        return None
+        try:
+            return await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+        except HTTPException as exc:
+            if discovery.state == 'absent' or not isinstance(exc.__cause__, OwnershipConflict):
+                raise
+            known = ''.join(f', {value}' for value in (discovery.reason_code, discovery.detail) if value)
+            _log.warning('session write for %s: gateway owner not reachable (%s%s)', home, discovery.state, known)
+            reason = discovery.reason_code or discovery.state
+            raise HTTPException(status_code=503, detail=f'owner_unavailable: {reason}: {exc.detail}') from exc
     if not getattr(endpoint, 'control_home', True):
         # The selected home answered on its own socket (a multiplexer-served profile already
         # names the multiplexer root). Pin it, so the ticket is minted on the socket that just
@@ -230,8 +243,13 @@ async def _mutate_via_gateway_owner(profile, actor, params):
             ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
     if params.get('expected_generation') is not None:
         call['expected_generation'] = params['expected_generation']
+    # A sign-in is the machine owner (owner_identity), which is this same-user socket's own peer
+    # subject: let the socket mint it natively. The verifier lets a peer NAME only a structured
+    # login subject, so forwarding the owner's OS subject explicitly would be refused.
+    from gateway.owner_identity import host_owner_subject
+    subject = None if actor.subject == host_owner_subject() else actor.subject
     try:
-        async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
+        async with connect_gateway(endpoint=endpoint, subject=subject) as client:
             return await client.rpc('session.mutate', **call)
     except GatewayRPCError:
         # The owner's own refusal frame: a verdict the caller maps to the direct path's status.
@@ -279,11 +297,9 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None:
-            # A live gateway owner answers first; only an owner-less home takes
-            # the offline store (whose reservation loses to that same owner).
+            # A live gateway owner answers first; a home without an endpoint takes
+            # the offline store (whose reservation loses to any owner holding the lock).
             result = await _mutate_via_gateway_owner(profile, actor, params)
-            if result is None:
-                result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)

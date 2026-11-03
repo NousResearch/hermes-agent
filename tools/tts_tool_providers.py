@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
+from tools.tts_elevenlabs_options import build_elevenlabs_convert_kwargs
 from tools.xai_http import hermes_xai_user_agent
 
 logger = logging.getLogger("tools.tts_tool")
@@ -220,10 +221,16 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: dict[str, Any]
     api_key = _require_key("ELEVENLABS_API_KEY", "elevenlabs", "Get one at https://elevenlabs.io/")
     el_config = tts_config.get("elevenlabs") or {}
     client = _origin()._import_elevenlabs()(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
-    audio_generator = client.text_to_speech.convert(
-        text=text, voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
+    convert_kwargs = build_elevenlabs_convert_kwargs(
+        text=text,
+        voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
         model_id=el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID),
-        output_format="opus_48000_64" if output_path.endswith(".ogg") else "mp3_44100_128")
+        output_format="opus_48000_64" if output_path.endswith(".ogg") else "mp3_44100_128",
+        el_config=el_config,
+        tts_config=tts_config,
+        convert_method=client.text_to_speech.convert,
+    )
+    audio_generator = client.text_to_speech.convert(**convert_kwargs)
     with open(output_path, "wb") as f:
         f.writelines(audio_generator)
     return output_path

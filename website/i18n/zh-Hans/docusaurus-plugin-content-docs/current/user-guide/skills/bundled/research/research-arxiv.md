@@ -195,12 +195,12 @@ web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
 `scripts/search_arxiv.py` 脚本负责处理 XML 解析并提供整洁输出：
 
 ```bash
-python scripts/search_arxiv.py "GRPO reinforcement learning"
-python scripts/search_arxiv.py "transformer attention" --max 10 --sort date
-python scripts/search_arxiv.py --author "Yann LeCun" --max 5
-python scripts/search_arxiv.py --category cs.AI --sort date
-python scripts/search_arxiv.py --id 2402.03300
-python scripts/search_arxiv.py --id 2402.03300,2401.12345
+python3 scripts/search_arxiv.py "GRPO reinforcement learning"
+python3 scripts/search_arxiv.py "transformer attention" --max 10 --sort date
+python3 scripts/search_arxiv.py --author "Yann LeCun" --max 5
+python3 scripts/search_arxiv.py --category cs.AI --sort date
+python3 scripts/search_arxiv.py --id 2402.03300
+python3 scripts/search_arxiv.py --id 2402.03300,2401.12345
 ```
 
 无需额外依赖——仅使用 Python 标准库。
@@ -261,7 +261,7 @@ curl -s "https://api.semanticscholar.org/graph/v1/author/search?query=Yann+LeCun
 
 ## 完整研究工作流
 
-1. **发现论文**：`python scripts/search_arxiv.py "your topic" --sort date --max 10`
+1. **发现论文**：`python3 scripts/search_arxiv.py "your topic" --sort date --max 10`
 2. **评估影响力**：`curl -s "https://api.semanticscholar.org/graph/v1/paper/arXiv:ID?fields=citationCount,influentialCitationCount"`
 3. **阅读摘要**：`web_extract(urls=["https://arxiv.org/abs/ID"])`
 4. **阅读完整论文**：`web_extract(urls=["https://arxiv.org/pdf/ID"])`

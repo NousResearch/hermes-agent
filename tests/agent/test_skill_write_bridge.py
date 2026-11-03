@@ -1,9 +1,11 @@
 """Behavior tests for the built-in skill_manage → external provider bridge.
 
 The bridge lives behind the MemoryManager interface
-(``MemoryManager.notify_skill_tool_write``): the agent loop (and the
-approval-replay path) hands over the raw skill_manage tool result + args, and
-the manager decides whether/what to mirror to external providers. These tests
+(``MemoryManager.notify_skill_tool_write``): the agent loop hands over the raw
+skill_manage tool result + args, and the write-approval handler does the same
+for an approved staged write it has just replayed (tagged
+``execution_context="approval_replay"``). The manager decides whether/what to
+mirror to external providers. These tests
 drive that method with a fake external provider and assert which
 ``on_skill_write`` calls land — in particular the action-aware content mapping
 (create/edit → ``content``, patch → ``new_string``, write_file →
@@ -168,7 +170,10 @@ def test_skips_failed_skill_write():
 
 def test_skips_staged_skill_write():
     # A write staged for approval has not committed — providers must not be
-    # told about it. (The approval-replay path re-notifies once it commits.)
+    # told about it here. When it is approved, the write-approval handler
+    # replays it and calls notify_skill_tool_write again with the replay result
+    # (execution_context="approval_replay"); that call is covered by
+    # tests/tools/test_write_approval.py and tests/gateway/test_skills_command_memory_manager.py.
     mgr, provider = _manager_with_provider()
     mgr.notify_skill_tool_write(
         json.dumps({"success": True, "staged": True, "pending_id": "abc123"}),

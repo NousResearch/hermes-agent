@@ -207,9 +207,14 @@ identity should skip destructive mirroring when it is absent.
 `session_id`, `parent_session_id`, `platform`, and `tool_name`
 (`"skill_manage"`).
 
-Only **committed** writes are mirrored. Failed writes and writes staged by the
-`skills.write_approval` gate never reach the hook; approved staged writes are
-not mirrored yet.
+Only **committed** writes are mirrored. A failed write never reaches the hook.
+A write staged by the `skills.write_approval` gate is not reported when it is
+staged — it has not committed — but approving it replays the write, and that
+committed replay fires the hook once per committed write (once per operation
+for an approved batch) with
+`metadata["execution_context"] == "approval_replay"`. The origin that staged
+the write (for example `background_review`) is preserved as
+`metadata["write_origin"]`.
 ### Oversized prefetch results
 
 External `prefetch()` results are returned in full by default, preserving the

@@ -959,12 +959,23 @@ def _write_approval_mode_setter(subsystem: str):
     return lambda enabled: _write_config_key(f"{subsystem}.write_approval", bool(enabled))
 
 
+def _pending_subcommand_memory_manager(session):
+    """The session agent's memory manager, when the session has one — approved skill writes are
+    replayed outside the agent loop, so this is the only path that can mirror them to external
+    providers. ``None`` (no live session agent) simply skips the mirror; approval still applies."""
+    if session:
+        with contextlib.suppress(Exception):
+            return getattr(session.get("agent"), "_memory_manager", None)
+    return None
+
+
 def _run_pending_review(rid, subsystem: str, arg: str, session, *, unknown: str):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
     out = handle_pending_subcommand(
         subsystem, (arg or "").split(),
         memory_store=_pending_subcommand_store(session) if subsystem == wa.MEMORY else None,
+        memory_manager=_pending_subcommand_memory_manager(session) if subsystem == wa.SKILLS else None,
         set_mode_fn=_write_approval_mode_setter(subsystem))
     return _exec_out(rid, out if out is not None else unknown)
 

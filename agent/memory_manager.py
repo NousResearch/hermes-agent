@@ -874,9 +874,11 @@ class MemoryManager:
         ``build_metadata`` is an optional agent-side callable (the loop knows
         session/task/tool-call provenance the manager does not).
 
-        Staged writes (``staged: true`` results) are skipped here. Approved
-        staged writes are not mirrored yet: the approval-replay path would
-        need to call this method again with the replay result.
+        Staged writes (``staged: true`` results) are skipped here — they have
+        not committed. When a staged write is later approved, the approval
+        handler replays it and calls this method again with the replay result
+        and the staged argument payload, tagged
+        ``execution_context="approval_replay"``.
         """
         if not self._memory_tool_result_succeeded(tool_result):
             return

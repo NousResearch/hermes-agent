@@ -243,9 +243,11 @@ class MemoryProvider(ABC):
           directory, e.g. 'references/api.md'); patch also carries
           ``old_string`` (the replaced text).
 
-        Only committed writes are mirrored: failed writes and writes staged
-        for approval never reach this hook. Approved staged writes are not
-        reported yet; only writes committed directly by the tool fire it.
+        Only committed writes are mirrored: failed writes never reach this
+        hook, and a write staged for approval is reported only once the
+        approval handler replays it and the write commits. Those replay
+        events carry ``execution_context="approval_replay"`` (and the origin
+        that staged the write as ``write_origin``).
 
         Use to mirror built-in skill writes to your backend.
         """

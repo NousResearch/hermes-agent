@@ -7,8 +7,8 @@ thinking off is trying to stop paying for.  The disable has to be sent:
 
     thinking: {"type": "disabled"}
 
-Reasoning-mandatory families (claude-fable) reject that with an HTTP 400
-("Thinking is mandatory for this model"), so they keep the omission — a
+Reasoning-mandatory families (claude-fable, claude-mythos, claude-opus-5-5)
+reject that with an HTTP 400, so they keep the omission — a
 silently-ignored disable is a much better failure than a dead turn.
 
 Legacy manual-thinking Claude (<= 4.5) needs no disable at all: thinking is

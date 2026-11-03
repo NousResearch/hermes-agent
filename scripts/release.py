@@ -725,7 +725,7 @@ def main():
                              "--only/--with/--without (starting from the stable default minus "
                              "upgrade, install-e2e and windows-store) and --[no-]require-green. Add "
                              "--channel NAME to claim channel.<stamp>-v<version> instead: the same "
-                             "pipeline (minus upgrade and windows-store) then advances that R2 channel.")
+                             "pipeline (minus windows-store, upgrading the channel's head) then advances that R2 channel.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")

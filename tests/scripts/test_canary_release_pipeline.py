@@ -203,27 +203,27 @@ def test_a_canary_upgrades_from_the_last_published_canary(monkeypatch):
     release = {"tagName": PREVIOUS, "isDraft": False, "isPrerelease": True}
     monkeypatch.setattr(stable, "output", lambda _argv: json.dumps(release))
     env = {"GITHUB_REPOSITORY": "example/hermes-agent"}
-    assert stable._published_baseline(env, BASE, "canary") == previous
+    assert stable._published_baseline(env, BASE, {"policy": "canary"}) == previous
     assert read == [f"{BASE}/releases/canary/release-candidates.json"]
     # A draft canary, a canary that is not a prerelease, and a stable baseline are refused.
     for bad in ({"isDraft": True}, {"isPrerelease": False}):
         release.update(bad)
         with pytest.raises(ValueError, match="published canary release"):
-            stable._published_baseline(env, BASE, "canary")
+            stable._published_baseline(env, BASE, {"policy": "canary"})
         release.update(isDraft=False, isPrerelease=True)
     with pytest.raises(ValueError, match="published stable release"):
-        stable._published_baseline(env, BASE, "stable")
+        stable._published_baseline(env, BASE, {"policy": "stable"})
     previous["tag"] = release["tagName"] = "v1.2.2"
     release["isPrerelease"] = False
     with pytest.raises(ValueError, match="published canary release"):
-        stable._published_baseline(env, BASE, "canary")
-    assert stable._published_baseline(env, BASE, "stable") == previous
+        stable._published_baseline(env, BASE, {"policy": "canary"})
+    assert stable._published_baseline(env, BASE, {"policy": "stable"}) == previous
 
     # No canary pointer yet: no baseline, so no upgrade arm.
     def missing(url, **_):
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
     monkeypatch.setattr(stable, "read_manifest", missing)
-    assert stable._published_baseline(env, BASE, "canary") is None
+    assert stable._published_baseline(env, BASE, {"policy": "canary"}) is None
 
 
 def test_canary_packages_upgrade_in_claim_stamp_order():
@@ -242,6 +242,11 @@ def test_canary_packages_upgrade_in_claim_stamp_order():
             stable._transition_row(target, {**right, "commit": "c" * 40}, {**left, "commit": COMMIT})
         with pytest.raises(ValueError, match="identity"):
             stable._transition_row(target, left, {**right, "identity": "NousResearch.HermesBundled"})
+        # A channel build orders against its channel's head by the same claim stamp.
+        channel = {**left, "tag": PREVIOUS.replace("canary.", "channel.")}, {**right, "tag": CANARY.replace("canary.", "channel.")}
+        assert stable._transition_row(target, *channel)["transition"]["new"]["tag"].startswith("channel.")
+        with pytest.raises(ValueError, match="increase"):
+            stable._transition_row(target, *reversed(channel))
 
 
 def test_canary_candidates_carry_the_canary_package_versions():

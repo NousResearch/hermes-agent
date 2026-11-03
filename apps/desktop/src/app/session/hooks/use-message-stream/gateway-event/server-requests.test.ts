@@ -482,6 +482,75 @@ describe('preview requests act for the session that asked (#73890)', () => {
     }
   })
 
+  it('keeps browser actions requester-owned across focus changes and revokes a closed tile', async () => {
+    publishSessionState('rt-b', createClientSessionState('stored-b'))
+    openPreview({ kind: 'url', label: 'a', source: 'https://a.example', url: 'https://a.example' }, 'stored-a')
+    openPreview({ kind: 'url', label: 'b', source: 'https://b.example', url: 'https://b.example' }, 'stored-b')
+    const [a, b] = $previewTabs.get()
+    const backA = vi.fn()
+    const backB = vi.fn()
+
+    const unbind = [
+      registerPreviewNav(a!.id, { back: backA, forward: () => {}, reload: () => {} }),
+      registerPreviewNav(b!.id, { back: backB, forward: () => {}, reload: () => {} })
+    ]
+
+    try {
+      focusTileB()
+      const focused = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+      await vi.waitFor(() => expect(focused.respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(focused.respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+
+      $layoutTree.set(group(['workspace'], { active: 'workspace', id: 'grp-main' }))
+      noteActiveTreeGroup('grp-main')
+      const background = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+      await vi.waitFor(() => expect(background.respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(background.respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+      expect(backB).toHaveBeenCalledTimes(2)
+      expect(backA).not.toHaveBeenCalled()
+      expect($layoutTree.get()).toEqual(group(['workspace'], { active: 'workspace', id: 'grp-main' }))
+
+      const unscoped = deliver('preview.act', { action: 'back' }, 'rt-a')
+      expect(JSON.parse(unscoped.respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+      const tour = deliver('tour', { action: 'discover', session_id: 'rt-b' }, 'rt-a')
+      expect(JSON.parse(tour.respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+
+      // Neither a cached runtime nor its still-open page keeps a closed tile authorized.
+      $sessionTiles.set([])
+      const closed = deliver('preview.act', { action: 'back', session_id: 'rt-b' }, 'rt-a')
+      expect(closed.decline).toHaveBeenCalledTimes(1)
+      expect(closed.respond).not.toHaveBeenCalled()
+      expect(backB).toHaveBeenCalledTimes(2)
+      expect(backA).not.toHaveBeenCalled()
+    } finally {
+      unbind.forEach(stop => stop())
+      dropSessionState('rt-b')
+    }
+  })
+
+  it('never lets an open background tile act on another profiles pinned page', async () => {
+    $sessionTiles.set([
+      { dir: 'right', ownerProfile: 'prof-p1-x', runtimeId: 'rt-x', storedSessionId: 'stored-x' } as never
+    ])
+    publishSessionState('rt-x', createClientSessionState('stored-x'))
+    openPreview({ kind: 'url', label: 'y', source: 'https://y.example', url: 'https://y.example' }, 'stored-a')
+    const pin = $previewTabs.get()[0]!.id
+    setPreviewTabPinned(pin, true)
+    const back = vi.fn()
+    const unbind = registerPreviewNav(pin, { back, forward: () => {}, reload: () => {} })
+
+    try {
+      const { decline, respond } = deliver('preview.act', { action: 'back', session_id: 'rt-x' }, 'rt-a')
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+      expect(decline).not.toHaveBeenCalled()
+      expect(back).not.toHaveBeenCalled()
+    } finally {
+      unbind()
+      dropSessionState('rt-x')
+    }
+  })
+
   it("runs a preview tour against the requesting session's tabs", async () => {
     focusTileB()
     vi.mocked(runTour).mockClear()

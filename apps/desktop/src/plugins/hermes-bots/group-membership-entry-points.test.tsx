@@ -93,6 +93,24 @@ it('Manage members offers the seatable rows plus the current members, never a ro
   expect(offered).not.toContain('spoofed')
 })
 
+it('Manage members will not uncheck a member whose machine is offline, and says why', async () => {
+  const homelab: RosterRow = { ...remote('scout'), connectionLabel: 'Homelab', sourceReachable: false }
+  $lastRoster.set([alpha, beta, homelab])
+  const { baseElement } = render(<GroupMemberPicker group="Core" members={[alpha, beta, homelab]} onClose={vi.fn()} open />)
+
+  await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
+  await act(async () => {})
+
+  const row = [...baseElement.querySelectorAll('[data-testid="group-member-picker"] [role="checkbox"]')].find(node =>
+    node.textContent?.includes('@scout')
+  ) as HTMLElement
+
+  expect(row.textContent).toContain(botsText().crossGateway.memberOffline('Homelab', 'Scout'))
+  expect(row.hasAttribute('disabled')).toBe(true)
+  fireEvent.click(row)
+  expect(row.getAttribute('aria-checked')).toBe('true')
+})
+
 function renderToolbar(roster: RosterRow[]) {
   const setGroupCreateOpen = vi.fn()
 

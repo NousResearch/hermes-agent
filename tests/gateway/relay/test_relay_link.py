@@ -20,7 +20,7 @@ _GATEWAY_ID = "gw-test"
 
 class _Connector(BaseHTTPRequestHandler):
     seen: list = []
-    managed_by = "connector"
+    managed_by = None  # None: a connector without the access route (404)
 
     def log_message(self, format, *args):
         pass
@@ -33,7 +33,17 @@ class _Connector(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _bearer_valid(self) -> bool:
+        token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode()
+        signed, _, sig = raw.rpartition(":")
+        return hmac.compare_digest(sig, hmac.new(_SECRET.encode(), signed.encode(), hashlib.sha256).hexdigest())
+
     def do_GET(self):  # /manage/access/list: who governs this agent's access
+        if not self._bearer_valid():
+            return self._reply(401, {"error": "bad bearer"})
+        if _Connector.managed_by is None:
+            return self._reply(404, {"error": "not found"})
         self._reply(200, {"agent": "inst-1", "managedBy": _Connector.managed_by, "grants": []})
 
     def do_POST(self):
@@ -52,7 +62,7 @@ def connector(monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), _Connector)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     _Connector.seen = []
-    _Connector.managed_by = "connector"
+    _Connector.managed_by = None
     monkeypatch.setenv("GATEWAY_RELAY_URL", f"ws://127.0.0.1:{server.server_port}/relay")
     monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "telegram")
     monkeypatch.setenv("GATEWAY_RELAY_BOT_IDS", json.dumps({"telegram": {"botId": "42", "username": "@NousHermesBot"}}))

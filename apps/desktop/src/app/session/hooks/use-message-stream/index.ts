@@ -635,8 +635,9 @@ export function useMessageStream({
           // a running-phase event only re-arms a sealed-no-result part on a
           // still-in-flight owner — a settled prior turn's sealed part is
           // history, so a new turn reusing the id seeds its own row instead
-          // of clobbering the prior turn's command.
-          eventTarget: state => toolCallOwnerMessageId(state.messages, payload, phase),
+          // of clobbering the prior turn's command. With no turn live the event
+          // can only be a late or repeated frame of a call already on screen.
+          eventTarget: state => toolCallOwnerMessageId(state.messages, payload, state.turnLive ? phase : 'complete'),
           // A copy of a call this turn already finished (re-delivered start or
           // completion) would otherwise draw that call a second time.
           skip: state => isRedeliveredToolEvent(state.messages, payload, phase)

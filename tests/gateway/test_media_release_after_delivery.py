@@ -145,6 +145,53 @@ async def test_resolution_racing_recovery_releases_once(tmp_path, monkeypatch, c
 
 
 @pytest.mark.asyncio
+async def test_resolution_the_drain_owned_is_collected_when_its_recovery_fails(tmp_path, monkeypatch):
+    import sqlite3
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    entered, resume = threading.Event(), threading.Event()
+    released = []
+    mark, read = recovery._mark_unknown, session_results.admission_result
+
+    def held_mark(*args):
+        result = mark(*args)
+        entered.set()
+        assert resume.wait(10)
+        return result
+
+    def fail(*args, **kwargs):
+        raise OSError('storage unavailable')
+
+    def read_once_fails(*args, **kwargs):
+        monkeypatch.setattr(session_results, 'admission_result', read)
+        raise sqlite3.OperationalError('database is locked')
+
+    async def execute(owner, ref, row):
+        owner.pending_results[row['admission_id']] = {'result': {'final_response': 'reply'}, 'usage': {}}
+        return 'reply'
+
+    monkeypatch.setattr(recovery, '_mark_unknown', held_mark)
+    monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', ())
+    monkeypatch.setattr(session_results, 'finish_result', fail)
+    monkeypatch.setattr(recovery, '_release_media', lambda owner, admission_id: released.append(admission_id))
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    with db:
+        receipt = await _submit(authority, 'photo')
+        drain = asyncio.create_task(authority._drain(REF))
+        try:
+            await async_wait_until(entered.is_set, timeout=5, what='recovery stamp')
+            row = get_session_admission(db, admission_id=receipt.admission_id)
+            await authority.resolve_unknown_as_owner(REF, receipt.admission_id, row['generation'])
+            monkeypatch.setattr(session_results, 'admission_result', read_once_fails)
+        finally:
+            resume.set()
+            await asyncio.gather(drain, return_exceptions=True)
+            await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='recovery cleanup')
+        assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        assert released == [receipt.admission_id], 'a resolved turn keeps its cleanup when the drain fails'
+
+
+@pytest.mark.asyncio
 async def test_resolution_of_a_retired_conversation_restores_it(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
@@ -359,3 +406,4 @@ async def test_shutdown_joins_cleanup_created_after_its_initial_snapshot(monkeyp
         resume_delivery.set()
         finish_cleanup.set()
         await asyncio.gather(shutdown, return_exceptions=True)
+

@@ -327,8 +327,21 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
         await authority._resolve_settled_waiter(admission_id, response)
         return True
     finally:
-        if settled is not None:
+        # A resolution that raced this drain handed its collection here (``_resolved_unknown``):
+        # honour it on every exit, settled or not.
+        owed = admission_id in getattr(authority, '_drain_owned_collection', ())
+        if owed:
+            authority._drain_owned_collection.discard(admission_id)
+        if settled is not None or owed:
             release_media_after_delivery(authority, row)
+
+
+def hand_collection_to_drain(authority, admission_id):
+    """The drain still owns this admission's claim: its exit queues the media collection."""
+    owed = getattr(authority, '_drain_owned_collection', None)
+    if owed is None:
+        owed = authority._drain_owned_collection = set()
+    owed.add(admission_id)
 
 
 def release_media_after_delivery(authority, row):

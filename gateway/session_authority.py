@@ -919,6 +919,9 @@ class SessionAuthority:
                 await deliver_resolved(self, admission_id, owed=prepared is not None and row['owner_epoch'] == self.epoch)
             finally:
                 release_media_after_delivery(self, row)
+        else:
+            from gateway.session_settlement_recovery import hand_collection_to_drain
+            hand_collection_to_drain(self, admission_id)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)

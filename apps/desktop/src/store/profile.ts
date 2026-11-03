@@ -1215,8 +1215,17 @@ export function enterAllProfilesView(): void {
   profileViewRestore?.(ALL_PROFILES)
 }
 
+/** The filter menu's and keybind's All toggle: a view change like a rail
+ *  pick, so each side comes back on its own main chat. */
 export function toggleShowAllProfiles(): void {
-  $showAllProfiles.set(!$showAllProfiles.get())
+  if (!$showAllProfiles.get()) {
+    enterAllProfilesView()
+
+    return
+  }
+
+  $showAllProfiles.set(false)
+  profileViewRestore?.(normalizeProfileKey($activeGatewayProfile.get()))
 }
 
 // ── Hotkey-driven profile switching ────────────────────────────────────────

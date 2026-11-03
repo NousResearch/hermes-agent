@@ -9,13 +9,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode, isReadFileErrorResult } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
+import { hostHas } from '@/lib/host-capabilities'
 import { isLoopbackPreviewUrl, openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   addAnnotatePin,
   beginAnnotateMode,
@@ -125,7 +126,7 @@ function webPreviewSurface(isWebPreview: boolean, isRemoteHtml: boolean): 'ifram
     return null
   }
 
-  return isBrowserHostedDesktop() ? 'iframe' : 'webview'
+  return hostHas('webviewPreview') ? 'webview' : 'iframe'
 }
 
 /** The raw Chromium params riding the webview tag's `context-menu` event. */
@@ -1112,7 +1113,7 @@ export function PreviewPane({
 
     // A browser host has no `<webview>` tag: past the guard above, this is
     // exactly `usesBrowserIframe`, so the iframe mounts instead.
-    if (isBrowserHostedDesktop()) {
+    if (!hostHas('webviewPreview')) {
       return mountBrowserPreviewFrame({
         host,
         navigationRef,
@@ -1445,7 +1446,7 @@ export function PreviewPane({
       // guest page gets its own via `app-command` in main), and unhandled they
       // walk the HOST document's history. A browser tab keeps its own back button.
       onMouseDown={event => {
-        if (isBrowserHostedDesktop() || (event.button !== 3 && event.button !== 4)) {
+        if (!hostHas('appMouseHistoryButtons') || (event.button !== 3 && event.button !== 4)) {
           return
         }
 
@@ -1542,7 +1543,7 @@ export function PreviewPane({
             ref={hostRef}
           />
           {isRemoteHtml && (
-            <iframe
+            <PreviewDocumentFrame
               className="absolute inset-0 size-full border-0 bg-white"
               referrerPolicy="no-referrer"
               sandbox=""

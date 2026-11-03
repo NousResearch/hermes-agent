@@ -170,9 +170,11 @@ def _legacy_order(path, record):
 
 def _home(authority, actor, profile):
     from gateway.session_authorities import served_profile_name
+    from tools.bot_mode_probe import _handle, _hermes_root, _roster
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
-    if actor.profile_id != authority.profile_id or profile not in (name, 'hermes' if name == 'default' else name):
+    handle = _handle(name, [n for n, _d in _roster(_hermes_root(home))]) if name == 'default' else name
+    if actor.profile_id != authority.profile_id or profile not in (name, handle):
         raise RuntimeStoreError('profile_mismatch')
     if 'session:submit' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -182,7 +184,7 @@ def _home(authority, actor, profile):
 async def _target(authority, actor):
     ref = lane = None
     row = authority.db.get_session_by_title('Bot Chat')
-    if row is None or (displaced := displaceable_bot_chat(authority, row)) is not None:
+    if row is None or (displaced := displaceable_bot_chat(authority, row, actor.subject)) is not None:
         # None: a concurrent delivery created it first. A title held by an API conversation no FIFO
         # can own is moved aside first, under the same lock (MSG-21, #140769).
         ref = await _create_bot_chat(authority, actor, displace=None if row is None else displaced)
@@ -210,13 +212,13 @@ async def _target(authority, actor):
     return ref, live, entry
 
 
-def displaceable_bot_chat(authority, row):
-    """The id holding the canonical title when the Bot Chat is a conversation no FIFO can own (an
-    ``api_`` row an older gateway or a plain ``POST /api/sessions`` minted, a messaging row, an
-    unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
-    adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
-    over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts and a local row a login stamped as its own are never moved."""
+def displaceable_bot_chat(authority, row, subject=None):
+    """The id holding the canonical title when the Bot Chat is a conversation this delivery can
+    never adopt, rename (the title is its identity) or rename over the API, so it would refuse
+    every delivery for good: an ``api_`` row an older gateway or a plain ``POST /api/sessions``
+    minted, a messaging row, or a lineage whose compression tip (the row a delivery adopts) is
+    unbound local history ``_kept_local_history`` does not keep for the delivering *subject*.
+    Else None: a bound local chat and kept history are never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -238,9 +240,9 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
-        if _kept_local_history(db, candidate):
-            return None
-    return row['id']
+    # Only the tip is adopted (``_target``), so only the tip decides: a root the owner could adopt
+    # above a tip nobody can would otherwise hold the title and refuse every delivery.
+    return None if _kept_local_history(db, tip, subject) else row['id']
 
 
 def release_superseded_bot_chat(db, store, route, session_id):
@@ -271,21 +273,37 @@ def release_superseded_bot_chat_at_boot(db, store):
         release_superseded_bot_chat(db, store, tip.get('session_key'), row['id'])
 
 
-def _kept_local_history(db, row):
+def _kept_local_history(db, row, subject=None):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts, or one a login stamped as its owner. A local-source row
-    no open can ever adopt (a route column left by a crash or reconnect, another profile's stamp)
-    is not: it held the title and refused every delivery for good (#141243)."""
+    or Desktop row the delivering *subject* or the host owner adopts by the native open's own rule
+    (``validate_legacy_row``: unstamped, or stamped with one of that adopter's identities), or a
+    Desktop row a foreign login stamped with its label (#140183: kept even with a route column or
+    another profile's name). Any other local-source row (a route column left by a crash or
+    reconnect, another profile's stamp, a stamp neither adopter owns, or outside Desktop a foreign
+    label) is not: kept, it held the title and refused every delivery for good (#141243, #143715).
+    *subject* None: the row's own ``auth:v1`` or owner-label stamp is the adopter, as a peer DM's
+    turn enters the chat."""
+    from gateway.owner_identity import host_owner_subject, same_owner
+    from gateway.session_identity import parse_authenticated_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
-    if row.get('user_id') and not legacy_account_label(row):
+    user_id = row.get('user_id')
+    owner = host_owner_subject()
+    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner)
+            and not (subject and same_owner(user_id, subject))
+            and parse_authenticated_subject(user_id) is None):
+        # A label neither adopter owns: Desktop keeps it (#140183); elsewhere no open adopts it.
+        return row.get('source') == 'desktop'
+    # A forwarded login (control socket) adopts its own stamp; the owner's history is never moved
+    # aside for a delivery that cannot adopt it.
+    for adopter in dict.fromkeys((user_id if subject is None else subject, owner)):
+        try:
+            validate_legacy_row(db, row, subject=adopter)
+        except RuntimeStoreError:
+            continue
         return True
-    try:
-        validate_legacy_row(db, row)
-    except RuntimeStoreError:
-        return False
-    return True
+    return False
 
 
 def _moved_aside_by_this_door(authority, holder, pinned):
@@ -337,7 +355,7 @@ async def _create_bot_chat(authority, actor, *, displace=None):
     async with lock:
         held = authority.db.get_session_by_title('Bot Chat')
         if held is not None:
-            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held) != displace:
+            if displace is None or held['id'] != displace or displaceable_bot_chat(authority, held, actor.subject) != displace:
                 return None
             logger.warning("Bot Chat title held by %s, a conversation no FIFO can own: moving it aside", displace)
             # False: the title moved since the check. A lane's ``/new`` frees a handed-off Bot Chat's
@@ -410,9 +428,9 @@ def _admission_outcome(authority, admission_id, fallback=None):
         # A successful bare silence marker is a delivery decision (same rule as the gateway and
         # the live Bot Chat completion): the turn stays in the target's transcript, the sender
         # never sees the marker as prose.
-        from gateway.response_filters import is_intentional_silence_response
-        if status == 'settled' and is_intentional_silence_response(reply):
-            reply = ''
+        from gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
+        if status == 'settled':
+            reply = '' if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
@@ -760,7 +778,8 @@ async def deliver(connection, params):
 def _require_same_delivery(record, actor, message, author, category):
     """A delivery id names one delivery: the same message, principal, author and category (the
     mailbox writer's identity), whether its receipt is admission-backed or refused."""
-    if (record['message'] != message or record['principal_id'] != actor.subject
+    from gateway.owner_identity import same_owner
+    if (record['message'] != message or not same_owner(record['principal_id'], actor.subject)
             or record.get('author') != author
             or record.get('notification_category', 'result') != category):
         raise RuntimeStoreError('admission_conflict')

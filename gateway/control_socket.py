@@ -373,7 +373,8 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject"}):
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject", "restart_wait"}
+                or params.get("restart_wait", "refuse") != "refuse"):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
@@ -389,7 +390,8 @@ class GatewayControlServer:
         if subject is not peer_subject and not _structured_login_subject(subject):
             raise PermissionError("invalid bootstrap subject")
         ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
-                                       purpose=params["purpose"], scope=params.get("scope", "profile"))
+                                       purpose=params["purpose"], scope=params.get("scope", "profile"),
+                                       refuse_restart_wait="restart_wait" in params)
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}

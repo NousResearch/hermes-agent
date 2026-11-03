@@ -224,8 +224,10 @@ class RoomMemberActivity(Result):
 class RoomDriverStatus(Result):
     """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt
     (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)
-    or the driver's approval action (``kind: approval`` + run/session/approval context).
-    ``member_activity`` lists live tasks in admission order (absent from older gateways)."""
+    or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled
+    room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken).
+    ``member_activity`` lists live tasks in admission order (absent from older gateways).
+    ``last_error`` is this room's last preparation failure, null once one succeeds."""
 
     running: bool
     working: bool
@@ -233,6 +235,7 @@ class RoomDriverStatus(Result):
     counts: dict[str, int]
     pending_actions: list[dict[str, JsonValue]]
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
+    last_error: str | None = None
     peer_routes: list[PeerRouteStatus]
 
 

@@ -41,7 +41,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-5.5", "anthropic/claude-haiku-4.5",
         "openai/gpt-6-astra", "openai/gpt-6-astra-fast", "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro",
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
-        "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
+        "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-4-argon",
         "google/gemini-3.1-pro-preview",
@@ -130,10 +130,11 @@ def _xai_finalize_catalog(ids: list[str]) -> list[str]:
 
 def _xai_curated_models() -> list[str]:
     """Offline curated floor for xAI / xAI OAuth pickers: $HERMES_HOME/models_dev_cache.json
-    (no network), else ``_XAI_STATIC_FALLBACK``. Any failure falls through to the static list."""
+    (no network), else ``_XAI_STATIC_FALLBACK``. Any failure falls through to the static list.
+    Reads through the process-wide models.dev copy, so the parse is the one every later reader shares."""
     try:
-        from agent.models_dev import _load_disk_cache
-        data = _load_disk_cache()
+        from agent.models_dev import fetch_models_dev
+        data = fetch_models_dev(allow_network=False)
         xai = data.get("xai") if isinstance(data, dict) else None
         models = xai.get("models") if isinstance(xai, dict) else None
         if isinstance(models, dict) and models:
@@ -143,6 +144,56 @@ def _xai_curated_models() -> list[str]:
     except Exception:
         pass
     return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
+
+
+_XAI_ROWS = ("xai", "xai-oauth")
+
+
+class _CuratedCatalog(dict):
+    """``_PROVIDER_MODELS``: static rows, except xAI's, which come from the models.dev disk cache.
+
+    That cache is a full parse of the whole catalog (tens of MiB resident), so it is read on the first
+    lookup of an xAI row or a whole-table walk, never at import: a process that never asks for xAI
+    never pays for it. Until then the xAI rows hold the static fallback, and they are filled in place,
+    so a list handed out earlier sees the same ids. Overriding ``__iter__`` keeps ``dict(table)`` and
+    ``{**table}`` on the slow path that reads values through ``__getitem__``."""
+
+    _xai_ready = False
+
+    def _ensure_xai(self) -> None:
+        if self._xai_ready:
+            return
+        ids = _xai_curated_models()
+        for row in _XAI_ROWS:
+            current = dict.get(self, row)
+            if isinstance(current, list):
+                current[:] = ids
+        self._xai_ready = True
+
+    def __iter__(self):
+        return dict.__iter__(self)
+
+    def __getitem__(self, key):
+        if key in _XAI_ROWS:
+            self._ensure_xai()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        if key in _XAI_ROWS:
+            self._ensure_xai()
+        return dict.get(self, key, default)
+
+    def values(self):
+        self._ensure_xai()
+        return dict.values(self)
+
+    def items(self):
+        self._ensure_xai()
+        return dict.items(self)
+
+    def copy(self):
+        self._ensure_xai()
+        return dict(dict.items(self))
 
 
 # Native OpenAI Chat Completions (api.openai.com).
@@ -168,10 +219,8 @@ _ALIBABA_TOKEN_PLAN_MODELS = [
     "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
     "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
 ]
-_XAI_MODELS = _xai_curated_models()
-
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
-_PROVIDER_MODELS: dict[str, list[str]] = {
+_PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "moa": ["default"],
     "nous": [mid for mid, _ in OPENROUTER_MODELS if mid not in _OPENROUTER_ONLY and not mid.endswith(":free")],
     # Used by /model counts and provider_model_ids fallback when /v1/models is unavailable.
@@ -183,7 +232,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
-    "xai-oauth": list(_XAI_MODELS),
+    "xai-oauth": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     "gemini": [
         # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
         "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
@@ -193,7 +242,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-5v-turbo", "glm-5-turbo",
         "glm-4.7", "glm-4.5", "glm-4.5-flash",
     ],
-    "xai": list(_XAI_MODELS),
+    "xai": _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK)),
     # Nemotron flagships, then third-party agentic models hosted on build.nvidia.com.
     "nvidia": [
         "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b",
@@ -306,7 +355,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
-}
+})
 
 
 # ---------------------------------------------------------------------------

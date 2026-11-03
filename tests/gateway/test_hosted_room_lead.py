@@ -242,6 +242,22 @@ def test_retried_settings_save_returns_its_first_event_after_a_routing_edit(room
         context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Other", notes="")
 
 
+
+def test_a_settings_retry_of_an_event_saved_before_routing_existed_returns_it(room_db: Path):
+    """A ``room.context_set`` written before lead routing carries only purpose and notes."""
+    first = hosted_rooms.append_event(
+        room_db, room_id=ROOM_ID, event_id="c-old", kind=context.CONTEXT_EVENT_KIND,
+        actor={"kind": "system", "id": "room-control"}, payload={"purpose": "Old", "notes": ""},
+        authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)
+
+    retry = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="")
+
+    assert retry["event"]["idempotent"] and retry["event"]["seq"] == first["seq"]
+    with pytest.raises(hosted_rooms.EventConflictError):  # asking for a lead under that id is a different save
+        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="",
+                                 routing="lead", lead_member_id="member-ada")
+
+
 @pytest.mark.parametrize("routing", ["everyone", "lead"])
 def test_batch_bounded_member_turn_publishes_its_real_reply(routing: str):
     """A member turn whose frozen batch stops below its source message is still a member turn, not routing."""

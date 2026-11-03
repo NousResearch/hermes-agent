@@ -115,7 +115,8 @@ test('keeps canonical alpha events and questions on alpha while beta is foregrou
           payload: { kind: 'approval', prompt_id: 'alpha-approval', execution_generation: 3, command: 'build', choices: ['once'] } })
       })
       expect(events.mock.calls.at(-1)?.[0]).toMatchObject({ profile: 'alpha', session_id: 'rt-alpha' })
-      expect(events.mock.calls.map(([event]) => event.profile)).toEqual(['beta', 'alpha', 'alpha'])
+      // Session frames only; the connection-level gateway.ready is not part of the routing under test.
+      expect(events.mock.calls.filter(([event]) => event.session_id).map(([event]) => event.profile)).toEqual(['beta', 'alpha', 'alpha'])
       expect(runtimeSessionOwner('rt-alpha')).toBe('alpha')
       expect(questions.mock.calls.at(-1)?.[0]).toMatchObject({ profile: 'alpha', id: 'alpha-approval' })
       const question = questions.mock.calls.at(-1)?.[0] as unknown as { respond: (answer: object) => void }

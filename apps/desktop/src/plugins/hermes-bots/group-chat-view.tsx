@@ -120,7 +120,7 @@ import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
-import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeaker, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -1360,28 +1360,19 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
+    // The room's `members` prop is derived from the live roster, so every
+    // roster paint re-renders this view; a plain read stays current.
+    const liveRoster = $lastRoster.get()
+    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta, liveRoster)
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
     // primary "default" profile renders as Hermes, remote dupes
-    // carry their @name-device handle) instead of raw profile ids.
-    const member = isUser
-      ? null
-      : members.find(
-          b =>
-            b.name === entry.from.name &&
-            (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
-        ) || null
+    // carry their @name-device handle); a former member as its own machine names it.
+    const speaker = groupTranscriptSpeaker(entry, members, liveRoster)
+    const member = members.find(bot => bot === speaker) ?? null
 
-    const display = isUser
-      ? b.group.you
-      : displayName(
-          member || {
-            name: entry.from.name
-          },
-          meta
-        )
+    const display = isUser || !speaker ? b.group.you : displayName(speaker, meta)
 
     const entryKey = `${entry.at}:${index}`
     const revealed = !isUser && revealedSpeaker === entryKey

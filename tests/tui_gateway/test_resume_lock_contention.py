@@ -125,6 +125,7 @@ def test_resume_of_idle_chat_is_not_stalled_by_busy_chat_history_lock(
         assert "result" in results["idle"]
     finally:
         # Join every worker even on failure, so none outlives monkeypatch teardown and leaks into the next case.
+        # ponytail: a worker still blocked after 3s outlives an already-failing test; subprocess isolation if that bites.
         holder.release()
         for thread in started:
             thread.join(timeout=3)
@@ -142,11 +143,11 @@ def test_resume_waits_for_held_resume_lock_before_rebinding_or_cancelling_reap(
     monkeypatch.setattr(server, "_sessions", {"sid": session})
     monkeypatch.setattr(server, "_pending_ws_reaps", {"sid": timer})
     results = {}
+    resumer = threading.Thread(
+        target=lambda: results.update(r=_resume(path, "sid", session)), daemon=True
+    )
     server._session_resume_lock.acquire()  # grace expiry holds the resume lock: a resume must not interleave
     try:
-        resumer = threading.Thread(
-            target=lambda: results.update(r=_resume(path, "sid", session)), daemon=True
-        )
         resumer.start()
         resumer.join(timeout=0.5)
         assert resumer.is_alive(), "resume ran past the held _session_resume_lock"
@@ -156,7 +157,8 @@ def test_resume_waits_for_held_resume_lock_before_rebinding_or_cancelling_reap(
         assert server._pending_ws_reaps.get("sid") is timer
     finally:
         server._session_resume_lock.release()
-    resumer.join(timeout=3)
+        if resumer.ident:
+            resumer.join(timeout=3)
     assert not resumer.is_alive()
     assert "result" in results["r"]
     assert timer.cancelled
@@ -172,16 +174,16 @@ def test_orphan_reaper_activity_check_does_not_wait_on_history_lock(monkeypatch)
     )
     monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 600)
     result = {}
+    checker = threading.Thread(
+        target=lambda: result.update(
+            fresh=server._ws_orphan_turn_activity_is_fresh(session)
+        ),
+        daemon=True,
+    )
     session[
         "history_lock"
     ].acquire()  # the reaper runs under the global resume lock; a turn holds history_lock
     try:
-        checker = threading.Thread(
-            target=lambda: result.update(
-                fresh=server._ws_orphan_turn_activity_is_fresh(session)
-            ),
-            daemon=True,
-        )
         checker.start()
         checker.join(timeout=3)
         assert not checker.is_alive(), (
@@ -189,4 +191,6 @@ def test_orphan_reaper_activity_check_does_not_wait_on_history_lock(monkeypatch)
         )
     finally:
         session["history_lock"].release()
+        if checker.ident:
+            checker.join(timeout=3)
     assert result["fresh"] is True

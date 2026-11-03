@@ -146,6 +146,8 @@ class MessageEvent:
     _admitted_before_drain: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Every chat message a merged event was built from; ``message_id`` alone keeps one of them.
+    _merged_message_ids: list[str] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
@@ -155,8 +157,10 @@ class MessageEvent:
     def absorb_turn_input(self, other: "MessageEvent") -> None:
         """One turn now carries *other*'s input too. A turn merged from two senders has no single
         actor: ``user_id`` "" exports none, so a narrowed approval binds to approvers and admins only
-        instead of to the first sender while it carries the second sender's text."""
+        instead of to the first sender while it carries the second sender's text. It keeps the ids of
+        *other*'s chat messages too (a secret answer is deleted from the chat, every message of it)."""
         self.absorb_reply_expected(other)
+        self.absorb_message_ids(other)
         if self.sender_id() != other.sender_id():
             self.user_id = self.user_name = ""
 
@@ -175,6 +179,23 @@ class MessageEvent:
             self.media_filenames = pad(self) + pad(other)
         self.media_urls.extend(other.media_urls)
         self.media_types.extend(other.media_types)
+
+    def absorb_merged(self, other: "MessageEvent") -> None:
+        """*other* was merged into this event: its reply expectation, and the ids of the messages it
+        came from (a secret answer is deleted from the chat, every message of it)."""
+        self.absorb_reply_expected(other)
+        self.absorb_message_ids(other)
+
+    def absorb_message_ids(self, other: "MessageEvent") -> None:
+        """Keep the ids of every chat message *other* was built from (``chat_message_ids``)."""
+        for message_id in (self.message_id, other.message_id, *other._merged_message_ids):
+            if message_id and str(message_id) not in self._merged_message_ids:
+                self._merged_message_ids.append(str(message_id))
+
+    def chat_message_ids(self) -> list[str]:
+        """The ids of every chat message this event carries, its own first."""
+        ids = [str(self.message_id)] if self.message_id else []
+        return ids + [i for i in self._merged_message_ids if i not in ids]
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

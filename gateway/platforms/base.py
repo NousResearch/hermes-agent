@@ -3744,7 +3744,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         else:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
+            state.event.absorb_merged(event)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -4012,11 +4012,10 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
         # blocked on Event.wait, message must reach the resolver before being a new turn.
         # See #4926.
-        if not cmd and event.allow_gateway_control:
+        if event.allow_gateway_control:
             try:
                 from tools import clarify_gateway as _clarify_mod
-                _has_text_clarify = _clarify_mod.get_pending_for_session(
-                    session_key, include_choice_prompts=True) is not None
+                _has_text_clarify = _clarify_mod.pending_takes_message(session_key, is_command=bool(cmd))
             except Exception:
                 _has_text_clarify = False
             if _has_text_clarify:

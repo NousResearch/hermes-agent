@@ -69,7 +69,7 @@ def merge_batched_event(pending: dict, key: str, event: MessageEvent, *, merge_c
     if existing is None:
         pending[key] = event
         return key
-    existing.absorb_reply_expected(event)
+    existing.absorb_merged(event)
     existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
     existing.extend_media(event)
     caption, notes = event.text or "", []

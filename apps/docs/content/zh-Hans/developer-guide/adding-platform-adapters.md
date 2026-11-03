@@ -594,14 +594,14 @@ PLATFORM_HINT = (
 
 | 文件 | 需添加内容 |
 |------|-------------|
-| `website/docs/user-guide/messaging/newplat.md` | 完整的平台设置页面 |
-| `website/docs/user-guide/messaging/index.md` | 平台对比表、架构图、toolset 表、安全章节、下一步链接 |
-| `website/docs/reference/environment-variables.md` | 所有 NEWPLAT_* 环境变量 |
-| `website/docs/reference/toolsets-reference.md` | hermes-newplat toolset |
-| `website/docs/integrations/index.md` | 平台链接 |
-| `website/sidebars.ts` | 文档页面的侧边栏条目 |
-| `website/docs/developer-guide/architecture.md` | 适配器数量 + 列表 |
-| `website/docs/developer-guide/gateway-internals.md` | 适配器文件列表 |
+| `apps/docs/content/zh-Hans/user-guide/messaging/newplat.md` | 完整的平台设置页面 |
+| `apps/docs/content/zh-Hans/user-guide/messaging/index.md` | 平台对比表、架构图、toolset 表、安全章节、下一步链接 |
+| `apps/docs/content/zh-Hans/reference/environment-variables.md` | 所有 NEWPLAT_* 环境变量 |
+| `apps/docs/content/zh-Hans/reference/toolsets-reference.md` | hermes-newplat toolset |
+| `apps/docs/content/zh-Hans/integrations/index.md` | 平台链接 |
+| `apps/docs/src/lib/navigation-data.ts` | 文档页面的侧边栏条目 |
+| `apps/docs/content/zh-Hans/developer-guide/architecture.md` | 适配器数量 + 列表 |
+| `apps/docs/content/zh-Hans/developer-guide/gateway-internals.md` | 适配器文件列表 |
 
 ## 一致性审计
 

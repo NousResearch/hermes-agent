@@ -24,7 +24,7 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 | ACP (IDE integration) | `acp_adapter/` | [ACP Internals](acp-internals.md) |
 | Desktop app | `apps/desktop/` | [Desktop Plugin SDK](desktop-plugin-sdk.md), [Worktree UI Development](worktree-ui-dev.md) |
 | TUI | `ui-tui/`, `tui_gateway/` | [Worktree UI Development](worktree-ui-dev.md) |
-| Docs site | `website/` | [Contributing](contributing.md) |
+| Docs site | `apps/docs/` | [Contributing](contributing.md) |
 | Tests | `tests/`, `tests-js/` | [Contributing → Before Submitting](contributing.md#before-submitting) |
 
 A few conventions that fall out of this map:

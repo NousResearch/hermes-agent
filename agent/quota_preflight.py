@@ -140,6 +140,17 @@ def preflight_quota_route(agent: Any) -> bool:
     return changed
 
 
+def prepare_quota_context(agent: Any, active_system_prompt: str, *, blocked: bool) -> str:
+    """Respect the turn veto before quota I/O, but bind before turn-start compaction."""
+    if not blocked and preflight_quota_route(agent):
+        from agent.conversation_loop import _sync_failover_system_message
+        from agent.turn_context import _publish_runtime_main
+
+        active_system_prompt = _sync_failover_system_message(agent, None, active_system_prompt)
+        _publish_runtime_main(agent)
+    return active_system_prompt
+
+
 def prepare_quota_turn(agent: Any, state: Any) -> None:
     """Cover whole-turn transports as well as the ordinary per-attempt loop."""
     if preflight_quota_route(agent):

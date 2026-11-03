@@ -72,8 +72,9 @@ authorize a different route or check those task-specific policies for you.
 The process-local cache is profile-, endpoint- and account-scoped, shared with
 threaded children, limited to 256 entries and 60 seconds. Unknown/fetch-failed
 observations are cached for 15 seconds. A reset expires the old observation; it
-does not prove recovery. Only a fresh positive account observation permits a
-quota-selected fallback to restore its primary on a later turn. Requests still use
+does not prove recovery. Reliable exhaustion keeps a quota-selected fallback
+active; available, unknown or failed observations defer to the native primary
+restoration and cooldown gates on later turns. Requests still use
 native client, transport, context and reasoning rebinding and native reactive
 credential rotation/fallback after errors. Usage is evidence, never a reservation
 or a guarantee that the next inference will succeed.
@@ -89,7 +90,9 @@ reserve quota across processes, proactively rotate multi-account credential
 pools, or infer exhaustion from ambiguous plugin/model-family windows. Such
 routes retain their native reactive recovery. Only native Codex account-window
 evidence is supported for proactive switching; other provider gauges remain
-unknown. The observer/context-injection hook `pre_llm_call` does not reroute calls.
+unknown. Turn-start quota preflight runs after the `pre_llm_call` veto and
+before compaction. A veto still prevents compaction and inference; the hook
+itself does not reroute calls.
 
 ### Supported Providers
 

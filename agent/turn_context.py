@@ -1134,10 +1134,6 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
-    # Route before preflight compaction can issue inference on an exhausted primary.
-    # Voice routing still binds later, after the session context has been prepared.
-    from agent.quota_preflight import preflight_quota_route
-    preflight_quota_route(agent)
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 
@@ -1240,6 +1236,9 @@ def build_turn_context(
         conversation_history=conversation_history, blocks=_blocks,
     )
     plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
+    # The veto precedes quota routing; an admitted turn still routes before compaction.
+    from agent.quota_preflight import prepare_quota_context
+    active_system_prompt = prepare_quota_context(agent, active_system_prompt, blocked=bool(plugin_block_message))
     compaction = CompactionOutcome(
         messages=messages, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,

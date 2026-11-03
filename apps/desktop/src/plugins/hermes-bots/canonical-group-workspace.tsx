@@ -8,6 +8,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { forgetCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -184,17 +185,6 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const rename = (name: string) =>
     void mutate(() => canonicalGroupRequest(binding, 'groups.rename', { room_id: binding.roomId, event_id: randomUuid(), name }))
 
-  // True only once the backend accepted it, so the settings form keeps a rejected draft.
-  const saveContext = async (context: CanonicalRoomContext) => {
-    let saved = false
-    await mutate(async () => {
-      await canonicalGroupRequest(binding, 'groups.context', { room_id: binding.roomId, event_id: randomUuid(), ...context })
-      saved = true
-    })
-
-    return saved
-  }
-
   // Rejects so ConfirmDialog stays open with the error; a disbanded room no longer reads back, so leave it.
   const end = async () => {
     await canonicalGroupRequest(binding, 'groups.disband', { room_id: binding.roomId, cancel_id: randomUuid() })
@@ -247,9 +237,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
   return <section className="flex h-full min-h-0">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <CanonicalGroupHeader busy={busy} canStop={!!driver} context={state?.context ?? undefined}
-        deliveryTarget={`room:${binding.roomId}${binding.profile ? `@${binding.profile}` : ''}`} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onSaveContext={saveContext} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
+      <CanonicalGroupHeader busy={busy} canStop={!!driver} detailsOpen={detailsOpen} onBack={onBack} onDetails={() => setDetailsOpen(open => !open)}
+        onDisband={end} onRename={rename} onStop={() => void mutate(() => canonicalGroupRequest(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: randomUuid() }))}
         room={state?.room} statuses={statuses} working={working} />
       {readError && <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-destructive" role="alert">{readError}
         <Button onClick={() => void refresh().catch(e => setReadError(String(e)))} size="xs" variant="ghost">{labels.refresh}</Button></div>}
@@ -296,6 +285,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </RoomComposer>
       </div>
     </div>
-    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses} />}
+    {detailsOpen && state?.room && <CanonicalGroupDetails avatarFor={avatarFor} labels={labels} onClose={() => setDetailsOpen(false)} room={state.room} statuses={statuses}>
+      <CanonicalGroupRoomSettings binding={binding} context={state.context} disabled={busy} onSaved={refresh} />
+    </CanonicalGroupDetails>}
   </section>
 }

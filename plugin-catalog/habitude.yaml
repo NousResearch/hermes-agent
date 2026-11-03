@@ -1,0 +1,20 @@
+name: habitude
+repo: https://github.com/legott-ai/habitude-agent-integrations
+sha: 5802d0c9680f93a56440439bbfba189c80f1ec3f
+subdir: hermes
+description: Read-only journal reflection skill with opt-in local Vault MCP setup.
+maintainer: IkwhanChang
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://habitude.ai/integrations
+version: "0.2.0"
+readme: true
+title: Habitude Journal
+known_issues:
+  - Requires Python 3.10+ and explicit Vault setup. No notes are connected during installation.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

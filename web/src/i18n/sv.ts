@@ -250,6 +250,28 @@ export const sv = defineLocale({
     approvedUsers: 'Godkända användare ({count})',
     noApprovedUsers: 'Inga godkända användare'
   },
+  modelsUi: {
+    cacheRead: 'Läst från cache',
+    reasoning: 'Resonemang',
+    input: 'Indata',
+    output: 'Utdata',
+    tools: 'Verktyg',
+    vision: 'Bildtolkning',
+    useAs: 'Använd som',
+    mainModel: 'Huvudmodell',
+    current: 'aktuell',
+    auxiliaryTask: 'Hjälpuppgift',
+    allAuxiliaryTasks: 'Alla hjälpuppgifter',
+    missingProviderModel: 'Leverantör eller modell saknas',
+    expensiveModelWarning: 'Varning för dyr modell',
+    expensivePricing: 'Den här modellen har ett ovanligt högt känt pris.',
+    switchAnyway: 'Byt ändå',
+    cancel: 'Avbryt',
+    main: 'huvud',
+    auxiliary: 'hjälp',
+    context: 'kontext',
+    outputTokens: 'ut'
+  },
   files: {
     title: 'Filer',
     refresh: 'Uppdatera filer',

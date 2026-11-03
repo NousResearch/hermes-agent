@@ -59,11 +59,24 @@ def _find_room_store(room_id: str, profile: Optional[str]) -> Optional[Path]:
     the room's owner entry: the shared-store import copies rooms out of ``state.db`` without deleting
     them, and nothing serves that leftover copy, so a post there would never reach the visible room."""
     from gateway.hosted_rooms import probe_hosted_room
-    from gateway.session_hosted_service import probe_native_room_owner
     session_store, shared_store = _room_stores(profile)
-    if probe_hosted_room(session_store, room_id=room_id) and probe_native_room_owner(session_store, room_id=room_id):
+    if _serves(session_store, room_id):
         return session_store
-    return shared_store if probe_hosted_room(shared_store, room_id=room_id) else None
+    if not probe_hosted_room(shared_store, room_id=room_id):
+        return None
+    # A shared room the root gateway imported is fenced here and lives on in the ROOT home's state.db
+    # (only that gateway imports), whichever profile's view advertised the target.
+    from gateway.hosted_rooms_gateway_import import handed_room_ids
+    root_store = shared_store.with_name("state.db")
+    if room_id in handed_room_ids(shared_store) and _serves(root_store, room_id):
+        return root_store
+    return shared_store
+
+
+def _serves(store: Path, room_id: str) -> bool:
+    from gateway.hosted_rooms import probe_hosted_room
+    from gateway.session_hosted_service import probe_native_room_owner
+    return probe_hosted_room(store, room_id=room_id) and probe_native_room_owner(store, room_id=room_id)
 
 
 def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool = False) -> Optional[str]:

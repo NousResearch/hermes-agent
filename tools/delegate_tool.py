@@ -553,10 +553,10 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[dict[str, Any]] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, delegation_id: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
-    list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
+    list/steer/stop/result run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
     (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
     dispatch handle when running in the background."""
     if parent_agent is None:
@@ -564,9 +564,9 @@ def delegate_task(
 
     normalized_action = (action or "").strip().lower()
     if normalized_action in _CONTROL_ACTIONS:
-        return _handle_control_action(normalized_action, subagent_id, message, parent_agent)
+        return _handle_control_action(normalized_action, subagent_id, message, parent_agent, delegation_id)
     if normalized_action and normalized_action != "spawn":
-        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
+        return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, stop, or result.")
 
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
@@ -841,11 +841,18 @@ DELEGATE_TASK_SCHEMA = {
                 "'list' = ids/goals/status/transcripts; 'steer' = queue "
                 "course-correction text into one child (subagent_id + "
                 "message) without stopping it; 'stop' = end one child "
-                "early (subagent_id; partial result still returns). "
+                "early (subagent_id; partial result still returns); 'result' = "
+                "read the stored record of one of YOUR delegations (delegation_id) "
+                "incl. state and per-child partial results — use it when a completion "
+                "message was lost, e.g. after a restart. "
                 "Control actions return immediately; goal/tasks are ignored unless spawning.",
-                enum=["spawn", "list", "steer", "stop"],
+                enum=["spawn", "list", "steer", "stop", "result"],
             ),
             "subagent_id": _p("string", "Target for action='steer'/'stop' (ids from the spawn response or action='list')."),
+            "delegation_id": _p(
+                "string",
+                "Required for action='result': the delegation_id from the spawn dispatch response.",
+            ),
             "message": _p(
                 "string",
                 "For action='steer': the course correction, appended to "
@@ -857,7 +864,7 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
-_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message"})
+_LIVE_CONTROL_PARAMS = frozenset({"action", "subagent_id", "message", "delegation_id"})
 
 
 def oneshot_delegate_function(function: dict) -> dict:
@@ -925,7 +932,7 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
+        parent_agent=kw.get("parent_agent"), delegation_id=args.get("delegation_id"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

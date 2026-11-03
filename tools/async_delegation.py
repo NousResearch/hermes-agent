@@ -743,12 +743,17 @@ def get_durable_delegation(delegation_id: str) -> Optional[dict[str, Any]]:
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute("""SELECT origin_session, state, dispatched_at, completed_at,
                       result_json, delivery_state, delivery_attempts,
-                      origin_session_id
+                      origin_session_id, delivered_at, parent_session_id, task_json
                FROM async_delegations WHERE delegation_id=?""", (delegation_id,)).fetchone()
-    return None if row is None else {
+    if row is None:
+        return None
+    result = redact_child_result(json.loads(row[4])) if row[4] else None
+    model = _json_object(row[10]).get("model") or (result.get("model") if isinstance(result, dict) else None)
+    return {
         "delegation_id": delegation_id, "origin_session": row[0], "state": row[1], "dispatched_at": row[2],
-        "completed_at": row[3], "result": redact_child_result(json.loads(row[4])) if row[4] else None, "delivery_state": row[5],
-        "delivery_attempts": row[6], "origin_session_id": row[7] or ""}
+        "completed_at": row[3], "result": result, "delivery_state": row[5],
+        "delivery_attempts": row[6], "origin_session_id": row[7] or "", "delivered_at": row[8],
+        "parent_session_id": row[9] or "", "model": model}
 
 
 _FAILED_TASK_STATES = frozenset({"error", "failed", "failure", "timeout", "stalled", "unknown", "interrupted"})

@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:name=".HermesApplication"
@@ -13,7 +15,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_launcher"
-        android:label="Hermes Agent"
+        android:label="@string/app_name"
         android:roundIcon="@drawable/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Hermes"
@@ -22,7 +24,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="Hermes Agent"
+            android:label="@string/app_name"
             android:theme="@style/Theme.Hermes">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -35,6 +37,14 @@
             android:enabled="true"
             android:exported="false" />
 
+        <service
+            android:name=".HermesPetOverlayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started, movable Hermes Pet overlay" />
+        </service>
     </application>
-
 </manifest>

@@ -11,6 +11,12 @@ Hermes' documented Android path is Termux on a 64-bit ARM (aarch64/arm64) device
 3. If installation fails, save the complete error output and check the supported Python version and architecture before changing dependencies.
 4. Start Hermes from Termux using the command documented by the installed package.
 
+## Hermes Pet for Android (prototype)
+
+The Android shell includes an initial movable overlay mascot. Choose a cat, robot, fox, panda, penguin, or dog in the app, grant Android's **Display over other apps** permission, and start the pet. Drag it around the screen; tapping it returns to the app settings. The mascot choice is saved locally, and a persistent notification shows when the overlay is active.
+
+This is only the visual foundation: it does **not** currently read screen contents, control other apps, understand assigned tasks, or connect the pet's animation to live Hermes tool activity. Those capabilities need a separate, opt-in AccessibilityService and/or Android screen-capture permission, plus a task bridge to a working Hermes backend. Do not claim computer-use functionality until those parts are implemented and tested. Users can stop the overlay from the app or its notification.
+
 ## APK in this repository: experimental
 
 The repository has advertised an [Android APK release](https://github.com/luciano2-web/hermes-agent/releases/tag/v1.0.0-android). A download does **not** prove that it installs, starts, or supports all Hermes features on every Android device. Treat it as experimental until a reproducible build and real-device tests pass.

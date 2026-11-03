@@ -1,68 +1,107 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center"
     android:background="@color/colorBackground"
     tools:context=".MainActivity">
 
-    <ImageView
-        android:layout_width="120dp"
-        android:layout_height="120dp"
-        android:src="@mipmap/ic_launcher"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="32dp"
-        android:contentDescription="Hermes Agent Logo" />
-
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Hermes Agent"
-        android:textSize="24sp"
-        android:textColor="@color/colorText"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="16dp" />
-
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="@android:style/Widget.ProgressBar.Horizontal"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="8dp"
-        android:layout_marginBottom="32dp"
-        android:visibility="gone" />
-
-    <Button
-        android:id="@+id/startButton"
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Start Hermes Agent"
-        android:textSize="18sp"
-        android:visibility="gone"
-        android:enabled="false"
-        android:backgroundTint="@color/colorPrimary"
-        android:textColor="@color/colorBackground" />
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:padding="24dp">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="AI Agent with Continuous Learning"
-        android:textSize="14sp"
-        android:textColor="@color/colorText"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="16dp" />
+        <ImageView
+            android:layout_width="104dp"
+            android:layout_height="104dp"
+            android:src="@mipmap/ic_launcher"
+            android:layout_marginBottom="20dp"
+            android:contentDescription="Hermes Agent" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="by Nous Research"
-        android:textSize="12sp"
-        android:textColor="@color/colorText"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="8dp" />
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Hermes Agent"
+            android:textSize="22sp"
+            android:gravity="center"
+            android:textColor="@color/colorText"
+            android:layout_marginBottom="12dp" />
 
-</LinearLayout>
+        <ProgressBar
+            android:id="@+id/progressBar"
+            style="@android:style/Widget.ProgressBar.Horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/startButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Start Hermes Agent"
+            android:visibility="gone"
+            android:enabled="false"
+            android:backgroundTint="@color/colorPrimary"
+            android:textColor="@color/colorBackground" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/colorPrimary"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Hermes Pet"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:textColor="@color/colorText" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Elige tu mascota y llévala flotando por la pantalla. Puedes arrastrarla y tocarla para volver a estos ajustes."
+            android:textSize="14sp"
+            android:textColor="@color/colorText"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="12dp" />
+
+        <Spinner
+            android:id="@+id/mascotSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:contentDescription="Elegir mascota de Hermes Pet"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/petToggleButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Activar Hermes Pet"
+            android:backgroundTint="@color/colorPrimary"
+            android:textColor="@color/colorBackground" />
+
+        <TextView
+            android:id="@+id/petStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="La mascota está apagada."
+            android:textSize="13sp"
+            android:textColor="@color/colorText"
+            android:layout_marginTop="10dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Prototipo: la mascota se puede mover y elegir. Ver la pantalla y controlar otras aplicaciones necesita una integración adicional y permisos separados."
+            android:textSize="12sp"
+            android:textColor="@color/colorText"
+            android:layout_marginTop="20dp" />
+    </LinearLayout>
+</ScrollView>

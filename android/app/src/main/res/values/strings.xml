@@ -10,4 +10,5 @@
     <string name="installing">Installing dependencies...</string>
     <string name="update_available">Update Available</string>
     <string name="version">Version</string>
+    <string name="hermes_pet_accessibility_description">Hermes Pet accessibility support (not enabled in this prototype).</string>
 </resources>

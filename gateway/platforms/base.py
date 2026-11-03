@@ -20,6 +20,7 @@ import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import safe_url_for_log
+from gateway.generated_audio import GeneratedAudio
 
 from utils import normalize_proxy_url, unlink_files_older_than
 from agent.i18n import t
@@ -4099,12 +4100,12 @@ class BasePlatformAdapter(ABC):
         lo, hi = bounds
         return random.uniform(lo / 1000.0, hi / 1000.0)
 
-    async def _synthesize_auto_tts(self, text_content: str) -> tuple[list[str], Optional[str]]:
-        """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
+    async def _synthesize_auto_tts(self, text_content: str, audio_stack: contextlib.ExitStack) -> list[str]:
+        """Synthesize auto-TTS audio -> existing paths; empty on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
         post-handler."""
         paths: list[str] = []
-        requested_path = None
+
         try:
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
             if check_tts_requirements():
@@ -4112,15 +4113,14 @@ class BasePlatformAdapter(ABC):
                 speech_text = self.prepare_tts_text(text_content)
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
-                requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
+                audio = audio_stack.enter_context(GeneratedAudio(build_auto_tts_output_path(self.platform)))
+                tts_data = _json.loads(await audio.synthesize(text_to_speech_tool, text=speech_text))
                 if tts_data.get("success", True):
                     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
                     paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
         except Exception as tts_err:
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
-        return paths, requested_path
+        return paths
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
                         text_content: str, media_files: list) -> bool:
@@ -4500,23 +4500,17 @@ class BasePlatformAdapter(ABC):
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
-                _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
-                    _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
-                # TTS plays before text; generated files are removed afterwards.
-                _tts_caption_delivered = False
-                for _tts_index, _tts_path in enumerate(_tts_paths):
-                    try:
+                _tts_paths, _tts_caption_delivered = [], False
+                # Own the entire generated family until all parts finish playing.
+                with contextlib.ExitStack() as audio_stack:
+                    if self._wants_auto_tts(
+                            event, session_key, interrupt_event, text_content, media_files):
+                        _tts_paths = await self._synthesize_auto_tts(text_content, audio_stack)
+                    for _tts_index, _tts_path in enumerate(_tts_paths):
                         _tts_caption_delivered |= await self._play_tts_file(
                             event, text_content, _tts_path, _tts_index == 0, _final_thread_metadata,
                             _record_delivery)
-                    finally:
-                        with contextlib.suppress(OSError):
-                            os.remove(_tts_path)
-                if not _tts_paths and _tts_requested_path is not None:
-                    with contextlib.suppress(OSError):
-                        os.remove(_tts_requested_path)
+
                 # Suspend the typing refresh before the first delivery attempt, not just in
                 # the turn's finally (#117300): if the final send stalls (platform accepted it
                 # but the HTTP ack never returns), control never reaches the finally, and

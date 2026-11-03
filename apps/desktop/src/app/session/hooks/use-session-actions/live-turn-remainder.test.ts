@@ -13,6 +13,13 @@ const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): 
   ...extra
 })
 
+const toolCall = (id: string) => ({ id, type: 'function' as const, function: { name: 'read_file', arguments: '{}' } })
+
+const resumeProjection = (assistantText: string): Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> => ({
+  session_id: 'runtime',
+  inflight: { user: 'go', assistant: assistantText, streaming: true }
+})
+
 it('extends one response across arbitrary chunk cuts without changing its tool or text occurrences', () => {
   const tool = {
     type: 'tool-call' as const,
@@ -156,6 +163,128 @@ it('folds a narration-led turn in either direction so one `clarify` staging rend
   runCase([userRow, clarifyRow({ reasoning: 'Internal narration.' })], stored =>
     stored[1].parts.filter(part => part.type !== 'reasoning')
   )
+})
+
+it('folds a covered live run past a tool occurrence the window never rendered', () => {
+  // Field capture (2026-10-12): a parallel pair lost its second call to the
+  // frame watermarks while the pane was away, so the live bubbles never held
+  // `call_two` while the durable fold did. The covered run must still fold.
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    { id: 2, role: 'assistant', content: 'lead', tool_calls: [toolCall('call_one'), toolCall('call_two')] },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' },
+    { id: 4, role: 'tool', content: 'two', tool_call_id: 'call_two' },
+    { id: 5, role: 'assistant', content: 'tail', tool_calls: [toolCall('call_three')] },
+    { id: 6, role: 'tool', content: 'three', tool_call_id: 'call_three' }
+  ]
+
+  const stored = toChatMessages(rows)
+  const liveParts = stored[1].parts.filter(part => !(part.type === 'tool-call' && part.toolCallId === 'call_two'))
+
+  let current = [stored[0], { ...stored[1], id: 'assistant-stream-live', pending: true, parts: liveParts }]
+
+  for (let resume = 0; resume < 3; resume++) {
+    current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('lead'))!
+
+    expect(current.some(row => row.id === 'assistant-stream-live')).toBe(false)
+    expect(
+      current
+        .filter(row => row.role === 'assistant')
+        .flatMap(row => row.parts)
+        .filter(part => part.type === 'text')
+        .map(part => part.text.trim())
+    ).toEqual(['lead', 'tail'])
+    expect(
+      current
+        .flatMap(row => row.parts)
+        .flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+        .sort()
+    ).toEqual(['call_one', 'call_three', 'call_two'])
+  }
+})
+
+it('keeps live content that no shared tool occurrence covers', () => {
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    { id: 2, role: 'assistant', content: 'lead', tool_calls: [toolCall('call_one')] },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' }
+  ]
+
+  const runCase = (parts: ChatMessagePart[]) => {
+    const stored = toChatMessages(rows)
+    let current = [stored[0], { id: 'assistant-stream-live', role: 'assistant' as const, pending: true, parts }]
+
+    for (let resume = 0; resume < 3; resume++) {
+      current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('lead'))!
+
+      const live = current.find(row => row.id === 'assistant-stream-live')
+      expect(live?.parts).toEqual(parts)
+    }
+  }
+
+  // Narration alone is not an occurrence: nothing proves this row is covered.
+  runCase([{ type: 'reasoning', text: 'Still thinking.' }])
+  // Equal prose without the tool occurrence behind it is a coincidence, not coverage.
+  runCase([{ type: 'text', text: 'lead' }])
+})
+
+it('stops the walk at stored text the live run never streamed', () => {
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    { id: 2, role: 'assistant', content: 'lead', tool_calls: [toolCall('call_one')] },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' },
+    { id: 5, role: 'assistant', content: 'prose', tool_calls: [toolCall('call_two')] },
+    { id: 6, role: 'tool', content: 'two', tool_call_id: 'call_two' },
+    { id: 7, role: 'assistant', content: 'tail', tool_calls: [toolCall('call_three')] },
+    { id: 8, role: 'tool', content: 'three', tool_call_id: 'call_three' }
+  ]
+
+  const stored = toChatMessages(rows)
+  const liveParts = stored[1].parts.filter(part => !(part.type === 'text' && part.sourceRowId === 5))
+
+  let current = [stored[0], { ...stored[1], id: 'assistant-stream-live', pending: true, parts: liveParts }]
+
+  for (let resume = 0; resume < 3; resume++) {
+    current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('lead'))!
+
+    const live = current.find(row => row.id === 'assistant-stream-live')
+    expect(
+      live?.parts.map(part => (part.type === 'tool-call' ? part.toolCallId : part.type === 'text' ? part.text.trim() : part.type))
+    ).toEqual(['call_two', 'tail', 'call_three'])
+  }
+})
+
+it('keeps the genuinely new suffix exactly once across repeated reconciliation', () => {
+  const rows: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'go' },
+    { id: 2, role: 'assistant', content: 'lead', tool_calls: [toolCall('call_one')] },
+    { id: 3, role: 'tool', content: 'one', tool_call_id: 'call_one' }
+  ]
+
+  const stored = toChatMessages(rows)
+
+  const liveParts: ChatMessagePart[] = [
+    { type: 'text', text: 'lead' },
+    ...stored[1].parts.filter(part => part.type === 'tool-call'),
+    { type: 'text', text: 'New suffix.' }
+  ]
+
+  let current = [stored[0], { id: 'assistant-stream-live', role: 'assistant' as const, pending: true, parts: liveParts }]
+
+  for (let resume = 0; resume < 3; resume++) {
+    current = reconcilePersistedLiveTurn(toChatMessages(rows), current, rows, resumeProjection('leadNew suffix.'))!
+
+    expect(
+      current
+        .flatMap(row => row.parts)
+        .filter(part => part.type === 'text' && part.text.includes('New suffix.'))
+    ).toHaveLength(1)
+    expect(
+      current
+        .flatMap(row => row.parts)
+        .flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    ).toEqual(['call_one'])
+  }
 })
 
 it('pairs only the queue projection, preserving equal corrections and different local queued occurrences', () => {

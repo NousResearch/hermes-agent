@@ -1709,6 +1709,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         self._consume_pending_native_image_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
+        # A thread opened on the bot's own post (Discord ``own_post_threads``): the adapter puts
+        # the post, fenced as quoted data, on every event; it opens a session's first turn only.
+        _starter = event.metadata.get("thread_starter_context") if event.metadata else None
+        if _starter and not history:
+            _sep = "\n\n" if getattr(event, "channel_context", None) else "\n\n[New message]\n"
+            message_text = f"{_starter}{_sep}{message_text}"
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)

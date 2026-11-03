@@ -1534,6 +1534,10 @@ DEFAULT_CONFIG = {
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,
         "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
+        # A thread someone opens on one of the bot's own posts (a cron report) counts as joined: no
+        # @mention needed there, and the post opens the session as quoted context. Allowlisted
+        # human authors only. Env: DISCORD_OWN_POST_THREADS.
+        "own_post_threads": False,
         # Bot authors must type @thisbot to trigger a reply; Discord reply pings alone do not count.
         # Set False only for trusted legacy relays. Humans are unaffected.
         "bots_require_inline_mention": True,

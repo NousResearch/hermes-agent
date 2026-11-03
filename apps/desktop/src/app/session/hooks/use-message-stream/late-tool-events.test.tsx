@@ -8,7 +8,8 @@ import type { GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { appendMidTurnUserMessage, finalizeInterruptedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
+import { appendMidTurnUserMessage, finalizeStoppedMessages } from '@/app/session/hooks/use-prompt-actions/rewind'
+import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -213,7 +214,7 @@ describe('tool events for a part that already exists on a sealed message', () =>
     event('message.start', 1000)
     event('tool.start', 1001, { args: { command: 'echo interrupted' }, name: 'terminal', tool_id: 'call_stopped' })
 
-    // Stop uses finalizeInterruptedMessages and marks this session interrupted.
+    // Stop uses finalizeStoppedMessages and marks this session interrupted.
     // Any late tool.start / tool.complete belongs to the cancelled turn and
     // must not seed a second transcript row or re-arm the old one.
     act(() => {
@@ -221,7 +222,7 @@ describe('tool events for a part that already exists on a sealed message', () =>
 
       stream.states.set(SID, {
         ...state,
-        messages: finalizeInterruptedMessages(state.messages, state.streamId, 1002),
+        messages: finalizeStoppedMessages(state.messages, state.streamId, 1002),
         streamId: null,
         interrupted: true
       })

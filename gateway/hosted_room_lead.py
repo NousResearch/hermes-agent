@@ -9,10 +9,12 @@ the lead alone: a routing answer can never broadcast.
 Everything else keeps the room's normal resolution: an @mention or @all/@everyone, a scheduled post, a
 reply inside an existing thread, and every message in an ``everyone`` room (the default).
 
-The routing turn is an ordinary driver task with one distinguishing coordinate: its ``seen_through_seq``
-is the message's seq minus one. A member turn always sees through at least the message that opened its
-discussion, so ``seen_through_seq < source_event_seq`` identifies a routing turn in durable state, and its
-terminal receipt never advances the lead's watermark past the message the lead still has to answer.
+The routing turn is an ordinary driver task whose payload carries ``lead_routing: true``. Only the planner's
+lead round sets it; the driver accepts it only as exactly true, and it is hashed into the task id, so a
+persisted task without it (every task admitted before lead routing existed, and every member turn, including
+batch-bounded ones whose ``seen_through_seq`` sits below their source message) is an ordinary member turn.
+Its ``seen_through_seq`` is the message's seq minus one, so its terminal receipt never advances the lead's
+watermark past the message the lead still has to answer.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, event
 
 
 def is_routing_task(task: DiscussionTaskPlan) -> bool:
-    return task.seen_through_seq < int(task.payload["source_event_seq"])
+    return task.payload.get("lead_routing") is True
 
 
 def routing_prompt(

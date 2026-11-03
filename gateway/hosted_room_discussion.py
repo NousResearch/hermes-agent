@@ -651,7 +651,7 @@ def _make_task_plan(
     *, room: DiscussionRoom, discussion_event: _ValidatedEvent, member: DiscussionMember, member_index: int,
     round_index: int, seen_through_seq: int, prompt: str,
     input_context: Mapping[str, Any] | None = None,
-    attachments: Sequence[Mapping[str, Any]] = ()) -> DiscussionTaskPlan:
+    attachments: Sequence[Mapping[str, Any]] = (), lead_routing: bool = False) -> DiscussionTaskPlan:
     turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
     if attachments:
         attachments = driver.validate_bound_task_manifest(list(attachments))
@@ -661,7 +661,8 @@ def _make_task_plan(
         "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
         "thread_id": discussion_event.payload["thread_id"],
         **({"input_context": input_context} if input_context is not None else {}),
-        **({"attachments": attachments} if attachments else {})})
+        **({"attachments": attachments} if attachments else {}),
+        **({"lead_routing": True} if lead_routing else {})})
     identity = driver.TaskIdentity(
         room_id=room.room_id, task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
         thread_id=str(discussion_event.payload["thread_id"]), turn_id=turn_id)
@@ -672,6 +673,8 @@ def _make_task_plan(
         payload["attachments"] = list(attachments)
     if input_context is not None:
         payload["input_context"] = dict(input_context)
+    if lead_routing:
+        payload["lead_routing"] = True
     return DiscussionTaskPlan(
         identity, payload, discussion_event.event_id, member, member_index, round_index, seen_through_seq)
 
@@ -780,7 +783,7 @@ def _lead_round(
     prompt = lead_routing.routing_prompt(
         room=room, lead=lead, discussion=discussion, context_lines=_context_lines(context))
     task = _make_task_plan(room=room, discussion_event=discussion, member=lead, member_index=0, round_index=0,
-                           seen_through_seq=discussion.seq - 1, prompt=prompt)
+                           seen_through_seq=discussion.seq - 1, prompt=prompt, lead_routing=True)
     chosen = lead_routing.first_round_members(room, lead, validated, discussion.event_id, task.identity.task_id)
     return _LeadRound(task if chosen is None else None, chosen or (), lead, task.identity.task_id)
 
@@ -851,6 +854,17 @@ def plan_next_task(
     raise AssertionError("bounded Discussion loop exhausted unexpectedly")
 
 
+def _reconstructed_lead_routing(payload: Mapping[str, Any], match: re.Match[str], source_event_seq: int) -> bool:
+    """A persisted routing turn keeps the only coordinates ``_lead_round`` mints: round 0, position 0,
+    seeing through the message before its own, with no frozen input or files."""
+    if "lead_routing" not in payload:
+        return False
+    if payload["lead_routing"] is not True or (match.group("round"), match.group("position")) != ("0", "0") or (
+            int(match.group("seen")) != source_event_seq - 1 or {"input_context", "attachments"} & set(payload)):
+        raise DiscussionReconstructionError("lead routing task does not match its turn_id")
+    return True
+
+
 def reconstruct_task_plan(
     room_value: Any, events: Sequence[Mapping[str, Any]], task: Mapping[str, Any], *, local_profiles: Iterable[str]
 ) -> DiscussionTaskPlan:
@@ -904,10 +918,11 @@ def reconstruct_task_plan(
         by_seq = {event.seq: event for event in validated}
         attachments = [item for seq in input_context["event_seqs"]
                        for item in _event_attachments(by_seq[seq], member)]
+    lead_routing = _reconstructed_lead_routing(payload, match, source_event_seq)
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
         round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
-        input_context=input_context, attachments=attachments)
+        input_context=input_context, attachments=attachments, lead_routing=lead_routing)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed

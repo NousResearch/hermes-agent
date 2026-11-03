@@ -159,3 +159,25 @@ def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db
     context.set_room_context(room_db, room_id=ROOM_ID, event_id="c2", purpose="New purpose", notes="")
     assert context.room_context(room_db, room_id=ROOM_ID) == {
         "purpose": "New purpose", "notes": "", "routing": "lead", "lead_member_id": "member-ada"}
+
+
+@pytest.mark.parametrize("routing", ["everyone", "lead"])
+def test_batch_bounded_member_turn_publishes_its_real_reply(routing: str):
+    """A member turn whose frozen batch stops below its source message is still a member turn, not routing."""
+    room = {"room_id": "room", "name": "Files", "authority_gateway_id": "gw", "authority_epoch": 1,
+            "members": [{"member_id": p, "profile": p, "handle": p} for p in ("alice", "bob")]}
+    files = [[{"attachment_id": f"att_{i * 10 + n:032x}", "kind": "file", "name": "f.txt", "size": 1,
+               "mime": "text/plain"} for n in range(8)] for i in range(1, 4)]
+    events = [{"room_id": "room", "seq": i, "event_id": f"event-{i}", "kind": "message.user", "authority_epoch": 1,
+               "actor": {"kind": "user", "id": "user"},
+               "payload": {"text": "@alice", "thread_id": "thread", "attachments": files[i - 1]}} for i in range(1, 4)]
+    settings = {"routing": routing, "lead_member_id": "alice" if routing == "lead" else ""}
+    task = discussion.plan_next_task(room, events, local_profiles=("alice", "bob"), freeze_input_context=True,
+                                     room_context=settings).task
+    assert (task.member.member_id, task.seen_through_seq) == ("alice", 2)
+    publication = discussion.plan_publication(
+        room, events, task, status="settled", result={"text": "Review @bob"}, local_profiles=("alice", "bob"))
+    kinds = [effect.kind for effect in publication.events]
+    assert "room.assignment" not in kinds
+    message = next(effect for effect in publication.events if effect.kind == "message.member")
+    assert message.payload["text"] == "Review @bob"

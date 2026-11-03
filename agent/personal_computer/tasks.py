@@ -11,14 +11,14 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class TaskStatus(StrEnum):
@@ -68,7 +68,7 @@ class PersonalComputerTask:
     metadata: dict[str, Any] | None = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "PersonalComputerTask":
+    def from_row(cls, row: sqlite3.Row) -> PersonalComputerTask:
         data = dict(row)
         data["status"] = TaskStatus(data["status"])
         data["approval_required"] = bool(data["approval_required"])

@@ -818,8 +818,9 @@ The contract a task's `fn` is written against:
   plugin's data so the next run picks up where this one stopped.
 * Keep a run idempotent: a run cut off by a restart leaves no record and runs again later from the
   start, so running the same batch twice must do no harm.
-* No second run of a task starts while one is in flight (a claim another process has held for
-  over an hour counts as abandoned). An exception is caught, logged and recorded as
+* No second run of a task starts while one is in flight. A claim whose process has died (a crash
+  or a kill) is taken over at the next poll; a claim whose owner cannot be checked (one written on
+  another machine) counts as abandoned after an hour. An exception is caught, logged and recorded as
   `last_status: error`; it never reaches the host.
 * Model calls from `fn` go through `ctx.llm` and its trust gate. `fn` has no turn, so it gets no
   `side_question_token` and cannot fork the session.

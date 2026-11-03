@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import time
@@ -46,29 +47,100 @@ def interval_due(
     return (now - last) >= timedelta(hours=interval_hours)
 
 
+def _machine() -> str:
+    """This container's or VM's instantiation (boot id + PID 1 start; ``""`` without ``/proc``): a
+    pid names the same process only on the machine that recorded it."""
+    from gateway.drain_control import current_instantiation_epoch
+
+    return current_instantiation_epoch()
+
+
+def _owner_record() -> dict[str, Any]:
+    from gateway.status import get_process_start_time
+
+    pid = os.getpid()
+    return {"pid": pid, "start": get_process_start_time(pid), "machine": _machine() or None}
+
+
+def _read_owner(lock: Path) -> Optional[dict[str, Any]]:
+    """The claim's owner record; ``None`` when unreadable or a bare pid (a claim of an older Hermes)."""
+    try:
+        data = json.loads(lock.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _owner_alive(owner: Optional[dict[str, Any]]) -> Optional[bool]:
+    """Whether the claim's owner still runs; ``None`` when that cannot be proven either way: no
+    record, another machine, or no start time to tell the owner from a process that reused its pid."""
+    pid, start, machine = (owner or {}).get("pid"), (owner or {}).get("start"), (owner or {}).get("machine")
+    if type(pid) is not int or pid <= 0 or type(start) is not int or not machine or machine != _machine():
+        return None
+    from gateway.status import _pid_exists, get_process_start_time
+
+    live_start = get_process_start_time(pid)
+    if live_start is not None and live_start != start:
+        return False  # the pid now belongs to another process
+    if not _pid_exists(pid):  # gone, or a zombie
+        return False
+    return True if live_start is not None else None
+
+
+def _abandoned(lock: Path, stale_seconds: float) -> bool:
+    """A claim is taken over when its owner is provably dead; a live owner's claim never is. When
+    the owner cannot be proven either way, a claim older than ``stale_seconds`` counts as crashed."""
+    alive = _owner_alive(_read_owner(lock))
+    if alive is not None:
+        return not alive
+    return time.time() - lock.stat().st_mtime > stale_seconds
+
+
+def _create(lock: Path) -> bool:
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_owner_record()))
+    return True
+
+
+def _unlink_guard(lock: Path):
+    """Every unlink of ``lock`` (a takeover or a release) happens under this cross-process file
+    lock, so the claim a takeover judged abandoned is the one it removes: two claimants never both
+    win, and a release never removes a claim another process has since taken."""
+    from tools.skill_usage import skill_file_lock
+
+    return skill_file_lock(lock.with_name(lock.name + ".guard"))
+
+
 def claim_run(lock: Path, stale_seconds: float = CLAIM_STALE_SECONDS) -> bool:
-    """One run at a time across processes: the O_EXCL create of ``lock`` wins the claim; a claim
-    older than ``stale_seconds`` is a crashed holder and is taken over. When the lock dir cannot be
-    created, run anyway."""
+    """One run at a time across processes: the O_EXCL create of ``lock`` wins the claim. The claim
+    records its owner (pid, process start, machine); a claim whose owner is provably dead is taken
+    over at once, one whose owner cannot be checked (another machine, an older Hermes's bare pid)
+    once it is older than ``stale_seconds``. When the lock dir cannot be created, run anyway."""
     try:
         lock.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return True
+    if _create(lock):
+        return True
     try:
-        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        try:
-            if time.time() - lock.stat().st_mtime > stale_seconds:
-                lock.unlink()
-                return claim_run(lock, stale_seconds)
-        except OSError:
-            pass
+        with _unlink_guard(lock):
+            if _create(lock):  # released meanwhile
+                return True
+            if not _abandoned(lock, stale_seconds):
+                return False
+            lock.unlink()
+            return _create(lock)
+    except OSError:
         return False
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(str(os.getpid()))
-    return True
 
 
 def release_run(lock: Path) -> None:
-    with contextlib.suppress(OSError):
-        lock.unlink()
+    """Drop this process's claim; a claim another process took over (as abandoned) stays."""
+    with contextlib.suppress(OSError), _unlink_guard(lock):
+        owner = _read_owner(lock)
+        if owner is None or owner.get("pid") == os.getpid():
+            lock.unlink()

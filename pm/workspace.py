@@ -523,6 +523,45 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str],
     return changed
 
 
+def _refuse_incompatible_core(plugin_dir: Path, requirements: Iterable[str], target: Mapping[str, str] | None,
+                              *, document: dict | None = None, extras: Iterable[str] = ()) -> None:
+    """Refuse a plugin whose applicable requirement on Hermes excludes the running version.
+
+    PM always satisfies ``hermes-agent`` from the checkout itself: runtime requirements naming
+    it are dropped, and a selected extra naming it binds to the workspace root, where uv ignores
+    the specifier. Neither may install a plugin against a Hermes it declares incompatible, so the
+    specifier is checked here, under the extras this generation installs and on *target*. The
+    identity is the one ``requires_hermes`` reads: the committed pyproject version is a
+    placeholder. With no identity (``unknown``) nothing can be judged, and nothing is refused.
+    A ResolutionConflict, like uv's own proofs, is a verdict on the plugin for update eviction.
+    """
+    from packaging.version import InvalidVersion, Version
+
+    from hermes_cli.plugins_manifest import running_hermes_version
+    from pm.install import _extra_key
+
+    installed: set[str] = set()
+    specs = list(requirements)
+    if document is not None:
+        installed = _selected_member_extras(document, extras, target)[0]
+        specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
+                  if _extra_key(name) in installed for spec in values]
+    pins = [requirement for requirement in _self_references(specs, "hermes-agent")
+            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), target)]
+    if not pins:
+        return
+    current = running_hermes_version()
+    try:
+        Version(current)
+    except InvalidVersion:
+        return
+    for requirement in pins:
+        if not requirement.specifier.contains(current, prereleases=True):
+            raise ResolutionConflict(
+                "venv", f"plugin {plugin_dir.name} requires {requirement}, but this Hermes is {current}",
+                "update Hermes or the plugin, or disable the plugin")
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),
                       target: Mapping[str, str] | None = None) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
@@ -545,6 +584,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
         # package metadata its backend produces.
         # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
         virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
+        _refuse_incompatible_core(plugin_dir, declaration.requirements, target, document=document, extras=extras)
         changed = False
         if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
@@ -579,6 +619,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
 
             (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
         return member
+    _refuse_incompatible_core(plugin_dir, declaration.requirements, target)
     specs = declaration.install_requirements
     member = root / "plugin-deps" / key
     member.mkdir(parents=True)

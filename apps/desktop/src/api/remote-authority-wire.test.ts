@@ -302,3 +302,39 @@ test('a settled readiness sends a request without waiting a turn', async () => {
     await shut(client, server)
   }
 })
+
+// Held `open` is delivered one handler at a time: an earlier handler can unsubscribe a later one,
+// or close the client, and the later one must then not hear `open`.
+test.each(['unsubscribe', 'close'] as const)('a held open is not delivered after an earlier handler %ss', async action => {
+  const server = await listen()
+
+  let announceReady = () => {}
+  server.on('connection', (socket: FixtureSocket) => { announceReady = () => socket.send(readyFrame()) })
+  const client = new HermesGateway()
+  const heard: string[] = []
+
+  let offLater = () => {}
+
+  const offFirst = client.onState(state => {
+    if (state !== 'open') { return }
+
+    if (action === 'unsubscribe') { offLater() } else { client.close() }
+  })
+
+  offLater = client.onState(state => { heard.push(`${state}:${client.connectionState}`) })
+  const opened = transportOpened(client)
+  const connected = client.connect(publicUrl(server))
+  void connected.catch(() => {})
+
+  try {
+    await opened
+    announceReady()
+    await connected.catch(() => {})
+    await vi.waitFor(() => expect(client.connectionState).toBe(action === 'close' ? 'closed' : 'open'))
+    expect(heard.filter(entry => entry.startsWith('open'))).toEqual([])
+  } finally {
+    offFirst()
+    offLater()
+    await shut(client, server)
+  }
+})

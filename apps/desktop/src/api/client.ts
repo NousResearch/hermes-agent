@@ -482,12 +482,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     readiness.ready = true
     readiness.resolve()
-    const held = [...this.heldOpens]
-    this.heldOpens.clear()
 
-    if (this.readiness !== readiness || super.connectionState !== 'open') { return }
+    // Rechecked per handler: an earlier one may unsubscribe a later one, or close or redial the
+    // client. A handler that already heard `closed` has left the held set.
+    for (const handler of [...this.heldOpens]) {
+      if (this.readiness !== readiness || super.connectionState !== 'open') { return }
 
-    for (const handler of held) { handler('open') }
+      if (this.heldOpens.delete(handler)) { handler('open') }
+    }
   }
 
   // Sessions attached over THIS socket. An authority subscription is per

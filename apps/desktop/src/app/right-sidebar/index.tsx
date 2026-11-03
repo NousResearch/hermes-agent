@@ -14,7 +14,7 @@ import { refreshRepoStatus, registerRepoStatusCwd } from '@/store/coding-status'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
-import { openFolderAsProject } from '@/store/projects'
+import { $activeProjectId, $projects, openFolderAsProject } from '@/store/projects'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
@@ -34,6 +34,59 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   const targetCwd = useStore($focusedWorkspaceCwd)
   const hasWorkspace = Boolean(targetCwd)
 
+  const activeProjectId = useStore($activeProjectId)
+  const projects = useStore($projects)
+  const activeProject = projects.find(project => project.id === activeProjectId)
+  const projectRoots = activeProject?.folders.map(folder => folder.path.trim()).filter(Boolean) ?? []
+
+  const roots =
+    hasWorkspace && projectRoots.includes(targetCwd) && projectRoots.length > 1
+      ? [...new Set(projectRoots)]
+      : [targetCwd]
+
+  return (
+    <aside
+      aria-label={r.aria}
+      className={cn(
+        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+        panesFlipped
+          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
+      )}
+    >
+      {roots.length > 1 ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {roots.map(root => (
+            <FilesystemRoot
+              cwd={root}
+              hasWorkspace={hasWorkspace}
+              key={root}
+              onActivateFile={onActivateFile}
+              onActivateFolder={onActivateFolder}
+            />
+          ))}
+        </div>
+      ) : (
+        <FilesystemRoot
+          cwd={roots[0]}
+          hasWorkspace={hasWorkspace}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+        />
+      )}
+    </aside>
+  )
+}
+
+interface FilesystemRootProps extends RightSidebarPaneProps {
+  cwd: string
+  hasWorkspace: boolean
+}
+
+function FilesystemRoot({ cwd, hasWorkspace, onActivateFile, onActivateFolder }: FilesystemRootProps) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+
   const {
     collapseAll,
     collapseNonce,
@@ -47,26 +100,26 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setNodeOpen,
     setShowIgnored,
     showIgnored
-  } = useProjectTree(hasWorkspace ? targetCwd : '')
+  } = useProjectTree(hasWorkspace ? cwd : '')
 
   useEffect(() => {
-    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+    const activeCwd = effectiveCwd || (hasWorkspace ? cwd : '')
 
     if (!activeCwd) {
       return
     }
 
     return registerRepoStatusCwd(activeCwd)
-  }, [effectiveCwd, hasWorkspace, targetCwd])
+  }, [effectiveCwd, hasWorkspace, cwd])
 
   const handleRefresh = useCallback(() => {
     void refreshRoot()
-    const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
+    const activeCwd = effectiveCwd || (hasWorkspace ? cwd : '')
 
     if (activeCwd) {
       void refreshRepoStatus(activeCwd)
     }
-  }, [effectiveCwd, hasWorkspace, refreshRoot, targetCwd])
+  }, [effectiveCwd, hasWorkspace, refreshRoot, cwd])
 
   const cwdName =
     effectiveCwd
@@ -91,36 +144,26 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
   }
 
   return (
-    <aside
-      aria-label={r.aria}
-      className={cn(
-        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
-        panesFlipped
-          ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
-          : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
-      )}
-    >
-      <FilesystemTab
-        canCollapse={canCollapse}
-        collapseNonce={collapseNonce}
-        cwd={effectiveCwd}
-        cwdName={cwdName}
-        data={data}
-        error={rootError}
-        hasWorkspace={hasWorkspace}
-        loading={rootLoading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onCollapseAll={collapseAll}
-        onLoadChildren={loadChildren}
-        onNodeOpenChange={setNodeOpen}
-        onPreviewFile={previewFile}
-        onRefresh={handleRefresh}
-        onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
-        openState={openState}
-        showIgnored={showIgnored}
-      />
-    </aside>
+    <FilesystemTab
+      canCollapse={canCollapse}
+      collapseNonce={collapseNonce}
+      cwd={effectiveCwd}
+      cwdName={cwdName}
+      data={data}
+      error={rootError}
+      hasWorkspace={hasWorkspace}
+      loading={rootLoading}
+      onActivateFile={onActivateFile}
+      onActivateFolder={onActivateFolder}
+      onCollapseAll={collapseAll}
+      onLoadChildren={loadChildren}
+      onNodeOpenChange={setNodeOpen}
+      onPreviewFile={previewFile}
+      onRefresh={handleRefresh}
+      onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
+      openState={openState}
+      showIgnored={showIgnored}
+    />
   )
 }
 

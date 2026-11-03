@@ -505,19 +505,28 @@ describe('useComposerDraft — same-draft scope rekey preserves only the focused
     markActiveComposer('main')
   })
 
-  function renderDraft(scope: string) {
+  function renderDraft(scope: string, onUndoPoint?: (preInsertText: string) => void) {
     let draft!: ReturnType<typeof useComposerDraft>
+    // Stands in for the ref ChatBar fills from `useComposerUndo`; the insert path
+    // is the only consumer, so a plain holder is enough to observe the seam.
+    const undoPointRef: { current: (() => void) | null } = { current: null }
 
     function DraftHarness({ activeScope }: { activeScope: string }) {
-      draft = useComposerDraft({
+      const engine = useComposerDraft({
         activeQueueSessionKey: activeScope,
         focusKey: null,
         inputDisabled: false,
         queueEditRef: { current: null },
+        recordUndoPointRef: undoPointRef,
         sessionId: activeScope
       })
 
-      return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+      draft = engine
+      undoPointRef.current = onUndoPoint
+        ? () => onUndoPoint(engine.editorRef.current ? composerPlainText(engine.editorRef.current) : '')
+        : null
+
+      return <div contentEditable data-slot="composer-rich-input" ref={engine.editorRef} tabIndex={0} />
     }
 
     const rendered = render(<DraftHarness activeScope={scope} />)
@@ -590,6 +599,32 @@ describe('useComposerDraft — same-draft scope rekey preserves only the focused
     // quoted last line and the next keystroke edits the quote itself.
     expect(text.endsWith('\n\n')).toBe(true)
     expect(caretOffsetInEditor(editor)).toBe(text.length)
+  })
+
+  it('banks the pre-insert draft once, so ⌘Z removes the quote and not the typing before it', async () => {
+    stashSessionDraft('lineage-root', 'ask about this', [])
+
+    const snapshots: string[] = []
+    const view = renderDraft('lineage-root', preInsert => snapshots.push(preInsert))
+    const editor = view.draft.editorRef.current!
+
+    editor.focus()
+    markActiveComposer('main')
+
+    act(() => requestComposerInsert('[Quoted from your previous message]\n> gamma', { caret: 'below', mode: 'block' }))
+
+    await waitFor(() => expect(composerPlainText(editor)).toContain('gamma'))
+
+    // Exactly one snapshot, taken BEFORE the repaint: that is the state ⌘Z has to
+    // return to. Without it the stack's top entry predates the quote, so undo
+    // reverted the user's earlier typing and left the inserted block stranded.
+    expect(snapshots).toEqual(['ask about this'])
+
+    // An insert carrying nothing is not an edit: it must not bank a snapshot,
+    // which would clear the redo stack on every empty plugin write.
+    act(() => requestComposerInsert('   ', { mode: 'block' }))
+
+    expect(snapshots).toEqual(['ask about this'])
   })
 })
 

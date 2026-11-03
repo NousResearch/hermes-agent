@@ -78,6 +78,17 @@ jobs:
       - name: Prepare locked Electron runtime before parallel checks
         run: node scripts/build/electron-runtime.mjs --source .
 
+      # The WhatsApp bridge is a standalone npm package, outside the root
+      # workspaces, so run-workspace-checks never sees it. Two of its suites
+      # import @whiskeysockets/baileys, so install its own lockfile first;
+      # --ignore-scripts because the tests need no native build.
+      - name: Install WhatsApp bridge dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+      - name: Run WhatsApp bridge node tests
+        run: node --test scripts/whatsapp-bridge/*.test.mjs
+
       # Every check runs at the same time. The step fails only after all of
       # them finish. There are two reasons this is not ``npm run --ws check``.
       #

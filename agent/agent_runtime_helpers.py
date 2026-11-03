@@ -21,6 +21,7 @@ from agent.message_sanitization import (
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
+from agent.cache_bounds import publish_lru
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -38,8 +39,6 @@ from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
-# Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
-_MAX_AUTH_REFRESH_ATTEMPTS = 2
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
@@ -933,44 +932,9 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     return False
 
 
-def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
-    if _is_entitlement_403(agent, status_code, error_context):
-        _ra().logger.info(
-            "Credential %s — entitlement-shaped 403 from %s; "
-            "skipping pool refresh (account lacks subscription, "
-            "not a transient auth failure).", status_code if status_code is not None else "auth",
-            agent.provider or "provider",
-        )
-        return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
-    if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
-    refreshed_id = getattr(refreshed, "id", None)
-    if refreshed_id is not None:
-        if getattr(agent, "_auth_pool_refresh_counts", None) is None:
-            agent._auth_pool_refresh_counts = {}
-        refresh_counts = agent._auth_pool_refresh_counts
-        refresh_key = (agent.provider, refreshed_id)
-        refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-        if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
-            )
-            return False, has_retried_429
-    _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    if agent._swap_credential(refreshed) is False:
-        return False, has_retried_429
-    return True, has_retried_429
+def _recover_auth_failure(agent, pool, **kwargs):
+    from agent.credential_auth_recovery import recover_auth_failure
+    return recover_auth_failure(agent, pool, **kwargs)
 
 
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
@@ -2638,18 +2602,16 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
-# ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
-# Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
-# ``_EMPTY_HEAL_ESCALATE_AFTER`` is the built-in default; deployments tune it via
-# ``agent.sanitizer_heal_escalation_threshold`` in config.yaml (<= 0 disables escalation entirely — WARNINGs
-# still fire per window).
+# Escalate repeated heals once per session window, then stay quiet: repeated heals of the same poisoned
+# transcript used to WARNING on every send (#96870). Built-in default threshold; config.yaml's
+# ``agent.sanitizer_heal_escalation_threshold`` tunes it (<= 0 disables escalation; WARNINGs still fire per window).
 _EMPTY_HEAL_ESCALATE_AFTER = 3
 _EMPTY_HEAL_WINDOW_S = 600.0
 _empty_heal_log_state: dict[str, dict[str, Any]] = {}
 _empty_heal_log_lock = threading.Lock()
-# Sessions already told ONCE (out-of-band, never in conversation context); kept apart from the
-# windowed log state so a new window never re-arms the notice.
+# LRU over the log counters only (they pick WARNING vs ERROR): a forgotten session that heals again opens a fresh
+# window. The notice set and pending notices below are never evicted, so nobody is told twice or loses a notice.
+_EMPTY_HEAL_MAX_SESSIONS = 1024
 # Session keys that already received the one-time user notice. Separate from the windowed log state so a new
 # 10-minute window never re-notifies: the user is told ONCE per session, ever (#96870 — out-of-band,
 # delivery channel only, never injected into conversation context).
@@ -2745,13 +2707,14 @@ def _log_empty_non_final_heal(healed: int) -> None:
     threshold = _heal_escalation_threshold()
     now = time.monotonic()
     with _empty_heal_log_lock:
-        state = _empty_heal_log_state.get(key)
+        state = _empty_heal_log_state.pop(key, None)  # re-inserted last: most recently healed
         if state is None or (now - state["window_start"]) > _EMPTY_HEAL_WINDOW_S:
             prior = state or {}
-            state = _empty_heal_log_state[key] = {
+            state = {
                 "count": 0, "window_start": now, "escalated": False,
                 "total_events": prior.get("total_events", 0), "total_healed": prior.get("total_healed", 0),
             }
+        publish_lru(_empty_heal_log_state, key, state, _EMPTY_HEAL_MAX_SESSIONS)
         state["count"] += 1
         state["total_events"] = state.get("total_events", 0) + 1
         state["total_healed"] = state.get("total_healed", 0) + healed

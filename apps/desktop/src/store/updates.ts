@@ -7,7 +7,7 @@ import { updateDebt } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { CANONICAL_GATEWAY_PROTOCOL } from '@/api/canonical-protocol'
-import { connectionScoped, profileScoped } from '@/api/client'
+import { $apiRequestScope, connectionScoped, profileScoped } from '@/api/client'
 import type {
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
@@ -463,6 +463,17 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
+// Only the newest getVersion may publish, and only while the request scope
+// (connection + profile) is unchanged. A profile switch moves $apiRequestScope
+// without replacing $connection, so the connection identity alone is not enough.
+let versionRequestSeq = 0
+
+function versionScopeKey(): string {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return `${connectionKey($connection.get())}|${connectionId ?? ''}|${profile ?? ''}`
+}
+
 /** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
@@ -475,10 +486,13 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // mid-reload, or the bridge not yet ready on first paint) would surface
   // as an unhandled promise rejection in the renderer. Swallow it.
   try {
-    const connection = $connection.get()
+    const seq = ++versionRequestSeq
+    const scope = versionScopeKey()
     const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
 
-    if ($connection.get() !== connection) {
+    // Superseded, or the scope moved while in flight: the scope listener has
+    // already asked again for the new target.
+    if (seq !== versionRequestSeq || versionScopeKey() !== scope) {
       return null
     }
 
@@ -1308,6 +1322,8 @@ let pollerStarted = false
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionKey: string | undefined
+let versionScopeUnsub: (() => void) | null = null
+let lastVersionScopeKey: string | undefined
 
 // mode alone can't tell two remote backends apart — switching directly from
 // remote profile A to remote profile B leaves mode === 'remote' both times.
@@ -1352,6 +1368,7 @@ export function startUpdatePoller(): void {
 
   pollerStarted = true
   runPassiveChecks()
+  lastVersionScopeKey = versionScopeKey()
   void refreshDesktopVersion()
   bridge.onProgress(ingestProgress)
 
@@ -1373,6 +1390,27 @@ export function startUpdatePoller(): void {
     }
   })
 
+  // The reported version belongs to the request scope, local or remote. Watch
+  // both stores: a profile switch changes $apiRequestScope but not $connection.
+  const onVersionScope = (): void => {
+    const key = versionScopeKey()
+
+    if (key === lastVersionScopeKey) {
+      return
+    }
+
+    lastVersionScopeKey = key
+    void refreshDesktopVersion()
+  }
+
+  const unsubScope = $apiRequestScope.listen(onVersionScope)
+  const unsubConnection = $connection.listen(onVersionScope)
+
+  versionScopeUnsub = () => {
+    unsubScope()
+    unsubConnection()
+  }
+
   window.addEventListener('focus', onFocus)
   backgroundTimer = setInterval(runPassiveChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
@@ -1385,7 +1423,11 @@ export function stopUpdatePoller(): void {
 
   connectionUnsub?.()
   connectionUnsub = null
+  versionScopeUnsub?.()
+  versionScopeUnsub = null
   lastConnectionKey = undefined
+  lastVersionScopeKey = undefined
+  versionRequestSeq++
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

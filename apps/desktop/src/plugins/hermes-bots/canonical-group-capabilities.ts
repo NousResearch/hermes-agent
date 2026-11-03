@@ -168,6 +168,26 @@ export function groupSelectionElsewhere(selection: RosterRow[], connectionId: nu
     !botOnConnection(selection[0], connectionId)
 }
 
+export type GroupCreationEngine = 'desktop' | 'elsewhere' | 'gateway'
+
+/** Who runs a room seating `selection` when created under `mode` from
+ *  `connectionId`: the gateway here (canonical mode, every bot on this
+ *  connection), this Desktop (a legacy gateway, or bots on two or more
+ *  connections), or nobody reachable from here (every bot on ONE other
+ *  connection, see groupSelectionElsewhere). */
+export function groupCreationEngine(mode: GroupExecutionMode, selection: RosterRow[], connectionId: null | string): GroupCreationEngine {
+  if (mode !== 'canonical' || groupNeedsDesktopCourier(selection, connectionId)) {
+    return 'desktop'
+  }
+
+  return groupSelectionElsewhere(selection, connectionId) ? 'elsewhere' : 'gateway'
+}
+
+/** The name a person knows a bot's connection by. */
+export function connectionName(bot: RosterRow | undefined): string {
+  return String(bot?.connectionLabel || bot?.connectionId || '')
+}
+
 /** The roster rows New Group Chat may seat: never an outage placeholder. Bots on
  *  the current connection must be ones the authority's seatable roster names
  *  (#141178); bots on another connection are offered when the Desktop can reach

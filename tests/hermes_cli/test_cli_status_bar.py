@@ -55,6 +55,45 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_opt_in_session_cost_is_rendered(self, monkeypatch):
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"show_cost": True}})
+        cli_obj = _make_cli()
+        cli_obj.agent = SimpleNamespace(
+            session_estimated_cost_usd=0.1234, session_cost_status="estimated")
+        assert "~$0.1234" in cli_obj._build_status_bar_text(width=160)
+        cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda: 160
+        fragments = cli_obj._get_status_bar_fragments()
+        assert "~$0.1234" in "".join(text for _, text in fragments)
+
+    def test_cost_visibility_and_unknown_pricing(self, monkeypatch):
+        cli_obj = _make_cli()
+        cli_obj.agent = SimpleNamespace(
+            session_estimated_cost_usd=0.1234, session_cost_status="estimated")
+        for display in (None, {}, {"show_cost": False}):
+            monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": display})
+            assert cli_obj._get_status_bar_snapshot()["model_short"]
+            assert "$" not in cli_obj._build_status_bar_text(width=160)
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"show_cost": True}})
+        for status, amount, expected in (
+            ("unknown", 0, "cost unknown"),
+            ("unknown", 0.1234, "cost unknown"),
+            ("estimated", float("nan"), "cost unknown"),
+            ("estimated", -1, "cost unknown"),
+            ("estimated", 0, "~$0.0000"),
+            ("included", 0, "cost included"),
+            ("included", 0.1234, "~$0.1234"),
+        ):
+            cli_obj.agent.session_cost_status = status
+            cli_obj.agent.session_estimated_cost_usd = amount
+            assert expected in cli_obj._build_status_bar_text(width=160)
+        snapshot = cli_obj._get_status_bar_snapshot()
+        for width in (40, 65, 160):
+            segments = cli_obj._status_bar_segments(snapshot, width, {"model"}, False, styled=False)
+            assert "cost" not in "".join(text for seg in segments for _, text in seg)
+        cli_obj.agent = None
+        assert "cost_label" not in cli_obj._get_status_bar_snapshot()
+
     def test_session_title_is_right_aligned_after_it_is_queued(self):
         cli_obj = _make_cli()
         cli_obj._pending_title = "weekly-digest"

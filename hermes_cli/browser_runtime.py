@@ -35,6 +35,15 @@ def _pm_executable() -> str | None:
     return str(installed.binary) if installed and installed.binary is not None else None
 
 
+def _native_windows_executable() -> str | None:
+    # CfT has no Windows ARM64 build. Its x64 fallback can crash/hang on N1X even after CDP starts.
+    # Keep PM first again if it gains a native package; an installed native browser avoids emulation now.
+    if pm.current_target() not in pm.get_package("chromium").emulated_arch_targets:
+        return None
+    from hermes_platform.resolver.browser import native_windows_chromium
+    return native_windows_chromium()
+
+
 def _baked_executable() -> str | None:
     try:
         value = BAKED_EXECUTABLE_FILE.read_text(encoding="utf-8-sig").strip()
@@ -61,12 +70,14 @@ def _system_executable() -> str | None:
 def chromium_executable(*, allow_override: bool = True) -> str | None:
     """The full Chromium a browser launcher should run, or ``None`` when none is available.
 
-    Order: ``browser.executable_path`` (skipped with ``allow_override=False``, for callers that need
-    pm's own build) -> pm's installed ``chromium`` -> the Docker image's baked path -> a system
+    Order: ``browser.executable_path`` (skipped with ``allow_override=False``) -> a native Windows
+    ARM64 browser when PM's default is emulated -> pm's installed ``chromium`` -> the Docker image's baked path -> a system
     ``chromium`` / ``chromium-browser`` on PATH, only on targets pm builds no Chromium for (Termux).
     """
     if allow_override and (override := _configured_executable()):
         return override
+    if native := _native_windows_executable():
+        return native
     if found := _pm_executable() or _baked_executable():
         return found
     return _system_executable() if _pm_has_no_chromium() else None

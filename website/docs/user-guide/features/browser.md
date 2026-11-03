@@ -119,10 +119,14 @@ and it works on headless servers with no desktop browser at all.
 **Which Chromium.** Hermes picks the first that exists:
 
 1. `browser.executable_path`, when set.
-2. The Chromium (Chrome for Testing) installed by Hermes's package manager — the
+2. On Windows ARM64, a registered native ARM64 Edge or Chrome installation when
+   Hermes's packaged Chromium would require x64 emulation. Hermes verifies the
+   executable's architecture and uses a separate automation profile, without
+   reading the browser's personal profile.
+3. The Chromium (Chrome for Testing) installed by Hermes's package manager — the
    installers and `hermes update` install it by default.
-3. `/etc/hermes/chromium-executable-path` in the official Docker image.
-4. A system `chromium` / `chromium-browser` on `PATH` (Android/Termux, and
+4. `/etc/hermes/chromium-executable-path` in the official Docker image.
+5. A system `chromium` / `chromium-browser` on `PATH` (Android/Termux, and
    platforms the package manager has no Chromium build for).
 
 If none is found, the browser tool reports a clear hint instead of failing

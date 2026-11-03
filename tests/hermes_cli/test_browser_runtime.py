@@ -34,6 +34,8 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     (tmp_path / "home").mkdir()
     monkeypatch.setattr(browser_runtime, "BAKED_EXECUTABLE_FILE", tmp_path / "etc" / "chromium-executable-path")
+    # Browser discovery is external machine state, like the PM store fixture below.
+    monkeypatch.setattr(browser_runtime, "_native_windows_executable", lambda: None, raising=False)
     return tmp_path
 
 
@@ -50,6 +52,19 @@ def test_chromium_resolves_installed_binary_without_mutation(homes):
     assert browser_runtime.chromium_executable() == str(binary)
     assert facts.path.read_bytes() == before
     assert dict(os.environ) == environment
+
+
+def test_native_browser_precedes_emulated_package_but_explicit_pin_wins(homes, monkeypatch):
+    _, facts = _fake_pm_chromium(homes / "tools")
+    before = facts.path.read_bytes()
+    native = homes / "native Edge" / "msedge.exe"
+    monkeypatch.setattr(browser_runtime, "_native_windows_executable", lambda: str(native))
+
+    assert browser_runtime.chromium_executable() == str(native)
+    assert browser_runtime.chromium_executable(allow_override=False) == str(native)
+    _write_config(homes / "home", "browser:\n  executable_path: /chosen/browser\n")
+    assert browser_runtime.chromium_executable() == "/chosen/browser"
+    assert facts.path.read_bytes() == before
 
 
 def test_configured_executable_wins_without_installing(homes, monkeypatch):

@@ -201,7 +201,7 @@ export function RoomHeader({ backLabel, children, onBack, onStop, onTitle, stopL
   stopLabel: string; title: ReactNode; titleExpanded?: boolean; titleLabel?: string; trailing?: ReactNode; working: boolean
 }) {
   // Inner column matches the transcript and composer (max-w-3xl) so every left edge lines up.
-  return <header className="shrink-0 border-b border-(--ui-stroke-tertiary) px-4 pb-2.5 pt-2">
+  return <header className="shrink-0 border-b border-(--ui-stroke-secondary) px-4 pb-2.5 pt-2">
     <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-2">
     <div className="flex min-w-0 items-center gap-1">
       {onBack && <Tip label={backLabel}>

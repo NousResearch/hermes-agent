@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { expect, test, vi } from 'vitest'
 
-import { HermesGateway } from './client'
+import { GATEWAY_NOT_CONNECTED_MESSAGE, HermesGateway } from './client'
 
 interface FixtureSocket {
   on(event: 'message', handler: (bytes: Buffer) => void): void
@@ -169,5 +169,23 @@ test('a closed-handler redial survives the previous socket\'s close until its ow
   } finally {
     off()
     await shut(client, server)
+  }
+})
+
+// The request layer reconnects, and connector reads retry, only on the transport's own answers.
+test.each(['refused', 'closed before ready'] as const)('a public dial %s keeps the transport failure for connect and for requests', async failure => {
+  const server = await listen()
+  server.on('connection', (socket: FixtureSocket) => { setTimeout(() => socket.terminate(), 10) })
+  const port = (server.address() as { port: number }).port
+
+  if (failure === 'refused') { await new Promise<void>(resolve => server.close(() => resolve())) }
+  const client = new HermesGateway()
+  const url = `ws://127.0.0.1:${port}/api/ws?ticket=public-fixture`
+
+  try {
+    await expect(client.connect(url)).rejects.toThrow(failure === 'refused' ? 'Could not connect to Hermes gateway' : 'before protocol readiness')
+    await expect(client.request('config.get')).rejects.toThrow(GATEWAY_NOT_CONNECTED_MESSAGE)
+  } finally {
+    if (failure === 'refused') { client.close() } else { await shut(client, server) }
   }
 })

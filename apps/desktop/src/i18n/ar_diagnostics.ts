@@ -67,6 +67,7 @@ export const arDiagnostics = {
       codeSkewRestartRequired: 'بعد التحديث ما زال هذا الخلفية يشغّل كودا قديما. أعد تشغيله لتحميل الكود الجديد.'
     },
     voice: {
+      echoDropped: 'تم تجاهل صدى الصوت المُشغّل. حاول التحدث مرة أخرى.',
       configureSpeechToText: 'اضبط تحويل الكلام إلى نص لاستخدام وضع الصوت.',
       couldNotStartSession: 'تعذر بدء جلسة الصوت',
       microphoneAccessDenied: 'تم رفض الوصول إلى الميكروفون.',

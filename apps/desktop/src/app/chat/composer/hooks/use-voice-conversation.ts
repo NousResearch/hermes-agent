@@ -535,6 +535,12 @@ export function useVoiceConversation({
         // the interruption latch so a later real turn isn't annotated.
         if (echoSource && isTtsEcho(transcript, echoSource)) {
           takeVoicePlaybackInterrupted()
+          notify({
+            id: 'voice-echo-drop-hint',
+            kind: 'info',
+            icon: 'mic',
+            message: voiceCopy.echoDropped
+          })
           resumeListening()
 
           return
@@ -580,7 +586,14 @@ export function useVoiceConversation({
         }
       }
     },
-    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, voiceCopy.transcriptionFailed]
+    [
+      consumePendingResponse,
+      focusInput,
+      onTranscribeAudio,
+      parkText,
+      voiceCopy.echoDropped,
+      voiceCopy.transcriptionFailed
+    ]
   )
 
   /**

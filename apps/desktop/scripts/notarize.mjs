@@ -25,9 +25,10 @@ function inlineKeyLooksValid(value) {
   return value.includes('BEGIN PRIVATE KEY') && value.includes('END PRIVATE KEY')
 }
 
-// Apple's notary and ticket-delivery services sometimes drop connections for many minutes. These
-// NSURLError codes mean a request got no answer (timed out, connection lost, host unreachable), not a
-// verdict, so the same request is repeated while the notarization budget lasts.
+// These NSURLError codes mean a request to Apple got no answer: it timed out (-1001), its connection
+// dropped (-1005), or the runner could not reach the host (-1003, -1004, -1006, -1009), which points at
+// the runner's own network rather than at Apple. None of them is a verdict, so the same request is
+// repeated within its time limit.
 const LOST_CONTACT = /NSURLErrorDomain\s+Code=-(?:1001|1003|1004|1005|1006|1009)\b/
 const CONTACT_DELAYS = [15000, 30000, 60000, 120000]
 // Stapling starts after Apple has accepted the app. A runner that still cannot reach Apple's
@@ -126,7 +127,7 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
   }
 
   // Accepted tickets can take time to reach Apple's CloudKit lookup service.
-  const delays = [15000, 30000, 60000, 120000, 120000]
+  const ticketRetryLimit = 5
   const stapleDeadline = Math.min(deadline, now() + STAPLE_CONTACT_WINDOW)
   let ticketRetries = 0
   let contactRetries = 0
@@ -139,8 +140,8 @@ async function submitAndStaple(zipPath, appPath, auth, { run, sleep, log, now })
     } catch (error) {
       const output = commandOutput(error)
       if (error.code === 65 && /CloudKit query[^\n]*Record not found/i.test(output)) {
-        if (ticketRetries === delays.length) throw error
-        const delay = delays[ticketRetries++]
+        if (ticketRetries === ticketRetryLimit) throw error
+        const delay = contactDelay(ticketRetries++)
         log(`[notarize] accepted ticket not available. Retrying in ${delay / 1000}s.`)
         await sleep(delay)
         continue

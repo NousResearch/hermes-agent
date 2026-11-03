@@ -68,7 +68,6 @@ test('accepted submissions retry only ticket propagation, without resubmitting o
 test('HTTP timeouts resume the same submission with notarytool wait and a shrinking budget', async () => {
   const f = fixture()
   // Replay the status-request failure from the macOS release log.
-  const timeoutOutput = `Error: HTTPError(statusCode: nil, error: Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={NSErrorFailingURLStringKey=https://appstoreconnect.apple.com/notary/v2/submissions/${submissionId}?, _kCFStreamErrorDomainKey=1})`
   try {
     for (const env of f.environments) {
       const calls = []
@@ -81,7 +80,7 @@ test('HTTP timeouts resume the same submission with notarytool wait and a shrink
         if (args[0] === 'notarytool' && args[1] === 'submit') {
           elapsed += 10 * 60 * 1000
           return runCommand(process.execPath, ['-e',
-            'process.stderr.write(process.argv[1]); process.exitCode = 1', timeoutOutput])
+            'process.stderr.write(process.argv[1]); process.exitCode = 1', notaryTimeout])
         }
         if (args[0] === 'notarytool' && args[1] === 'wait') {
           if (++waits === 1) {

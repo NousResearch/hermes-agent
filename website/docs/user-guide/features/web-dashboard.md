@@ -278,6 +278,8 @@ Advanced/rarely-used keys are hidden by default behind a toggle.
 The dashboard view of the same encrypted credential vault the agent uses for password-blind
 sign-in (see [Passwords & Logins](credential-vault.md)) — no terminal needed:
 
+![Vault admin page — login sources, saved logins, and the add form](/img/dashboard/admin-vault.png)
+
 - **Saved logins** — label, kind, origin and the login identifier. Passwords are never shown,
   not even after unlocking.
 - **Add** — a `login` (site origin + identifier + password, optional authenticator key),

@@ -10,6 +10,7 @@ import math
 import time
 from collections import Counter
 from datetime import datetime, timezone, UTC
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
@@ -23,6 +24,7 @@ from hermes_state_keys import (
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+from hermes_state_lineage import session_lineage_guard
 import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -422,6 +424,24 @@ class SessionPortabilityMixin:
             return {"ok": False, "adopted": False, "donor_retired": False,
                     "error": f"session {session_id!r} not found in donor store"}
         segments = payload.get("segments") or [payload]
+        segment_ids = [segment["id"] for segment in segments if segment.get("id")]
+        # Keep the source owner check, target import, and donor retirement under one home-wide
+        # lock. The nested import guard is re-entrant; without the outer lock a donor can append
+        # after export, or a second profile can claim the id between copy and retirement.
+        with session_lineage_guard(donor_db.db_path, segment_ids):
+            refreshed = donor_db.export_session_lineage(session_id, include_inactive=True)
+            if not refreshed:
+                return {"ok": False, "adopted": False, "donor_retired": False,
+                        "error": f"session {session_id!r} not found in donor store"}
+            refreshed_segments = refreshed.get("segments") or [refreshed]
+            refreshed_ids = [segment["id"] for segment in refreshed_segments if segment.get("id")]
+            with session_lineage_guard(donor_db.db_path, refreshed_ids):
+                return self._adopt_lineage_segments_locked(
+                    donor_db, session_id, refreshed_segments, retire_donor=retire_donor)
+
+    def _adopt_lineage_segments_locked(self, donor_db: Any, session_id: str, segments: list[dict[str, Any]],
+                                       *, retire_donor: bool) -> dict[str, Any]:
+        """Copy/retire the already-snapshotted segments while the source ownership lock is held."""
 
         # Divergence guard: a segment we will SKIP (already here) may have kept growing in
         # the donor after a partial adoption; retiring it would strand those messages
@@ -438,7 +458,7 @@ class SessionPortabilityMixin:
                 logger.warning("adoption divergence: donor segment %s has %d messages, "
                                "local copy has %d — donor will NOT be retired", seg_id, donor_count, local_count)
 
-        result = self.import_sessions([dict(seg) for seg in segments])
+        result = self.import_sessions([dict(seg) for seg in segments], transfer_from=donor_db.db_path)
         imported = int(result.get("imported") or 0)
         skipped = int(result.get("skipped") or 0)
         adopted = result.get("ok", False) and (imported + skipped) == len(segments)
@@ -467,10 +487,10 @@ class SessionPortabilityMixin:
                     "leaving donor unretired", seg_id, donor_now, local_now,
                 )
                 return False
-            # First end_reason wins in end_session(); reopen so the adoption boundary is
-            # stamped even on ended segments.
-            donor_db.reopen_session(seg_id)
-            donor_db.end_session(seg_id, "adopted_by_profile")
+            # Stamp the adoption boundary without reopening the donor: a concurrent target
+            # owner must never see the donor become live again between import and retirement.
+            if not donor_db.end_session_as_adopted(seg_id):
+                return False
             # The session lives on in the adopting profile: not a delete for plugins.
             donor_db.set_session_archived(seg_id, True, notify=False)
             return True
@@ -786,7 +806,9 @@ class SessionPortabilityMixin:
                 detached += 1
         return detached
 
-    def import_sessions(self, sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    def import_sessions(
+        self: Any, sessions: list[dict[str, Any]], *, transfer_from: str | Path | None = None,
+    ) -> dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
         are skipped. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
@@ -808,6 +830,20 @@ class SessionPortabilityMixin:
         normalized, errors = self._validate_import_payload(sessions)
         if errors:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
+
+        session_ids = tuple(dict.fromkeys(
+            str(item["session"].get("id") or "").strip() for item in normalized
+            if str(item["session"].get("id") or "").strip()
+        ))
+        with self._read_ctx() as conn:
+            present_ids: set[str] = set()
+            for start in range(0, len(session_ids), 500):
+                chunk = session_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                present_ids.update(row[0] for row in conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({placeholders})", chunk
+                ).fetchall())
+        new_ids = tuple(session_id for session_id in session_ids if session_id not in present_ids)
 
         def _do(conn):
             from hermes_state_mutation_retirement import retired_in
@@ -837,4 +873,5 @@ class SessionPortabilityMixin:
                 "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
             }
 
-        return self._execute_write(_do)
+        with session_lineage_guard(self.db_path, new_ids, transfer_from=transfer_from):
+            return self._execute_write(_do)

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_state_common import (
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
     _sql_session_last_active)
+from hermes_state_lineage import guarded_session_write
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -299,7 +300,7 @@ class SessionGatewayMixin:
                     (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
                      origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
-        self._execute_write(_do)
+        guarded_session_write(self, session_id, _do)
 
     def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``

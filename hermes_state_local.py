@@ -5,6 +5,7 @@ import time
 from collections import OrderedDict
 
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
+from hermes_state_lineage import SessionLineageError, SessionLineageInventoryError, guarded_session_write
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
 API_BINDING_PREFIX = 'gateway.api.binding.v1.'
@@ -79,7 +80,12 @@ def commit_local_session(db, *, epoch, receipt):
             on_create.publish()  # before the row is visible, so no reader lazy-loads around it
         return receipt
     try:
-        return db._execute_write(write)
+        return guarded_session_write(db, sid, write)
+    except SessionLineageError as exc:
+        if on_create is not None:
+            on_create.withdraw()
+        reason = 'storage_unavailable' if isinstance(exc, SessionLineageInventoryError) else 'admission_conflict'
+        raise RuntimeStoreError(reason) from exc
     except BaseException:
         if on_create is not None:
             on_create.withdraw()  # only this attempt's own snapshot, never another winner's

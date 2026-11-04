@@ -157,10 +157,21 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
 def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkeypatch, capsys):
     _seed_crossings(homes)
     snapshots = []
+    import hermes_state_lineage as lineage
+    real_import = SessionDB.import_moved_session
+    observed_locked_imports = []
+
+    def assert_move_lock(self, *args, **kwargs):
+        assert getattr(lineage._THREAD_LOCKS, "active", {}), "profile move imported outside its lineage lock"
+        observed_locked_imports.append(True)
+        return real_import(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "import_moved_session", assert_move_lock)
     monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot",
                         lambda store: snapshots.append(store.profile) or f"snap-{store.profile}")
 
     assert _run(apply=True) == 0
+    assert observed_locked_imports
     assert set(snapshots) == {"default", "acme", "beta"}
 
     root = SessionDB(homes["default"] / "state.db")
@@ -323,17 +334,27 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
         acme.close()
 
     monkeypatch.setattr(SessionDB, method, real)
-    assert _run(apply=True) == 0
+    assert _run(apply=True) == 1
+    out = capsys.readouterr().out
+    assert "explicit canonical-owner decision" in out
     root = SessionDB(homes["default"] / "state.db")
     acme = SessionDB(homes["acme"] / "state.db")
     try:
-        assert all(root.get_session(sid) is None for sid in ("gp", "par", "kid", "lone"))
+        # The partial first attempt left a second copy of gp in the target. The report-only
+        # owner fence must not silently pick one or claim the stores are clean.
+        assert root.get_session("gp") is not None and acme.get_session("gp") is not None
+        assert all(root.get_session(sid) is None for sid in ("par", "kid", "lone"))
         assert acme.get_session("par")["parent_session_id"] == "gp"
         assert acme.get_session("kid")["parent_session_id"] == "par"
     finally:
         root.close()
         acme.close()
-    assert not any(f["kind"] == "wrong_store" for f in _report()["findings"])
+    # With only the unresolved duplicate left, --apply must still return nonzero and explain why.
+    assert _run(apply=True) == 1
+    assert "No automatic repair" in capsys.readouterr().out
+    findings = _report()["findings"]
+    assert any(f["kind"] == "dual_home" and f["subject"] == "gp" for f in findings)
+    assert not any(f["kind"] == "wrong_store" for f in findings)
 
 
 def _admit(path: Path, sid: str, status: str) -> None:

@@ -2634,7 +2634,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None
-        session, err = await asyncio.to_thread(db._execute_write, _atomic)
+        from hermes_state_lineage import SessionLineageError, SessionLineageInventoryError, guarded_session_write
+        try:
+            session, err = await asyncio.to_thread(guarded_session_write, db, session_id, _atomic)
+        except SessionLineageInventoryError as exc:
+            return _error_response(
+                "Session ownership could not be verified; retry later.", 503,
+                code=getattr(exc, "code", "session_lineage_unverifiable"))
+        except SessionLineageError as exc:
+            return _error_response(
+                "Session ID is already owned or has conflicting owners.", 409,
+                code=getattr(exc, "code", "session_lineage_conflict"))
         if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
             return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
         if err and err.startswith("title:"):

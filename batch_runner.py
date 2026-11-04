@@ -30,7 +30,6 @@ from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
-from model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
 from tools.registry import registry
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES

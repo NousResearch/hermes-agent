@@ -52,11 +52,12 @@ import {
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
 import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { unpinSession } from '@/store/session-pin-sync'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
@@ -359,7 +360,7 @@ export function startSessionDrag(
         if (pin) {
           pinSession(pinId)
         } else {
-          unpinSession(pinId)
+          unpinSession(pinId, session)
         }
       } else if (moveToProject) {
         // Same RPC the row's own "Move to project" menu item calls — the drop

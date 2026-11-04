@@ -12,6 +12,24 @@ import { deleteSession, renameSession, setSessionArchived, setSessionPinnedRemot
 
 beforeEach(() => { vi.mocked(hermesApi).mockReset(); setApiRequestConnection('owner'); setApiRequestProfile('work') })
 
+it('pins the snapshot and unpin PATCH to the explicit owner even after the active connection changes', async () => {
+  let finishRead!: (snapshot: { exists: boolean; runtime_revision: number; runtime_generation: number }) => void
+  vi.mocked(hermesApi).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve as typeof finishRead }))
+    .mockResolvedValue({ ok: true } as never)
+  const unpin = setSessionPinnedRemote('foreign', false, { connectionId: 'local', profile: 'research' })
+  await vi.waitFor(() => expect(finishRead).toBeTypeOf('function'))
+  setApiRequestConnection('third')
+  setApiRequestProfile('unrelated')
+  finishRead({ exists: true, runtime_revision: 7, runtime_generation: 2 })
+  await unpin
+
+  expect(vi.mocked(hermesApi).mock.calls.map(([request]) => request)).toEqual([
+    { connectionId: 'local', profile: 'research', path: '/api/sessions/foreign/mutation-snapshot?profile=research' },
+    { connectionId: 'local', profile: 'research', path: '/api/sessions/foreign', method: 'PATCH',
+      body: { pinned: false, profile: 'research', expected_revision: 7, expected_generation: 2, request_id: expect.any(String) } }
+  ])
+})
+
 it('concurrent equal sidebar edits share the missing-snapshot verdict on older standalone servers', async () => {
   vi.mocked(hermesApi).mockImplementation(async request => {
     if (!request.method || request.method === 'GET') {

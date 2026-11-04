@@ -31,9 +31,10 @@ import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { $pinnedSessionIds, pinSession, SIDEBAR_SESSIONS_PAGE_SIZE, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { $sessionProfilesTruncated, $sessions, sessionPinId } from '@/store/session'
+import { unpinSession } from '@/store/session-pin-sync'
 import { confirmSharedGatewayRestart } from '@/store/system-actions'
 
 import { SidebarLoadMoreRow } from '../chat/sidebar/load-more-row'
@@ -416,7 +417,7 @@ export function CommandCenterView({
                     <ul>
                       {filteredSessions.map(session => {
                         const pinId = sessionPinId(session)
-                        const pinned = pinnedSessionIds.includes(pinId)
+                        const pinned = pinnedSessionIds.includes(pinId) || session.pinned === true
 
                         return (
                           <li className="group flex items-center gap-2 py-2" key={session.id}>
@@ -434,7 +435,7 @@ export function CommandCenterView({
                             </button>
                             <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                               <RowIconButton
-                                onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                                onClick={() => (pinned ? unpinSession(pinId, session) : pinSession(pinId))}
                                 title={pinned ? cc.unpinSession : cc.pinSession}
                               >
                                 {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}

@@ -1099,12 +1099,12 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 
 # --- Quick state snapshots (used by /snapshot slash command and hermes backup --quick) ---
 
-# Critical state files (relative to HERMES_HOME) for quick snapshots; everything else is
-# regeneratable or managed separately (skills, repo, sessions/). Entries may be files OR
-# directories (recursive); missing entries are skipped. Pairing data lives in platform JSON blobs
-# outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
+# Critical state files (relative to HERMES_HOME) for quick snapshots; everything else is regeneratable or
+# managed separately (skills, repo, sessions/). Entries may be files OR directories, missing ones skipped;
+# ``hermes update`` snapshots this set (#15733). ``.env``/``auth.json`` stay out (#77470): a snapshot is
+# file-loss recovery, not a credential archive — the copy outlived rotation, re-arming a revoked key.
 _QUICK_STATE_FILES = (
-    "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
+    "state.db", "config.yaml", "cron/jobs.json", "cron/executions.db",
     "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
     "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update

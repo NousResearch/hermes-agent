@@ -300,22 +300,26 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
         from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_config_options, session_modes
-        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
         models = await asyncio.to_thread(model_state, info)
         meta = await asyncio.to_thread(provenance_meta, self._home / "state.db", editor_id, session_id)
+        mode = self._modes.setdefault(session_id, session_modes(info).current_mode_id)
+        options = await session_config_options(self._gateway, session_id, models, info, mode)
+        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
+        policy = MODE_TO_EDIT_APPROVAL_POLICY[self._modes[session_id]]
+        modes = session_modes({"edit_approval_policy": policy})
+        for option in options:
+            if option.id == EDIT_APPROVAL_POLICY_CONFIG_ID:
+                option.current_value = policy
         if self._conn:
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
-        modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
-            session_id, session_modes(info).current_mode_id)]})
         return {"models": models, "modes": modes, "field_meta": meta,
-                "config_options": await session_config_options(
-                    self._gateway, session_id, models, info, modes.current_mode_id)}
+                "config_options": options}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update

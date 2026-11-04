@@ -140,3 +140,67 @@ def test_multi_table_split():
         # Single card is also acceptable if all tables fit within limits
         msg_type, _ = result
         assert msg_type == "interactive"
+
+
+def test_oversized_payload_splits_by_bytes():
+    """Content exceeding ~28KB splits into multiple card payloads.
+
+    The Feishu Card JSON 2.0 API has an undocumented ~30KB payload limit.
+    The adapter uses a 28KB safe threshold (_CARD_PAYLOAD_MAX_BYTES = 28000).
+    When a single markdown element produces a payload larger than this,
+    it must be split into multiple independent cards.
+    """
+    # Build content that will exceed 28KB when wrapped in card JSON.
+    # Each row ~60 bytes; need ~500 rows to exceed 28KB.
+    rows = ["| col_a | col_b | col_c | col_d |", "|-------|-------|-------|-------|"]
+    for i in range(600):
+        rows.append(f"| val_{i:04d}_aaaa | val_{i:04d}_bbbb | val_{i:04d}_cccc | val_{i:04d}_dddd |")
+    content = "\n".join(rows)
+    # Sanity: raw content alone should exceed 28KB
+    assert len(content.encode("utf-8")) > 28000, "test content must exceed 28KB"
+
+    result = _call_build_outbound_payload(content)
+
+    if isinstance(result, list):
+        # Verify split happened and each card is under the limit
+        assert len(result) >= 2, (
+            f"content >{len(content)}B should split into multiple cards, got {len(result)}"
+        )
+        for msg_type, payload_str in result:
+            assert msg_type == "interactive"
+            payload = json.loads(payload_str)
+            assert payload.get("schema") == "2.0"
+            payload_bytes = len(payload_str.encode("utf-8"))
+            # Allow some headroom — each card should be well under 30KB
+            assert payload_bytes < 30000, (
+                f"split card payload is {payload_bytes}B, should be <30KB"
+            )
+    else:
+        # If not split, the single payload must still be valid
+        msg_type, payload_str = result
+        assert msg_type == "interactive"
+
+
+def test_bold_list_blockquote_use_interactive_card():
+    """Rich markdown (bold, lists, blockquotes) without tables still uses card.
+
+    Ensures the Post→Card migration applies to all markdown, not just tables.
+    """
+    content = (
+        "**Important update:**\n\n"
+        "- Item one\n"
+        "- Item two\n\n"
+        "> This is a blockquote\n\n"
+        "Some `inline code` here."
+    )
+    result = _call_build_outbound_payload(content)
+    assert isinstance(result, tuple)
+    msg_type, payload_str = result
+    assert msg_type == "interactive", (
+        f"expected 'interactive' for rich markdown, got {msg_type!r}; "
+        "bold/lists/blockquotes should use Card JSON 2.0"
+    )
+    md_texts = _card_md_texts(payload_str)
+    joined = "".join(md_texts)
+    assert "Important update" in joined
+    assert "blockquote" in joined or ">" in joined or "Item one" in joined

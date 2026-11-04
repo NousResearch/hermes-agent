@@ -259,6 +259,57 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
         self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_falls_back_when_interactive_card_is_rejected(self):
+        """send() degrades from interactive card to post when card is rejected."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230001,
+                        msg="content format of the post type is incorrect",
+                        data=SimpleNamespace(message_id="om_fail"),
+                    )
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_ok"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="Here is a **bold** message with\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        # First attempt: interactive card; on rejection: falls back
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        fallback_type = captured["calls"][1].request_body.msg_type
+        self.assertIn(fallback_type, ("post", "text"), (
+            f"fallback should be 'post' or 'text', got {fallback_type!r}"
+        ))
+
 
 @patch.dict(os.environ, {}, clear=True)
 class TestDeleteMessage(unittest.TestCase):

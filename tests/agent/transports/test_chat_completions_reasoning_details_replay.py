@@ -36,3 +36,16 @@ def test_openrouter_format_gateways_keep_and_strict_hosts_strip_reasoning_detail
         kwargs = transport.build_kwargs("m", _HISTORY, base_url=url)
         assert all("reasoning_details" not in m for m in kwargs["messages"]), url
     assert "reasoning_details" in _HISTORY[1]  # durable history is untouched
+
+
+def test_auxiliary_wire_omits_empty_tool_content_for_chat_completions():
+    history = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "setup_beat", "arguments": "{}"}},
+    ]}]
+    for base_url in ("https://api.openai.com/v1", "https://api.groq.com/openai/v1",
+                     "https://openrouter.ai/api/v1", "https://llm.example.com/v1",
+                     "https://inference-api.nvidia.com/v1"):
+        with OpenAI(api_key="k", base_url=base_url) as client:
+            wire = prepare_chat_messages(client, {"model": "m", "messages": history})["messages"]
+            assert "content" not in wire[0]
+    assert history[0]["content"] == ""

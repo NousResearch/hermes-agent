@@ -19173,6 +19173,34 @@
           "notes": {
             "title": "Notes",
             "type": "string"
+          },
+          "routing": {
+            "anyOf": [
+              {
+                "enum": [
+                  "everyone",
+                  "lead"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing"
+          },
+          "lead_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lead Member Id"
           }
         },
         "required": [
@@ -34241,6 +34269,20 @@
           },
           "notes": {
             "title": "Notes",
+            "type": "string"
+          },
+          "routing": {
+            "default": "everyone",
+            "enum": [
+              "everyone",
+              "lead"
+            ],
+            "title": "Routing",
+            "type": "string"
+          },
+          "lead_member_id": {
+            "default": "",
+            "title": "Lead Member Id",
             "type": "string"
           }
         },

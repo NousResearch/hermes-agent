@@ -3,7 +3,9 @@
 Both live in the append-only room log, never in a side file: the Discussion planner must stay a pure
 function of durable room state, because a member turn's task id hashes its prompt. Purpose and notes are
 read as of the message that opened a discussion, so editing them mid-discussion never re-plans a turn that
-is already admitted; the edit applies from the next message.
+is already admitted; the edit applies from the next message. The same event carries the room's routing:
+``everyone`` (every member gets a turn on an unaddressed message, the default) or ``lead`` (the lead picks
+who takes it; ``gateway/hosted_room_lead.py``).
 
 Scheduled posts are ordinary ``message.user`` events whose server-owned actor id names the cron job. Only
 this module mints that actor (``groups.send`` hard-codes ``desktop``), so a client cannot impersonate a job.
@@ -29,20 +31,27 @@ _CONTEXT_ACTOR = {"kind": "system", "id": "room-control"}
 # member; a failure notice never does (its text is machine-written, not addressed to anyone).
 SCHEDULED_POST_PREFIX = "cron:"
 SCHEDULED_NOTICE_PREFIX = "cron-notice:"
-_EMPTY_CONTEXT = {"purpose": "", "notes": ""}
+ROUTING_MODES = ("everyone", "lead")
+_EMPTY_CONTEXT = {"purpose": "", "notes": "", "routing": "everyone", "lead_member_id": ""}
 
 
-def validate_context(purpose: Any, notes: Any) -> dict[str, str]:
-    """Normalize one purpose/notes pair; both may be empty (clears them)."""
-    if not isinstance(purpose, str) or not isinstance(notes, str):
-        raise hosted_rooms.HostedRoomError("purpose and notes must be strings")
+def validate_context(purpose: Any, notes: Any, routing: Any = "everyone", lead_member_id: Any = "") -> dict[str, str]:
+    """Normalize one room settings record; purpose and notes may be empty (clears them). ``lead`` routing
+    needs a lead; ``everyone`` routing never keeps one."""
+    if not all(isinstance(value, str) for value in (purpose, notes, routing, lead_member_id)):
+        raise hosted_rooms.HostedRoomError("purpose, notes, routing and lead_member_id must be strings")
     purpose = " ".join(purpose.split())
     notes = notes.strip()
     if len(purpose) > MAX_PURPOSE_CHARS:
         raise hosted_rooms.HostedRoomError(f"purpose must be at most {MAX_PURPOSE_CHARS} characters")
     if len(notes.encode("utf-8")) > MAX_NOTES_BYTES:
         raise hosted_rooms.HostedRoomError(f"notes must be at most {MAX_NOTES_BYTES} bytes")
-    return {"purpose": purpose, "notes": notes}
+    if routing not in ROUTING_MODES:
+        raise hosted_rooms.HostedRoomError("routing must be 'everyone' or 'lead'")
+    if routing == "lead" and not lead_member_id.strip():
+        raise hosted_rooms.HostedRoomError("lead routing needs a lead_member_id")
+    return {"purpose": purpose, "notes": notes, "routing": routing,
+            "lead_member_id": lead_member_id.strip() if routing == "lead" else ""}
 
 
 def _local_authority(db_path: DbPath, room_id: Any) -> dict[str, Any]:
@@ -52,32 +61,59 @@ def _local_authority(db_path: DbPath, room_id: Any) -> dict[str, Any]:
     return state
 
 
-def room_context(db_path: DbPath, *, room_id: Any, before_seq: int | None = None) -> dict[str, str]:
-    """The latest purpose/notes, or the ones in force before ``before_seq`` when given."""
-    room_id = hosted_rooms._room_id(room_id)
+def _latest_context(conn: Any, room_id: str, before_seq: int | None) -> dict[str, str]:
     sql = "SELECT payload_json FROM hosted_room_events WHERE room_id=? AND kind=?"
     params: tuple[Any, ...] = (room_id, CONTEXT_EVENT_KIND)
     if before_seq is not None:
         sql, params = sql + " AND seq<?", (*params, int(before_seq))
-    with closing(hosted_rooms._read_connection(db_path)) as conn:
-        row = conn.execute(sql + " ORDER BY seq DESC LIMIT 1", params).fetchone()
+    row = conn.execute(sql + " ORDER BY seq DESC LIMIT 1", params).fetchone()
     if row is None:
         return dict(_EMPTY_CONTEXT)
     payload = json.loads(row["payload_json"])
-    return {key: str(payload.get(key) or "") for key in _EMPTY_CONTEXT}
+    return {key: str(payload.get(key) or default) for key, default in _EMPTY_CONTEXT.items()}
+
+
+def room_context(db_path: DbPath, *, room_id: Any, before_seq: int | None = None) -> dict[str, str]:
+    """The latest purpose/notes, or the ones in force before ``before_seq`` when given."""
+    room_id = hosted_rooms._room_id(room_id)
+    with closing(hosted_rooms._read_connection(db_path)) as conn:
+        return _latest_context(conn, room_id, before_seq)
 
 
 def set_room_context(
-    db_path: DbPath, *, room_id: Any, event_id: Any, purpose: Any, notes: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, event_id: Any, purpose: Any, notes: Any, routing: Any = None,
+    lead_member_id: Any = None, now: float | None = None,
 ) -> dict[str, Any]:
-    """Record a new purpose/notes pair as one replayable room event."""
-    context = validate_context(purpose, notes)
+    """Record new room settings as one replayable room event. Omitted routing fields keep their current
+    values, so a client that only edits purpose/notes never switches a lead room back to everyone. Those
+    values are read under the append's write lock: a concurrent routing change cannot be written back stale.
+    A retried save (same ``event_id``) fills them from its own first write instead, so it returns that event
+    even after another client changed the routing meanwhile."""
     state = _local_authority(db_path, room_id)
+    seated = {str(member.get("member_id")) for member in state.get("members") or ()}
+    saved: dict[str, str] = {}
+
+    def settings(conn: Any) -> dict[str, str]:
+        first = hosted_rooms._load_event(conn, state["room_id"], hosted_rooms._event_id(event_id))
+        original = json.loads(first["payload_json"]) if first is not None and first["kind"] == CONTEXT_EVENT_KIND else None
+        current = {**_EMPTY_CONTEXT, **original} if original is not None else _latest_context(conn, state["room_id"], None)
+        context = validate_context(
+            purpose, notes, current["routing"] if routing is None else routing,
+            current["lead_member_id"] if lead_member_id is None else lead_member_id)
+        if first is None and context["routing"] == "lead" and context["lead_member_id"] not in seated:
+            raise hosted_rooms.HostedRoomError("the lead must be a member of this Group Chat")
+        saved.update(context)
+        if original is None:
+            return context
+        # A retry is compared in its first event's own schema: one saved before routing existed has only
+        # purpose and notes, so a field still at its default is left out rather than read as a different save.
+        return {key: value for key, value in context.items() if key in original or value != _EMPTY_CONTEXT[key]}
+
     event = hosted_rooms.append_event(
         db_path, room_id=room_id, event_id=event_id, kind=CONTEXT_EVENT_KIND, actor=dict(_CONTEXT_ACTOR),
-        payload=context, authority_gateway_id=state["authority_gateway_id"],
+        payload=settings, authority_gateway_id=state["authority_gateway_id"],
         authority_epoch=state["authority_epoch"], now=now)
-    return {"context": context, "event": event}
+    return {"context": saved, "event": event}
 
 
 def scheduled_post_kind(actor: Mapping[str, Any] | None) -> str | None:

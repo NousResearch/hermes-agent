@@ -66,7 +66,7 @@ on:
         type: string
         default: ''
       bundle-arch:
-        description: 'Architecture of the bundled pair: arm64 (macos-15) or x64 (macos-15-intel).'
+        description: 'Architecture of the bundled pair. Only arm64 (macos-15) runs: there is no Intel macOS leg.'
         required: false
         type: string
         default: arm64
@@ -225,10 +225,22 @@ jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: ${{ inputs.bundle-arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    runs-on: macos-15
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
+      # The runner is Apple Silicon and no Intel macOS bundle ships, so an x64
+      # pair would only reach app launch (or Rosetta) before failing.
+      - name: Reject an unsupported bundle architecture
+        shell: bash
+        env:
+          BUNDLE_ARCH: ${{ inputs.bundle-arch }}
+        run: |
+          if [ "$BUNDLE_ARCH" != arm64 ]; then
+            echo "::error::unsupported macOS bundle architecture '$BUNDLE_ARCH': only arm64 bundles are built and tested"
+            exit 1
+          fi
+
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}

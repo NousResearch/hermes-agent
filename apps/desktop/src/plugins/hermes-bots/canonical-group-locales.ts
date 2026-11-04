@@ -69,6 +69,14 @@ export interface CanonicalGroupMessages {
   notesPlaceholder: string
   deliveryTarget: string
   scheduledPost: string
+  routingLabel: string
+  routingEveryone: string
+  routingLead: string
+  routingEveryoneHint: string
+  routingLeadHint: string
+  leadBadge: string
+  assignment: string
+  assignmentFallback: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -142,7 +150,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Shared notes',
     notesPlaceholder: 'Facts every member should keep in mind',
     deliveryTarget: 'Scheduled jobs can post here with deliver:',
-    scheduledPost: 'Scheduled'
+    scheduledPost: 'Scheduled',
+    routingLabel: 'Who answers a message that names nobody',
+    routingEveryone: 'Everyone answers',
+    routingLead: 'Lead: {name}',
+    routingEveryoneHint: 'Every member gets a turn, as today.',
+    routingLeadHint: 'The lead picks who takes it; @mentions and @everyone still go straight to those members.',
+    leadBadge: 'Lead',
+    assignment: '{lead} gave this to {names}',
+    assignmentFallback: '{lead} is taking this'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -214,7 +230,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: '共有メモ',
     notesPlaceholder: '全メンバーが覚えておくべき事項',
     deliveryTarget: 'スケジュール済みジョブの投稿先 deliver:',
-    scheduledPost: 'スケジュール'
+    scheduledPost: 'スケジュール',
+    routingLabel: '誰も指名されていないメッセージに答えるのは',
+    routingEveryone: '全員が答える',
+    routingLead: 'リーダー: {name}',
+    routingEveryoneHint: '今と同じく、全メンバーが順に答えます。',
+    routingLeadHint: 'リーダーが担当者を選びます。@メンションと @everyone はそのまま宛先のメンバーに届きます。',
+    leadBadge: 'リーダー',
+    assignment: '{lead} が {names} に割り当てました',
+    assignmentFallback: '{lead} が担当します'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -286,7 +310,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: '共享笔记',
     notesPlaceholder: '每位成员都应记住的事项',
     deliveryTarget: '定时任务可通过 deliver: 发到这里',
-    scheduledPost: '定时'
+    scheduledPost: '定时',
+    routingLabel: '没有点名的消息由谁回答',
+    routingEveryone: '所有人回答',
+    routingLead: '负责人：{name}',
+    routingEveryoneHint: '和现在一样，每位成员都轮流回答。',
+    routingLeadHint: '由负责人决定谁来处理；@提及和 @everyone 仍直接发给对应成员。',
+    leadBadge: '负责人',
+    assignment: '{lead} 把这条交给了 {names}',
+    assignmentFallback: '{lead} 亲自处理'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -358,7 +390,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: '共用筆記',
     notesPlaceholder: '每位成員都應記住的事項',
     deliveryTarget: '排程工作可透過 deliver: 張貼到這裡',
-    scheduledPost: '排程'
+    scheduledPost: '排程',
+    routingLabel: '沒有點名的訊息由誰回答',
+    routingEveryone: '所有人回答',
+    routingLead: '負責人：{name}',
+    routingEveryoneHint: '和現在一樣，每位成員都輪流回答。',
+    routingLeadHint: '由負責人決定誰來處理；@提及和 @everyone 仍直接送給對應成員。',
+    leadBadge: '負責人',
+    assignment: '{lead} 把這則交給了 {names}',
+    assignmentFallback: '{lead} 親自處理'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -430,7 +470,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'ملاحظات مشتركة',
     notesPlaceholder: 'حقائق يجب أن يتذكرها كل عضو',
     deliveryTarget: 'يمكن للمهام المجدولة النشر هنا باستخدام deliver:',
-    scheduledPost: 'مجدول'
+    scheduledPost: 'مجدول',
+    routingLabel: 'من يجيب عن رسالة لا تذكر أحدًا',
+    routingEveryone: 'يجيب الجميع',
+    routingLead: 'القائد: {name}',
+    routingEveryoneHint: 'يحصل كل عضو على دوره كما هو الحال الآن.',
+    routingLeadHint: 'يختار القائد من يتولاها؛ الإشارات @ و@everyone تصل مباشرة إلى أصحابها.',
+    leadBadge: 'القائد',
+    assignment: 'أسند {lead} هذه الرسالة إلى {names}',
+    assignmentFallback: 'يتولى {lead} هذه الرسالة'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -505,7 +553,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Общие заметки',
     notesPlaceholder: 'Что должен помнить каждый участник',
     deliveryTarget: 'Задания по расписанию могут писать сюда через deliver:',
-    scheduledPost: 'По расписанию'
+    scheduledPost: 'По расписанию',
+    routingLabel: 'Кто отвечает на сообщение без упоминаний',
+    routingEveryone: 'Отвечают все',
+    routingLead: 'Ведущий: {name}',
+    routingEveryoneHint: 'Каждый участник отвечает по очереди, как сейчас.',
+    routingLeadHint: 'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
+    leadBadge: 'Ведущий',
+    assignment: '{lead} передал(а) это: {names}',
+    assignmentFallback: '{lead} берёт это на себя'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -579,7 +635,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Notes partagées',
     notesPlaceholder: 'Ce que chaque membre doit garder en tête',
     deliveryTarget: 'Les tâches planifiées peuvent publier ici avec deliver:',
-    scheduledPost: 'Planifié'
+    scheduledPost: 'Planifié',
+    routingLabel: 'Qui répond à un message qui ne nomme personne',
+    routingEveryone: 'Tout le monde répond',
+    routingLead: 'Responsable : {name}',
+    routingEveryoneHint: 'Chaque membre a son tour, comme aujourd\'hui.',
+    routingLeadHint: 'Le responsable choisit qui s\'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.',
+    leadBadge: 'Responsable',
+    assignment: '{lead} a confié ceci à {names}',
+    assignmentFallback: '{lead} s\'en charge'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -654,7 +718,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Gemeinsame Notizen',
     notesPlaceholder: 'Was jedes Mitglied im Blick behalten soll',
     deliveryTarget: 'Geplante Aufgaben können hier mit deliver: posten',
-    scheduledPost: 'Geplant'
+    scheduledPost: 'Geplant',
+    routingLabel: 'Wer antwortet auf eine Nachricht ohne Erwähnung',
+    routingEveryone: 'Alle antworten',
+    routingLead: 'Leitung: {name}',
+    routingEveryoneHint: 'Jedes Mitglied ist an der Reihe, wie bisher.',
+    routingLeadHint: 'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
+    leadBadge: 'Leitung',
+    assignment: '{lead} hat das an {names} gegeben',
+    assignmentFallback: '{lead} übernimmt das'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -728,7 +800,15 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Notas compartidas',
     notesPlaceholder: 'Lo que cada miembro debe tener presente',
     deliveryTarget: 'Las tareas programadas pueden publicar aquí con deliver:',
-    scheduledPost: 'Programado'
+    scheduledPost: 'Programado',
+    routingLabel: 'Quién responde a un mensaje que no nombra a nadie',
+    routingEveryone: 'Responden todos',
+    routingLead: 'Líder: {name}',
+    routingEveryoneHint: 'Cada miembro tiene su turno, como ahora.',
+    routingLeadHint: 'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
+    leadBadge: 'Líder',
+    assignment: '{lead} se lo dio a {names}',
+    assignmentFallback: '{lead} se encarga'
   },
   cs: {
     roomStopped: 'Skupina zastavena',
@@ -801,6 +881,14 @@ export const CANONICAL_GROUP_LOCALES = {
     notesLabel: 'Sdílené poznámky',
     notesPlaceholder: 'Co má mít každý člen na paměti',
     deliveryTarget: 'Naplánované úlohy sem mohou publikovat pomocí deliver:',
-    scheduledPost: 'Naplánováno'
+    scheduledPost: 'Naplánováno',
+    routingLabel: 'Kdo odpovídá na zprávu, ve které nikdo není zmíněn',
+    routingEveryone: 'Odpovídají všichni',
+    routingLead: 'Vedoucí: {name}',
+    routingEveryoneHint: 'Každý člen dostane slovo, jako dosud.',
+    routingLeadHint: 'Kdo se toho ujme, vybírá vedoucí; @zmínky a @everyone jdou nadále přímo daným členům.',
+    leadBadge: 'Vedoucí',
+    assignment: '{lead} to přidělil {names}',
+    assignmentFallback: '{lead} se toho ujímá'
   }
 } satisfies Record<string, CanonicalGroupMessages>

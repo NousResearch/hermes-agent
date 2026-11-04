@@ -23,6 +23,9 @@ export interface CanonicalRoomMember {
 export interface CanonicalRoomContext {
   purpose: string
   notes: string
+  /** Absent on runtimes without lead routing (they behave as `everyone`). */
+  routing?: 'everyone' | 'lead'
+  lead_member_id?: string
 }
 
 /** The backend's cap on shared notes (UTF-8 bytes after trimming; `validate_context`). */

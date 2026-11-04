@@ -2091,6 +2091,13 @@ export const csOverrides = {
           'Otevřít ji může jen tento počítač. Zastavte ji a znovu spusťte, abyste ji mohli otevřít z jiných zařízení.',
         runningPublic: 'Obsluhováno přes vaši URL.',
         start: 'Spustit',
+        startElapsed: time => `Uplynulo ${time}`,
+        startStages: {
+          preparing: 'Připravuje se webová aplikace. Sestavení může trvat několik minut.',
+          building: 'Sestavuje se webová aplikace. Může to trvat několik minut.',
+          registering: 'Nastavuje se přihlášení Nous pro tuto adresu.',
+          restarting: 'Restartuje se gateway, aby obsluhovala webovou aplikaci.'
+        },
         startTimedOut: 'Gateway nezačala obsluhovat webovou aplikaci do 90 sekund.',
         starting: 'Spouští se',
         stop: 'Zastavit',

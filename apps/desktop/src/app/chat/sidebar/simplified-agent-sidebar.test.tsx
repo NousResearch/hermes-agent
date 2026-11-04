@@ -38,6 +38,7 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import { SimplifiedAgentOffer } from './simplified-agent-offer'
 import { SimplifiedAgentSidebar } from './simplified-agent-sidebar'
+import { $simplifiedPinnedRows } from './use-simplified-pin-writes'
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<typeof ProfileModule>()),
@@ -109,6 +110,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  $simplifiedPinnedRows.set(new Map())
   vi.restoreAllMocks()
   setSimplifiedAgentMode(false)
   $sessions.set([])

@@ -121,7 +121,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/connectors` | TUI-only. Open the connector accounts list: one row per account, `app · name · status`. Keys: ↑/↓ select, `r` rename (inline input; Enter saves, Esc cancels), `a` add another account (pick the app, enter a name, then open the link), `c` reconnect the selected account (offered only when it needs repair: failed, expired, revoked or inactive), `x` remove (asks to confirm), Tab show or hide retired accounts, Esc or `q` close. See [Multiple connector accounts](../user-guide/features/tool-gateway.md#multiple-connector-accounts). |
 | `/reload-skills` (alias: `/reload_skills`) | Re-scan `~/.hermes/skills/` for newly installed or removed skills |
 | `/reload` | Reload `.env` variables into the running session (picks up new API keys without restarting) |
-| `/plugins` | List installed plugins and their status |
+| `/plugins [update\|auto-update [on\|off]]` | List installed plugins and their status; `update` updates every plugin that has an update, `auto-update` shows or sets unattended plugin updates |
 | `/pet [list\|<slug>]` | Toggle or adopt a [petdex](../user-guide/features/pets.md) mascot. `/pet` toggles the pane, `/pet list` shows installed pets, `/pet <slug>` adopts a specific one. |
 | `/hatch <description>` (alias: `/generate-pet`) | Generate a brand-new petdex pet from a text description, using the configured image backend (OpenRouter / Nous Portal). See [Pets](../user-guide/features/pets.md). |
 

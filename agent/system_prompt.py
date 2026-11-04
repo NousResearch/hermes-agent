@@ -699,8 +699,8 @@ def _coding_parts(agent: Any) -> tuple[list[str], list[str], list[str]]:
 
 def _post_workspace_parts(agent: Any) -> list[str]:
     """Blocks that follow the worktree-specific context: environment probe
-    (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, platform hint."""
+    (config.yaml agent.environment_probe, which also gates the remote-backend probe in
+    build_environment_hints; one line, nothing when clean, skipped for remote backends), bot-mode protocol, platform hint."""
     parts: list[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -765,7 +765,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
-    environment_hints = _pb.build_environment_hints()
+    environment_hints = _pb.build_environment_hints(
+        probe_backend=getattr(agent, "_environment_probe", True))
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(agent)
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent)

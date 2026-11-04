@@ -880,12 +880,6 @@ def _format_backend_probe(output: str) -> str:
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
     from hermes_constants import hermes_home_key
-    # agent.environment_probe gates every prompt-side environment probing, not just the tools/env_probe
-    # line: off, a remote backend would still create+force-remove a probe container (and run the orphan
-    # reaper via _build_docker_env) on every fresh process against the shared daemon (#131409).
-    agent_cfg = _config_readonly("agent.environment_probe").get("agent", {}) or {}
-    if not agent_cfg.get("environment_probe", True):
-        return None
     cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
@@ -976,11 +970,13 @@ def _bot_screen_hint() -> str:
         return ""
 
 
-def _remote_backend_hint(backend: str) -> str:
-    """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
+def _remote_backend_hint(backend: str, probe_backend: bool = True) -> str:
+    """Backend-only block for remote/sandbox backends (host info deliberately suppressed).
+    ``probe_backend`` is the agent's ``agent.environment_probe``: off, no probe sandbox is created
+    (it would create+force-remove a container, and run the orphan reaper, per fresh process; #131409)."""
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
-    probe = _probe_remote_backend(backend)
+    probe = _probe_remote_backend(backend) if probe_backend else None
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
@@ -994,9 +990,11 @@ def _remote_backend_hint(backend: str) -> str:
         or f"a {backend} environment (likely Linux)"
     )
     return lead + (
-        f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
-        f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
-        f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
+        f"{description} — NOT on the machine where Hermes itself runs. "
+        + ("The backend probe didn't respond at prompt-build time"
+           if probe_backend else "Backend probing is turned off")
+        + ", so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
+        "If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
     )
 
 
@@ -1017,13 +1015,13 @@ def _embedder_environment_hint() -> str:
         (_config_readonly("agent.environment_hint").get("agent", {}) or {}).get("environment_hint", "")).strip()
 
 
-def build_environment_hints() -> str:
+def build_environment_hints(probe_backend: bool = True) -> str:
     """Execution-environment block: local backends get host OS/home/cwd; remote/sandbox
     backends get ONLY the backend's own state (the agent's tools cannot touch the host).
-    WSL and embedder hints are appended."""
+    WSL and embedder hints are appended. ``probe_backend=False`` skips the live sandbox probe."""
     backend = (_tenv_read("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS or _plugin_backend_is_remote(backend)
-    hints = [_remote_backend_hint(backend)] if is_remote_backend else _local_host_hints()
+    hints = [_remote_backend_hint(backend, probe_backend)] if is_remote_backend else _local_host_hints()
     # A host-placed Bot Screen is only reachable from a local backend (a sandboxed terminal cannot
     # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
     if not is_remote_backend:

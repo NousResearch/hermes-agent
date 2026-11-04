@@ -60,6 +60,20 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_environment_probe_flag_gates_backend_probe(flag):
+    """``agent.environment_probe`` also gates the remote-backend probe (#131409): the agent's
+    resolved flag is what build_environment_hints receives."""
+    seen = []
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints",
+              side_effect=lambda probe_backend=True: seen.append(probe_backend) or ""),
+    ):
+        build_system_prompt_parts(_make_agent(_environment_probe=flag))
+    assert seen == [flag]
+
 @pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
 def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
     """A profile can expose kanban tools without making the session a worker."""

@@ -103,7 +103,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     onDeleteSession: props.onDeleteSession,
     onArchiveSession: props.onArchiveSession,
     onBranchSession: props.onBranchSession,
-    ambiguousIds: ambiguousSessionIds(all),
+    ambiguousIds: ambiguousSessionIds([...all, ...rows]),
     onUpdate: (row: SessionInfo, field: 'pinned' | 'unread', value: boolean) => {
       void updateRow(row, field, value)
     }

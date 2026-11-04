@@ -1,16 +1,20 @@
 import type { SessionInfo } from '@/hermes'
 import { sessionPinId } from '@/store/session'
 
+import { sessionRowKey } from './simplified-session-identity'
+
 export function ambiguousSessionIds(rows: readonly SessionInfo[]): Set<string> {
-  const seen = new Set<string>()
+  const seen = new Map<string, string>()
   const ambiguous = new Set<string>()
 
   for (const row of rows) {
-    if (seen.has(row.id)) {
+    const ownerKey = sessionRowKey(row)
+
+    if (seen.has(row.id) && seen.get(row.id) !== ownerKey) {
       ambiguous.add(row.id)
     }
 
-    seen.add(row.id)
+    seen.set(row.id, ownerKey)
   }
 
   return ambiguous

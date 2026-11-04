@@ -1156,8 +1156,25 @@ class LocalEnvironment(BaseEnvironment):
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
             own_process_groups([proc.pid])
             proc._hermes_owned_pgid = proc.pid
-            with contextlib.suppress(ProcessLookupError):
+            # OpenBSD getpgid(2) returns EPERM once start_new_session has put the
+            # child in its own session. That child is the group leader, so its
+            # pgid is its pid. Linux still answers getpgid across sessions.
+            # ProcessLookupError means the child is already gone. Leave the group
+            # unset, as before: inventing a pgid there can signal a recycled pid.
+            # PermissionError is OpenBSD only: getpgid(2) refuses a child that
+            # start_new_session has put in its own session, and that child is the
+            # group leader, so its pgid is its pid.
+            record_start = False
+            try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
+                record_start = True
+            except PermissionError:
+                if proc.pid:
+                    proc._hermes_pgid = proc.pid
+                    record_start = True
+            except ProcessLookupError:
+                pass
+            if record_start:
                 # Record the group leader's start-time fingerprint so _kill_process can
                 # detect PID/PGID recycling before signalling the group (#43044). The
                 # psutil fallback in get_process_start_time captures a baseline on every

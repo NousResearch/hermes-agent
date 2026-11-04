@@ -39,6 +39,11 @@ def test_down_marker_does_not_follow_a_down_symlink(tmp_path):
     (slot / "dangling").rename(slot / "down")
     s6._set_down_marker(slot, down=True)
     assert list(victim_dir.iterdir()) == [victim]
+    # s6 follows ``down``: a dangling link would not park the slot, so it becomes a real file.
+    assert not (slot / "down").is_symlink() and (slot / "down").is_file()
+    s6._set_down_marker(slot, down=False)
+    assert not os.path.lexists(slot / "down")
+    (slot / "down").symlink_to(victim)
     s6._set_down_marker(slot, down=False)  # removes the link, not its target
     assert not os.path.lexists(slot / "down") and victim.exists()
 

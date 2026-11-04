@@ -89,7 +89,8 @@ def _set_down_marker(service_dir: Path, *, down: bool) -> None:
 
     Slots live in the hermes-owned scandir, so a root caller must not ``touch`` through a ``down``
     (or slot) symlink planted there. The slot is opened O_NOFOLLOW and ``down`` is handled
-    relative to that fd; an existing ``down`` entry is left untouched.
+    relative to that fd. An existing marker that resolves is left untouched; a dangling ``down``
+    symlink (which s6 would not honour) is replaced by a regular file.
     """
     from hermes_cli.service_manager import _root_hermes_account
 
@@ -101,11 +102,18 @@ def _set_down_marker(service_dir: Path, *, down: bool) -> None:
             except FileNotFoundError:
                 pass
             return
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         try:
-            fd = os.open("down", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644,
-                         dir_fd=slot_fd)
+            fd = os.open("down", flags, 0o644, dir_fd=slot_fd)
         except FileExistsError:
-            return
+            try:
+                os.stat("down", dir_fd=slot_fd)  # s6 follows the marker, so a resolvable one parks
+                return
+            except FileNotFoundError:
+                pass
+            # A dangling symlink does not park the slot: replace the link itself, never its target.
+            os.unlink("down", dir_fd=slot_fd)
+            fd = os.open("down", flags, 0o644, dir_fd=slot_fd)
         try:
             account = _root_hermes_account()
             if account is not None:

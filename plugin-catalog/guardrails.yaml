@@ -1,7 +1,7 @@
 name: guardrails
 repo: https://github.com/eddiemessiah/hermes-guardrails
-sha: b36fde51b939c76d65ae591cbc684f82c7511097
-description: "Hard spend limits enforced in code before any payment tool runs: per-payment, daily and per-payee caps, Hermes approval for large or first-time payees (scoped to one payment), idempotency keys so retries never double-charge, a kill switch only a human can lift, and a SHA-256 hash-chained audit log. Can also guard other plugins' spending tools. Ships a zero-key mock backend and an optional Stripe test-mode backend. Disclosure — a pre_tool_call hook sees every tool call but acts only on guardrails_pay and tools listed in guarded_tools; a post_tool_call hook settles those tools' reservations; writes payments and audit entries to plugin-data/guardrails/guardrails.db; no network with the default mock backend; with backend stripe_test, payment requests go to api.stripe.com using GUARDRAILS_STRIPE_TEST_KEY (test keys only, live keys refused); no shell commands, background processes, telemetry or Python dependencies."
+sha: fcbe5859f468b83634e92020f3abb520600555f4
+description: "The policy layer every payment plugin is missing. Backend-neutral hard spend limits enforced in code before any payment tool runs: per-payment, daily and per-payee caps, Hermes approval for large or first-time payees (scoped to one payment), idempotency keys so retries never double-charge, a kill switch only a human can lift, and a SHA-256 hash-chained audit log. Can also guard other plugins' spending tools. Ships a zero-key mock backend and an optional Stripe test-mode backend. Disclosure — a pre_tool_call hook sees every tool call but acts only on guardrails_pay and tools listed in guarded_tools; a post_tool_call hook settles those tools' reservations; writes payments and audit entries to plugin-data/guardrails/guardrails.db; no network with the default mock backend; with backend: stripe_test, each payment sends amount, currency, payee, memo and idempotency key to api.stripe.com with GUARDRAILS_STRIPE_TEST_KEY, read via agent.secret_scope.get_secret (test keys only, live keys refused); approvals go through Hermes's own approval gate and are blocked by it when no one can answer (cron, gateway timeout); no shell commands, background processes, telemetry or Python dependencies."
 maintainer: eddiemessiah
 tier: community
 category: tools
@@ -10,10 +10,10 @@ docs_url: https://github.com/eddiemessiah/hermes-guardrails#readme
 version: "0.1.0"
 title: Guardrails
 screenshots:
-  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/b36fde51b939c76d65ae591cbc684f82c7511097/docs/02-approval-pause.png
-  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/b36fde51b939c76d65ae591cbc684f82c7511097/docs/03-run-complete.png
-  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/b36fde51b939c76d65ae591cbc684f82c7511097/docs/04-audit-log.png
-  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/b36fde51b939c76d65ae591cbc684f82c7511097/docs/05-tamper-detected.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/fcbe5859f468b83634e92020f3abb520600555f4/docs/02-approval-pause.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/fcbe5859f468b83634e92020f3abb520600555f4/docs/03-run-complete.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/fcbe5859f468b83634e92020f3abb520600555f4/docs/04-audit-log.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/fcbe5859f468b83634e92020f3abb520600555f4/docs/05-tamper-detected.png
 platforms: []
 capabilities:
   provides_tools: [guardrails_pay, guardrails_status, guardrails_audit]

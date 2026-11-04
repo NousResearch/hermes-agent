@@ -44,6 +44,18 @@ ALL_REASONS = frozenset({
 # recognises that definite no-send by it, so owner and tool share this one literal.
 HELD_NOT_SENT = "runtime_coordination_required"
 
+# Not bot-turn reasons either: the Bot Chat admission refusals about the owner's state, not the
+# delivery. With nothing committed the authority withdraws its pin and a same-id resend admits once
+# it clears (a full FIFO, a drain for restart/update or retirement, a fenced epoch or generation,
+# storage, a live CLI holding the session, or a target that moved before the write: the resend
+# resolves it again). Every other refusal (permission_denied, invalid_params, admission_conflict,
+# profile_mismatch, ...) is final for that delivery. The authority (``gateway/session_bot.py``)
+# and cron's Bot Chat producer, which parks these for a later resend, share this one set.
+OWNER_STATE_REFUSALS = frozenset({
+    "queue_full", "runtime_draining", "runtime_retired", "stale_epoch", "stale_generation",
+    "storage_unavailable", HELD_NOT_SENT, "session_busy", "not_found",
+})
+
 #: Reasons a supervisor may retry automatically without human intervention.
 AUTO_RETRYABLE = frozenset({RUNTIME_OFFLINE, DELIVERY_TIMEOUT, PROVIDER_RATE_LIMIT, PROVIDER_SERVER_ERROR})
 

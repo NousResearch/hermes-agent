@@ -26,8 +26,14 @@ const settle = async () => {
   }
 }
 
-const mount = (msgs: Msg[], render: ImageRenderResponse | ((params: { path: string }) => ImageRenderResponse)) => {
-  const request = vi.fn(async (_method: string, params: { path: string }) =>
+type RenderParams = { cols?: number; path: string }
+
+const mount = (
+  msgs: Msg[],
+  render: ImageRenderResponse | ((params: RenderParams) => ImageRenderResponse),
+  cols = 100
+) => {
+  const request = vi.fn(async (_method: string, params: RenderParams) =>
     typeof render === 'function' ? render(params) : render
   )
 
@@ -47,7 +53,7 @@ const mount = (msgs: Msg[], render: ImageRenderResponse | ((params: { path: stri
   const instance = renderSync(
     <GatewayProvider value={gateway}>
       {msgs.map((msg, i) => (
-        <MessageLine cols={100} key={i} msg={msg} t={DEFAULT_THEME} />
+        <MessageLine cols={cols} key={i} msg={msg} t={DEFAULT_THEME} />
       ))}
     </GatewayProvider>,
     {
@@ -97,6 +103,39 @@ describe('inline transcript images', () => {
         .split('\n')
         .filter(line => line.includes(PLACEHOLDER))
     ).toHaveLength(4)
+  })
+
+  it('re-sends a kitty image when another size of it replaced the placement', async () => {
+    // Every size of one file shares an image id, and kitty keeps one virtual placement per id.
+    const terminal = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    const wide = '\x1b_Ga=T,U=1,i=99,c=3,r=1,f=100,q=2,m=0;WIDE\x1b\\'
+    const narrow = '\x1b_Ga=T,U=1,i=99,c=2,r=1,f=100,q=2,m=0;NARROW\x1b\\'
+
+    const sized = ({ cols }: { cols?: number }): ImageRenderResponse => {
+      const small = (cols ?? 0) < 64
+
+      return {
+        color: '#000063',
+        cols: small ? 2 : 3,
+        mode: 'kitty',
+        placeholder: [PLACEHOLDER.repeat(small ? 2 : 3)],
+        rows: 1,
+        transmit: small ? narrow : wide
+      }
+    }
+
+    const shot: Msg = { images: ['/tmp/resized.png'], kind: 'image', role: 'system', text: '' }
+
+    for (const cols of [100, 40, 100]) {
+      mount([shot], sized, cols)
+      await settle()
+    }
+
+    expect(terminal.mock.calls.map(([data]) => data).filter(data => data === wide || data === narrow)).toEqual([
+      wide,
+      narrow,
+      wide
+    ])
   })
 
   it("draws half-blocks under a user turn's attachment", async () => {

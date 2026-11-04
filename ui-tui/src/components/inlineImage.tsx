@@ -31,14 +31,25 @@ interface RenderEntry {
 
 const renders = new Map<string, RenderEntry>()
 
-// kitty keeps a transmitted image under its id, so each (image, size) goes
-// over the tty once per process.
-const transmitted = new Set<string>()
+// kitty holds one virtual placement per image id, and every size of a file
+// shares that id (the placeholder color), so transmitting size B replaces
+// size A. The size the terminal holds now, per id.
+const placed = new Map<string, string>()
+
+const sizeOf = (res: ImageRenderResponse) => `${res.cols}x${res.rows}`
 
 const renderKey = (path: string, revision: string | undefined, cols: number) => `${path}\0${revision ?? ''}\0${cols}`
 
-/** A resolved render, ready to paint. */
-const usableRender = (key: string): ImageRenderResponse | null => renders.get(key)?.result ?? null
+/** A resolved render that paints correctly right now: for kitty, the terminal must hold its size. */
+const usableRender = (key: string): ImageRenderResponse | null => {
+  const result = renders.get(key)?.result
+
+  if (!result || (result.mode === 'kitty' && placed.get(result.color ?? '') !== sizeOf(result))) {
+    return null
+  }
+
+  return result
+}
 
 const remember = (key: string, entry: RenderEntry) => {
   renders.delete(key)
@@ -63,7 +74,9 @@ const requestRender = (
   const key = renderKey(path, revision, cols)
   const cached = renders.get(key)
 
-  if (cached) {
+  // In flight, or still paintable. A kitty entry another size displaced has
+  // no transmit left, so it asks again.
+  if (cached && (!cached.result || usableRender(key))) {
     remember(key, cached)
 
     return cached.pending
@@ -85,14 +98,10 @@ const requestRender = (
         }
 
         // Single-flight: every mount of this key shares this one write.
-        const sent = `${res.color}:${res.cols}x${res.rows}`
-
         if (res.mode === 'kitty' && res.transmit) {
           try {
-            if (!transmitted.has(sent)) {
-              write(res.transmit)
-              transmitted.add(sent)
-            }
+            write(res.transmit)
+            placed.set(res.color ?? '', sizeOf(res))
           } catch {
             // a dead tty paints nothing either way
           }

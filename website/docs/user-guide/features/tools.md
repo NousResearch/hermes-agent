@@ -159,7 +159,7 @@ hermes config set terminal.singularity_image ~/python.sif
 
 ### Sprites
 
-A plugin ([`sprites`](https://github.com/NousResearch/hermes-plugin-sprites)) that runs commands in a stateful [Sprite](https://sprites.dev) on Fly.io. See [Sprites Backend](../configuration.md#sprites-backend).
+A plugin ([`sprites`](https://github.com/NousResearch/hermes-plugin-sprites)) that runs commands in a stateful [Sprite](https://fly.io/sprites) on Fly.io. See [Sprites Backend](../configuration.md#sprites-backend).
 
 ```bash
 hermes plugins install NousResearch/hermes-plugin-sprites --enable

@@ -192,7 +192,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `BRV_API_KEY` | ByteRover API key (optional, for cloud sync — local-first by default) ([app.byterover.dev](https://app.byterover.dev)) |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
-| `SPRITES_TOKEN` | Sprites cloud sandboxes, read by the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites) ([sprites.dev](https://sprites.dev/)) |
+| `SPRITES_TOKEN` | Sprites cloud sandboxes, read by the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites) ([fly.io/sprites](https://fly.io/sprites)) |
 | `VERCEL_TOKEN` | Vercel Sandbox access token ([vercel.com](https://vercel.com/)) |
 | `VERCEL_PROJECT_ID` | Vercel project ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |

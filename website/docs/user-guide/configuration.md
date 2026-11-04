@@ -656,7 +656,7 @@ terminal:
 
 ### Sprites Backend
 
-Runs commands in a [Sprite](https://sprites.dev), a stateful cloud sandbox on Fly.io with checkpoint and restore. It is the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites); install it, then select it:
+Runs commands in a [Sprite](https://fly.io/sprites), a stateful cloud sandbox on Fly.io with checkpoint and restore. It is the [`sprites` plugin](https://github.com/NousResearch/hermes-plugin-sprites); install it, then select it:
 
 ```bash
 hermes plugins install NousResearch/hermes-plugin-sprites --enable

@@ -16,6 +16,7 @@ import base64
 import io
 import logging
 import os
+import warnings
 import zlib
 from dataclasses import dataclass, field
 from itertools import groupby
@@ -221,6 +222,9 @@ _IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
 # Transmit at up to 2 px per nominal cell pixel: sharp on HiDPI cells without shipping
 # a full-resolution photo through the tty.
 _PIXELS_PER_CELL_PIXEL = 2
+# Refuse to decode a preview past this many pixels (after JPEG draft scaling): a 169 MP PNG is
+# under Pillow's bomb error and would fully decode (seconds, >1 GB) on the CLI's agent thread.
+_MAX_DECODE_PIXELS = 40_000_000
 
 
 def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: bool = False) -> str:
@@ -320,6 +324,33 @@ def _grid_for(width: int, height: int, *, max_cols: int, max_rows: int) -> tuple
     return cols, rows
 
 
+def _decode_preview(source: Path, *, max_cols: int, max_rows: int):
+    """``(image, cols, rows)``: *source* decoded no larger than its preview needs, upright, RGBA.
+
+    The grid comes from the header size; JPEG decodes straight at the target scale (``draft``);
+    a pixel count past ``_MAX_DECODE_PIXELS`` or a Pillow bomb warning refuses (raises)
+    before any pixel is decoded.
+    """
+    from PIL import Image, ImageOps
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(source) as opened:
+            width, height = opened.size
+            swapped = opened.getexif().get(0x0112) in (5, 6, 7, 8)  # EXIF orientations that turn 90°
+            if swapped:
+                width, height = height, width
+            cols, rows = _grid_for(width, height, max_cols=max_cols, max_rows=max_rows)
+            box = (cols * CELL_W * _PIXELS_PER_CELL_PIXEL, rows * CELL_H * _PIXELS_PER_CELL_PIXEL)
+            box = box[::-1] if swapped else box
+            opened.draft("RGB", box)
+            if opened.width * opened.height > _MAX_DECODE_PIXELS:
+                raise ValueError(f"{opened.width}x{opened.height} is past the preview decode cap")
+            opened.thumbnail(box, Image.LANCZOS)
+            image = ImageOps.exif_transpose(opened).convert("RGBA")
+    return image, cols, rows
+
+
 def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows: int) -> InlineImage | None:
     """Lay out the image at *path* for *mode* (``kitty``/``iterm``/``unicode``); ``None`` when it can't be shown.
 
@@ -329,16 +360,10 @@ def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows:
     if mode not in ("kitty", "iterm", "unicode") or max_cols < 1 or max_rows < 1:
         return None
     try:
-        from PIL import Image, ImageOps
-
         source = Path(path)
-        with Image.open(source) as opened:
-            opened.draft("RGB", (max_cols * CELL_W * _PIXELS_PER_CELL_PIXEL, max_rows * CELL_H * _PIXELS_PER_CELL_PIXEL))
-            image = ImageOps.exif_transpose(opened).convert("RGBA")
-        cols, rows = _grid_for(image.width, image.height, max_cols=max_cols, max_rows=max_rows)
+        image, cols, rows = _decode_preview(source, max_cols=max_cols, max_rows=max_rows)
         if mode == "unicode":
             return InlineImage(mode=mode, cols=cols, rows=rows, cells=downscale_cells(image, target_cols=cols, rows=rows))
-        image.thumbnail((cols * CELL_W * _PIXELS_PER_CELL_PIXEL, rows * CELL_H * _PIXELS_PER_CELL_PIXEL), Image.LANCZOS)
         if mode == "iterm":
             return InlineImage(mode=mode, cols=cols, rows=rows, transmit=encode_iterm(image, cols=cols, rows=rows))
         image_id = _image_id(source)

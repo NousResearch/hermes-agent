@@ -37,7 +37,7 @@ from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
-    demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
+    _tc_get, demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
@@ -1176,11 +1176,6 @@ def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
     value = value.strip()
     if value and value not in items and len(items) < limit:
         items.append(value)
-
-
-def _tc_get(obj: Any, key: str, default: Any = "") -> Any:
-    """Field of a dict- or object-shaped tool call (or its ``function`` sub-object)."""
-    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
 
 def _extract_tool_call_name_and_args(tool_call: Any) -> tuple[str, str]:
@@ -4519,6 +4514,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Remove orphaned tool results and strip orphaned tool_calls after compression.
         Stubs would be dropped by repair_message_sequence when call_id != id."""
         from agent.agent_runtime_helpers import _classify_tool_call_orphans
+        from agent.message_metadata import prune_tool_call_uids
         _, result_call_ids, orphaned_result_msgs, missing_tool_calls = _classify_tool_call_orphans(messages)
         orphaned_results = {id(m) for m in orphaned_result_msgs}
         if orphaned_results:
@@ -4544,6 +4540,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             stripped_count += len(tcs) - len(kept)
             if kept:
+                prune_tool_call_uids(msg, kept)
                 msg["tool_calls"] = kept
             else:
                 msg.pop("tool_calls", None)

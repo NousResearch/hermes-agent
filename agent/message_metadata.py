@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from time import time as wall_time
 from uuid import uuid4
-from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
+from typing import Any, Mapping, MutableMapping, Optional, TypeVar
 
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
@@ -251,8 +251,8 @@ def record_absorbed_message(
         survivor[ABSORBED_MESSAGE_UIDS] = absorbed
 
 
-def fold_tool_call_uids(prev_uids: Any, prev_calls: List[Mapping[str, Any]], new_uids: Any,
-                        new_calls: List[Mapping[str, Any]]) -> dict:
+def fold_tool_call_uids(prev_uids: Any, prev_calls: list[Mapping[str, Any]], new_uids: Any,
+                        new_calls: list[Mapping[str, Any]]) -> dict:
     """The ``_tool_call_uids`` of a fold that appends *new_calls* to *prev_calls*, each side described by its
     own map (missing or empty for a row an older build wrote). A provider id the combined calls name more
     than once (llama.cpp-style constant ids) maps to a list with one slot per occurrence, in call order: the

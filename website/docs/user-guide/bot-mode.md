@@ -221,6 +221,18 @@ From the next turn in that Bot Chat the teammate roster, the protocol section, a
 Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
 :::
 
+### Trusted identity and plugin policy
+
+Every Bot-to-Bot DM carries a structured, transport-stamped author — never a claim read out of the message text. The sender is identified canonically: `bot:<profile>` for a Bot on the recipient's own install, `bot:<origin>/<profile>` for one on another machine (`<origin>` is the sender's hostname on a peer dm, the Desktop's connection id when relayed). A receiving agent's plugins see this identity at two points, and a sending agent's plugins at one:
+
+| Boundary | Hook | What it sees |
+|---|---|---|
+| Receiving agent, before inference | [`pre_gateway_dispatch`](./features/hooks.md#pre_gateway_dispatch) | The delivery and its trusted sender in `event.metadata["turn_author"]`; `{"action": "skip"}` refuses the DM (`authorization_refused`) with nothing committed. |
+| Receiving agent, per turn | [`pre_llm_call`](./features/hooks.md#pre_llm_call) | `turn_author` (`{"id", "name", "is_bot"}`, or `None` when no door stamped one) for attribution — and an authorization point: `{"action": "block", "message"}` vetoes the turn before any inference request. |
+| Sending agent, at dispatch | [`pre_tool_call`](./features/hooks.md#pre_tool_call) | The `message_agent` dispatch-boundary pass: `bot_sender`/`bot_recipient` with the **resolved** canonical recipient (aliases never reach it); `{"action": "block"}` refuses the send (`policy_refused`) before anything is dispatched. |
+
+A plugin cannot securely authenticate a Bot from message content, a display name, or a self-declared `is_bot` flag in user-controlled metadata — only the door-stamped identities above are trustworthy. Both authorization boundaries run under the respective profile's plugin scope, so a policy applies per Bot, not install-wide.
+
 ### Failed turns retry safely
 
 Local one-shot delivery preserves the active-session refusal code separately from

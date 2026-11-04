@@ -112,6 +112,7 @@ _DEFAULT_PAYLOADS = {
     "pre_llm_call": {
         "session_id": "test-session", "user_message": "What is the weather?",
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
+        "turn_author": None,  # {"id": "bot:<profile>", "name": ..., "is_bot": True} on a Bot-Mode DM turn
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
     "pre_verify": {

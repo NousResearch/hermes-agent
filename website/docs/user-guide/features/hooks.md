@@ -453,7 +453,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
-| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
+| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message; the first valid `{"action": "block", "message": ...}` ends the turn before any inference request. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id`, `turn_author` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform`, `side_question_token` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
@@ -477,7 +477,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
-| `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; also once per Bot Mode DM delivery at its admission door (`message_agent`, `bot_relay.deliver`, peer dm), before it commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). A command the classic CLI, TUI or Desktop sends to the gateway through `slash.exec` or `command.dispatch` fires it once, in the gateway, with `surface` and `platform` both `"cli"` as before (Ink and Desktop fired it through the CLI slash worker) and `session_key` the session id. A recognized command the classic CLI runs itself is reported to the gateway (`command.observe`) once it has run, and so are these TUI commands: `/help`, `/history`, `/clear`, `/new`, `/tools` (not `enable`/`disable`), `/usage` and `/reasoning` (a level once the gateway accepts it). The gateway fires it there after replying, so neither client loads plugin code; a command either client refuses fires nothing. This is a deliberate change from the classic CLI before the unified gateway, which fired it for every recognized command just before dispatch: now a command fires it only if it runs, so one that is refused or that the client has no handler for (`/handoff` in a gateway session, `/start`) fires nothing. A TUI change the gateway applies, such as `/reasoning high`, fires it once the gateway accepts the change, so after the change has taken effect. A gateway older than the client fires no hook for those commands (the classic CLI prints a one-time notice). Known gap: Desktop's own pickers, actions and dedicated RPCs (commands it answers without `slash.exec`) fire nothing yet, and neither do the other commands the TUI answers itself or through a dedicated gateway call, such as `/title`, `/undo`, `/retry`, `/model`, `/compress`, `/branch`, `/save`, `/copy`, `/queue`, `/steer`, `/bg`, `/btw`, `/skin`, `/yolo`, `/busy`, `/fast`, `/verbose`, `/rollback`, `/reload-mcp`, `/quit` and `/reasoning --global`. During a local session's turn every command that still runs fires it except `/stop`, `/approve` and `/deny`; a command that is refused (rejected while busy, or named as unavailable on the gateway) fires nothing. Each callback is timeout-bounded (`plugins.hook_callback_timeout`); each delivery waits on a thread of its own, never a worker shared with other sessions or the event loop's executor. One session's commands reach it in order, and a callback still running for that session (hung) is skipped for its later commands instead of running out of order, without holding up other sessions. Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
@@ -591,6 +591,38 @@ Both formats are normalized internally to `{"action": "modify", "args": {...}}`.
 
 If a `pre_tool_call` callback exceeds `plugins.hook_callback_timeout` (or is still running from a previous timed-out fire), Hermes **fails closed**: the tool is blocked with a timeout message rather than proceeding without a policy decision. The same applies to a callback that raises: the block message names the callback and the error. A hung callback is skipped for a 60s suppression window; after that a new tool call runs it again (up to three abandoned workers per callback, so a permanently hung plugin blocks tool calls with a warning naming it instead of silently wedging the agent until restart).
 
+#### `message_agent` dispatch-boundary pass
+
+`message_agent` (Bot Mode agent-to-agent DMs) resolves the recipient **after** the ordinary `pre_tool_call` fire — the model's `target` is an alias until matched against the roster. So the tool runs one additional `pre_tool_call` pass at the actual dispatch boundary, after resolution and before any delivery starts. The arguments carry the resolved identities:
+
+| Arg | Shape | Meaning |
+|-----|-------|---------|
+| `target`, `message` | `str` | The model-supplied values, unchanged |
+| `bot_sender` | `{"id", "name", "is_bot", ...}` | The exact turn-author identity the delivery will carry (`bot:<profile>` locally, `bot:<hostname>/<profile>` on a peer dm) |
+| `bot_recipient` | `{"kind", "id", "name", ...}` | The canonical resolved recipient: `kind` is `"local"`, `"peer"` (plus `peer`/`profile`) or `"remote"` (plus `connection_id`/`connection_label`); `id` is the same `bot:<profile>` / `bot:<origin>/<profile>` grammar the receiver's hooks see. **Aliases and display names never reach this pass** — only the resolved identity. |
+
+A `block` directive (including the fail-closed timeout/raise behavior above) refuses the send with `{"error": ..., "reason": "policy_refused"}` and nothing dispatched — no runner, no envelope, no admission. `approve` is not re-escalated on this pass (the whole-directive pass already ran before the tool call); `modify` is not applied. Authorization therefore lands on the **resolved** recipient: a plugin allowing `watch_tracker` cannot be bypassed by a friendly-name alias, and recipient rewriting cannot dodge it because the pass runs after resolution.
+
+**Example — allow Bot DMs only to specific canonical recipients:**
+
+```python
+ALLOWED = {"bot:watch_tracker", "bot:researcher"}
+
+def guard_bot_dms(tool_name, args, **kwargs):
+    if tool_name != "message_agent":
+        return None
+    recipient = args.get("bot_recipient")
+    if recipient is None:                 # not the dispatch-boundary pass
+        return None
+    if recipient.get("id") not in ALLOWED:
+        return {"action": "block",
+                "message": f"messages to {recipient.get('id')} are not allowed for this agent"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", guard_bot_dms)
+```
+
 **Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement, argument sanitization, path rewriting, injecting default parameters.
 
 **Example — tool call audit log:**
@@ -694,6 +726,8 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `sender_id` | `str` | The platform user id of the turn's sender (empty for local sessions without one). Set by the transport, never by message content. |
+| `turn_author` | `dict \| None` | Trusted author of the turn's user side: `{"id", "name", "is_bot"}` (`agent/turn_author.py`). `None` means no door stamped an author — treat the sender as unverified. See [Bot sender identity](#bot-sender-identity). |
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 
@@ -762,6 +796,21 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+#### Bot sender identity
+
+`turn_author` is the structured, transport-stamped identity of whoever wrote the turn — never derived from message text, display names, or self-declared JSON. It distinguishes the origins a Bot-to-Bot policy needs:
+
+| `turn_author` | Origin | Trust |
+|---|---|---|
+| `None` | No door stamped an author (an ordinary local CLI/TUI turn, or an unknown sender) | Unverified — do not treat as a bot |
+| `{"is_bot": false, "id": "<platform user id>", ...}` | A human platform user | The platform adapter derived `id`/`is_bot` from the SDK payload |
+| `{"id": "bot:<profile>", "is_bot": true}` | A Bot Mode DM from a bot on **this install** | Stamped by the delivery door (`message_agent` / `bot_relay.deliver` / peer dm admission) |
+| `{"id": "bot:<origin>/<profile>", "is_bot": true}` | A Bot Mode DM from **another install** — `<origin>` is the sender's hostname (peer dm) or the Desktop connection id (relayed dm) | Same as above; `agent.turn_author.bot_origin(turn_author)` returns `"local"` or the origin string |
+
+`sender_id`/`platform` remain the raw transport view; `turn_author` is the normalized claim that survived the door. A plugin **cannot** securely authenticate a Bot from message content, a display name, or a self-declared `is_bot` field in user-controlled metadata — only the values above are stamped by Hermes.
+
+`pre_llm_call` is also an **authorization point**: with `turn_author` a plugin can verify the sender and return `{"action": "block", "message": ...}` to veto the turn **before any inference request** (fail closed on an explicit block; a raising or timed-out callback still fails open, so a mandatory policy must catch its own errors). [`pre_gateway_dispatch`](#pre_gateway_dispatch) remains the earlier boundary — at gateway ingress and the Bot-DM admission door, before auth and session state — when a message must never even reach the receiving agent's session.
 
 ---
 
@@ -1316,6 +1365,7 @@ def my_callback(event, gateway, session_store, **kwargs):
 |------|--------------------|
 | Platform adapters (Telegram, Discord, Slack, …) and relay slash commands | In `GatewayRunner._handle_message()` (`_hm_admit_event` in `gateway/run_inbound.py`), **before** auth/pairing, so a plugin can handle unauthorized senders. |
 | Webhook deliveries and relay messages | In `admit_producer` (`gateway/platforms/webhook_ingress.py`), **after** the delivery's authorization and **before** its admission commits: a refused sender never reaches the hook, a skipped delivery is never admitted, and a rewrite is what gets admitted. A provider retry or relay re-send of a delivery that was already admitted resolves to that admission without calling the hook again. On the relay, admission with a registered hook runs off the relay socket reader, so a callback may await `gateway.adapters[...].send(...)`; one chat's messages still wait for each other, in arrival order. |
+| Bot Mode DM deliveries (`message_agent` → `bot_relay.deliver`, `hermes peer dm` under session authority, owner recovery and the derived retry) | In `gateway/session_bot.py` (`_offer_bot_dm_pre_dispatch` from `_admit`/`_maybe_retry`), **before** the delivery commits to the receiving profile's Bot Chat. The trusted sender is `event.metadata["turn_author"]` (`{"id", "name", "is_bot"}`; absent for a trusted producer's own report) — never message text or a self-declared flag. A `skip` refuses that delivery as `authorization_refused` with nothing committed: no receipt pin, no admission row, so a later same-id delivery re-evaluates the policy. The derived retry is a **new** admission id, so it gets its own pass. Runs under the receiving profile's scope — only that profile's plugins fire. |
 | Local CLI, TUI, Desktop and API-server turns | Never. |
 | A queued admission when it executes (first run or restart replay) | Never: the message already passed the hook at ingress, so a `skip` can't drop admitted input. |
 
@@ -1343,6 +1393,25 @@ def deny_unauthorized_dms(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", deny_unauthorized_dms)
 ```
+
+**Example — reject an unauthorized Bot Mode DM before the receiving agent infers** (Bot Chat deliveries carry the trusted sender in `event.metadata["turn_author"]`):
+
+```python
+ALLOWED_BOTS = {"bot:watch_tracker", "bot:mini/watch_tracker"}
+
+def vet_bot_dm_senders(event, **kwargs):
+    author = event.metadata.get("turn_author")
+    if author is None:
+        return None                       # a trusted producer's own report, or not a bot DM
+    if author.get("is_bot") and author.get("id") not in ALLOWED_BOTS:
+        return {"action": "skip", "reason": f"unauthorized-bot-sender:{author.get('id')}"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", vet_bot_dm_senders)
+```
+
+A policy that must never fail open catches its own errors and returns `skip` on failure — the surrounding hook dispatch itself is fail-open by design (a misbehaving plugin must not blackhole a profile's traffic).
 
 **Example — rewrite an ambient-message buffer into a single prompt on mention:**
 

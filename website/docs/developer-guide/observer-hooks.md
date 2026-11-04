@@ -119,7 +119,8 @@ These hooks frame the user turn, not individual provider API attempts:
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
-and `sender_id`.
+`sender_id`, and `turn_author` (the trusted turn author, `{"id", "name",
+"is_bot"}` for a Bot Mode DM turn, `None` when no door stamped one).
 
 Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and

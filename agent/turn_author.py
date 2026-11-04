@@ -101,3 +101,18 @@ def a2a_key(author: Optional[dict[str, Any]]) -> Optional[str]:
     if not isinstance(author, dict) or not author.get("is_bot") or not author.get("id"):
         return None
     return f"a2a:{author['id']}"
+
+
+def bot_origin(author: Optional[dict[str, Any]]) -> Optional[str]:
+    """Where a bot author's message came from, from the id alone (never message text):
+    ``local`` for ``bot:<profile>`` (a bot on the recipient's own install), else the origin
+    string — the sender's hostname on a peer dm, the Desktop's connection id when relayed.
+    None for a human-authored turn or an id-less author."""
+    if not isinstance(author, dict) or not author.get("is_bot") or not isinstance(author.get("id"), str):
+        return None
+    ident = author["id"]
+    if not ident.startswith("bot:"):
+        return None
+    rest = ident[len("bot:"):]
+    origin, slash, _profile = rest.partition("/")
+    return origin.strip() if slash else "local"

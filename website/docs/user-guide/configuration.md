@@ -673,7 +673,7 @@ terminal:
 
 **Required:** `SPRITES_TOKEN` in `~/.hermes/.env`. Create the token in your organization's Sprites settings in the Fly.io dashboard; `sprite login` on its own does not give Hermes a token.
 
-**Persistence:** A persistent Sprite stays alive after the session and is resumed by name the next time. Names are profile-scoped: `hermes-{task_id}` on the default profile, `hermes-{profile}-{digest}` on named profiles. The Sprite's own filesystem is the authoritative copy, so nothing is synced back to the host. With `container_persistent: false`, each run gets a uniquely named Sprite that is deleted on cleanup.
+**Persistence:** A persistent Sprite stays alive after the session and is resumed by name the next time. Names are profile-scoped: `hermes-{task_id}` on the default profile, and `hermes-{profile}-{task_id}-{digest}` (shortened to fit) on named profiles. The Sprite's own filesystem is the authoritative copy, so nothing is synced back to the host. With `container_persistent: false`, each run gets a uniquely named Sprite that is deleted on cleanup.
 
 **Sharing:** Gateway and WebUI sessions each get their own Sprite, `delegate_task` subagents share their parent's, and flows without a session (CLI, cron) share the profile's default Sprite.
 

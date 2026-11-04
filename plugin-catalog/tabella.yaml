@@ -1,6 +1,6 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-sha: 567fa5ad6776d377eb6994fa42ed384bed083b11
+sha: 4922d16c9d20ff7b4c2a3b4fbd0aa797f7be8d76
 description: >-
   Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
   from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
@@ -40,10 +40,11 @@ tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/dyiapanis/tabella#readme
-version: "2.0.6"
+version: "2.0.7"
 readme: true
 platforms:
   - linux
+  - macos
   - windows
 capabilities:
   provides_tools:

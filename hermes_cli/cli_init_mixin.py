@@ -517,6 +517,7 @@ class CLIInitMixin:
         # deleted during shutdown. Set by process_command() when the user runs /exit --delete or /quit
         # --delete. Ported from google-gemini/gemini-cli#19332.
         self._pending_relaunch: list[str] | None = None
+        self._pending_session_relaunch = None
         self._last_ctrl_c_time = 0
         # Blocking-prompt overlays (clarify / sudo / approval / slash-confirm / model picker).
         self._clarify_state = self._clarify_multi_base = None

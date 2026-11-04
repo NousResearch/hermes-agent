@@ -9,7 +9,7 @@ import { registry } from '@/contrib/registry'
 import { $interfaceMode } from '@/store/interface-mode'
 import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
-import { SIDEBAR_NAV_AREA } from '../../routes'
+import { ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
 
 import { SimplifiedGlobalNav } from './simplified-global-nav'
 
@@ -19,7 +19,7 @@ afterEach(() => {
   noteActiveTreeGroup(null)
 })
 
-it('omits the plugin divider when no pages are enabled', () => {
+it('shows only core destinations when no plugin pages are enabled', () => {
   render(
     <MemoryRouter>
       <RootTooltipProvider>
@@ -27,9 +27,14 @@ it('omits the plugin divider when no pages are enabled', () => {
       </RootTooltipProvider>
     </MemoryRouter>
   )
-  fireEvent.keyDown(screen.getByRole('button', { name: 'Capabilities' }), { key: 'Enter' })
-  expect(screen.getAllByRole('menuitem')).toHaveLength(4)
-  expect(screen.queryByRole('separator')).toBeNull()
+  expect(screen.getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
+    'Chats',
+    'Agent settings',
+    'Capabilities',
+    'Library',
+    'Routines',
+    'Settings'
+  ])
 })
 
 it('keeps plugin pages reachable and respects visibility, preferences, and unloading', () => {
@@ -37,6 +42,7 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
   $interfaceMode.set('simple')
 
   const dispose = registry.registerMany([
+    { area: ROUTES_AREA, id: 'test-board-route', data: { path: '/board' }, render: () => null },
     {
       area: SIDEBAR_NAV_AREA,
       id: 'test-board',
@@ -63,21 +69,22 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
       </MemoryRouter>
     )
     const capabilities = screen.getByRole('button', { name: 'Capabilities' })
-    expect(capabilities.getAttribute('aria-current')).toBe('page')
-    fireEvent.keyDown(capabilities, { key: 'Enter' })
-    expect(screen.getByRole('separator')).toBeTruthy()
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-      'Connectors',
-      'Plugins',
-      'Tools',
-      'Maintenance',
-      'Test board'
+    expect(capabilities.hasAttribute('aria-current')).toBe(false)
+    expect(screen.getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual([
+      'Chats',
+      'Agent settings',
+      'Capabilities',
+      'Library',
+      'Routines',
+      'Test board',
+      'Settings'
     ])
-    expect(screen.queryByRole('menuitem', { name: 'Advanced page' })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: 'Hidden page' })).toBeNull()
-    expect(screen.queryByRole('menuitem', { name: 'Invalid page' })).toBeNull()
-    const board = screen.getByRole('menuitem', { name: 'Test board' })
+    expect(screen.queryByRole('button', { name: 'Advanced page' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Hidden page' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Invalid page' })).toBeNull()
+    const board = screen.getByRole('button', { name: 'Test board' })
     expect(board.getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('button', { name: 'Chats' }).hasAttribute('aria-current')).toBe(false)
     act(() => {
       $layoutTree.set(
         split('row', [
@@ -92,10 +99,8 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     expect(board.getAttribute('aria-current')).toBe('page')
     fireEvent.click(board)
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/board' }))
-    fireEvent.keyDown(capabilities, { key: 'Enter' })
     act(dispose)
-    expect(screen.queryByRole('menuitem', { name: 'Test board' })).toBeNull()
-    expect(screen.queryByRole('separator')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Test board' })).toBeNull()
   } finally {
     cleanup()
     dispose()

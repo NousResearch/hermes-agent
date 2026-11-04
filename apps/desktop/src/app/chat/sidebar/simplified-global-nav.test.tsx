@@ -29,7 +29,7 @@ function mount(route = '/') {
 
 it.each([
   ['Agent settings', '/profiles'],
-  ['Skills', '/capabilities?tab=skills'],
+  ['Capabilities', '/capabilities'],
   ['Library', '/artifacts'],
   ['Routines', '/cron']
 ])('opens %s using its existing destination', (label, route) => {
@@ -38,15 +38,18 @@ it.each([
   expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route }))
 })
 
-it('opens Plugins through Capabilities and identifies the active section', () => {
-  const navigate = mount('/capabilities?tab=plugins')
-  const button = screen.getByRole('button', { name: 'Capabilities' })
-  expect(button.getAttribute('aria-current')).toBe('page')
-  expect(screen.getByRole('button', { name: 'Skills' }).hasAttribute('aria-current')).toBe(false)
-  fireEvent.keyDown(button, { key: 'Enter' })
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Plugins' }))
-  expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/capabilities?tab=plugins' }))
-})
+it.each(['skills', 'plugins', 'connectors', 'toolsets'])(
+  'keeps Capabilities active for its %s tab without a dropdown',
+  tab => {
+    const navigate = mount(`/capabilities?tab=${tab}`)
+    const button = screen.getByRole('button', { name: 'Capabilities' })
+    expect(button.getAttribute('aria-current')).toBe('page')
+    expect(screen.queryByRole('button', { name: 'Skills' })).toBeNull()
+    fireEvent.click(button)
+    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/capabilities' }))
+    expect(screen.queryByRole('menu')).toBeNull()
+  }
+)
 
 it('opens account settings without inventing a global profile or changing the active agent', () => {
   const navigate = mount()
@@ -72,13 +75,13 @@ it('follows the focused chat tile instead of the workspace page underneath it', 
   )
   noteActiveTreeGroup('workspace-group')
   mount('/capabilities?tab=skills')
-  const skills = screen.getByRole('button', { name: 'Skills' })
+  const capabilities = screen.getByRole('button', { name: 'Capabilities' })
   const chats = screen.getByRole('button', { name: 'Chats' })
-  expect(skills.getAttribute('aria-current')).toBe('page')
+  expect(capabilities.getAttribute('aria-current')).toBe('page')
   act(() => noteActiveTreeGroup('chat-group'))
   expect(chats.getAttribute('aria-current')).toBe('page')
-  expect(skills.hasAttribute('aria-current')).toBe(false)
+  expect(capabilities.hasAttribute('aria-current')).toBe(false)
   act(() => noteActiveTreeGroup('workspace-group'))
-  expect(skills.getAttribute('aria-current')).toBe('page')
+  expect(capabilities.getAttribute('aria-current')).toBe('page')
   expect(chats.hasAttribute('aria-current')).toBe(false)
 })

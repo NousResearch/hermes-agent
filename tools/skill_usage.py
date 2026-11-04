@@ -658,9 +658,10 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
     if Path(skill_name).name != skill_name or skill_name in (".", ".."):
         # The archive path is built from the frontmatter name: a "../x" name would land outside .archive/.
         return False, f"skill name '{skill_name}' is not a plain name; refusing to archive"
-    if not skill_dir.is_symlink() and not skill_dir.resolve().is_relative_to(_skills_dir().resolve()):
-        # Reached through a symlinked parent: the rename would move the real directory out of
-        # its owner's tree. A symlinked skill dir itself is fine — only the link moves.
+    # Reached through a symlinked parent, the rename would move the real directory (or, for a symlinked skill dir,
+    # the link entry) out of its owner's tree. A symlinked skill dir is fine only when its link lives in our tree.
+    anchor = skill_dir.parent if skill_dir.is_symlink() else skill_dir
+    if not anchor.resolve().is_relative_to(_skills_dir().resolve()):
         return False, f"skill '{skill_name}' resolves outside {_skills_dir()}; refusing to move it"
     # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
     # `huggingface-accelerate`, and restore/list/purge all key on the name.

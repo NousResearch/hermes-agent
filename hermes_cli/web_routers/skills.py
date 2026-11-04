@@ -18,8 +18,8 @@ from hermes_cli.web_models import (
     SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillLock, SkillToggle,
     SkillUninstallRequest, SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
-    _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
-    spawn_profile_action)
+    _profile_scope, config_write_scope, destructive_profile, http_failure, log as _log, require,
+    scoped_to_thread, spawn_profile_action)
 
 hub_router = APIRouter()
 router = APIRouter()
@@ -495,6 +495,7 @@ async def delete_skill(name: str, profile: Optional[str] = None):
     """
     from agent.learning_mutations import archive_user_skill
 
+    profile = destructive_profile(profile, "DELETE /api/skills")
     res = await scoped_to_thread(profile, lambda: archive_user_skill(name))
     if not res.get("ok"):
         msg = res.get("message") or "Failed to archive skill."

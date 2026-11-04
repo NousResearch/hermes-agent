@@ -272,3 +272,9 @@ def test_archive_stays_inside_the_profile_skills_dir(home, tmp_path):
     assert (evil / "SKILL.md").is_file() and not (home / "escaped").exists()
     assert not lm.archive_user_skill("victim")["ok"]
     assert (outside / "victim" / "SKILL.md").is_file()
+    # A symlinked skill dir whose link entry itself lives in that foreign tree: the link must stay there.
+    (tmp_path / "real2").mkdir()
+    (tmp_path / "real2" / "SKILL.md").write_text("---\nname: foreign-link\ndescription: x\n---\n", encoding="utf-8")
+    (outside / "lnk").symlink_to(tmp_path / "real2", target_is_directory=True)
+    assert not lm.archive_user_skill("foreign-link")["ok"]
+    assert (outside / "lnk").is_symlink()

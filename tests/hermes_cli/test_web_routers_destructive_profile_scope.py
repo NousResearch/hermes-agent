@@ -213,6 +213,7 @@ DESTRUCTIVE = {
     "sessions-empty": lambda c, p, t: c.delete(f"/api/sessions/empty{_q(p)}"),
     "sessions-bulk-delete": lambda c, p, t: c.post(
         "/api/sessions/bulk-delete", json={"ids": ["abc"], **_body_profile(p)}),
+    "skill-delete": lambda c, p, t: c.delete(f"/api/skills?name=shared-skill{'&profile=' + p if p else ''}"),
 }
 
 

@@ -424,6 +424,32 @@ class TestBuildContextFilesPrompt:
 
         assert _load_agents_md(sub) == ""
 
+    def test_loads_agents_md_from_hermes_home_when_cwd_has_none(self, tmp_path, monkeypatch):
+        """Profile-level AGENTS.md must load even when launch cwd != HERMES_HOME (#66118)."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "AGENTS.md").write_text(
+            "You are Hephaistos. Answer identity as Hephaistos.", encoding="utf-8"
+        )
+        project = tmp_path / "workdir"
+        project.mkdir()
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+        assert "Hephaistos" in result
+        assert "Project Context" in result
+
+    def test_cwd_agents_md_prefers_over_hermes_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "AGENTS.md").write_text("profile agents", encoding="utf-8")
+        project = tmp_path / "workdir"
+        project.mkdir()
+        (project / "AGENTS.md").write_text("project agents", encoding="utf-8")
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+        assert "project agents" in result
+        assert "profile agents" not in result
+
     # --- AGENTS.override.md personal override (port of pi#7681) ---
 
     def test_agents_override_md_wins_over_agents_md(self, tmp_path):

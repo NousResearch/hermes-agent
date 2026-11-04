@@ -50,6 +50,7 @@ def _run_switch(
     validation=_ACCEPTED,
     current_model="old-model",
     current_base_url="",
+    detect_provider_result=None,
 ):
     """Drive ``switch_model`` with the resolution chain mocked out.
 
@@ -63,7 +64,7 @@ def _run_switch(
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
          patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=detect_provider_result), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
          patch(
@@ -253,3 +254,40 @@ def test_raw_list_provider_key_with_different_credential_stays_ambiguous():
         custom_providers=raw)
     assert result.success is False
     assert "multiple configured providers" in (result.error_message or "")
+
+
+def test_switch_from_llamacpp_to_openrouter_model():
+    """When current provider is a local llama.cpp alias (``llamacpp``), switching to an
+    OpenRouter model should route through OpenRouter instead of staying on the local alias.
+
+    Before the fix, the ``not is_custom`` guard at step e in ``_route_from_model_input``
+    prevented ``detect_provider_for_model`` from running when the current provider was
+    a local alias (``llamacpp``, ``llama.cpp``, ``llama-cpp``), so ``target_provider``
+    remained the local alias and the switch would fail with an internal error because
+    the local runtime was disabled."""
+    # Current provider is llamacpp (a local alias), user wants to switch to openrouter model
+    result = _run_switch(
+        raw_input="openrouter/anthropic/claude-sonnet-4.6",
+        current_provider="llamacpp",
+        current_model="qwen3.5-4b",
+        current_base_url="http://localhost:8080/v1",
+        detect_provider_result=("openrouter", "anthropic/claude-sonnet-4.6"),
+    )
+    assert result.success is True, result.error_message
+    # The target provider should be openrouter, not llamacpp
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "anthropic/claude-sonnet-4.6"
+
+
+def test_switch_from_custom_local_to_openrouter_model():
+    """Same as above but for a ``custom:local-ollama`` style provider slug."""
+    result = _run_switch(
+        raw_input="openrouter/google/gemini-2.5-pro",
+        current_provider="custom:local-ollama",
+        current_model="llama3",
+        current_base_url="http://localhost:11434/v1",
+        detect_provider_result=("openrouter", "google/gemini-2.5-pro"),
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "openrouter"
+    assert result.new_model == "google/gemini-2.5-pro"

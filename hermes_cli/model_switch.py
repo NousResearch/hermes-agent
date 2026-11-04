@@ -1428,10 +1428,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     config_routed = _route_configured_provider(st)  # d.5 — deliberately NOT gated on ``not is_custom``
     if isinstance(config_routed, ModelSwitchResult):
         return config_routed
-    is_custom = (
-        current_provider in {"custom", "local"} or current_provider.startswith("custom:")
-        or base_url_hostname(st.current_base_url or "") in ("localhost", "127.0.0.1"))
-    if not config_routed and not is_custom:  # e
+    if not config_routed:  # e
         detected = detect_provider_for_model(st.new_model, current_provider)
         if detected:
             st.target_provider, st.new_model = detected

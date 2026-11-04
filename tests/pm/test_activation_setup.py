@@ -201,8 +201,11 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
         return [line for line in calls.read_text().splitlines() if line.split()[0] == name]
 
     def app_syncs():
+        # PM runtime staging also syncs --frozen --all-packages; it alone passes
+        # --no-default-groups (pm/runtime_stage.py), the app sync carries --extra all.
         return [line for line in operations("sync")
-                if "--frozen --all-packages" in line and "--group dev" not in line]
+                if "--frozen --all-packages" in line and "--group dev" not in line
+                and "--no-default-groups" not in line]
 
     cold = activate()
     first = selection()

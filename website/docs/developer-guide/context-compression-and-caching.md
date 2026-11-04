@@ -861,6 +861,8 @@ prompt_caching:
 
 `"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
 
+A delegated child's tier is set after construction by `tools/delegate_tool.py::_apply_child_cache_ttl` from `delegation.cache_ttl` (`5m` by default, `1h` opt-in), replacing whatever the child's own resolution picked: a configured `1h`, or `auto` reading the parent's session source. A disabled cache stays disabled, and `effective_cache_ttl` still clamps per route at request time. The TTL counts from the start of the request that wrote or read the entry, which is why `1h` exists for children: a generation that runs four minutes or more leaves the next call at most a minute to reuse a `5m` entry.
+
 The CLI shows caching status at startup:
 ```
 💾 Prompt caching: ENABLED (Claude via OpenRouter, 5m TTL)

@@ -100,6 +100,7 @@ import {
   shouldLatchSshClientFailure,
   sshClientFailedError
 } from './backend-start-failure'
+import { createBootMessageLogger } from './boot-progress-log'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
@@ -2624,6 +2625,7 @@ function abandonFirstRunSetupChoiceForRemoteApply() {
 // The latched reauth failure whose hold has already been logged, so a burst of
 // dropped updates from one in-flight sibling attempt logs once, not per event.
 let bootProgressHeldFor: Error | null = null
+const logBootMessage = createBootMessageLogger(rememberLog)
 
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
   // A latched CONFIRMED reauth rejection owns the boot surface until a
@@ -2663,9 +2665,7 @@ function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
     timestamp: Date.now()
   }
 
-  if (update.message) {
-    rememberLog(`[boot] ${update.message}`)
-  }
+  logBootMessage(update.message)
 
   broadcastBootProgress()
 }

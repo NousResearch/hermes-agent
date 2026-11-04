@@ -425,16 +425,23 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
                             on_done=None, on_error=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
+    accepted = False
     try:
-        _run_prompt_submit(rid, sid, session, prompt)
+        # Retain Desktop's routed socket across slow dispatch preparation without
+        # announcing a message: only the admitted worker owns message.start.
+        _emit("session.info", sid, {"running": True})
+        accepted = _run_prompt_submit(rid, sid, session, prompt)
         if on_done is not None:
             on_done()
     except Exception as exc:
         if on_error is not None:
             on_error()
         _hook_failure(what, exc)
-        with session["history_lock"]:
-            session["running"] = False
+    finally:
+        if not accepted:
+            with session["history_lock"]:
+                session["running"] = False
+            _emit("session.info", sid, {"running": False})
 
 
 def _run_post_turn_followups(

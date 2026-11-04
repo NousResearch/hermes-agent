@@ -111,7 +111,7 @@ def test_start_frames_follow_admission_once_and_keep_diagnostic_visibility(monke
                 visible = refusal is None and (not diagnostic or dispatch == "followup")
                 assert events.count("message.start") == int(visible)
                 if visible:
-                    assert events[:2] == ["message.start", "prepared"]
+                    assert [event for event in events if event != "session.info"][:2] == ["message.start", "prepared"]
                 assert session["running"] is False
 
 

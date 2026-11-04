@@ -15,7 +15,6 @@ import json
 import os
 from pathlib import Path
 import threading
-import time
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
@@ -85,7 +84,7 @@ def _write_config(*, mode: str, trace_enabled: bool = False) -> None:
             "  entries:",
             "    camel-guard:",
             "      settings:",
-            f"        mode: {mode}",
+            f'        mode: "{mode}"',
             f"        trace_enabled: {'true' if trace_enabled else 'false'}",
             "        classifier_timeout_seconds: 2.0",
             "",
@@ -130,7 +129,7 @@ def _classifier(
         if captured is not None:
             captured.append(deepcopy(kwargs))
         if delay:
-            time.sleep(delay)
+            threading.Event().wait(delay)
         route_info = kwargs.get("route_info")
         if isinstance(route_info, dict):
             route_info.update({"provider": "ifc", "model": "ifc-oracle"})
@@ -401,7 +400,7 @@ def test_ifc_i7_concurrent_decisions_are_single_classification_and_deterministic
         nonlocal call_count
         with count_lock:
             call_count += 1
-        time.sleep(0.03)
+        threading.Event().wait(0.03)
         route_info = kwargs.get("route_info")
         if isinstance(route_info, dict):
             route_info.update({"provider": "ifc", "model": "ifc-oracle"})

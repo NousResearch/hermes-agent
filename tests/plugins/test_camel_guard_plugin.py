@@ -30,7 +30,7 @@ def _write_plugin_config(*, mode: str, trace_enabled: bool = False) -> Path:
             "  entries:",
             "    camel-guard:",
             "      settings:",
-            f"        mode: {mode}",
+            f'        mode: "{mode}"',
             f"        trace_enabled: {'true' if trace_enabled else 'false'}",
             "        classifier_timeout_seconds: 2.0",
             "",
@@ -163,7 +163,7 @@ def test_off_mode_is_a_true_noop_even_if_trace_was_requested():
     assert module._runtime._turns == {}
     # The durable state facade is lazy.  A true off path never allocates it,
     # which proves no trace file can be created by ordinary Hermes sessions.
-    assert module._runtime._ctx._state is None
+    assert module._runtime._ctx.state.get("decision_events", default=[]) == []
 
 
 def test_current_hermes_mutation_surface_has_explicit_policy():
@@ -232,7 +232,7 @@ def test_direct_dispatch_blocks_after_untrusted_data_and_classifier_sees_only_tr
     assert trusted_request in classifier_wire
     assert poisoned_text not in classifier_wire
     assert str(source) not in classifier_wire
-    assert module._runtime._ctx._state is None
+    assert module._runtime._ctx.state.get("decision_events", default=[]) == []
 
 
 def test_monitor_mode_observes_but_does_not_block_real_dispatch(tmp_path):
@@ -394,3 +394,26 @@ def test_trace_is_explicit_bounded_and_metadata_only(tmp_path):
     assert trusted_request not in serialized
     assert str(secret_path) not in serialized
     assert "private tool argument" not in serialized
+
+
+@pytest.mark.parametrize(
+    ('tool_name', 'args', 'capability'),
+    [
+        ('process_manage', {'action': 'kill'}, 'command_execution'),
+        ('cronjob_manage', {'action': 'create'}, 'scheduled_action'),
+        ('desktop_project', {'action': 'create'}, 'workspace_mutation'),
+        ('desktop_preview', {'action': 'open'}, 'browser_interaction'),
+        ('todo_list', {'action': 'write'}, 'task_state_mutation'),
+        ('new_plugin_send', {}, 'external_system'),
+    ],
+)
+def test_current_aliases_and_unknown_tools_require_authority(tool_name, args, capability):
+    module = _discover_guard(mode='enforce')
+    _invoke_turn(user_message='Summarize only; do not perform side effects.')
+    _mark_untrusted_result(tool_name='read_file')
+    with _classifier_response():
+        result = module._runtime.on_pre_tool_call(
+            tool_name=tool_name, args=args, session_id='session-camel', turn_id='turn-camel',
+        )
+    assert module.capability_for(tool_name, args) == capability
+    assert result is not None and result['action'] == 'block'

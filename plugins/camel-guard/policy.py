@@ -68,6 +68,7 @@ _CONTROL_OUTPUT_TOOLS = {
     "skill_view",
     "skills_list",
     "todo",
+    "todo_list",
 }
 
 _READ_ONLY_BROWSER_TOOLS = {
@@ -122,6 +123,9 @@ _DESKTOP_INTERACTION_TOOLS = {
     "close_terminal",
     "focus_pane",
     "open_preview",
+    "desktop_preview",
+    "drive_preview",
+    "set_theme",
 }
 
 _EXTERNAL_MESSAGING_TOOLS = {
@@ -145,6 +149,13 @@ _EXTERNAL_SYSTEM_TOOLS = {
     "xai_video_edit",
     "xai_video_extend",
 }
+
+_READ_ONLY_TOOLS = {
+    "clarify", "read_file", "search_files", "web_search", "web_extract",
+    "vision_analyze", "video_analyze", "session_search", "skills_list",
+    "skill_view", "read_terminal", "read_window_below",
+}
+
 
 _EXTERNAL_PREFIXES = (
     "discord_",
@@ -177,7 +188,7 @@ def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str
 
     if name in {"terminal", "execute_code"}:
         return "command_execution"
-    if name == "process":
+    if name in {"process", "process_manage"}:
         return "" if action in _READ_ONLY_PROCESS_ACTIONS else "command_execution"
     if name in {"write_file", "patch"}:
         return "file_mutation"
@@ -185,7 +196,7 @@ def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str
         return "persistent_memory"
     if name == "skill_manage":
         return "skill_mutation"
-    if name == "cronjob":
+    if name in {"cronjob", "cronjob_manage"}:
         return "" if action == "list" else "scheduled_action"
     if name == "send_message":
         return "" if action == "list" else "external_messaging"
@@ -199,8 +210,10 @@ def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str
         return "" if action in _READ_ONLY_COMPUTER_ACTIONS else "browser_interaction"
     if name in _DESKTOP_INTERACTION_TOOLS:
         return "browser_interaction"
-    if name in {"project_create", "project_switch"}:
-        return "workspace_mutation"
+    if name in {"project_create", "project_switch", "desktop_project"}:
+        return "" if action in {"list", "show"} else "workspace_mutation"
+    if name in {"todo", "todo_list"}:
+        return "" if action == "read" else "task_state_mutation"
     if name.startswith("kanban_"):
         return "" if name in _READ_ONLY_KANBAN_TOOLS else "task_state_mutation"
     if name in {"discord", "discord_admin"}:
@@ -209,19 +222,22 @@ def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str
         return ""
     if name.startswith("feishu_"):
         return "external_system"
-    if name.startswith("yb_"):
+    if name in {"yb_query_group_info", "yb_query_member_info"}:
         return ""
     if name.startswith("browser_") and name not in _READ_ONLY_BROWSER_TOOLS:
         return "browser_interaction"
     if name.startswith(_EXTERNAL_PREFIXES):
         return "external_system"
-    return ""
+    if name in _READ_ONLY_TOOLS or name in _READ_ONLY_BROWSER_TOOLS:
+        return ""
+    # A new plugin or native name must not silently escape the effect policy.
+    return "external_system"
 
 
 def is_untrusted_output(tool_name: str) -> bool:
     """Whether a tool result must be treated as data rather than control."""
     name = str(tool_name or "").strip()
-    return bool(name) and name not in _CONTROL_OUTPUT_TOOLS
+    return bool(name) and name not in {"clarify", "todo", "todo_list"}
 
 
 def normalized_capabilities(value: Any) -> set[str]:

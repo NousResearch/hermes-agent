@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $repoStatusByCwd } from '@/store/coding-status'
 
 import { ProjectTree } from './tree'
 import type { TreeNode } from './use-project-tree'
@@ -50,7 +51,7 @@ function renderTree(overrides: Partial<Parameters<typeof ProjectTree>[0]> = {}) 
   return { ...view, onActivateFile, onPreviewFile }
 }
 
-describe('ProjectTree context-menu clicks', () => {
+describe('ProjectTree', () => {
   beforeEach(() => {
     // The resize-observer hook falls back to a single getBoundingClientRect
     // measurement when no ResizeObserver exists, so stubbing the element box
@@ -61,8 +62,45 @@ describe('ProjectTree context-menu clicks', () => {
 
   afterEach(() => {
     cleanup()
+    $repoStatusByCwd.set({})
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('tints a collapsed folder before its children are loaded and clears it after a clean probe (#148823)', async () => {
+    const onLoadChildren = vi.fn()
+    renderTree({ onLoadChildren })
+    const folder = await screen.findByText('src')
+    const row = folder.closest('[aria-expanded]')
+
+    act(() => {
+      $repoStatusByCwd.set({
+        '/w': {
+          branch: 'main',
+          defaultBranch: 'main',
+          detached: false,
+          ahead: 0,
+          behind: 0,
+          staged: 0,
+          unstaged: 1,
+          untracked: 0,
+          conflicted: 0,
+          changed: 1,
+          added: 1,
+          removed: 1,
+          files: [{ path: 'src/features/deep.ts', staged: false, unstaged: true, untracked: false, conflicted: false }]
+        }
+      })
+    })
+
+    await waitFor(() => expect(folder.classList.contains('text-(--ui-yellow)')).toBe(true))
+    expect(row?.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('deep.ts')).toBeNull()
+    expect(onLoadChildren).not.toHaveBeenCalled()
+    expect(screen.getByText('a.ts').classList.contains('text-(--ui-yellow)')).toBe(false)
+
+    act(() => $repoStatusByCwd.set({}))
+    await waitFor(() => expect(folder.classList.contains('text-(--ui-yellow)')).toBe(false))
   })
 
   it('a context-menu item click does not also open the file preview (#101263)', async () => {

@@ -258,6 +258,71 @@ describe('refreshRepoStatus', () => {
 })
 
 describe('repoChangeKindForPath', () => {
+  it.each([
+    {
+      label: 'unstaged modification',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      conflicted: false,
+      kind: 'modified'
+    },
+    {
+      label: 'staged modification',
+      staged: true,
+      unstaged: false,
+      untracked: false,
+      conflicted: false,
+      kind: 'modified'
+    },
+    { label: 'untracked file', staged: false, unstaged: false, untracked: true, conflicted: false, kind: 'added' },
+    { label: 'conflict', staged: false, unstaged: true, untracked: false, conflicted: true, kind: 'conflicted' }
+  ])(
+    'decorates ancestors of a $label without decorating clean siblings (#148823)',
+    ({ label: _label, kind, ...state }) => {
+      const folder = repoChangeKindForPath('/repo/src')
+      const listener = vi.fn()
+      const unsubscribe = folder.subscribe(listener)
+
+      $repoStatusByCwd.set({
+        '/repo': { ...sampleStatus, files: [{ path: 'src/features/deep.ts', ...state }] }
+      })
+
+      expect(repoChangeKindForPath('/repo/src/features/deep.ts').get()).toBe(kind)
+      expect(repoChangeKindForPath('/repo/src/features').get()).toBe(kind)
+      expect(folder.get()).toBe(kind)
+      expect(repoChangeKindForPath('/repo/src/features/clean.ts').get()).toBeUndefined()
+      expect(repoChangeKindForPath('/repo/src/other').get()).toBeUndefined()
+      expect(repoChangeKindForPath('/repo/other').get()).toBeUndefined()
+
+      // A fresh probe with the same kind must not repaint the folder row.
+      listener.mockClear()
+      $repoStatusByCwd.set({
+        '/repo': { ...sampleStatus, files: [{ path: 'src/features/another.ts', ...state }] }
+      })
+      expect(listener).not.toHaveBeenCalled()
+
+      $repoStatusByCwd.set({ '/repo': { ...sampleStatus, files: [] } })
+      expect(folder.get()).toBeUndefined()
+      expect(repoChangeKindForPath('/repo/src/features').get()).toBeUndefined()
+      expect(listener).toHaveBeenCalledTimes(1)
+      unsubscribe()
+    }
+  )
+
+  it.each(['\\', '\\\\'])('preserves literal trailing backslashes in filenames (%j)', suffix => {
+    $repoStatusByCwd.set({
+      '/repo': {
+        ...sampleStatus,
+        files: [{ path: `src/name${suffix}`, staged: false, unstaged: true, untracked: false, conflicted: false }]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo/src').get()).toBe('modified')
+    expect(repoChangeKindForPath(`/repo/src/name${suffix}`).get()).toBe('modified')
+    expect(repoChangeKindForPath('/repo/src/name').get()).toBeUndefined()
+  })
+
   it('does not notify a row when only another path changes', () => {
     $currentCwd.set('/repo')
     $repoStatusByCwd.set({ '/repo': { ...sampleStatus, files: [] } })
@@ -283,6 +348,39 @@ describe('repoChangeKindForPath', () => {
     expect(listener.mock.calls.at(-1)?.[0]).toBe('added')
 
     unsubscribe()
+  })
+
+  it.each([false, true])('keeps mixed directory statuses scoped and order-independent (reverse: %s)', reverse => {
+    const files: HermesRepoStatus['files'] = [
+      { path: 'src/new-dir/', staged: false, unstaged: false, untracked: true, conflicted: false },
+      { path: 'src/changed.ts', staged: true, unstaged: false, untracked: false, conflicted: false },
+      { path: 'src/deep/conflict.ts', staged: false, unstaged: true, untracked: false, conflicted: true }
+    ]
+
+    $repoStatusByCwd.set({
+      '/repo-a/': { ...sampleStatus, files: reverse ? [...files].reverse() : files },
+      '/repo-ab': {
+        ...otherStatus,
+        files: [{ path: 'src/new.ts', staged: false, unstaged: false, untracked: true, conflicted: false }]
+      }
+    })
+
+    expect(repoChangeKindForPath('/repo-a/src').get()).toBe('conflicted')
+    expect(repoChangeKindForPath('/repo-a/src/deep').get()).toBe('conflicted')
+    expect(repoChangeKindForPath('/repo-a/src/changed.ts').get()).toBe('modified')
+    expect(repoChangeKindForPath('/repo-a/src/new-dir').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo-a/src/new-dir/nested/file.ts').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo-a/src/clean.ts').get()).toBeUndefined()
+    expect(repoChangeKindForPath('/repo-a/src-similar').get()).toBeUndefined()
+    expect(repoChangeKindForPath('/repo-ab/src').get()).toBe('added')
+    expect(repoChangeKindForPath('/repo-ab/src/clean.ts').get()).toBeUndefined()
+    expect(repoChangeKindForPath('/').get()).toBeUndefined()
+
+    // Removing the conflict exposes the modified descendant, not the added one.
+    $repoStatusByCwd.set({ '/repo-a': { ...sampleStatus, files: files.slice(0, 2) } })
+    expect(repoChangeKindForPath('/repo-a/src').get()).toBe('modified')
+    expect(repoChangeKindForPath('/repo-a/src/deep').get()).toBeUndefined()
+    expect(repoChangeKindForPath('/repo-ab/src').get()).toBeUndefined()
   })
 
   it('maps changes across multiple probed CWDs independently of active session ownership', () => {

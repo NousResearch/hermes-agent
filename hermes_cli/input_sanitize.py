@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 
 # Degraded visible bracketed-paste forms, matched only at boundaries so embedded literals stay intact.
+# Each form is quantified so a run of them is consumed by one match: the boundary character is part
+# of the opening matches and is re-emitted, so after a single-marker substitution the next marker is
+# preceded by the previous one's "~" rather than a boundary and would never match again.
 _BOUNDARY_SUBS = (
-    (re.compile(r"(^|[\s\n>:\]\)])\[200~"), r"\1"),
-    (re.compile(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])"), ""),
-    (re.compile(r"(^|[\s\n>:\]\)])00~"), r"\1"),
-    (re.compile(r"01~(?=$|[\s\n<\[\(\):;.,!?])"), ""),
+    (re.compile(r"(^|[\s\n>:\]\)])(?:\[200~)+"), r"\1"),
+    (re.compile(r"(?:\[201~)+(?=$|[\s\n<\[\(\):;.,!?])"), ""),
+    (re.compile(r"(^|[\s\n>:\]\)])(?:00~)+"), r"\1"),
+    (re.compile(r"(?:01~)+(?=$|[\s\n<\[\(\):;.,!?])"), ""),
 )
 
 # Corruption signature from desktop bracketed-paste leaks (#62557).

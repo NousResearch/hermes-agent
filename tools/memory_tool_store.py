@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from utils import atomic_write_text
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -271,7 +271,7 @@ class MemoryStore:
         self._overflow_failures: dict[str, int] = {}  # per-target over-budget failures, cumulative
         self._no_progress_successes = 0  # consecutive success responses that changed nothing
         self._turn_failures_total = 0  # ALL failed ops this turn, success-immune (_MAX_TURN_FAILURES_TOTAL)
-        self._state_history: Dict[str, List[int]] = {}  # post-write state hashes per target, this turn
+        self._state_history: dict[str, list[int]] = {}  # post-write state hashes per target, this turn
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).

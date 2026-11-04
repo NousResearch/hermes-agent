@@ -39,7 +39,11 @@ def initial_task_state(
         )}
         missing = [pid for pid in parents if pid not in rows]
         if missing:
-            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+            from hermes_cli.kanban_db import _cross_board_task_hint
+
+            raise ValueError(
+                f"unknown parent task(s): {', '.join(missing)}{_cross_board_task_hint(conn, missing)}"
+            )
         if tenant is None:
             tenant = next((rows[pid]["tenant"] for pid in parents if rows[pid]["tenant"]), None)
     if initial_status == "blocked":

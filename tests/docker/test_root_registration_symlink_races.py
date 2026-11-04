@@ -90,3 +90,38 @@ def test_root_lifecycle_control_does_not_follow_control_symlink(
     victim = docker_exec_sh(container_name, "cat /opt/victim-file; echo; stat -c '%u %a' "
                             "/opt/victim-file", user="root")
     assert victim.stdout.splitlines() == ["ORIGINAL", "0 600"], victim.stdout
+
+
+def test_root_slot_parking_does_not_follow_marker_or_event_symlinks(
+    built_image: str, container_name: str,
+) -> None:
+    """Multiplex migration parks slots as root: ``down`` and ``event/`` are hermes-controlled."""
+    start_container(built_image, container_name)
+    registered = docker_exec(container_name, "python3", "-c", (
+        "from hermes_cli.service_manager import S6ServiceManager; "
+        "S6ServiceManager().register_profile_gateway('park', start_now=False)"
+    ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))
+    assert registered.returncode == 0, registered.stderr
+    slot = f"{SCANDIR}/gateway-park"
+    ok, state = poll_container(container_name, f"/command/s6-svstat {slot}", deadline_s=30)
+    assert ok, state
+    seeded = docker_exec_sh(container_name, (
+        "printf ORIGINAL > /opt/victim-file && chmod 0600 /opt/victim-file && "
+        "touch -d @1 /opt/victim-file && mkdir -m 0700 /opt/victim-dir"
+    ), user="root")
+    assert seeded.returncode == 0, seeded.stderr
+    planted = docker_exec_sh(container_name, (
+        f"rm -f {slot}/down && ln -s /opt/victim-file {slot}/down && "
+        f"mv {slot}/event {slot}/event.moved && ln -s /opt/victim-dir {slot}/event"
+    ))
+    assert planted.returncode == 0, planted.stderr
+    parked = docker_exec(container_name, "python3", "-c", (
+        "from hermes_cli import gateway_multiplex_s6 as s6\n"
+        "s6._wait_down(s6._manager().scandir / 'gateway-park', timeout_ms=500)\n"
+        "s6.park_named_slot('park')\n"
+    ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))
+    assert parked.returncode == 0, parked.stderr
+    victims = docker_exec_sh(container_name, (
+        "cat /opt/victim-file; echo; stat -c '%u %a %Y' /opt/victim-file; ls -A /opt/victim-dir"
+    ), user="root")
+    assert victims.stdout.splitlines() == ["ORIGINAL", "0 600 1"], victims.stdout

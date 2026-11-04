@@ -66,7 +66,8 @@ def _mask_arg(arg: str) -> tuple[str, bool]:
                 and _SECRET_ENV_RE.search(inner.group(2)):
             return f"{flag.group(0)}{inner.group(1)}{inner.group(2)}=***", False
         return arg, False
-    assign = None if arg.startswith("-") else _ASSIGN_RE.match(arg)
+    # ``KEY=VALUE`` alone, or attached to a short flag (``-eGITHUB_TOKEN=…``, java ``-Dapi.token=…``).
+    assign = _ASSIGN_RE.match(arg)
     if assign and _SECRET_ENV_RE.search(assign.group(2)):
         return f"{assign.group(1)}{assign.group(2)}=***", False
     return arg, False
@@ -76,9 +77,9 @@ def _mask_flag_values(args: list[str]) -> list[str]:
     out: list[str] = []
     mask_next = False
     for arg in args:
-        # A long flag right after a secret flag is the next flag, not its value (``--token --exec x``
-        # fails to parse as a token): masking it would hide what runs.
-        if mask_next and not arg.startswith("--"):
+        # Any flag right after a secret flag is the next flag, not its value (``--token -c x`` does
+        # not parse as a token): masking it would hide what runs.
+        if mask_next and not arg.startswith("-"):
             out.append("***")
             mask_next = False
             continue

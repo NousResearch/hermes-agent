@@ -1,5 +1,5 @@
 #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
-"""Regenerate website/docs/developer-guide/serve-handler-ledger.json from the code.
+"""Regenerate tests/hermes_cli/serve_handler_ledger.json from the code.
 
 One row per handler ``hermes serve`` exposes: every HTTP/WebSocket route of the shared FastAPI app
 (``hermes_cli.web_server.app``, imported the way ``serve`` imports it, ``HERMES_SERVE_HEADLESS=1``)
@@ -32,7 +32,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "website" / "docs" / "developer-guide" / "serve-handler-ledger.json"
+OUT = ROOT / "tests" / "hermes_cli" / "serve_handler_ledger.json"
 DECISION_VALUES = ("authority", "keep-host-wide", "delete", "undecided")
 # Reviewed owner decisions, keyed by row ``handler``: ``(decision, ref)``. A row not listed here
 # keeps its mechanical default.

@@ -274,6 +274,10 @@ class CLITuiRuntimeMixin:
         from cli import _accent_hex, _detect_light_mode
         with suppress(Exception):  # light-mode probe before pt grabs the tty (cached)
             _detect_light_mode()
+        from hermes_cli.cli_inline_images import vscode_images_hint
+        _show_vscode_images_hint = False
+        with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
+            _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
         # Scroll the cursor to the last row so banner, responses and prompt pin to the bottom.
         with suppress(Exception):
             _term_lines = shutil.get_terminal_size().lines
@@ -330,7 +334,12 @@ class CLITuiRuntimeMixin:
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
-        self._print_random_tip()
+        if _show_vscode_images_hint:
+            from hermes_cli.skin_engine import get_active_skin
+            _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+            self._console_print(f"[dim {_tip_color}]{t('cli.tip_line', tip=t('cli.tui.vscode_images_hint'))}[/]")
+        else:
+            self._print_random_tip()
 
         self._tui_startup_background_maintenance()
         # Before the background preload is folded in (at agent init), show the REQUESTED names.

@@ -554,7 +554,7 @@ display:
   inline_images: auto   # auto | kitty | iterm | unicode | off
 ```
 
-- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). Everything else, including tmux, GNU screen, VS Code and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). In the VS Code terminal the classic CLI asks the terminal at startup whether images are on (`terminal.integrated.enableImages`; the reply takes about 10 ms) and draws full-resolution images when they are, with an occasional tip to turn them on when they are not. Everything else, including tmux, GNU screen, SSH sessions into VS Code, and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
 - **`kitty`** forces the kitty protocol, for example in the classic CLI inside a tmux with `set -g allow-passthrough on`.
 - **`iterm`** forces the iTerm2 protocol in the classic CLI (the TUI falls back to `auto` here).
 - **`unicode`** always uses half-blocks.

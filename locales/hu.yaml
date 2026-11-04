@@ -2181,6 +2181,7 @@ cli:
     images_attached_other: "📎 {count} kép csatolva"
     command_interrupted: "Parancs megszakítva."
     welcome: "Üdv a Hermes Agentben! Írd be az üzenetedet, vagy a /help paranccsal nézd meg a parancsokat."
+    vscode_images_hint: "A VS Code itt teljes felbontású képeket is meg tud jeleníteni: kapcsold be a(z) terminal.integrated.enableImages beállítást."
     activated_skills_label: "Aktivált skillek:"
     redaction_disabled_title: "⚠  A titkok kitakarása KI VAN KAPCSOLVA"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Az API-kulcsok és tokenek szó szerint megjelenhetnek a chatkimenetben, a munkamenet-JSON-okban és a naplókban. A visszakapcsoláshoz állítsd be a config.yaml fájlban: {setting}."

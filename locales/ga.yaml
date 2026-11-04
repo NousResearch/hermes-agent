@@ -2164,6 +2164,7 @@ cli:
     images_attached_other: "📎 {count} íomhá ceangailte"
     command_interrupted: "Briseadh isteach ar an ordú."
     welcome: "Fáilte go Hermes Agent! Clóscríobh do theachtaireacht nó /help le haghaidh orduithe."
+    vscode_images_hint: "Is féidir le VS Code íomhánna lánrúin a thaispeáint anseo: cas air terminal.integrated.enableImages sna socruithe."
     activated_skills_label: "Scileanna gníomhachtaithe:"
     redaction_disabled_title: "⚠  Tá ceilt rún DÍCHUMASAITHE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). D'fhéadfadh eochracha API agus comharthaí a bheith le feiceáil focal ar fhocal in aschur comhrá, i JSON na seisiún agus i logaí. Socraigh {setting} i config.yaml chun é a athchumasú."

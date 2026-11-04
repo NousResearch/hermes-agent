@@ -2164,6 +2164,7 @@ cli:
     images_attached_other: "📎 已附加 {count} 张图片"
     command_interrupted: "命令已中断。"
     welcome: "欢迎使用 Hermes Agent！输入你的消息，或输入 /help 查看命令。"
+    vscode_images_hint: "VS Code 可以在这里以完整分辨率显示图片：请在设置中开启 terminal.integrated.enableImages。"
     activated_skills_label: "已激活的技能："
     redaction_disabled_title: "⚠  密钥脱敏已禁用"
     redaction_disabled_body: "（HERMES_REDACT_SECRETS={value}）。API 密钥和 token 可能会原样出现在聊天输出、会话 JSON 和日志中。在 config.yaml 中设置 {setting} 可重新启用。"

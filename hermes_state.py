@@ -49,7 +49,7 @@ from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
-from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for, note_read_pool_exhausted
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
@@ -877,10 +877,7 @@ class SessionDB(
                 return None
         # Permit BEFORE the open: openers race for permits, not descriptors.
         if not self._read_budget.acquire(self):
-            logger.debug(
-                "read pool at capacity (%d) for %s; serving this read from the "
-                "locked writer connection", _READ_POOL_MAX, self.db_path,
-            )
+            note_read_pool_exhausted(self.db_path)
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:

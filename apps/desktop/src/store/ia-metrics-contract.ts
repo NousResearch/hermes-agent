@@ -27,6 +27,8 @@ export const IA_ACTIONS = {
     'gateway_collapsed'
   ],
   search: ['opened', 'used', 'results', 'empty', 'partial_failure', 'selected', 'cleared', 'early'],
+  pin_count: ['zero', 'one', 'two', 'three', 'overflow'],
+  profile_pin_count: ['zero', 'one', 'two', 'three', 'overflow'],
   pin: ['pinned_request', 'agent_request', 'search_request', 'pinned', 'unpinned', 'failed'],
   new_session: [
     'sidebar',

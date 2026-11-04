@@ -31,7 +31,7 @@ from hermes_cli.auth_device_flow import (
 logger = logging.getLogger("hermes_cli.auth")
 
 CODEX_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
-CODEX_OAUTH_BROWSER_SCOPE = "openid profile email offline_access"
+CODEX_OAUTH_BROWSER_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 # Registered with the Codex client: ``http://localhost:1455/auth/callback``. The listener binds
 # 127.0.0.1 explicitly; only the redirect URI string says ``localhost``.
 CODEX_BROWSER_CALLBACK_PORT = 1455

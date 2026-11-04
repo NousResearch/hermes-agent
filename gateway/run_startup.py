@@ -716,6 +716,8 @@ class GatewayStartupMixin:
         See #69089.
         """
         from gateway.shutdown_watchdog import _arm_loop_floor_timer, start_loop_liveness_watchdog
+        from hermes_state_loop_guard import install_from_env
+        install_from_env()  # HERMES_SESSIONDB_LOOP_GUARD: flag SessionDB calls made on this loop
         config = getattr(self, "config", None)
         if config is not None and not getattr(config, "loop_watchdog", True):
             return

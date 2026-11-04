@@ -153,6 +153,20 @@ def test_documented_session_helper_and_own_install_path_fallback_are_not_flagged
     assert sites == ["__init__.py:8 hermes_cli.gateway_client._session_ticket"], sites
 
 
+def test_plugin_guide_session_identity_example_validates_clean(tmp_path):
+    """Regression for #148311: the plugin guide's ``get_session_env`` example uses the import spelling
+    ``hermes plugins validate`` accepts, so a plugin that copies it gets no private-import warning."""
+    import re
+
+    guide = Path(__file__).resolve().parents[2] / "website/docs/developer-guide/plugins/index.md"
+    blocks = [b for b in re.findall(r"```python\n(.*?)```", guide.read_text(encoding="utf-8"), re.DOTALL)
+              if "get_session_env" in b]
+    assert blocks, "plugins/index.md shows no code example importing get_session_env"
+    plugin = _plugin(tmp_path / "sessid", {f"example_{i}.py": b for i, b in enumerate(blocks)})
+
+    assert _private_warnings(validate_plugin_dir(plugin)) == []
+
+
 def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_path):
     """opencode-sync calls SessionDB / GatewayRunner private methods on the objects it is handed;
     no import names them, so only the attribute pass can see it. The plugin's own ``_helper`` and

@@ -84,7 +84,7 @@ def _mask_flag_values(args: list[str]) -> list[str]:
 
 # Tab and newline are the two controls the approval sanitizer keeps; the card draws one line.
 _LINE_BREAKS = str.maketrans({"\t": "\\t", "\n": "\\n"})
-# Scrubbed first, then cut, so a secret straddling the cut is already masked.
+# Scrubbed first, then the middle cut, so a secret straddling the cut is already masked.
 MAX_TARGET_CHARS = 400
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s]+", re.IGNORECASE)
 # A path segment that reads as a credential, not a route: long and url-safe with letters and digits,
@@ -116,7 +116,7 @@ def _mask_url(match: re.Match[str]) -> str:
 
 # Tab and newline are the two controls the approval sanitizer keeps; the card draws one line.
 _LINE_BREAKS = str.maketrans({"\t": "\\t", "\n": "\\n"})
-# Scrubbed first, then cut, so a secret straddling the cut is already masked.
+# Scrubbed first, then the middle cut, so a secret straddling the cut is already masked.
 MAX_TARGET_CHARS = 400
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s]+", re.IGNORECASE)
 # A path segment that reads as a credential, not a route: long and url-safe with letters and digits,
@@ -146,7 +146,11 @@ def _visible(text: str) -> str:
 def scrub(text: str) -> str:
     text = _URL_RE.sub(_mask_url, " ".join(_visible(text).split()))
     text = redact_for_egress(redact_sensitive_text(text, force=True, redact_url_credentials=True))
-    return text if len(text) <= MAX_TARGET_CHARS else text[: MAX_TARGET_CHARS - 1] + "…"
+    if len(text) <= MAX_TARGET_CHARS:
+        return text
+    # The middle goes, never the tail: the last args are where an appended `--exec` would sit.
+    tail = MAX_TARGET_CHARS // 3
+    return f"{text[: MAX_TARGET_CHARS - tail - 3]} … {text[-tail:]}"
 
 
 def _env_keys(env: Any) -> list[str]:

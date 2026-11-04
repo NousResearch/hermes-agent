@@ -1,26 +1,35 @@
-import { atom, Button, host, randomUuid, useValue } from '@hermes/plugin-sdk'
-import { useEffect, useState } from 'react'
+import { atom, host, randomUuid, useQuery, useValue } from '@hermes/plugin-sdk'
+import { useEffect } from 'react'
 
-import { useCanonicalGroupLabels } from './canonical-group-labels'
-import { CanonicalGroupRow } from './canonical-group-row'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, discoverCanonicalGroups } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from './canonical-groups'
+import { canonicalGroupRequest, discoverCanonicalGroups, listCanonicalRooms } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 import { closeGroupChatMainTab } from './group-panes'
+import { rpcMethodMissing } from './rpc-errors'
+import { ID } from './shared'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
-// Bumped when a room leaves outside the list's own Refresh, so the sidebar re-reads `groups.list`.
+// Bumped when this window creates or disbands a room, so the roster re-reads `groups.list` now.
 const $canonicalGroupListRevision = atom(0)
+
+export function refreshGatewayGroupRooms(): void {
+  $canonicalGroupListRevision.set($canonicalGroupListRevision.get() + 1)
+}
 
 /** Drop a disbanded room's key and every alias to it, then re-read the sidebar list. */
 export function forgetCanonicalGroup({ connectionId, profile, roomId }: CanonicalGroupBinding): void {
   $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, binding]) =>
     binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId)))
-  $canonicalGroupListRevision.set($canonicalGroupListRevision.get() + 1)
+  refreshGatewayGroupRooms()
 }
 
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
+  const current = $canonicalGroupBindings.get()[key]
+
+  // The roster re-lists on a poll: an unchanged room must not wake every binding reader.
+  if (current?.connectionId !== route.connectionId || current.profile !== route.profile || current.roomName !== room.name) {
+    $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id, roomName: room.name } })
+  }
 
   return key
 }
@@ -123,57 +132,74 @@ function canonicalGroupViews({ connectionId, profile, roomId }: CanonicalGroupBi
   return views
 }
 
-interface ListedRoom { binding: CanonicalGroupBinding; key: string; memberCount: number; members: CanonicalRoom['members']; name: string }
+/** One gateway Group Chat as the roster lists it: its exact authority binding and
+ *  the `canonical:` key the open path takes. */
+export interface GatewayGroupRoom {
+  binding: CanonicalGroupBinding
+  key: string
+  members: CanonicalRoomMember[]
+  name: string
+  /** Milliseconds; the room's last change, its recency in the roster. */
+  updatedAt: number
+}
+
+/** The active source's rooms. A backend that predates gateway Group Chats has none. */
+async function listGatewayGroupRooms(route: CanonicalGroupRoute): Promise<GatewayGroupRoom[]> {
+  let rooms: CanonicalRoom[]
+
+  try {
+    rooms = await listCanonicalRooms(route)
+  } catch (error) {
+    if (rpcMethodMissing(error)) {return []}
+    throw error
+  }
+
+  return rooms.map(room => ({
+    binding: { ...route, roomId: room.room_id, roomName: room.name },
+    key: registerCanonicalGroup(route, room),
+    members: room.members ?? [],
+    name: room.name,
+    updatedAt: (room.updated_at ?? 0) * 1000
+  }))
+}
+
+const ROOMS_KEY = [ID, 'gateway-group-rooms']
+
+/** Gateway Group Chats for the Bots roster, kept current without a refresh
+ *  button: re-read on a poll, on every socket/source change and after a
+ *  create or disband here. A failed read keeps the last good list (the roster
+ *  shows rooms, never a transport error); a window whose connection has no
+ *  registry id cannot bind a room to an authority, so it lists none. */
+export function useGatewayGroupRooms(): GatewayGroupRoom[] {
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const revision = useValue($canonicalGroupListRevision)
+
+  const { data, refetch } = useQuery({
+    queryKey: [...ROOMS_KEY, connectionId, profile],
+    enabled: Boolean(connectionId && profile) && gateway === 'open',
+    queryFn: () => listGatewayGroupRooms({ connectionId: connectionId!, profile }),
+    refetchInterval: 10_000,
+    retry: false,
+    // Always stale, so the socket reopening (boot, reconnect, wake) re-reads at once.
+    staleTime: 0
+  })
+
+  // A create or disband here re-reads now; a failed re-read keeps the last good list.
+  useEffect(() => {
+    if (revision && host.state.gateway.get() === 'open') {void refetch()}
+  }, [revision, refetch])
+
+  return connectionId ? data ?? [] : []
+}
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.
  *  A refusal rejects before anything is dropped, so the row stays and the confirm shows why. */
-async function disbandListedRoom(room: ListedRoom, doneMessage: string): Promise<void> {
+export async function disbandGatewayGroupRoom(room: GatewayGroupRoom, doneMessage: string): Promise<void> {
   await canonicalGroupRequest(room.binding, 'groups.disband', { room_id: room.binding.roomId, cancel_id: randomUuid() })
   // Collect before forgetting: the bindings are the only record of which views alias this room.
   canonicalGroupViews(room.binding).add(room.key).forEach(closeGroupChatMainTab)
   forgetCanonicalGroup(room.binding)
   host.notify({ kind: 'success', message: doneMessage })
-}
-
-export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: CanonicalGroupOrigin) => void }) {
-  const labels = useCanonicalGroupLabels()
-  const connectionId = useValue(host.state.connectionId)
-  const profile = useValue(host.state.profile)
-  const gateway = useValue(host.state.gateway)
-  const [rooms, setRooms] = useState<ListedRoom[]>([])
-  const [error, setError] = useState('')
-  const [refresh, setRefresh] = useState(0)
-  const revision = useValue($canonicalGroupListRevision)
-  useEffect(() => {
-    let cancelled = false
-    setRooms([])
-    setError('')
-    void (async () => {
-      const route = captureCanonicalGroupRoute()
-      const result = await discoverCanonicalGroups(route)
-
-      if (!cancelled) {
-        setRooms(result.rooms.map(room => ({
-          binding: { ...route, roomId: room.room_id, roomName: room.name },
-          key: registerCanonicalGroup(route, room),
-          memberCount: room.members?.length ?? 0,
-          members: room.members ?? [],
-          name: room.name
-        })))
-      }
-    })().catch(e => {
-      // A relaunch restores the Bots pane before its socket opens: that
-      // refusal is not a room-list failure, and the open transition re-lists.
-      if (!cancelled && host.state.gateway.get() === 'open') {setError(e instanceof Error ? e.message : String(e))}
-    })
-
-    return () => { cancelled = true }
-  }, [connectionId, gateway, profile, refresh, revision])
-
-  return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
-    {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <CanonicalGroupRow binding={room.binding} key={room.key} memberCount={room.memberCount} members={room.members} name={room.name}
-      onDelete={() => disbandListedRoom(room, labels.disbanded(room.name))} onOpen={() => onOpen(room.key, 'key')} />)}
-  </div>
 }

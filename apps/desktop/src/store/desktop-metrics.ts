@@ -36,6 +36,8 @@ import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
 import { readJson, writeJson } from '@/lib/storage'
 
+import { sendDesktopDaily } from './desktop-metrics-daily'
+import { IA_ACTION_IDS } from './ia-metrics-contract'
 import type { SharedMetricsRequester } from './shared-metrics'
 
 // ── closed vocabularies ───────────────────────────────────────────────────────
@@ -279,13 +281,14 @@ export const DESKTOP_BUTTON_ACTIONS = {
   sidebarDisable: 'sidebar.simplified.disable'
 } as const
 
-export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut'
+export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut' | 'state'
 
 /** Built-in action ids (DESKTOP_ACTION_IDS on the backend); anything else — a plugin's palette
  *  command or keybinding, a numbered slot (`profile.switch.3`) — is `other`. */
 const ACTION_IDS: ReadonlySet<string> = new Set(
   [
     ...KEYBIND_ACTION_IDS,
+    ...IA_ACTION_IDS,
     ...KEYBIND_READONLY.map(action => action.id),
     ...Object.values(DESKTOP_BUTTON_ACTIONS)
   ].filter(id => !/\.\d+$/.test(id))
@@ -381,6 +384,7 @@ let scope = scopeKey('|default')
 let request: SharedMetricsRequester | null = null
 let queue: [string, Record<string, unknown>][] = []
 let flushingDays = false
+let consentGeneration = 0
 /** Onboarding transitions before the consent answer (memory only); null once the answer is known. */
 let preConsent: (() => void)[] | null = []
 let botCount = 0
@@ -842,25 +846,33 @@ async function flushPendingDays(): Promise<void> {
 
   try {
     // Pinned to the profile and gateway that started the flush: a switch mid-await stops it.
-    const [owner, requester] = [scope, request]
+    const [owner, requester, generation] = [scope, request, consentGeneration]
 
     for (let day = withState(current => current.pending[0]); day; day = withState(current => current.pending[0])) {
-      const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
-        actions: Object.entries(day.actions)
-          .filter(([, count]) => count > 0)
-          .map(([key, count]) => {
-            const at = key.lastIndexOf('|')
+      const result = await sendDesktopDaily(
+        requester,
+        {
+          actions: Object.entries(day.actions)
+            .filter(([, count]) => count > 0)
+            .map(([key, count]) => {
+              const at = key.lastIndexOf('|')
 
-            return { action: key.slice(0, at), count, via: key.slice(at + 1) }
-          }),
-        bot_count: day.botCount,
-        day: day.day,
-        modes: (['bots', 'sessions'] as const)
-          .filter(mode => day.modes[mode])
-          .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
-      })
+              return { action: key.slice(0, at), count, via: key.slice(at + 1) as DesktopActionVia }
+            }),
+          bot_count: day.botCount,
+          day: day.day,
+          modes: (['bots', 'sessions'] as const)
+            .filter(mode => day.modes[mode])
+            .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
+        },
+        () =>
+          $desktopMetricsGate.get() === 'on' &&
+          consentGeneration === generation &&
+          scope === owner &&
+          request === requester
+      )
 
-      if (result?.recorded !== true || scope !== owner || request !== requester) {
+      if (result?.recorded !== true || consentGeneration !== generation || scope !== owner || request !== requester) {
         return
       }
 
@@ -933,6 +945,7 @@ function tellMain(on: boolean): void {
 }
 
 function forgetInMemory(): void {
+  consentGeneration++
   queue = []
   areaOpenedAt.clear()
   openFlows.clear()

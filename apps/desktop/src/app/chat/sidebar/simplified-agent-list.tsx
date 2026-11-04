@@ -16,8 +16,11 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId, selectConnection } from '@/store/connections'
 import { recordAction } from '@/store/desktop-metrics'
+import { $fleetRoster } from '@/store/fleet-roster'
+import { recordIaAction } from '@/store/ia-metrics'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profileColors, ensureGatewayProfile } from '@/store/profile'
+import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 
 import { SimplifiedGatewayHeader } from './simplified-gateway-header'
@@ -50,6 +53,15 @@ export function SimplifiedAgentList({
   const { agents: sorted, owner, sessionsByAgent } = agents
 
   async function openAgent(agent: (typeof sorted)[number]) {
+    const state =
+      agent.connectionId === (activeConnection ?? owner)
+        ? $gatewayState.get()
+        : $fleetRoster.get()?.sources.find(source => source.connectionId === agent.connectionId)?.reachable
+
+    if (state === 'closed' || state === 'error' || state === false) {
+      recordIaAction('ia.gateway.offline_agent')
+    }
+
     setPending(agent.id)
 
     try {
@@ -130,7 +142,14 @@ export function SimplifiedAgentList({
               <SimplifiedGatewayHeader
                 connectionId={connectionId}
                 fallbackLabel={group[0].gateway}
-                onToggle={gateways.length > 1 ? () => onToggle(gatewayId, open) : undefined}
+                onToggle={
+                  gateways.length > 1
+                    ? () => {
+                        recordIaAction(open ? 'ia.section.gateway_collapsed' : 'ia.section.gateway_expanded')
+                        onToggle(gatewayId, open)
+                      }
+                    : undefined
+                }
                 open={open}
                 selected={selected}
               />
@@ -147,7 +166,10 @@ export function SimplifiedAgentList({
                             <Button
                               aria-expanded={agentOpen}
                               aria-label={toggleLabel}
-                              onClick={() => onToggle(agent.id, agentOpen)}
+                              onClick={() => {
+                                recordIaAction(agentOpen ? 'ia.section.agent_collapsed' : 'ia.section.agent_expanded')
+                                onToggle(agent.id, agentOpen)
+                              }}
                               size="icon-xs"
                               variant="grip"
                             >
@@ -176,6 +198,7 @@ export function SimplifiedAgentList({
                             className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
                             onClick={() => {
                               recordAction('session.new', 'click')
+                              recordIaAction('ia.new_session.agent_row')
                               startSimplifiedAgentSession(agent)
                             }}
                             size="icon-xs"

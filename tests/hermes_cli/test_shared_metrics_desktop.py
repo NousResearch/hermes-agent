@@ -234,3 +234,28 @@ def test_simplified_sidebar_metrics_keep_consent_and_closed_reason_codes(marks):
     _rpc("shared_metrics.desktop_feature_use", area="classic_sidebar")
     assert len(marks.rows) == 3
     assert len(_stored(contract.DESKTOP_FEATURE_USE_METRIC)) == 1
+
+
+def test_ia_daily_counters_preserve_closed_codes_consent_and_replay(marks):
+    params = {
+        "day": "2026-09-26",
+        "actions": [
+            {"action": "ia.pin.pinned", "via": "state", "count": 2},
+            {"action": "ia.transition.chat_to_capabilities", "via": "state", "count": 1},
+            {"action": "ia.rail.plugin", "via": "click", "count": 1},
+            {"action": "ia.rail.private-plugin-name", "via": "click", "count": 1},
+        ],
+    }
+    marks.policy["on"] = False
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": False}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == []
+    marks.policy["on"] = True
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.pin.pinned", "ia.transition.chat_to_capabilities", "ia.rail.plugin", "other",
+    }
+    assert all(d["via"] == "state" for _, d, _ in rows if d["action"].startswith("ia.pin"))
+    assert "private-plugin" not in json.dumps(rows)
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == rows

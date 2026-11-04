@@ -6,6 +6,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { recordIaAction } from '@/store/ia-metrics'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 
 import {
@@ -20,6 +21,7 @@ import {
 import type { SidebarNavItem } from '../../types'
 
 import { SimplifiedSettingsMenu } from './simplified-settings-menu'
+import { useIaNavigationMetrics } from './use-ia-navigation-metrics'
 import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
 export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: SidebarNavItem) => void }) {
@@ -29,24 +31,39 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
   const focusedSessionIsTile = useStore($focusedSessionIsTile)
   const view = focusedSessionIsTile ? 'chat' : appViewForPath(pathname)
   const pluginPages = useSimplifiedPluginPages()
+  useIaNavigationMetrics(view)
 
   const destinations = [
     {
       label: t.simplifiedAgents.chats,
       icon: 'comment-discussion',
+      area: 'chat',
       route: sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE,
       active: view === 'chat'
     },
-    { label: t.simplifiedAgents.settings, icon: 'robot', route: PROFILES_ROUTE, active: view === 'profiles' },
+    {
+      label: t.simplifiedAgents.settings,
+      icon: 'robot',
+      area: 'profiles',
+      route: PROFILES_ROUTE,
+      active: view === 'profiles'
+    },
     {
       label: t.sidebar.nav.capabilities,
       icon: 'symbol-misc',
+      area: 'capabilities',
       route: CAPABILITIES_ROUTE,
       active: view === 'capabilities'
     },
-    { label: t.simplifiedAgents.library, icon: 'files', route: ARTIFACTS_ROUTE, active: view === 'artifacts' },
-    { label: t.simplifiedAgents.routines, icon: 'watch', route: CRON_ROUTE, active: view === 'cron' }
-  ]
+    {
+      label: t.simplifiedAgents.library,
+      icon: 'files',
+      area: 'artifacts',
+      route: ARTIFACTS_ROUTE,
+      active: view === 'artifacts'
+    },
+    { label: t.simplifiedAgents.routines, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
+  ] as const
 
   const items = [
     ...destinations.map(({ icon, ...item }) => ({
@@ -54,7 +71,11 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
       id: icon,
       icon: (props: { className?: string }) => <Codicon name={icon} {...props} />
     })),
-    ...pluginPages.map(page => ({ ...page, active: !focusedSessionIsTile && pathname === page.route }))
+    ...pluginPages.map(page => ({
+      ...page,
+      area: 'plugin' as const,
+      active: !focusedSessionIsTile && pathname === page.route
+    }))
   ]
 
   return (
@@ -69,7 +90,10 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
               aria-current={item.active ? 'page' : undefined}
               aria-label={item.label}
               className={cn(item.active && 'bg-(--chrome-action-hover) text-(--ui-text-primary)')}
-              onClick={() => onNavigate(item)}
+              onClick={() => {
+                recordIaAction(`ia.rail.${item.area}`)
+                onNavigate(item)
+              }}
               size="icon"
               variant="ghost"
             >

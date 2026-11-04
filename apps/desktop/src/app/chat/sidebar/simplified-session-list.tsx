@@ -15,6 +15,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { Pin } from '@/lib/icons'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile } from '@/store/profile'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
 
@@ -24,6 +25,7 @@ import { SessionActionsMenu } from './session-actions-menu'
 import { sessionRowKey } from './simplified-session-identity'
 
 interface SimplifiedSessionListProps {
+  searching?: boolean
   showAgent?: boolean
   sessions: SessionInfo[]
   activeSessionId: string | null
@@ -81,6 +83,18 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
             selected && 'bg-(--chrome-action-hover)'
           )}
           onClick={event => {
+            recordIaAction(
+              props.searching
+                ? 'ia.session.opened_search'
+                : props.showAgent
+                  ? 'ia.session.opened_pinned'
+                  : 'ia.session.opened_agent'
+            )
+
+            if (props.searching) {
+              recordIaAction('ia.search.selected')
+            }
+
             if (event.metaKey || event.ctrlKey) {
               openSession(row.id, navigate, event.shiftKey ? 'window' : 'tab', {
                 workspaceMode: 'sessions',
@@ -138,7 +152,21 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
               onArchive={() => props.onArchiveSession(row.id)}
               onBranch={() => props.onBranchSession(row.id)}
               onDelete={() => props.onDeleteSession(row.id)}
-              onPin={props.pinPending?.(row) ? undefined : () => props.onUpdate(row, 'pinned', !pinned)}
+              onPin={
+                props.pinPending?.(row)
+                  ? undefined
+                  : () => {
+                      recordIaAction(
+                        props.searching
+                          ? 'ia.pin.search_request'
+                          : props.showAgent
+                            ? 'ia.pin.pinned_request'
+                            : 'ia.pin.agent_request',
+                        'menu'
+                      )
+                      props.onUpdate(row, 'pinned', !pinned)
+                    }
+              }
               onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
               pinned={pinned}
               profile={row.profile}

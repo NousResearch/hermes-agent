@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { mutateSessionHttp } from '@/api/sessions'
 import type { SessionInfo } from '@/hermes'
+import { captureIaRecorder } from '@/store/ia-metrics'
 import { sessionPinId } from '@/store/session'
 
 import { sessionRowKey } from './simplified-session-identity'
@@ -58,6 +59,7 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
       return
     }
 
+    const record = captureIaRecorder()
     const previous = writes.get(key)
     const capturedRow = { ...row, connection_id: row.connection_id || owner || undefined }
     inflight.current.add(key)
@@ -73,7 +75,9 @@ export function useSimplifiedPinWrites(owner: string | null, refresh: () => void
           profile: row.profile || 'default'
         }
       )
+      record(value ? 'ia.pin.pinned' : 'ia.pin.unpinned')
     } catch (error) {
+      record('ia.pin.failed')
       setWrites(current => {
         const next = new Map(current)
 

@@ -11,6 +11,7 @@ import { platformStatusTone } from '@/lib/platform-status'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { recordIaAction } from '@/store/ia-metrics'
 import { notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { StatusResponse } from '@/types/hermes'
@@ -91,10 +92,23 @@ export function GatewayMenuPanel({
   const { t } = useI18n()
   const copy = t.shell.gatewayMenu
   const [reconnecting, setReconnecting] = useState(false)
+  const openedState = useRef(gatewayState)
+  useEffect(() => {
+    const state = openedState.current
+    recordIaAction(
+      state === 'open'
+        ? 'ia.gateway.popover_open'
+        : state === 'connecting'
+          ? 'ia.gateway.popover_connecting'
+          : 'ia.gateway.popover_offline',
+      'state'
+    )
+  }, [])
 
   // Both jumps open the system panel, which owns the full view — so dismiss the
   // little status popover on the way out.
   const openSystem = () => {
+    recordIaAction('ia.gateway.system')
     onClose()
     onOpenSystem()
   }
@@ -111,6 +125,7 @@ export function GatewayMenuPanel({
       return
     }
 
+    recordIaAction('ia.gateway.reconnect')
     setReconnecting(true)
     void reconnectGateway()
       .catch(err => notifyError(err, copy.reconnectGateway))
@@ -217,7 +232,10 @@ export function GatewayMenuPanel({
             <SectionLabel>{copy.recentActivity}</SectionLabel>
             <Button
               className="-mr-2 h-auto py-0 font-medium leading-none text-muted-foreground"
-              onClick={openSystem}
+              onClick={() => {
+                recordIaAction('ia.gateway.logs')
+                openSystem()
+              }}
               size="xs"
               type="button"
               variant="text"

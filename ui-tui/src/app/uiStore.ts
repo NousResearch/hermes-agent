@@ -26,6 +26,7 @@ const buildUiState = (): UiState => ({
   inlineDiffs: true,
   inlineImages: true,
   mouseTracking: MOUSE_TRACKING,
+  copyOnSelect: 'auto',
   notice: null,
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,

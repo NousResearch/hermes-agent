@@ -250,6 +250,17 @@ display:
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
   inline_images: auto        # auto | kitty | iterm | unicode | off — see the CLI guide's "Inline Images"
+  copy_on_select: auto       # auto | on | off (or true/false for back-compat).
+                             #   auto  — copy a finished mouse drag to the clipboard when the
+                             #             TUI host is macOS or the session is an inbound SSH
+                             #             session (a remote client has no native selection
+                             #             path while the app holds the alt screen); plain
+                             #             local Linux/Windows sessions stay off because
+                             #             X11/Wayland already copy selections themselves
+                             #   on    — always copy a finished selection to the clipboard
+                             #   off   — never copy automatically
+                             #   Boot override: HERMES_TUI_COPY_ON_SELECT=on|off, mirroring
+                             #   the HERMES_TUI_MOUSE_TRACKING force-a-value knob
 ```
 
 Runtime toggles:

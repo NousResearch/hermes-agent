@@ -36,9 +36,10 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { t } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
+import { copyOnSelectEnabled } from '../lib/copyOnSelect.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -415,7 +416,7 @@ export function useMainApp(gw: GatewayClient) {
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
+    if (!copyOnSelectEnabled(undefined, undefined, ui.copyOnSelect)) {
       return
     }
 
@@ -439,7 +440,7 @@ export function useMainApp(gw: GatewayClient) {
       lastCopiedVersionRef.current = version
       void selection.copySelectionNoClear()
     })
-  }, [selection])
+  }, [selection, ui.copyOnSelect])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()

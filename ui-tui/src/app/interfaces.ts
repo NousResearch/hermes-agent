@@ -14,6 +14,7 @@ import type {
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
+import type { CopyOnSelectSetting } from '../lib/copyOnSelect.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -354,6 +355,7 @@ export interface UiState {
   // `display.inline_images` isn't off: transcript rows draw (and reserve rows for) their images.
   inlineImages: boolean
   mouseTracking: MouseTrackingMode
+  copyOnSelect: CopyOnSelectSetting
   notice: Notice | null
   pasteCollapseLines: number
   pasteCollapseChars: number

@@ -6,6 +6,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { syncTuiLocale } from '../i18n/loader.js'
 import { t } from '../i18n/runtime.js'
+import { normalizeCopyOnSelect } from '../lib/copyOnSelect.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -359,6 +360,7 @@ export const applyDisplay = (
     inlineDiffs: d.inline_diffs !== false,
     inlineImages: inlineImagesEnabled(d.inline_images),
     mouseTracking: normalizeMouseTracking(d),
+    copyOnSelect: normalizeCopyOnSelect(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),

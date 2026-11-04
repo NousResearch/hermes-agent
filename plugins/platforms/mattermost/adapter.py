@@ -654,7 +654,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 def interactive_setup() -> None:
     """Guide the user through Mattermost bot setup (URL + token, allowlist, home channel)."""
     from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.cli_output import prompt, print_header, print_info, print_success
+    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
     from hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
@@ -693,7 +693,11 @@ def interactive_setup() -> None:
     info("📬 Home Channel: where Hermes delivers cron job results and notifications.",
          "   To get a channel ID: click channel name → View Info → copy the ID",
          "   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
+    while True:
+        home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
+        if not home_channel or re.fullmatch(r"[A-Za-z0-9]{26}", home_channel):
+            break
+        print_warning("Enter the 26-character channel ID, not its name, or leave empty and use /set-home.")
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
     elif remove_env_value("MATTERMOST_HOME_CHANNEL"):

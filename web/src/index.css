@@ -170,6 +170,12 @@ code { font-size: 0.875rem; }
   --color-muted-foreground: var(--color-text-secondary);
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-accent-foreground: var(--midground);
+  /* Code chip surfaces for chat markdown. `secondary` (6%) is too close to
+     the bubble card (4%) to read as a distinct area, so inline snippets and
+     fences get their own token with a clearly stronger tint plus a hairline
+     edge that follows the active theme's own palette. */
+  --color-code-chip: color-mix(in srgb, var(--midground-base) 14%, var(--background-base));
+  --color-code-chip-border: color-mix(in srgb, var(--midground-base) 26%, var(--background-base));
   --color-destructive: #fb2c36;
   --color-destructive-foreground: #ffffff;
   --color-success: #4ade80;

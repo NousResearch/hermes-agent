@@ -611,7 +611,8 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
+    name: str, file_path: str | None = None, task_id: str | None = None,
+    session_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "<plugin>:<skill>" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
@@ -631,6 +632,14 @@ def skill_view(
         if local_category_name and (lookup_error := skill_lookup_path_error(local_category_name)):
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         roots, active_skills_dir = skill_search_dirs()
+        # Drafts are never catalogued.  The exact creating session may request
+        # its own draft explicitly; loading it activates the read-only tool
+        # envelope enforced by registry.dispatch.
+        from tools.skill_lifecycle import proposal_for_session, restrict_session
+        if proposal := proposal_for_session(name, session_id):
+            from agent.skill_utils import TIER_LOCAL
+            roots = [(TIER_LOCAL, proposal.parent)] + roots
+            restrict_session(session_id)
         all_dirs = [d for _t, d in roots]
         error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:
@@ -766,7 +775,8 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id,
+                        session_id=kw.get("session_id"))
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):

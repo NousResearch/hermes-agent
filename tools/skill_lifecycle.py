@@ -1,0 +1,254 @@
+"""Profile-local proposed→active skill lifecycle and scheduled GitHub review batches."""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone, UTC
+from pathlib import Path
+from typing import Any, Callable
+
+from hermes_constants import get_hermes_home
+from utils import atomic_write_text
+
+RISKS = frozenset({"read-only", "write", "send", "credentials"})
+NIGHTLY_SCHEDULE, DIGEST_SCHEDULE, MONTHLY_SCHEDULE = "0 1 * * *", "30 7 * * *", "0 8 1 * *"
+LIFECYCLE_TIMEZONE = "America/Chicago"
+_META = ".proposal.json"
+
+
+def roots(home: Path | None = None) -> tuple[Path, Path]:
+    base = Path(home) if home is not None else get_hermes_home()
+    return base / "skills" / "active", base / "skills" / "proposed"
+
+
+def ensure_layout(home: Path | None = None) -> tuple[Path, Path]:
+    active, proposed = roots(home)
+    active.mkdir(parents=True, exist_ok=True); proposed.mkdir(parents=True, exist_ok=True)
+    return active, proposed
+
+
+def bootstrap_layout(home: Path | None = None) -> dict[str, Any]:
+    """Atomically migrate legacy skill packages before enabling active-only discovery."""
+    base = Path(home) if home is not None else get_hermes_home(); root = base / "skills"
+    legacy = sorted({p.parent for p in root.glob("*/SKILL.md")}) if root.is_dir() else []
+    active = root / "active"
+    collisions = [p.name for p in legacy if (active / p.name).exists()]
+    if collisions:
+        raise FileExistsError("active-name-collision: " + ", ".join(collisions))
+    active.mkdir(parents=True, exist_ok=True); (root / "proposed").mkdir(parents=True, exist_ok=True)
+    moved = []
+    for package in legacy:
+        package.replace(active / package.name); moved.append(package.name)
+    marker = root / ".lifecycle-enabled.json"
+    atomic_write_text(marker, json.dumps({"version": 1, "migrated": moved}, sort_keys=True) + "\n", create_mode=0o600)
+    return {"migrated": moved, "marker": str(marker)}
+
+
+def proposal_metadata(skill_dir: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((skill_dir / _META).read_text(encoding="utf-8")); return value if isinstance(value, dict) else {}
+    except (OSError, ValueError): return {}
+
+
+def create_proposal(name: str, content: str, *, session_id: str, risk: str, why: dict[str, Any],
+                    home: Path | None = None, creator_identity: str | None = None,
+                    creator_capabilities: set[str] | None = None) -> Path:
+    if not session_id: raise ValueError("automatic skill creation requires a creating session_id")
+    if risk not in RISKS: raise ValueError(f"risk must be one of: {', '.join(sorted(RISKS))}")
+    required = ("need", "tools", "example_run")
+    if not isinstance(why, dict) or any(not why.get(k) for k in required):
+        raise ValueError("why requires non-empty need, tools, and example_run fields")
+    _active, proposed = ensure_layout(home); target = proposed / name; target.mkdir(exist_ok=False)
+    atomic_write_text(target / "SKILL.md", content, create_mode=0o644)
+    tools = why["tools"] if isinstance(why["tools"], list) else [why["tools"]]
+    atomic_write_text(target / "why.md", f"# Why {name}\n\n## Need\n{why['need']}\n\n## Tools\n" + "\n".join(f"- {x}" for x in tools) + f"\n\n## Example run\n{why['example_run']}\n\n## Risk\n{risk}\n", create_mode=0o644)
+    meta = {"name": name, "creating_session_id": session_id, "creator_identity": creator_identity or session_id,
+            "creator_capabilities": sorted(creator_capabilities or ()), "risk": risk,
+            "created_at": datetime.now(UTC).isoformat(), "status": "proposed"}
+    atomic_write_text(target / _META, json.dumps(meta, indent=2, sort_keys=True) + "\n", create_mode=0o600)
+    return target
+
+
+def proposal_for_session(name: str, session_id: str | None, home: Path | None = None) -> Path | None:
+    candidate = roots(home)[1] / name; meta = proposal_metadata(candidate)
+    return candidate if candidate.is_dir() and session_id and meta.get("creating_session_id") == session_id else None
+
+
+_RESTRICTED_SESSIONS: set[str] = set()
+_SAFE_TOOLS = frozenset({"skills_list", "skill_view", "read_file", "search_files", "web_search", "web_extract", "vision_analyze"})
+def restrict_session(session_id: str | None) -> None:
+    if session_id: _RESTRICTED_SESSIONS.add(session_id)
+def tool_allowed(session_id: str | None, tool_name: str) -> bool:
+    return not session_id or session_id not in _RESTRICTED_SESSIONS or tool_name in _SAFE_TOOLS
+
+def assert_secret_access_allowed(session_id: str | None) -> None:
+    """Call before any profile secret provider is constructed or .env is read."""
+    if session_id and session_id in _RESTRICTED_SESSIONS:
+        raise PermissionError("proposed-skill sessions cannot load secrets")
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    passed: bool; findings: tuple[str, ...]; eval_passed: bool; evidence: dict[str, Any] | None = None
+
+_PATTERNS = {
+ "url-or-webhook": re.compile(r"https?://|webhook", re.IGNORECASE), "slash-command": re.compile(r"(?m)(?:^|\s)/(?:[a-z][\w-]{1,})\b"),
+ "secret-path": re.compile(r"(?:\.env|auth\.json|credentials?|keychain|/secrets?\b)", re.IGNORECASE),
+ "send-call": re.compile(r"\b(?:send|post_message|send_email|slack|imessage)\b", re.IGNORECASE),
+ "write-call": re.compile(r"\b(?:write_file|patch|skill_manage|rm\s|unlink|rmtree)\b", re.IGNORECASE),
+}
+_B64 = re.compile(r"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?![A-Za-z0-9+/])")
+
+def _encoded_payload(text: str) -> bool:
+    for token in _B64.findall(text):
+        try: decoded = base64.b64decode(token, validate=True)
+        except (binascii.Error, ValueError): continue
+        if decoded and (any(b < 9 or 13 < b < 32 for b in decoded) or re.search(rb"https?://|BEGIN [A-Z ]+KEY|token|password|webhook", decoded, re.IGNORECASE)):
+            return True
+    return False
+
+
+def _run_eval(skill_dir: Path) -> tuple[bool, dict[str, Any]]:
+    """Execute a defined, side-effect-free load/use eval and capture evidence."""
+    from agent.skill_utils import parse_frontmatter
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8"); fm, body = parse_frontmatter(text)
+        why = (skill_dir / "why.md").read_text(encoding="utf-8")
+        passed = bool(fm.get("name") and fm.get("description") and body.strip() and "## Example run" in why)
+        return passed, {"case": "parse-and-example-run", "name": fm.get("name"), "body_chars": len(body), "passed": passed}
+    except Exception as exc:
+        return False, {"case": "parse-and-example-run", "passed": False, "error": type(exc).__name__}
+
+
+def deterministic_scan(skill_dir: Path) -> ScanResult:
+    findings: set[str] = set()
+    for path in sorted(p for p in skill_dir.rglob("*") if p.is_file() and p.name != _META):
+        try: text = path.read_text(encoding="utf-8")
+        except UnicodeError: findings.add("non-utf8"); continue
+        if any(unicodedata.category(ch) in {"Cf", "Cs"} for ch in text): findings.add("hidden-unicode")
+        for label, pattern in _PATTERNS.items():
+            if pattern.search(text): findings.add(label)
+        if _encoded_payload(text): findings.add("encoded-payload")
+    eval_passed, evidence = _run_eval(skill_dir)
+    return ScanResult(not findings and eval_passed, tuple(sorted(findings)), eval_passed, evidence)
+
+
+def _approval_conflict(meta: dict[str, Any], reviewer: dict[str, Any] | None) -> bool:
+    if not reviewer: return False
+    if reviewer.get("identity") == meta.get("creator_identity"): return True
+    requested = set(meta.get("creator_capabilities") or ()) | ({meta.get("risk")} - {"read-only"})
+    return bool(requested & set(reviewer.get("capabilities") or ()))
+
+
+def review_proposals(home: Path | None = None, *, booth_approved: set[str] | None = None,
+                     reviewer_session_id: str | None = None, reviewer: dict[str, Any] | None = None,
+                     apply: bool = True) -> dict[str, Any]:
+    active, proposed = ensure_layout(home); approved = booth_approved or set()
+    if reviewer_session_id and reviewer is None: reviewer = {"identity": reviewer_session_id, "capabilities": []}
+    outcome = {"merged": [], "waiting_approval": [], "rejected": []}
+    for skill_dir in sorted(p for p in proposed.iterdir() if p.is_dir()):
+        meta = proposal_metadata(skill_dir); scan = deterministic_scan(skill_dir); name, risk = skill_dir.name, meta.get("risk")
+        evidence = {"scan": list(scan.findings), "eval": scan.evidence}
+        if not scan.passed:
+            outcome["rejected"].append({"name": name, "reasons": list(scan.findings) or ["eval-failed"], "decision": "rewrite-or-delete", "evidence": evidence}); continue
+        if risk != "read-only" and (name not in approved or _approval_conflict(meta, reviewer)):
+            reason = "reviewer access conflict" if _approval_conflict(meta, reviewer) else "Booth approval required for access widening"
+            outcome["waiting_approval"].append({"name": name, "risk": risk, "reason": reason, "evidence": evidence}); continue
+        destination = active / name
+        if destination.exists(): outcome["rejected"].append({"name": name, "reasons": ["active-name-collision"], "decision": "rewrite", "evidence": evidence}); continue
+        if apply:
+            meta.update(status="active", promoted_at=datetime.now(UTC).isoformat())
+            atomic_write_text(skill_dir / _META, json.dumps(meta, indent=2, sort_keys=True) + "\n", preserve_mode=True); skill_dir.replace(destination)
+        outcome["merged"].append({"name": name, "risk": risk, "evidence": evidence})
+    return outcome
+
+
+def write_batch_report(outcome: dict[str, Any], home: Path | None = None) -> Path:
+    base = Path(home) if home is not None else get_hermes_home(); d = base / "skills" / ".lifecycle"; d.mkdir(parents=True, exist_ok=True)
+    path = d / "latest.json"; atomic_write_text(path, json.dumps(outcome, indent=2, sort_keys=True) + "\n", create_mode=0o600); return path
+
+def morning_digest(home: Path | None = None) -> str:
+    base = Path(home) if home is not None else get_hermes_home()
+    try: data = json.loads((base / "skills" / ".lifecycle" / "latest.json").read_text())
+    except (OSError, ValueError): data = {"merged": [], "waiting_approval": [], "rejected": []}
+    lines = ["Skill lifecycle digest"]
+    for key, title in (("merged","Merged"),("waiting_approval","Waiting approval"),("rejected","Rejected")):
+        rows=data.get(key) or []; lines.append(f"{title}: {len(rows)}")
+        for row in rows: lines.append(f"- {row.get('name')}: {row.get('reason') or ', '.join(row.get('reasons', []))}".rstrip(": "))
+    return "\n".join(lines)
+
+def archive_review_candidates(home: Path | None = None, *, now: datetime | None = None, idle_days: int = 60) -> list[str]:
+    base=Path(home) if home is not None else get_hermes_home(); active,_=roots(base)
+    try: usage=json.loads((base/"skills"/".usage.json").read_text())
+    except (OSError,ValueError): usage={}
+    cutoff=(now or datetime.now(UTC)).timestamp()-idle_days*86400; flagged=[]
+    for skill in sorted(p.name for p in active.iterdir() if p.is_dir()) if active.is_dir() else []:
+        stamp=(usage.get(skill) or {}).get("last_used_at") or (usage.get(skill) or {}).get("last_activity_at")
+        try: ts=datetime.fromisoformat(str(stamp)).timestamp()
+        except (TypeError,ValueError): ts=0
+        if ts<cutoff: flagged.append(skill)
+    return flagged
+
+def freeze_inventory(home: Path | None = None) -> dict[str, Any]:
+    root=(Path(home) if home is not None else get_hermes_home())/"skills"; rows=[]
+    for md in sorted(root.rglob("SKILL.md")) if root.is_dir() else []:
+        package=md.parent; files=[]
+        for p in sorted(x for x in package.rglob("*") if x.is_file()): files.append({"path":str(p.relative_to(root)),"sha256":hashlib.sha256(p.read_bytes()).hexdigest()})
+        rows.append({"path":str(md.relative_to(root)),"sha256":hashlib.sha256(md.read_bytes()).hexdigest(),"files":files})
+    return {"skills_root":str(root),"count":len(rows),"file_count":sum(len(x["files"]) for x in rows),"skills":rows}
+
+
+def lifecycle_job_specs(deliver: str = "origin") -> list[dict[str, Any]]:
+    py=sys.executable; module="tools.skill_lifecycle"
+    return [
+      {"name":"skill-lifecycle-nightly","schedule":NIGHTLY_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} nightly',"no_agent":True,"deliver":"local"},
+      {"name":"skill-lifecycle-digest","schedule":DIGEST_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} digest',"no_agent":True,"deliver":deliver},
+      {"name":"skill-lifecycle-archive-review","schedule":MONTHLY_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} archive',"no_agent":True,"deliver":deliver},]
+
+def install_lifecycle_jobs(home: Path | None = None, *, deliver: str = "origin") -> list[dict[str, Any]]:
+    from cron.jobs import create_job, load_jobs, use_cron_store
+    base=Path(home) if home is not None else get_hermes_home(); created=[]
+    with use_cron_store(base):
+        existing={j.get("name") for j in load_jobs()}
+        for spec in lifecycle_job_specs(deliver):
+            if spec["name"] not in existing: created.append(create_job(prompt="", **spec))
+    return created
+
+def _gh(args:list[str], cwd:Path, *, check:bool=True)->subprocess.CompletedProcess[str]:
+    return subprocess.run(["gh",*args],cwd=cwd,text=True,capture_output=True,check=check)
+def parse_booth_approvals(text:str)->set[str]:
+    return set(re.findall(r"(?im)^\s*APPROVE-SKILL:\s*([a-z0-9._-]+)\s*$",text or ""))
+def checks_pass_exact_head(repo:Path, pr:int, expected_head:str)->bool:
+    view=json.loads(_gh(["pr","view",str(pr),"--json","headRefOid,statusCheckRollup"],repo).stdout)
+    checks=view.get("statusCheckRollup") or []
+    return view.get("headRefOid")==expected_head and bool(checks) and all((c.get("conclusion") or c.get("state")) in {"SUCCESS","NEUTRAL","SKIPPED"} for c in checks)
+
+def nightly_batch(repo: Path, home: Path | None = None, *, implementation_pr: int = 148971) -> dict[str,Any]:
+    """Create exactly one review PR; mutation/merge occurs only through that PR lineage."""
+    _gh(["auth","status"],repo); outcome=review_proposals(home,apply=False)
+    if not any(outcome.values()): write_batch_report(outcome,home); return outcome
+    stamp=datetime.now(UTC).strftime("%Y%m%d"); branch=f"skill-lifecycle/{stamp}"
+    _gh(["checkout","-B",branch],repo); evidence=repo/".hermes"/"skill-lifecycle"/f"{stamp}.json"; evidence.parent.mkdir(parents=True,exist_ok=True)
+    atomic_write_text(evidence,json.dumps(outcome,indent=2,sort_keys=True)+"\n",create_mode=0o644)
+    _gh(["add",str(evidence)],repo); _gh(["commit","-m",f"chore(skills): lifecycle batch {stamp}"],repo); _gh(["push","-u","fork",branch,"--force-with-lease"],repo)
+    title=f"chore(skills): lifecycle batch {stamp}"
+    cp=_gh(["pr","create","--title",title,"--body",f"Automated lifecycle evidence. Access-widening requires `APPROVE-SKILL: name` from Booth.\n\nImplementation PR #{implementation_pr} is excluded.","--base","main","--head",branch],repo)
+    outcome["pr_url"]=cp.stdout.strip(); write_batch_report(outcome,home); return outcome
+
+def main(argv:list[str]|None=None)->int:
+    action=(argv or sys.argv[1:] or [""])[0]
+    if action=="install": print(json.dumps(install_lifecycle_jobs(),indent=2)); return 0
+    if action=="digest": print(morning_digest()); return 0
+    if action=="archive": print(json.dumps({"archive_review":archive_review_candidates()})); return 0
+    if action=="nightly": print(json.dumps(nightly_batch(Path.cwd()),indent=2)); return 0
+    raise SystemExit("usage: python -m tools.skill_lifecycle {install|nightly|digest|archive}")
+if __name__=="__main__": raise SystemExit(main())

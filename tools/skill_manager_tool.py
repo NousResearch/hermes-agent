@@ -465,12 +465,30 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 # --- Core actions -------------------------------------------------------------
 
-def _create_skill(name: str, content: str, category: str | None = None) -> dict[str, Any]:
+def _create_skill(name: str, content: str, category: str | None = None, *,
+                  session_id: str | None = None, risk: str | None = None,
+                  why: dict[str, Any] | None = None) -> dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
                or _validate_frontmatter(content) or _validate_content_size(content)):
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+    # Agent/tool creations are proposals.  Calls without session identity are
+    # retained for user-driven CLI/migration compatibility.
+    if session_id:
+        try:
+            from tools.skill_lifecycle import create_proposal
+            skill_dir = create_proposal(
+                name, content, session_id=session_id, risk=risk or "read-only",
+                why=why or {}, home=get_hermes_home())
+        except (OSError, ValueError) as exc:
+            return _err(str(exc))
+        result = {"success": True, "message": f"Skill '{name}' proposed (not active).",
+                  "path": str(skill_dir), "skill_md": str(skill_dir / "SKILL.md"),
+                  "risk": risk or "read-only", "status": "proposed",
+                  "_change": {"description": _description_preview(content)}}
+        _attach_lint_findings(_add_description_prompt_preview(result, content), skill_dir / "SKILL.md")
+        return result
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
@@ -701,15 +719,21 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     return _run_write_gate(_staging)
 
 
-_FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
+_FLAT_OP_KEYS = ("content", "category", "risk", "why", "file_path", "file_content", "old_string", "new_string",
                  "absorbed_into", "operations")
 
 
 def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
-    """Call ``skill_manage`` with the flat-shape fields (and absorbed_into/operations) of ``payload``."""
+    """Call ``skill_manage`` with the flat-shape fields of ``payload``.
+
+    Persisted approval records carry ``session_id`` separately from the public
+    operation shape so an approved create still lands in that session's proposed
+    root rather than silently becoming active.
+    """
+    session_id = extra.pop("session_id", None) or payload.get("session_id")
     return skill_manage(
         action=payload.get("action", ""), name=payload.get("name", ""),
-        replace_all=payload.get("replace_all", False),
+        replace_all=payload.get("replace_all", False), session_id=session_id,
         **{k: payload.get(k) for k in _FLAT_OP_KEYS}, **extra)
 
 
@@ -735,7 +759,8 @@ def _act_patch(a):
 # action -> handler(args dict) returning a result dict, or a tool_error JSON string for
 # argument-shape errors. "edit" is a legacy alias for a full rewrite (not in the schema).
 _ACTION_HANDLERS = {
-    "create": lambda a: _create_skill(a["name"], a["content"], a["category"]),
+    "create": lambda a: _create_skill(a["name"], a["content"], a["category"],
+                                      session_id=a.get("session_id"), risk=a.get("risk"), why=a.get("why")),
     "edit": lambda a: _edit_skill(a["name"], a["content"]),
     "patch": _act_patch,
     "delete": lambda a: _delete_skill(a["name"], absorbed_into=a["absorbed_into"]),
@@ -784,6 +809,7 @@ def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
+    risk: str | None = None, why: dict[str, Any] | None = None,
     session_id: str | None = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
@@ -794,7 +820,8 @@ def skill_manage(
         return json.dumps(preflight, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
-    args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
+    args = dict(content=content, category=category, risk=risk, why=why,
+                session_id=session_id, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
@@ -898,7 +925,15 @@ SKILL_MANAGE_SCHEMA = {
                                     "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
                         "category": {"type": "string",
                                      "description": "Optional category subdir (e.g. 'devops')."},
-                    }, ("content",)),
+                        "risk": {"type": "string", "enum": ["read-only", "write", "send", "credentials"],
+                                 "description": "Required capability risk classification."},
+                        "why": {"type": "object", "additionalProperties": False,
+                                "properties": {
+                                    "need": {"type": "string"},
+                                    "tools": {"type": "array", "items": {"type": "string"}},
+                                    "example_run": {"type": "string"}},
+                                "required": ["need", "tools", "example_run"]},
+                    }, ("content", "risk", "why")),
                     _op_schema("patch", {
                         "old_string": _OLD_STRING, "new_string": _NEW_STRING,
                         "replace_all": {"type": "boolean",

@@ -976,6 +976,18 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        # Loading a session-bound proposed skill puts that creating session in a
+        # deterministic read-only capability envelope.  Enforcement belongs at
+        # dispatch so aliases/plugins cannot bypass it.
+        try:
+            from tools.skill_lifecycle import tool_allowed
+            if not tool_allowed(kwargs.get("session_id"), name):
+                return tool_error(
+                    "Proposed skills run read-only in their creating session; write, send, and secret tools are disabled.",
+                    error_type="proposed_skill_capability")
+        except Exception:
+            logger.exception("Proposed-skill capability check failed")
+            return tool_error("Proposed-skill capability check failed closed.")
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``

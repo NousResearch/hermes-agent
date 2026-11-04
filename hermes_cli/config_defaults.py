@@ -1433,6 +1433,16 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
+        # Agent-created skills are staged under proposed/ and only active/ is
+        # normally loadable. Lifecycle jobs use one pinned wall-clock zone.
+        "lifecycle": {
+            "enabled": True,
+            "timezone": "America/Chicago",
+            "nightly_schedule": "0 1 * * *",
+            "digest_schedule": "30 7 * * *",
+            "archive_review_schedule": "0 8 1 * *",
+            "unused_days": 60,
+        },
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to

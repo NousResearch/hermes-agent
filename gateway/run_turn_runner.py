@@ -503,30 +503,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
         # The post-turn review is spawned from the agent thread before the gateway drains a
         # same-session message queued while that turn was busy. Give review admission a
-        # non-consuming, body-free probe so foreground follow-ups win without a review request.
-        followup_state = None
-        followup_epoch = 0
-        state_factory = getattr(ctx._status_adapter, "followup_admission_state", None)
-        if ctx.session_key and callable(state_factory):
-            followup_state = state_factory(ctx.session_key)
-            with followup_state.lock:
-                followup_epoch = followup_state.epoch
+        # non-consuming, body-free probe so foreground follow-ups win without a review request
+        # (``followup_pending_callback``; its durable-FIFO read is sampled off the admission
+        # lock, ``followup_pending_sample``, so no SQLite I/O runs under the gateway's fence).
+        from gateway.run_turn_followup_probe import install_followup_probe
 
-        def _followup_pending() -> bool:
-            probe = getattr(ctx._status_adapter, "has_pending_message", None)
-            if not (ctx.session_key and callable(probe)):
-                return False
-            if followup_state is None:
-                return bool(probe(ctx.session_key) or runner._overflow_queue(ctx.session_key))
-            with followup_state.lock:
-                return bool(
-                    followup_state.epoch != followup_epoch
-                    or probe(ctx.session_key)
-                    or runner._overflow_queue(ctx.session_key)
-                )
-
-        agent.followup_pending_callback = _followup_pending
-        agent.followup_pending_lock = getattr(followup_state, "lock", None)
+        # The overflow FIFO is resolved at probe time, as every other runner read here is.
+        install_followup_probe(
+            agent, ctx._status_adapter, ctx.session_key, lambda key: runner._overflow_queue(key)
+        )
         register_cancel = getattr(ctx._status_adapter, "register_followup_review_cancel", None)
         if ctx.session_key and callable(register_cancel):
             def _cancel_review_for_followup() -> None:

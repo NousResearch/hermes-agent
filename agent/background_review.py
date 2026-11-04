@@ -32,7 +32,8 @@ class _BackgroundReviewRun:
     HERE, at admission. The pre-spawn checks cannot be the last word: building the fork takes
     real time, and a gateway follow-up queued in that window only becomes a live turn after it is
     delivered — so without this gate the review would still get its full-transcript request onto
-    the wire first. Automatic admission takes the follow-up lock, samples the gate with no other
+    the wire first. Automatic admission runs ``admission_sample`` with no lock held (the host
+    probe's durable-FIFO read: SQLite), takes the follow-up lock, samples the gate with no other
     lock held (the host probe takes gateway state), then the foreground registry lock for the
     live-turn re-check (``live_turn_gate``, registry reads only) and the publication, then the
     run lock. /refine passes no gate: an explicit review is never preempted.
@@ -45,6 +46,7 @@ class _BackgroundReviewRun:
         foreground_admission_lock: Any = None,
         followup_cancellable: bool = True,
         live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
+        admission_sample: Optional[Callable[[], None]] = None,
     ) -> None:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
@@ -54,6 +56,7 @@ class _BackgroundReviewRun:
         self.lease_yield_reason: Optional[str] = None
         self._lock = threading.Lock()
         self._admission_gate = admission_gate
+        self._admission_sample = admission_sample
         self._live_turn_gate = live_turn_gate
         self._admission_lock = admission_lock
         self._foreground_admission_lock = foreground_admission_lock
@@ -67,20 +70,25 @@ class _BackgroundReviewRun:
     def begin_request(self, review_agent: Any) -> bool:
         """Atomically admit the first provider-capable review phase.
 
-        The follow-up admission scope is held for the whole sample -> publication window, so a
+        The follow-up admission scope is held for the whole gate -> publication window, so a
         queue insertion either lands first (and the gate refuses) or finds a published fork to
-        cancel. The foreground registry lock is NOT held across the gate: the host probe takes
-        the gateway's per-session state lock, and the gateway's queue fence holds a state lock
-        while it cancels through the registry — a later activation of the same session key owns
-        a fresh state, so a probe holding the registry lock and reaching that state inverts the
-        two orders and wedges the gateway event loop behind a review. The registry lock is taken
-        only for ``live_turn_gate`` (registry reads) together with the publication, so a live-turn
-        registration either lands before that re-check (and refuses) or after the publication
-        (and finds the fork). The RUN lock is taken only for the flag reads and the publication,
-        never across either gate: the fence takes the run lock after its state lock.
+        cancel. The host probe's durable read (``admission_sample``: the gateway's SQLite FIFO)
+        runs BEFORE that scope is entered: the gateway loop takes the same per-session lock for
+        every follow-up it accepts, and the probe's epoch compare under the lock catches an
+        insertion that landed after the sample. The foreground registry lock is NOT held across
+        the gate: the host probe takes the gateway's per-session state lock, and the gateway's
+        queue fence holds a state lock while it cancels through the registry — a later
+        activation of the same session key owns a fresh state, so a probe holding the registry
+        lock and reaching that state inverts the two orders and wedges the gateway event loop
+        behind a review. The registry lock is taken only for ``live_turn_gate`` (registry reads)
+        together with the publication, so a live-turn registration either lands before that
+        re-check (and refuses) or after the publication (and finds the fork). The RUN lock is
+        taken only for the flag reads and the publication, never across either gate: the fence
+        takes the run lock after its state lock.
         """
         admission_scope = self._admission_lock or nullcontext()
         foreground_scope = self._foreground_admission_lock or nullcontext()
+        self._take_admission_sample()
         with admission_scope:
             if self._fenced():
                 return False
@@ -98,6 +106,16 @@ class _BackgroundReviewRun:
                         return False
                     self._review_agent = review_agent
                     return True
+
+    def _take_admission_sample(self) -> None:
+        """The host's lock-free sample for the gate (SQLite: never under the admission lock). A
+        hook that raises is logged, not fatal: the gate samples on its own and fails safe."""
+        if self._admission_sample is None:
+            return
+        try:
+            self._admission_sample()
+        except Exception:
+            logger.debug("Background review admission sample failed", exc_info=True)
 
     def _fenced(self) -> bool:
         """Whether this run is already cancelled or past its request phase."""
@@ -253,6 +271,7 @@ def prepare_background_review_run(
     session_id: Optional[str] = None,
     profile_key: Optional[str] = None,
     live_turn_gate: Optional[Callable[[], Optional[str]]] = None,
+    admission_sample: Optional[Callable[[], None]] = None,
 ) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun(
@@ -261,6 +280,7 @@ def prepare_background_review_run(
         foreground_admission_lock,
         followup_cancellable,
         live_turn_gate=live_turn_gate,
+        admission_sample=admission_sample,
     )
     review_session_id = str(
         session_id if session_id is not None else getattr(agent, "session_id", None) or ""
@@ -1909,6 +1929,9 @@ def spawn_background_review_thread(
             ),
             admission_lock=(
                 getattr(agent, "followup_pending_lock", None) if automatic else None
+            ),
+            admission_sample=(
+                getattr(agent, "followup_pending_sample", None) if automatic else None
             ),
             foreground_admission_lock=(
                 review_admission.admission_lock() if automatic else None

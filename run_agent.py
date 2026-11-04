@@ -905,6 +905,7 @@ class AIAgent(
             )
             return
         admission_gate = admission_lock = foreground_admission_lock = live_turn_gate = None
+        admission_sample = None
         if automatic:
             if _review_profile_key is None:
                 _review_profile_key = review_admission.current_profile_key()
@@ -915,12 +916,14 @@ class AIAgent(
                 _review_session_id, _spawning_turn_token, _review_profile_key
             )
             admission_lock = getattr(self, "followup_pending_lock", None)
+            admission_sample = getattr(self, "followup_pending_sample", None)
             foreground_admission_lock = review_admission.admission_lock()
 
         review_run = prepare_background_review_run(
             self,
             admission_gate=admission_gate,
             admission_lock=admission_lock,
+            admission_sample=admission_sample,
             foreground_admission_lock=foreground_admission_lock,
             followup_cancellable=automatic,
             session_id=_review_session_id,

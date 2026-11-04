@@ -96,11 +96,16 @@ def test_followup_probe_tracks_the_current_session_without_consuming_it(monkeypa
     assert adapter._text_debounce["session-key"] is debounced
 
 
-@pytest.mark.parametrize("broken_probe", ["has_pending_message", "overflow_queue"])
+@pytest.mark.parametrize(
+    "broken_probe",
+    ["has_pending_message_in_memory", "has_durable_followup", "overflow_queue"],
+)
 def test_raising_adapter_probe_reads_as_admission_failure(monkeypatch, broken_probe):
     """The gateway-installed probe must propagate an adapter failure, never swallow it as "no
     follow-up": unknown foreground state reads as ``admission_probe_failed`` and blocks the
-    automatic review instead of authorizing a full-transcript request."""
+    automatic review instead of authorizing a full-transcript request. Each of its three reads
+    — the in-memory slot read under the lock, the durable FIFO sample off it, the runner's
+    overflow FIFO — fails the same way."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = object.__new__(BasePlatformAdapter)
     adapter._post_delivery_callbacks = {}
@@ -109,11 +114,11 @@ def test_raising_adapter_probe_reads_as_admission_failure(monkeypatch, broken_pr
     def _boom(_key):
         raise RuntimeError(f"{broken_probe} failed")
 
-    if broken_probe == "has_pending_message":
-        adapter.has_pending_message = _boom
-        agent = _wire_with_adapter(adapter)
-    else:
+    if broken_probe == "overflow_queue":
         agent = _wire_with_adapter(adapter, overflow_probe=_boom)
+    else:
+        setattr(adapter, broken_probe, _boom)
+        agent = _wire_with_adapter(adapter)
 
     with pytest.raises(RuntimeError):
         agent.followup_pending_callback()
@@ -1198,10 +1203,10 @@ def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
     session goes idle (cleanup pops the store entry) and turn N+1 — on a rotated session id, so
     the live-turn registry does not refuse the review first — wires a fresh state with its own
     cancel fence. The review holds turn N's state lock and, on the old code, the process-wide
-    registry lock while its probe reaches ``has_pending_message``, which took the CURRENT store
-    entry's lock; the gateway loop, inside a fenced slot write under that fresh lock, ran the
-    cancel callback into the registry lock. Two threads, two locks, opposite order: the gateway
-    event loop froze for every session the process serves.
+    registry lock while its probe reaches the adapter's in-memory read, which took the CURRENT
+    store entry's lock; the gateway loop, inside a fenced slot write under that fresh lock, ran
+    the cancel callback into the registry lock. Two threads, two locks, opposite order: the
+    gateway event loop froze for every session the process serves.
     """
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     monkeypatch.setattr(
@@ -1247,14 +1252,14 @@ def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
 
     review_in_probe = threading.Event()
     gateway_holds_fresh_state = threading.Event()
-    original_probe = adapter.has_pending_message
+    original_probe = adapter.has_pending_message_in_memory
 
     def _probe(key):
         review_in_probe.set()
         gateway_holds_fresh_state.wait(timeout=5.0)
         return original_probe(key)
 
-    adapter.has_pending_message = _probe
+    adapter.has_pending_message_in_memory = _probe
 
     def _mutation():
         gateway_holds_fresh_state.set()
@@ -1293,10 +1298,10 @@ def test_stale_probe_state_and_fresh_fence_state_cannot_deadlock(monkeypatch):
 
 
 def test_pending_probe_takes_no_lock_from_a_replaced_admission_state(monkeypatch):
-    """``has_pending_message`` acquires nothing: the per-turn probe closure already runs under the
-    state lock its turn captured, and the store entry may since have been replaced by a later
-    activation of the same key. Taking that entry's lock from a stale probe is a lock-order
-    inversion against the gateway fence (state lock, then registry lock)."""
+    """``has_pending_message`` acquires nothing: the per-turn probe already orders its reads
+    against the state lock its turn captured, and the store entry may since have been replaced
+    by a later activation of the same key. Taking that entry's lock from a stale probe is a
+    lock-order inversion against the gateway fence (state lock, then registry lock)."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(
         PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM

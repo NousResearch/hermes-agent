@@ -21,9 +21,11 @@ from tests.gateway.test_shared_busy_receive_loop import Adapter, _statuses
 from tests.waiting import async_wait_until
 
 
-def _wire_probe(runner, adapter, source, session_key, run_generation):
-    """The production probe for one turn (``_wire_turn_agent_callbacks``), on the real runner and adapter."""
-    agent = types.SimpleNamespace()
+def _wire_probe(runner, adapter, source, session_key, run_generation, agent=None):
+    """The production probe for one turn (``_wire_turn_agent_callbacks``), on the real runner and
+    adapter; ``agent`` lets a test wire a real ``AIAgent`` instead of a bare namespace."""
+    if agent is None:
+        agent = types.SimpleNamespace()
     ctx = types.SimpleNamespace(
         progress_callback=None,
         native_tool_start_callback=None,

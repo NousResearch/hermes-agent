@@ -9,8 +9,10 @@ the review never spawns beside, or runs beside, the follower. The same mixin com
 turn's gateway review ownership with its delivery outcome (``_take_review_delivery_callback``
 / ``_complete_review_delivery``: the completion ``gateway/run_turn_review.py`` parked on the
 live session Event) and answers the review's own pending-follow-up probe
-(``has_pending_message``). Bound into ``BasePlatformAdapter`` via the MRO; adapters override
-nothing here.
+(``has_pending_message``, split into the process-local ``has_pending_message_in_memory`` the
+turn's probe reads under the state lock and the SQLite-backed ``has_durable_followup`` it
+samples off it: ``gateway/run_turn_followup_probe.py``). Bound into ``BasePlatformAdapter`` via
+the MRO; adapters override nothing here.
 """
 
 from __future__ import annotations
@@ -367,29 +369,37 @@ class FollowupAdmissionMixin:
     def has_pending_message(self, session_key: str) -> bool:
         """Return whether a session has a queued message without consuming it.
 
-        Lock-free on purpose. The per-turn review probe already runs under the
-        ``FollowupAdmissionState`` lock its turn captured, and that lock — not this read — is what
-        orders a slot write against the review's publication (``_record_and_fence_followup_locked``
+        Lock-free on purpose. The turn's review probe (``run_turn_followup_probe``) orders its
+        reads against the ``FollowupAdmissionState`` lock its turn captured — in-memory reads
+        under it, the durable read sampled off it — and that lock, not this read, is what orders
+        a slot write against the review's publication (``_record_and_fence_followup_locked``
         bumps the epoch under it). The store entry may since have been replaced by a later
-        activation of the same key, whose lock the gateway loop holds while it cancels through the
-        review registry; a stale probe taking that lock is a lock-order inversion.
+        activation of the same key, whose lock the gateway loop holds while it cancels through
+        the review registry; a stale probe taking that lock is a lock-order inversion.
         """
+        in_memory = self.has_pending_message_in_memory(session_key)
+        return in_memory or self.has_durable_followup(session_key)
+
+    def has_pending_message_in_memory(self, session_key: str) -> bool:
+        """The process-local half of :meth:`has_pending_message`: the pending slot, the busy-text
+        debounce buffer and a same-sender busy burst still merging or committing. Dict reads
+        only, so the turn's probe may take them under the admission state lock."""
+        from gateway.session_ingress_burst import holds_busy_burst
+
         pending = getattr(self, "_pending_messages", None) or {}
         debounce = getattr(self, "_text_debounce", None) or {}
         return (
             session_key in pending
             or session_key in debounce
-            or self._shared_followup_pending(session_key)
+            or holds_busy_burst(self, session_key)
         )
 
-    def _shared_followup_pending(self, session_key: str) -> bool:
-        """A busy follow-up the shared runtime holds for ``session_key`` instead of the slot: a
-        same-sender burst still merging, or an admission already committed to the durable FIFO
-        behind the running turn. Body-free (burst keys and admission statuses only)."""
-        from gateway.session_ingress_burst import holds_busy_burst
-
-        if holds_busy_burst(self, session_key):
-            return True
+    def has_durable_followup(self, session_key: str) -> bool:
+        """The durable half of :meth:`has_pending_message`: a busy follow-up already committed to
+        the shared runtime's FIFO behind the running turn (``session_admissions`` rows, a SQLite
+        read through every authority this runner serves). Body-free (admission statuses only).
+        Never call it under a ``FollowupAdmissionState`` lock: the gateway loop takes that lock
+        for every follow-up it accepts, and a slow read there stalls the loop for the session."""
         from gateway.session_authorities import all_authorities
 
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)

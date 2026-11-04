@@ -414,6 +414,20 @@ it('shows loading rather than no matches while a search is pending', () => {
   }
 })
 
+it('withholds bare-ID actions for search-only owner collisions and restores them when search clears', async () => {
+  vi.spyOn(apiClient, 'hermesApi')
+    .mockResolvedValueOnce({ results: [] })
+    .mockResolvedValue({ results: [{ session_id: 'regular', title: 'Other owner chat', snippet: 'other', session_started: 1 }] })
+  mount()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'other' } })
+  await screen.findByText('Other owner chat')
+  expect(screen.queryByRole('button', { name: 'Session actions: Other owner chat' })).toBeNull()
+  fireEvent.click(screen.getByText('Other owner chat'))
+  expect(resume).toHaveBeenCalledWith('regular', expect.objectContaining({ profile: 'research' }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: '' } })
+  expect(screen.getByRole('button', { name: 'Session actions: Regular chat' })).toBeTruthy()
+})
+
 it('keeps a newly pinned search result visible after clearing search, before the list refreshes', async () => {
   vi.spyOn(apiClient, 'hermesApi')
     .mockResolvedValueOnce({ results: [] })
@@ -498,9 +512,11 @@ it('marks pinned agent chats and sorts them first, restoring recency when unpinn
     makeSessionInfo({ id: 'oldest', title: 'Oldest', profile: 'research', last_active: 100 })
   ])
   mount()
+
   const agent = within(
     screen.getByRole('button', { name: /Agent settings: Research/ }).closest('[role=group]') as HTMLElement
   )
+
   const titles = () => agent.getAllByText(/^(Newest|Pinned newer|Pinned older|Oldest)$/).map(row => row.textContent)
   expect(titles()).toEqual(['Pinned newer', 'Pinned older', 'Newest', 'Oldest'])
   expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(2)

@@ -1,7 +1,7 @@
 ---
 name: core-testflight
 description: Verify exact iOS TestFlight builds and device installation.
-version: 3.0.0
+version: 3.1.0
 author: Peter Beddow, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -23,7 +23,28 @@ Use this procedure for Accessible Core iOS TestFlight work. Keep these states se
 
 Never use one state as proof of another. Never claim `DONE` until the requested installation state is directly evidenced.
 
-This skill treats a release receipt as historical evidence, not as proof of what is currently installed. Every release attempt must produce a current provenance report that ties one GitHub commit to one Xcode Cloud run, one TestFlight build, and one device readback. Use the checker shipped at `scripts/verify-release-provenance.py`; a failed or unavailable device readback is `BLOCKED`, never `DONE`.
+## Delivery-mode boundary
+
+The caller's delivery mode is authoritative and must be recorded before this
+skill is invoked:
+
+- **`TESTFLIGHT`**: App Store Connect and TestFlight distribution are the
+  delivery route. This mode never requires PHN-01 to be connected to a Mac,
+  never requires a CoreDevice tunnel, and never runs direct-device installation
+  as a prerequisite. Complete the Apple-side exact-build checks first, then
+  report the TestFlight installation action for the iPhone. A missing or
+  unavailable CoreDevice connection is not a TestFlight blocker.
+- **`DIRECT_DEVICE`**: CoreDevice discovery and tunnel readiness may be
+  required by the selected direct installer. If that route fails, stop the
+  direct route and hand the request back to this skill in `TESTFLIGHT` mode;
+  do not silently retry direct installation.
+
+When `TESTFLIGHT` is selected, use the existing API-first workflow below and
+record `ROUTE_DECISION=TESTFLIGHT`. Device inspection is optional post-install
+verification only; it is never a precondition for App Store Connect reads,
+TestFlight availability, or reporting the iPhone Install action.
+
+This skill treats a release receipt as historical evidence, not as proof of what is currently installed. Every release attempt must produce a current provenance report that ties one GitHub commit to one Xcode Cloud run and one TestFlight build. In `DIRECT_DEVICE` mode, a failed or unavailable device readback is `BLOCKED`; in `TESTFLIGHT` mode, when the exact Apple-side build is ready but the phone-side Install action or post-install readback is unavailable, report `INSTALL_ACTION_REQUIRED`, never a CoreDevice failure.
 
 ## Required release record
 
@@ -37,19 +58,19 @@ Target build:
 PHN-01 installed build:
 Installation method:
 Verification evidence:
-Outcome: DONE / BLOCKED / FAILED
+Outcome: DONE / INSTALL_ACTION_REQUIRED / BLOCKED / FAILED
 ```
 
-The current record must contain the exact bundle ID, marketing version, target build number, GitHub ref and 40-character commit SHA, Xcode Cloud workflow/run IDs, Xcode Cloud source commit and build number, TestFlight build record and availability, target device identifier, installation method, and fresh device evidence containing the installed `CFBundleVersion`. A historical receipt may be linked for context but cannot fill a missing current field.
+The current record must contain the exact bundle ID, marketing version, target build number, GitHub ref and 40-character commit SHA, Xcode Cloud workflow/run IDs, Xcode Cloud source commit and build number, TestFlight build record and availability, intended tester/group, and installation method/outcome. In `DIRECT_DEVICE` mode also require target device identifiers and fresh device evidence containing the installed `CFBundleVersion`. In `TESTFLIGHT` mode, record the exact Apple-side readiness and either phone-side install evidence or `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE`; do not require CoreDevice fields before that action and do not fill them with stale data. A historical receipt may be linked for context but cannot fill a missing current field.
 
 ## Safety and ownership
 
 - Native iOS is the only implementation scope for this skill.
 - Preserve the existing Xcode Cloud workflow. Do not create another upload, signing, build-number, or authentication system.
 - Do not use `xcodebuild -exportArchive`, `altool`, `iTMSTransporter`, or a local IPA as a substitute for the existing Xcode Cloud/TestFlight path.
-- Do not open a general Apple login page or ask for an Apple password or verification code when the API path below is available.
+- Do not open a general Apple login page or ask for an Apple password or verification code. Reuse the already authenticated browser session when the protected client is unavailable.
 - Never print, log, commit, or place in a receipt the App Store Connect private key, Key ID, Issuer ID, JWT, bearer token, Core Secrets bearer credential, password, or connection string. Replace sensitive values with `[REDACTED]` in reports.
-- Do not create a second credential store. Use the existing Core Secrets skill and the authorized workstation procedure.
+- Do not create a second credential store. Use the existing Core Secrets skill or the already authenticated browser session; both are approved existing paths.
 - Before a write, state what will change and why. After every App Store Connect write, read the exact target back.
 
 ## Exact target
@@ -91,9 +112,31 @@ After Xcode Cloud succeeds, perform a separate fresh App Store Connect/TestFligh
 
 If Xcode Cloud reports `action_required`, `Preparing build for App Store Connect failed`, or another preparation failure, record that failure separately. Do not change signing, build numbers, or workflow configuration just to force another run.
 
+## Authentication path decision (mandatory)
+
+Use exactly one already-authorized path; do not create or repair credentials in
+this workflow:
+
+1. If the protected `accessible_core_secrets` App Store Connect client is
+   installed and importable on the authorized workstation, use the in-memory
+   Core Secrets/API path in the next section.
+2. If that client is not installed in the current shell, reuse the already
+   authenticated App Store Connect browser session. Read the exact Xcode Cloud,
+   App Store Connect, TestFlight, group, tester, and build records through that
+   existing session. Do not install a package, invent an import path, open a
+   login page, ask for credentials, or create a second credential store.
+3. If neither an importable protected client nor an already authenticated
+   browser session is available, record the missing evidence and report
+   `BLOCKED`; do not guess or substitute a credential path.
+
+The browser-session route is an approved readback fallback, not a new
+credential system. Preserve the same exact-build gates and redact cookies,
+tokens, passwords, private keys, and other secrets from every report.
+
 ## Core Secrets and App Store Connect authentication
 
-Use the existing `core-secrets` skill. The authorized workstation flow is:
+Use the existing `core-secrets` skill when the protected client is available.
+The authorized workstation flow is:
 
 ```python
 from accessible_core_secrets.client import SecretsServiceClient
@@ -119,11 +162,29 @@ Create an App Store Connect JWT in memory with ES256:
 - encode the signature as the JWT's raw 64-byte `r || s` value, not DER;
 - send it only as `Authorization: Bearer <JWT>` over TLS.
 
-Use a certificate-verifying TLS context, for example Python `ssl.create_default_context(cafile=certifi.where())`. On authentication failure, report only the redacted endpoint, HTTP status, and Apple error title/detail. Do not ask Peter for a secret if the established Core Secrets route is available.
+Use a certificate-verifying TLS context, for example Python `ssl.create_default_context(cafile=certifi.where())`. On authentication failure, report only the redacted endpoint, HTTP status, and Apple error title/detail. Do not ask Peter for a secret when either approved existing authentication path is available.
+
+## Existing browser-session readback
+
+When the browser-session path is selected, use the current already-authenticated
+App Store Connect/Xcode Cloud page and its same-origin JSON reads for the exact
+records below. A browser page that shows a login, a stale page, or an
+unauthenticated response is not evidence. Do not open a login flow or copy
+cookies, headers, tokens, or page credentials into a file or report. Keep the
+browser session attached while the current release record is captured.
+
+Use the same exact-build selection and readback sequence regardless of whether
+the response came from the protected client or the browser session. For any
+write made through the browser session, record the intended change, perform
+only that bounded write, and read the exact target back before continuing.
 
 ## App Store Connect read sequence
 
-Use fresh authenticated API reads. The App Store Connect API represents the build number in the build resource's `attributes.version`; do not assume a `buildNumber` attribute exists. The marketing version is read from the linked `preReleaseVersion` resource.
+Use fresh authenticated API reads (from the protected client or the existing
+browser session). The App Store Connect API represents the build number in the
+build resource's `attributes.version`; do not assume a `buildNumber` attribute
+exists. The marketing version is read from the linked `preReleaseVersion`
+resource.
 
 1. Find the app:
 
@@ -222,9 +283,31 @@ python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installable
 
 Do not rely on local builds, Xcode Cloud completion, an App Store Connect row for another build, a tester's generic state, or a stale browser page.
 
-## Device discovery and TestFlight launch
+## TestFlight delivery and optional device control
 
-Use the connected, paired device. Do not request Peter to manage windows or change his normal computer use.
+When `delivery_mode=TESTFLIGHT`, do not run `xcrun devicectl` before the
+App Store Connect/TestFlight checks. The required sequence is:
+
+1. read and verify the exact Apple-side build, compliance, group membership,
+   tester access, and tester-visible build;
+2. record `ROUTE_DECISION=TESTFLIGHT` and
+   `TESTFLIGHT_READY build=<exact-build>`;
+3. use TestFlight on PHN-01 to select the exact build and tap **Install**;
+4. if an approved remote-UI capability is already available, it may perform
+   that phone-side action; otherwise report
+   `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE` with the exact build.
+
+The TestFlight install action is independent of the Mac's CoreDevice tunnel.
+A disconnected phone, missing device record, failed `devicectl` command, or
+unavailable tunnel must never be reported as a TestFlight distribution blocker.
+Those observations may be recorded as unavailable post-install verification,
+but they do not change the selected route or the required iPhone action.
+
+When `delivery_mode=DIRECT_DEVICE`, the caller may use the connected-device
+launch and inspection commands below. If that direct route fails, return to
+this skill in `TESTFLIGHT` mode instead of repeating direct discovery.
+
+## Optional direct-device launch
 
 ```bash
 xcrun devicectl list devices
@@ -233,21 +316,39 @@ xcrun devicectl device process launch \
   com.apple.TestFlight --activate
 ```
 
-Check that the device is paired and available before attempting the launch. A successful TestFlight launch proves only that TestFlight opened. It does not prove that the requested build was installed.
+A successful TestFlight launch proves only that TestFlight opened. It does not
+prove that the requested build was installed. These commands are never a
+precondition for the `TESTFLIGHT` route.
 
 ## No-intervention installation policy
 
-Try all agent-controlled steps first:
+Try all agent-controlled steps that are valid for the selected mode:
 
-1. discover the paired device;
-2. launch TestFlight remotely;
-3. use an approved device-control capability, if installed, to select the exact app/build and activate Install;
-4. wait for installation to finish;
-5. inspect the device for the exact bundle ID and `CFBundleVersion`.
+1. in `TESTFLIGHT` mode, complete the authenticated Apple-side checks without
+   device discovery;
+2. if an approved device-control capability is already available, use it to
+   select the exact app/build and activate Install;
+3. wait for installation to finish when that control path exists;
+4. inspect the device for the exact bundle ID and `CFBundleVersion` only when a
+   reliable post-install device readback path is available.
 
-`xcrun devicectl` provides device discovery, process launch, and app inspection, but it does not provide a supported command to press TestFlight's in-app Install control. Do not substitute `devicectl device install app`, `ios-deploy`, or a local IPA for a requested TestFlight installation; if a direct installation is intentionally used for a separate development test, record it as `direct-device-install`, not TestFlight.
+`xcrun devicectl` provides device discovery, process launch, and app inspection,
+but it does not provide a supported command to press TestFlight's in-app Install
+control. Do not substitute `devicectl device install app`, `ios-deploy`, or a
+local IPA for a requested TestFlight installation; if a direct installation is
+intentionally used for a separate development test, record it as
+`direct-device-install`, not TestFlight.
 
-After installation, read the current app record from PHN-01 using a reliable, structured device inspection method. Require the current record to identify the exact bundle ID, marketing version, and `CFBundleVersion`. Compare the read `CFBundleVersion` with the intended build number. A missing app record, an empty result, a socket failure, an owner statement without a named build, a successful launch, or a historical receipt is not installation evidence. If the installed version cannot be read reliably, preserve the last verified installed state and report `BLOCKED`.
+After installation, read the current app record from PHN-01 using a reliable,
+structured device inspection method when that readback path is available.
+Require the current record to identify the exact bundle ID, marketing version,
+and `CFBundleVersion`. Compare the read `CFBundleVersion` with the intended
+build number. A missing app record or an owner statement without a named build
+is not installation evidence. If TestFlight is ready but no phone-control or
+post-install readback path is available, report
+`INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE` rather than a CoreDevice
+failure. Do not convert unavailable CoreDevice verification into a TestFlight
+distribution blocker.
 
 Therefore:
 
@@ -275,7 +376,7 @@ Parse the structured result and require:
 - installed `CFBundleVersion` equals the target build number;
 - the device and app record are current, not a stale saved file.
 
-If the structured result is empty, missing the target app, missing `CFBundleVersion`, or cannot be read, preserve the last verified installed build and report `BLOCKED`. Do not replace this gate with a historical receipt, TestFlight visibility, a successful launch, or owner confirmation. A release can be marked `DONE` only after the current device readback matches the intended build.
+If the structured result is empty, missing the target app, missing `CFBundleVersion`, or cannot be read, preserve the last verified installed build and report `BLOCKED` only for `DIRECT_DEVICE` acceptance. For `TESTFLIGHT`, if Apple-side readiness is verified but the phone-side Install action or readback is unavailable, preserve the uninstalled/unverified state and report `INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE`; never report CoreDevice failure as the reason. A release can be marked `DONE` only after the current device readback matches the intended build; TestFlight readiness alone is not installation evidence.
 
 ## Mandatory release receipt
 
@@ -336,7 +437,7 @@ Target build: <marketing version / build number / bundle ID>
 PHN-01 installed build: <fresh CFBundleVersion read, or BLOCKED>
 Installation method: <TestFlight, or direct-device-install for a separate development test>
 Verification evidence: <current device readback path and result>
-Outcome: DONE / BLOCKED / FAILED
+Outcome: DONE / INSTALL_ACTION_REQUIRED / BLOCKED / FAILED
 ```
 
 Never report `DONE` when PHN-01's current installed build is unknown or does not equal the target. Never report a direct-device-install as a TestFlight installation. Keep historical receipts immutable and separate from the current release report. Never say Peter needs to do nothing while an agent-owned provenance or installation gate remains.

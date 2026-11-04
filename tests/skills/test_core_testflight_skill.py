@@ -90,3 +90,30 @@ def test_rejects_xcode_cloud_commit_mismatch() -> None:
     report["xcode_cloud"]["source_commit"] = "b" * 40
     with pytest.raises(_MODULE.ProvenanceError, match="source commit"):
         _MODULE.validate(report)
+
+
+def test_testflight_action_required_does_not_require_coredevice() -> None:
+    report = _report()
+    report["delivery_mode"] = "TESTFLIGHT"
+    report["target"].pop("device_id")
+    report["installation"] = {
+        "method": "testflight",
+        "action_required": "TESTFLIGHT_ON_IPHONE",
+    }
+    _MODULE.validate(report)
+
+
+def test_testflight_missing_phone_action_is_not_coredevice_blocker() -> None:
+    report = _report()
+    report["delivery_mode"] = "TESTFLIGHT"
+    report["target"].pop("device_id")
+    report["installation"] = {"method": "testflight", "readback_status": "unavailable"}
+    with pytest.raises(_MODULE.ProvenanceError, match="INSTALL_ACTION_REQUIRED"):
+        _MODULE.validate(report)
+
+
+def test_unknown_delivery_mode_is_rejected() -> None:
+    report = _report()
+    report["delivery_mode"] = "SIMULATOR"
+    with pytest.raises(_MODULE.ProvenanceError, match="unsupported delivery mode"):
+        _MODULE.validate(report)

@@ -78,6 +78,22 @@ def validate(report: dict[str, Any]) -> None:
     _require_true(testflight, "available", "testflight")
     _require_true(testflight, "tester_visible", "testflight")
 
+    delivery_mode = str(
+        report.get("delivery_mode") or installation.get("delivery_mode") or "DIRECT_DEVICE"
+    ).upper()
+    if delivery_mode == "TESTFLIGHT":
+        if installation.get("action_required") == "TESTFLIGHT_ON_IPHONE":
+            return
+        if installation.get("readback_status") == "verified":
+            raise ProvenanceError(
+                "TESTFLIGHT installation evidence must include the phone-side Install action"
+            )
+        raise ProvenanceError(
+            "INSTALL_ACTION_REQUIRED=TESTFLIGHT_ON_IPHONE or verified TestFlight install evidence is required"
+        )
+    if delivery_mode != "DIRECT_DEVICE":
+        raise ProvenanceError(f"unsupported delivery mode: {delivery_mode}")
+
     if str(_required(installation, "device_id", "installation")) != str(
         _required(target, "device_id", "target")
     ):

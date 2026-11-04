@@ -7,6 +7,7 @@ import { dropTilesForProfile } from '@/store/session-states'
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from './browser-profile-prefs'
 import { RELAYED_ROSTER_TIMEOUT_MS } from './browser-relay'
+import { UnservedProfileError } from './browser-served-profiles'
 
 type RelayWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -24,9 +25,10 @@ const json = (body: unknown, status = 200) =>
 
 /**
  * The serving gateway at /hermes, relaying to Mini; answers by path and records every request. A
- * stalled Mini takes the request and never answers it.
+ * stalled Mini takes the request and never answers it. `miniServes` is the served set Mini reports
+ * (its multiplexer's `gateway_shared_with`); left out, Mini reports none, as an older one does.
  */
-function servingGateway({ miniStalled = false } = {}) {
+function servingGateway({ miniStalled = false, miniServes }: { miniServes?: string[]; miniStalled?: boolean } = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
   const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
@@ -58,6 +60,14 @@ function servingGateway({ miniStalled = false } = {}) {
 
     if (path === '/hermes/api/relay/mini/api/profiles/sessions') {
       return json({ sessions: [{ id: 'm1', profile: 'research', title: 'On Mini' }], total: 1 })
+    }
+
+    if (path === '/hermes/api/relay/mini/api/status') {
+      return json(miniServes ? { gateway_shared_with: miniServes } : {})
+    }
+
+    if (path === '/hermes/api/relay/mini/api/profiles/active') {
+      return json({ active: 'default', current: 'default' })
     }
 
     if (path === '/hermes/api/profiles') {
@@ -359,6 +369,26 @@ describe('a Webapp whose gateway relays to others', () => {
       ['local', true],
       ['mini', true]
     ])
+  })
+
+  it("lists a relayed gateway's installed but unserved profile as unreachable and refuses its dial", async () => {
+    // Mini serves only its own `default`; `research` is installed there but parked or standalone.
+    servingGateway({ miniServes: ['default'] })
+    const desktop = install()
+    const roster = await desktop.getAgentRoster!()
+
+    expect(
+      roster.agents.filter(agent => agent.connectionId === 'mini').map(agent => [agent.profile, agent.reachable])
+    ).toEqual([
+      ['default', undefined],
+      ['research', false]
+    ])
+    await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'research' })).rejects.toBeInstanceOf(
+      UnservedProfileError
+    )
+    await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'default' })).resolves.toMatchObject({
+      ok: true
+    })
   })
 
   it('lists a relayed gateway that never answers as unreachable without holding the roster', async () => {

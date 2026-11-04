@@ -1,0 +1,185 @@
+// ko/03.ts — Korean translation of the `sessionImport, common, fileMenu, boot` section(s) of en.ts.
+// Translate ONLY the user-visible English strings into natural Korean (존댓말, concise UI tone).
+// Keep every key, every function's parameters/arity, array lengths and placeholders exactly as-is.
+// Do not add, remove or reorder keys, and keep trailing commas/quoting style intact.
+
+import type { TranslationOverrides } from '../define-locale'
+
+export const ko03: TranslationOverrides = {
+sessionImport: {
+    title: '다른 앱에서 이어서 하기',
+    subtitle: '대화를 Hermes로 가져와 멈춘 곳부터 이어서 하세요.',
+    action: '세션 가져오기',
+    readingFrom: '읽어오는 위치',
+    connectedComputer: '연결된 컴퓨터',
+    destination: '가져올 위치',
+    all: '전체',
+    search: '불러온 세션 검색',
+    scanning: '대화 찾는 중',
+    scanError: '세션을 찾을 수 없어요',
+    scanHelp: '백엔드 연결을 확인한 뒤 다시 시도해 주세요. 오래된 백엔드는 업데이트가 필요할 수 있어요.',
+    empty: '찾은 대화가 없어요',
+    emptyHelp: '이 백엔드에 있는 Claude Code와 Codex 세션이 여기에 표시돼요.',
+    noMatches: '일치하는 대화가 없어요',
+    searchHelp: '다른 제목이나 폴더로 검색하거나 세션을 더 불러와 보세요.',
+    skipped: '일부 로그가 비어 있거나, 읽을 수 없거나, 미리보기 하기에 너무 컸어요.',
+    more: '세션 더 불러오기',
+    messages: '메시지',
+    choose: '이어서 할 만한 대화',
+    chooseHelp: 'Hermes로 가져오기 전에 세션을 선택해 기록을 읽어보세요.',
+    previewLoading: '미리보기 여는 중',
+    previewError: '미리보기를 사용할 수 없어요',
+    previewHelp: '원본이 이동했거나 변경됐을 수 있어요. 목록을 새로 고친 뒤 다시 시도해 주세요.',
+    previewLimit: '읽기 쉽도록 미리보기를 줄였어요. 전체 대화는 그대로 가져와요.',
+    you: '나',
+    snapshot: '이 대화는 이미 Hermes에 있어요. 기존 사본을 열어 이어서 하세요.',
+    copyNotice:
+      '대화 텍스트를 복사해요. 원본 파일은 변경되지 않아요. 도구 출력과 추론은 함께 가져오지 않아요.',
+    importing: '가져오는 중…',
+    open: 'Hermes에서 열기',
+    continue: 'Hermes에서 이어서 하기',
+    importError: '이 대화를 가져올 수 없어요.'
+  },
+common: {
+    apply: '적용',
+    back: '뒤로',
+    save: '저장',
+    saving: '저장 중…',
+    cancel: '취소',
+    change: '변경',
+    choose: '선택',
+    clear: '지우기',
+    close: '닫기',
+    collapse: '접기',
+    confirm: '확인',
+    connect: '연결',
+    connecting: '연결 중',
+    continue: '계속',
+    bots: '봇',
+    copied: '복사됨',
+    copy: '복사',
+    copyFailed: '복사 실패',
+    delete: '삭제',
+    docs: '문서',
+    done: '완료',
+    error: '오류',
+    expand: '펼치기',
+    failed: '실패',
+    formatJson: 'JSON 서식 정리',
+    free: '무료',
+    loading: '불러오는 중…',
+    notSet: '설정 안 됨',
+    refresh: '새로 고침',
+    remove: '제거',
+    replace: '바꾸기',
+    retry: '다시 시도',
+    run: '실행',
+    send: '보내기',
+    set: '설정',
+    skip: '건너뛰기',
+    update: '업데이트',
+    tryHint: term => `“${term}” 시도`,
+    on: '켜짐',
+    off: '꺼짐'
+  },
+fileMenu: {
+    revealFinder: 'Finder에서 보기',
+    revealExplorer: 'File Explorer에서 보기',
+    revealFileManager: '포함된 폴더 열기',
+    revealInSidebar: '파일 트리에서 보기',
+    copyPath: '경로 복사',
+    copyRelativePath: '상대 경로 복사',
+    download: '다운로드',
+    downloadSaved: '저장됨',
+    downloadFailed: '다운로드 실패',
+    rename: '이름 바꾸기…',
+    delete: '삭제',
+    renameTitle: '이름 바꾸기',
+    renameLabel: '새 이름',
+    deleteTitle: name => `${name} 삭제할까요?`,
+    deleteBody: '휴지통으로 이동하며, 거기서 복원할 수 있어요.',
+    pathCopied: '경로를 복사했어요',
+    revealMissing: '이 컴퓨터에 해당 폴더가 없어요',
+    revealUnavailable: '이 컴퓨터에 해당 경로가 없어요 — 백엔드 컴퓨터에 있어요. “파일 트리에서 보기”를 사용하세요.'
+  },
+boot: {
+    ready: 'Hermes Desktop을 사용할 준비가 됐어요',
+    desktopBootFailedWithMessage: message => `데스크톱 시작 실패: ${message}`,
+    steps: {
+      connectingGateway: '실시간 데스크톱 게이트웨이 연결 중',
+      loadingSettings: 'Hermes 설정 불러오는 중',
+      loadingSessions: '최근 세션 불러오는 중',
+      retryingRemoteBackend: '원격 Hermes 백엔드에 다시 연결하는 중…',
+      startingDesktopConnection: '데스크톱 연결 시작 중',
+      startingHermesDesktop: 'Hermes Desktop 시작 중…'
+    },
+    errors: {
+      backgroundExited:
+        '채팅을 실행하는 서비스가 예기치 않게 종료됐어요. 계속하려면 다시 시작하세요 — 채팅과 설정은 안전해요.',
+      backgroundExitedDuringStartup: 'Hermes가 시작하자마자 멈췄어요.',
+      backendStopped: 'Hermes의 백그라운드 작업이 중단됐어요',
+      restartHermes: 'Hermes 다시 시작',
+      openLogs: '로그 열기',
+      desktopBootFailed: 'Hermes를 시작할 수 없어요',
+      gatewayConnectionLost: 'Hermes 연결이 끊어졌어요',
+      gatewayConnectionLostDetail:
+        '다시 연결하는 중이에요. 계속 읽고 작성할 수 있어요. 이 상태가 계속되면 지금 다시 연결하거나 연결 설정을 확인해 주세요.',
+      reconnectNow: '지금 다시 연결',
+      connectionSettings: '연결 설정',
+      gatewaySignInRequired: '원격 Hermes에서 로그아웃됐어요',
+      gatewaySignInRequiredDetail: '다시 연결하려면 로그인해 주세요. 채팅과 설정은 안전해요.',
+      signInAgain: '다시 로그인',
+      ipcBridgeUnavailable: 'Hermes Desktop이 자체 백그라운드 계층과 통신할 수 없어요. 앱을 다시 시작하세요.'
+    },
+    // Plain causes for a local backend boot failure (`classifyBootFailure`);
+    // the raw output stays behind "Show recent logs".
+    causes: {
+      exitedEarly: 'Hermes의 백그라운드 서비스가 시작하자마자 멈췄어요.',
+      timedOut: 'Hermes의 백그라운드 서비스가 제때 응답하지 않았어요.',
+      permission: 'Hermes가 데이터 폴더에 쓸 수 없어요(권한 문제).',
+      diskFull: '디스크가 가득 차서 Hermes를 시작할 수 없어요.',
+      portInUse: '다른 프로그램이 Hermes에 필요한 네트워크 포트를 사용 중이에요.',
+      installMissing: 'Hermes 설치의 일부가 누락됐어요. “설치 복구”를 선택해 복원하세요.'
+    },
+    failure: {
+      title: 'Hermes를 시작할 수 없어요',
+      description:
+        'Hermes의 백그라운드 서비스가 시작되지 않았어요. 아래 복구 단계 중 하나를 시도해 보세요. 여기서 채팅이나 설정이 삭제되지 않아요.',
+      details: '세부 정보',
+      remoteTitle: '원격 게이트웨이 로그인 필요',
+      remoteDescription:
+        '원격 게이트웨이 세션이 만료됐어요. 다시 연결하려면 로그인해 주세요. 여기서 채팅이나 설정이 삭제되지 않아요.',
+      retry: '다시 시도',
+      repairInstall: '설치 복구',
+      useLocalGateway: '로컬 게이트웨이 사용',
+      gatewaySettings: '게이트웨이 설정',
+      back: '뒤로',
+      openLogs: '로그 열기',
+      repairHint: '복구는 설치 프로그램을 다시 실행하며, 새 컴퓨터에서는 몇 분 걸릴 수 있어요.',
+      bundledReinstallHint:
+        '이 번들 설치에서는 앱 안에서 스스로 복구할 수 없어요 — 백엔드를 복원하려면 앱을 다시 설치하세요.',
+      reinstallApp: '앱 다시 설치',
+      remoteSignInHint: signInLabel =>
+        `저장된 원격 브라우저 세션에서 로그아웃한 뒤 ${signInLabel}을 엽니다. 대신 번들 백엔드로 전환하려면 로컬 게이트웨이를 사용하세요.`,
+      signOutAndSignIn: '로그아웃 후 로그인',
+      remoteFailureHint: '게이트웨이 설정에서 게이트웨이 URL과 로그인을 확인하거나 로컬 게이트웨이로 전환하세요.',
+      cloudDownTitle: 'Nous Cloud 에이전트가 중단됐어요',
+      cloudDownDescription:
+        '이 게이트웨이가 연결하는 Nous 관리형 클라우드 에이전트가 서버 오류를 반환하고 있어요. 여기서는 다시 시작할 수 없어요 — 상태를 확인하거나, 로컬 게이트웨이로 전환하거나, 지원을 받으세요.',
+      cloudDownHint:
+        '아래 버튼은 Nous Portal(인스턴스 상태 및 제어)과 지원을 위한 Discord를 엽니다.',
+      cloudDownCheckPortal: 'Portal 상태 확인',
+      cloudDownDiscord: 'Discord에서 도움 받기',
+      hideRecentLogs: '최근 로그 숨기기',
+      showRecentLogs: '최근 로그 표시',
+      signedInTitle: '로그인됨',
+      signedInMessage: '원격 게이트웨이에 다시 연결하는 중…',
+      signInIncompleteTitle: '로그인 미완료',
+      signInIncompleteMessage: '인증이 끝나기 전에 로그인 창이 닫혔어요.',
+      signInFailed: '로그인 실패',
+      signInToRemoteGateway: '원격 게이트웨이에 로그인',
+      signInWithProvider: provider => `${provider}(으)로 로그인`,
+      identityProvider: '사용자의 ID 제공자'
+    }
+  },
+}

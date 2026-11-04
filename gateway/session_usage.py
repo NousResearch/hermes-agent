@@ -180,7 +180,7 @@ def usage_frame(stats: dict) -> dict:
     top-level counters on this event are deprecated: new viewers read ``usage`` (or call
     ``session.stats`` for the counters). Before they can be dropped, these readers must move off
     them: the classic CLI's ``SessionState.apply_event`` → ``GatewayAgent.apply_session_usage``,
-    ACP's ``_project_usage`` (``usage_update`` / ``turn_usage``), and the flat branch of
+    ACP's ``_project_usage`` (``usage_update`` / ``prompt_usage``), and the flat branch of
     ``usageFromTick`` (Desktop and Ink).
     """
     return {"usage": tui_usage(stats), **stats}

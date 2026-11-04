@@ -1,0 +1,194 @@
+[
+  {
+    "observedAt": "2026-11-03T19:33:02.504Z",
+    "event": {
+      "type": "message.start",
+      "session_id": "fixture-session-0001",
+      "seq": 1,
+      "payload": {}
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:03.410Z",
+    "event": {
+      "type": "message.delta",
+      "session_id": "fixture-session-0001",
+      "seq": 2,
+      "payload": {
+        "text": "Synthetic qualification data only. No tools are executed."
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:04.332Z",
+    "event": {
+      "type": "tool.start",
+      "session_id": "fixture-session-0001",
+      "seq": 3,
+      "payload": {
+        "tool_id": "fx-read-001",
+        "name": "read_file",
+        "args": {
+          "path": "C:/Lab/fixture-data/alpha.txt"
+        }
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:05.233Z",
+    "event": {
+      "type": "tool.progress",
+      "session_id": "fixture-session-0001",
+      "seq": 4,
+      "payload": {
+        "tool_id": "fx-read-001",
+        "name": "read_file",
+        "progress": 25,
+        "total": 100,
+        "percent": 25,
+        "message": "Synthetic fixture 25%"
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:06.145Z",
+    "event": {
+      "type": "tool.progress",
+      "session_id": "fixture-session-0001",
+      "seq": 5,
+      "payload": {
+        "tool_id": "fx-read-001",
+        "name": "read_file",
+        "progress": 75,
+        "total": 100,
+        "percent": 75,
+        "message": "Synthetic fixture 75%"
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:07.051Z",
+    "event": {
+      "type": "tool.complete",
+      "session_id": "fixture-session-0001",
+      "seq": 6,
+      "payload": {
+        "tool_id": "fx-read-001",
+        "name": "read_file",
+        "args": {
+          "path": "C:/Lab/fixture-data/alpha.txt"
+        },
+        "result": {
+          "content": "1|Alpha fixture\n2|second synthetic line\n3|Unicode: café → ✓\n4|No files were read by this tool event.",
+          "total_lines": 4,
+          "truncated": false
+        },
+        "duration_s": 2
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:07.957Z",
+    "event": {
+      "type": "tool.start",
+      "session_id": "fixture-session-0001",
+      "seq": 7,
+      "payload": {
+        "tool_id": "fx-search-002",
+        "name": "search_files",
+        "args": {
+          "path": "C:/Lab/fixture-data",
+          "pattern": "fixture",
+          "target": "content"
+        }
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:09.769Z",
+    "event": {
+      "type": "tool.complete",
+      "session_id": "fixture-session-0001",
+      "seq": 8,
+      "payload": {
+        "tool_id": "fx-search-002",
+        "name": "search_files",
+        "args": {
+          "path": "C:/Lab/fixture-data",
+          "pattern": "fixture",
+          "target": "content"
+        },
+        "result": {
+          "total_count": 2,
+          "matches_text": "alpha.txt:1: fixture\nbeta.txt:2: fixture",
+          "truncated": false
+        },
+        "duration_s": 2
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:10.676Z",
+    "event": {
+      "type": "tool.start",
+      "session_id": "fixture-session-0001",
+      "seq": 9,
+      "payload": {
+        "tool_id": "fx-read-003",
+        "name": "read_file",
+        "args": {
+          "path": "C:/Lab/fixture-data/beta.txt"
+        }
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:33:11.582Z",
+    "event": {
+      "type": "tool.progress",
+      "session_id": "fixture-session-0001",
+      "seq": 10,
+      "payload": {
+        "tool_id": "fx-read-003",
+        "name": "read_file",
+        "progress": 50,
+        "total": 100,
+        "percent": 50,
+        "message": "Synthetic fixture 50%"
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:35:04.369Z",
+    "event": {
+      "type": "tool.complete",
+      "session_id": "fixture-session-0001",
+      "seq": 11,
+      "payload": {
+        "tool_id": "fx-read-003",
+        "name": "read_file",
+        "args": {
+          "path": "C:/Lab/fixture-data/beta.txt"
+        },
+        "result": {
+          "content": "1|Beta fixture\n2|Expandable output belongs to the native renderer.\n3|End of synthetic output.",
+          "total_lines": 3,
+          "truncated": false
+        },
+        "duration_s": 2
+      }
+    }
+  },
+  {
+    "observedAt": "2026-11-03T19:35:05.284Z",
+    "event": {
+      "type": "message.complete",
+      "session_id": "fixture-session-0001",
+      "seq": 12,
+      "payload": {
+        "text": "Fixture completed.",
+        "status": "complete"
+      }
+    }
+  }
+]

@@ -144,6 +144,8 @@ function admitExecutionEvent(
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const executionAuthorities = useRef(new Map())
+  // Only an observed turn start opens a reset namespace, never an old completion.
+  const toolSequenceRuns = useRef(new Map<string, { high: number; run: number }>())
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   // One pin per concurrent unscoped stream, not a single shared slot: two chats
@@ -248,6 +250,52 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       }
 
+      let completionKey: string | undefined
+
+      if (sessionId && typeof event.seq === 'number' && Number.isFinite(event.seq)) {
+        const scope = JSON.stringify([
+          registryBackendScopeKey(event.connectionId ?? null, event.profile ?? null),
+          sessionId,
+          event.replay_epoch ?? event.replayEpoch ?? null
+        ])
+
+        const cursor = toolSequenceRuns.current.get(scope) ?? { high: event.seq, run: 0 }
+
+        if (event.type === 'message.start' && event.seq <= cursor.high && toolSequenceRuns.current.has(scope)) {
+          cursor.run += 1
+          cursor.high = event.seq
+        } else {
+          cursor.high = Math.max(cursor.high, event.seq)
+        }
+
+        toolSequenceRuns.current.set(scope, cursor)
+        const toolId = payload?.tool_id || payload?.tool_call_id || payload?.id
+
+        if (event.type === 'tool.complete' && toolId) {
+          completionKey = JSON.stringify([
+            scope,
+            cursor.run,
+            event.authority_epoch ?? null,
+            event.execution_generation ?? null,
+            event.admission_id ?? null,
+            event.seq,
+            toolId
+          ])
+
+          // The finished occurrence owns this copy, even across a user/turn
+          // boundary. Reject it before a newer pending reuse can claim it.
+          if (
+            sessionStateByRuntimeIdRef.current
+              .get(sessionId)
+              ?.messages.some(message =>
+                message.parts.some(part => part.type === 'tool-call' && part.toolCompletionKey === completionKey)
+              )
+          ) {
+            return
+          }
+        }
+      }
+
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId, {
@@ -278,6 +326,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       const ctx: GatewayEventContext = {
         deps,
         event,
+        completionKey,
         payload,
         sessionId,
         explicitSid,

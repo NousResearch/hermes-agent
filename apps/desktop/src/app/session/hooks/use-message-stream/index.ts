@@ -576,7 +576,8 @@ export function useMessageStream({
       payload: GatewayEventPayload | undefined,
       phase: 'running' | 'complete',
       sourceEventType?: string,
-      occurredAt = Date.now() / 1000
+      occurredAt = Date.now() / 1000,
+      completionKey?: string
     ) => {
       // Text deltas flush on a timer but tool events apply now; flush first so
       // a tool part can't jump ahead of the text that preceded it.
@@ -615,8 +616,8 @@ export function useMessageStream({
 
       mutateStream(
         sessionId,
-        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt)),
-        () => upsertToolPart([], payload, phase, occurredAt),
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt, completionKey)),
+        () => upsertToolPart([], payload, phase, occurredAt, completionKey),
         {
           pending: m => phase !== 'complete' || (m.pending ?? false),
           // A tool event belongs to the bubble that owns the call, not to

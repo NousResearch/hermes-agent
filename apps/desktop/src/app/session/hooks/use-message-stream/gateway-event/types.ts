@@ -61,7 +61,8 @@ export interface GatewayEventDeps {
     payload: GatewayEventPayload | undefined,
     phase: 'running' | 'complete',
     sourceEventType?: string,
-    occurredAt?: number
+    occurredAt?: number,
+    completionKey?: string
   ) => void
 }
 
@@ -70,6 +71,8 @@ export interface GatewayEventDeps {
 export interface GatewayEventContext {
   deps: GatewayEventDeps
   event: GatewayEvent
+  /** Scoped identity of a sequenced live completion, not a sequence cutoff. */
+  completionKey?: string
   payload: GatewayEventPayload | undefined
   /** Routed session id (explicit, pinned unscoped stream, or active fallback). */
   sessionId: null | string

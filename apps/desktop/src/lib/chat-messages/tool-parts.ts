@@ -345,7 +345,8 @@ export function upsertToolPart(
   parts: ChatMessagePart[],
   payload: GatewayEventPayload | undefined,
   phase: 'running' | 'complete',
-  occurredAt = Date.now() / 1000
+  occurredAt = Date.now() / 1000,
+  completionKey?: string
 ): ChatMessagePart[] {
   const stableId = toolId(payload)
   const name = payload?.name || 'tool'
@@ -374,6 +375,7 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
+      ...(completionKey ? { toolCompletionKey: completionKey } : {}),
       result: payload?.result !== undefined ? payload.result : prevResult,
       toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
       isError:

@@ -5287,6 +5287,7 @@ export interface CanonicalConfigGetResult {
   mcp_rev?: string | null
   key?: string | null
   scope?: string | null
+  options?: ('normal' | 'fast' | 'auto' | 'cold' | 'ultrafast')[] | null
 }
 /** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {

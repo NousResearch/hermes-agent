@@ -8200,6 +8200,28 @@
             ],
             "default": null,
             "title": "Scope"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "normal",
+                    "fast",
+                    "auto",
+                    "cold",
+                    "ultrafast"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
           }
         },
         "title": "CanonicalConfigGetResult",

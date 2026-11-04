@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ 目標 {used}/{max}"
     goal: "⊙ 目標"
     ctx_pinned: " 已釘選"
+    ctx_fallback: " 預設值"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 暫存（{count} 項）"

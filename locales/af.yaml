@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ doelwit {used}/{max}"
     goal: "⊙ doelwit"
     ctx_pinned: " vasgepen"
+    ctx_fallback: " terugval"
     ctx_unknown: "ktx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Bergplek ({count} item)"

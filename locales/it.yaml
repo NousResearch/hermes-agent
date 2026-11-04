@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ obiettivo {used}/{max}"
     goal: "⊙ obiettivo"
     ctx_pinned: " fissato"
+    ctx_fallback: " predefinito"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} elemento)"

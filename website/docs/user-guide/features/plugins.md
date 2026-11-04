@@ -40,6 +40,10 @@ Here is a complete plugin that adds a `hello_world` tool and logs every tool cal
 name: hello-world
 version: "1.0"
 description: A minimal example plugin
+provides_tools:
+  - hello_world
+provides_hooks:
+  - post_tool_call
 ```
 
 **`~/.hermes/plugins/hello-world/__init__.py`**
@@ -80,7 +84,7 @@ def register(ctx):
     )
 
     # --- Hook: log every tool call ---
-    def on_tool_call(tool_name, params, result):
+    def on_tool_call(tool_name, args, result, **kwargs):
         print(f"[hello-world] tool called: {tool_name}")
 
     ctx.register_hook("post_tool_call", on_tool_call)

@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ цель {used}/{max}"
     goal: "⊙ цель"
     ctx_pinned: " закреплён"
+    ctx_fallback: " по умолчанию"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Отложено ({count} элемент)"

@@ -768,6 +768,13 @@ export const arSettings = {
         restartFailedBecause: reason => `تعذّرت إعادة تشغيل البوابة: ${reason}`,
         startTimedOut: 'لم تقدّم البوابة تطبيق الويب خلال 90 ثانية.',
         stopTimedOut: 'لم تتوقف البوابة عن تقديم تطبيق الويب خلال 90 ثانية.',
+        startStages: {
+          preparing: 'جارٍ تجهيز تطبيق الويب. قد يستغرق إنشاؤه بضع دقائق.',
+          building: 'جارٍ إنشاء تطبيق الويب. قد يستغرق ذلك بضع دقائق.',
+          registering: 'جارٍ إعداد تسجيل الدخول عبر Nous لهذا العنوان.',
+          restarting: 'جارٍ إعادة تشغيل البوابة لتقديم تطبيق الويب.'
+        },
+        startElapsed: time => `الوقت المنقضي: ${time}`,
         start: 'تشغيل',
         stop: 'إيقاف',
         restartGateway: 'إعادة تشغيل البوابة',

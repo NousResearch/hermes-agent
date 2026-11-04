@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -924,8 +925,13 @@ class SessionDB:
 
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
-            # back to LIKE.
-            if self._fts_enabled:
+            # back to LIKE. Disabled entirely via HERMES_DISABLE_FTS_TRIGRAM: this
+            # tokenizer only earns its (large) storage cost for CJK/Thai scripts,
+            # which have no inter-word spaces for unicode61 to split on. Indic
+            # scripts (Devanagari, Kannada, Tamil, Telugu, etc.) are space-
+            # delimited like Latin, so they already search fine on messages_fts
+            # and never touch this path -- disabling it does not affect them.
+            if self._fts_enabled and not os.environ.get("HERMES_DISABLE_FTS_TRIGRAM"):
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )

@@ -1,4 +1,5 @@
 ---
+triggers: ["discover a tool for this task", "web scraping", "structured data retrieval", "enrichment lookup", "social media data", "company or people data", "content monitoring endpoint"]
 name: monid
 version: 0.1.6
 description: >-

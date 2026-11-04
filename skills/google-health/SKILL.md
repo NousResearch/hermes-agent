@@ -1,4 +1,5 @@
 ---
+triggers: ["my sleep data", "my step count", "my heart rate data", "my nutrition log", "my exercise history", "google health api"]
 name: google-health
 description: "Read and write the user's Google Health data (sleep, activity, heart-rate, nutrition, exercise) via health.googleapis.com — Fitbit-descended API."
 version: 1.0.0

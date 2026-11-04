@@ -1,4 +1,5 @@
 ---
+triggers: ["redraft this", "make this readable", "clean this up", "format this properly", "restructure this text", "tidy up this message"]
 name: redraft
 description: "Redraft text into a clean, structured, scannable message."
 version: 1.0.0

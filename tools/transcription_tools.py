@@ -540,7 +540,8 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
-def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProcess:
+def _run_command_stt(command: str, timeout: float,
+                     env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
     """Run a command-provider shell command with process-tree timeout cleanup.
 
     Mirrors ``tools.tts_tool._run_command_tts``.
@@ -551,6 +552,8 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
         "stderr": subprocess.PIPE,
         "text": True,
     }
+    if env is not None:
+        popen_kwargs["env"] = env
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
@@ -684,12 +687,28 @@ def _transcribe_command_stt(
                 "hotwords": str(hotwords or ""),
             }
             command = _render_command_stt_template(command_template, placeholders)
+            # Command providers run as subprocesses and cannot see contextvars.
+            # Pass the current session identity via env so wrappers can attach
+            # X-Hermes-* usage headers (see stt_wrapper.sh).
+            command_env = None
+            try:
+                from gateway.session_context import get_session_env
+                command_env = dict(os.environ)
+                command_env["HERMES_USAGE_USER_ID"] = get_session_env("HERMES_SESSION_USER_ID", "")
+                command_env["HERMES_USAGE_USER_NAME"] = get_session_env("HERMES_SESSION_USER_NAME", "")
+                command_env["HERMES_USAGE_PLATFORM"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+                command_env["HERMES_USAGE_SESSION_ID"] = (
+                    get_session_env("HERMES_SESSION_ID", "")
+                    or command_env.get("HERMES_SESSION_ID", "")
+                )
+            except Exception:
+                command_env = None
             logger.info(
                 "Transcribing %s via command STT provider '%s'...",
                 audio.name, provider_name,
             )
             try:
-                result = _run_command_stt(command, timeout)
+                result = _run_command_stt(command, timeout, env=command_env)
             except subprocess.TimeoutExpired:
                 return {
                     "success": False,

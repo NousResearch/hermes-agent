@@ -377,7 +377,26 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    if not command_name:
+        return False
+    if resolve_command(command_name) is not None:
+        return True
+    # hermes-jobs fix (2026-10-26): plugin-registered commands (anything
+    # added via PluginContext.register_command, e.g. /job, /jobs) were
+    # invisible here -- resolve_command() only ever consulted the built-in
+    # static registry. That meant ANY plugin command sent while a session
+    # was busy fell through to the generic "interrupt the running agent"
+    # catch-all instead of being dispatched, exactly the failure mode this
+    # function exists to prevent for built-ins (see the docstring above).
+    # Recognizing plugin commands here is additive and symmetric with the
+    # built-in check -- it does not change behaviour for any command that
+    # was already recognized.
+    try:
+        from hermes_cli.plugins import get_plugin_command_handler
+
+        return get_plugin_command_handler(command_name.replace("_", "-")) is not None
+    except Exception:
+        return False
 
 
 def _resolve_config_gates() -> set[str]:

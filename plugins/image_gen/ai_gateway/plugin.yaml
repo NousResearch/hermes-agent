@@ -1,0 +1,5 @@
+name: ai_gateway
+version: 1.0.0
+description: "Image generation through the central AI Model Gateway; usage and cost are metered alongside chat."
+author: Hermes
+kind: backend

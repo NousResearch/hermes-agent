@@ -1,4 +1,5 @@
 ---
+triggers: ["draft an email", "compose an email", "email this person", "reply to this email", "create a gmail draft", "threaded email reply"]
 name: email-drafter
 description: Creates Gmail drafts — new emails or threaded replies.
 metadata:

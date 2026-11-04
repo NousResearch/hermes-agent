@@ -132,12 +132,59 @@ def _normalize(text: str) -> str:
 def _get_session_user_cfg() -> dict:
     """Return the user config dict for the current session user, or {} if unknown."""
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_gws_identity_env
         from tools._user_registry import get_user_config
-        session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+        session_uid = get_gws_identity_env()
         return get_user_config(session_uid) or {}
     except Exception:
         return {}
+
+
+# Single-tenant interim default -- the only Hermes user with this registry
+# sheet configured today. Used ONLY to establish ambient session context
+# (via the sanctioned set_session_vars()/clear_session_vars() mechanism --
+# never passed directly to gws_auth, which refuses caller-supplied ids by
+# design) for background work that has no session at all: the Tier-2 hot
+# cache refresh thread, and the bare thread force_refresh() spawns (plain
+# threading.Thread does not inherit contextvars from its parent, so even a
+# cron-triggered rebuild loses HERMES_CRON_JOB_OWNER_ID once it hits a new
+# thread -- see _run_with_identity_fallback below).
+# TODO(multi-tenant): replace with a Postgres-backed per-user registry and
+# propagate each user's own owner id into their rebuild instead of this
+# single default.
+_DEFAULT_OWNER_USER_ID = "ndr-7449813913"
+
+
+def _run_with_identity_fallback(fn, *, inherited_context=None):
+    """Run ``fn()`` with session identity guaranteed to be set.
+
+    If real session/cron-owner context is already present (either ambiently,
+    or copied in via ``inherited_context``), it is left untouched. Only when
+    there is truly no identity anywhere does this establish the single-tenant
+    default via the same ``set_session_vars`` mechanism a live chat uses --
+    never by passing an id directly to gws_auth.
+    """
+    import contextvars
+    from gateway.session_context import (
+        get_gws_identity_env,
+        set_session_vars,
+        clear_session_vars,
+    )
+
+    def _runner():
+        if get_gws_identity_env():
+            fn()
+            return
+        tokens = set_session_vars(user_id=_DEFAULT_OWNER_USER_ID)
+        try:
+            fn()
+        finally:
+            clear_session_vars(tokens)
+
+    if inherited_context is not None:
+        inherited_context.run(_runner)
+    else:
+        _runner()
 
 
 def _get_sheet_id() -> str:
@@ -160,16 +207,19 @@ def _build_service():
     refresh-capable Credentials object.  No credentials pass through the LLM.
     """
     from tools import gws_auth
-    from gateway.session_context import get_session_env
+    from gateway.session_context import get_gws_identity_env
 
     cfg = _get_session_user_cfg()
     gws_service = cfg.get("gws_service", "")
-    session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+    # get_gws_identity_env() covers live sessions + cron-owner fallback
+    # (this was previously a raw get_session_env() read, which missed the
+    # cron-owner case the same way _get_session_user_cfg() used to).
+    session_uid = get_gws_identity_env()
 
     if not session_uid:
         raise RuntimeError(
             "Cannot identify session user for Google Sheets access. "
-            "HERMES_SESSION_USER_ID not set or user not found in registry."
+            "No live session or cron job owner context available."
         )
     if not gws_service:
         raise RuntimeError(
@@ -258,8 +308,8 @@ class NounResolver:
     def start(self):
         """Build initial index and start background refresh."""
         try:
-            self._rebuild_index()
-            self._refresh_hot_cache()
+            _run_with_identity_fallback(self._rebuild_index)
+            _run_with_identity_fallback(self._refresh_hot_cache)
         except Exception as e:
             logger.warning(f"NounResolver: initial load failed ({e}) — will retry in background")
 
@@ -274,7 +324,12 @@ class NounResolver:
 
     def force_refresh(self):
         """Call this after the learner writes new data to the sheet."""
-        threading.Thread(target=self._rebuild_index, daemon=True).start()
+        import contextvars
+        ctx = contextvars.copy_context()
+        threading.Thread(
+            target=lambda: _run_with_identity_fallback(self._rebuild_index, inherited_context=ctx),
+            daemon=True,
+        ).start()
 
     # ── Index building ─────────────────────────────────────────────────────────
 
@@ -434,7 +489,7 @@ class NounResolver:
 
     def _background_refresh(self):
         while not self._stop_event.wait(HOT_REFRESH_INTERVAL):
-            self._refresh_hot_cache()
+            _run_with_identity_fallback(self._refresh_hot_cache)
 
     # ── Resolution ─────────────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 ---
+triggers: ["act on another draas.com account", "domain-wide delegation", "read another employee mailbox", "admin access to someone else workspace account"]
 name: gws-domain-admin
 version: 0.2.0
 description: Domain-wide-delegation ops on any Workspace account.

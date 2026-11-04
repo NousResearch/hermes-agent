@@ -2945,7 +2945,7 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3089,7 +3089,7 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False

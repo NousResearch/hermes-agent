@@ -38,6 +38,17 @@ HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 
+# A4: dedicated cron-script folder with a lifecycle tied to the job.
+# SCRIPTS_DIR is the permanent, general-purpose scripts root (never deleted
+# automatically). CRON_SCRIPTS_DIR holds scripts that exist only for one
+# cron job and live exactly as long as that job (see resolve_cron_script,
+# _trash_script_folder below). Both stay on the persistent volume -- never
+# /tmp, which is wiped on container recreation.
+SCRIPTS_DIR = HERMES_DIR / "scripts"
+CRON_SCRIPTS_DIR = SCRIPTS_DIR / "cron"
+CRON_TRASH_DIR = CRON_SCRIPTS_DIR / ".trash"
+CRON_TRASH_RETENTION_DAYS = 7
+
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
@@ -50,6 +61,59 @@ ONESHOT_GRACE_SECONDS = 120
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+
+# Metadata validation (A1): display name, description and labels are
+# free-form annotations an admin or the agent can set; validated here so
+# both create_job() and update_job() enforce the same limits regardless of
+# caller (REST API, agent tool, migration script).
+_NAME_MAX_LEN = 80
+_DESCRIPTION_MAX_LEN = 500
+_LABEL_MAX_LEN = 30
+_LABELS_MAX_COUNT = 10
+_LABEL_RE = re.compile(r'^[a-z0-9_-]{1,%d}$' % _LABEL_MAX_LEN)
+
+
+def _normalize_name_field(name: Optional[str]) -> str:
+    text = str(name or "").strip()
+    if len(text) > _NAME_MAX_LEN:
+        raise ValueError(f"Cron job name must be <= {_NAME_MAX_LEN} characters (got {len(text)})")
+    return text
+
+
+def _normalize_description_field(description: Optional[str]) -> Optional[str]:
+    if description is None:
+        return None
+    text = str(description).strip()
+    if not text:
+        return None
+    if len(text) > _DESCRIPTION_MAX_LEN:
+        raise ValueError(f"Cron job description must be <= {_DESCRIPTION_MAX_LEN} characters (got {len(text)})")
+    return text
+
+
+def _normalize_labels_field(labels: Optional[Any]) -> List[str]:
+    if labels is None:
+        return []
+    if isinstance(labels, str):
+        raw_items = [labels]
+    else:
+        raw_items = list(labels)
+    normalized: List[str] = []
+    for item in raw_items:
+        text = str(item or "").strip().lower()
+        if not text:
+            continue
+        if not _LABEL_RE.match(text):
+            raise ValueError(
+                f"Invalid label {text!r}: labels must be lowercase, match "
+                f"[a-z0-9_-], and be <= {_LABEL_MAX_LEN} characters"
+            )
+        if text not in normalized:
+            normalized.append(text)
+    if len(normalized) > _LABELS_MAX_COUNT:
+        raise ValueError(f"At most {_LABELS_MAX_COUNT} labels allowed per job (got {len(normalized)})")
+    return normalized
+
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -66,6 +130,85 @@ def _job_output_dir(job_id: str) -> Path:
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     return OUTPUT_DIR / text
+
+
+def resolve_cron_script(job_id: str, script: str):
+    """Resolve a cron job's script file (A4).
+
+    Lookup order:
+      1. scripts/cron/<job_id>/<script>  (scripts that exist only for this job)
+      2. scripts/<script>                (permanent, shared scripts)
+
+    Returns (resolved_path_or_None, scope_or_None, error_or_None). ``scope``
+    is ``"cron"`` or ``"permanent"`` -- stored on the job as script_scope so
+    the admin UI can show where a job's script actually lives. Containment
+    is enforced for both roots: the resolved path must stay inside the
+    matched root, with no symlink/traversal escape.
+    """
+    text = str(script or "").strip()
+    if not text:
+        return None, None, "No script specified"
+    if text.startswith(("/", "~")) or (len(text) >= 2 and text[1] == ":") or ".." in Path(text).parts:
+        return None, None, f"Invalid script path {text!r}: must be a relative filename, no traversal"
+
+    candidates = [
+        (CRON_SCRIPTS_DIR / str(job_id) / text, "cron", CRON_SCRIPTS_DIR / str(job_id)),
+        (SCRIPTS_DIR / text, "permanent", SCRIPTS_DIR),
+    ]
+    for candidate, scope, root in candidates:
+        try:
+            if not candidate.exists():
+                continue
+            resolved = candidate.resolve()
+            root_resolved = root.resolve()
+            resolved.relative_to(root_resolved)
+        except (OSError, ValueError):
+            continue  # missing, or symlink/traversal escape -- treat as not found
+        return resolved, scope, None
+
+    return None, None, (
+        f"Script not found; looked in {CRON_SCRIPTS_DIR / str(job_id)} and {SCRIPTS_DIR}"
+    )
+
+
+def _purge_old_cron_trash() -> None:
+    """Delete trashed cron script folders older than the retention window.
+
+    Best-effort, lazy sweep -- runs opportunistically whenever a job is
+    removed/completes rather than needing its own cron job.
+    """
+    try:
+        if not CRON_TRASH_DIR.is_dir():
+            return
+        cutoff = _hermes_now() - timedelta(days=CRON_TRASH_RETENTION_DAYS)
+        for entry in CRON_TRASH_DIR.iterdir():
+            try:
+                mtime = datetime.fromtimestamp(entry.stat().st_mtime).astimezone()
+                if entry.is_dir() and mtime < cutoff:
+                    shutil.rmtree(entry)
+            except Exception:
+                continue
+    except Exception:
+        logger.warning("Cron trash sweep failed", exc_info=True)
+
+
+def _trash_script_folder(job_id: str) -> None:
+    """Move a job's cron-only script folder to a 7-day trash, best-effort.
+
+    Called on job removal and on terminal completion (one-shot fired, or a
+    repeat limit used up). Never touches the permanent scripts/ root.
+    """
+    try:
+        job_dir = CRON_SCRIPTS_DIR / str(job_id)
+        if job_dir.is_dir():
+            CRON_TRASH_DIR.mkdir(parents=True, exist_ok=True)
+            ts = _hermes_now().strftime("%Y%m%d%H%M%S")
+            dest = CRON_TRASH_DIR / f"{job_id}-{ts}"
+            shutil.move(str(job_dir), str(dest))
+            logger.info("Moved cron script folder for job %s to trash: %s", job_id, dest)
+        _purge_old_cron_trash()
+    except Exception:
+        logger.warning("Failed to trash cron script folder for job %s", job_id, exc_info=True)
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -152,6 +295,20 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 
     profile = _coerce_job_text(normalized.get("profile")).strip()
     normalized["profile"] = profile or None
+
+    # A1: description/labels metadata. Older records won't have these --
+    # default on read without rewriting storage (normalize-on-read, same
+    # pattern as `profile`/`schedule_display` above).
+    desc = normalized.get("description")
+    normalized["description"] = desc if isinstance(desc, str) and desc.strip() else None
+    raw_labels = normalized.get("labels")
+    normalized["labels"] = [str(x) for x in raw_labels] if isinstance(raw_labels, list) else []
+
+    # A4: which scripts root a job's script resolved from (set by the
+    # scheduler/tool at creation/validation time). None for agent-only jobs
+    # or legacy jobs created before this field existed.
+    scope = normalized.get("script_scope")
+    normalized["script_scope"] = scope if scope in ("cron", "permanent") else None
 
     return normalized
 
@@ -566,6 +723,8 @@ def create_job(
     profile: Optional[str] = None,
     no_agent: bool = False,
     owner: Optional[str] = None,
+    description: Optional[str] = None,
+    labels: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -659,6 +818,24 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    normalized_description = _normalize_description_field(description)
+    normalized_labels = _normalize_labels_field(labels)
+    if name is not None:
+        name = _normalize_name_field(name)
+
+    # B1: every cron job must have a resolvable owner. Interactive sessions
+    # resolve one automatically from the session identity (see
+    # tools/cronjob_tools.py::_owner_from_env); API callers must send an
+    # identity header so the gateway can resolve one before calling here.
+    # This is enforced in one place so every creation path (agent tool,
+    # REST API, migration script) gets it for free.
+    owner_id = (str(owner).strip() or None) if owner else None
+    if not owner_id:
+        raise ValueError(
+            "Cron jobs must have a resolvable owner -- interactive sessions "
+            "supply one automatically; API callers must send an identity "
+            "header so the gateway can resolve one."
+        )
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -713,9 +890,12 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
-        # Canonical vault user_id of the creator — GWS/vault identity only,
-        # see the ``owner`` docstring above. Never used for delivery routing.
-        "owner": (str(owner).strip() or None) if owner else None,
+        # Canonical vault user_id of the creator -- GWS/vault identity only,
+        # see the ``owner`` docstring above. Validated non-None above (B1).
+        "owner": owner_id,
+        "description": normalized_description,
+        "labels": normalized_labels,
+        "script_scope": None,
     }
 
     jobs = load_jobs()
@@ -813,6 +993,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        if "name" in updates and updates["name"] is not None:
+            updates["name"] = _normalize_name_field(updates["name"])
+        if "description" in updates:
+            updates["description"] = _normalize_description_field(updates["description"])
+        if "labels" in updates:
+            updates["labels"] = _normalize_labels_field(updates["labels"])
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
@@ -916,6 +1103,7 @@ def remove_job(job_id: str) -> bool:
         # Clean up output directory to prevent orphaned dirs accumulating
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
+        _trash_script_folder(canonical_id)  # A4: cron-only script lifecycle tied to the job
         return True
     return False
 
@@ -953,6 +1141,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         # Remove the job (limit reached)
                         jobs.pop(i)
                         save_jobs(jobs)
+                        _trash_script_folder(job_id)  # A4: terminal completion
                         return
                 
                 # Compute next run
@@ -984,6 +1173,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     else:
                         job["enabled"] = False
                         job["state"] = "completed"
+                        _trash_script_folder(job_id)  # A4: terminal completion
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 

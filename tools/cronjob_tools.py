@@ -400,43 +400,79 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
+def _validate_cron_script_path(script: Optional[str], job_id: Optional[str] = None) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Scripts must be relative filenames. They may live in the job's own
+    cron-only folder (``scripts/cron/<job_id>/``, A4) or the permanent
+    shared ``scripts/`` root. Existence isn't required here (the scheduler
+    checks that lazily at run time and the admin UI flags it separately);
+    this only blocks traversal/absolute paths at the API boundary.
 
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
+    from cron.jobs import SCRIPTS_DIR, CRON_SCRIPTS_DIR
 
     raw = script.strip()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
+    # Reject absolute paths, ~ expansion, and traversal at the API boundary.
+    # Messages print real absolute directories -- a previous version said
+    # "~/.hermes/scripts/", but inside this container ~ is /opt/data, so
+    # agents following that message literally saved scripts to
+    # /opt/data/.hermes/scripts/, where the scheduler never looks.
+    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":") or ".." in Path(raw).parts:
+        cron_dir = CRON_SCRIPTS_DIR / (job_id or "<job_id>")
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
-            f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Script path must be a relative filename. Resolves under "
+            f"{cron_dir} (this job's own scripts, A4) or {SCRIPTS_DIR} "
+            f"(shared scripts). Got absolute or traversal path: {raw!r}."
         )
 
-    # Validate containment after resolution
+    # Validate containment after resolution against the permanent root.
+    # (The per-job cron root is created on demand by the script_content
+    # write path below, so it isn't checked here for a bare path string.)
     from tools.path_security import validate_within_dir
 
-    scripts_dir = get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
+    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    containment_error = validate_within_dir(SCRIPTS_DIR / raw, SCRIPTS_DIR)
     if containment_error:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
 
     return None
+
+
+def _write_cron_script_content(job_id: str, filename: str, content: str) -> Optional[str]:
+    """Write ``content`` to this job's own cron-only script folder (A4).
+
+    The folder is created on demand, owned by the running process (uid
+    10000 inside the container) with mode 0700, matching jobs.json's own
+    permission model. Returns an error string on failure, else None.
+    """
+    from cron.jobs import CRON_SCRIPTS_DIR
+
+    name = Path(filename).name
+    if not name or name != filename or name in {".", ".."}:
+        return f"Invalid script filename {filename!r}: must be a plain filename, no path separators."
+
+    try:
+        job_dir = CRON_SCRIPTS_DIR / str(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        script_file = job_dir / name
+        script_file.write_text(content, encoding="utf-8")
+        try:
+            import os as _os
+            _os.chmod(job_dir, 0o700)
+            _os.chmod(script_file, 0o700)
+        except OSError:
+            pass
+        return None
+    except OSError as exc:
+        return f"Failed to write script content: {exc}"
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -475,6 +511,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["workdir"] = job["workdir"]
     if job.get("profile"):
         result["profile"] = job["profile"]
+    if job.get("description"):
+        result["description"] = job["description"]
+    if job.get("labels"):
+        result["labels"] = job["labels"]
+    if job.get("script_scope"):
+        result["script_scope"] = job["script_scope"]
     return result
 
 
@@ -499,6 +541,9 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    description: Optional[str] = None,
+    labels: Optional[List[str]] = None,
+    script_content: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -531,8 +576,27 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
-            if script:
+            # A4: script_content writes the file into this job's own cron
+            # folder once the job exists (we need its id first) -- the
+            # agent never picks a directory, which removes the ~ confusion
+            # that caused scripts to land somewhere the scheduler never
+            # looks at (see _validate_cron_script_path docstring).
+            _script_filename = None
+            if script_content:
+                if not script:
+                    return tool_error(
+                        "script_content requires `script` to be set to the "
+                        "filename it should be saved as (e.g. 'watchdog.py').",
+                        success=False,
+                    )
+                _script_filename = Path(script).name
+                if _script_filename != script or not _script_filename or _script_filename in {".", ".."}:
+                    return tool_error(
+                        f"Invalid script filename {script!r}: must be a plain "
+                        f"filename, no path separators.",
+                        success=False,
+                    )
+            elif script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
                     return tool_error(script_error, success=False)
@@ -549,25 +613,47 @@ def cronjob(
                             success=False,
                         )
 
-            job = create_job(
-                prompt=prompt or "",
-                schedule=schedule,
-                name=name,
-                repeat=repeat,
-                deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
-                skills=canonical_skills,
-                model=_normalize_optional_job_value(model),
-                provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
-                script=_normalize_optional_job_value(script),
-                context_from=context_from,
-                enabled_toolsets=enabled_toolsets or None,
-                workdir=_normalize_optional_job_value(workdir),
-                profile=_normalize_optional_job_value(profile),
-                no_agent=_no_agent,
-                owner=_owner_from_env(),
-            )
+            try:
+                job = create_job(
+                    prompt=prompt or "",
+                    schedule=schedule,
+                    name=name,
+                    repeat=repeat,
+                    deliver=_normalize_deliver_param(deliver),
+                    origin=_origin_from_env(),
+                    skills=canonical_skills,
+                    model=_normalize_optional_job_value(model),
+                    provider=_normalize_optional_job_value(provider),
+                    base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                    script=_script_filename or _normalize_optional_job_value(script),
+                    context_from=context_from,
+                    enabled_toolsets=enabled_toolsets or None,
+                    workdir=_normalize_optional_job_value(workdir),
+                    profile=_normalize_optional_job_value(profile),
+                    no_agent=_no_agent,
+                    owner=_owner_from_env(),
+                    description=description,
+                    labels=labels,
+                )
+            except ValueError as exc:
+                # B1: create_job() refuses jobs with no resolvable owner, and
+                # A1 validation (name/description/labels) raises ValueError too.
+                return tool_error(str(exc), success=False)
+
+            if script_content and _script_filename:
+                write_error = _write_cron_script_content(job["id"], _script_filename, script_content)
+                if write_error:
+                    # Job was already created with the script field set --
+                    # surface the write failure but don't silently hide the
+                    # job that now exists (the admin UI shows script_exists=False).
+                    return tool_error(
+                        f"Job '{job['name']}' created (id={job['id']}) but writing "
+                        f"its script failed: {write_error}",
+                        success=False,
+                    )
+                from cron.jobs import update_job as _update_job
+                job = _update_job(job["id"], {"script_scope": "cron"}) or job
+
             return json.dumps(
                 {
                     "success": True,
@@ -669,13 +755,22 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if description is not None:
+                updates["description"] = description or None
+            if labels is not None:
+                updates["labels"] = labels
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
-                    script_error = _validate_cron_script_path(script)
+                    script_error = _validate_cron_script_path(script, job_id=job_id)
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+                if script and script_content:
+                    write_error = _write_cron_script_content(job_id, Path(script).name, script_content)
+                    if write_error:
+                        return tool_error(write_error, success=False)
+                    updates["script_scope"] = "cron"
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list
@@ -861,6 +956,19 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
             },
+            "description": {
+                "type": "string",
+                "description": "Optional free-text description (up to 500 chars) shown in the admin UI and cronjob list/get output. On update, pass an empty string to clear."
+            },
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional labels for filtering in the admin UI (lowercase, [a-z0-9_-], up to 30 chars each, max 10). On update, pass an empty array to clear."
+            },
+            "script_content": {
+                "type": "string",
+                "description": "Optional script source to write yourself -- pairs with `script` as the filename it should be saved under (e.g. script='watchdog.py', script_content='<python source>'). Written into this job's own cron-only script folder (scripts/cron/<job_id>/), which is created and deleted automatically with the job -- never choose a directory yourself. On create, the job is made first (to get its id) then the file is written. On update, pass a new `script` + `script_content` together to overwrite."
+            },
         },
         "required": ["action"]
     }
@@ -917,6 +1025,9 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        description=args.get("description"),
+        labels=args.get("labels"),
+        script_content=args.get("script_content"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

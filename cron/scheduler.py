@@ -659,6 +659,93 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     return targets[0] if targets else None
 
 
+def _resolve_owner_delivery(job: dict) -> "tuple[Optional[dict], Optional[str]]":
+    """B1: resolve where a cron job's result goes, based on its OWNER.
+
+    Order: 1) owner's Telegram identity, 2) owner's primary email (the
+    vault has no explicit "primary" marker across multiple emails -- the
+    first stored one is used, with a warning logged), 3) unresolved.
+
+    Legacy routing (deliver=origin / explicit platform:chat_id / "all") is
+    intentionally NOT consulted here -- every non-local cron job resolves
+    via its owner now (see the Cron Admin plan, section 3). Callers must
+    check ``deliver == "local"`` themselves before calling this.
+    """
+    owner_id = str(job.get("owner") or "").strip()
+    if not owner_id:
+        return None, "owner has no telegram or email"
+    try:
+        from tools import gws_vault_client as vault
+        identity = vault.get_identity(owner_id, session_uid=owner_id)
+    except Exception as exc:
+        logger.warning(
+            "Job '%s' (%s): vault lookup failed for owner %s: %s",
+            job.get("name", job.get("id")), job.get("id"), owner_id, exc,
+        )
+        identity = None
+    if not identity:
+        return None, "owner has no telegram or email"
+
+    telegrams = (identity.get("identities") or {}).get("telegram") or []
+    if telegrams:
+        return {
+            "kind": "telegram",
+            "platform": "telegram",
+            "chat_id": str(telegrams[0]),
+            "thread_id": None,  # owner's personal DM, not a home-channel topic
+        }, None
+
+    emails = (identity.get("identities") or {}).get("email") or []
+    if emails:
+        if len(emails) > 1:
+            logger.warning(
+                "Cron owner %s has %d emails and no marked primary -- using first: %s",
+                owner_id, len(emails), emails[0],
+            )
+        return {"kind": "email", "identity": identity}, None
+
+    return None, "owner has no telegram or email"
+
+
+def _send_owner_email(identity: dict, subject: str, body: str) -> Optional[str]:
+    """Send ``body`` to the owner's primary email via their OWN Gmail OAuth
+    token -- per-user OAuth only, never DWD/service-account (SA-key/DWD was
+    dropped 2026-05-08; see memory/gws_auth_approach.md). Returns None on
+    success, or an error string on failure.
+    """
+    try:
+        emails = (identity.get("identities") or {}).get("email") or []
+        if not emails:
+            return "owner has no email"
+        to_addr = emails[0]
+        owner_id = identity.get("user_id")
+        service_key = str(identity.get("gws_service") or "google").strip() or "google"
+
+        from tools import gws_vault_client as vault
+        token_json = vault.get_token(owner_id, service_key, session_uid=owner_id)
+
+        import base64 as _b64
+        import json as _json
+        from email.mime.text import MIMEText
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build as _gbuild
+
+        creds = Credentials.from_authorized_user_info(_json.loads(token_json))
+        service = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
+        mime = MIMEText(body)
+        mime["to"] = to_addr
+        mime["subject"] = subject
+        raw = _b64.urlsafe_b64encode(mime.as_bytes()).decode()
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Owner-email cron delivery failed for %s: %s",
+            identity.get("user_id"), exc, exc_info=True,
+        )
+        return f"email delivery failed: {exc}"
+
+
 # Media extension sets — audio routing is centralized in gateway.platforms.base
 # via should_send_media_as_audio() so Telegram-specific rules stay in one place.
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
@@ -732,13 +819,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
-    targets = _resolve_delivery_targets(job)
-    if not targets:
-        if job.get("deliver", "local") != "local":
-            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
-            logger.warning("Job '%s': %s", job["id"], msg)
-            return msg
+    if _normalize_deliver_value(job.get("deliver", "local")) == "local":
         return None  # local-only jobs don't deliver — not a failure
+
+    # B1: delivery is owner-based only (legacy origin/explicit-platform
+    # values are migrated to "owner" or "local" -- see the Cron Admin plan,
+    # section 3 / cron_migrate_delivery.py). Order: owner's Telegram, else
+    # owner's primary email, else unresolved (surfaced via last_delivery_error
+    # and the admin UI).
+    job_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    owner_target, _owner_resolve_err = _resolve_owner_delivery(job)
+    if not owner_target:
+        msg = _owner_resolve_err or "owner has no telegram or email"
+        logger.warning("Job '%s' (%s): delivery unresolved: %s", job_name, job_id, msg)
+        return msg
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -754,14 +849,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         pass
 
     if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
+        description = (job.get("description") or "").strip()
+        header = f"Cronjob Response: {job_name}"
+        if description:
+            header += f"\n{description}"
         delivery_content = (
-            f"Cronjob Response: {task_name}\n"
+            f"{header}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {job_name}\")."
         )
     else:
         delivery_content = content
@@ -771,11 +868,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
+    if owner_target["kind"] == "email":
+        # Per-user OAuth only -- never DWD/service-account. Media attachments
+        # are not sent via this path yet; any MEDIA: markers stay as plain
+        # text in the email body (known limitation, not a crash).
+        subject = f"[Hermes cron] {job_name}"
+        err = _send_owner_email(owner_target["identity"], subject, cleaned_delivery_content)
+        if err:
+            logger.error("Job '%s' (%s): email delivery failed: %s", job_name, job_id, err)
+        else:
+            to_addr = (owner_target["identity"].get("identities") or {}).get("email", [None])[0]
+            logger.info("Job '%s' (%s): delivered via email to %s", job_name, job_id, to_addr)
+        return err
+
+    targets = [owner_target]
+
     try:
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
-        logger.error("Job '%s': %s", job["id"], msg)
+        logger.error("Job '%s' (%s): %s", job_name, job_id, msg)
         return msg
 
     delivery_errors = []
@@ -784,20 +896,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
-
-        # Diagnostic: log thread_id for topic-aware delivery debugging
-        origin = _resolve_origin(job) or {}
-        origin_thread = origin.get("thread_id")
-        if origin_thread and not thread_id:
-            logger.warning(
-                "Job '%s': origin has thread_id=%s but delivery target lost it "
-                "(deliver=%s, target=%s)",
-                job["id"], origin_thread, job.get("deliver", "local"), target,
-            )
-        elif thread_id:
+        if thread_id:
             logger.debug(
-                "Job '%s': delivering to %s:%s thread_id=%s",
-                job["id"], platform_name, chat_id, thread_id,
+                "Job '%s' (%s): delivering to %s:%s thread_id=%s",
+                job_name, job_id, platform_name, chat_id, thread_id,
             )
 
         # Built-in names resolve to their enum member; plugin platform names
@@ -905,11 +1007,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
-                logger.error("Job '%s': %s", job["id"], msg)
+                logger.error("Job '%s' (%s): %s", job_name, job_id, msg)
                 delivery_errors.append(msg)
                 continue
 
-            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            logger.info("Job '%s' (%s): delivered to %s:%s", job_name, job_id, platform_name, chat_id)
 
     if delivery_errors:
         return "; ".join(delivery_errors)
@@ -954,7 +1056,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, job_id: Optional[str] = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -981,28 +1083,45 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
+    # A4: scripts/cron/<job_id>/ first (scripts that exist only for this
+    # job), then scripts/ (permanent, shared scripts) -- shared lookup with
+    # tools/cronjob_tools.py's validation path via cron.jobs.resolve_cron_script.
+    resolved_path = None
+    lookup_error = None
+    if job_id:
+        try:
+            from cron.jobs import resolve_cron_script
+            resolved_path, _scope, lookup_error = resolve_cron_script(job_id, script_path)
+        except Exception:
+            resolved_path = None
+            lookup_error = None  # fall through to legacy single-root lookup
 
-    raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
+    if resolved_path is not None:
+        path = resolved_path
     else:
-        path = (scripts_dir / raw).resolve()
+        scripts_dir = _get_hermes_home() / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        scripts_dir_resolved = scripts_dir.resolve()
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+        raw = Path(script_path).expanduser()
+        if raw.is_absolute():
+            path = raw.resolve()
+        else:
+            path = (scripts_dir / raw).resolve()
 
-    if not path.exists():
-        return False, f"Script not found: {path}"
+        # Guard against path traversal, absolute path injection, and symlink
+        # escape — scripts MUST reside within HERMES_HOME/scripts/.
+        try:
+            path.relative_to(scripts_dir_resolved)
+        except ValueError:
+            return False, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
+
+        if not path.exists():
+            detail = f" ({lookup_error})" if lookup_error else ""
+            return False, f"Script not found: {path}{detail}"
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
@@ -1127,7 +1246,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            success, script_output = _run_job_script(script_path, job.get("id"))
         if success:
             if script_output:
                 prompt = (
@@ -1396,7 +1515,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, job.get("id"))
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1485,7 +1604,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script(script_path, job.get("id"))
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -1624,15 +1743,13 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
-        delivery_target = _resolve_delivery_target(job)
-        if delivery_target:
+        delivery_target = None
+        if _normalize_deliver_value(job.get("deliver", "local")) != "local":
+            delivery_target, _ = _resolve_owner_delivery(job)
+        if delivery_target and delivery_target.get("kind") == "telegram":
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
-                ""
-                if delivery_target.get("thread_id") is None
-                else str(delivery_target["thread_id"])
-            )
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set("")
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 

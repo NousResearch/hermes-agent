@@ -1,4 +1,5 @@
 ---
+triggers: ["yuanbao group", "at-mention a group member", "list yuanbao group members", "元宝 group"]
 name: yuanbao
 description: "Yuanbao (元宝) groups: @mention users, query info/members."
 version: 1.0.0

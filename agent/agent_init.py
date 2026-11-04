@@ -904,6 +904,60 @@ def init_agent(
             _headers["X-Hermes-Route-Tier"] = "no-free"
             client_kwargs["default_headers"] = _headers
 
+        # Usage-metering identity. Optional and fail-open: the gateway records
+        # "unknown" when these are absent. Scoped to the gateway only, so these
+        # headers are never sent to third-party providers. See
+        # hermes-apps-stack/llm-gateway/usage.py.
+        if "llm-gateway" in _effective_base or "ai-gateway" in _effective_base:
+            _headers = client_kwargs.get("default_headers") or {}
+            _headers.setdefault("X-Hermes-Client", "hermes-agent")
+            _headers["X-Hermes-Platform"] = platform or "cli"
+            if session_id:
+                _headers["X-Hermes-Session-Id"] = str(session_id)
+            try:
+                from agent.user_identity import resolve_canonical_user_id
+                _uid = resolve_canonical_user_id(
+                    user_id, user_id_alt, platform=platform or "cli",
+                )
+                if _uid:
+                    _headers["X-Hermes-User-Id"] = _uid
+            except Exception:
+                pass
+            if user_name:
+                _headers["X-Hermes-User-Label"] = str(user_name)
+            # Cron sessions deliberately clear HERMES_SESSION_USER_ID so they
+            # can't impersonate a live chat for routing. Their recorded owner
+            # (HERMES_CRON_JOB_OWNER_ID) is still the right attribution key.
+            if not _headers.get("X-Hermes-User-Id") and (platform or "").lower() == "cron":
+                try:
+                    from gateway.session_context import get_gws_identity_env
+                    _owner = get_gws_identity_env()
+                    if _owner:
+                        _headers["X-Hermes-User-Id"] = _owner
+                        _headers["X-Hermes-User-Label"] = _owner
+                except Exception:
+                    pass
+            if (platform or "").lower() == "cron":
+                _headers["X-Hermes-Job-Type"] = "cron"
+                if session_id:
+                    _headers["X-Hermes-Job-Id"] = str(session_id)
+            client_kwargs["default_headers"] = _headers
+            # Auxiliary LLM calls (vision/compression/title/...) use their own
+            # OpenAI clients in agent/auxiliary_client.py. Share the same
+            # identity so their gateway calls are attributed to this user.
+            try:
+                from agent import auxiliary_client as _aux_client
+                _identity_keys = (
+                    "X-Hermes-Client", "X-Hermes-Platform", "X-Hermes-Session-Id",
+                    "X-Hermes-User-Id", "X-Hermes-User-Label", "X-Hermes-Job-Type",
+                    "X-Hermes-Job-Id",
+                )
+                _aux_client.set_usage_identity(
+                    {k: _headers[k] for k in _identity_keys if k in _headers}
+                )
+            except Exception:
+                pass
+
         # User-configured request headers (model.default_headers in
         # config.yaml) override provider/SDK defaults. Lets custom
         # OpenAI-compatible endpoints behind a gateway/WAF that rejects the

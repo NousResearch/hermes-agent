@@ -108,6 +108,12 @@ _HERMES_CHILD_ALLOWED = frozenset({
     "HERMES_PROFILE",
     "HERMES_CONFIG",
     "HERMES_ENV",
+    # Non-secret FTS-storage toggle read at hermes_state.py import/init time
+    # (schema init runs in any process that opens state.db, including a
+    # sandbox child that imports a repo module which touches SessionDB).
+    # Without this, a child silently sees it unset and re-creates the
+    # trigram index the parent explicitly disabled (2026-11-01).
+    "HERMES_DISABLE_FTS_TRIGRAM",
 })
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.

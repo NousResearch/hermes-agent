@@ -46,7 +46,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from gateway.session_context import get_session_env
+from gateway.session_context import get_gws_identity_env
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,14 @@ EMOJI = "\U0001F4AC"  # 💬
 
 BASE_URL = os.environ.get("WA_BASE_URL", "https://wa.ahfl.in").rstrip("/")
 TIMEOUT = 45
+
+# One process, N accounts (2026-10-25): there is exactly ONE bridge URL/token, shared by every
+# Hermes user -- the bridge itself resolves WHICH account a call is for from the
+# actingVaultUserId field _call() injects into every POST payload below. A short-lived pilot
+# (same day) hardcoded a per-user base_url/port table here instead; it was never a durable
+# design (ports got torn down once the real per-account registry landed server-side) and sent
+# RNR's messages through NDR's bridge by falling through to BASE_URL when her hardcoded port
+# stopped resolving. Removed outright -- this file no longer needs to know accounts exist.
 
 
 def _format_contact(name: Optional[str], external_chat_id: str) -> str:
@@ -84,15 +92,43 @@ def _format_contact(name: Optional[str], external_chat_id: str) -> str:
 
 
 def _acting_vault_user_id() -> Optional[str]:
-    """Who is actually chatting with Hermes right now, per the gateway's own session context.
+    """Who is actually chatting with Hermes right now, as the bridge's canonical vault id.
 
     Deliberately not an argument the caller supplies: HERMES_SESSION_USER_ID is set by the
-    gateway from the real channel sender (see gateway/session_context.py), is explicitly cleared
-    for cron jobs so a scheduled job cannot impersonate a live chat, and is read here directly —
-    never taken from the args dict. Auto-send eligibility is keyed on this.
+    gateway from the real channel sender (see gateway/session_context.py) and is read here
+    directly — never taken from the args dict. Auto-send eligibility is keyed on this.
+
+    Cron jobs (2026-10-27): HERMES_SESSION_USER_ID is cleared under cron so a job cannot
+    impersonate a live chat for routing, which left every scheduled WhatsApp send anonymous --
+    "No session user context", then a draft, even for chats on the owner's auto-send list.
+    get_gws_identity_env() falls back to HERMES_CRON_JOB_OWNER_ID (the job's stored ``owner``,
+    whoever created it), the same identity Drive/Calendar/Gmail already use under cron. A job
+    with no recorded owner still resolves to nobody, as before.
+
+    The gateway's value is the RAW channel id: for a Telegram session that is the numeric
+    Telegram id (``7449813913``), while the bridge's ``account_access`` table is keyed by the
+    canonical vault id (``ndr-7449813913``). Sending the raw id makes every bridge call resolve
+    to no account and return ``no_whatsapp_account``, even though the account is linked.
+    Resolve the alias through the vault, exactly as gws_auth.canonical_uid() does for Google
+    token operations, and fall back to the raw id only when the vault cannot resolve it (or is
+    unreachable) so single-account / legacy behaviour is preserved.
     """
-    uid = get_session_env("HERMES_SESSION_USER_ID", "").strip()
-    return uid or None
+    raw = get_gws_identity_env().strip()
+    if not raw:
+        return None
+    try:
+        from tools import gws_vault_client as vault
+
+        canonical = vault.resolve_any(raw)
+        if canonical:
+            return canonical
+    except Exception:
+        logger.warning(
+            "whatsapp: could not canonicalize session user %r; using the raw id",
+            raw,
+            exc_info=True,
+        )
+    return raw
 
 
 # =============================================================================
@@ -112,11 +148,29 @@ def _call(path: str, payload: Optional[dict] = None, method: str = "POST") -> tu
             "WA_SERVICE_TOKEN is not set in the Hermes environment, so the WhatsApp bridge "
             "cannot be reached. This needs an operator to configure it."
         )
-    data = json.dumps(payload or {}).encode() if method == "POST" else None
+    uid = _acting_vault_user_id()
+    body_payload = dict(payload or {})
+    if method == "POST" and uid:
+        # Redundant with the header below for a JSON POST body (harmless, kept for callers that
+        # read it back out of their own request for logging). The HEADER is what the bridge
+        # actually trusts now -- see the 2026-10-25 note on X-WA-Acting-Vault-User-Id below for
+        # why: it is the only mechanism that works for every request shape, not just JSON POSTs.
+        body_payload.setdefault("actingVaultUserId", uid)
+    data = json.dumps(body_payload).encode() if method == "POST" else None
+    headers = {"content-type": "application/json", "X-WA-Service-Token": token}
+    if uid:
+        # BUG FIX (2026-10-25): a GET request and a multipart upload cannot carry this in a
+        # JSON body at all, and even a POST's JSON body was read by Fastify's preHandler
+        # reliably only for plain JSON -- a multipart upload's form field was NEVER readable
+        # there (the plugin does not populate req.body for multipart without an option this
+        # app does not set), so every Hermes media upload silently defaulted to the bootstrap
+        # account. A header is read identically for every request shape, so it is now the one
+        # mechanism every call in this file uses, uniformly -- GET, POST, and upload alike.
+        headers["X-WA-Acting-Vault-User-Id"] = uid
     req = urllib.request.Request(
         f"{BASE_URL}{path}",
         data=data,
-        headers={"content-type": "application/json", "X-WA-Service-Token": token},
+        headers=headers,
         method=method,
     )
     try:
@@ -168,10 +222,19 @@ def _upload(path: str, kind: Optional[str] = None) -> tuple[Optional[dict], Opti
         parts.append(fh.read())
     parts.append(f"\r\n--{boundary}--\r\n".encode())
     body = b"".join(parts)
+    # BUG FIX (2026-10-25): a multipart form field named actingVaultUserId (what used to be
+    # here) is NEVER readable by the bridge's identity check -- Fastify does not populate
+    # req.body for multipart requests unless specially configured, and this app is not. Every
+    # media upload silently landed on the bootstrap account regardless of this field's value.
+    # The header is read identically for every request shape; see the long note in _call().
+    upload_headers = {"content-type": f"multipart/form-data; boundary={boundary}", "X-WA-Service-Token": token, "X-WA-Tool": "wa_send_media"}
+    uid = _acting_vault_user_id()
+    if uid:
+        upload_headers["X-WA-Acting-Vault-User-Id"] = uid
     req = urllib.request.Request(
         f"{BASE_URL}/v1/media/upload",
         data=body,
-        headers={"content-type": f"multipart/form-data; boundary={boundary}", "X-WA-Service-Token": token, "X-WA-Tool": "wa_send_media"},
+        headers=upload_headers,
         method="POST",
     )
     try:
@@ -192,7 +255,11 @@ def _download(media_id: str, dest_dir: str) -> tuple[Optional[str], Optional[str
     token = _token()
     if not token:
         return None, "WA_SERVICE_TOKEN is not set."
-    req = urllib.request.Request(f"{BASE_URL}/v1/media/{media_id}", headers={"X-WA-Service-Token": token}, method="GET")
+    download_headers = {"X-WA-Service-Token": token}
+    uid = _acting_vault_user_id()
+    if uid:
+        download_headers["X-WA-Acting-Vault-User-Id"] = uid
+    req = urllib.request.Request(f"{BASE_URL}/v1/media/{media_id}", headers=download_headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             cd = resp.headers.get("content-disposition", "")
@@ -375,6 +442,27 @@ def _handle_style_corpus(args: Optional[dict], **_kw: Any) -> str:
 # write tools — two steps, enforced by the bridge
 # =============================================================================
 
+def _bundle_note(body: dict) -> str:
+    """Explain where a draft sits in its bundle (bridge migration 018).
+
+    Every draft written to one chat within a few minutes -- attachments and text alike -- is ONE
+    reviewable unit: NDR sees it as one card, approves it once, and the items go out in the
+    order they were drafted. Before this, three documents and the text that said "attached
+    above" were five separate drafts, the documents expired unseen, and only the text was sent.
+    """
+    size = int(body.get("bundleSize") or 1)
+    if size <= 1:
+        return ""
+    lines = [f"  {b.get('position')}. {b.get('preview')}  (draft_id {b.get('draftId')})" for b in body.get("bundle") or []]
+    return (
+        f"\n\nThis is item {body.get('position')} of {size} in ONE draft for this chat (bundle {body.get('bundleId')}). "
+        "They are shown to NDR together, approved together, and sent one after another in this order:\n"
+        + "\n".join(lines)
+        + "\nAll items share the latest expiry. To approve, call wa_send_confirmed ONCE with any one of these "
+        "draft_ids -- never once per item."
+    )
+
+
 def _handle_draft_reply(args: Optional[dict], **_kw: Any) -> str:
     args = args or {}
     chat_id = (args.get("chatId") or "").strip()
@@ -415,6 +503,7 @@ def _handle_draft_reply(args: Optional[dict], **_kw: Any) -> str:
         "Show that text to NDR verbatim and ask for explicit approval. Only if he approves, call "
         "wa_send_confirmed with this draft_id. If he wants changes, create a new draft instead. "
         "The bridge sends the stored text, so editing the wording after approval requires a new draft."
+        + _bundle_note(body)
     )
 
 
@@ -435,6 +524,17 @@ def _handle_send_confirmed(args: Optional[dict], **_kw: Any) -> str:
         if state:
             return tool_error(f"{err} (draft state is '{state}'). Create a fresh draft if it expired or was cancelled.")
         return tool_error(err)
+    if body.get("alreadyConfirmedWithBundle"):
+        return tool_result(
+            f"Already approved: draft_id={body.get('draftId')} was queued together with the rest of its bundle "
+            "when another item was confirmed. Nothing more to do -- do not confirm the other items either."
+        )
+    if int(body.get("bundleSize") or 1) > 1:
+        return tool_result(
+            f"Approved and queued: all {body.get('bundleSize')} items of this draft "
+            f"({', '.join(body.get('queuedDraftIds') or [])}) go out one after another, in order. "
+            "Do NOT call wa_send_confirmed for the other draft_ids. Use wa_draft_status on the last one to confirm it reached 'sent'."
+        )
     return tool_result(
         f"Approved and queued for delivery (draft_id={body.get('draftId')}).\n"
         "The bridge sent the stored text. Use wa_draft_status to confirm it reached 'sent'."
@@ -534,6 +634,12 @@ def _handle_auto_send_remove(args: Optional[dict], **_kw: Any) -> str:
 
 
 def _handle_send_message(args: Optional[dict], **_kw: Any) -> str:
+    """Send a WhatsApp message. This is the ONLY send tool -- always call this, never ask
+    NDR to confirm first and never wait on a separate approval step. The bridge decides what
+    actually happens: on his auto-send list, it goes out immediately; otherwise it is left as
+    a draft inside the WhatsApp app itself for him to review and approve there himself. Either
+    outcome is reported back in one call -- see SEND_MESSAGE_SCHEMA.
+    """
     args = args or {}
     chat_id = (args.get("chatId") or "").strip()
     if not chat_id:
@@ -547,22 +653,36 @@ def _handle_send_message(args: Optional[dict], **_kw: Any) -> str:
 
     vault_id = _acting_vault_user_id()
     if not vault_id:
-        return tool_error("No session user context, so this cannot be sent as a specific person's auto-send decision.")
+        return tool_error(
+            "No session user context, so this cannot be sent as a specific person's auto-send decision. "
+            "Use wa_draft_reply instead -- it leaves the message as a draft NDR approves in the WhatsApp app."
+        )
 
     body, err = _call(
         "/v1/messages/send_auto",
         {"chatId": chat_id, "text": text, "idempotencyKey": idem, "actingVaultUserId": vault_id, "tool": "wa_send_message"},
     )
     if err:
-        if body and body.get("error") == "not_on_auto_send_list":
-            return tool_error(
-                "NOT_ON_AUTO_SEND_LIST (this is expected and normal, not a fault): this chat is not "
-                "on your auto-send list, so it needs explicit approval instead. Call wa_style_corpus, "
-                "then wa_draft_reply, show NDR the exact text, and only call wa_send_confirmed after "
-                "he approves it."
-            )
         return tool_error(err)
-    return tool_result(f"Sent immediately (auto-send, no approval needed for this contact). outbox_id={body.get('outboxId')}")
+    body = body or {}
+    if body.get("autoSent"):
+        return tool_result(f"SENT (this contact is on the auto-send list). outbox_id={body.get('outboxId')}")
+    # Drafted, not sent -- expected and normal for anyone not on the auto-send list. Nothing
+    # further is needed: do not call wa_draft_reply or wa_send_confirmed for this, and do not
+    # ask NDR to confirm it in this chat -- he approves it from the WhatsApp app itself.
+    return tool_result(
+        f"DRAFTED — not sent yet (this chat is not on the auto-send list, which is expected, not an error). "
+        f"NDR will see and approve this himself in the WhatsApp app; do NOT ask him to confirm it here, and do "
+        f"NOT call wa_draft_reply or wa_send_confirmed for this message. draft_id={body.get('draftId')}, "
+        f"what will be sent: {body.get('preview')}"
+        + (
+            "\nIt joined the attachments/drafts already waiting in this chat, so it is shown and sent after them, in order."
+            if body.get("reason") == "joins_open_draft"
+            else ""
+        )
+    )
+
+
 
 
 def _handle_voice_reply(args: Optional[dict], **_kw: Any) -> str:
@@ -689,6 +809,28 @@ def _handle_transcode_media(args: Optional[dict], **_kw: Any) -> str:
     )
 
 
+def _auto_send_result(body: dict, what: str) -> str:
+    """Report a /v1/messages/send_auto-style answer: sent now, or left as a draft in the app.
+
+    2026-10-27: attachments and contact cards used to be drafted ALWAYS, even to a chat on
+    NDR's auto-send list (Family Group, Weekend plans...). With a session user they now follow
+    the same rule as wa_send_message -- the bridge decides, Hermes just reports it.
+    """
+    if body.get("autoSent"):
+        return tool_result(f"SENT ({what}; this chat is on the auto-send list). outbox_id={body.get('outboxId')}, sent: {body.get('preview')}")
+    joined = (
+        "\nIt joined the attachments/drafts already waiting in this chat, so it is shown and sent after them, in order."
+        if body.get("reason") == "joins_open_draft"
+        else ""
+    )
+    return tool_result(
+        f"DRAFTED — not sent yet ({what}; this chat is not on the auto-send list, which is expected, not an error). "
+        "NDR will see and approve this himself in the WhatsApp app; do NOT ask him to confirm it here, and do "
+        f"NOT call wa_send_confirmed for it. draft_id={body.get('draftId')}, what will be sent: {body.get('preview')}"
+        + joined
+    )
+
+
 def _handle_send_media(args: Optional[dict], **_kw: Any) -> str:
     args = args or {}
     chat_id = (args.get("chatId") or "").strip()
@@ -718,6 +860,17 @@ def _handle_send_media(args: Optional[dict], **_kw: Any) -> str:
         content = {"type": "document", "mediaId": up["mediaId"], "fileName": args.get("fileName") or os.path.basename(path)}
         if args.get("caption"):
             content["caption"] = args["caption"]
+    vault_id = _acting_vault_user_id()
+    if vault_id and not args.get("replyTo"):
+        # Same rule as wa_send_message: on the auto-send list -> sent now, else drafted in-app.
+        # (A quoted reply needs the draft route's replyTo resolution, so it stays a draft.)
+        body, err = _call(
+            "/v1/messages/send_auto",
+            {"chatId": chat_id, "content": content, "idempotencyKey": idem, "actingVaultUserId": vault_id, "tool": "wa_send_media"},
+        )
+        if err:
+            return tool_error(err)
+        return _auto_send_result(body or {}, f"{k} {content.get('fileName') or ''}".strip())
     body, err = _call("/v1/messages/draft", {"chatId": chat_id, "content": content, "idempotencyKey": idem, "tool": "wa_send_media", "replyTo": args.get("replyTo") or None})
     if err:
         return tool_error(err)
@@ -729,6 +882,7 @@ def _handle_send_media(args: Optional[dict], **_kw: Any) -> str:
         f"draft_id: {body.get('draftId')}\n"
         f"what will be sent: {body.get('preview')}\n\n"
         "Show this to NDR and only on explicit approval call wa_send_confirmed with this draft_id."
+        + _bundle_note(body)
     )
 
 
@@ -741,10 +895,16 @@ def _handle_send_contact(args: Optional[dict], **_kw: Any) -> str:
     idem = (args.get("idempotencyKey") or "").strip()
     if not idem or len(idem) < 8:
         return tool_error("idempotencyKey is required (>= 8 chars).")
-    body, err = _call("/v1/contacts/send", {"chatId": chat_id, "contact": contact, "idempotencyKey": idem, "tool": "wa_send_contact"})
+    payload = {"chatId": chat_id, "contact": contact, "idempotencyKey": idem, "tool": "wa_send_contact"}
+    vault_id = _acting_vault_user_id()
+    if vault_id:
+        payload["actingVaultUserId"] = vault_id
+    body, err = _call("/v1/contacts/send", payload)
     if err:
         return tool_error(err)
     body = body or {}
+    if vault_id:
+        return _auto_send_result(body, "contact card")
     chat = body.get("chat", {})
     return tool_result(
         "DRAFT CREATED — nothing has been sent.\n\n"
@@ -752,6 +912,84 @@ def _handle_send_contact(args: Optional[dict], **_kw: Any) -> str:
         f"draft_id: {body.get('draftId')}\n"
         f"what will be sent: {body.get('preview')}\n\n"
         "Show this to NDR and only on explicit approval call wa_send_confirmed with this draft_id."
+        + _bundle_note(body)
+    )
+
+
+def _handle_send_new_number(args: Optional[dict], **_kw: Any) -> str:
+    """Message a phone number with no prior chat history at all -- see SEND_NEW_NUMBER_SCHEMA."""
+    args = args or {}
+    phone = (args.get("phoneNumber") or "").strip()
+    if not phone:
+        return tool_error("phoneNumber is required.")
+    idem = (args.get("idempotencyKey") or "").strip()
+    if not idem or len(idem) < 8:
+        return tool_error("idempotencyKey is required (>= 8 chars).")
+    vault_id = _acting_vault_user_id()
+    if not vault_id:
+        return tool_error("No session user context, so there is no account to attribute this send to.")
+
+    text = (args.get("text") or "").strip()
+    path = (args.get("path") or "").strip()
+    if not text and not path:
+        return tool_error("text or path (a file to send) is required.")
+    if text and path:
+        return tool_error("Send either text or a file (path), not both, in one call.")
+
+    payload: dict = {"phoneNumber": phone, "idempotencyKey": idem, "actingVaultUserId": vault_id, "tool": "wa_send_new_number"}
+    if text:
+        payload["text"] = text
+    else:
+        kind = (args.get("kind") or "").strip() or None
+        up, err = _upload(path, kind)
+        if err:
+            return tool_error(err)
+        up = up or {}
+        k = kind or up.get("kind") or "document"
+        if k == "voice":
+            content = {"type": "audio", "mediaId": up["mediaId"], "ptt": True}
+        elif k in ("image", "video"):
+            content = {"type": k, "mediaId": up["mediaId"]}
+            if args.get("caption"):
+                content["caption"] = args["caption"]
+        elif k == "audio":
+            content = {"type": "audio", "mediaId": up["mediaId"], "ptt": False}
+        elif k == "sticker":
+            content = {"type": "sticker", "mediaId": up["mediaId"]}
+        else:
+            content = {"type": "document", "mediaId": up["mediaId"], "fileName": args.get("fileName") or os.path.basename(path)}
+            if args.get("caption"):
+                content["caption"] = args["caption"]
+        payload["content"] = content
+
+    body, err = _call("/v1/messages/send_new_number", payload)
+    if err:
+        code = (body or {}).get("error")
+        if code == "not_on_whatsapp":
+            return tool_error("NOT_ON_WHATSAPP: " + phone + " does not have WhatsApp (or is mistyped). Nothing was sent.")
+        if code == "existing_contact":
+            chat_id = (body or {}).get("chatId")
+            return tool_error(
+                "EXISTING_CONTACT (this is expected, not a fault): there is already a conversation "
+                "with this number (chatId=" + str(chat_id) + "). Use wa_draft_reply or wa_send_message "
+                "instead of this tool, which is only for numbers with no history."
+            )
+        return tool_error(err)
+    body = body or {}
+    if body.get("autoSent"):
+        return tool_result(
+            "SENT immediately to " + phone + " (new-number default is set to auto-send). "
+            + "outbox_id=" + str(body.get("outboxId")) + chr(10)
+            + "what was sent: " + str(body.get("preview"))
+        )
+    chat = body.get("chat", {})
+    return tool_result(
+        "DRAFT CREATED — nothing has been sent (new-number default is set to draft)."
+        + chr(10) + chr(10)
+        + "To: " + phone + " (chatId=" + str(chat.get("chatId")) + ", a brand-new contact for this account)" + chr(10)
+        + "draft_id: " + str(body.get("draftId")) + chr(10)
+        + "what will be sent: " + str(body.get("preview")) + chr(10) + chr(10)
+        + "Show this to NDR and only on explicit approval call wa_send_confirmed with this draft_id."
     )
 
 
@@ -825,7 +1063,18 @@ def _handle_events_poll(args: Optional[dict], **_kw: Any) -> str:
 def _handle_health(args: Optional[dict], **_kw: Any) -> str:
     body, err = _call("/v1/health", None, method="GET")
     if err:
-        return tool_error(err)
+        # /v1/health runs several aggregate stats queries, and one of them can fail on its own
+        # (e.g. an account-scoped query against a table that has no account_id) while the
+        # account mapping and the read/send paths are perfectly healthy. Do not let that turn
+        # into a false "bridge is down / not linked" answer: prove the link with one cheap read
+        # first, and only report the original error if that read also fails.
+        probe, perr = _call("/v1/chats/list", {"limit": 1})
+        if perr:
+            return tool_error(err)
+        return tool_result(
+            "WhatsApp bridge: linked and reachable; the /v1/health summary is unavailable "
+            f"({err}). Reads and sends are still available."
+        )
     if not body:
         return tool_error("Empty response from the bridge.")
     return tool_result(
@@ -945,12 +1194,12 @@ STYLE_SCHEMA = {
 DRAFT_SCHEMA = {
     "name": "wa_draft_reply",
     "description": (
-        "Store a drafted WhatsApp reply on the bridge and get back a draft_id. This does NOT "
-        "send anything. Works for any chat NDR already has in WhatsApp — drafting is always "
-        "safe because nothing goes out until wa_send_confirmed, after NDR explicitly approves "
-        "the exact text. Call wa_style_corpus first so the draft matches how NDR writes to this "
-        "person. This is the default path — use it whenever wa_send_message refuses with "
-        "not_on_auto_send_list, or whenever you are not certain auto-send applies."
+        "Store a drafted WhatsApp reply on the bridge and get back a draft_id, for NDR to "
+        "approve HERE in this chat before anything sends. NOT the default anymore: for an "
+        "ordinary message always call wa_send_message instead -- it auto-sends when allowed and "
+        "otherwise drafts the message into the WhatsApp app itself for NDR to approve there, with "
+        "nothing further needed from you. Use this one only when NDR explicitly asks to see and "
+        "approve the exact wording in THIS conversation before it goes anywhere."
     ),
     "parameters": {
         "type": "object",
@@ -1057,12 +1306,12 @@ AUTO_SEND_REMOVE_SCHEMA = {
 SEND_MESSAGE_SCHEMA = {
     "name": "wa_send_message",
     "description": (
-        "Try to send a WhatsApp message IMMEDIATELY, with no approval step. Only succeeds for a "
-        "chat already on the current user's auto-send list. A refusal with "
-        "not_on_auto_send_list is the EXPECTED, NORMAL outcome for most contacts — it is not an "
-        "error, and the correct response is to fall back to wa_draft_reply + wa_send_confirmed, "
-        "not to retry this tool. Still call wa_style_corpus first so the message matches the "
-        "user's voice."
+        "Send a WhatsApp message. This is the ONLY send tool -- always call this for an ordinary reply or message, "
+        "never wa_draft_reply + wa_send_confirmed, and never ask the user to confirm first or wait for one. The bridge "
+        "decides what actually happens, and tells you in the response: autoSent=true means it is already sent; "
+        "drafted=true means it is sitting in the WhatsApp app itself for the operator to review and approve -- "
+        "that is the expected, normal outcome for most contacts, not an error, and there is nothing further for "
+        "you to do or ask about it. Still call wa_style_corpus first so the message matches the user's voice."
     ),
     "parameters": {
         "type": "object",
@@ -1158,6 +1407,32 @@ SEND_CONTACT_SCHEMA = {
     },
 }
 
+SEND_NEW_NUMBER_SCHEMA = {
+    "name": "wa_send_new_number",
+    "description": (
+        "Message a phone number this account has never messaged before -- the only wa_* tool "
+        "that works without an existing chat. WhatsApp itself is checked first (not_on_whatsapp "
+        "if it fails); if a conversation already exists for the number this refuses with "
+        "existing_contact -- use wa_draft_reply or wa_send_message for those instead. Whether "
+        "the message is sent immediately or held as a draft for approval is controlled by one "
+        "setting the operator sets in the PWA (Settings -> Sending -> \"New phone numbers\"), "
+        "not by this call -- do not assume either outcome, read autoSent in the response."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "phoneNumber": {"type": "string", "description": "e.g. 9820000000 or +91 98200 00000."},
+            "text": {"type": "string", "description": "Plain text message. Omit if sending a file instead."},
+            "path": {"type": "string", "description": "Local file path to send instead of text (image, video, audio, voice, document, sticker)."},
+            "kind": {"type": "string", "description": "image | video | audio | voice | document | sticker (default: guessed from the file)."},
+            "caption": {"type": "string"},
+            "fileName": {"type": "string", "description": "Name the receiver sees (documents)."},
+            "idempotencyKey": {"type": "string", "description": "Stable key for this one message (>= 8 chars) so a retry cannot double-send."},
+        },
+        "required": ["phoneNumber", "idempotencyKey"],
+    },
+}
+
 MESSAGE_ACTION_SCHEMA = {
     "name": "wa_message_action",
     "description": (
@@ -1244,6 +1519,8 @@ registry.register(name="wa_send_media", toolset=TOOLSET, schema=SEND_MEDIA_SCHEM
                   handler=_handle_send_media, emoji="\U0001F4CE")
 registry.register(name="wa_send_contact", toolset=TOOLSET, schema=SEND_CONTACT_SCHEMA,
                   handler=_handle_send_contact, emoji="\U0001F464")
+registry.register(name="wa_send_new_number", toolset=TOOLSET, schema=SEND_NEW_NUMBER_SCHEMA,
+                  handler=_handle_send_new_number, emoji="\U0001F195")
 registry.register(name="wa_message_action", toolset=TOOLSET, schema=MESSAGE_ACTION_SCHEMA,
                   handler=_handle_message_action, emoji="\U0001F4CC")
 registry.register(name="wa_chat_get", toolset=TOOLSET, schema=CHAT_GET_SCHEMA,

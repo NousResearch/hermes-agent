@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # ── Handler ────────────────────────────────────────────────────────────────────
 
-def _handle(params: dict) -> str:
+def _handle(params: dict, **_kwargs) -> str:
     query   = str(params.get("query", "")).strip()
     limit   = int(params.get("limit", 10))
     types   = params.get("types") or None          # list[str] or None → all sheets

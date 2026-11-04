@@ -1030,6 +1030,56 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
+_GATEWAY_FALLBACK_REASONS = {
+    FailoverReason.overloaded,
+    FailoverReason.server_error,
+    FailoverReason.timeout,
+}
+
+
+def _is_gateway_primary(agent) -> bool:
+    base = str(getattr(agent, "base_url", "") or "").lower()
+    return "llm-gateway" in base or "ai-gateway" in base
+
+
+def _alert_fallback_activation(agent, old_model: str, fb_provider: str,
+                               fb_model: str, reason) -> None:
+    """Best-effort Telegram notice when the paid DR fallback is used."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_HOME_CHANNEL", "").strip()
+    if not token or not chat:
+        return
+    text = (
+        "\u26a0\ufe0f Hermes fallback activated\n"
+        f"from: {old_model}\n"
+        f"to: {fb_provider}/{fb_model}\n"
+        f"reason: {getattr(reason, 'value', reason) or 'unknown'}\n"
+        "This is the direct OpenRouter disaster-recovery path; the gateway "
+        "was unreachable or returned a 5xx/timeout."
+    )
+
+    def _send() -> None:
+        import json
+        import urllib.request
+        try:
+            payload = json.dumps({
+                "chat_id": chat, "text": text,
+                "disable_web_page_preview": True,
+            }).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fallback activation alert failed: %s", e)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1042,6 +1092,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # The LLM gateway is the single router for all normal traffic. Its
+    # client-side fallback is a disaster-recovery path for gateway downtime
+    # only: connection errors, timeouts, 5xx/502/503/504. Identity, auth,
+    # billing, model-validation and other 4xx errors must surface instead of
+    # silently spending on a direct paid provider (e.g. OpenRouter).
+    if _is_gateway_primary(agent) and reason not in _GATEWAY_FALLBACK_REASONS:
+        logger.warning(
+            "Fallback suppressed: gateway error %s is not a gateway-availability failure",
+            getattr(reason, "value", reason),
+        )
+        return False
     if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -1168,6 +1229,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
+        _alert_fallback_activation(agent, old_model, fb_provider, fb_model, reason)
 
         # Clear the credential pool when the fallback provider doesn't match
         # the pool's provider.  The pool was seeded for the primary provider;

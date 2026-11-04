@@ -1,4 +1,5 @@
 ---
+triggers: ["qa this web app", "exploratory testing pass", "find bugs in this site", "browser based bug report"]
 name: dogfood
 description: "Exploratory QA of web apps: find bugs, evidence, reports."
 version: 1.0.0

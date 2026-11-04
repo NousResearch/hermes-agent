@@ -69,6 +69,26 @@ def _handle_smart_browser(args: dict, **_) -> str:
     except Exception:
         pass
 
+    # Forward the session identity so the sidecar can send X-Hermes-* headers
+    # to the LLM gateway. Cron jobs use their owner as the attribution key.
+    try:
+        from gateway.session_context import get_session_env
+        user_id = (
+            get_session_env("HERMES_SESSION_USER_ID", "").strip()
+            or get_session_env("HERMES_CRON_JOB_OWNER_ID", "").strip()
+        )
+        user_label = (
+            get_session_env("HERMES_SESSION_USER_NAME", "").strip()
+            or user_id
+        )
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip() or "browser"
+        if user_id:
+            payload["user_id"] = user_id
+            payload["user_label"] = user_label
+        payload["platform"] = platform
+    except Exception:
+        pass
+
     logger.info(
         "smart_browser → sidecar session=%s instruction=%r",
         session_id, instruction[:120],

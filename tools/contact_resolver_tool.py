@@ -119,13 +119,17 @@ def _build_svc(account_email: str | None = None):
     in tools._user_registry), same as noun_resolver.py.
     """
     from tools import gws_auth
-    from gateway.session_context import get_session_env
+    from gateway.session_context import get_gws_identity_env
 
-    session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+    # get_gws_identity_env() covers both live-chat sessions and cron jobs
+    # (cron deliberately clears HERMES_SESSION_USER_ID and stores the real
+    # owner in HERMES_CRON_JOB_OWNER_ID instead -- a raw get_session_env()
+    # read here would wrongly treat every cron-triggered call as "no user").
+    session_uid = get_gws_identity_env()
     if not session_uid:
         raise RuntimeError(
             "Cannot identify session user for Google Sheets access "
-            "(HERMES_SESSION_USER_ID not set)."
+            "(no live session or cron job owner context available)."
         )
 
     if account_email:

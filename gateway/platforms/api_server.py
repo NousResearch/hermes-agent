@@ -1106,6 +1106,60 @@ try:
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
+# A2/A4: script containment validation, reused from the agent tool so the
+# REST path enforces identical rules (relative filename, resolves under
+# scripts/cron/<job_id>/ or scripts/, no traversal). Imported defensively --
+# a missing validator must not disable the cron REST API.
+try:
+    from tools.cronjob_tools import _validate_cron_script_path as _validate_cron_script_path
+except Exception:  # pragma: no cover
+    _validate_cron_script_path = None
+
+# B1/A2: vault identity lookups, for owner resolution (create) and owner
+# validation (update). Imported defensively -- same reasoning as above.
+try:
+    from tools import gws_vault_client as _gws_vault_client
+except Exception:  # pragma: no cover
+    _gws_vault_client = None
+
+
+def _admin_actor_from_request(request: "web.Request") -> Optional[str]:
+    """Read the caller-supplied admin actor email for the audit log.
+
+    X-Admin-Actor is honoured ONLY because _check_auth() already required
+    the caller to hold the server API key before any handler that reads
+    this runs -- anyone who can set this header already has full cron API
+    access, so there is no separate trust boundary to enforce here.
+    """
+    actor = request.headers.get("X-Admin-Actor", "").strip()
+    return actor or None
+
+
+def _append_cron_audit_log(actor: str, job_id: str, action: str, before: dict, after: dict) -> None:
+    """Append one admin-audit entry to cron/admin_audit.jsonl (A2).
+
+    Best-effort: a logging failure must never block the underlying cron
+    mutation, which has already succeeded by the time this is called.
+    """
+    try:
+        import datetime as _dt
+        from hermes_cli.config import get_hermes_home
+
+        entry = {
+            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "actor": actor or "unknown",
+            "job_id": job_id,
+            "action": action,
+            "before": before or {},
+            "after": after or {},
+        }
+        audit_path = get_hermes_home() / "cron" / "admin_audit.jsonl"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        logger.warning("Failed to append cron admin audit log entry", exc_info=True)
+
 
 class APIServerAdapter(BasePlatformAdapter):
     """
@@ -3678,7 +3732,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    _UPDATE_ALLOWED_FIELDS = {
+        "name", "schedule", "prompt", "deliver", "skills", "skill", "repeat",
+        "enabled", "description", "labels", "owner", "script", "paused_reason",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3736,6 +3793,8 @@ class APIServerAdapter(BasePlatformAdapter):
             deliver = body.get("deliver", "local")
             skills = body.get("skills")
             repeat = body.get("repeat")
+            description = body.get("description")
+            labels = body.get("labels")
 
             if not name:
                 return web.json_response({"error": "Name is required"}, status=400)
@@ -3752,9 +3811,28 @@ class APIServerAdapter(BasePlatformAdapter):
             if prompt and _scan_cron_prompt is not None:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
+                    return web.json_response({"error": scan_error}, status=422)
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+
+            # B1: every cron job needs a resolvable owner. API callers must
+            # send an identity header the gateway already knows how to
+            # resolve (X-OpenWebUI-User-Email, etc. -- see
+            # gateway.platforms.identity_resolver.user_identity, the same
+            # resolver the chat-completions path uses).
+            from gateway.platforms.identity_resolver import user_identity
+            owner_id, _owner_email, _owner_draas_id = user_identity(request)
+            if not owner_id:
+                return web.json_response(
+                    {
+                        "error": (
+                            "Owner identity required: send an identity header "
+                            "(e.g. X-OpenWebUI-User-Email) that resolves to a "
+                            "known vault user before creating a cron job."
+                        )
+                    },
+                    status=400,
+                )
 
             kwargs = {
                 "prompt": prompt,
@@ -3762,14 +3840,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 "name": name,
                 "deliver": deliver,
                 "origin": self._cron_origin_from_request(request),
+                "owner": owner_id,
             }
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            if description is not None:
+                kwargs["description"] = description
+            if labels is not None:
+                kwargs["labels"] = labels
 
             job = _cron_create(**kwargs)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                _append_cron_audit_log(actor, job["id"], "create", {}, {"name": name, "owner": owner_id})
             return web.json_response({"job": job})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=422)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -3821,11 +3909,49 @@ class APIServerAdapter(BasePlatformAdapter):
             if sanitized.get("prompt") and _scan_cron_prompt is not None:
                 scan_error = _scan_cron_prompt(sanitized["prompt"])
                 if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
+                    return web.json_response({"error": scan_error}, status=422)
+
+            # A4: script containment, same rules as the agent tool.
+            if sanitized.get("script") and _validate_cron_script_path is not None:
+                script_error = _validate_cron_script_path(sanitized["script"], job_id=job_id)
+                if script_error:
+                    return web.json_response({"error": script_error}, status=400)
+
+            # B1: an owner change must resolve in the vault -- never guess,
+            # never silently accept an unresolvable id.
+            if "owner" in sanitized:
+                new_owner = str(sanitized.get("owner") or "").strip()
+                if not new_owner:
+                    return web.json_response(
+                        {"error": "owner cannot be cleared -- every cron job must have an owner"},
+                        status=400,
+                    )
+                if _gws_vault_client is None:
+                    return web.json_response({"error": "Vault client unavailable; cannot validate owner"}, status=503)
+                try:
+                    _owner_identity = _gws_vault_client.get_identity(new_owner, session_uid=new_owner)
+                except Exception as exc:
+                    return web.json_response(
+                        {"error": f"Vault lookup failed for owner {new_owner!r}: {exc}"}, status=502,
+                    )
+                if not _owner_identity:
+                    return web.json_response(
+                        {"error": f"Owner {new_owner!r} does not resolve in the vault"}, status=400,
+                    )
+                sanitized["owner"] = new_owner
+
+            before_job = _cron_get(job_id) or {}
+            before_snapshot = {k: before_job.get(k) for k in sanitized.keys()}
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                after_snapshot = {k: job.get(k) for k in sanitized.keys()}
+                _append_cron_audit_log(actor, job_id, "update", before_snapshot, after_snapshot)
             return web.json_response({"job": job})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=422)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -3841,9 +3967,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
+            before_job = _cron_get(job_id)
             success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                _append_cron_audit_log(
+                    actor, job_id, "delete",
+                    {"name": (before_job or {}).get("name")}, {},
+                )
             return web.json_response({"ok": True})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3860,9 +3993,23 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = _cron_pause(job_id)
+            reason = None
+            try:
+                body = await request.json()
+                reason = (body.get("reason") or "").strip() or None
+            except Exception:
+                pass  # body is optional for this endpoint
+            before_job = _cron_get(job_id)
+            job = _cron_pause(job_id, reason=reason)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                _append_cron_audit_log(
+                    actor, job_id, "pause",
+                    {"enabled": (before_job or {}).get("enabled"), "state": (before_job or {}).get("state")},
+                    {"enabled": job.get("enabled"), "state": job.get("state"), "paused_reason": job.get("paused_reason")},
+                )
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3879,9 +4026,17 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
+            before_job = _cron_get(job_id)
             job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                _append_cron_audit_log(
+                    actor, job_id, "resume",
+                    {"enabled": (before_job or {}).get("enabled"), "state": (before_job or {}).get("state")},
+                    {"enabled": job.get("enabled"), "state": job.get("state")},
+                )
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3901,7 +4056,146 @@ class APIServerAdapter(BasePlatformAdapter):
             job = _cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
+            actor = _admin_actor_from_request(request)
+            if actor:
+                _append_cron_audit_log(actor, job_id, "run", {}, {"next_run_at": job.get("next_run_at")})
             return web.json_response({"job": job})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_cron_schedule_preview(self, request: "web.Request") -> "web.Response":
+        """GET /api/jobs/schedule-preview?schedule=... — live schedule preview.
+
+        Returns {valid, display, next_runs: [5 ISO times], error}. Used by
+        the admin UI so a schedule edit can be previewed before saving.
+
+        NOTE: registered BEFORE "/api/jobs/{job_id}" (see route registration
+        below) -- aiohttp's UrlDispatcher matches in registration order, and
+        the dynamic {job_id} route would otherwise swallow this static path
+        first (treating "schedule-preview" as a job_id).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        cron_err = self._check_jobs_available()
+        if cron_err:
+            return cron_err
+        schedule_str = request.query.get("schedule", "").strip()
+        if not schedule_str:
+            return web.json_response({"valid": False, "error": "schedule is required"}, status=400)
+        try:
+            from cron.jobs import parse_schedule, compute_next_run
+
+            parsed = parse_schedule(schedule_str)
+            next_runs = []
+            last_run_at = None
+            for _ in range(5):
+                nxt = compute_next_run(parsed, last_run_at)
+                if not nxt:
+                    break
+                next_runs.append(nxt)
+                if parsed.get("kind") == "once":
+                    break  # a one-shot has exactly one run
+                last_run_at = nxt
+            return web.json_response({
+                "valid": True,
+                "display": parsed.get("display", schedule_str),
+                "next_runs": next_runs,
+                "error": None,
+            })
+        except ValueError as e:
+            return web.json_response({"valid": False, "display": None, "next_runs": [], "error": str(e)})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_get_job_runs(self, request: "web.Request") -> "web.Response":
+        """GET /api/jobs/{job_id}/runs?limit=20 — recent run output.
+
+        cron/output/<job_id>/ holds one file per run (its content, not a
+        structured status record), so only the MOST RECENT entry can be
+        annotated with the job's current last_status/last_error/
+        last_delivery_error -- older entries carry output text only. This
+        is a known limitation of the underlying storage, not a bug here.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        cron_err = self._check_jobs_available()
+        if cron_err:
+            return cron_err
+        job_id, id_err = self._check_job_id(request)
+        if id_err:
+            return id_err
+        try:
+            limit = max(1, min(int(request.query.get("limit", "20")), 100))
+        except (TypeError, ValueError):
+            limit = 20
+        try:
+            job = _cron_get(job_id)
+            if not job:
+                return web.json_response({"error": "Job not found"}, status=404)
+            from hermes_cli.config import get_hermes_home
+
+            output_dir = get_hermes_home() / "cron" / "output" / job_id
+            runs = []
+            if output_dir.is_dir():
+                files = sorted(output_dir.glob("*.md"), reverse=True)[:limit]
+                for i, f in enumerate(files):
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        text = ""
+                    entry = {
+                        "time": f.stem,
+                        "output_preview": text[:2000],
+                    }
+                    if i == 0:
+                        entry["status"] = job.get("last_status")
+                        entry["error"] = job.get("last_error")
+                        entry["delivery_error"] = job.get("last_delivery_error")
+                    runs.append(entry)
+            return web.json_response({"runs": runs})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_get_job_script_preview(self, request: "web.Request") -> "web.Response":
+        """GET /api/jobs/{job_id}/script-preview — first 200 lines of a job's script.
+
+        Read-only, and limited to the two script roots (scripts/cron/<job_id>/
+        and scripts/) via cron.jobs.resolve_cron_script's containment check.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        cron_err = self._check_jobs_available()
+        if cron_err:
+            return cron_err
+        job_id, id_err = self._check_job_id(request)
+        if id_err:
+            return id_err
+        try:
+            job = _cron_get(job_id)
+            if not job:
+                return web.json_response({"error": "Job not found"}, status=404)
+            script = job.get("script")
+            if not script:
+                return web.json_response({"error": "This job has no script"}, status=404)
+            from cron.jobs import resolve_cron_script
+
+            resolved, scope, err = resolve_cron_script(job_id, script)
+            if resolved is None:
+                return web.json_response({"error": err or "Script not found", "script_exists": False}, status=404)
+            try:
+                lines = resolved.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError as exc:
+                return web.json_response({"error": f"Failed to read script: {exc}"}, status=500)
+            return web.json_response({
+                "script_resolved_path": str(resolved),
+                "script_scope": scope,
+                "script_exists": True,
+                "lines": lines[:200],
+                "truncated": len(lines) > 200,
+            })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -4514,6 +4808,47 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        # --- hermes-jobs: opt-in conversation restore (job spine) --------
+        # /v1/runs has always PERSISTED messages under session_id but never
+        # read them back, so a run resumed with the same session_id woke up
+        # amnesiac (verified: it denied its own previous turn). This mirrors
+        # the X-Hermes-Session-Id branch in _handle_chat_completions -- same
+        # loader, same auth gate -- so a parked job can be resumed with its
+        # tool results intact.
+        #
+        # Strictly opt-in: a caller that does not pass restore_history takes
+        # the exact branch it took before. Fails OPEN to a fresh run, never
+        # 500s a shared endpoint.
+        if (
+            not conversation_history
+            and body.get("restore_history")
+            and body.get("session_id")
+        ):
+            if not self._api_key:
+                return web.json_response(
+                    _openai_error(
+                        "restore_history requires API key authentication.",
+                        code="session_restore_forbidden",
+                    ),
+                    status=403,
+                )
+            try:
+                _restore_db = self._ensure_session_db()
+                if _restore_db is not None:
+                    conversation_history = _restore_db.get_messages_as_conversation(
+                        session_id
+                    )
+                    logger.info(
+                        "[api_server] restore_history: %d message(s) for session %s",
+                        len(conversation_history), session_id,
+                    )
+            except Exception as _restore_exc:
+                logger.warning(
+                    "[api_server] restore_history failed for %s: %s",
+                    session_id, _restore_exc,
+                )
+                conversation_history = []
+        # --- end hermes-jobs ---------------------------------------------
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         # Resolve SSO identity injected by the Open WebUI pipe / API client
@@ -5471,12 +5806,15 @@ class APIServerAdapter(BasePlatformAdapter):
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
+            self._app.router.add_get("/api/jobs/schedule-preview", self._handle_cron_schedule_preview)
             self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
             self._app.router.add_patch("/api/jobs/{job_id}", self._handle_update_job)
             self._app.router.add_delete("/api/jobs/{job_id}", self._handle_delete_job)
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            self._app.router.add_get("/api/jobs/{job_id}/runs", self._handle_get_job_runs)
+            self._app.router.add_get("/api/jobs/{job_id}/script-preview", self._handle_get_job_script_preview)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs", self._handle_list_runs)

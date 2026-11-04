@@ -88,15 +88,22 @@ SHEET_TAB_NAMES = {
     "vocabulary_corrections": "vocab_corrections",
 }
 
+# Referenced throughout _ensure_vocab_corrections_tab / _upsert_vocab_correction
+# below. Was missing entirely -- every learn_correction call NameError'd here
+# (caught by the outer try/except in _learn_correction, so it looked like a
+# generic "Error writing misspelling" even though the misspelling had already
+# been written to the contact row a line earlier).
+VOCAB_CORRECTIONS_TAB = SHEET_TAB_NAMES["vocabulary_corrections"]
+
 
 
 # ── Credential helper ─────────────────────────────────────────────────────────
 
 def _get_session_user_cfg() -> dict:
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_gws_identity_env
         from tools._user_registry import get_user_config
-        session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+        session_uid = get_gws_identity_env()
         return get_user_config(session_uid) or {}
     except Exception:
         return {}
@@ -120,16 +127,19 @@ def _build_service():
     canonical vault user_id and loaded as a refresh-capable Credentials object.
     """
     from tools import gws_auth
-    from gateway.session_context import get_session_env
+    from gateway.session_context import get_gws_identity_env
 
     cfg = _get_session_user_cfg()
     gws_service = cfg.get("gws_service", "")
-    session_uid = get_session_env("HERMES_SESSION_USER_ID", "")
+    # get_gws_identity_env() covers both live-chat sessions and cron jobs
+    # (cron deliberately clears HERMES_SESSION_USER_ID and stores the real
+    # owner in HERMES_CRON_JOB_OWNER_ID instead).
+    session_uid = get_gws_identity_env()
 
     if not session_uid:
         raise RuntimeError(
             "Cannot identify session user for Google Sheets access. "
-            "HERMES_SESSION_USER_ID not set or user not found in registry."
+            "No live session or cron job owner context available."
         )
     if not gws_service:
         raise RuntimeError(
@@ -175,7 +185,7 @@ def _append_to_cell(svc, tab: str, col: str, row: int, new_value: str, sep: str 
 
 def _ensure_vocab_corrections_tab(svc):
     """Create vocab_corrections tab with headers if it does not exist."""
-    meta = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
+    meta = svc.spreadsheets().get(spreadsheetId=_get_sheet_id()).execute()
     existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
     if VOCAB_CORRECTIONS_TAB in existing:
         return

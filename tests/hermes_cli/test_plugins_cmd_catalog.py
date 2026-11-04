@@ -377,6 +377,50 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
+def _recall_after_install(world, tmp_path, monkeypatch, name: str = "killed") -> Path:
+    """A URL install that lands on the kill list afterwards (offline: no cached live copy)."""
+    target = _install_url(tmp_path / f"later-{name}", name, {})
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name=name, reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    return target
+
+
+def test_plugin_pack_install_refuses_a_recalled_plugin(world):
+    from hermes_cli.plugin_packs import PackPluginEntry, PluginPack, ResolvedPackPlugin, install_pack_plugins
+    world["state"]["removed"].append(
+        pc_cat.RemovedEntry(name="cat-plugin", repo=world["repo"].as_uri(), reason="malware"))
+    entry = PackPluginEntry(ref=world["sha1"], repo=world["repo"].as_uri())
+    pack = PluginPack(name="p", plugins=[entry])
+    results = install_pack_plugins(pack, [ResolvedPackPlugin(entry=entry, identifier=entry.install_identifier)],
+                                   pc._console())
+    assert [(r.ok, "malware" in (r.error or "")) for r in results] == [(False, True)]
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+    assert "cat-plugin" not in pc._get_enabled_set()
+
+
+def test_dashboard_enable_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    result = pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)
+    assert result["ok"] is False and "backdoor" in result["error"]
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_tui_plugin_toggle_of_an_installed_recalled_plugin_is_refused(world, tmp_path, monkeypatch):
+    from tui_gateway import server
+    _recall_after_install(world, tmp_path, monkeypatch)
+    reply = server.handle_request({"id": "1", "method": "plugins.manage",
+                                   "params": {"action": "toggle", "key": "killed", "enable": True}})
+    assert "backdoor" in json.dumps(reply.get("error"))
+    assert "killed" not in pc._get_enabled_set()
+
+
+def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(world, tmp_path, monkeypatch):
+    _recall_after_install(world, tmp_path, monkeypatch)
+    pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    assert pc.dashboard_set_agent_plugin_enabled("killed", enabled=True)["ok"] is True
+    assert "killed" in pc._get_enabled_set()
+
+
 _HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
 
 

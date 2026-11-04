@@ -394,7 +394,7 @@ def install_pack_plugins(
 
         try:
             _set_plugin_enabled(installed_name, enable=True)
-        except AdmissionRefused as exc:
+        except (AdmissionRefused, PluginOperationError) as exc:
             _fail(display, str(exc))
             continue
 

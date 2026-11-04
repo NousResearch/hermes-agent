@@ -638,9 +638,14 @@ def _selection_lock() -> threading.Lock:
 
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
-    """Submit the command's delta with the version of the selection it read."""
+    """Submit the command's delta with the version of the selection it read. Enabling a non-bundled
+    plugin on the kill list raises :class:`PluginOperationError` (every enable surface lands here)."""
     from pm.plugins_state import read_home_selection
 
+    entry = _find_plugin_entry(name) if enable else None
+    if entry is not None and entry[3] != "bundled":
+        from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+        refuse_if_installed_removed(entry[5], _user_installed_plugin_dir(entry[5].rsplit("/", 1)[-1]))
     with _selection_lock():
         expected_config = _plugin_selection_version()
         config = read_home_selection(get_hermes_home()) or {}
@@ -1021,7 +1026,7 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     toolset_key = None if enabled else _saved_list_toolset_key(key)
     try:
         changed = _activate_key(key, enable=enabled)
-    except AdmissionRefused as exc:
+    except (AdmissionRefused, PluginOperationError) as exc:
         return {
             "ok": False,
             "error": str(exc),

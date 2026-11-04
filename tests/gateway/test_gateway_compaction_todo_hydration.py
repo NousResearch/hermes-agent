@@ -251,6 +251,8 @@ async def test_compaction_without_any_todo_state_leaves_transcript_unchanged(tod
     # Keep the target name fixed for the canonical path while supplying a genuinely empty database.
     empty = SessionDB(tmp_path / "empty.db")
     empty.create_session("sess-todo", source="cli")
+    for msg in _history():
+        empty.append_message("sess-todo", msg["role"], msg["content"])
     try:
         with monkeypatch.context() as scoped:
             result, tail = await _canonical_compress(empty, tmp_path, scoped)
@@ -274,6 +276,41 @@ async def test_plugin_compress_restores_summarised_tasks(todo_db, tmp_path, monk
     assert result["engine_owner"].context_compressor is engine
     if partial:
         assert result["messages"][-2]["content"] == _history()[-2]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plugin", [False, True], ids=["builtin", "plugin"])
+@pytest.mark.parametrize("partial", [False, True], ids=["full", "partial"])
+async def test_canonical_compress_refuses_growth_after_todo_fold(todo_db, tmp_path, monkeypatch, plugin, partial):
+    from agent.model_metadata import estimate_messages_tokens_rough
+    from gateway.compaction_todo_hydration import fold_todos_for_compaction
+
+    todos = [{"id": f"t{i}", "content": "archived task " * 250, "status": "pending"} for i in range(8)]
+    pair = _todo_pair("large", todos, 4)
+    todo_db.append_message("sess-todo", "assistant", "", tool_calls=pair[0]["tool_calls"])
+    todo_db.append_message("sess-todo", "tool", pair[1]["content"], tool_call_id="large", tool_name="todo")
+    todo_db.archive_and_compact("sess-todo", [])
+    for msg in _history():
+        todo_db.append_message("sess-todo", msg["role"], msg["content"])
+    before = todo_db.get_messages_as_conversation("sess-todo")
+    candidate = _compressed_tail()
+    assert estimate_messages_tokens_rough(candidate) < estimate_messages_tokens_rough(before)
+    folded = fold_todos_for_compaction(before, candidate, todo_db, "sess-todo")
+    assert estimate_messages_tokens_rough(folded) > estimate_messages_tokens_rough(before)
+    ended = []
+    engine = SimpleNamespace(compress=lambda *a, **k: _compressed_tail(),
+                             on_session_end=lambda *a: ended.append(a))
+    if plugin:
+        monkeypatch.setattr("gateway.session_mutation_compress._plugin_engine", lambda *a: engine)
+    result, _ = await _canonical_compress(todo_db, tmp_path, monkeypatch,
+                                         {"partial": True, "keep_last": 2} if partial else {})
+    assert result.get("status") == "noop"
+    assert "messages" not in result
+    assert todo_db.get_messages_as_conversation("sess-todo") == before
+    if plugin:
+        assert engine._last_compress_refused_would_grow is True
+        assert len(ended) == 1
+        assert ended[0] == ("sess-todo", before)
 
 
 @pytest.mark.asyncio

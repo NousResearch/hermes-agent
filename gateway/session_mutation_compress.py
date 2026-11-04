@@ -34,7 +34,6 @@ async def prepare_compress(authority, live, payload, prepared):
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _parse_config_int
     from agent.model_metadata import estimate_request_tokens_rough
-    from gateway.compaction_todo_hydration import fold_todos_for_compaction
     from hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
     from utils import is_truthy_value
@@ -76,7 +75,7 @@ async def prepare_compress(authority, live, payload, prepared):
                 try:
                     compressed = _engine_compress(engine, head, tail, messages, request, memory_context)
                     if compressed is not None:
-                        compressed = fold_todos_for_compaction(messages, compressed, authority.db, snapshot['target'])
+                        compressed = _fold_and_check_growth(messages, compressed, authority.db, snapshot['target'], engine)
                     return compressed, engine
                 except BaseException:
                     if resident is None:
@@ -93,7 +92,7 @@ async def prepare_compress(authority, live, payload, prepared):
             if not any(m.get('_compressed_summary') for m in compressed):
                 return None, compressor
             compressed = rejoin_compressed_head_and_tail(compressed, tail)
-            return fold_todos_for_compaction(messages, compressed, authority.db, snapshot["target"]), compressor
+            return _fold_and_check_growth(messages, compressed, authority.db, snapshot['target'], compressor), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
@@ -122,10 +121,9 @@ async def prepare_compress(authority, live, payload, prepared):
 
 
 def _engine_compress(engine, head, tail, messages, request, memory_context):
-    """One forced ``compress()`` on a plugin engine; None when it changed nothing or would grow the
-    conversation (the agent path refuses a growing result the same way)."""
+    """One forced plugin compression, rejoined with its retained tail; None when unchanged."""
     from agent.conversation_compression import _supported_compression_kwargs
-    from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+    from agent.model_metadata import estimate_request_tokens_rough
     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
     engine._last_compress_refused_would_grow = False
     compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
@@ -133,7 +131,15 @@ def _engine_compress(engine, head, tail, messages, request, memory_context):
         focus_topic=request.focus_topic, force=True, memory_context=memory_context))
     if compressed == head:
         return None
-    compressed = rejoin_compressed_head_and_tail(compressed, tail)
+    return rejoin_compressed_head_and_tail(compressed, tail)
+
+
+def _fold_and_check_growth(messages, compressed, session_db, session_id, engine):
+    """Judge the complete candidate, including todo state restored from archived results."""
+    from gateway.compaction_todo_hydration import fold_todos_for_compaction
+    from agent.model_metadata import estimate_messages_tokens_rough
+    # Retained tail rows may alias the input; folding must not inflate the comparison baseline.
+    compressed = fold_todos_for_compaction(messages, json.loads(json.dumps(compressed)), session_db, session_id)
     if estimate_messages_tokens_rough(compressed) > estimate_messages_tokens_rough(messages):
         engine._last_compress_refused_would_grow = True  # read by the /compress report
         return None

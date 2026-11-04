@@ -34,6 +34,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
 )
 from agent.errors import EmptyStreamError
+from agent.i18n import t
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
@@ -2666,19 +2667,30 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+# The five failure reasons the fallback notice translates. Other reasons keep
+# their existing English operator-facing labels (and unknown future reason
+# objects keep their value-derived text).
+_FALLBACK_REASON_CATALOG_KEYS = {
+    FailoverReason.auth: "auth",
+    FailoverReason.billing: "billing",
+    FailoverReason.rate_limit: "rate_limit",
+    FailoverReason.timeout: "timeout",
+    FailoverReason.unknown: "provider_failure",
+}
+
+
 def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     """Return a concise operator-facing explanation for a fallback switch."""
     if reason is None:
-        return "provider failure"
+        return t("agent.fallback.reason.provider_failure")
+    catalog_key = _FALLBACK_REASON_CATALOG_KEYS.get(reason)
+    if catalog_key:
+        return t(f"agent.fallback.reason.{catalog_key}")
     labels = {
-        FailoverReason.auth: "authentication failed",
         FailoverReason.auth_permanent: "authentication permanently failed",
-        FailoverReason.billing: "billing or quota exhausted",
-        FailoverReason.rate_limit: "rate limit",
         FailoverReason.upstream_rate_limit: "upstream model rate limit",
         FailoverReason.overloaded: "provider overloaded",
         FailoverReason.server_error: "provider server error",
-        FailoverReason.timeout: "request timeout",
         FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
         FailoverReason.context_overflow: "context window exceeded",
         FailoverReason.payload_too_large: "request payload too large",
@@ -2693,7 +2705,6 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
         FailoverReason.long_context_tier: "long-context tier unavailable",
         FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
         FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
-        FailoverReason.unknown: "provider failure",
     }
     label = labels.get(reason)
     if label:
@@ -3149,9 +3160,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        notice = (
-            f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-            f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."
+        notice = t(
+            "agent.fallback.notice",
+            old_model=old_model,
+            old_provider=old_provider,
+            reason=_fallback_reason_text(reason),
+            new_model=fb_model,
+            new_provider=fb_provider,
         )
         # The buffered switch is surfaced on terminal failure. A successful
         # fallback clears retry chatter, so retain every switch as a durable

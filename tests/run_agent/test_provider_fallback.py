@@ -14,6 +14,12 @@ from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
+@pytest.fixture(autouse=True)
+def _pin_english(monkeypatch):
+    """Fallback notices are translated now; these assertions are English."""
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+
+
 def _make_agent(fallback_model=None):
     """Create a minimal AIAgent with optional fallback config."""
     with (

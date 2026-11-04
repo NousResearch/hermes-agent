@@ -459,3 +459,13 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found:           "資料庫中找不到此工作階段。"
     warn_passthrough:            "⚠️ {error}"
+
+agent:
+  fallback:
+    notice: "⚠️ 模型降級：{old_model}（{old_provider}）無法使用（{reason}）；已切換為 {new_model}（{new_provider}）。"
+    reason:
+      rate_limit: "限流"
+      auth: "認證失敗"
+      billing: "額度耗盡"
+      timeout: "逾時"
+      provider_failure: "供應商故障"

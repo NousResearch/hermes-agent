@@ -459,3 +459,13 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found:           "数据库中未找到该会话。"
     warn_passthrough:            "⚠️ {error}"
+
+agent:
+  fallback:
+    notice: "⚠️ 模型降级：{old_model}（{old_provider}）不可用（{reason}）；已切换为 {new_model}（{new_provider}）。"
+    reason:
+      rate_limit: "限流"
+      auth: "认证失败"
+      billing: "额度耗尽"
+      timeout: "超时"
+      provider_failure: "供应商故障"

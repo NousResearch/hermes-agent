@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="Directory to save in-progress preview frames")
     p.add_argument("--no-color", action="store_true", help="Disable ANSI colour")
     p.add_argument("--timeout", type=float, default=600.0,
-                   help="Hard cap on monitor duration (default 600s)")
+                   help="Idle socket timeout in seconds (default 600s)")
     args = p.parse_args(argv)
 
     try:

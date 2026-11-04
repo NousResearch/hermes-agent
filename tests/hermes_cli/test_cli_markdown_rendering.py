@@ -1,15 +1,176 @@
+import re
+import sys
 from io import StringIO
 
+import pytest
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from cli import _render_final_assistant_content, _strip_markdown_syntax_keep_links
 
 
 def _render_to_text(renderable) -> str:
     buf = StringIO()
     Console(file=buf, width=80, force_terminal=False, color_system=None).print(renderable)
     return buf.getvalue()
+
+
+OSC_JIRA = "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\ITT-3320\x1b]8;;\x1b\\"
+
+
+def test_strip_keeps_hyperlinks_but_drops_markdown_and_colour():
+    from cli import _strip_markdown_syntax_keep_links
+
+    source = OSC_JIRA + " — **жирный** и \x1b[31mкрасный\x1b[0m"
+    stripped = _strip_markdown_syntax_keep_links(source)
+
+    # Link target survives as an OSC 8 pair around the same visible text.
+    assert "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\" in stripped
+    assert stripped.count("\x1b]8;;") == 2
+    # Markdown markers and colour SGR are gone, link text is untouched.
+    assert "**" not in stripped and "\x1b[31m" not in stripped
+    assert "ITT-3320" in stripped and "жирный" in stripped
+
+
+def test_strip_renderable_carries_link_span_without_escapes():
+    renderable = _render_final_assistant_content(OSC_JIRA + " — текст", mode="strip")
+
+    # Visible text stays plain (no escapes), so cell widths are computed correctly.
+    assert "\x1b" not in renderable.plain
+    assert renderable.plain.startswith("ITT-3320")
+    links = [s.style.link for s in renderable.spans if s.style and getattr(s.style, "link", None)]
+    assert links == ["https://jira.skala-r.ru/browse/ITT-3320"]
+
+
+def test_strip_plain_text_is_unchanged_by_link_handling():
+    renderable = _render_final_assistant_content("простой текст и **маркеры**", mode="strip")
+
+    assert "\x1b" not in renderable.plain
+    assert renderable.plain == "простой текст и маркеры"
+
+
+def test_strip_turns_markdown_link_into_osc8_pair():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links(
+        "Задача [ITT-3320](https://jira.skala-r.ru/browse/ITT-3320) ждёт ревью")
+
+    # The pair is built from markdown: label visible, target in the escape, URL not left as text.
+    assert "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\" in stripped
+    assert stripped == ("Задача \x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\ITT-3320"
+                        "\x1b]8;;\x1b\\ ждёт ревью")
+
+
+def test_strip_markdown_link_with_title_keeps_only_the_target():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links('[клик](https://example.org/a "подсказка")')
+
+    assert stripped == "\x1b]8;;https://example.org/a\x1b\\клик\x1b]8;;\x1b\\"
+    assert "подсказка" not in stripped
+
+
+def test_strip_markdown_link_label_keeps_its_markup_stripped():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links("ссылка [**ITT-3320**](https://x/y)")
+
+    assert stripped == "ссылка \x1b]8;;https://x/y\x1b\\ITT-3320\x1b]8;;\x1b\\"
+
+
+def test_strip_no_link_is_invented_inside_a_code_span():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links("пример: `[ITT-3320](https://x/y)`")
+
+    # Literal code keeps the old marker-pass result and never grows a clickable target.
+    assert "\x1b]8;;" not in stripped
+    assert stripped == "пример: ITT-3320"
+
+
+def test_strip_image_syntax_does_not_become_a_link():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links("![скрин](https://x/y.png)")
+
+    assert "\x1b]8;;" not in stripped
+    assert stripped == "скрин"
+
+
+def test_strip_keeps_existing_osc8_untouched_next_to_markdown_link():
+    from cli import _strip_markdown_syntax_keep_links
+
+    stripped = _strip_markdown_syntax_keep_links(OSC_JIRA + " и [вторая](https://example.org/a_b_c)")
+
+    assert stripped.count("\x1b]8;;") == 4  # two pairs, both balanced
+    assert OSC_JIRA in stripped
+    assert "\x1b]8;;https://example.org/a_b_c\x1b\\вторая\x1b]8;;\x1b\\" in stripped
+
+
+def test_strip_renderable_carries_markdown_link_as_span():
+    renderable = _render_final_assistant_content(
+        "ключ [ITT-3320](https://jira.skala-r.ru/browse/ITT-3320)", mode="strip")
+
+    # Terminals render the span; the panel's visible text stays escape-free for width math.
+    assert "\x1b" not in renderable.plain
+    assert renderable.plain == "ключ ITT-3320"
+    links = [s.style.link for s in renderable.spans if s.style and getattr(s.style, "link", None)]
+    assert links == ["https://jira.skala-r.ru/browse/ITT-3320"]
+
+
+def test_chat_console_keeps_hyperlink_but_scrubs_other_osc(monkeypatch):
+    import cli
+    from cli import ChatConsole
+
+    captured_links, captured_plain = [], []
+    monkeypatch.setattr(cli, "_cprint_links_raw", lambda line: captured_links.append(line))
+    monkeypatch.setattr(cli, "_cprint", lambda line: captured_plain.append(line))
+
+    renderable = _render_final_assistant_content(
+        "ключ [ITT-3320](https://jira.skala-r.ru/browse/ITT-3320) \x1b]11;?\x1b\\", mode="strip")
+    ChatConsole().print(renderable)
+
+    assert len(captured_links) == 1
+    # Rich writes the run as "]8;id=<n>;<uri>"; the label sits between the opening and closing runs.
+    assert re.search(r"\x1b]8;(?:id=\d+;)?https://jira\.skala-r\.ru/browse/ITT-3320\x1b\\",
+                     captured_links[0])
+    assert "\x1b]8;;\x1b\\" in captured_links[0]
+    assert "ITT-3320" in captured_links[0]
+    # A non-hyperlink OSC sequence (terminal query, title) is still scrubbed out.
+    assert "]11;?" not in captured_links[0]
+
+
+def test_cprint_links_raw_writes_the_pair_without_prompt_toolkit(monkeypatch):
+    import hermes_cli.cli_render as render
+    import cli
+
+    monkeypatch.setattr(cli, "_output_history_recording", lambda: False)
+    written = []
+    monkeypatch.setattr(sys, "stdout", type("S", (), {"fileno": lambda self: 4242})())
+    monkeypatch.setattr(render.os, "write", lambda fd, data: written.append((fd, data)))
+
+    render._cprint_links_raw("\x1b]8;;https://example.org/x\x1b\\клик\x1b]8;;\x1b\\")
+
+    assert written == [(4242, "\x1b]8;;https://example.org/x\x1b\\клик\x1b]8;;\x1b\\\n".encode())]
+
+
+def test_stream_line_routes_links_around_prompt_toolkit(monkeypatch):
+    import cli
+    from hermes_cli.cli_stream_mixin import CLIStreamMixin
+
+    routed, plain = [], []
+    monkeypatch.setattr(cli, "_cprint_links_raw", lambda line: routed.append(line))
+    monkeypatch.setattr(cli, "_cprint", lambda line: plain.append(line))
+
+    class _Stub:
+        _stream_text_ansi = ""
+
+    link_line = _strip_markdown_syntax_keep_links("[ITT-3320](https://x/y)")
+    CLIStreamMixin._emit_stream_line(_Stub(), link_line)
+    CLIStreamMixin._emit_stream_line(_Stub(), "обычная строка")
+
+    assert routed == [link_line]
+    assert plain == ["обычная строка"]
 
 
 def test_final_assistant_content_uses_markdown_renderable():
@@ -102,3 +263,153 @@ def test_strip_mode_still_strips_boundary_underscore_emphasis():
 
     output = _render_to_text(renderable)
     assert "say hi and bold now" in output
+
+
+def test_cprint_links_raw_off_loop_hands_the_write_to_the_app_loop(monkeypatch):
+    """An agent thread must not write raw bytes itself: the UI could be mid-repaint.
+
+    ``run_in_terminal`` is already a scheduled future, so calling it from a thread without a
+    running loop raises; the write has to hop onto the application's loop instead.
+    """
+    import asyncio
+    import threading
+
+    import prompt_toolkit.application as pt_app
+    import hermes_cli.cli_render as cr
+
+    link = "\x1b]8;;https://jira.skala-r.ru/browse/ITT-3320\x1b\\ITT-3320\x1b]8;;\x1b\\"
+    calls: list[str] = []
+
+    class _App:
+        _is_running = True
+
+        class output:
+            @staticmethod
+            def flush() -> None:
+                calls.append("flush")
+
+    async def _main() -> None:
+        app = _App()
+        app.loop = asyncio.get_running_loop()
+        monkeypatch.setattr(pt_app, "get_app_or_none", lambda: app)
+
+        def _fake_run_in_terminal(func, *args, **kwargs):
+            calls.append("run_in_terminal")
+            func()
+
+        monkeypatch.setattr(pt_app, "run_in_terminal", _fake_run_in_terminal)
+        monkeypatch.setattr(cr, "_write_links_raw", lambda text: calls.append("write"))
+
+        worker = threading.Thread(target=lambda: cr._cprint_links_raw(link))
+        worker.start()
+        for _ in range(100):
+            if "write" in calls:
+                break
+            await asyncio.sleep(0.02)
+        worker.join(timeout=5)
+
+    asyncio.run(_main())
+
+    assert "run_in_terminal" in calls, calls
+    assert calls.index("run_in_terminal") < calls.index("write")
+    assert calls.index("flush") < calls.index("write")
+
+
+def test_cprint_links_raw_writes_directly_without_a_running_app(monkeypatch):
+    """No application: nothing to suspend, so the line goes out immediately."""
+    import prompt_toolkit.application as pt_app
+    import hermes_cli.cli_render as cr
+
+    monkeypatch.setattr(pt_app, "get_app_or_none", lambda: None)
+    written: list[str] = []
+    monkeypatch.setattr(cr, "_write_links_raw", lambda text: written.append(text))
+
+    cr._cprint_links_raw("ключ \x1b]8;;https://example.test\x1b\\K\x1b]8;;\x1b\\")
+
+    assert len(written) == 1
+    assert "\x1b]8;;https://example.test" in written[0]
+
+
+def test_strip_closes_a_link_at_the_end_of_every_line():
+    """An OSC 8 pair has no end-of-line semantics: an open one links every following line."""
+    source = "клик \x1b]8;;https://ex.com/leak\x1b\\CLICK\nстрока 2\nстрока 3"
+
+    stripped = _strip_markdown_syntax_keep_links(source)
+    lines = stripped.split("\n")
+
+    link_re = re.compile(r"\x1b]8;;(?P<target>[^\x07\x1b]*)(?:\x07|\x1b\\)")
+    for line in lines:
+        opens = sum(1 for m in link_re.finditer(line) if m.group("target"))
+        closes = sum(1 for m in link_re.finditer(line) if not m.group("target"))
+        assert opens == closes, f"незакрытая ссылка: {line!r}"
+    assert "https://ex.com/leak" in lines[0]
+    assert "https://ex.com/leak" not in "\n".join(lines[1:])
+
+
+def test_write_links_raw_closes_a_link_left_open_by_a_chunk(monkeypatch):
+    """A streamed chunk can end mid-link; the next write must not inherit the link."""
+    import hermes_cli.cli_render as render
+
+    written = []
+    monkeypatch.setattr(sys, "stdout", type("S", (), {"fileno": lambda self: 4242})())
+    monkeypatch.setattr(render.os, "write", lambda fd, data: written.append(data))
+
+    render._write_links_raw("клик \x1b]8;;https://ex.com/leak\x1b\\CLICK")
+
+    (payload,) = written
+    text = payload.decode()
+    assert text.count("\x1b]8;;") == 2 and text.count("\x1b]8;;\x1b\\") == 1
+    assert text.endswith("\x1b]8;;\x1b\\\n")
+
+
+def test_strip_realigns_a_table_whose_cell_is_a_link():
+    """A linked cell must not switch the whole message out of table realignment."""
+    table_with_link = (
+        "| ключ | ссылка |\n| --- | --- |\n"
+        "| ITT-1432 | [задача](https://jira.skala-r.ru/browse/ITT-1432) |"
+    )
+    table_plain = "| ключ | ссылка |\n| --- | --- |\n| ITT-1432 | задача |"
+
+    with_link = _render_to_text(_render_final_assistant_content(table_with_link, mode="strip"))
+    without = _render_to_text(_render_final_assistant_content(table_plain, mode="strip"))
+
+    with_lines, without_lines = with_link.split("\n"), without.split("\n")
+    assert with_lines[0] == without_lines[0]  # header row padded the same in both
+    assert with_lines[1] == without_lines[1]  # divider row
+    rows_with = [row for row in with_lines if "ITT-1432" in row]
+    rows_without = [row for row in without_lines if "ITT-1432" in row]
+    assert rows_with == rows_without and len(rows_with) == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.com/s?q=a*b",
+        "https://ex.com/a~~b",
+        "https://ex.com/x_[a](b)",
+        "https://ex.com/a`b`c",
+        "https://ex.com/a_b_c",
+        "https://ex.com/plain",
+    ],
+)
+def test_strip_keeps_marker_bearing_link_targets_intact(url):
+    """Markdown markers inside a target are not markup — the URL survives byte for byte."""
+    stripped = _strip_markdown_syntax_keep_links(f"\x1b]8;;{url}\x1b\\метка\x1b]8;;\x1b\\")
+
+    assert f"\x1b]8;;{url}\x1b\\" in stripped
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://ex.com/s?q=a*b",
+        "https://ex.com/a~~b",
+        "https://ex.com/a_b_c",
+        "https://ex.com/a`b`c",
+    ],
+)
+def test_strip_keeps_marker_bearing_markdown_link_targets_intact(url):
+    """Same for a link the model writes as markdown: the pair is built before markers go."""
+    stripped = _strip_markdown_syntax_keep_links(f"[метка]({url})")
+
+    assert f"\x1b]8;;{url}\x1b\\" in stripped

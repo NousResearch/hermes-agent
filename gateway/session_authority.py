@@ -489,7 +489,7 @@ class SessionAuthority:
         restore_retired(self, ref.session_id)
         live = self.sessions[ref.session_id]
         live.rescan = True
-        if live.background_wait is not None:
+        if getattr(live, "background_wait", None) is not None:
             from gateway.run_plugin_injection import wake_background_wait
             wake_background_wait(self, ref)
         if live.task is None or live.task.done():

@@ -17,6 +17,7 @@ from gateway.owner_identity import host_owner_subject as _owner
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
+from tests.waiting import wait_until
 from tools import async_delegation as ad
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
@@ -21715,8 +21716,7 @@ def _join_turn_thread(sess, timeout=10.0):
     dispatch thread hands off to a ``prompt-turn-*`` worker, so follow ``_run_thread`` until stable."""
     deadline = time.monotonic() + timeout
     while isinstance(run_thread := sess.get("_run_thread"), threading.Thread):
-        while run_thread.ident is None and time.monotonic() < deadline:  # published just before start()
-            time.sleep(0.005)
+        wait_until(lambda: run_thread.ident is not None, timeout=max(0.0, deadline - time.monotonic()), what="the published turn thread to start")
         run_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         assert not run_thread.is_alive(), "prompt.submit turn thread did not finish"
         if sess.get("_run_thread") is run_thread:

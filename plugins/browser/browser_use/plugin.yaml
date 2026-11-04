@@ -1,0 +1,7 @@
+name: browser-browser-use
+version: 1.0.0
+description: "Browser Use (https://browser-use.com) cloud browser backend. Supports both direct BROWSER_USE_API_KEY and the managed Nous tool gateway. Also powers the 'Nous Subscription' UX flow that bills usage to a Nous subscription."
+author: NousResearch
+kind: backend
+provides_browser_providers:
+  - browser-use

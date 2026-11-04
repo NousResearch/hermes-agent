@@ -1,0 +1,21 @@
+name: image-utils
+repo: https://github.com/MazenMkhinini/hermes-image-plugin
+sha: c4123fbdb315137b40e4c5b4b5fd3eb2298dae66
+description: Inspect, resize, crop, rotate, convert and re-encode image files in-process with Pillow - no shell, no ImageMagick, no network.
+maintainer: MazenMkhinini
+tier: community
+category: tools
+docs_url: https://github.com/MazenMkhinini/hermes-image-plugin#readme
+version: "1.0.0"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - image_info
+    - image_resize
+    - image_crop
+    - image_rotate
+    - image_convert
+    - image_optimize
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

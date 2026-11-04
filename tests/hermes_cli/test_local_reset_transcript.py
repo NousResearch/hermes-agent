@@ -13,7 +13,7 @@ async def test_local_reset_history_reads_current_transcript(tmp_path, monkeypatc
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from hermes_cli.web_routers import sessions
     from hermes_state_local import local_receipt
@@ -22,7 +22,7 @@ async def test_local_reset_history_reads_current_transcript(tmp_path, monkeypatc
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="fixture")
-    actor = Principal("owner", "default", frozenset({"session:create", "session:read"}), "socket")
+    actor = SessionActor("owner", "default", frozenset({"session:create", "session:read"}), "socket")
     ref = create_local_session(authority, actor, {
         "request_id": "history", "source": "gui", "cwd": str(tmp_path), "model": "frozen", "toolsets": [],
     })

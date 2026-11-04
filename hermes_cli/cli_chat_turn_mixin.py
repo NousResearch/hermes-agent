@@ -528,11 +528,15 @@ class CLIChatTurnMixin:
             lost = lost_admission(connection.reattach(self.session_id), admission_id)
             connection.call("prompt.resolve_unknown", session_id=self.session_id,
                             admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
-            connection.reattach(self.session_id)  # the cached pending list the next prompt checks
+            # The cached pending list the next prompt checks: any other lost turn still refuses it.
+            snapshot = connection.reattach(self.session_id)
         except GatewayClientError as exc:
             _cprint(f"  /discard: {exc}")
             return
-        _cprint(f"  Discarded {lost['admission_id']}; send your prompt again.")
+        left = sum(row["status"] == "unknown" for row in snapshot.get("pending", []))
+        _cprint(f"  Discarded {lost['admission_id']}; it was not re-run. "
+                + (f"{left} more paused turn{'s' if left > 1 else ''} to /discard first." if left
+                   else "You can send messages again."))
 
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.
@@ -724,6 +728,10 @@ class CLIChatTurnMixin:
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
             ) and not is_error_response
             modern = getattr(self, "_modern_layout", False)
+            # A gateway refusal is Hermes's own copy (quoted user text, a /discard line to copy):
+            # markdown stripping or rendering would rewrite the quote and merge the lines.
+            mode = ("raw" if turn.result and turn.result.get("failure_reason") == "gateway_connection"
+                    else self.final_response_markdown)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 if modern:
@@ -740,12 +748,12 @@ class CLIChatTurnMixin:
             elif modern:
                 from hermes_cli.cli_modern_layout import answer_label, closing_separator
                 _cprint(answer_label())
-                ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
+                ChatConsole().print(_render_final_assistant_content(response, mode=mode),
                                     style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
                 _cprint(closing_separator(True))
             else:
                 ChatConsole().print(Panel(
-                    _render_final_assistant_content(response, mode=self.final_response_markdown),
+                    _render_final_assistant_content(response, mode=mode),
                     title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
                     style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
                     width=self._scrollback_box_width(),

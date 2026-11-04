@@ -3,7 +3,9 @@ import { atom, batch, computed } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { getProfiles, hermesApi, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { initialGatewayProfile, isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
+import { persistStore } from '@/lib/persist-store'
+import { initialGatewayProfile } from '@/lib/platform'
 import { sortByProfileOrder as sortProfilesByOrder } from '@/lib/profile-order'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
@@ -200,7 +202,7 @@ const PROFILE_ORDER_STORAGE_KEY = 'hermes.desktop.profileOrder'
 
 export const $profileOrder = atom<string[]>(storedStringArray(PROFILE_ORDER_STORAGE_KEY))
 
-$profileOrder.subscribe(value => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value]))
+persistStore($profileOrder, (value, options) => persistStringArray(PROFILE_ORDER_STORAGE_KEY, [...value], options), [])
 
 export function setProfileOrder(names: string[]): void {
   if (!arraysEqual($profileOrder.get(), names)) {
@@ -221,7 +223,7 @@ const PROFILE_COLORS_STORAGE_KEY = 'hermes.desktop.profileColors'
 
 export const $profileColors = atom<Record<string, string>>(storedStringRecord(PROFILE_COLORS_STORAGE_KEY))
 
-$profileColors.subscribe(value => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value))
+persistStore($profileColors, (value, options) => persistStringRecord(PROFILE_COLORS_STORAGE_KEY, value, options), {})
 
 // Set (or, with null, clear) a profile's color override.
 export function setProfileColor(name: string, color: null | string): void {
@@ -958,7 +960,7 @@ const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 // single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
 
-$showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+persistStore($showAllProfiles, (value, options) => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value, options), false)
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
@@ -1028,7 +1030,7 @@ export function selectProfile(name: string): void {
 // — and its startup profile is the tab's own `?profile=`, which `remember`
 // rewrites in place. The per-origin default and other tabs are untouched.
 function remembersProfilePick(target: string): Promise<boolean> {
-  if (isBrowserHostedDesktop()) {
+  if (hostHas('tabStartupProfile')) {
     return Promise.resolve(true)
   }
 
@@ -1117,10 +1119,8 @@ export function newSessionInProfile(name: string): void {
   })
 }
 
-/** Start a draft owned by a specific registry agent. Foreground activation is
- * only a presentation step; the route stays attached to the draft for the
- * eventual session.create request. */
-export function newSessionInAgent(route: AgentProfileRoute): void {
+/** Pin the next new chat to an exact registry agent; session.create reads this route. */
+export function pinNewChatRoute(route: AgentProfileRoute): AgentProfileRoute {
   const captured = {
     ...route,
     connectionId: route.connectionId.trim(),
@@ -1135,6 +1135,15 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
   $newChatProfile.set(captured.profile)
   $newChatRoute.set(captured)
   captureNewChatSource(captured.connectionId)
+
+  return captured
+}
+
+/** Start a draft owned by a specific registry agent. Foreground activation is
+ * only a presentation step; the route stays attached to the draft for the
+ * eventual session.create request. */
+export function newSessionInAgent(route: AgentProfileRoute): void {
+  const captured = pinNewChatRoute(route)
   leaveForeignProjectScope(captured.profile, captured.connectionId)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.

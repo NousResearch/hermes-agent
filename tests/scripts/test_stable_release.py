@@ -15,7 +15,7 @@ from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC041
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
-from scripts.releases import lanes as lane_set
+from scripts.releases import desktop_targets, lanes as lane_set
 from scripts.releases.stable import (
     check_claim, ensure_final_tag, gate_expectations, plan_receipt_transitions, plan_transitions, read_manifest,
     require_stable_identity, require_success, validate_candidates, validate_receipt,
@@ -35,22 +35,21 @@ def candidates(tag, commit, digest, archive=None):
                          + timedelta(seconds=second)).timestamp())
     native_version = f"2026.5761.{second}.0"
     ref = archive or tag
-    for platform in ("windows", "macos"):
-        for arch in ("x64", "arm64"):
-            packages.append({
-                "platform": platform, "arch": arch, "tag": tag, "commit": commit,
-                "identity": "test.application",
-                "version": native_version if platform == "windows" else tag[1:],
-                **({"executableVersion": native_version} if platform == "windows" else {}),
-                **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
-                "artifact": {"sha256": digest,
-                             "url": f"{BASE}/releases/tag/{ref}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
-            })
+    for platform, arch in desktop_targets.MANIFEST_TARGETS:
+        packages.append({
+            "platform": platform, "arch": arch, "tag": tag, "commit": commit,
+            "identity": "test.application",
+            "version": native_version if platform == "windows" else tag[1:],
+            **({"executableVersion": native_version} if platform == "windows" else {}),
+            **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
+            "artifact": {"sha256": digest,
+                         "url": f"{BASE}/releases/tag/{ref}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
+        })
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
             "archive": ref,
             "packages": packages,
             "smoke_results": {name: {"result": "success"} for name in (
-                "smoke-darwin-arm64", "smoke-darwin-x64", "smoke-win32-arm64", "smoke-win32-x64")}}
+                "smoke-darwin-arm64", "smoke-win32-arm64", "smoke-win32-x64")}}
 
 
 def test_gate_requires_every_success_including_real_cli(tmp_path):
@@ -136,7 +135,6 @@ def test_validate_candidates_keys_the_archive_by_the_attempt_ref():
 
 RECEIPTS = (
     ("darwin-arm64", ("macos/arm64",)),
-    ("darwin-x64", ("macos/x64",)),
     ("win32-bundle", ("windows/x64", "windows/arm64")),
 )
 
@@ -158,12 +156,17 @@ def test_each_receipt_accepts_its_own_rows():
         assert set(rows) == set(targets)
 
 
-def test_a_mac_receipt_with_both_arches_or_a_termux_row_is_refused():
+def test_a_mac_receipt_with_an_intel_or_a_termux_row_is_refused():
     commit = "b" * 40
     manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
-    both = _receipt_rows(manifest, {"macos/arm64", "macos/x64"})
-    with pytest.raises(ValueError, match="eceipt"):
-        validate_receipt(both, "darwin-arm64", manifest["tag"], commit, BASE,
+    intel = _receipt_rows(manifest, {"macos/arm64"})
+    intel["packages"].append({**intel["packages"][0], "arch": "x64",
+                              "artifact": {"sha256": "2" * 64, "url": f"{BASE}/releases/tag/rc.2-v1.2.4/x64.zip"}})
+    with pytest.raises(ValueError, match="candidate target: macos/x64"):
+        validate_receipt(intel, "darwin-arm64", manifest["tag"], commit, BASE,
+                         manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+    with pytest.raises(ValueError, match="Unknown receipt"):
+        validate_receipt(_receipt_rows(manifest, {"macos/arm64"}), "darwin-x64", manifest["tag"], commit, BASE,
                          manifest["releaseEpoch"], archive="rc.2-v1.2.4")
     termux = _receipt_rows(manifest, {"macos/arm64"})
     termux["packages"].append({"platform": "termux", "arch": "aarch64", "tag": manifest["tag"],
@@ -223,8 +226,7 @@ def test_a_manifest_must_carry_exactly_the_targets_its_claims_lanes_build():
     manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
     # A release may build any subset of the lanes, so a partial manifest is a valid manifest.
     windows_only = _receipt_rows(manifest, {"windows/x64", "windows/arm64"})
-    windows_only["smoke_results"] = {**manifest["smoke_results"], "smoke-darwin-arm64": {"result": "skipped"},
-                                     "smoke-darwin-x64": {"result": "skipped"}}
+    windows_only["smoke_results"] = {**manifest["smoke_results"], "smoke-darwin-arm64": {"result": "skipped"}}
     assert validate_candidates(windows_only, manifest["tag"], commit, BASE, manifest["releaseEpoch"],
                                archive="rc.2-v1.2.4").keys() == {"windows/x64", "windows/arm64"}
     from scripts.releases.stable import require_targets_match_claim
@@ -259,30 +261,31 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"])
     transitions = plan_transitions(old, new, BASE)
-    assert {row["target"] for row in transitions} == {"windows-x64", "windows-arm64", "macos-x64", "macos-arm64"}
+    assert {row["target"] for row in transitions} == {"windows-x64", "windows-arm64", "macos-arm64"}
     assert all(row["transition"]["new"]["commit"] == new["commit"] for row in transitions)
     assert all(row["transition"]["new"]["artifact"]["url"].startswith(f"{BASE}/releases/tag/{new['archive']}/")
                for row in transitions)
     # A target the new release did not build has nothing to upgrade to.
     missing = copy.deepcopy(new)
-    missing["packages"].pop()
+    missing["packages"] = [row for row in missing["packages"] if row["platform"] != "macos"]
     missing["smoke_results"]["smoke-darwin-arm64"] = {"result": "skipped"}
     assert {row["target"] for row in plan_transitions(old, missing, BASE)} == \
-        {"windows-x64", "windows-arm64", "macos-x64"}
+        {"windows-x64", "windows-arm64"}
     with pytest.raises(ValueError, match="identity"):
         validate_candidates(new, new["tag"], old["commit"], BASE, archive=new["archive"])
+    windows = next(i for i, row in enumerate(new["packages"]) if row["platform"] == "windows")
     for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other"), ("version", "9.9.9.0")]:
         changed = copy.deepcopy(new)
-        changed["packages"][0][key] = value
+        changed["packages"][windows][key] = value
         with pytest.raises(ValueError):
             plan_transitions(old, changed, BASE)
     mutable = copy.deepcopy(new)
-    mutable["packages"][0]["artifact"]["url"] = f"{BASE}/releases/win32/stable/current.msixbundle"
+    mutable["packages"][windows]["artifact"]["url"] = f"{BASE}/releases/win32/stable/current.msixbundle"
     with pytest.raises(ValueError, match="immutable"):
         plan_transitions(old, mutable, BASE)
     for suffix in ("../other.zip", "%2e%2e/other.zip", "%252e%252e/other.zip"):
         traversal = copy.deepcopy(new)
-        traversal["packages"][0]["artifact"]["url"] = f"{BASE}/releases/tag/{new['tag']}/{suffix}"
+        traversal["packages"][windows]["artifact"]["url"] = f"{BASE}/releases/tag/{new['tag']}/{suffix}"
         with pytest.raises(ValueError, match="path encoding"):
             plan_transitions(old, traversal, BASE)
     with pytest.raises(ValueError, match="increase"):
@@ -515,8 +518,11 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
     parsed = _claim_metadata(raw, version="0.21.7", attempt=11, commit=commit)
     assert parsed == {**old, "lanes": lane_set.DEFAULT}
     assert old == json.loads(raw)  # the caller's record is not mutated
-    both = {**old, "includeMacosIntel": True, "includeTermux": True}
+    both = {**old, "includeMacosIntel": False, "includeTermux": True}
     assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
+    # macOS Intel is no longer built: a claim that opted into it cannot be honoured.
+    with pytest.raises(ValueError, match="metadata is invalid: it opts into macOS Intel"):
+        validate_claim({**old, "includeMacosIntel": True}, version="0.21.7", attempt=11, commit=commit)
     untested = {**old, "skipTests": True}
     assert validate_claim(untested, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
         {"docker", "windows", "windows-store", "macos-arm64"})
@@ -538,26 +544,22 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
             validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
 
 
-def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
+def test_a_default_claim_builds_no_termux_and_lanes_restore_it(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
-           "candidates-termux", "termux-checks"}
+    off = {"candidates-termux", "termux-checks"}
     required = ["admit", *lane_set.JOB_LANES]
     default = stable.gate_expectations(required, lane_set.DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
     assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
-    intel = stable.gate_expectations(required, lane_set.select(with_=["macos-intel"]))
-    assert {name for name, result in intel.items() if result == "skipped"} == \
-        {"candidates-termux", "termux-checks"}
     # A lane that is off removes its jobs even when its test lane is on.
     assert stable.gate_expectations(["candidates-termux", "termux-checks"],
                                     lane_set.select(without=["termux"])) == \
         {"candidates-termux": "skipped", "termux-checks": "skipped"}
 
     # Only the default groups stage handoffs; the manifest is complete without
-    # the x64 Mac and Termux rows and records the unbuilt smoke as skipped.
+    # the Termux row.
     https_origin.store = r2_server.store
     built = tmp_path / "built"
     built.mkdir()
@@ -573,17 +575,15 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
     manifest = json.loads(stored)
     assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {
         "macos/arm64", "windows/x64", "windows/arm64"}
-    assert manifest["smoke_results"]["smoke-darwin-x64"] == {"result": "skipped"}
     stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                RELEASE_EPOCH, archive=ATTEMPT)
     stable.require_targets_match_claim(manifest, lane_set.DEFAULT)
     with pytest.raises(ValueError, match="differ from the claim"):
-        stable.require_targets_match_claim(manifest, lane_set.select(with_=["macos-intel"]))
+        stable.require_targets_match_claim(manifest, lane_set.select(with_=["termux"]))
     # A smoke that claims to have passed for a target nobody built is refused.
-    forged = {**manifest, "smoke_results": {**manifest["smoke_results"],
-                                            "smoke-darwin-x64": {"result": "success"}}}
+    lean = {**manifest, "packages": [row for row in manifest["packages"] if row["platform"] != "macos"]}
     with pytest.raises(ValueError, match="did not build"):
-        stable.validate_candidates(forged, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
+        stable.validate_candidates(lean, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                    RELEASE_EPOCH, archive=ATTEMPT)
     # A claim that built Termux needs its handoff: a missing one leaves no manifest.
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -753,10 +753,6 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
 
     commit, tag_object = _claim_fixture(tmp_path, tag="rc.1-v1.2.3", version="1.2.3")
     candidate = candidates("v1.2.3", commit, "c" * 64, archive="rc.1-v1.2.3")
-    # The claim did not opt into macOS Intel, so the accepted manifest has no x64 Mac row.
-    candidate["packages"] = [row for row in candidate["packages"]
-                             if (row["platform"], row["arch"]) != ("macos", "x64")]
-    candidate["smoke_results"]["smoke-darwin-x64"] = {"result": "skipped"}
     calls = []
 
     def record(argv):
@@ -1272,29 +1268,6 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     assert macos["include"] == []
 
 
-def test_an_intel_receipt_upgrades_only_from_a_baseline_that_built_intel(tmp_path, r2_server, https_origin,
-                                                                         monkeypatch):
-    """Opting macOS Intel back in after a release that left it out has no OLD Intel package."""
-    from scripts.releases import stable
-
-    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-x64")
-    full = _local_baseline(https_origin.base)
-    lean = dict(full, packages=[row for row in full["packages"]
-                                if (row["platform"], row["arch"]) != ("macos", "x64")],
-                smoke_results={**full["smoke_results"], "smoke-darwin-x64": {"result": "skipped"}})
-    monkeypatch.setattr(stable, "output", lambda argv: json.dumps(
-        {"tagName": full["tag"], "isDraft": False, "isPrerelease": False}))
-    for baseline, arches, planned in ((lean, [], "none"), (full, ["x64"], "published")):
-        https_origin.store["baseline.json"] = (json.dumps(baseline).encode(), '"e"')
-        (tmp_path / "output").unlink(missing_ok=True)
-        stable.main(["transitions"], _transitions_env(tmp_path, https_origin.base, "darwin-x64", url, digest))
-        emitted = dict(line.split("=", 1)
-                       for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
-        assert emitted["baseline"] == planned
-        assert [row["arch"] for row in json.loads(emitted["macos"])["include"]] == arches
-        assert json.loads(emitted["windows"]) == {"include": []}
-
-
 def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
@@ -1335,7 +1308,6 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     built = tmp_path / "built"
     built.mkdir()
     _stage_darwin_handoff(built, "arm64")
-    _stage_darwin_handoff(built, "x64")
     _stage_windows_handoff(built, "x64")
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)
@@ -1348,7 +1320,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
     manifest = json.loads(stored)
     assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {
-        "macos/arm64", "macos/x64", "windows/x64", "windows/arm64", "termux/aarch64"}
+        "macos/arm64", "windows/x64", "windows/arm64", "termux/aarch64"}
     stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                RELEASE_EPOCH, archive=ATTEMPT)
     emitted = dict(line.split("=", 1)
@@ -1360,10 +1332,10 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     # A candidate call that did not succeed (a failed smoke behind it) leaves
     # no accepted manifest in the archive.
     failed = dict(env)
-    failed["RELEASE_NEEDS"] = json.dumps({**_calls(), "candidates-darwin-x64": {"result": "failure"}})
+    failed["RELEASE_NEEDS"] = json.dumps({**_calls(), "candidates-darwin-arm64": {"result": "failure"}})
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
     (tmp_path / "output").unlink()
-    with pytest.raises(ValueError, match="smoke-darwin-x64"):
+    with pytest.raises(ValueError, match="smoke-darwin-arm64"):
         stable.main(["candidate-manifest"], failed)
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
@@ -1376,7 +1348,6 @@ def test_a_claim_without_the_smoke_lane_records_skipped_smokes_never_passed(
     built = tmp_path / "built"
     built.mkdir()
     _stage_darwin_handoff(built, "arm64")
-    _stage_darwin_handoff(built, "x64")
     _stage_windows_handoff(built, "x64")
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)

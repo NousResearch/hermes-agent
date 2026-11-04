@@ -19,8 +19,9 @@
 import { computed } from 'nanostores'
 
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { hostHas } from '@/lib/host-capabilities'
 
+import { $tabFlashText } from './browser-tab-attention'
 import { normalizeProfileKey } from './profile'
 import { $sessions, sessionMatchesStoredId } from './session'
 import { $unreadSessionCount } from './session-dot-state'
@@ -83,11 +84,14 @@ const $browserTabTitle = computed(
 /** Keep the tab title in step with session status. A no-op outside a browser
  *  host; returns the unsubscribe. */
 export function installBrowserTabTitle(): () => void {
-  if (typeof document === 'undefined' || !isBrowserHostedDesktop()) {
+  if (typeof document === 'undefined' || !hostHas('tabTitleStatus')) {
     return () => {}
   }
 
-  return $browserTabTitle.subscribe(title => {
+  // A background attention flash alternates its text with the status title.
+  const $shown = computed([$browserTabTitle, $tabFlashText], (status, flash) => flash ?? status)
+
+  return $shown.subscribe(title => {
     if (document.title !== title) {
       document.title = title
     }

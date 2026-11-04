@@ -10,6 +10,7 @@ import contextlib
 import importlib
 import os
 import threading
+import uuid
 
 # Imported, so never rebound: it reads the bound server from this module, not server.py's globals.
 from .methods_groups_forward import forward_bound as _forward_to_owner
@@ -470,7 +471,7 @@ def _(rid, params: dict, service) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Durably cancel queued or running work for one hosted room."""
     count = service.stop_room(
-        str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or "desktop-stop"))
+        str(params.get("room_id") or ""), cancel_id=str(params.get("cancel_id") or uuid.uuid4().hex))
     return _ok(rid, {"cancelled": count})
 
 

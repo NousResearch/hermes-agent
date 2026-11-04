@@ -438,7 +438,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       // Editing a durable row re-admits the edited text as a new input once
       // the authority has retired the original. Until then the edit is a
       // durable local row; a refused retirement leaves it as an unconfirmed
-      // draft (Alt+K) instead of admitting a second copy behind the original.
+      // draft (retry key) instead of admitting a second copy behind the original.
       if (server) {
         if (server.status === 'unknown') {
           patchUiState({ status: t('canonical.queue.unknownExecution') })

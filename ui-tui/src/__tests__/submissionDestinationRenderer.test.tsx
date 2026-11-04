@@ -146,7 +146,7 @@ it('refuses the whole submit when a {!cmd} cannot run instead of sending a place
     await expect.poll(() => sys.mock.calls.length).toBe(1)
     expect(request.mock.calls.map(([method]) => method)).not.toContain('prompt.submit')
     expect(String(sys.mock.calls[0]![0])).toContain('dangerous_command')
-    // Retained for Alt+K / an edit, never silently dropped.
+    // Retained for the retry key / an edit, never silently dropped.
     expect(item.failed).toBe(true)
     expect(queue.queueRef.current).toContain(item)
   } finally {

@@ -203,7 +203,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   // A `{!cmd}` that could not run refuses the whole submit: the model never receives a
   // placeholder such as `(error)` standing in for output the user expected (dokterdok N22). The
-  // staged row settles as not accepted, so the input stays retained for Alt+K / an edit.
+  // staged row settles as not accepted, so the input stays retained for the retry key / an edit.
   const interpolate = useCallback(
     (text: string, then: (result: string) => void, destination = captureDestination(), item?: QueueItem) => {
       patchUiState({ status: 'interpolating…' })

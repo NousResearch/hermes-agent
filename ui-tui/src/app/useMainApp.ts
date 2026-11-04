@@ -47,7 +47,7 @@ import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
-import { createBackgroundSessionWatch } from './backgroundSessionNotices.js'
+import { backgroundSessionNotices, createBackgroundSessionWatch } from './backgroundSessionNotices.js'
 import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
@@ -761,9 +761,9 @@ export function useMainApp(gw: GatewayClient) {
           if (!stopped && result?.sessions) {
             const liveSessionCount = result.sessions.length
 
-            for (const notice of backgroundWatchRef.current.update(result.sessions, getUiState().sid)) {
-              sys(notice)
-            }
+            void backgroundSessionNotices(backgroundWatchRef.current, gw, result.sessions, getUiState().sid)
+              .then(notices => !stopped && notices.forEach(sys))
+              .catch(() => {})
 
             // Surface the current session's (auto-)title for the terminal
             // titlebar. The active_list poll already carries it, so no extra

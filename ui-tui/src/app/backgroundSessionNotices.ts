@@ -1,4 +1,7 @@
+import type { GatewayClient } from '../gatewayClient.js'
+import type { SessionActiveListResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
+import { asRpcResult } from '../lib/rpc.js'
 
 // Sessions this view left running (/new mid-turn, the switcher) keep working out of sight; the
 // 1.5 s live-session poll is what notices their turn ending or a question waiting, and says so in
@@ -33,6 +36,15 @@ export function createBackgroundSessionWatch() {
       if (sid) {
         shown.add(sid)
       }
+    },
+
+    /** Whether a session this view showed is live off screen (only then is a status read worth it). */
+    watching(rows: LiveRow[], focused: null | string): boolean {
+      return rows.some(row => {
+        const id = row.session_id || row.id
+
+        return Boolean(id) && id !== focused && shown.has(id!)
+      })
     },
 
     /** Notices for this poll: a shown, non-focused session whose turn finished or that now waits. */
@@ -72,4 +84,24 @@ export function createBackgroundSessionWatch() {
       return notices
     }
   }
+}
+
+export type BackgroundSessionWatch = ReturnType<typeof createBackgroundSessionWatch>
+
+/** The poll's notices. The shared gateway's live `session.list` says only running or not; while a
+ * shown session is off screen its `session.active_list` is read too, which says `waiting` when a
+ * question (approval, clarify) holds the turn. */
+export async function backgroundSessionNotices(
+  watch: BackgroundSessionWatch,
+  gw: Pick<GatewayClient, 'isCanonical' | 'request'>,
+  rows: LiveRow[],
+  focused: null | string
+): Promise<string[]> {
+  if (!gw.isCanonical || !watch.watching(rows, focused)) {
+    return watch.update(rows, focused)
+  }
+
+  const raw = await gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: focused })
+
+  return watch.update(asRpcResult<SessionActiveListResponse>(raw)?.sessions ?? rows, focused)
 }

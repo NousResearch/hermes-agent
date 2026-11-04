@@ -488,7 +488,7 @@ export const zhOverrides = {
       advancedOutput: '输出限制',
       advancedDelegation: '子智能体',
       advancedDesktop: '桌面与启动',
-      gatewayConnection: '当前窗口',
+      gatewayConnection: '主网关',
       gatewayDevices: '已保存的连接',
       gatewayManagedUpdates: '远程更新',
       gatewayManagedUpdatesUnavailable: '远程更新需要支持托管 SSH 更新的桌面版本。',
@@ -1322,8 +1322,7 @@ export const zhOverrides = {
     connections: {
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
-      stagedNote:
-        '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
+      stagedNote: '所有网关都保持连接。配置档案、聊天、消息和定时任务归属于各自网关，“会话”可以同时显示全部网关。',
       launchModeTitle: '启动时返回上次使用网关的会话视图',
       launchModeDesc: '关闭时，会话将在主网关上打开。',
       searchPlaceholder: '搜索网关…',
@@ -2059,6 +2058,10 @@ export const zhOverrides = {
     changesApplyNewSessions: '更改将应用于新会话。',
     skillUpdated: '技能已更新',
     edit: '编辑',
+    lock: '锁定',
+    locked: '已锁定',
+    lockHint: '锁定期间，智能体无法更改此技能。你仍可以自己编辑。',
+    unlockedHint: '锁定后，智能体将无法更改此技能。你仍可以自己编辑。',
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
@@ -2507,6 +2510,32 @@ export const zhOverrides = {
     restartNow: '立即重启',
     restarting: '正在重启…',
     restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: '无需机器人令牌',
+      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      link: (platform: string) => `关联 ${platform}`,
+      linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
+      linkedAccounts: '已关联账号',
+      unlink: '取消关联',
+      unlinkFailed: '无法取消关联该账号',
+      stepOpen: (platform: string) => `1. 用手机扫描二维码，或在 ${platform} 中打开机器人。`,
+      stepSend: '2. 用要关联的账号向机器人发送这条消息：',
+      open: (platform: string) => `打开 ${platform}`,
+      copy: '复制消息',
+      copied: '已复制',
+      copyFailed: (command: string) => `复制失败。请手动输入 ${command}。`,
+      waiting: '正在等待机器人收到你的消息。此代码只能使用一次。',
+      linked: (platform: string) => `${platform} 账号已关联。给机器人发消息即可与智能体对话。`,
+      expired: '代码在使用前已过期。请获取新代码后重试。',
+      refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
+      qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedIntro: '此代理的账号在 Nous Portal 中关联。',
+      openPortal: '在 Nous Portal 中关联账号',
+      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+    },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
       subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
@@ -2712,13 +2741,10 @@ export const zhOverrides = {
       gateway: gateway => `${gateway} 上的配置档案`,
       gatewayUnreachable: gateway => `${gateway} · 无法连接`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,
+      switchTo: (name, gateway) => `打开 ${gateway} 上的 ${name}`,
       deleteOn: gateway => `（位于 ${gateway}）`,
       localDevice: '此设备（本地后端——若未安装 Hermes 则会安装，否则打开一个新会话）',
-      switchDeviceTitle: '切换到此设备？',
-      switchDeviceDesc: '这会在这台电脑上打开一个新会话。当前对话仍留在另一个网关上。',
-      switchDeviceConfirm: '切换',
-      installDeviceTitle: '切换到此设备？',
+      installDeviceTitle: '在此设备上安装 Hermes？',
       installDeviceDesc: '这将在本地安装 Hermes，然后在这台电脑上打开一个新会话。确认之前不会开始安装。',
       installDeviceConfirm: '本地安装',
       connectExistingInstead: '改为连接现有环境'
@@ -3143,7 +3169,6 @@ export const zhOverrides = {
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
-      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
@@ -3909,7 +3934,9 @@ export const zhOverrides = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
       updateFailed: '模型选项更新失败',
-      fastFailed: '快速模式更新失败'
+      fastFailed: '快速模式更新失败',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失败'
     },
     gatewayMenu: {
       gateway: '网关',
@@ -4090,6 +4117,14 @@ export const zhOverrides = {
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
+    terminalNewOn: '新建终端于…',
+    terminalGatewayRemoved: '已移除的网关',
+    terminalGatewayRemovedBody:
+      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody:
+      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody:
+      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 

@@ -1,6 +1,6 @@
 # Gateway-owned groups in Desktop
 
-Bot Mode lists gateway rooms separately from legacy renderer rooms. Refresh gateway groups reloads the selected connection/profile's canonical room list. Opening a room captures that exact authority; changing the foreground profile does not retarget its controls.
+The Bots roster lists the selected connection/profile's gateway rooms as ordinary Group Chat rows beside legacy renderer rooms. The list keeps itself current (a poll, every socket or source change, and right after a create or disband here); a failed read keeps the last good list and never shows transport text. Opening a room binds and captures that exact authority; changing the foreground profile does not retarget its controls.
 
 With `groups.capabilities.driver` enabled, the existing creation dialog creates a canonical group. Only same-authority local-profile members are supported; Desktop connection descriptors are not peer grants. Existing legacy rooms offer **Start gateway group** instead of renderer-owned execution. This starts a new room and deliberately does not replay legacy history.
 

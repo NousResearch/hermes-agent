@@ -1141,6 +1141,24 @@
       }
     },
     {
+      "name": "groups.context",
+      "summary": "Set one hosted room's purpose and shared notes; members see them from the next message.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsContextParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsContextResult"
+        }
+      }
+    },
+    {
       "name": "groups.create",
       "summary": "Create a hosted room idempotently; authority is this gateway's stable install identity.",
       "params": [
@@ -4071,6 +4089,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SubagentListResult"
+        }
+      }
+    },
+    {
+      "name": "subagent.roster",
+      "summary": "Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SubagentRosterResult"
         }
       }
     },
@@ -7802,6 +7838,74 @@
         "title": "CanonicalAttachment",
         "type": "object"
       },
+      "CanonicalBotCancelParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "author_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Author Id"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CanonicalBotCancelParams",
+        "type": "object"
+      },
+      "CanonicalBotCancelResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_bot_cancel.py``: ``cancelled`` (withdrawn before it ran, or its pending\nautomatic retry withdrawn), ``stopping`` (its running turn was told to stop), or ``finished``\n(nothing left to cancel); ``receipt_status`` is the delivery receipt's status after it.",
+        "properties": {
+          "delivery_id": {
+            "title": "Delivery Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "stopping",
+              "finished"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "receipt_status": {
+            "title": "Receipt Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "delivery_id",
+          "status",
+          "receipt_status"
+        ],
+        "title": "CanonicalBotCancelResult",
+        "type": "object"
+      },
       "CanonicalBotDeliverParams": {
         "additionalProperties": false,
         "properties": {
@@ -7966,6 +8070,25 @@
             ],
             "default": null,
             "title": "Reason"
+          },
+          "target_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "working",
+                  "waiting_approval",
+                  "waiting_clarify",
+                  "paused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target State"
           }
         },
         "required": [
@@ -8164,6 +8287,28 @@
             ],
             "default": null,
             "title": "Scope"
+          },
+          "options": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "normal",
+                    "fast",
+                    "auto",
+                    "cold",
+                    "ultrafast"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Options"
           }
         },
         "title": "CanonicalConfigGetResult",
@@ -9972,6 +10117,17 @@
             "default": null,
             "title": "Unknown Toolsets"
           },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10726,6 +10882,17 @@
             ],
             "default": null,
             "title": "Unknown Toolsets"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",
@@ -19085,6 +19252,92 @@
         "title": "GroupsCapabilitiesResult",
         "type": "object"
       },
+      "GroupsContextParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "routing": {
+            "anyOf": [
+              {
+                "enum": [
+                  "everyone",
+                  "lead"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Routing"
+          },
+          "lead_member_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lead Member Id"
+          }
+        },
+        "required": [
+          "room_id",
+          "event_id",
+          "purpose",
+          "notes"
+        ],
+        "title": "GroupsContextParams",
+        "type": "object"
+      },
+      "GroupsContextResult": {
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/RoomContext"
+          },
+          "event": {
+            "$ref": "#/components/schemas/RoomEvent"
+          }
+        },
+        "required": [
+          "context",
+          "event"
+        ],
+        "title": "GroupsContextResult",
+        "type": "object"
+      },
       "GroupsCreateParams": {
         "additionalProperties": false,
         "properties": {
@@ -20294,6 +20547,17 @@
               }
             ],
             "default": null
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RoomContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -21292,7 +21556,7 @@
       },
       "LanguageOption": {
         "additionalProperties": false,
-        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language. ``surfaces`` are the surfaces some\nlayer has strings for; a renderer leaves out a language it does not bundle and that lacks its surface,\nsince picking it would only show English.",
         "properties": {
           "id": {
             "title": "Id",
@@ -21309,13 +21573,21 @@
           "source": {
             "title": "Source",
             "type": "string"
+          },
+          "surfaces": {
+            "items": {
+              "$ref": "#/components/schemas/LocaleSurface"
+            },
+            "title": "Surfaces",
+            "type": "array"
           }
         },
         "required": [
           "id",
           "endonym",
           "rtl",
-          "source"
+          "source",
+          "surfaces"
         ],
         "title": "LanguageOption",
         "type": "object"
@@ -22844,6 +23116,11 @@
             ],
             "default": null,
             "title": "Plugin"
+          },
+          "needs_auth": {
+            "default": false,
+            "title": "Needs Auth",
+            "type": "boolean"
           }
         },
         "required": [
@@ -24019,6 +24296,11 @@
           "ultrafast": {
             "default": false,
             "title": "Ultrafast",
+            "type": "boolean"
+          },
+          "daybreak": {
+            "default": false,
+            "title": "Daybreak",
             "type": "boolean"
           },
           "reasoning": {
@@ -27780,7 +28062,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (https only) or ``catalog_name`` + ``ref`` (the commit\n``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no\n``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``;\n``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always\nwith ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) \u2014 the desktop half onto\nthe host that serves this client; ``remove_desktop``: ``name``\n(+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose\nsecurity scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -34086,6 +34368,40 @@
         "title": "RoomAuthority",
         "type": "object"
       },
+      "RoomContext": {
+        "additionalProperties": false,
+        "description": "``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn\nprompt carries (inside the user-role message).",
+        "properties": {
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "routing": {
+            "default": "everyone",
+            "enum": [
+              "everyone",
+              "lead"
+            ],
+            "title": "Routing",
+            "type": "string"
+          },
+          "lead_member_id": {
+            "default": "",
+            "title": "Lead Member Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purpose",
+          "notes"
+        ],
+        "title": "RoomContext",
+        "type": "object"
+      },
       "RoomDriverStatus": {
         "additionalProperties": false,
         "description": "``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt\n(``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``)\nor the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled\nroom preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken).\n``member_activity`` lists live tasks in admission order (absent from older gateways).\n``last_error`` is this room's last preparation failure, null once one succeeds.",
@@ -34135,6 +34451,18 @@
             ],
             "default": null,
             "title": "Last Error"
+          },
+          "max_rounds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Rounds"
           },
           "peer_routes": {
             "items": {
@@ -34509,7 +34837,7 @@
       },
       "RoomMemberActivity": {
         "additionalProperties": false,
-        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``.",
+        "description": "One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and\n``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running;\n``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running\nthe turn.",
         "properties": {
           "member_id": {
             "title": "Member Id",
@@ -34518,6 +34846,66 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "round_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Round Index"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool"
+          },
+          "progress_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Progress At"
           }
         },
         "required": [
@@ -42583,6 +42971,44 @@
         "title": "SubagentOutputTailEntry",
         "type": "object"
       },
+      "SubagentRosterEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "subagents": {
+            "default": 0,
+            "title": "Subagents",
+            "type": "integer"
+          },
+          "background": {
+            "default": 0,
+            "title": "Background",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SubagentRosterEntry",
+        "type": "object"
+      },
+      "SubagentRosterResult": {
+        "additionalProperties": false,
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SubagentRosterEntry"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "title": "SubagentRosterResult",
+        "type": "object"
+      },
       "SubagentSnapshot": {
         "additionalProperties": false,
         "description": "``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record.",
@@ -47786,6 +48212,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/PromptResponseResult"
+        }
+      }
+    },
+    {
+      "name": "bot_relay.cancel",
+      "summary": "",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/CanonicalBotCancelParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CanonicalBotCancelResult"
         }
       }
     },

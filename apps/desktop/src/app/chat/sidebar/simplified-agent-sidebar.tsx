@@ -3,7 +3,6 @@ import { type ComponentProps, useMemo, useState } from 'react'
 
 import { ambientOwnerConnectionId } from '@/api/client'
 import { mutateSessionHttp } from '@/api/sessions'
-import { BrandMark } from '@/components/brand-mark'
 import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { type SessionInfo } from '@/hermes'
@@ -152,9 +151,6 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     >
       <SimplifiedGlobalNav onNavigate={props.onNavigate} />
       <SidebarContent className="min-w-0 gap-2.5 overflow-y-auto px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
-        <div className="flex min-h-8.5 shrink-0 items-center gap-2 px-2 text-xs font-medium">
-          <BrandMark className="size-6" />{t.updates.appName}
-        </div>
         <SimplifiedNewSession
           onFallback={() => {
             $newChatProfile.set(null)

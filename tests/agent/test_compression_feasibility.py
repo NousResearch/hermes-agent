@@ -670,3 +670,42 @@ def test_threshold_suggestion_kept_for_large_context_main(mock_get_client, mock_
 
 
 
+
+
+def _warm_agent_on(home, entries):
+    """A warm agent whose compression task names the ``work-gateway`` custom provider in *home*."""
+    import json
+    (home / "config.yaml").write_text(json.dumps({
+        "auxiliary": {"compression": {"provider": "work-gateway", "model": "small"}},
+        "custom_providers": entries}))
+    agent = _make_agent(main_context=1_000_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    return agent
+
+
+def test_a_changed_provider_context_pin_reprobes_a_warm_agent(monkeypatch, tmp_path):
+    """Only the provider entry's per-model ``context_length`` changes (900K to 80K): the next request
+    re-probes and the trigger lands on the new pin, through the same path a turn takes."""
+    import json
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = {"name": "work-gateway", "base_url": "http://gateway.invalid/v1",
+             "models": {"small": {"context_length": 900_000}}}
+    agent = _warm_agent_on(home, [entry])
+    client = MagicMock(base_url="http://gateway.invalid/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")):
+        ensure_compression_feasibility_checked(agent, 200_000)
+        assert agent.context_compressor.threshold_tokens == 750_000
+        entry["models"]["small"]["context_length"] = 80_000
+        (home / "config.yaml").write_text(json.dumps({
+            "auxiliary": {"compression": {"provider": "work-gateway", "model": "small"}},
+            "custom_providers": [entry]}))
+        ensure_compression_feasibility_checked(agent, 200_000)
+    assert agent.context_compressor.threshold_tokens == 80_000
+

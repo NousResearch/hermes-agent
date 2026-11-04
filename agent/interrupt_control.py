@@ -120,6 +120,24 @@ def requeue_drained_steer(agent, steer_text: str) -> None:
         _set_steer_parts(agent, _steer_parts(agent) + parts)
 
 
+def redirect_or_steer(agent, text: str) -> str | None:
+    """Correct a turn the caller knows is live: ``"redirect"``, ``"steer"``, or None when refused.
+
+    A redirect cancels only an in-flight model request, so between two requests (or past the last
+    one) the agent refuses it, and a surface that queues the refusal holds back a correction the
+    running turn could still read (#141973). That window takes the steer boundary instead: the next
+    tool result carries the text, or the finalizer hands it back as the next turn. A hard stop
+    (which discards the turn's steers) and a refused native Codex steer (which may follow delivery)
+    stay refusals."""
+    if agent.redirect(text):
+        return "redirect"
+    steer = getattr(agent, "steer", None)
+    if (not callable(steer) or getattr(agent, "_interrupt_requested", False)
+            or _ic_codex_method(agent, "request_steer") is not None):
+        return None
+    return "steer" if steer(text) else None
+
+
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
     if getattr(agent, "api_mode", None) != "codex_app_server":

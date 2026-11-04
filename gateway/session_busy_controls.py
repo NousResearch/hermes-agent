@@ -212,7 +212,15 @@ async def correct(connection, ref, params, *, verb):
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')
-        accepted = method(params['text'])
+        if verb == 'redirect':
+            # The claim's live agent with no model request to cancel (between two requests) takes
+            # the words at its steer boundary, answered like session.steer (#141973).
+            from agent.interrupt_control import redirect_or_steer
+            accepted = redirect_or_steer(agent, params['text'])
+            if accepted == 'steer':
+                verb = 'steer'
+        else:
+            accepted = method(params['text'])
         return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
                 'text': params['text'], 'execution_generation': generation,
                 'authority_epoch': authority.epoch}

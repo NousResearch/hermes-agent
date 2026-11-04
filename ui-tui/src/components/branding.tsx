@@ -1,5 +1,4 @@
 import { Box, Text, useStdout } from '@hermes/ink'
-import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
@@ -223,11 +222,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const lineBudget = Math.max(12, w - 2)
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
-  // Hierarchy: labels lead in the label tone; member lists recede in the
-  // muted/text midpoint. Anchoring on MUTED (mid-luminance by construction)
-  // keeps the fade readable on both poles even when polarity detection is
-  // wrong — surface-relative blends go invisible when text is already pale.
-  const listFade = mix(t.color.muted, t.color.text, 0.5)
+  // Hierarchy: labels lead in the label tone; member lists recede to the
+  // muted tone. The previous `mix(muted, text, 0.5)` midpoint is a
+  // surface-relative blend — on this skin it resolved to #DCFFFF instead of
+  // the requested #B8FFFE, so the member lists are pinned to `muted` itself.
+  // `muted` is mid-luminance by construction, so it still reads receded
+  // against white body text on either polarity.
+  const listFade = t.color.muted
 
   // ── Local collapse state for each section ──
   const [toolsOpen, setToolsOpen] = useState(true)

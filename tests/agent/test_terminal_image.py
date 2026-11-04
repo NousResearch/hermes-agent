@@ -188,3 +188,18 @@ def test_iterm_size_is_the_decoded_byte_count(tmp_path):
     ):
         size, payload = re.search(r"size=(\d+);.*:([A-Za-z0-9+/=]+)\x07$", transmit).groups()
         assert int(size) == len(base64.b64decode(payload))
+
+
+def test_preview_past_the_decode_cap_is_refused_before_decoding(tmp_path, monkeypatch):
+    # A huge PNG (no draft scaling) must not fully decode on the agent thread for a 64-column preview.
+    big = _png(tmp_path / "big.png", (400, 300))
+    monkeypatch.setattr(terminal_image, "_MAX_DECODE_PIXELS", 100_000, raising=False)
+    assert render_inline_image(big, mode="unicode", max_cols=20, max_rows=8) is None
+    assert render_inline_image(_png(tmp_path / "small.png", (300, 300)), mode="unicode", max_cols=20, max_rows=8)
+
+
+def test_decompression_bomb_warning_is_a_refusal(tmp_path, monkeypatch):
+    # Between MAX_IMAGE_PIXELS and twice that Pillow only warns; a preview treats it as a bomb.
+    path = _png(tmp_path / "bomb.png", (400, 400))
+    monkeypatch.setattr(PIL, "MAX_IMAGE_PIXELS", 100_000)
+    assert render_inline_image(path, mode="kitty", max_cols=20, max_rows=8) is None

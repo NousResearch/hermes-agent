@@ -53,16 +53,17 @@ def test_followup_retains_route_before_database_preparation_and_worker_publicati
 @pytest.mark.parametrize("refusal", ["closing", "replaced", "retiring", "ownership", "preparation_error"])
 def test_refused_followup_settles_retention_without_starting_a_turn(monkeypatch, followup, refusal):
     session, events = followup
-    if refusal == "closing":
-        session["_closing"] = True
-    elif refusal == "replaced":
-        server._sessions["route"] = {}
-    elif refusal == "ownership":
-        monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_: "not owned")
-    elif refusal == "preparation_error":
-        def fail(_session):
-            raise RuntimeError("database preparation failed")
-        monkeypatch.setattr(server, "_ensure_session_db_row", fail)
+    def fail(_session):
+        raise RuntimeError("database preparation failed")
+
+    session["_closing"] = refusal == "closing"
+    server._sessions["route"] = {} if refusal == "replaced" else session
+    refusal_hooks = {
+        "ownership": ("_ensure_active_session_slot", lambda *_: "not owned"),
+        "preparation_error": ("_ensure_session_db_row", fail),
+    }
+    if hook := refusal_hooks.get(refusal):
+        monkeypatch.setattr(server, *hook)
     monkeypatch.setattr(server, "_start_session_work", lambda *a, **k: None)
     server._dispatch_followup_turn("rid", "route", session, "continue", "goal continuation")
     assert session["running"] is False

@@ -209,6 +209,7 @@ This is off by default because every unit is a new turn for the orchestrator: a 
 The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting (the worker pool grows to the number of live units so no unit waits behind a full pool). An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 10 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
+- **Full background pool:** the same number caps concurrent background calls. When every slot is busy, `delegation.at_capacity` decides: `sync` (default) runs the new batch inline and blocks the turn until it finishes, with a `note` saying so; `reject` starts nothing and returns `status: "rejected"` with the goals, so the model waits for the running results instead. `delegate_task(action="list")` reports the free slots up front.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
 - **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
@@ -535,7 +536,7 @@ The parent agent orchestrates its own running children with the same `delegate_t
 {"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
 ```
 
-- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`. It also returns `pool`: `{cap, running, free, at_capacity}` for the background pool (`cap` is `delegation.max_concurrent_children`, `running` counts busy slots process-wide, one per running background call, and `at_capacity` is the configured policy), so a caller can size its next batch instead of tripping a full pool.
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
 - **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
 
@@ -764,6 +765,7 @@ error.
 delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
+  # at_capacity: sync                       # Background pool full: sync = run inline (blocks the turn), reject = start nothing, return a rejection
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
   # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)

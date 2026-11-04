@@ -149,10 +149,20 @@ def _managed_refusal(key):
     return RuntimeStoreError('permission_denied', field=key, detail='managed by your administrator')
 
 
-def _refuse_managed_change(before, after):
+def _refuse_managed_change(before, after, edit):
+    """Refuse an edit that sets a managed leaf, even to the value the raw file already holds (no change
+    there, but the managed value still wins): a dry run on a copy without the managed leaves shows each
+    leaf the edit targets; read-only edits (``focus`` status) set none."""
     from hermes_cli.managed_scope import managed_config_keys
-    for key in sorted(managed_config_keys()):
-        if _leaf(before, key) != _leaf(after, key):
+    keys, probe = sorted(managed_config_keys()), copy.deepcopy(before)
+    for key in keys:
+        *parents, leaf = key.split('.')
+        if isinstance(node := _leaf(probe, '.'.join(parents)) if parents else probe, dict):
+            node.pop(leaf, None)
+    if keys:
+        edit(probe)
+    for key in keys:
+        if _leaf(before, key) != _leaf(after, key) or _leaf(probe, key) is not _UNSET:
             raise _managed_refusal(key)
 
 
@@ -169,8 +179,8 @@ def _write_profile_config(connection, edit):
             raise RuntimeStoreError('storage_unavailable') from exc
         before = copy.deepcopy(cfg)
         result = edit(cfg)
+        _refuse_managed_change(before, cfg, edit)
         if cfg != before:
-            _refuse_managed_change(before, cfg)
             try:
                 atomic_config_replace(path, cfg)
             except Exception as exc:

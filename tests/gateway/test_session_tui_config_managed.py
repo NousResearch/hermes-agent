@@ -30,7 +30,10 @@ def _owner_write(home, key, value):
     return _write_profile_config(connection, lambda cfg: _set_display(cfg, key, value))
 
 
-def test_owner_config_set_refuses_a_managed_key_and_writes_nothing(home):
+@pytest.mark.parametrize("raw", [None, "display:\n  skin: mono\n"], ids=["unset", "stale-raw-equal"])
+def test_owner_config_set_refuses_a_managed_key_and_writes_nothing(home, raw):
+    if raw:  # the raw file already holds the requested value: no change there, the managed one still wins
+        (home / "config.yaml").write_text(raw)
     before = (home / "config.yaml").read_text()
     with pytest.raises(RuntimeStoreError) as refused:
         _owner_write(home, "skin", "mono")

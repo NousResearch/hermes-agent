@@ -188,19 +188,24 @@ def _parse_json_result(raw: Any) -> Any:
     return raw
 
 
-def _current_page_origin(task_id: str) -> Optional[str]:
+def _read_page_origin(task_id: str) -> Optional[str]:
+    """The current page's origin, "" on a blank or non-web page, None when the page could not be read."""
     res = _eval_js(task_id, "window.location.href")
     if not res.get("success"):
         return None
     href = str(res.get("result") or "").strip().strip('"').strip("'")
     if not href or href == "about:blank":
-        return None
-    try:
-        from agent.vault_store import normalize_origin
+        return ""
+    from agent.vault_store import VaultError, normalize_origin
 
+    try:
         return normalize_origin(href)
-    except Exception:
-        return None
+    except VaultError:
+        return ""
+
+
+def _current_page_origin(task_id: str) -> Optional[str]:
+    return _read_page_origin(task_id) or None
 
 
 def _deep_probe(selector: str) -> str:
@@ -263,12 +268,19 @@ def _bound_page_origin(task_id: str, meta: Any, probe_kind: str) -> str | dict[s
 # Handlers
 # ---------------------------------------------------------------------------
 
-def browser_vault_list() -> str:
-    """List login handles + metadata across every enabled backend. Passwords are never included.
+# Above this many items an unfiltered list returns a count and asks for a query: every handle carries its site
+# and identifier, so listing a vault of hundreds of logins costs tens of thousands of tokens per call and puts
+# every identifier in the context.
+_LIST_UNFILTERED_MAX = 50
 
-    A locked external manager contributes no items; instead it is reported under ``locked`` so the
-    agent knows to call fill (which prompts the user to unlock) or tell the user.
-    """
+
+def _list_entry_matches(entry: dict[str, Any], needle: str) -> bool:
+    fields = [entry.get("origin"), entry.get("label"), entry.get("identifier"), *entry.get("allowed_origins", ())]
+    return any(needle in str(value).lower() for value in fields if value)
+
+
+def _list_items() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(items, locked managers, backend errors) across every enabled backend; never a secret."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
 
@@ -280,7 +292,7 @@ def browser_vault_list() -> str:
             continue
         try:
             metas = backend.list_items()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- one manager failing is reported under errors; the rest still list
             errors.append({"backend": backend.name, "error": str(exc)[:200]})
             continue
         for meta in metas:
@@ -294,10 +306,83 @@ def browser_vault_list() -> str:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
             items.append(entry)
+    return items, locked, errors
+
+
+def _host(origin: Any) -> str:
+    from urllib.parse import urlsplit
+
+    return (urlsplit(str(origin or "")).hostname or "").lower()
+
+
+def _no_browser(task_id: str) -> bool:
+    """True when the task has no browser at all (no supervisor, no session endpoint): no page is open."""
+    from tools.browser_session import session_for_task
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    return SUPERVISOR_REGISTRY.get(task_id) is None and not session_for_task(task_id).get("cdp_url")
+
+
+def _list_page_host(task_id: str) -> Optional[str]:
+    """Host of the page the agent is on (the supervisor's tab, else the open tab holding a login,
+    card or address form); "" when no web page is open; None when an open browser could not be read."""
+    origin = _read_page_origin(task_id)
+    if origin is None:
+        return "" if _no_browser(task_id) else None
+    for kind in ("login", "payment", "address"):
+        if origin:
+            break
+        if _focus_bound_origin(task_id, "", kind):
+            origin = _read_page_origin(task_id)
+            if origin is None:
+                return None
+    return _host(origin)
+
+
+def _scope_to_site(out: dict[str, Any], items: list[dict[str, Any]], site: str) -> None:
+    """Keep the items saved for ``site`` (exact host of any saved origin); the rest are counted, never named."""
+    mine = [e for e in items if site in {_host(o) for o in [e.get("origin"), *e.get("allowed_origins", ())]}]
+    out.update(items=mine, site=site)
+    if len(items) > len(mine):
+        out["other_sites_items"] = len(items) - len(mine)
+    if not mine:
+        out["hint"] = (f"Nothing saved for {site}. Call browser_vault action=save_login on its login page to ask the "
+                       "user to save one; list query=<site> searches other sites' items by name.")
+
+
+def browser_vault_list(query: str = "", all_sites: bool = False, task_id: Optional[str] = None) -> str:
+    """List handles + metadata for the site of the page the agent is on. Passwords are never included.
+
+    Every site and username the user keeps is not the model's business: with a web page open, only items
+    saved for its host are returned and the rest are only counted. ``query`` keeps the items whose site,
+    label or identifier contains it (case-insensitive), across every site. ``all_sites`` (or no page open)
+    lists the whole inventory, but above ``_LIST_UNFILTERED_MAX`` items reports the size and asks for a query.
+
+    A locked external manager contributes no items; instead it is reported under ``locked`` so the
+    agent knows to call fill (which prompts the user to unlock) or tell the user.
+    """
+    items, locked, errors = _list_items()
+    needle = (query or "").strip().lower()
+    site = "" if needle or all_sites or not items else _list_page_host(task_id or "default")
     out: dict[str, Any] = {"success": True, "items": items}
-    if not items:
+    if needle:
+        out["items"] = items = [entry for entry in items if _list_entry_matches(entry, needle)]
+        if not items:
+            out["hint"] = (f"No saved item matches {query.strip()!r}. Try a shorter part of the site's host; if nothing "
+                           "is saved for this site, call browser_vault action=save_login on its login page.")
+    elif not items:
         out["hint"] = ("No saved logins. On a login page, call browser_vault action=save_login to ask the user to save one. "
                        "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
+    elif site is None:  # a page is open but unreadable: listing every site here would defeat the scoping
+        out = {"success": True, "items": [], "total": len(items),
+               "hint": ("The open page could not be read, so its site is unknown. Call list again with "
+                        "query=<site>, part of the page's host (e.g. 'github'), to get its handles.")}
+    elif site:
+        _scope_to_site(out, items, site)
+    elif len(items) > _LIST_UNFILTERED_MAX:
+        out = {"success": True, "items": [], "total": len(items),
+               "hint": (f"{len(items)} saved items: call list again with query=<site>, part of the login page's "
+                        "host (e.g. 'github'), to get the matching handles.")}
     if locked:
         out["locked"] = locked
     if errors:
@@ -572,9 +657,10 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
-        register_vault_redaction_value(value)
+    if meta.kind == "payment":
+        _register_card_secrets(secret, effective_task_id, page_origin)
+    else:
+        register_vault_redaction_value(secret.get("password", ""))
 
     try:
         fill_result = _eval_js_secret(
@@ -619,6 +705,22 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
     return json.dumps(out)
 
 
+def _register_card_secrets(secret: dict[str, Any], task_id: str, page_origin: str) -> None:
+    """Before a card is written: its number is masked in every later result, in whatever grouping the
+    page reformats it into (last 4 kept); its CVC only as a whole number while this page lives; and
+    captures of the page refuse until it navigates. Holder name, expiry and billing postcode are not
+    secret: registering them scrubbed common names, dates and postcodes from every later tool result."""
+    from agent.redact import register_vault_redaction_value
+    from agent.redact_cards import register_card_number
+    from tools.browser_vault_card_guard import mark_card_filled
+
+    number = str(secret.get("card_number") or "")
+    for value in (number, "".join(ch for ch in number if ch.isdigit())):
+        register_vault_redaction_value(value)
+    register_card_number(number)
+    mark_card_filled(task_id, page_origin, str(secret.get("cvc") or ""))
+
+
 def _confirm_payment_fill(label: str, origin: str) -> bool:
     """Human confirmation before a card is written into a page: a prompt injection that reaches a checkout
     must not be able to spend. Routes through the approval surface of the active session (gateway button
@@ -641,8 +743,9 @@ BROWSER_VAULT_SCHEMA = {
     "description": (
         "Fill saved logins, 2FA codes, cards and addresses on the CURRENT browser page. Secrets never "
         "enter the conversation. "
-        "Actions: list (call first: saved logins/cards/addresses as handles; logins carry the identifier you type "
-        "yourself with the browser's input tool; locked password managers appear under `locked`); fill (handle: "
+        "Actions: list (call first, on the site's page: that site's saved logins/cards/addresses as handles; logins "
+        "carry the identifier you type yourself with the browser's input tool; locked password managers appear under "
+        "`locked`); fill (handle: "
         "the password for a login, card fields after the user confirms, address fields; refused unless the page "
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
@@ -658,6 +761,10 @@ BROWSER_VAULT_SCHEMA = {
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "query": {"type": "string", "description": ("list only: part of a site's host, label or identifier "
+                                                        "(e.g. 'github'), searched across every site.")},
+            "all_sites": {"type": "boolean", "description": ("list only: every site's items, only when the user asks "
+                                                             "what is saved. Default: the current page's site.")},
         },
         "required": ["action"],
     },
@@ -684,7 +791,10 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     action = str(args.get("action") or "")
     handle, label = str(args.get("handle") or ""), str(args.get("label") or "")
     if action == "list":
-        return browser_vault_list()
+        query, all_sites = str(args.get("query") or ""), args.get("all_sites") is True
+        if query.strip() or all_sites:
+            return browser_vault_list(query, all_sites)
+        return _fenced_page_op(tid, lambda: browser_vault_list(task_id=tid))  # reads the current page
     if action == "unlock":
         return browser_vault_unlock(str(args.get("backend") or ""))
     page_ops = {

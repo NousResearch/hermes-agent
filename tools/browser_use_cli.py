@@ -91,6 +91,23 @@ _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
 """
 
+# Prepended while a payment card is filled into the task's page (tools/browser_vault_card_guard.py): the
+# harness's cdp() (which capture_screenshot and the recorder call through the helpers module) refuses the
+# capture methods, so no image of the card is ever written and no workspace file needs deleting.
+_CARD_FILLED_PREAMBLE = """\
+# hermes: a payment card is filled into the page; screenshots are refused for this call
+def _hermes_refuse_captures(inner, methods, message):
+    def cdp(method, *args, **kwargs):
+        if method in methods:
+            raise RuntimeError(message)
+        return inner(method, *args, **kwargs)
+    return cdp
+from browser_harness import helpers as _hermes_helpers
+_hermes_helpers.cdp = _hermes_refuse_captures(_hermes_helpers.cdp, {methods!r}, {message!r})
+cdp = _hermes_refuse_captures(cdp, {methods!r}, {message!r})
+del _hermes_refuse_captures, _hermes_helpers
+"""
+
 _DEFAULT_TIMEOUT_S = 300
 _MIN_TIMEOUT_S = 5
 _MAX_TIMEOUT_S = 1800
@@ -822,6 +839,11 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     from tools.browser_use_shot import ACTIVATE_NEVER, harness_command
     cmd = harness_command(cmd, activate=env.pop(_CLOUD_BROWSER_SENTINEL, None) or ACTIVATE_NEVER)
 
+    from tools.browser_vault_card_guard import CDP_CAPTURE_METHODS, capture_refusal
+    card_capture_refusal = capture_refusal(task_id)
+    if card_capture_refusal:
+        code = _CARD_FILLED_PREAMBLE.format(methods=sorted(CDP_CAPTURE_METHODS), message=card_capture_refusal) + code
+
     workspace = _workspace_dir(task_id)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
@@ -886,7 +908,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:
         result["stderr"] = stderr
-    screenshot = _find_screenshot(proc.stdout, started)
+    return _result_with_screenshot(result, proc.stdout, started, card_capture_refusal)
+
+
+def _result_with_screenshot(result: dict[str, Any], stdout: str, started: float,
+                            card_capture_refusal: Optional[str]):
+    """The exec result with its screenshot attached; nothing is attached while a payment card is filled
+    (the call's captures were refused, ``_CARD_FILLED_PREAMBLE``)."""
+    from tools.registry import tool_result
+    if card_capture_refusal:
+        return tool_result(result)
+    screenshot = _find_screenshot(stdout, started)
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)

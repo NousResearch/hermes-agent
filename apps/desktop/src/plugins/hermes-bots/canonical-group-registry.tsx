@@ -1,5 +1,5 @@
 import { atom, host, randomUuid, useQuery, useValue } from '@hermes/plugin-sdk'
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { canonicalGroupRequest, discoverCanonicalGroups, listCanonicalRooms } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
@@ -10,6 +10,9 @@ import { ID } from './shared'
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
 // Bumped when this window creates or disbands a room, so the roster re-reads `groups.list` now.
 const $canonicalGroupListRevision = atom(0)
+// Rooms this window saw disbanded. A `groups.list` that started before the
+// disband (or a failed re-read keeping the last good list) never lists them again.
+const $disbandedGatewayRooms = atom<ReadonlySet<string>>(new Set())
 
 export function refreshGatewayGroupRooms(): void {
   $canonicalGroupListRevision.set($canonicalGroupListRevision.get() + 1)
@@ -17,13 +20,18 @@ export function refreshGatewayGroupRooms(): void {
 
 /** Drop a disbanded room's key and every alias to it, then re-read the sidebar list. */
 export function forgetCanonicalGroup({ connectionId, profile, roomId }: CanonicalGroupBinding): void {
+  $disbandedGatewayRooms.set(new Set($disbandedGatewayRooms.get()).add(canonicalGroupKey({ connectionId, profile }, roomId)))
   $canonicalGroupBindings.set(Object.fromEntries(Object.entries($canonicalGroupBindings.get()).filter(([, binding]) =>
     binding.connectionId !== connectionId || binding.profile !== profile || binding.roomId !== roomId)))
   refreshGatewayGroupRooms()
 }
 
+function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
+  return `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`
+}
+
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
-  const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
+  const key = canonicalGroupKey(route, room.room_id)
   const current = $canonicalGroupBindings.get()[key]
 
   // The roster re-lists on a poll: an unchanged room must not wake every binding reader.
@@ -139,8 +147,16 @@ export interface GatewayGroupRoom {
   key: string
   members: CanonicalRoomMember[]
   name: string
+  room: CanonicalRoom
   /** Milliseconds; the room's last change, its recency in the roster. */
   updatedAt: number
+}
+
+/** Bind the room the user clicked, then hand back the key to open. Binding
+ *  happens here, at the gesture, never in the list read: a slow read must not
+ *  re-bind a room disbanded since, or rename one re-read since. */
+export function bindGatewayGroupRoom({ binding, room }: GatewayGroupRoom): string {
+  return registerCanonicalGroup(binding, room)
 }
 
 /** The active source's rooms. A backend that predates gateway Group Chats has none. */
@@ -154,13 +170,24 @@ async function listGatewayGroupRooms(route: CanonicalGroupRoute): Promise<Gatewa
     throw error
   }
 
-  return rooms.map(room => ({
+  const listed = rooms.map(room => ({
     binding: { ...route, roomId: room.room_id, roomName: room.name },
-    key: registerCanonicalGroup(route, room),
+    key: canonicalGroupKey(route, room.room_id),
     members: room.members ?? [],
     name: room.name,
+    room,
     updatedAt: (room.updated_at ?? 0) * 1000
   }))
+
+  // A disbanded room this read no longer lists is gone at the gateway: stop hiding it.
+  const prefix = canonicalGroupKey(route, '')
+  const keys = new Set(listed.map(room => room.key))
+  const hidden = $disbandedGatewayRooms.get()
+  const kept = [...hidden].filter(key => !key.startsWith(prefix) || keys.has(key))
+
+  if (kept.length !== hidden.size) {$disbandedGatewayRooms.set(new Set(kept))}
+
+  return listed
 }
 
 const ROOMS_KEY = [ID, 'gateway-group-rooms']
@@ -175,6 +202,7 @@ export function useGatewayGroupRooms(): GatewayGroupRoom[] {
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
   const revision = useValue($canonicalGroupListRevision)
+  const disbanded = useValue($disbandedGatewayRooms)
 
   const { data, refetch } = useQuery({
     queryKey: [...ROOMS_KEY, connectionId, profile],
@@ -191,7 +219,10 @@ export function useGatewayGroupRooms(): GatewayGroupRoom[] {
     if (revision && host.state.gateway.get() === 'open') {void refetch()}
   }, [revision, refetch])
 
-  return connectionId ? data ?? [] : []
+  return useMemo(
+    () => (connectionId ? (data ?? []).filter(room => !disbanded.has(room.key)) : []),
+    [connectionId, data, disbanded]
+  )
 }
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.

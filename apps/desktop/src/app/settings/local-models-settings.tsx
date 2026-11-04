@@ -26,6 +26,7 @@ import { LocalModelsModelsSection } from './local-models-models-section'
 import { LocalModelsOwnerProvider, useScopedLocalModelsOwner } from './local-models-owner'
 import { LocalModelsQuickstart } from './local-models-quickstart'
 import { LocalModelsRuntimeSection } from './local-models-runtime-section'
+import { LocalModelsSettingsPanel } from './local-models-settings-panel'
 import { SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { ActiveProfileNote } from './profile-scope'
 
@@ -61,7 +62,7 @@ function ScopedLocalModelsSettings(): ReactElement {
           <SettingsContent>
             <ActiveProfileNote className="mb-5" />
             <SectionHeading icon={SlidersHorizontal} title={t.settings.localModels.samplingTitle} />
-            <p className="text-sm text-muted-foreground">{t.settings.localModels.settingsEmpty}</p>
+            <LocalModelsSettingsPanel />
           </SettingsContent>
         )}
       </div>

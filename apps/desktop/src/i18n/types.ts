@@ -1329,6 +1329,27 @@ export interface Translations extends NoticeTranslations {
       settingsTab: string
       samplingTitle: string
       settingsEmpty: string
+      settingsModelLabel: string
+      settingsAuto: string
+      settingsSave: string
+      settingsSaving: string
+      settingsResetAll: string
+      settingsResetField: string
+      settingsLoadingTitle: string
+      settingsLoadingDetail: (policy: string, context: string) => string
+      settingsLoadFailed: string
+      settingsSourceModel: string
+      settingsSourcePublisher: string
+      settingsSourceCatalog: string
+      settingsSourceProfile: string
+      settingsSourceEngine: string
+      settingsSourceRequest: string
+      settingsSourceInherit: string
+      settingsConflictReloaded: string
+      settingsModelChangedReloaded: string
+      settingsErrorUnknownSetting: string
+      settingsErrorInvalidValue: string
+      settingsErrorRejected: string
       connectionChanged: string
       title: string
       runtimeTitle: string

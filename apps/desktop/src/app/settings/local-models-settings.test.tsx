@@ -14,7 +14,7 @@ vi.mock('@/store/session', async (): Promise<object> => {
 })
 
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
@@ -24,6 +24,18 @@ import { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } from '@/store
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
+
+// The typed settings client is its own module — mock it so the panel's
+// contract is what it RENDERS and what it SENDS, not transport.
+vi.mock('@/api/local-models-settings', async (): Promise<object> => {
+  const { vi: vitest } = await import('vitest')
+
+  return {
+    getLocalModelSettings: vitest.fn(),
+    resetLocalModelSettings: vitest.fn(),
+    saveLocalModelSettings: vitest.fn()
+  }
+})
 
 // Mock the API layer — the pane's contract is what it RENDERS from these
 // payloads, not transport.
@@ -51,9 +63,11 @@ vi.mock('@/hermes', () => ({
   sideloadLocalModel: vi.fn()
 }))
 
+import * as settingsApi from '@/api/local-models-settings'
 import * as hermes from '@/hermes'
 
 const mocked = vi.mocked(hermes)
+const mockedSettings = vi.mocked(settingsApi)
 
 const BASE_STATUS: LocalModelsStatus = {
   enabled: true,
@@ -138,6 +152,63 @@ function setInstallStarting(starting: boolean): void {
   }
 }
 
+// Full response contract, shape pinned by
+// tests/hermes_cli/test_local_model_settings_api.py::test_get_full_response_contract.
+const MODEL_FINGERPRINT = 'a'.repeat(64)
+
+function settingsResponse(over: Record<string, unknown> = {}): object {
+  return {
+    model_id: 'Dispatch-Model',
+    schema_version: 1,
+    key: { model_fingerprint: MODEL_FINGERPRINT, engine: 'llamacpp', workflow: 'chat' },
+    revision: 3,
+    overrides: { top_k: 40 },
+    effective: {
+      values: { temperature: 0.75, top_k: 40 },
+      sources: {
+        temperature: 'publisher',
+        top_k: 'model',
+        presence_penalty: 'inherit',
+        seed: 'inherit'
+      }
+    },
+    fields: [
+      { key: 'temperature', kind: 'float', minimum: 0, maximum: 2, choices: null, supports_auto: true, apply: 'request' },
+      { key: 'top_k', kind: 'int', minimum: 0, maximum: null, choices: null, supports_auto: true, apply: 'request' },
+      { key: 'presence_penalty', kind: 'float', minimum: -2, maximum: 2, choices: null, supports_auto: true, apply: 'request' },
+      { key: 'seed', kind: 'int', minimum: null, maximum: null, choices: null, supports_auto: true, apply: 'request' }
+    ],
+    runtime: { engine: 'llamacpp', backend: 'metal', installed_tag: 'b10290', pinned_tag: 'b10290' },
+    loading: { policy: 'auto', context_length: null },
+    ...over
+  }
+}
+
+const STAGED_STATUS: LocalModelsStatus = {
+  ...BASE_STATUS,
+  models: [{ id: 'Dispatch-Model', size_bytes: 1024, size_label: '1 KiB' }]
+}
+
+const mockedSave = (): Mock => mockedSettings.saveLocalModelSettings as unknown as Mock
+const mockedGet = (): Mock => mockedSettings.getLocalModelSettings as unknown as Mock
+const mockedReset = (): Mock => mockedSettings.resetLocalModelSettings as unknown as Mock
+
+function httpError(status: number, detail: Record<string, unknown>): Error {
+  // The REST bridge rejects with "<status>: <body>" (electron/api-transport.ts).
+  return new Error(`${status}: ${JSON.stringify({ detail })}`)
+}
+
+async function openSettingsPanel(): Promise<void> {
+  mocked.getLocalModelsStatus.mockResolvedValue(STAGED_STATUS)
+  renderPane()
+  fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Settings' }), { button: 0, ctrlKey: false })
+  await screen.findByLabelText(/^temperature$/i)
+}
+
+function field(name: RegExp): HTMLInputElement {
+  return screen.getByLabelText(name) as HTMLInputElement
+}
+
 function renderPane() {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -181,6 +252,9 @@ beforeEach((): void => {
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
   mocked.getLocalCatalog.mockResolvedValue({ models: [FITTING_MODEL, SPILLED_MODEL, REFUSED_MODEL] })
+  mockedSettings.getLocalModelSettings.mockResolvedValue(settingsResponse())
+  mockedSettings.saveLocalModelSettings.mockResolvedValue(settingsResponse())
+  mockedSettings.resetLocalModelSettings.mockResolvedValue(settingsResponse())
   // The backend mock ECHOES the atom: the watcher's immediate poll reads
   // seeded jobs instead of wiping them with a default {jobs:[]}.
   mocked.getLocalModelsJobs.mockImplementation(async () => ({
@@ -755,5 +829,154 @@ describe('quickstart finalization', (): void => {
     // Stage detail yes; byte counter no — a 100% counter on an install
     // phase would lie about the model leg still ahead.
     expect(screen.queryByText(/of/)).toBeNull()
+  })
+})
+
+
+describe('LocalModelsSettings sampling panel', () => {
+  it('renders typed fields with source badges and a read-only loading block', async () => {
+    await openSettingsPanel()
+
+    expect(field(/^temperature$/i).value).toBe('0.75')
+    expect(field(/^top k$/i).value).toBe('40')
+    expect(screen.getByTestId('source-temperature').textContent).toBe('File metadata')
+    expect(screen.getByTestId('source-top_k').textContent).toBe('Saved')
+    expect(screen.getByTestId('source-seed').textContent).toBe('Default')
+    // Range placeholder from the schema, not a guess.
+    expect(field(/^temperature$/i).placeholder).toBe('0 – 2')
+    // Loading stays Auto policy and is NOT editable.
+    expect(screen.getByText(/policy auto, context length Auto/)).toBeTruthy()
+    expect(screen.queryByLabelText(/context/i)).toBeNull()
+    expect(mockedGet()).toHaveBeenCalledWith('Dispatch-Model', expect.anything())
+  })
+
+  it('keeps unchanged stored values and saves with revision + fingerprint', async () => {
+    await openSettingsPanel()
+
+    fireEvent.change(field(/^presence penalty$/i), { target: { value: '0.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    await waitFor(() => expect(mockedSave()).toHaveBeenCalledTimes(1))
+    const [modelId, body] = mockedSave().mock.calls[0]
+    expect(modelId).toBe('Dispatch-Model')
+    expect(body).toEqual({
+      expected_revision: 3,
+      expected_fingerprint: MODEL_FINGERPRINT,
+      // top_k keeps its stored value; publisher temperature is NOT promoted to an override.
+      overrides: { top_k: 40, presence_penalty: 0.5 }
+    })
+  })
+
+  it('preserves an explicit zero (never treated as empty)', async () => {
+    await openSettingsPanel()
+
+    fireEvent.change(field(/^top k$/i), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    await waitFor(() => expect(mockedSave()).toHaveBeenCalledTimes(1))
+    const overrides = mockedSave().mock.calls[0][1].overrides as Record<string, unknown>
+    expect(overrides.top_k).toBe(0)
+    expect(Object.is(overrides.top_k, 0)).toBe(true)
+  })
+
+  it('encodes Auto exactly as {auto:true}, including a cleared numeric field', async () => {
+    await openSettingsPanel()
+
+    const autoButtons = screen.getAllByRole('button', { name: 'Auto' })
+    fireEvent.click(autoButtons[0]!) // temperature
+    fireEvent.change(field(/^top k$/i), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    await waitFor(() => expect(mockedSave()).toHaveBeenCalledTimes(1))
+    expect(mockedSave().mock.calls[0][1].overrides).toEqual({
+      temperature: { auto: true },
+      top_k: { auto: true }
+    })
+  })
+
+  it('blocks Save for an out-of-range value and says why', async () => {
+    await openSettingsPanel()
+
+    fireEvent.change(field(/^temperature$/i), { target: { value: '5' } })
+
+    expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getAllByRole('alert').some(node => node.textContent === '0 – 2')).toBe(true)
+    expect(mockedSave()).not.toHaveBeenCalled()
+  })
+
+  it('on revision_conflict reloads, keeps the drafts, and never auto-retries', async () => {
+    await openSettingsPanel()
+    mockedSave().mockRejectedValueOnce(
+      httpError(409, { error: 'revision_conflict', expected_revision: 3, current_revision: 4 })
+    )
+    mockedGet().mockResolvedValue(settingsResponse({ revision: 4, overrides: { top_k: 41 } }))
+
+    fireEvent.change(field(/^presence penalty$/i), { target: { value: '0.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    expect(await screen.findByText('Settings changed elsewhere — reloaded, re-apply if needed')).toBeTruthy()
+    expect(mockedGet().mock.calls.length).toBeGreaterThanOrEqual(2) // refetched
+    expect(mockedSave()).toHaveBeenCalledTimes(1) // the lost write is NOT replayed
+    expect(field(/^presence penalty$/i).value).toBe('0.5') // the user's edit survives
+    expect(field(/^top k$/i).value).toBe('41') // the reloaded authority shows through
+  })
+
+  it('on model_changed discards pending edits and retargets the new model', async () => {
+    await openSettingsPanel()
+    const newFingerprint = 'b'.repeat(64)
+    mockedSave().mockRejectedValueOnce(
+      httpError(409, { error: 'model_changed', current_fingerprint: newFingerprint })
+    )
+    mockedGet().mockResolvedValue(
+      settingsResponse({
+        revision: 0,
+        overrides: {},
+        key: { model_fingerprint: newFingerprint, engine: 'llamacpp', workflow: 'chat' }
+      })
+    )
+
+    fireEvent.change(field(/^presence penalty$/i), { target: { value: '0.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    expect(await screen.findByText('The model file changed — settings now target the new model')).toBeTruthy()
+    expect(mockedSave()).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(field(/^presence penalty$/i).value).toBe(''))
+
+    // The next write carries the NEW binding, never the refused one.
+    fireEvent.change(field(/^presence penalty$/i), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await waitFor(() => expect(mockedSave()).toHaveBeenCalledTimes(2))
+    expect(mockedSave().mock.calls[1][1]).toMatchObject({
+      expected_revision: 0,
+      expected_fingerprint: newFingerprint
+    })
+  })
+
+  it('shows a plain message for a backend validation refusal without crashing', async () => {
+    await openSettingsPanel()
+    mockedSave().mockRejectedValueOnce(httpError(400, { error: 'invalid_setting_value' }))
+
+    fireEvent.change(field(/^presence penalty$/i), { target: { value: '0.5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+
+    expect(await screen.findByText('The backend rejected a value — check the allowed ranges.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Save settings' })).toBeTruthy() // panel still alive
+  })
+
+  it('resets one field or everything under the same revision + fingerprint discipline', async () => {
+    await openSettingsPanel()
+
+    const row = screen.getByTestId('source-top_k').closest('[data-tour="top_k"]') as HTMLElement
+    fireEvent.click(within(row).getByText('Reset'))
+    await waitFor(() => expect(mockedReset()).toHaveBeenCalledTimes(1))
+    expect(mockedReset().mock.calls[0][1]).toEqual({
+      expected_revision: 3,
+      expected_fingerprint: MODEL_FINGERPRINT,
+      keys: ['top_k']
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset all' }))
+    await waitFor(() => expect(mockedReset()).toHaveBeenCalledTimes(2))
+    expect(mockedReset().mock.calls[1][1].keys).toBeNull()
   })
 })

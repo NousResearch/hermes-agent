@@ -71,12 +71,13 @@ class _Board:
         self, tid: str = "t_lost", *, worker_pid=None, record_worker_pid: bool = True,
         claim_expires_in: int = 900, heartbeat_age=None, owner: bool = True,
         admission=("terminal", "interrupted"), worker_lost=None, dead_seconds: int = 120,
-        owner_pid=None,
+        owner_pid=None, worker_lost_cause=None, worker_lost_lock=None, fingerprint=None,
     ) -> int:
         """A ``running`` card whose managed worker was lost."""
         worker_pid = _absent_pid() if worker_pid is None else int(worker_pid)
         lock = f"{HOST}:{_absent_pid(base=3_900_000)}"
         started = NOW - dead_seconds
+        fingerprint = fingerprint or FINGERPRINT
         run_id = int(self.conn.execute(
             "INSERT INTO task_runs (task_id, profile, status, claim_lock, claim_expires, "
             "worker_pid, started_at) VALUES (?, 'fan', 'running', ?, ?, ?, ?)",
@@ -88,12 +89,12 @@ class _Board:
             "VALUES (?, ?, 'fan', 'running', ?, ?, ?, ?, ?, ?, ?, ?, 5)",
             (tid, tid, NOW - 86400, lock, NOW + claim_expires_in,
              worker_pid if record_worker_pid else None,
-             FINGERPRINT if record_worker_pid else None,
+             fingerprint if record_worker_pid else None,
              (NOW - heartbeat_age) if heartbeat_age is not None else None, run_id, started),
         )
         self.event(tid, run_id, "claimed", {"lock": lock, "expires": NOW + claim_expires_in}, started)
         self.event(tid, run_id, "spawned",
-                   {"pid": worker_pid, "started_at": FINGERPRINT} if record_worker_pid else {}, started)
+                   {"pid": worker_pid, "started_at": fingerprint} if record_worker_pid else {}, started)
         if owner:
             request_id = f'kanban:["default","{tid}",{run_id}]'
             self.event(tid, run_id, "owner_admitted",
@@ -104,9 +105,11 @@ class _Board:
                     store.execute("INSERT INTO session_admissions VALUES ('sess-1', ?, ?, ?)",
                                   (request_id, admission[0], admission[1]))
         if worker_lost:
-            self.event(tid, run_id, "worker_lost",
-                       {"reason": worker_lost, "claim_lock": lock, "run_id": run_id,
-                        "pid": worker_pid, "bound": False}, started + 24)
+            payload = {"reason": worker_lost, "claim_lock": worker_lost_lock or lock, "run_id": run_id,
+                       "pid": worker_pid, "bound": False}
+            if worker_lost_cause:
+                payload["cause"] = worker_lost_cause
+            self.event(tid, run_id, "worker_lost", payload, started + 24)
         self.conn.commit()
         return run_id
 
@@ -310,3 +313,104 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+
+# --- the diagnosable cause: the owner's record says WHY the attempt died ------------------
+# ``session_managed_worker.execute_managed`` records the child's own bounded cause (failing step,
+# exception, source line, exit code) with the loss, so a crash record answers "why" without
+# reading four logs (t_925a816f).
+
+CAUSE = {"step": "execute", "exc_type": "ValueError", "detail": "ValueError: kanban_skills_unavailable",
+         "where": "session_kanban.py:388 in _run_task_turns", "exit_code": 1, "pid": 49832,
+         "log": "/h/profiles/orca/logs/managed-worker.log"}
+
+
+def test_the_owner_recorded_cause_reaches_the_crash_record(board):
+    run_id = board.running("t_cause", claim_expires_in=900, heartbeat_age=30,
+                           worker_lost="managed_worker_failed", worker_lost_cause=CAUSE)
+    board.tick(failure_limit=2)
+    run = board.run(run_id)
+    assert run["outcome"] == "crashed"
+    # The run error names the step and the exception: diagnosable from the board alone.
+    assert "execute: ValueError: kanban_skills_unavailable" in run["error"]
+    assert "session_kanban.py:388 in _run_task_turns" in run["error"]
+    assert "child exit 1" in run["error"]
+    note = json.loads(run["metadata"])["attempt_note"]
+    assert note.startswith("managed worker lost: managed_worker_failed (execute: ValueError: kanban_skills_unavailable")
+    # And the structured cause survives on the event itself.
+    lost = [json.loads(r["payload"]) for r in board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_cause' AND kind='worker_lost'")]
+    assert lost[-1]["cause"]["where"] == CAUSE["where"] and lost[-1]["cause"]["exit_code"] == 1
+
+
+def test_a_loss_without_a_cause_reads_exactly_as_before(board):
+    """Older events (and losses the owner observed itself) keep the bare reason: no fabricated cause."""
+    run_id = board.running("t_nocause", claim_expires_in=900, heartbeat_age=30,
+                           worker_lost="managed_worker_failed")
+    board.tick(failure_limit=2)
+    assert json.loads(board.run(run_id)["metadata"])["attempt_note"] == "managed worker lost: managed_worker_failed"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_handler_writes_the_childs_cause_onto_the_board(board):
+    """Through ``_record_lost_attempt``: the cause the gateway collected is what the board keeps."""
+    from gateway.session_managed_worker import _record_lost_attempt
+    from types import SimpleNamespace
+    run_id = board.running("t_owner_cause", claim_expires_in=900, heartbeat_age=30)
+    policy = _owner_policy(board, "t_owner_cause", run_id)
+    recording = _record_lost_attempt(SimpleNamespace(), policy, RuntimeError(), "managed_worker_failed",
+                                     None, cause={"step": "execute", "exc_type": "ValueError",
+                                                  "detail": "ValueError: kanban_skills_unavailable",
+                                                  "exit_code": 1, "unexpected": "dropped"})
+    await recording
+    payload = json.loads(board.conn.execute(
+        "SELECT payload FROM task_events WHERE task_id='t_owner_cause' AND kind='worker_lost'").fetchone()[0])
+    assert payload["cause"]["step"] == "execute" and payload["cause"]["exit_code"] == 1
+    assert "unexpected" not in payload["cause"]      # only the known, bounded keys land
+
+
+# --- a lost managed worker leaves the card dispatchable, without ``sessions discard`` -----
+# Observed (t_925a816f): a worker that died after binding left its admission ``unknown`` (the
+# committed unknown row deliberately pauses the FIFO). The board's reclaim gate read that as "an
+# attempt may still be running" and held the claim, so the card needed a manual
+# ``hermes sessions discard`` before it could be dispatched again. The owner's own ``worker_lost``
+# for THIS run and claim is its record that the attempt ended: with every recorded pid dead,
+# nothing can still be executing it.
+
+def test_a_lost_managed_worker_releases_its_card_without_a_session_discard(board):
+    run_id = board.running("t_unknown", claim_expires_in=900, heartbeat_age=30,
+                           admission=("unknown", None), worker_lost="managed_worker_failed")
+    # The fence is real: an unknown admission does pause the generic reclaim paths...
+    assert kanban_owner_recovery.owner_reclaim_paused(board.conn, "t_unknown") is True
+    board.tick(failure_limit=2)
+    row = board.state("t_unknown")
+    # ...but the owner's own loss record ends it: the card is free again without a discard.
+    assert row["status"] == "ready" and row["claim_lock"] is None and row["current_run_id"] is None
+    assert board.run(run_id)["outcome"] in {"crashed", "reclaimed"}
+
+
+def test_an_unknown_admission_without_an_owner_loss_record_still_holds_the_claim(board):
+    """The fence stays for the case it exists for: an owner that said nothing about the attempt."""
+    board.running("t_silent", claim_expires_in=900, heartbeat_age=30, admission=("unknown", None))
+    board.tick(failure_limit=2)
+    row = board.state("t_silent")
+    assert row["status"] == "running" and row["claim_lock"]
+    assert kanban_owner_recovery.owner_reclaim_blocked(board.conn, "t_silent") is True
+
+
+def test_a_loss_under_another_claim_does_not_hold_this_attempt(board):
+    """The loss record is claim-scoped too: a previous attempt's loss cannot speak for this one."""
+    board.running("t_other_claim", claim_expires_in=900, heartbeat_age=30, admission=("unknown", None),
+                  worker_lost="managed_worker_failed", worker_lost_lock=f"{HOST}:999999")
+    board.tick(failure_limit=2)
+    assert board.state("t_other_claim")["status"] == "running"
+
+
+def test_a_lost_worker_whose_bound_interpreter_is_still_live_keeps_the_claim(board):
+    """Anyone still able to run this attempt keeps the pause: the release is not a blanket bypass."""
+    import os
+    board.running("t_live_worker", claim_expires_in=900, heartbeat_age=30, admission=("unknown", None),
+                  worker_pid=os.getpid(), worker_lost="managed_worker_failed",
+                  fingerprint=kbd._process_fingerprint(os.getpid()))
+    board.tick(failure_limit=2)
+    assert board.state("t_live_worker")["status"] == "running"

@@ -39,13 +39,14 @@ def _profile_units(runner, profile: str, units: list[dict[str, Any]]) -> list[di
     home = (getattr(runner, "_served_profile_homes", None) or {}).get(profile)
     registry = getattr(runner, "session_authorities", None)
     authority = registry.for_home(home) if registry is not None and home is not None else None
-    from gateway.session_runtime_workers import side_agents
+    from gateway.session_runtime_workers import managed_units, side_agents
 
-    managed = sum(not w.closed.is_set() for w in getattr(authority, "_managed_workers", {}).values())
+    # A managed turn is a child process, so name it by session/admission/pid, never by the gateway's pid.
+    managed = managed_units(runner, authority=authority)
     crons = len(getattr(authority, "_cron_cancellations", None) or {})
     sides = len(side_agents(authority)) if authority is not None else 0
     pid = os.getpid()
-    return (mine + [{"kind": "managed", "pid": pid}] * managed + [{"kind": "cron", "job_id": "?", "pid": pid}] * crons
+    return (mine + managed + [{"kind": "cron", "job_id": "?", "pid": pid}] * crons
             + [{"kind": "side_agent", "pid": pid}] * sides)
 
 

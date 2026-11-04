@@ -312,7 +312,26 @@ def _record_worker_result(context, code, last_output):
                  'last_output': last_output}, run_id=context['run_id'])
 
 
-def record_worker_loss(policy, reason, *, pid=None, bound=False):
+def _bounded_cause(cause):
+    """The child's diagnostic as the board keeps it: known keys only, each bounded.
+
+    A lost managed worker's cause is the difference between "died for no stated reason" and
+    "failed in execute: ValueError: kanban_skills_unavailable at session_kanban.py:388", so it
+    rides the ``worker_lost`` event. Unknown keys are dropped (the child is trusted for shape,
+    not for content) and every value is capped so one event cannot grow the board.
+    """
+    if not isinstance(cause, dict):
+        return None
+    limits = {'step': 24, 'exc_type': 64, 'detail': 200, 'where': 120, 'log': 200}
+    bounded: dict = {k: str(cause[k])[:limit] for k, limit in limits.items() if cause.get(k) not in (None, '')}
+    for key in ('pid', 'exit_code'):
+        value = cause.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            bounded[key] = value
+    return bounded or None
+
+
+def record_worker_loss(policy, reason, *, pid=None, bound=False, cause=None):
     """Append a run-scoped ``worker_lost`` event for this attempt to the card's board.
 
     Dropped when the card has moved past the run (it says nothing about the current attempt).
@@ -330,10 +349,11 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
                                (context['task_id'],)).fetchone()
             if row is None or row[0] != 'running' or row[1] != run_id:
                 return
-            kb._append_event(conn, context['task_id'], 'worker_lost',
-                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
-                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
-                             run_id=run_id)
+            payload = {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                       'run_id': run_id, 'pid': pid, 'bound': bool(bound)}
+            if (bounded := _bounded_cause(cause)) is not None:
+                payload['cause'] = bounded
+            kb._append_event(conn, context['task_id'], 'worker_lost', payload, run_id=run_id)
     except Exception:
         import logging
         logging.getLogger(__name__).exception('kanban worker_lost record failed')

@@ -64,6 +64,21 @@ def describe_active_work_unit(unit: dict, home: Optional[Path] = None) -> str:
         tool = unit.get("current_tool")
         detail = ", ".join(p for p in (f"model {model}" if model else "", f"tool {tool}" if tool else "") if p)
         return f"chat turn {session}{pid_part}{elapsed_part}" + (f" [{detail}]" if detail else "")
+    if kind == "managed":
+        # A managed turn is a CHILD process: name the turn (session + admission), never the
+        # gateway's pid, so an operator can tell real in-flight work from a leak.
+        session = str(unit.get("session") or "?")
+        admission = unit.get("admission_id")
+        profile = unit.get("profile")
+        detail = ", ".join(p for p in (f"profile {profile}" if profile else "",
+                                       f"admission {admission}" if admission else "") if p)
+        return (f"managed turn {session}{pid_part}{elapsed_part}"
+                + (f" [{detail}]" if detail else "") + (", stopping" if unit.get("stopping") else ""))
+    if kind == "session":
+        session = str(unit.get("session") or "?")
+        admission = unit.get("admission_id")
+        return (f"executing session {session}" + (f" [admission {admission}]" if admission else "")
+                + elapsed_part)
     if kind == "delegation":
         goal = str(unit.get("goal") or "").strip()
         return (f"background delegation {unit.get('delegation_id') or '?'}{pid_part}{elapsed_part}"

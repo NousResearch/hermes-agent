@@ -1,5 +1,7 @@
 """Physical worker liveness and cooperative Stop across every served authority."""
 import asyncio
+import os
+import time
 
 from gateway.session_authorities import all_authorities
 
@@ -21,6 +23,96 @@ def uncounted_runtime_work(runner):
     return (managed + sum(live.route not in running and sid not in getattr(authority, '_managed_workers', {})
                 for authority in authorities for sid, live, _ in executing_sessions(authority))
             + sum(len(mutation_tasks(authority)) + len(side_agents(authority)) for authority in authorities))
+
+
+def managed_units(runner, *, authority=None, now=None):
+    """One dict per LIVE managed worker, naming the turn a stop would interrupt.
+
+    A managed turn runs in a child process the owner spawns, so the owner's own pid says nothing
+    about it: this reports the SESSION, its ADMISSION, the child's pid (the verified interpreter
+    once reserved, else the spawn handle), the served profile and how long it has run. The restart
+    guard prints these, which is what lets an operator tell real in-flight work from a leak.
+    Best-effort per worker: a source that cannot be read is omitted, never raised.
+    """
+    now = time.time() if now is None else now
+    units = []
+    for served in ([authority] if authority is not None else all_authorities(runner)):
+        for session_id, worker in list(getattr(served, '_managed_workers', {}).items()):
+            closed = getattr(worker, 'closed', None)
+            if closed is not None and closed.is_set():
+                continue
+            units.append(managed_unit(session_id, worker, now))
+    return units
+
+
+def managed_unit(session_id, worker, now):
+    """The named identity of one live managed worker: session, admission, child pid, profile."""
+    handle = getattr(worker, 'process', None)
+    bound = getattr(worker, 'worker', None)
+    spawn_pid = getattr(handle, 'pid', None)
+    unit = {'kind': 'managed', 'session': getattr(worker, 'session_id', None) or session_id,
+            'pid': bound[0] if bound else spawn_pid}
+    if getattr(worker, 'admission_id', None):
+        unit['admission_id'] = worker.admission_id
+    if getattr(worker, 'route', None):
+        unit['route'] = worker.route
+    if getattr(worker, 'profile', None):
+        unit['profile'] = worker.profile
+    if spawn_pid and spawn_pid != unit['pid']:
+        unit['spawn_pid'] = spawn_pid
+    started = getattr(worker, 'started_at', None)
+    if started:
+        unit['elapsed_s'] = round(now - started, 1)
+    if getattr(worker, 'stop', None) is not None and worker.stop.is_set():
+        unit['stopping'] = True
+    return unit
+
+
+def unmapped_session_units(runner, *, authority=None):
+    """One dict per executing session the ordinary agent map does not hold (a managed turn whose
+    worker is not registered yet, or an in-process claim outside ``_running_agents``)."""
+    units = []
+    running = getattr(runner, '_running_agents', {})
+    for served in ([authority] if authority is not None else all_authorities(runner)):
+        workers = getattr(served, '_managed_workers', {})
+        for sid, live, execution in executing_sessions(served):
+            if live.route in running or sid in workers:
+                continue
+            unit = {'kind': 'session', 'session': sid}
+            if isinstance(execution, dict) and execution.get('admission_id'):
+                unit['admission_id'] = execution['admission_id']
+            units.append(unit)
+    return units
+
+
+def counted_work_units(runner, now=None):
+    """The count-based work units the restart report prints, NAMED wherever the source allows it.
+
+    A managed turn is a child process, so it is reported by session, admission and its OWN pid:
+    the gateway's pid names nothing an operator can act on, and repeating it once per turn is what
+    made a blind ``--yes`` restart possible. Unmapped executing sessions are named by session.
+    ``owner_work`` is the remainder of the managed-turn total this reader could not itemise (owner
+    mutations, side agents, a source that raised) and ``api`` / ``deferred`` runs expose no
+    identity at all: they stay count-only but countED, so a refusal never undercounts live work.
+
+    Best-effort per source (``suppress``, as the caller had it): one unreadable source never
+    silences the units the others name.
+    """
+    from contextlib import suppress
+    units: list = []
+    with suppress(Exception):
+        units.extend(managed_units(runner, now=now))
+        units.extend(unmapped_session_units(runner))
+        from gateway.run_runtime import managed_turn_count
+        units.extend({'kind': 'owner_work', 'pid': os.getpid()}
+                     for _ in range(max(0, managed_turn_count(runner) - len(units))))
+    for kind, name in (('api', '_active_api_run_count'), ('deferred', '_active_deferred_agent_worker_count')):
+        counter = getattr(runner, name, None)
+        count = 0
+        with suppress(Exception):
+            count = counter() if callable(counter) else 0
+        units.extend({'kind': kind, 'pid': os.getpid()} for _ in range(count if isinstance(count, int) else 0))
+    return units
 
 
 def side_agents(authority):

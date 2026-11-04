@@ -142,9 +142,11 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
       * every worker pid recorded for the run (``tasks.worker_pid``, its ``spawned`` and
         ``worker_bound`` events) is dead or recycled;
       * and the owner's own admission is SETTLED (``status='terminal'``) with at least one
-        recorded pid, or the host-local claim has EXPIRED with no heartbeat inside
-        ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` and the admission is settled or (pids
-        recorded) the owner's process is gone.
+        recorded pid, or the owner recorded it LOST this attempt (``worker_lost``, bound to this
+        run and claim) while the admission is ``unknown`` with at least one recorded pid (its own
+        note that no outcome landed still ends the attempt), or the host-local claim has EXPIRED
+        with no heartbeat inside ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` and the admission
+        is settled or (pids recorded) the owner's process is gone.
 
     A settled admission outranks the owner's liveness: the owner is usually the long-lived
     gateway, alive by design, and it settles a lost managed worker's admission without
@@ -171,7 +173,16 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
         return False
     admission = _admission_row(receipt)
     settled = admission is not None and admission[0] == 'terminal'
-    if settled and pids:
+    # The owner that lost this worker wrote ``worker_lost`` for THIS run and claim. That is its
+    # own record that the attempt ended with the worker's death, not the "nobody knows what
+    # landed" an unknown admission guards against, so it releases the claim once nothing it
+    # recorded can still be executing the attempt. Without it a lost managed worker held its
+    # card until an operator ran ``hermes sessions discard``, and every retry died behind the
+    # same wall. A receipt-less or loss-less unknown keeps the pause: only the owner may speak.
+    lost = _latest_run_event(conn, task_id, 'worker_lost')
+    owner_recorded_loss = (admission is not None and admission[0] == 'unknown'
+                           and bool(lost.get('reason')) and lost.get('claim_lock') == row['claim_lock'])
+    if (settled or owner_recorded_loss) and pids:
         return True
     now = int(time.time())
     expires = kb._to_epoch(row['claim_expires'])
@@ -180,8 +191,34 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     heartbeat = kb._to_epoch(row['last_heartbeat_at'])
     if heartbeat is not None and now - heartbeat <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
         return False
-    # A lapsed claim: a settled admission is proof; an unsettled one needs recorded pids and a dead owner.
-    return settled or (bool(pids) and _owner_process_gone(receipt))
+    # A lapsed claim: a settled admission (or the owner's own loss record) is proof; an
+    # unsettled one needs recorded pids and a dead owner.
+    return settled or owner_recorded_loss or (bool(pids) and _owner_process_gone(receipt))
+
+
+def cause_text(cause) -> str:
+    """One board/log line from a ``worker_lost`` cause: what failed, where, and the exit code.
+
+    ``{"step": "execute", "exc_type": "ValueError", "detail": "kanban_skills_unavailable",
+       "where": "session_kanban.py:388 in _run_task_turns", "exit_code": 1}``
+    reads ``execute: ValueError: kanban_skills_unavailable at session_kanban.py:388 in
+    _run_task_turns (child exit 1)``. Missing fields drop out; an empty cause yields ``""``.
+    """
+    if not isinstance(cause, dict):
+        return ''
+    head = str(cause.get('detail') or '').strip()
+    kind = str(cause.get('exc_type') or '').strip()
+    if kind and head and not head.startswith(f'{kind}:'):
+        head = f'{kind}: {head}'
+    elif kind and not head:
+        head = kind
+    step = str(cause.get('step') or '').strip()
+    text = f'{step}: {head}' if step and head else (step or head)
+    if cause.get('where'):
+        text = f"{text} at {cause['where']}" if text else f"at {cause['where']}"
+    if cause.get('exit_code') is not None:
+        text = f"{text} (child exit {cause['exit_code']})" if text else f"child exit {cause['exit_code']}"
+    return text[:300]
 
 
 def owner_attempt_note(conn, task_id, lost=None) -> str:
@@ -190,13 +227,15 @@ def owner_attempt_note(conn, task_id, lost=None) -> str:
     The reclaim paths put this in the run error so the board says what happened instead of
     a bare ``stale_lock=``: a managed worker that died (its owner recorded ``worker_lost``,
     passed as ``lost`` when the caller already read it) is a different fault from a worker
-    that never started.
+    that never started. The owner's recorded CAUSE rides along, so the crash record answers
+    "why did it die" instead of quoting a reason code alone.
     """
     if lost is None:
         lost = _latest_run_event(conn, task_id, 'worker_lost')
     reason = str(lost.get('reason') or '')
     if reason:
-        return f"managed worker lost: {reason[:80]}"
+        cause = cause_text(lost.get('cause'))
+        return f"managed worker lost: {reason[:80]}" + (f" ({cause})" if cause else '')
     receipt = _owner_receipt(conn, task_id)
     if receipt is None:
         return ""

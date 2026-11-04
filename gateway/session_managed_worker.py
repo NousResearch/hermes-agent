@@ -153,6 +153,19 @@ class ManagedWorker:
         self.process = process
         # Verified interpreter behind the handle (a launcher trampoline may sit between).
         self.worker = None
+        # Identity of the turn this process owns, so ``active-work`` (and the restart guard that
+        # reads it) can name what a stop would interrupt: the session, its admission, the profile
+        # and when it started. Set by ``execute_managed``; unknown until then.
+        self.session_id: str | None = None
+        self.admission_id: str | None = None
+        self.route: str | None = None
+        self.profile: str | None = None
+        self.started_at: float | None = None
+        # The child's own bounded reason for dying (``agent.managed_worker.loss_cause``), filled
+        # from its error frame so the loss record says WHY instead of a bare reason code. Its exit
+        # status is collected off-loop once the child has announced that failure.
+        self.loss_cause: dict | None = None
+        self.exit_code: int | None = None
         self.write_lock = threading.Lock()
         self.commands = queue.Queue(maxsize=16)
         self.closed = threading.Event()
@@ -549,12 +562,82 @@ def _stopped_before_spawn(authority, ref, row):
     return True
 
 
-def _record_lost_attempt(authority, policy, exc, reason, scope):
+LOSS_CAUSE_BUDGET_S = 5
+
+
+def _child_exit_code(process):
+    """The child's own exit status after it reported an error, or None when it is still running.
+
+    The owner has just read the child's error frame, so a healthy child exits within its epilogue;
+    the wait is bounded so a wedged one never holds the loss record. Callers run it off-loop."""
+    wait = getattr(process, 'wait', None)
+    if not callable(wait):
+        return None
+    try:
+        code = wait(timeout=LOSS_CAUSE_BUDGET_S)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return code if isinstance(code, int) else None
+
+
+def _loss_cause(worker, process, exc):
+    """The bounded cause of a lost execution: the child's own report plus its exit status.
+
+    ``loss_cause.pid``/``log`` point an operator at this attempt's stderr in the profile's
+    private managed-worker.log (``gateway/session_managed_worker_log.py``); ``step``,
+    ``exc_type`` and ``detail`` say what failed. A loss the owner itself observed (a protocol
+    fault, EOF, a frame timeout) has no child report, so its own reason is the cause.
+
+    Never blocks: the exit status is the one already collected off-loop when the child announced
+    its own failure (``execute_managed``), else whatever ``poll()`` has now.
+    """
+    cause = dict(worker.loss_cause) if isinstance(getattr(worker, 'loss_cause', None), dict) else {}
+    exit_code = getattr(worker, 'exit_code', None)
+    if exit_code is None:
+        poll = getattr(process, 'poll', None)
+        exit_code = poll() if callable(poll) else None
+    if exit_code is None:
+        exit_code = getattr(exc, 'exit_code', None)
+    bound = getattr(worker, 'worker', None)
+    pid = bound[0] if bound else getattr(process, 'pid', None)
+    if pid is not None:
+        cause['pid'] = pid
+    if exit_code is not None:
+        cause['exit_code'] = exit_code
+    with suppress(Exception):
+        from gateway.session_managed_worker_log import worker_log_path
+        path = worker_log_path(getattr(worker, 'profile', None))
+        if path is not None:
+            cause['log'] = str(path)
+    if not cause.get('step') and isinstance(exc, RuntimeStoreError):
+        cause['step'] = exc.field
+    if not cause.get('detail') and isinstance(exc, RuntimeStoreError):
+        cause['detail'] = exc.detail or exc.reason
+    return cause
+
+
+async def _raise_lost_frame(worker, frame, process):
+    """The child announced its own failure: keep its cause, then end the turn as lost.
+
+    Raising is the point — the caller's loss path records the attempt on the board and settles its
+    admission. The bounded, off-loop exit-status read is what lets the crash record carry the
+    child's OWN code instead of a fabricated one.
+    """
+    if (frame.get('reason') != 'managed_worker_failed' or set(frame) - {'type', 'reason', 'cause'}
+            or ('cause' in frame and not isinstance(frame.get('cause'), dict))):
+        raise RuntimeStoreError('invalid_worker_frame')
+    worker.loss_cause = frame.get('cause')
+    worker.exit_code = await asyncio.to_thread(_child_exit_code, process)
+    raise RuntimeStoreError('managed_worker_failed')
+
+
+def _record_lost_attempt(authority, policy, exc, reason, scope, *, cause=None):
     """Start the board disposition (``worker_lost``) for a lost Kanban card attempt; the task, or None.
 
     A worker that dies in ``worker.adopt`` never writes ``worker_bound``/``worker_result``, so
     without it the card's run learns nothing from its own loss. A deliberate Stop or a
-    superseded generation is not a loss. Tracked, so retirement joins the write.
+    superseded generation is not a loss. ``cause`` is the bounded diagnostic the crash record
+    keeps, so the run says WHY the attempt died. Tracked, so retirement joins the write.
     """
     if (not getattr(policy, 'kanban_json', None) or isinstance(exc, asyncio.CancelledError)
             or reason in ('managed_worker_stopped', 'stale_generation')):
@@ -562,7 +645,8 @@ def _record_lost_attempt(authority, policy, exc, reason, scope):
     from gateway.session_kanban import record_worker_loss
     from gateway.session_runtime_workers import track_mutation
     return track_mutation(authority, asyncio.to_thread(partial(record_worker_loss, policy, reason,
-                                                               pid=(scope or {}).get('pid'), bound=scope is not None)))
+                                                               pid=(scope or {}).get('pid'), bound=scope is not None,
+                                                               cause=cause)))
 
 
 async def _settle_lost(authority, row, scope, recording):
@@ -613,6 +697,13 @@ async def _spawn_registered_worker(authority, ref, row):
     workers[ref.session_id] = worker
     spawning.pop(ref.session_id, None)
     worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
+    # Naming this turn on the worker lets ``active-work`` (and the restart guard it feeds) say
+    # WHAT a stop would interrupt instead of repeating the gateway's own pid.
+    worker.session_id = ref.session_id
+    worker.admission_id = row.get('admission_id')
+    worker.route = getattr(getattr(authority, 'sessions', {}).get(ref.session_id), 'route', None)
+    worker.profile = str(getattr(authority, 'profile_id', '') or '')
+    worker.started_at = time.time()
     return worker, process
 
 
@@ -680,8 +771,10 @@ async def execute_managed(authority, ref, row, policy):
             with authority.sessions[ref.session_id].event_stream.lock:
                 if _prompt_frame(authority, ref, row, worker, frame):
                     continue
-            if frame == {'type': 'error', 'reason': 'managed_worker_failed'}:
-                raise RuntimeStoreError('managed_worker_failed')
+            if frame.get('type') == 'error':
+                # The child names its own failure (step, exception, source line) after redacting
+                # it; the raw traceback stays in the profile's managed-worker.log.
+                await _raise_lost_frame(worker, frame, process)
             kind = frame.get('type')
             if kind == 'ready' and set(frame) == {'type', 'pid'} and frame['pid'] == scope['pid']:
                 continue
@@ -713,16 +806,21 @@ async def execute_managed(authority, ref, row, policy):
     except (Exception, asyncio.CancelledError) as exc:
         import logging
         reason = exc.reason if isinstance(exc, RuntimeStoreError) else type(exc).__name__
-        logging.getLogger(__name__).warning('Managed worker lost: %s', reason)
+        # One diagnosable line for errors.log, plus the same cause on the card's crash record.
+        cause = _loss_cause(worker, process, exc)
+        from hermes_cli.kanban_owner_recovery import cause_text
+        logging.getLogger(__name__).warning('Managed worker lost: %s [%s]', reason,
+                                           cause_text(cause) or 'no cause reported')
         if scope is None:
             if isinstance(exc, asyncio.CancelledError) or (
                     isinstance(exc, RuntimeStoreError) and exc.reason == 'managed_worker_stopped'):
                 # Stopped before the child ever received its bootstrap: nothing executed, so
                 # this settles like an ordinary interrupted turn (the finally kills the child).
                 return _interrupted_before_bootstrap(authority, row, worker.stop_cause)
-            _record_lost_attempt(authority, policy, exc, reason, scope)  # nothing bound: a late note is dropped, never misbooked
+            _record_lost_attempt(authority, policy, exc, reason, scope, cause=cause)  # nothing bound: a late note is dropped, never misbooked
             raise
-        await _settle_lost(authority, row, scope, _record_lost_attempt(authority, policy, exc, reason, scope))
+        await _settle_lost(authority, row, scope,
+                           _record_lost_attempt(authority, policy, exc, reason, scope, cause=cause))
         live = authority.sessions[ref.session_id]
         with live.event_stream.lock:
             live.controls.snapshot(ref.session_id, None)

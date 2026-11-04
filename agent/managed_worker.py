@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 import sys
 import threading
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +450,45 @@ def hello():
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
+def loss_cause(exc, step, frame=None):
+    """The bounded, redacted reason this worker is dying, for the owner's crash record.
+
+    The owner cannot read this process's traceback (it is drained to the profile's private
+    managed-worker.log), so a bare ``managed_worker_failed`` left every card crash undiagnosable.
+    The frame carries the failing STEP, the exception type, its one-line message and the source
+    location — never the raw traceback, which can hold credentials (see ``main``).
+    """
+    from agent.redact import redact_sensitive_text
+    text = f'{type(exc).__name__}: {exc}'
+    for secret in ([frame.get('api_key')] if isinstance(frame, dict) else []):
+        if isinstance(secret, str) and secret:
+            text = text.replace(secret, '***')
+    where = ''
+    frames = [tb for tb in traceback.extract_tb(exc.__traceback__)] if exc.__traceback__ else []
+    if frames:
+        last = frames[-1]
+        where = f'{Path(last.filename).name}:{last.lineno} in {last.name}'
+    return {'step': step, 'exc_type': type(exc).__name__,
+            'detail': redact_sensitive_text(text, force=True)[:300], 'where': where[:160]}
+
+
+def serve(channel):
+    """One turn over *channel*: its exit status, and the child's own cause frame when it fails."""
+    frame, step = None, 'hello'
+    try:
+        channel.send('hello', **hello())
+        step = 'bootstrap'
+        frame = validate_bootstrap(read_frame(sys.stdin.buffer))
+        step = 'execute'
+        execute(frame, channel)
+    except Exception as exc:
+        # Runtime exceptions can contain credentials; the owner gets no raw traceback.
+        logger.exception('managed worker failed')
+        channel.send('error', reason='managed_worker_failed', cause=loss_cause(exc, step, frame))
+        return 1
+    return 0
+
+
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
@@ -459,17 +499,19 @@ def main():
         logger.addHandler(logging.StreamHandler(sys.stderr))
     logger.propagate = False
     try:
-        channel.send('hello', **hello())
-        frame = validate_bootstrap(read_frame(sys.stdin.buffer))
-        execute(frame, channel)
-    except Exception:
-        # Runtime exceptions can contain credentials; the owner gets no raw traceback.
-        logger.exception('managed worker failed')
-        channel.send('error', reason='managed_worker_failed')
-        return 1
+        code = serve(channel)
     finally:
         channel.stream.close()
-    return 0
+    if code:
+        # A failed worker must still report ITS OWN exit status. Ordinary interpreter finalization
+        # aborts behind a parked daemon thread ("_enter_buffered_busy ... <stdin>"), which the owner
+        # then books as an abnormal exit (0xC0000005 on Windows) instead of this worker's 1. The
+        # owner has its cause frame and the profile log by now, so leave without finalizing.
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+            sys.stderr.flush()
+        os._exit(code)
+    return code
 
 
 if __name__ == '__main__':

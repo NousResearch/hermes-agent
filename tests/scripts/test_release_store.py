@@ -243,6 +243,20 @@ def test_hold_commits_the_draft_manual_and_says_publish_now(capsys):
     assert api.mode == "Manual" and api.commits == 1
 
 
+def test_hold_on_a_committed_auto_publish_build_does_not_say_publish_now(capsys):
+    from scripts.releases.store import release
+
+    # MS_STORE_HOLD set after the build was committed Immediate: the API refuses the switch,
+    # and the build still goes live by itself, so Publish now would be wrong advice.
+    api = _Api("Certification", refuse_committed=True)
+    api.mode = "Immediate"
+    assert release(product_id="9NTEST", store_file=STORE_FILE, tenant_id="T", client_id="C",
+                   client_secret="S", hold=True, run=api) == "already-immediate"
+    out = capsys.readouterr().out
+    assert "goes live by itself" in out and "Publish now" not in out
+    assert api.mode == "Immediate" and api.commits == 0
+
+
 @pytest.mark.parametrize("refusal", ["update", "commit"])
 def test_a_refused_switch_leaves_it_held_and_says_publish_now(capsys, refusal):
     api = _Api(refuse_committed=refusal == "update", commit_status=409 if refusal == "commit" else 200)

@@ -252,17 +252,20 @@ _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0
 # ``NAME=value`` (issue #143982). The flag name is kept so the reader still knows what was
 # passed; only the value is masked. ``-p`` is scoped to a container ``login`` because
 # everywhere else it is a port or a path.
+# Each quote style is matched on its own, so ``"Abc'def ghi"`` is consumed whole instead of
+# falling back to ``\S+`` at the apostrophe and leaving the tail visible.
+_QUOTED_FLAG_VALUE = r"\"[^\"\n]+\"|'[^'\n]+'|\S+"
 _CLI_SECRET_FLAG_RE = re.compile(
     r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
     r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
     r"|credential)s?)"
     r"(?P<sep>\s*=|\s+)"
-    r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)",
+    rf"(?P<value>{_QUOTED_FLAG_VALUE})",
     re.IGNORECASE,
 )
 _CLI_LOGIN_P_RE = re.compile(
     r"(?P<flag>\b(?:docker|podman|nerdctl)\s+login\b[^\n;|&]*?\s-p\s*)"
-    r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)"
+    rf"(?P<value>{_QUOTED_FLAG_VALUE})"
 )
 # Azure connection-string keys. They are ``Name=value`` inside a quoted string, so
 # every ENV pass declines them: the name is mixed case and carries no underscore boundary.
@@ -273,9 +276,10 @@ _CLI_LOGIN_P_RE = re.compile(
 # 16+ char base64 run carrying a digit, which an identifier like ``config.Key`` or
 # ``StorageAccountKeyFromVault`` is not.
 _CONNSTR_SECRET_KEY_RE = re.compile(
-    r"(?P<flag>(?<![^;,?&'\"\s])(?:AccountKey|SharedAccessKey|SharedAccessSignature)"
+    r"(?P<flag>(?<![^;,?&'\"\s])(?:AccountKey|SharedAccessKey|(?P<sas>SharedAccessSignature))"
     r"(?:=|[ \t]*+=[ \t]*+(?=[A-Za-z+/]*[0-9])(?=[A-Za-z0-9+/]{16,}={0,2}(?![\w.(]))))"
-    r"(?P<value>[^;\s'\"&]+)",
+    # A SAS value is itself a query string (``sv=…&sig=…``): it runs to the next ``;``.
+    r"(?P<value>(?(sas)[^;\s'\"]+|[^;\s'\"&]+))",
     re.IGNORECASE,
 )
 
@@ -483,7 +487,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
         # value is treated as configuration.
         if value[0] == "$" or not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/")):
             return False
+    # ``signing_key`` / ``privateKey`` are credentials at any length, the same policy
+    # is_secret_field_name applies to mappings, so JSON text and dicts agree.
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
+            or _is_qualified_key_name(key)
             or _looks_like_opaque_credential(value))
 
 
@@ -608,9 +615,11 @@ _PGP_PRIVATE_KEY_RE = re.compile(
 )
 # Line ends may be CRLF (Windows writes .ppk that way) or a JSON-escaped ``\\n``.
 _PPK_EOL = r"(?:\r?\n|\\r\\n|\\n)"
+# Body lines may carry read_file's ``  4|`` line-number gutter.
+_PPK_BODY_GUTTER = r"[ \t]*+(?:[0-9]++(?:[|:]|\t)[ \t]*+)?"
 _PUTTY_PRIVATE_LINES_RE = re.compile(
     rf"(?<![\w-])(Private-Lines:[ \t]*+[0-9]++[ \t]*+(?P<eol>{_PPK_EOL}))"
-    rf"(?:[A-Za-z0-9+/=]{{16,}}+[ \t]*+{_PPK_EOL}?)++"
+    rf"(?:{_PPK_BODY_GUTTER}[A-Za-z0-9+/=]{{16,}}+[ \t]*+{_PPK_EOL}?)++"
 )
 _AGE_SECRET_KEY_RE = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{20,}")
 
@@ -832,11 +841,18 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
-def _mask_flag_value(match: "re.Match[str]") -> str:
-    """Mask the value of a flag/connection-string key, keeping the flag and any quotes."""
+# Output of an earlier pass: masking it again would erase the kind it keeps visible.
+_REDACTION_MARKER_PREFIXES = ("***", "«redacted", "[REDACTED")
+
+
+def _mask_flag_value(match: "re.Match[str]", mask=None) -> str:
+    """Mask the value of a flag/connection-string key, keeping the flag and any quotes.
+
+    ``mask`` is the caller's mask function: ``file_read`` passes the non-reusable sentinel,
+    so a file read never hands back a head/tail value shaped like a usable key (#35519)."""
     value = match.group("value")
     stripped = value.strip("'\"")
-    if not stripped:
+    if not stripped or stripped.startswith(_REDACTION_MARKER_PREFIXES):
         return match.group(0)
     # ``--password=$DB_PASS`` / ``--token=${TOKEN}`` name a variable; the reference is
     # not the credential and masking it would make the command unreplayable.
@@ -849,7 +865,7 @@ def _mask_flag_value(match: "re.Match[str]") -> str:
             return match.group(0)
         if _is_flag_path_reference(match.group("flag"), stripped):
             return match.group(0)
-    masked = _mask_token(stripped)
+    masked = (mask or _mask_token)(stripped)
     start = match.start("value") - match.start(0)
     end = match.end("value") - match.start(0)
     return match.group(0)[:start] + masked + match.group(0)[end:]
@@ -884,15 +900,40 @@ def _is_flag_path_reference(flag: str, value: str) -> bool:
     return not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/"))
 
 
-def _redact_cli_secrets(text: str) -> str:
+def _redact_cli_secrets(text: str, mask=None) -> str:
     """Mask credentials written as command-line flags and connection-string keys."""
+    def sub(m: "re.Match[str]") -> str:
+        return _mask_flag_value(m, mask)
+
     if "=" in text or " " in text:
         if _CLI_SECRET_FLAG_GATE.search(text):
-            text = _CLI_SECRET_FLAG_RE.sub(_mask_flag_value, text)
+            text = _CLI_SECRET_FLAG_RE.sub(sub, text)
         if _CLI_LOGIN_GATE.search(text):
-            text = _CLI_LOGIN_P_RE.sub(_mask_flag_value, text)
+            text = _CLI_LOGIN_P_RE.sub(sub, text)
     if _CONNSTR_GATE.search(text):
-        text = _CONNSTR_SECRET_KEY_RE.sub(_mask_flag_value, text)
+        text = _CONNSTR_SECRET_KEY_RE.sub(sub, text)
+    return text
+
+
+def _redact_private_key_blocks(text: str) -> str:
+    """Whole private-key blocks (PEM, base64 PEM, PGP, PuTTY, age). Runs before the
+    flag/connection-string passes: those stop a value at whitespace, so masking
+    ``AccountKey=-----BEGIN`` first would break the PEM header and leave the body visible."""
+    if "-----BEGIN" in text and "-----END" in text:  # no END, no match: skip the quadratic scan
+        text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "LS0tLS1CRUdJTi" in text:
+        text = _B64_PEM_RE.sub(
+            lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
+            text,
+        )
+    if "END PGP PRIVATE KEY BLOCK" in text:  # no END, no match: skip the quadratic scan
+        text = _PGP_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    if "Private-Lines:" in text:
+        text = _PUTTY_PRIVATE_LINES_RE.sub(
+            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]" + m.group("eol"), text
+        )
+    if "AGE-SECRET-KEY-1" in text:
+        text = _AGE_SECRET_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
     return text
 
 
@@ -1239,7 +1280,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # Flags and connection-string keys carry a credential in command text, so they are not
     # gated on code_file: the shape (``--password=`` / ``;AccountKey=``) is unambiguous, and
     # the surfaces that leaked them (approval cards, chat status) run this pass anyway.
-    text = _redact_cli_secrets(text)
+    text = _redact_private_key_blocks(text)
+    text = _redact_cli_secrets(text, _mask_token_nonreusable if file_read else None)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
@@ -1247,22 +1289,6 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if ":" in text:
         text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
-
-    if "BEGIN" in text and "-----" in text:
-        text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
-    if "LS0tLS1CRUdJTi" in text:
-        text = _B64_PEM_RE.sub(
-            lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
-            text,
-        )
-    if "END PGP PRIVATE KEY BLOCK" in text:  # no END, no match: skip the quadratic scan
-        text = _PGP_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
-    if "Private-Lines:" in text:
-        text = _PUTTY_PRIVATE_LINES_RE.sub(
-            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]" + m.group("eol"), text
-        )
-    if "AGE-SECRET-KEY-1" in text:
-        text = _AGE_SECRET_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

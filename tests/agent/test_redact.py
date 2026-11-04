@@ -1756,12 +1756,35 @@ class TestFlagAndKeyShapedCredentials:
         "docker build --secret id=npmrc,src=.npmrc .",
         "gcloud auth --credentials ~/.config/gcloud/creds.json",
         "docker login ghcr.io; docker run -p 8080:80 nginx",
+        "      --secret stringArray      Secret file to expose to the build",
+        "mysql [options] --password db_name",
+        "--password[=password], -p[password]: use --password= or -p",
+        "hermes auth add openrouter --api-key sk-or-v1-xxx   # Add API key",
+        "For auth use `redis://:<password>@host:6379` or `redis://:${REDIS_PASSWORD}@host`.",
+        "this.primaryKey = model.idField;\ndt.PrimaryKey = new DataColumn[] { dt.Columns[0] };",
+        "var creds = new Creds { AccountKey = settings.StorageAccountKey };",
     ])
     def test_help_text_prose_and_paths_after_a_flag_stay_readable(self, text):
-        from agent.redact import redact_for_egress
+        from agent.redact import redact_for_egress, redact_terminal_output
 
         assert redact_sensitive_text(text, force=True) == text
+        assert redact_sensitive_text(text, force=True, file_read=True) == text
+        assert redact_terminal_output(text, "cat src.cs", force=True) == text
         assert redact_for_egress(text) == text
+
+    @pytest.mark.parametrize("text", [
+        "PuTTY-User-Key-File-3: ssh-rsa\r\nPrivate-Lines: 1\r\nAAAAIZq8xR2vT9pL4mN7kAAAA\r\nPrivate-MAC: x\r\n",
+        '{"ppk": "Private-Lines: 1\\nAAAAIZq8xR2vT9pL4mN7kAAAA\\nPrivate-MAC: x"}',
+        "rediss://:Zq8xR2vT9pL4mN7k@cache.upstash.io:6380",
+        "amqps://bob:Zq8xR2vT9pL4mN7k@mq.cloudamqp.com/vhost",
+        "signing:\n  signing_key: Zq8xR2vT9pL4mN7k\n  privateKey: Zq8xR2vT9pL4mN7k\n",
+        "AccountKey = Zq8xR2vT9pL4mN7k",
+    ])
+    def test_crlf_ppk_tls_urls_and_yaml_key_names_are_masked(self, text):
+        from agent.redact import redact_for_egress
+
+        assert "Zq8xR2vT9pL4mN7k" not in redact_sensitive_text(text, force=True)
+        assert "Zq8xR2vT9pL4mN7k" not in redact_for_egress(text)
 
     def test_connection_string_keys_are_masked(self):
         text = (
@@ -1841,3 +1864,12 @@ class TestPasswordOnlyConnStrings:
     ])
     def test_hosts_ports_and_lookalikes_are_untouched(self, text):
         assert redact_sensitive_text(text, force=True) == text
+
+    def test_repeated_scheme_prefixes_scan_in_linear_time(self):
+        import time
+
+        for unit in ("redis://:", "redis://u:"):
+            text = unit * (100_000 // len(unit))
+            t0 = time.perf_counter()
+            redact_sensitive_text(text, force=True)
+            assert time.perf_counter() - t0 < 0.5, unit

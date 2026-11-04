@@ -58,10 +58,10 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
-# Databases (path + inode) whose schema this process already reconciled: replaying the idempotent SCHEMA_SQL
-# once per file is enough. Per connection it ran ~30 PRAGMA table_info plus the DDL on every ledger call,
-# twice per 30 s orphan sweep (salvaged from #135351).
-_SCHEMA_READY: set[tuple[str, int, int]] = set()
+# Database path -> PRAGMA schema_version this process last reconciled it at: replaying the idempotent
+# SCHEMA_SQL once per (file, schema) is enough. Per connection it ran ~30 PRAGMA table_info plus the DDL on
+# every ledger call, three times per 30 s orphan sweep (after #135351).
+_SCHEMA_READY: dict[str, int] = {}
 _SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
@@ -137,41 +137,11 @@ def _connect() -> sqlite3.Connection:
     # A late replay or writer must not resurrect a removed named profile (#123265).
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
-    identity = _db_identity(path)
-    with _SCHEMA_READY_LOCK:
-        reconciled = identity is not None and identity in _SCHEMA_READY
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
-                   wal=False, row_factory=None,
-                   initialize=_apply_barriers_only if reconciled else _initialize_schema)
+                   wal=False, row_factory=None, initialize=_initialize_schema)
     _secure_state_db_files(path)
-    if not reconciled and identity is not None:
-        with _SCHEMA_READY_LOCK:
-            _SCHEMA_READY.add(identity)
     return conn
-
-
-def _db_identity(path) -> Optional[tuple[str, int, int]]:
-    """``(path, st_dev, st_ino)`` of the database file, else None. The inode makes a state.db deleted or
-    replaced at the same path reconcile again. Taken BEFORE the open (the file exists by then:
-    ``_secure_state_db_files(create_main=True)``), so a file swapped in between is reconciled next time."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return os.path.normcase(os.path.abspath(path)), st.st_dev, st.st_ino
-
-
-def _apply_barriers_only(conn: sqlite3.Connection) -> None:
-    """Initializer for a file this process already reconciled: barriers, plus ONE sqlite_master probe. The
-    inode key misses a state.db deleted and recreated onto a recycled inode (seen under load); a missing
-    ledger table there falls back to the full reconcile instead of failing every call with
-    "no such table"."""
-    from hermes_state_repair import apply_durability_barriers
-    apply_durability_barriers(conn)
-    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_delegations'").fetchone() is None:
-        from hermes_state_schema import reconcile_state_schema
-        reconcile_state_schema(conn)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -180,6 +150,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
+    # Reconcile once per (file, schema): PRAGMA schema_version is a header read that SQLite bumps on every
+    # DDL, so a file deleted, recreated (even onto a recycled inode), restored from an older backup, or
+    # migrated by another writer reads a different value and is reconciled again; an unchanged file skips
+    # the full replay. In-memory / unnamed databases (tests) always reconcile.
+    row = conn.execute("PRAGMA database_list").fetchone()
+    key = os.path.normcase(os.path.abspath(row[2])) if row and row[2] else None
+    version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    with _SCHEMA_READY_LOCK:
+        if key is not None and _SCHEMA_READY.get(key) == version:
+            return
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -188,6 +168,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     # nullability/defaults depending on which authority touched the database
     # first (#94691).
     reconcile_state_schema(conn)
+    if key is not None:
+        with _SCHEMA_READY_LOCK:  # the version AFTER the replay (its DDL bumps it), so the next open matches
+            _SCHEMA_READY[key] = conn.execute("PRAGMA schema_version").fetchone()[0]
 
 
 def _transaction():

@@ -4,8 +4,9 @@
 whole canonical ``SCHEMA_SQL`` plus the column reconcile (~30 ``PRAGMA table_info``) each time. The orphan
 sweep runs every 30 s and calls ``_connect`` at least twice per pass (``recover_abandoned_delegations`` and
 ``sweep_orphaned_completions``), so on a slow filesystem a field deployment saw this thread in two of three
-watchdog dumps. Reconciling once per file (path + inode) is enough: the DDL is idempotent, and a database
-replaced at the same path is reconciled again. Ported from #135351 (the reconcile-once half).
+watchdog dumps. Reconciling once per (file, ``PRAGMA schema_version``) is enough: the DDL is idempotent,
+and a database replaced, recreated or restored at the same path reads a different schema version and is
+reconciled again. After #135351 (its reconcile-once half).
 """
 
 import time
@@ -63,17 +64,31 @@ def test_a_replaced_database_is_reconciled_again(home, reconcile_calls):
     assert ad.get_durable_delegation("d-1") is not None
 
 
-def test_a_recreated_database_on_a_recycled_inode_still_gets_its_ledger(home, monkeypatch, reconcile_calls):
-    """The filesystem may hand the recreated state.db the deleted file's inode, so the identity key matches:
-    the one-row sqlite_master probe must still notice the missing ledger table and reconcile."""
-    monkeypatch.setattr(ad, "_db_identity", lambda path: (str(path), 1, 1))  # every file looks the same
+def test_a_recreated_database_on_a_recycled_inode_still_gets_its_ledger(home, reconcile_calls):
+    """The filesystem may hand a recreated state.db the deleted file's inode, so no file-identity key can
+    tell the two apart; the schema_version header can (the fresh file reads 0)."""
     _sweep_once()
     for suffix in ("", "-wal", "-shm", "-journal"):
         (home / f"state.db{suffix}").unlink(missing_ok=True)
+    (home / "state.db").touch()  # an empty file at the same path, whatever inode it got
     ad._persist_dispatch({"delegation_id": "d-2", "session_key": "", "origin_ui_session_id": "ui",
                           "parent_session_id": "p", "dispatched_at": time.time()})
     assert ad.get_durable_delegation("d-2") is not None
     assert len(reconcile_calls) == 2
+
+
+def test_a_restored_older_database_gets_its_missing_columns(home, reconcile_calls):
+    """A state.db swapped in from an older backup has the ledger table but not every column: its different
+    schema_version makes it reconcile again."""
+    import sqlite3
+    _sweep_once()
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (home / f"state.db{suffix}").unlink(missing_ok=True)
+    with sqlite3.connect(str(home / "state.db")) as old:
+        old.execute("CREATE TABLE async_delegations (delegation_id TEXT PRIMARY KEY)")
+    ad._persist_dispatch({"delegation_id": "d-3", "session_key": "", "origin_ui_session_id": "ui",
+                          "parent_session_id": "p", "dispatched_at": time.time()})
+    assert ad.get_durable_delegation("d-3") is not None
 
 
 def test_each_database_is_reconciled_on_its_own(tmp_path, reconcile_calls):

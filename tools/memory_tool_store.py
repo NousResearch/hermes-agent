@@ -803,10 +803,16 @@ class MemoryStore:
                 # visit to one post-write state is circling, not progressing; the 2nd visit
                 # (a single revert) stays allowed for genuine self-correction.
                 FAILURE_CLASS.set("retry_cap")
-                return {"success": False, "done": True, "target": target,
-                        "error": ("Memory writes are oscillating — the store returned to a state it "
-                                  "already held twice this turn (add/remove or replace cycling). Stop "
-                                  "calling memory and continue with your reply to the user.")}
+                # Route through the failure funnel: a refusal the model can read and route
+                # around is not a stop. The 22:44-22:52 replay took 30 of these refusals and
+                # kept going to 89 calls because the refusal bypassed the cumulative budget.
+                return self._consolidation_failure(
+                    {"success": False, "done": True, "target": target,
+                     "error": ("Memory writes are oscillating — the store returned to a state it "
+                               "already held twice this turn (add/remove or replace cycling). Stop "
+                               "calling memory and continue with your reply to the user.")},
+                    target,
+                )
             hist.append(state)
             if len(hist) > 16:
                 del hist[:-16]

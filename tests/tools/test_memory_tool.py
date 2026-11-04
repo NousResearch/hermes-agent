@@ -1159,6 +1159,26 @@ class TestOscillationAndCumulativeGuards:
         assert r4["success"] is False and r4.get("done") is True
         assert "oscillating" in r4["error"]
 
+    def test_oscillation_refusals_accumulate_to_a_terminal(self, s):
+        """The 22:44-22:52 replay: varying literals defeat every signature-based detector.
+
+        The loop ran add("X45")/remove("X45") -> add("X46")/remove("X46") -> ... for 89 calls.
+        Every argument differed, so a consecutive-identical streak and a fixed-period cycle
+        detector both miss it, and the store merely returned to the same anchor state each lap.
+        30 oscillation refusals were handed back as ordinary tool results and the loop kept
+        going, because the refusal bypassed the cumulative budget. Each refusal must spend it.
+        """
+        s.add("memory", "anchor entry for the accumulating oscillation test")
+        terminal = None
+        for i in range(20):
+            s.add("memory", f"transient probe entry number {i}")
+            r = s.remove("memory", f"transient probe entry number {i}")
+            if r.get("done") is True and "successes do NOT reset" in r.get("error", ""):
+                terminal = r
+                break
+        assert terminal is not None, "oscillation refusals must spend the cumulative budget"
+        assert s._turn_failures_total > s._MAX_TURN_FAILURES_TOTAL
+
     def test_state_history_and_totals_reset_at_turn_boundary(self, s):
         s.add("memory", "anchor entry for the reset test")
         s.add("memory", "transient probe entry alpha")

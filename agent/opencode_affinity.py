@@ -91,6 +91,28 @@ def resolve_affinity_key(session_id: Optional[str] = None) -> str:
         return str(session_id or "")
 
 
+def resolve_affinity_turn_trace_key(turn_id: Optional[str] = None) -> str:
+    """Return a turn-scoped trace identifier ('htr-<hex16>').
+
+    Stable across all API iterations/requests within the same user turn (tool calls, retries),
+    and rotates when a new turn begins. Falls back to ephemeral UUID when outside a turn.
+    """
+    if not turn_id:
+        try:
+            from agent.relay_runtime import current_turn
+
+            turn = current_turn()
+            if turn and getattr(turn, "turn_id", None):
+                turn_id = str(turn.turn_id)
+        except Exception:
+            pass
+    if turn_id:
+        import hashlib
+
+        return f"htr-{hashlib.sha256(str(turn_id).encode('utf-8')).hexdigest()[:16]}"
+    return f"htr-{uuid.uuid4().hex[:16]}"
+
+
 def opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
@@ -116,6 +138,7 @@ def opencode_session_headers(
 def custom_provider_session_affinity_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
 ) -> dict[str, str]:
     """Return session affinity / trace headers when the route's provider entry declares one, else ``{}``."""
     try:
@@ -134,14 +157,14 @@ def custom_provider_session_affinity_headers(
     if header is True or (isinstance(header, str) and header.lower() in ("true", "hermes", "default")):
         return {
             HERMES_SESSION_HEADER: key,
-            HERMES_TRACE_HEADER: f"htr-{uuid.uuid4().hex[:16]}",
+            HERMES_TRACE_HEADER: resolve_affinity_turn_trace_key(turn_id),
         }
 
     # When explicitly configured as the canonical x-hermes-session-id header, emit trace id as well
     if isinstance(header, str) and header.lower() == HERMES_SESSION_HEADER:
         return {
             HERMES_SESSION_HEADER: key,
-            HERMES_TRACE_HEADER: f"htr-{uuid.uuid4().hex[:16]}",
+            HERMES_TRACE_HEADER: resolve_affinity_turn_trace_key(turn_id),
         }
 
     return {header: key}
@@ -152,6 +175,7 @@ def merge_session_affinity_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
@@ -159,7 +183,7 @@ def merge_session_affinity_headers(
     Targets with neither source configured are left untouched.
     """
     headers = opencode_session_headers(provider, base_url, session_id)
-    headers.update(custom_provider_session_affinity_headers(base_url, session_id))
+    headers.update(custom_provider_session_affinity_headers(base_url, session_id, turn_id=turn_id))
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}

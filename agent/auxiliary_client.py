@@ -6685,7 +6685,16 @@ def _build_call_kwargs(
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
     # turn so compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_session_affinity_headers
-    return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    _parent_turn_id = None
+    try:
+        from agent.auxiliary_hooks import _parent_turn_identity
+
+        _parent_turn_id = _parent_turn_identity().get("turn_id") or None
+    except Exception:
+        pass
+    return merge_session_affinity_headers(
+        kwargs, provider, base_url, _runtime_main_value("session_id") or None, turn_id=_parent_turn_id
+    )
 
 
 def _validate_llm_response(

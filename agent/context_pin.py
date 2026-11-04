@@ -66,7 +66,13 @@ def agent_context_marker(agent) -> str:
     pin = getattr(compressor, "_config_context_length", getattr(agent, "_config_context_length", None))
     # The compressor's route is what resolved the window; the agent's is the fallback for doubles without one.
     route = {name: getattr(compressor, name, None) or getattr(agent, name, "") or "" for name in ("model", "provider", "base_url")}
-    return context_window_marker(getattr(compressor, "context_length", None), pin, **route)
+    window = getattr(compressor, "context_length", None)  # first: reading it resolves the window
+    own = getattr(compressor, "_context_default", None)  # (model, base_url, defaulted window | None) from that lookup
+    if isinstance(own, tuple) and len(own) == 3 and own[:2] == (getattr(compressor, "model", None), getattr(compressor, "base_url", None)):
+        if is_context_pinned(window, pin):
+            return "pinned"
+        return "fallback" if type(own[2]) is int and own[2] == window else ""
+    return context_window_marker(window, pin, **route)
 
 
 def agent_context_suffix(agent) -> str:

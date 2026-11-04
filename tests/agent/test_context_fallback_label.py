@@ -108,6 +108,36 @@ class TestFallbackMarker:
         assert in_home("confirmed", mark) == ""
 
 
+class TestFallbackSourceIsOwnedByTheCompressor:
+    """Greptile on f6e7d756: the label must follow the lookup that produced the window, not the route's latest."""
+
+    def test_a_later_lookup_on_the_same_route_keeps_a_live_compressors_label(self, _quiet_custom_endpoint):
+        from agent.context_compressor import ContextCompressor
+        from agent.context_pin import agent_context_marker
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+        compressor = ContextCompressor(model="mystery-model", base_url=LOCAL_URL, provider="custom", quiet_mode=True)
+        agent = SimpleNamespace(model="mystery-model", provider="custom", base_url=LOCAL_URL, _config_context_length=None,
+                                context_compressor=compressor)
+        assert compressor.context_length == DEFAULT_FALLBACK_CONTEXT  # endpoint down: this agent runs on the default
+        assert agent_context_marker(agent) == "fallback"
+        _quiet_custom_endpoint.setattr("agent.model_metadata._resolve_endpoint_context_length",
+                                       lambda *a, **k: DEFAULT_FALLBACK_CONTEXT)
+        assert _resolve_and_mark("mystery-model", provider="custom", base_url=LOCAL_URL)[1] == ""  # another session
+        assert agent_context_marker(agent) == "fallback"  # still running on its own defaulted window
+
+    def test_a_moa_preset_keeps_its_aggregators_fallback(self, monkeypatch):
+        """The preset's window is the aggregator's; when that lookup defaulted, so did the preset's."""
+        from agent import model_metadata
+        from agent.context_pin import context_window_marker
+
+        def _aggregator(model, custom_providers):
+            return model_metadata.get_model_context_length(UNKNOWN, base_url=RUNTIME_URL, provider="bedrock")
+        monkeypatch.setattr(model_metadata, "_resolve_moa_context_length", _aggregator)
+        ctx = model_metadata.get_model_context_length("my-preset", provider="moa")
+        assert ctx == 128_000
+        assert context_window_marker(ctx, None, model="my-preset", provider="moa") == "fallback"
+
+
 class TestFallbackIsLabelledOnSurfaces:
     """Every surface that shows the window says when it is the fallback, not a known/detected limit."""
 

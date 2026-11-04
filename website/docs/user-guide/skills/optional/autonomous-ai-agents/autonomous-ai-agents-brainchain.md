@@ -50,7 +50,7 @@ Do not use it for anything that must stay private, for interactive back-and-fort
 3. Funds, on one rail:
    - **USDG on Robinhood Chain** (the default): 1 USDG per task, plus a little ETH on Robinhood Chain for a one-time approval. Run the approval once from the `terminal` tool; the key is read from the environment:
      ```bash
-     npx -y brainchain-mcp@0.4.1 approve
+     npx -y brainchain-mcp@0.4.2 approve
      ```
    - **USDC on Base**: 1 USDC per task; payments are signatures, so no ETH and no approval. Set `BRAINCHAIN_PAY_ON: base` in the server's `env` below.
 4. The `brainchain` MCP server in `~/.hermes/config.yaml`, then restart the session:
@@ -58,7 +58,7 @@ Do not use it for anything that must stay private, for interactive back-and-fort
    mcp_servers:
      brainchain:
        command: npx
-       args: ["-y", "brainchain-mcp@0.4.1"]
+       args: ["-y", "brainchain-mcp@0.4.2"]
        env:
          BRAINCHAIN_PAYER_KEY: "${BRAINCHAIN_PAYER_KEY}"
          BRAINCHAIN_BUDGET_UNITS: "5000000"
@@ -72,8 +72,8 @@ Do not use it for anything that must stay private, for interactive back-and-fort
 The server registers two tools: `mcp__brainchain__brainchain_post_task` pays for a task and returns an order id, and `mcp__brainchain__brainchain_get_task` reads that order until it is done. Check the wallet first with the helper script, which takes the wallet's address (never its key) and reads public chain state only:
 
 ```bash
-python scripts/wallet_check.py 0xWALLET_ADDRESS --tasks 3
-python scripts/wallet_check.py 0xWALLET_ADDRESS --pay-on base
+python3 scripts/wallet_check.py 0xWALLET_ADDRESS --tasks 3
+python3 scripts/wallet_check.py 0xWALLET_ADDRESS --pay-on base
 ```
 
 It prints JSON with `ready` and a list of `problems`, and exits 0 when the wallet can pay for the given number of tasks.
@@ -84,7 +84,7 @@ It prints JSON with `ready` and a list of `problems`, and exits 0 when the walle
 | --- | --- |
 | Post a task | `mcp__brainchain__brainchain_post_task` with `title` (up to 120 characters), `brief` (up to 32,000) and `levels` (2 or 3, best first, up to 200 characters each) |
 | Follow it | `mcp__brainchain__brainchain_get_task` with the `order` id, again after `retryAfterSeconds`, until `done` is true |
-| Check the wallet | `python scripts/wallet_check.py <address> [--network testnet] [--pay-on base] [--tasks N]` |
+| Check the wallet | `python3 scripts/wallet_check.py <address> [--network testnet] [--pay-on base] [--tasks N]` |
 | See every decision | https://usebrainchain.com/decisions |
 
 ## Procedure
@@ -92,7 +92,7 @@ It prints JSON with `ready` and a list of `problems`, and exits 0 when the walle
 1. Confirm the work suits a public, one-shot task. If it involves secrets, private code or personal data, stop and tell the user.
 2. Run `scripts/wallet_check.py` with the wallet's address through `terminal`. If `ready` is false, report the `problems` and stop.
 3. Write the brief so a stranger could do the work from it alone: the goal, every input pasted in, the output format, and what to leave out. Text from users or web pages goes in as material, clearly marked, never as instructions.
-4. Write two or three quality levels, best first, each under 200 characters and checkable by a reader ("Every claim cites a source URL that supports it"). The work is paid only if it reaches the second level or better, so the second level is the real bar.
+4. Write two or three quality levels, best first, each under 200 characters and checkable by a reader ("Every claim cites a source URL that supports it"). With three levels the work is paid at the second level or better; with two, only at the first.
 5. Tell the user the cost (1 USDG or USDC) and post with `mcp__brainchain__brainchain_post_task`. Keep the returned `order` id.
 6. Poll `mcp__brainchain__brainchain_get_task` with that id, waiting `retryAfterSeconds` between calls, until `done` is true. Results usually arrive within minutes.
 7. If the work was accepted, check it before relying on it: run delivered code and its tests with `terminal`, open cited sources with `web_extract`. Then give the user the result, what the check found, and the order's public links. If it was rejected or expired, say so and pass on the refund transaction; nothing was paid for that task.

@@ -180,7 +180,7 @@ def _harness_credentials() -> dict:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _base_subprocess_env() -> dict:
+def _base_subprocess_env(*, namespace: bool = True) -> dict:
     from tools.browser_session import build_browser_env
     env = build_browser_env()
     env.update(_harness_credentials())
@@ -196,7 +196,8 @@ def _base_subprocess_env() -> dict:
         env.pop("PYTHONPATH", None)
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
-    namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
+    if namespace:
+        namespace_harness_dirs(env, _served_profile_tag())  # a served profile's own harness runtime/tmp dirs
     # A daemon the CLI starts inherits this tag; _own_harness_daemon owns only one that names us.
     env.update(spawn_env("browser-harness-daemon"))
     return env
@@ -771,8 +772,75 @@ def _take_real_profile_note(route_key: str) -> dict:
     return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
+# Explicit attachment to an externally launched Browser Use cloud daemon.
+_CLOUD_DAEMON_GUARD = '''\
+from browser_harness.admin import daemon_browser_kind as _hermes_daemon_kind
+if _hermes_daemon_kind() != "cloud":
+    raise RuntimeError("Explicit cloud daemon is no longer available; refusing another browser")
+'''
+
+
+def _named_daemon_kind(env: dict) -> Optional[str]:
+    """Read-only IPC probe on the harness's own interpreter; never start a daemon."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "from browser_harness.admin import daemon_browser_kind; print(daemon_browser_kind() or '')"],
+            env=env, capture_output=True, text=True, timeout=5, check=False,
+        )
+        kind = proc.stdout.strip() if proc.returncode == 0 else ""
+        return kind if kind in {"cloud", "cdp", "local"} else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _existing_named_cloud_env(env: dict, session: str) -> tuple[dict, Optional[str]]:
+    """Explicit cloud intent attaches only. Default-profile CLI daemons may live outside gateway scope;
+    other Hermes profiles must never search that shared namespace. No provider call or local fallback."""
+    from hermes_constants import account_default_hermes_home
+    if not session:
+        return env, "cloud=true requires the name of an already launched cloud daemon in session."
+    candidates = [dict(env)]
+    if hermes_home_key() == hermes_home_key(account_default_hermes_home()):
+        unscoped = _base_subprocess_env(namespace=False)
+        unscoped["BU_NAME"] = session
+        if daemon_identity(unscoped) != daemon_identity(env):
+            candidates.append(unscoped)
+    for candidate in candidates:
+        fit_default_socket_dir(candidate)
+        if _named_daemon_kind(candidate) != "cloud":
+            continue
+        candidate.pop("BU_CDP_WS", None)
+        candidate.pop("BU_CDP_URL", None)
+        candidate.pop("BU_AUTOSPAWN", None)
+        candidate["BH_REQUIRE_EXISTING_DAEMON"] = "1"  # close the probe-to-dispatch disappearance race
+        candidate[_PRIVATE_BROWSER_SENTINEL] = "1"
+        from tools.browser_use_shot import ACTIVATE_ALWAYS
+        candidate[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_ALWAYS
+        return candidate, None
+    return env, (f"No existing cloud daemon named {session!r} in this Hermes profile. "
+                 "Launch it explicitly in the matching harness runtime, then retry cloud=true. "
+                 "Refusing local CDP, automatic provisioning, or another profile's browser.")
+
+
+def _set_legacy_autospawn(env: dict, cloud: bool) -> None:
+    """Attach-only cloud calls must never enable the legacy automatic provisioner."""
+    if not cloud and "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        env["BU_AUTOSPAWN"] = "1"
+
+
+def _prepare_exec_route(env, session, task_id, local, local_sidecar, route_key, cloud, code, private_url):
+    """Resolve a normal route or an attach-only cloud route before dispatch."""
+    if not cloud:
+        routed = _route_exec_current(env, session, task_id, bool(local), local_sidecar, route_key)
+        return (*routed, code)
+    if local or private_url:
+        return env, "cloud=true cannot use local=true or a private-URL local sidecar.", False, 0, code
+    env, error = _existing_named_cloud_env(env, session)
+    return env, error, False, 0, _CLOUD_DAEMON_GUARD + code
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
+                 task_id: Optional[str] = None, local: bool = False, cloud: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
@@ -800,8 +868,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    env, route_err, local_sidecar, generation = _route_exec_current(
-        env, session, task_id, bool(local), local_sidecar, route_key)
+    env, route_err, local_sidecar, generation, code = _prepare_exec_route(
+        env, session, task_id, local, local_sidecar, route_key, cloud, code, verdict.local_sidecar)
     if route_err:
         return tool_error(route_err)
     if local_sidecar:
@@ -826,23 +894,22 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
 
-    # BU_AUTOSPAWN makes the CLI start a Browser Use cloud browser when no local
-    # Chrome/CDP endpoint is reachable (their API key authenticates it)
-    if "BU_AUTOSPAWN" not in env and is_legacy_browser_use_cloud_config(_read_browser_cfg()):
-        env["BU_AUTOSPAWN"] = "1"
+    # BU_AUTOSPAWN lets the legacy CLI provision only on ordinary calls.
+    _set_legacy_autospawn(env, cloud)
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            daemon = daemon_identity(env)
-            _driven_daemons[daemon] = hermes_home_key()
+        if not cloud:  # externally launched cloud daemons are not owned/reloaded by /browser connect
+            with _driven_daemons_lock:
+                daemon = daemon_identity(env)
+                _driven_daemons[daemon] = hermes_home_key()
         # The first call starts the daemon and may run long (navigation, user code): own it as soon as
         # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
         from agent.periodic_scheduler import schedule
-        owning = schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
+        owning = None if cloud else schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
@@ -854,15 +921,17 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
         finally:
-            owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
+            if owning is not None:
+                owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
 
     if bot_desktop_browser:
         from tools.browser_session import run_fenced
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
-    _reload_if_republished(env, generation)
-    _own_harness_daemon(env)
+    if not cloud:
+        _reload_if_republished(env, generation)
+        _own_harness_daemon(env)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]
@@ -996,6 +1065,8 @@ BROWSER_EXEC_SCHEMA = {
         "properties": {
             "code": {"type": "string", "description": "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back."},
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
+            "cloud": {"type": "boolean", "default": False,
+                      "description": "Attach ONLY to an already launched named Browser Use cloud daemon. Requires session; fails closed if absent or not cloud. Overrides attached local CDP without changing the default browser. Does not provision a browser. Use for authenticated cloud-profile workflows."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
                           "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
         },
@@ -1026,7 +1097,7 @@ def _handle_browser_exec(args: dict, **kw):
         return record_browser_call(lambda: browser_exec(
             code=args.get("code", ""), session=args.get("session", "") or "",
             timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
-            local=bool(args.get("local", False)),
+            local=bool(args.get("local", False)), cloud=bool(args.get("cloud", False)),
         ), lambda: browser_backend_name(local_engine=_exec_local_engine.get()))
     finally:
         _exec_local_engine.reset(token)

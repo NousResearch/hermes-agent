@@ -82,6 +82,27 @@ shared browser. Omitting `session` uses the shared default session, which is
 fine for one-at-a-time browsing. When [real-profile browsing](#real-profile-browsing-use-your-own-logins)
 is on, the tool also exposes a `local` flag (see that section).
 
+### Attach to an existing named Browser Use cloud daemon
+
+`browser_exec(code="print(capture_screenshot())", session="research", cloud=True)`
+explicitly attaches to an **already launched Browser Use cloud daemon**. It can
+be used while ordinary calls continue to use local Chromium or attached CDP.
+A session name alone does not select cloud: without `cloud=True`, the existing
+backend selection and CDP precedence are unchanged.
+
+This mode never provisions a cloud browser and never falls back to local CDP.
+It requires a nonempty `session`, rejects a missing or noncloud daemon, and
+cannot be combined with `local=True` or private-URL local-sidecar routing.
+Launch the daemon separately with the bundled Browser Use harness and the
+intended authentication profile; then use the same name for subsequent calls.
+Hermes's default profile can also attach to an unscoped terminal-launched
+daemon. Other Hermes profiles search only their own harness namespace.
+
+The external launcher remains responsible for stopping this browser. Attaching
+does not transfer its lifecycle to Hermes. Screenshots use the normal native
+image attachment path. The flag verifies cloud browser kind, not which saved
+authentication profile or account was used: verify the page/account before acting.
+
 :::note
 `browser_exec` executes model-written Python on your machine, so it is only
 offered to sessions that also have the `terminal` toolset. A platform

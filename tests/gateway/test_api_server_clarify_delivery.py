@@ -113,6 +113,42 @@ def test_no_live_run_is_a_no_op():
     assert fake._run_event_queues == {}
 
 
+def test_payload_carries_the_live_stream_prompt_id_alias():
+    """The live session-event stream labels the clarify id ``prompt_id``; the SSE path and the
+    answer body use ``request_id``. A client rendering either surface must find the id under the
+    key it knows, so both keys travel with the same value."""
+    fake = _adapter([("run-live", "running", "sess-alias", 3.0, 4.0)])
+
+    APIServerAdapter.notify_clarify_prompt(
+        fake, session_id="sess-alias", entry=_entry(), generation=2, session_key="sess-alias")
+
+    payload = fake._run_event_queues["run-live"].events[0][1]
+    assert payload["request_id"] == "clarify-1"
+    assert payload["prompt_id"] == "clarify-1"
+
+
+def test_question_and_choices_are_redacted_like_the_live_path():
+    """The live publisher redacts with force=True (#48456); a clarify question can quote tool-call
+    context, so the SSE copy must not ship a credential-shaped value verbatim."""
+    entry = SimpleNamespace(
+        clarify_id="clarify-2",
+        question="Run this: export AWS_SECRET_ACCESS_KEY=abcd1234efgh5678",
+        choices=["Use export AWS_SECRET_ACCESS_KEY=abcd1234efgh5678", "Skip"],
+        multi_select=False,
+    )
+    fake = _adapter([("run-live", "running", "sess-redact", 3.0, 4.0)])
+
+    APIServerAdapter.notify_clarify_prompt(
+        fake, session_id="sess-redact", entry=entry, generation=1, session_key="sess-redact")
+
+    payload = fake._run_event_queues["run-live"].events[0][1]
+    assert "abcd1234efgh5678" not in payload["question"]
+    assert "abcd1234efgh5678" not in " ".join(payload["choices"])
+    assert "***" in payload["question"]
+    # a choice with nothing to redact is passed through untouched
+    assert payload["choices"][1] == "Skip"
+
+
 class _Request:
     """Opaque request stand-in — the handler is patched out below."""
 

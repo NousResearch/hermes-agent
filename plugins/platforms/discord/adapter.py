@@ -4935,6 +4935,16 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             "free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD", "false", truthy=True,
         )
 
+    def _discord_role_mentions(self) -> bool:
+        """Whether a role ping naming a role the bot holds counts as a mention of the bot.
+
+        Discord treats a role mention as a notification to every member of that role, bots
+        included, but never expands the role's members into ``message.mentions`` — so without
+        this the bot cannot tell a role ping aimed at it from ordinary chatter. Opt-in because
+        it changes when a bot answers: a role shared with humans (a team role, say) makes every
+        ping of that role a summons."""
+        return self._extra_or_env_flag("role_mentions", "DISCORD_ROLE_MENTIONS", "false", truthy=True)
+
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
@@ -5126,13 +5136,78 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         content = getattr(message, "content", "") or ""
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
+    def _raw_mentioned_role_ids(self, message: Any) -> set:
+        """Extract role-mention IDs (``<@&ID>``) from raw content. Discord resolves role mentions
+        into ``message.role_mentions``, but that list is empty for relayed messages and for
+        senders whose role pings the server strips — the raw token is the reliable half."""
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@&(\d+)>", content)}
+
+    def _mentioned_role_ids(self, message: Any) -> set:
+        """Role IDs the message mentions: Discord's resolved roles plus raw ``<@&ID>`` tokens."""
+        ids: set = set()
+        for role in getattr(message, "role_mentions", None) or []:
+            role_id = str(getattr(role, "id", "") or "")
+            if role_id:
+                ids.add(role_id)
+        ids.update(self._raw_mentioned_role_ids(message))
+        return ids
+
+    def _self_role_ids(self, message: Any) -> set:
+        """Role IDs the bot itself holds in this guild.
+
+        ``@everyone`` (the guild's own ID) is excluded: every member holds it, so treating it as
+        a mention target would wake the bot on every server-wide ping."""
+        guild = getattr(message, "guild", None)
+        if guild is None:
+            return set()
+        me = getattr(guild, "me", None)
+        if me is None:
+            return set()
+        guild_id = str(getattr(guild, "id", "") or "")
+        return {
+            str(getattr(role, "id", "") or "")
+            for role in (getattr(me, "roles", None) or [])
+            if str(getattr(role, "id", "") or "") not in ("", guild_id)
+        }
+
+    def _self_is_role_mentioned(self, message: Any) -> bool:
+        """True when the message mentions a role the bot holds.
+
+        A role ping notifies every member of that role — bots included — so a bot holding the
+        pinged role was addressed. Discord never expands role members into ``message.mentions``,
+        so this cannot be read off the resolved mentions list."""
+        if not self._discord_role_mentions():
+            return False
+        held = self._self_role_ids(message)
+        if not held:
+            return False
+        return bool(held & self._mentioned_role_ids(message))
+
+    def _strip_self_role_mentions(self, message: Any, text: str) -> str:
+        """Drop the ``<@&id>`` tokens of roles the bot holds — they addressed the bot, not the reader.
+
+        Only roles the bot actually holds are stripped; a ping of some other role stays in the
+        text, because the bot was addressed alongside everyone else in it."""
+        if not text:
+            return text
+        held = self._self_role_ids(message)
+        if not held:
+            return text
+        for role_id in held & self._mentioned_role_ids(message):
+            text = text.replace(f"<@&{role_id}>", "").strip()
+        return text
+
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
-        """True when the bot is in ``message.mentions`` or raw-mentioned in the content."""
+        """True when the bot is in ``message.mentions``, raw-mentioned in the content, or named
+        by a role it holds."""
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return self._self_is_role_mentioned(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """True only for a literal ``<@bot>`` token: reply-pings add us to ``message.mentions``
@@ -6123,6 +6198,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            normalized_content = self._strip_self_role_mentions(message, normalized_content)
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -7260,6 +7336,7 @@ _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
     ("bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION"),
+    ("role_mentions", "DISCORD_ROLE_MENTIONS"),
 )
 # (public websocket_* key, legacy liveness_* alias, env bridge var)
 _YAML_WEBSOCKET_LIVENESS_KEYS = (

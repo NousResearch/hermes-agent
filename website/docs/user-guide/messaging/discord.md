@@ -319,6 +319,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
 | `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
+| `DISCORD_ROLE_MENTIONS` | No | `false` | When `true`, a role ping that names a role the bot holds counts as an `@mention` of the bot, so the bot answers it. Discord resolves role mentions into `message.role_mentions` but never expands the role's members into `message.mentions`, so without this the bot cannot tell a role ping aimed at it from ordinary chatter. Off by default: a role shared with humans (a team role, say) makes every ping of that role a summons. See [Role Mentions](#role-mentions). |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
@@ -361,6 +362,19 @@ discord:
 
 The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is also supported when the YAML option is unset. With this opt-out, `mentions` accepts Discord's resolved mentions, including reply pings, and `all` removes the bot-specific mention requirement; other channel mention rules still apply. An admitted reply ping can also open the continuation window in this compatibility mode. Use it only for trusted relays because it restores the accidental reply-loop risk.
 
+### Role Mentions
+
+By default, `@mention` means a user mention. Discord also has role mentions — `@<role>` — which notify every member of that role, bots included. Hermes ignores them by default, because Discord never expands a role's members into the message's mention list, so the bot cannot tell a role ping aimed at it from ordinary chatter.
+
+Set `discord.role_mentions: true` (or `DISCORD_ROLE_MENTIONS=true`) to make a role ping of a role the bot holds count as a mention of the bot:
+
+```yaml
+discord:
+  role_mentions: true
+```
+
+Give the bot a dedicated role for this to work, and enable "Allow anyone to @mention this role" for it in Discord's server settings — a role that cannot be pinged is never delivered to the bot.
+
 ### Config File (`config.yaml`)
 
 The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Config.yaml settings are applied as defaults — if the equivalent env var is already set, the env var wins.
@@ -371,6 +385,7 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
+  role_mentions: false            # A ping of a role the bot holds counts as a mention (default: false)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
@@ -418,6 +433,26 @@ discord:
   require_mention: true
   thread_require_mention: true    # multi-bot setup
 ```
+
+#### `discord.role_mentions`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, a role ping that names a role the bot holds counts as an `@mention` of the bot, so the bot answers it instead of staying silent.
+
+```yaml
+discord:
+  role_mentions: true
+```
+
+Discord resolves `<@&ROLE>` into `message.role_mentions`, but it never expands the role's members into `message.mentions` — the list of users the message explicitly names. So out of the box the bot sees a role ping as a message that mentions nobody, drops it under `require_mention`, and never reacts to it.
+
+With this on, the bot treats the ping as addressed to it when it holds the pinged role. The `<@&ROLE>` token is stripped from the prompt, so the model sees the message text without the ping. A ping of a role the bot does **not** hold is left alone, and `@everyone` never counts (every member holds it, so it would turn any server-wide ping into a summons).
+
+Two things to know before enabling it:
+
+- **A role shared with humans becomes a summons.** If the bot holds a team role, every ping of that role wakes it. Give the bot a dedicated role if you want role pings to reach it.
+- **The role must be mentionable in Discord.** A role with "Allow anyone to @mention this role" disabled cannot be pinged by ordinary members, so the bot never sees the ping either. Enable it in Server Settings → Roles.
 
 #### `discord.free_response_channels`
 

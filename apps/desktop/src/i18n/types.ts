@@ -1326,6 +1326,9 @@ export interface Translations extends NoticeTranslations {
     }
     model: ModelSettingsTranslations
     localModels: {
+      settingsTab: string
+      samplingTitle: string
+      settingsEmpty: string
       connectionChanged: string
       title: string
       runtimeTitle: string

@@ -1,6 +1,9 @@
 import type { Translations } from './types'
 
 export const enLocalModels: Translations['settings']['localModels'] = {
+  settingsTab: 'Settings',
+  samplingTitle: 'Sampling defaults',
+  settingsEmpty: 'Download or add a compatible model to configure its settings.',
   connectionChanged: 'Local models connection changed',
   title: 'Local Models',
   runtimeTitle: 'Local runtime',

@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const zhLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  settingsTab: '设置',
+  samplingTitle: '采样默认值',
+  settingsEmpty: '下载或添加兼容模型以配置其设置。',
   connectionChanged: '本地模型连接已更改',
   title: '本地模型',
   runtimeTitle: '本地运行时',

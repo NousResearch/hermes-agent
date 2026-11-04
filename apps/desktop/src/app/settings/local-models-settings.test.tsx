@@ -203,6 +203,20 @@ afterEach(async () => {
 })
 
 describe('LocalModelsSettings', () => {
+  it('keeps the Settings tab reachable before a model is installed', async () => {
+    renderPane()
+
+    const settings = await screen.findByRole('tab', { name: 'Settings' })
+    fireEvent.mouseDown(settings, { button: 0, ctrlKey: false })
+
+    expect(await screen.findByText('Sampling defaults')).toBeTruthy()
+    expect(screen.getByText('Download or add a compatible model to configure its settings.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Models' }), { button: 0, ctrlKey: false })
+    expect(await screen.findByRole('button', { name: /set up for me/i })).toBeTruthy()
+  })
+
   it.each(['starting', 'running'])(
     'keeps the runtime update view visible with no staged models while %s',
     async phase => {

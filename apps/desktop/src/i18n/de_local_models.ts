@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const deLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  settingsTab: 'Einstellungen',
+  samplingTitle: 'Sampling-Standardwerte',
+  settingsEmpty: 'Lade ein kompatibles Modell herunter oder füge eines hinzu, um es zu konfigurieren.',
   connectionChanged: 'Verbindung für lokale Modelle geändert',
   title: 'Lokale Modelle',
   runtimeTitle: 'Lokale Laufzeit',

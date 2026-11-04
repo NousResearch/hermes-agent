@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const jaLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  settingsTab: '設定',
+  samplingTitle: 'サンプリングの既定値',
+  settingsEmpty: '対応モデルをダウンロードまたは追加すると、設定を変更できます。',
   connectionChanged: 'ローカルモデルの接続が変更されました',
   title: 'ローカルモデル',
   runtimeTitle: 'ローカルランタイム',

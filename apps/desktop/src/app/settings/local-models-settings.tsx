@@ -1,8 +1,11 @@
 import { useIsMutating, useQuery } from '@tanstack/react-query'
-import { type ReactElement, useEffect, useRef, useState } from 'react'
+import { type ReactElement, useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { NEW_CHAT_ROUTE } from '@/app/routes'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useI18n } from '@/i18n'
+import { SlidersHorizontal } from '@/lib/icons'
 import {
   localModelsCatalogOptions,
   localModelsHardwareOptions,
@@ -14,6 +17,8 @@ import {
 } from '@/store/local-runtime-jobs'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
+import { PAGE_INSET_X } from '../layout-constants'
+
 import { isActiveStatus } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'
 import { LocalModelsHardwareSection } from './local-models-hardware-section'
@@ -21,7 +26,7 @@ import { LocalModelsModelsSection } from './local-models-models-section'
 import { LocalModelsOwnerProvider, useScopedLocalModelsOwner } from './local-models-owner'
 import { LocalModelsQuickstart } from './local-models-quickstart'
 import { LocalModelsRuntimeSection } from './local-models-runtime-section'
-import { SettingsContent, SettingsSkeleton } from './primitives'
+import { SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { ActiveProfileNote } from './profile-scope'
 
 export function LocalModelsSettings(): ReactElement {
@@ -35,6 +40,36 @@ export function LocalModelsSettings(): ReactElement {
 }
 
 function ScopedLocalModelsSettings(): ReactElement {
+  const { t } = useI18n()
+  const [view, setView] = useState<'models' | 'settings'>('models')
+  const id = useId()
+
+  return (
+    <Tabs className="min-h-0 gap-4" onValueChange={value => setView(value === 'settings' ? 'settings' : 'models')} value={view}>
+      <div className={PAGE_INSET_X}>
+        <TabsList aria-label={t.settings.localModels.title}>
+          <TabsTrigger aria-controls={`${id}-panel`} id={`${id}-models`} value="models">
+            {t.settings.localModels.modelsTitle}
+          </TabsTrigger>
+          <TabsTrigger aria-controls={`${id}-panel`} id={`${id}-settings`} value="settings">
+            {t.settings.localModels.settingsTab}
+          </TabsTrigger>
+        </TabsList>
+      </div>
+      <div aria-labelledby={`${id}-${view}`} id={`${id}-panel`} role="tabpanel">
+        {view === 'models' ? <LocalModelsLibrary /> : (
+          <SettingsContent>
+            <ActiveProfileNote className="mb-5" />
+            <SectionHeading icon={SlidersHorizontal} title={t.settings.localModels.samplingTitle} />
+            <p className="text-sm text-muted-foreground">{t.settings.localModels.settingsEmpty}</p>
+          </SettingsContent>
+        )}
+      </div>
+    </Tabs>
+  )
+}
+
+function LocalModelsLibrary(): ReactElement {
   const owner: LocalModelsOwner = useScopedLocalModelsOwner()
   const installStarting: boolean = useIsMutating({ mutationKey: localModelsKey(owner, 'install') }) > 0
   const { data: status } = useLocalModelsStatus(owner, true, true)

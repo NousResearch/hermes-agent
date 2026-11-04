@@ -3,6 +3,9 @@ import type { TranslationOverride } from '@hermes/shared/i18n'
 import type { Translations } from './types'
 
 export const esLocalModels: TranslationOverride<Translations['settings']['localModels']> = {
+  settingsTab: 'Ajustes',
+  samplingTitle: 'Valores de muestreo predeterminados',
+  settingsEmpty: 'Descarga o añade un modelo compatible para configurar sus ajustes.',
   connectionChanged: 'Cambió la conexión de los modelos locales',
   title: 'Modelos locales',
   runtimeTitle: 'Entorno local',

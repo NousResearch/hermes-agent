@@ -1,8 +1,12 @@
 name: hermes-rss-lite
 repo: https://github.com/MrNorkum/hermes-rss-lite
-sha: de0900b8707d3c71e3dc2168941764e4c0ab97ba
+sha: 9af39a59041be093899e5f2a0d658126b07a7120
 subdir: plugin
 version: "1.0.0"
+image: https://raw.githubusercontent.com/MrNorkum/hermes-rss-lite/9af39a59041be093899e5f2a0d658126b07a7120/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/MrNorkum/hermes-rss-lite/9af39a59041be093899e5f2a0d658126b07a7120/docs/screenshots/reader.png
+  - https://raw.githubusercontent.com/MrNorkum/hermes-rss-lite/9af39a59041be093899e5f2a0d658126b07a7120/docs/screenshots/player.png
 title: RSS Lite
 description: "Lightweight RSS, Atom and YouTube reader page for Hermes Desktop: folders, unread/saved, search, a sanitized reader view, and optional AI summaries on your configured model. Disclosure — the gateway fetches only the feeds you add (and a pasted web page or YouTube @handle page once, to find its feed) through the plugin's own SSRF-guarded backend route, sending YouTube's anonymous consent cookie SOCS=CAI to YouTube hosts only; Desktop loads thumbnails and article images directly from publishers (can be turned off) and a YouTube video only after you press Play, through Desktop's own embed; Summarise sends the article title and up to 12,000 characters of its text to your configured model; subscriptions are stored in HERMES_HOME/rss-lite; no shell commands, background processes, credentials or telemetry. Independent implementation, not derived from hermes-rss or rss-reader."
 maintainer: MrNorkum

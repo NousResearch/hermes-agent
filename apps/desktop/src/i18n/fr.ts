@@ -2994,7 +2994,7 @@ export const frOverrides = {
     openLogs: 'Ouvrir les journaux',
     teamGateway: {
       title: 'La messagerie passe par Team Gateway',
-      body: 'Cet agent rejoint les plateformes de discussion via les bots partagés de Team Gateway : il n’a donc besoin d’aucun jeton de bot. Choisissez les plateformes qu’il utilise et qui peut lui écrire sur la page de l’agent dans Nous Portal.',
+      body: 'Cet agent rejoint les plateformes de discussion via les bots partagés de Team Gateway : il n’a donc besoin d’aucun jeton de bot. Choisissez les plateformes qu’il utilise et qui peut lui écrire dans Gérer les agents de Nous Portal.',
       carried: (platforms: string) => `Disponibles pour cet agent : ${platforms}`,
       openPortal: 'Gérer les agents dans Nous Portal'
     },

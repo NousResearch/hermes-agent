@@ -2986,7 +2986,7 @@ export const deOverrides = {
     openLogs: 'Logs öffnen',
     teamGateway: {
       title: 'Messaging läuft über Team Gateway',
-      body: 'Dieser Agent erreicht Chat-Plattformen über die gemeinsamen Bots von Team Gateway und braucht daher keine eigenen Bot-Tokens. Welche Plattformen er nutzt und wer ihm schreiben darf, legst du auf der Seite des Agenten im Nous Portal fest.',
+      body: 'Dieser Agent erreicht Chat-Plattformen über die gemeinsamen Bots von Team Gateway und braucht daher keine eigenen Bot-Tokens. Welche Plattformen er nutzt und wer ihm schreiben darf, legst du unter „Agenten verwalten“ im Nous Portal fest.',
       carried: (platforms: string) => `Für diesen Agenten verfügbar: ${platforms}`,
       openPortal: 'Agenten im Nous Portal verwalten'
     },

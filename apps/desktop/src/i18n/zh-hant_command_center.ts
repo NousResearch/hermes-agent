@@ -170,7 +170,7 @@ export const zhHantCommandCenter = {
     restartFailedManual: '閘道重新啟動失敗 — 請手動重新啟動並檢查閘道日誌。',
     teamGateway: {
       title: '訊息透過 Team Gateway 傳遞',
-      body: '此代理透過 Team Gateway 的共用機器人連接聊天平台，因此不需要自己的機器人權杖。請在 Nous Portal 的代理頁面中選擇它使用的平台，以及誰可以傳訊息給它。',
+      body: '此代理透過 Team Gateway 的共用機器人連接聊天平台，因此不需要自己的機器人權杖。請在 Nous Portal 的「管理代理」中選擇它使用的平台，以及誰可以傳訊息給它。',
       carried: (platforms: string) => `此代理可用：${platforms}`,
       openPortal: '在 Nous Portal 中管理代理'
     },

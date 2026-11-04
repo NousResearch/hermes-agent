@@ -424,10 +424,11 @@ export interface MessagingPlatformsResponse {
   team_gateway?: null | TeamGatewayInfo
 }
 
+/** Team Gateway owns messaging: channels are set under Manage Agents (`portal_url`); `platforms` are the
+ *  ones its shared bots carry, `direct_platforms` the surfaces it leaves running (API server, webhooks). */
 export interface TeamGatewayInfo {
-  /** Platforms the shared Team Gateway bots carry for this agent. */
+  direct_platforms?: string[]
   platforms: string[]
-  /** The Portal's Manage Agents page, where this agent's channels are configured. */
   portal_url: string
 }
 

@@ -73,6 +73,19 @@ const stateLabel = (state: null | string | undefined, m: Translations['messaging
 // Filter order: what needs you first, then what's fine, then what's off.
 const STATUS_FILTER_ORDER: StatusTone[] = ['bad', 'warn', 'good', 'muted']
 
+function surfacesToConfigure(
+  platforms: MessagingPlatformInfo[] | null,
+  teamGateway: null | TeamGatewayInfo
+): MessagingPlatformInfo[] | null {
+  if (!platforms || !teamGateway) {
+    return platforms
+  }
+
+  const direct = new Set(teamGateway.direct_platforms ?? [])
+
+  return platforms.filter(platform => direct.has(platform.id))
+}
+
 function platformMatches(platform: MessagingPlatformInfo, tone: 'all' | StatusTone, query: string): boolean {
   const q = normalize(query)
 
@@ -340,13 +353,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [changeEventsAvailable, refreshAll])
 
+  // Under Team Gateway only the surfaces its rule leaves running (API server, webhooks) keep setup here.
+  const listed = useMemo(() => surfacesToConfigure(platforms, teamGateway), [platforms, teamGateway])
+
   const selected = useMemo(() => {
-    if (!platforms) {
+    if (!listed) {
       return null
     }
 
-    return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
-  }, [platforms, selectedId])
+    return listed.find(platform => platform.id === selectedId) || listed[0] || null
+  }, [listed, selectedId])
 
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
@@ -354,15 +370,15 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // Only tones some platform is actually in get a tab; a filter whose last
   // platform changed state falls back to All instead of an empty list.
   const presentTones = useMemo(
-    () => STATUS_FILTER_ORDER.filter(tone => platforms?.some(platform => platformStatusTone(platform) === tone)),
-    [platforms]
+    () => STATUS_FILTER_ORDER.filter(tone => listed?.some(platform => platformStatusTone(platform) === tone)),
+    [listed]
   )
 
   const activeStatusFilter = statusFilter !== 'all' && presentTones.includes(statusFilter) ? statusFilter : 'all'
 
   const visiblePlatforms = useMemo(
-    () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
-    [activeStatusFilter, platforms, query]
+    () => listed?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
+    [activeStatusFilter, listed, query]
   )
 
   // Picking a filter moves the detail pane into it. Only on that click: a
@@ -371,7 +387,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setStatusFilter(next)
 
     if (selected && !platformMatches(selected, next, query)) {
-      const first = platforms?.find(platform => platformMatches(platform, next, query))
+      const first = listed?.find(platform => platformMatches(platform, next, query))
 
       if (first) {
         setSelectedId(first.id)
@@ -557,24 +573,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
-  // Team Gateway owns this profile's messaging: no direct bot runs, so the page is the Portal link.
-  if (teamGateway) {
-    return (
-      <PageSearchShell {...props} searchHidden>
-        <div className="flex h-full min-h-0 flex-col">
-          <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
-          <TeamGatewayMessaging teamGateway={teamGateway} />
-        </div>
-      </PageSearchShell>
-    )
-  }
-
   return (
     <PageSearchShell
       {...props}
       onSearchChange={setQuery}
-      searchHidden={(platforms?.length ?? 0) === 0}
-      searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
+      searchHidden={(listed?.length ?? 0) === 0}
+      searchHints={listed?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
       searchTrailingAction={
         presentTones.length > 1 && (
@@ -595,6 +599,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           {/* Which profile's gateway this page configures (hidden for
               single-profile users). */}
           <SettingsProfileScope className="border-b border-(--ui-stroke-secondary) px-3 py-2" />
+          {teamGateway && <TeamGatewayMessaging platforms={platforms} teamGateway={teamGateway} />}
           <div className="min-h-0 flex-1">
             <MasterDetail>
               <ListColumn>

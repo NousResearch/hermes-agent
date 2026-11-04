@@ -43,11 +43,24 @@ def notify_clarify_prompt(adapter: Any, *, session_id: str, entry: Any, generati
     events = adapter._run_event_queues.get(run_id) if run_id else None
     if events is None:
         return
+    # Redact like the live publisher does (session_pending_controls.register_clarify): a clarify
+    # question can quote tool-call context, and a credential-shaped value must not reach a client
+    # surface (#48456). force=True keeps the parity even when security.redact_secrets is off.
+    from gateway.run import _redact_approval_command
+
+    clarify_id = str(getattr(entry, "clarify_id", "") or "")
     events.enqueue("clarify.request", {
         "kind": "clarify",
-        "request_id": str(getattr(entry, "clarify_id", "") or ""),
+        "request_id": clarify_id,
+        # The live session-event stream labels the same clarify id ``prompt_id`` while this path and
+        # the answer body use ``request_id``. Both keys carry the id so a client can render either
+        # surface without knowing which path delivered the prompt.
+        "prompt_id": clarify_id,
         "execution_generation": generation,
-        "question": str(getattr(entry, "question", "") or ""),
-        "choices": list(getattr(entry, "choices", None) or []),
+        "question": _redact_approval_command(str(getattr(entry, "question", "") or "")),
+        "choices": [
+            _redact_approval_command(str(choice))
+            for choice in (getattr(entry, "choices", None) or [])
+        ],
         "multi_select": bool(getattr(entry, "multi_select", False)),
     })

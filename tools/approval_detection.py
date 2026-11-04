@@ -4,6 +4,8 @@ Pure command classification for :mod:`tools.approval` — no approval state, con
 prompting live here.
 """
 
+import bisect
+import fnmatch
 import functools
 import logging
 import os
@@ -55,6 +57,7 @@ _EMOJI_PRESENTATION_BASES = (
 _HIDDEN_VARIATION_SELECTOR_RE = re.compile(
     rf'(?<![{_EMOJI_PRESENTATION_BASES}])(?!(?<=[0-9#*])\ufe0f\u20e3)[\ufe00-\ufe0f\U000e0100-\U000e01ef]')
 _INVISIBLE_UNICODE_DESCRIPTION = "invisible or bidirectional Unicode control character (possible obfuscation)"
+_CREDENTIAL_UPLOAD_DESCRIPTION = "upload a secret or credential file via curl/wget (possible exfiltration)"
 # Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
 # its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
@@ -355,7 +358,7 @@ DANGEROUS_PATTERNS = [
     # an uploading curl/wget. Flag letters are case-sensitive (-d/-F/-T upload; -D/-f/-t do not).
     (rf'{_UPLOAD_FLAG}(?:[\s=]+|(?=[@"\'$]))(?:"[^"]*(?:{_SECRET_VAR}|{_SECRET_FILE})|\'[^\']*{_SECRET_FILE}'
      rf'|\$\([^)]*{_SECRET_FILE}|\S*?(?:{_SECRET_VAR}|{_SECRET_FILE}))',
-     "upload a secret or credential file via curl/wget (possible exfiltration)"),
+     _CREDENTIAL_UPLOAD_DESCRIPTION),
     (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
      "pipe a credential file into a curl/wget upload (possible exfiltration)"),
     # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
@@ -1569,6 +1572,66 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _upload_flag_owner_ranges(command: str) -> tuple[list[int], list[int]]:
+    """Merged ``(starts, ends)`` of the ranges where an upload flag may belong to curl/wget.
+    ``awk -F``, ``cut -d`` and ``sort -t`` share the flag letters but take a delimiter and upload
+    nothing. A range runs from a curl/wget word (``xargs curl``, ``ssh host curl``) or a word that
+    may expand to one to the end of its simple command, and covers the inside of a quoted word
+    (``eval "curl -d …"``, ``ssh host "curl …"``) that another program may re-parse as a command.
+    Built once per command, so many delimiter flags cost one parse instead of one parse each."""
+    ranges = []
+    for start, _, _ in _iter_shell_command_word_spans(command):
+        end = start + len(_shell_command_segment(command, start))
+        pos = start
+        while pos < end:
+            redirect = _SHELL_REDIRECTION_RE.match(command, _skip_shell_whitespace(command, pos))
+            if redirect:  # ``ssh host >/dev/null curl …``: a redirection does not end the command
+                _, pos, _ = _read_shell_word(command, redirect.end())
+                continue
+            word_start, pos, word = _read_shell_word(command, pos)
+            if word_start == pos:
+                break
+            if _word_may_run_curl_or_wget(word):
+                ranges.append((word_start, end))
+                break
+            if any(ch.isspace() for ch in command[word_start:pos]):
+                ranges.append((word_start + 1, pos))
+    starts: list[int] = []
+    ends: list[int] = []
+    for range_start, range_end in sorted(ranges):
+        if ends and range_start <= ends[-1]:
+            ends[-1] = max(ends[-1], range_end)
+        else:
+            starts.append(range_start)
+            ends.append(range_end)
+    return starts, ends
+
+
+def _upload_flag_owned_by_curl_or_wget(owner_ranges: tuple[list[int], list[int]], flag_start: int) -> bool:
+    """True when the upload flag at *flag_start* lies in a range from :func:`_upload_flag_owner_ranges`."""
+    starts, ends = owner_ranges
+    index = bisect.bisect_right(starts, flag_start) - 1
+    return index >= 0 and flag_start < ends[index]
+
+
+def _word_may_run_curl_or_wget(word: str) -> bool:
+    """True for a curl/wget word (also ``curl.exe``, ``C:\\tools\\curl.exe``) or a word whose command
+    name holds an unresolved expansion (``$CURL``, ``"$(which curl)"``, ``/usr/bin/$CURL``,
+    ``c${suffix}``): what it runs is unknown without executing the shell."""
+    names = (os.path.basename(_deobfuscate_shell_word_for_detection(word)), re.split(r"[\\/]", word)[-1])
+    if any(name.lower().removesuffix(".exe") in ("curl", "wget") for name in names):
+        return True
+    # A glob in the name (``/usr/bin/cur[l]``, ``wge*``) may match curl/wget.
+    if any(fnmatch.fnmatchcase(tool, name.lower()) for name in names if any(c in name for c in "*?[")
+           for tool in ("curl", "wget", "curl.exe", "wget.exe")):
+        return True
+    unquoted = word.lstrip("'\"")
+    if unquoted.startswith(("$", "`")):
+        return True
+    # An option (``-d``) or assignment (``x="$A"``) cannot name the command being run; ``c${s:=url}`` can.
+    return not unquoted.startswith("-") and not _ENV_ASSIGNMENT_RE.fullmatch(word) and ("$" in word or "`" in word)
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1592,6 +1655,11 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                         _mask_quoted_prose(command_variant)
                     )
                 if pattern_re.search(masked_lower):
+                    yield description
+            elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:
+                matches = list(pattern_re.finditer(command_lower))
+                owner_ranges = _upload_flag_owner_ranges(command_lower) if matches else ([], [])
+                if any(_upload_flag_owned_by_curl_or_wget(owner_ranges, match.start()) for match in matches):
                     yield description
             elif pattern_re.search(command_lower):
                 yield description

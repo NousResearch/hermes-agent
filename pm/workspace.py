@@ -162,6 +162,10 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        # A member requirement naming core (a selected extra's ``hermes-agent[x] @ git+…``)
+        # names a workspace member, which uv refuses without a source; root sources apply
+        # to every member, renamed virtual ones included.
+        uv_policy.setdefault("sources", {})[document["project"]["name"]] = {"workspace": True}
         _solve_only_for(uv_policy, target)
         text = tomli_w.dumps(document)
     else:
@@ -290,20 +294,18 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
     """Keep every selected member or refuse an incompatible selection.
 
-    A member whose requires_hermes rejects the running version sits out instead: the
-    verdict is only as good as our version identity (an untagged source checkout reads
-    as an older release), the loader skips that plugin anyway, and the member rejoins
-    as soon as the verdict flips. Enabling one is still refused at admission.
+    A member that does not accept the running Hermes (``hermes_fit_error``) sits out instead:
+    the verdict is only as good as our version identity (an untagged source checkout reads
+    as an older release), the loader skips that plugin anyway, and the member rejoins as
+    soon as the verdict flips. Enabling one is still refused at admission. Judged with no
+    core extra selected; ``build_member_dirs`` adds the extras a build selects.
     """
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
-        # Per plugin: with none selected, PM must not import the application's manifest module.
-        from hermes_cli.plugins_manifest import requires_hermes_error
-
         declaration = read_python_declaration(path)
-        if requires_hermes_error(declaration.manifest):
+        if hermes_fit_error(declaration, ()):
             continue
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
@@ -311,6 +313,17 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
         if declaration.installs_packages:
             members.append(path)
     return members
+
+
+def build_member_dirs(extras: Iterable[str], python: Path | None = None) -> list[Path]:
+    """``enabled_member_dirs`` for a build selecting core *extras*: a plugin extra they select
+    can add a ``hermes-agent`` requirement the running Hermes misses, which sits out too.
+    A build passes its interpreter *python*, whose markers the generation (and so the loader)
+    sees; PM itself may run under a bootstrap Python."""
+    extras, members = list(extras), enabled_member_dirs()
+    target = _target_environment(python) if members and python is not None else None
+    return [path for path in members
+            if not core_requirement_error(read_python_declaration(path), extras, target)]
 
 
 def _member_key(identity: Path) -> str:
@@ -517,6 +530,70 @@ def _runtime_member_metadata(document: dict, extras: Iterable[str],
                 settings.pop("conflicts")
             changed = True
     return changed
+
+
+def _recorded_extras() -> list[str]:
+    """The extras of the generation this install selected: what a gate asked outside a build
+    (admission, the loader) evaluates a plugin's extras under."""
+    from pm.environments import runtime_facts_path
+    from pm.lock import Facts
+
+    extras = (Facts(runtime_facts_path(paths.repo_root())).get("venv") or {}).get("extras")
+    return [extra for extra in extras if isinstance(extra, str)] if isinstance(extras, list) else []
+
+
+def core_requirement_error(declaration, extras: Iterable[str] | None = None,
+                           target: Mapping[str, str] | None = None) -> Optional[str]:
+    """Why the plugin's applicable requirement on ``hermes-agent`` rejects the running Hermes.
+
+    PM satisfies ``hermes-agent`` from the checkout itself: a runtime requirement naming it is
+    dropped, and a selected extra naming it binds to the workspace root, where uv ignores the
+    specifier. So the specifier is judged here, PEP 440 like any requirement, under *extras*
+    (the core extras the build selects; ``None`` reads the recorded selection) and the markers
+    of *target* (the installing interpreter; ``None`` is this process, which the loader runs
+    in). The identity is the one ``requires_hermes`` reads (the committed pyproject version is
+    a placeholder); with none (``unknown``) nothing is judged. It is read only for a plugin
+    that names core: the read walks git, and every plugin passes here at startup.
+    """
+    import tomllib
+
+    from packaging.markers import default_environment
+    from packaging.version import InvalidVersion, Version
+
+    from hermes_cli.plugins_manifest import running_hermes_version
+    from pm.install import _extra_key
+
+    if declaration.external:
+        return None
+    environment = default_environment() if target is None else target
+    specs, installed = list(declaration.requirements), set()
+    if declaration.pyproject is not None:
+        document = tomllib.loads(declaration.pyproject.read_text(encoding="utf-8-sig"))
+        installed = _selected_member_extras(document, _recorded_extras() if extras is None else extras, environment)[0]
+        specs += [spec for name, values in document["project"].get("optional-dependencies", {}).items()
+                  if _extra_key(name) in installed for spec in values]
+    pins = [requirement for requirement in _self_references(specs, "hermes-agent")
+            if requirement.specifier and _reference_active(requirement, ("", *sorted(installed)), environment)]
+    if not pins:
+        return None
+    current = running_hermes_version()
+    try:
+        Version(current)
+    except InvalidVersion:
+        return None
+    rejected = [str(requirement) for requirement in pins
+                if not requirement.specifier.contains(current, prereleases=True)]
+    return f"requires {rejected[0]}, running {current}" if rejected else None
+
+
+def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Optional[str]:
+    """Why this Hermes is not one the plugin accepts: its ``requires_hermes`` or an applicable
+    ``hermes-agent`` requirement rejects the running version. Either verdict is only as good as
+    our version identity, so a selected misfit sits out of the build (config untouched) and
+    rejoins once it flips; admission refuses it."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
+    return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
 
 
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: Iterable[str] = (),

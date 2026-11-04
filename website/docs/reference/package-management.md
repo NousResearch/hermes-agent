@@ -153,7 +153,21 @@ them, because PM never installs them yet uv would still
 resolve them against core's pins. The original plugin metadata and core development
 pins are unchanged; genuine runtime conflicts still refuse admission. A plugin with no
 build backend gets a unique `hermes-plugin-…` name in its snapshot, and its references to
-its own extras (`myplugin[runtime]`) are renamed with it. The generated workspace and extended lock remain
+its own extras (`myplugin[runtime]`) are renamed with it. Hermes itself always comes from
+the checkout: a plugin requirement naming `hermes-agent` (a runtime dependency in
+`pyproject.toml` or `plugin.yaml`, or an extra this install selects, such as
+`hermes-agent[web]>=0.20`) is satisfied by it, whatever its version specifier says. PM
+therefore checks that specifier itself against the running Hermes version (the one
+`requires_hermes` reads), with standard PEP 440 comparison and the requirement's environment
+marker; a requirement in an unselected extra or one whose marker is false on this machine is
+not checked, and with no known version (`unknown`) nothing is. A plugin that excludes the
+running version is treated like one whose `requires_hermes` does: enabling or installing it is
+refused, and one already enabled is left out of the environment and skipped at load, with its
+config untouched, until Hermes reaches a version it accepts. The two checks compare differently:
+`requires_hermes` compares only `major.minor.patch` (pre/post-release suffixes are dropped, and a
+clause it cannot parse passes), while a `hermes-agent` requirement is compared as any Python
+requirement would be (`>=0.27.0.post1` excludes 0.27.0). Either one can keep a plugin out.
+The generated workspace and extended lock remain
 outside shipped source. The workspace is solved only for the platform and
 architecture of the interpreter it installs into, so a plugin dependency with no
 wheels for another platform (onnxruntime or torch on Android) does not block it;

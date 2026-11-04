@@ -11,6 +11,7 @@ export function useCanonicalGroupLabels() {
     ...canonical,
     back: t.common.back,
     cancel: t.common.cancel,
+    close: t.common.close,
     refresh: t.common.refresh,
     retry: t.common.retry,
     send: t.common.send,

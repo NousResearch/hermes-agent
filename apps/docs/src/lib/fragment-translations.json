@@ -86,7 +86,6 @@
     "keybindings": "快捷键"
   },
   "/user-guide/configuration": {
-    "auxiliary-models": "辅助模型",
     "context-compression": "上下文压缩",
     "credential-pool-strategies": "凭据池策略",
     "display-settings": "显示设置",

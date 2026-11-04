@@ -41,7 +41,7 @@ Hermes 使用两类模型槽位：
 
 选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
 
-## 设置辅助模型 {#setting-auxiliary-models}
+## 设置辅助模型 [#setting-auxiliary-models]
 
 点击 **Show auxiliary** 展开辅助任务列表，每项任务一行（插件可注册更多任务）：
 

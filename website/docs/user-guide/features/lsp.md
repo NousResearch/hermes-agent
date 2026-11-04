@@ -358,6 +358,11 @@ lsp:
 * `initialization_options: {...}` — merged into the LSP
   `initializationOptions` payload sent in the `initialize`
   handshake. Server-specific; consult the language server's docs.
+  The built-in `typescript` server starts with
+  `tsserver.useSyntaxServer: never` and
+  `disableAutomaticTypingAcquisition: true` (one tsserver, no
+  background `@types` downloads); set either key here to restore the
+  server's own default.
 
 ### Custom servers
 

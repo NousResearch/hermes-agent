@@ -1,4 +1,4 @@
-"""Profile-local proposed→active skill lifecycle and scheduled GitHub review batches."""
+"""Canonical-repository proposed→active skill lifecycle and scheduled review batches."""
 from __future__ import annotations
 
 import base64
@@ -21,6 +21,7 @@ from utils import atomic_write_text
 
 RISKS = frozenset({"read-only", "write", "send", "credentials"})
 NIGHTLY_SCHEDULE, DIGEST_SCHEDULE, MONTHLY_SCHEDULE = "0 1 * * *", "30 7 * * *", "0 8 1 * *"
+RECONCILE_SCHEDULE = "*/15 * * * *"
 LIFECYCLE_TIMEZONE = "America/Chicago"
 _META = ".proposal.json"
 
@@ -28,6 +29,17 @@ _META = ".proposal.json"
 def roots(home: Path | None = None) -> tuple[Path, Path]:
     base = Path(home) if home is not None else get_hermes_home()
     return base / "skills" / "active", base / "skills" / "proposed"
+
+
+def canonical_repo_path(repo: Path | None = None) -> Path:
+    """Resolve the source-of-truth repository; never silently use the installed profile."""
+    raw = repo or os.environ.get("HERMES_SKILLS_REPO")
+    if not raw:
+        raise ValueError("canonical skill repo required (argument or HERMES_SKILLS_REPO)")
+    path = Path(raw).expanduser().resolve()
+    if not (path / ".git").exists():
+        raise ValueError(f"canonical skill repo is not a git checkout: {path}")
+    return path
 
 
 def ensure_layout(home: Path | None = None) -> tuple[Path, Path]:
@@ -60,17 +72,28 @@ def proposal_metadata(skill_dir: Path) -> dict[str, Any]:
 
 
 def create_proposal(name: str, content: str, *, session_id: str, risk: str, why: dict[str, Any],
-                    home: Path | None = None, creator_identity: str | None = None,
+                    home: Path | None = None, canonical_repo: Path | None = None, creator_identity: str | None = None,
                     creator_capabilities: set[str] | None = None) -> Path:
     if not session_id: raise ValueError("automatic skill creation requires a creating session_id")
     if risk not in RISKS: raise ValueError(f"risk must be one of: {', '.join(sorted(RISKS))}")
-    required = ("need", "tools", "example_run")
+    required = ("need", "tools", "example_run", "eval")
     if not isinstance(why, dict) or any(not why.get(k) for k in required):
         raise ValueError("why requires non-empty need, tools, and example_run fields")
-    _active, proposed = ensure_layout(home); target = proposed / name; target.mkdir(exist_ok=False)
+    if canonical_repo is not None:
+        proposed = canonical_repo_path(canonical_repo) / "skills" / "proposed"
+        proposed.mkdir(parents=True, exist_ok=True)
+    else:
+        _active, proposed = ensure_layout(home)
+    target = proposed / name; target.mkdir(exist_ok=False)
     atomic_write_text(target / "SKILL.md", content, create_mode=0o644)
     tools = why["tools"] if isinstance(why["tools"], list) else [why["tools"]]
     atomic_write_text(target / "why.md", f"# Why {name}\n\n## Need\n{why['need']}\n\n## Tools\n" + "\n".join(f"- {x}" for x in tools) + f"\n\n## Example run\n{why['example_run']}\n\n## Risk\n{risk}\n", create_mode=0o644)
+    atomic_write_text(target / "eval.json", json.dumps(why["eval"], indent=2, sort_keys=True) + "\n", create_mode=0o644)
+    fixtures = why.get("fixtures") or {}
+    for filename, fixture_content in fixtures.items():
+        fixture = target / "fixtures" / str(filename)
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(fixture, str(fixture_content), create_mode=0o644)
     meta = {"name": name, "creating_session_id": session_id, "creator_identity": creator_identity or session_id,
             "creator_capabilities": sorted(creator_capabilities or ()), "risk": risk,
             "created_at": datetime.now(UTC).isoformat(), "status": "proposed"}
@@ -118,15 +141,24 @@ def _encoded_payload(text: str) -> bool:
 
 
 def _run_eval(skill_dir: Path) -> tuple[bool, dict[str, Any]]:
-    """Execute a defined, side-effect-free load/use eval and capture evidence."""
-    from agent.skill_utils import parse_frontmatter
+    """Execute one declarative fixture-backed case with a read-only tool allowlist."""
+    allowed = {"read_file"}
     try:
-        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8"); fm, body = parse_frontmatter(text)
-        why = (skill_dir / "why.md").read_text(encoding="utf-8")
-        passed = bool(fm.get("name") and fm.get("description") and body.strip() and "## Example run" in why)
-        return passed, {"case": "parse-and-example-run", "name": fm.get("name"), "body_chars": len(body), "passed": passed}
+        case = json.loads((skill_dir / "eval.json").read_text(encoding="utf-8"))
+        tool = case.get("tool")
+        if tool not in allowed:
+            return False, {"case": case, "passed": False, "error": "tool-not-allowed"}
+        fixture_name = str(case.get("fixture") or "")
+        fixture = (skill_dir / "fixtures" / fixture_name).resolve()
+        fixture_root = (skill_dir / "fixtures").resolve()
+        if not fixture.is_relative_to(fixture_root) or not fixture.is_file():
+            return False, {"case": case, "passed": False, "error": "invalid-fixture"}
+        value = fixture.read_text(encoding="utf-8")
+        expected = str(case.get("expect_contains") or "")
+        passed = bool(expected) and expected in value
+        return passed, {"case": case, "passed": passed, "fixture_sha256": hashlib.sha256(value.encode()).hexdigest()}
     except Exception as exc:
-        return False, {"case": "parse-and-example-run", "passed": False, "error": type(exc).__name__}
+        return False, {"case": "fixture-read", "passed": False, "error": type(exc).__name__}
 
 
 def deterministic_scan(skill_dir: Path) -> ScanResult:
@@ -211,6 +243,7 @@ def lifecycle_job_specs(deliver: str = "origin") -> list[dict[str, Any]]:
     py=sys.executable; module="tools.skill_lifecycle"
     return [
       {"name":"skill-lifecycle-nightly","schedule":NIGHTLY_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} nightly',"no_agent":True,"deliver":"local"},
+      {"name":"skill-lifecycle-reconcile","schedule":RECONCILE_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} reconcile',"no_agent":True,"deliver":"local"},
       {"name":"skill-lifecycle-digest","schedule":DIGEST_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} digest',"no_agent":True,"deliver":deliver},
       {"name":"skill-lifecycle-archive-review","schedule":MONTHLY_SCHEDULE,"timezone":LIFECYCLE_TIMEZONE,"script":f'{py} -m {module} archive',"no_agent":True,"deliver":deliver},]
 
@@ -223,32 +256,145 @@ def install_lifecycle_jobs(home: Path | None = None, *, deliver: str = "origin")
             if spec["name"] not in existing: created.append(create_job(prompt="", **spec))
     return created
 
+
+def bootstrap_lifecycle(home: Path | None = None, *, canonical_repo: Path | None = None,
+                        migrate_profile: bool = False, deliver: str = "origin") -> dict[str, Any]:
+    """Supported install/upgrade hook: configure source identity and idempotently arm jobs.
+
+    Profile migration is opt-in so installing this feature never mutates an existing live
+    ``~/.hermes/skills`` tree. Canonical active content is synced by an explicit deployment step.
+    """
+    base = Path(home) if home is not None else get_hermes_home()
+    repo = Path(canonical_repo).resolve() if canonical_repo is not None else None
+    marker = base / "skills" / ".canonical-source.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    if repo is not None:
+        atomic_write_text(marker, json.dumps({"repo": str(repo), "active": "skills/active"}, sort_keys=True) + "\n", create_mode=0o600)
+    migration = bootstrap_layout(base) if migrate_profile else None
+    created = install_lifecycle_jobs(base, deliver=deliver)
+    return {"jobs_created": len(created), "canonical_repo": str(repo) if repo else None, "migration": migration}
+
 def _gh(args:list[str], cwd:Path, *, check:bool=True)->subprocess.CompletedProcess[str]:
     return subprocess.run(["gh",*args],cwd=cwd,text=True,capture_output=True,check=check)
 def parse_booth_approvals(text:str)->set[str]:
     return set(re.findall(r"(?im)^\s*APPROVE-SKILL:\s*([a-z0-9._-]+)\s*$",text or ""))
+
+
+def trusted_booth_approvals(repo: Path, pr: int, booth_logins: set[str]) -> set[str]:
+    """Read approval text only from explicitly trusted GitHub identities."""
+    return set(trusted_booth_approval_records(repo, pr, booth_logins))
+
+
+def trusted_booth_approval_records(repo: Path, pr: int, booth_logins: set[str]) -> dict[str, set[str]]:
+    """Map approved skills to trusted approving logins for conflict checks."""
+    trusted = {login.casefold() for login in booth_logins if login}
+    approved: dict[str, set[str]] = {}
+    endpoints = ((f"repos/{{owner}}/{{repo}}/issues/{pr}/comments", False),
+                 (f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews", True))
+    for endpoint, is_review in endpoints:
+        data = json.loads(_gh(["api", endpoint], repo).stdout)
+        for item in data:
+            login = str((item.get("user") or {}).get("login") or "").casefold()
+            if login not in trusted:
+                continue
+            if is_review and item.get("state") != "APPROVED":
+                continue
+            for name in parse_booth_approvals(item.get("body") or ""):
+                approved.setdefault(name, set()).add(login)
+    return approved
+
+
 def checks_pass_exact_head(repo:Path, pr:int, expected_head:str)->bool:
     view=json.loads(_gh(["pr","view",str(pr),"--json","headRefOid,statusCheckRollup"],repo).stdout)
     checks=view.get("statusCheckRollup") or []
     return view.get("headRefOid")==expected_head and bool(checks) and all((c.get("conclusion") or c.get("state")) in {"SUCCESS","NEUTRAL","SKIPPED"} for c in checks)
 
+
+def apply_batch_transitions(repo: Path, outcome: dict[str, Any]) -> Path:
+    """Materialize all deterministic proposal decisions in one canonical-repo branch."""
+    proposed, active = repo / "skills" / "proposed", repo / "skills" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    for row in outcome.get("merged", []):
+        source, destination = proposed / row["name"], active / row["name"]
+        if not source.is_dir() or destination.exists():
+            raise FileExistsError(f"invalid promotion: {row['name']}")
+        meta = proposal_metadata(source)
+        meta.update(status="active", promoted_at=datetime.now(UTC).isoformat())
+        atomic_write_text(source / _META, json.dumps(meta, indent=2, sort_keys=True) + "\n", preserve_mode=True)
+        source.replace(destination)
+    for row in outcome.get("rejected", []):
+        source = proposed / row["name"]
+        if row.get("decision") == "delete" and source.exists():
+            shutil.rmtree(source)
+        elif source.is_dir():
+            atomic_write_text(source / ".rejection.json", json.dumps(row, indent=2, sort_keys=True) + "\n", create_mode=0o644)
+    evidence = repo / ".hermes" / "skill-lifecycle" / "latest.json"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(evidence, json.dumps(outcome, indent=2, sort_keys=True) + "\n", create_mode=0o644)
+    return evidence
+
+
+def reconcile_batch_pr(repo: Path, pr: int, expected_head: str, outcome: dict[str, Any], *,
+                       booth_logins: set[str], implementation_pr: int = 148971) -> dict[str, Any]:
+    """Merge an exact checked batch head, never the lifecycle implementation PR."""
+    if pr == implementation_pr:
+        return {"merged": False, "reason": "implementation-pr-excluded"}
+    if not checks_pass_exact_head(repo, pr, expected_head):
+        return {"merged": False, "reason": "exact-head-checks-not-passing"}
+    promoted = outcome.get("merged") or []
+    widening = {row["name"] for row in promoted if row.get("risk") != "read-only"}
+    if widening:
+        approvals = trusted_booth_approval_records(repo, pr, booth_logins)
+        missing = widening - set(approvals)
+        if missing:
+            return {"merged": False, "reason": "trusted-booth-approval-required", "missing": sorted(missing)}
+        for name in widening:
+            meta = proposal_metadata(repo / "skills" / "active" / name)
+            creator = str(meta.get("creator_identity") or "").casefold()
+            if creator and creator in approvals[name]:
+                return {"merged": False, "reason": "self-approval-conflict", "skill": name}
+    _gh(["pr", "merge", str(pr), "--merge", "--match-head-commit", expected_head], repo)
+    return {"merged": True, "pr": pr, "head": expected_head}
+
+
+def reconcile_open_batches(repo: Path, *, booth_logins: set[str], implementation_pr: int = 148971) -> list[dict[str, Any]]:
+    """Reconcile every open lifecycle batch using evidence fetched from that PR's exact head."""
+    repo = canonical_repo_path(repo)
+    rows = json.loads(_gh(["pr", "list", "--state", "open", "--search", "in:title lifecycle batch",
+                           "--json", "number,headRefOid"], repo).stdout)
+    results = []
+    for row in rows:
+        number, head = int(row["number"]), str(row["headRefOid"])
+        if number == implementation_pr:
+            continue
+        payload = json.loads(_gh(["api", f"repos/{{owner}}/{{repo}}/contents/.hermes/skill-lifecycle/latest.json?ref={head}"], repo).stdout)
+        evidence = json.loads(base64.b64decode(payload["content"]).decode("utf-8"))
+        results.append(reconcile_batch_pr(repo, number, head, evidence, booth_logins=booth_logins,
+                                          implementation_pr=implementation_pr))
+    return results
+
 def nightly_batch(repo: Path, home: Path | None = None, *, implementation_pr: int = 148971) -> dict[str,Any]:
-    """Create exactly one review PR; mutation/merge occurs only through that PR lineage."""
-    _gh(["auth","status"],repo); outcome=review_proposals(home,apply=False)
+    """Create one canonical-repo branch/PR containing source transitions and evidence."""
+    repo = canonical_repo_path(repo)
+    _gh(["auth","status"],repo); outcome=review_proposals(repo,apply=False)
     if not any(outcome.values()): write_batch_report(outcome,home); return outcome
     stamp=datetime.now(UTC).strftime("%Y%m%d"); branch=f"skill-lifecycle/{stamp}"
-    _gh(["checkout","-B",branch],repo); evidence=repo/".hermes"/"skill-lifecycle"/f"{stamp}.json"; evidence.parent.mkdir(parents=True,exist_ok=True)
-    atomic_write_text(evidence,json.dumps(outcome,indent=2,sort_keys=True)+"\n",create_mode=0o644)
-    _gh(["add",str(evidence)],repo); _gh(["commit","-m",f"chore(skills): lifecycle batch {stamp}"],repo); _gh(["push","-u","fork",branch,"--force-with-lease"],repo)
+    _gh(["checkout","-B",branch],repo)
+    evidence = apply_batch_transitions(repo, outcome)
+    _gh(["add","skills/proposed","skills/active",str(evidence.relative_to(repo))],repo); _gh(["commit","-m",f"chore(skills): lifecycle batch {stamp}"],repo); _gh(["push","-u","fork",branch,"--force-with-lease"],repo)
     title=f"chore(skills): lifecycle batch {stamp}"
-    cp=_gh(["pr","create","--title",title,"--body",f"Automated lifecycle evidence. Access-widening requires `APPROVE-SKILL: name` from Booth.\n\nImplementation PR #{implementation_pr} is excluded.","--base","main","--head",branch],repo)
+    cp=_gh(["pr","create","--title",title,"--body",f"Canonical lifecycle source transitions and evidence. Access widening requires verified Booth approval.\n\nImplementation PR #{implementation_pr} is excluded.","--base","main","--head",branch],repo)
     outcome["pr_url"]=cp.stdout.strip(); write_batch_report(outcome,home); return outcome
 
 def main(argv:list[str]|None=None)->int:
     action=(argv or sys.argv[1:] or [""])[0]
-    if action=="install": print(json.dumps(install_lifecycle_jobs(),indent=2)); return 0
+    if action=="install": print(json.dumps(bootstrap_lifecycle(canonical_repo=Path.cwd()),indent=2)); return 0
     if action=="digest": print(morning_digest()); return 0
     if action=="archive": print(json.dumps({"archive_review":archive_review_candidates()})); return 0
-    if action=="nightly": print(json.dumps(nightly_batch(Path.cwd()),indent=2)); return 0
-    raise SystemExit("usage: python -m tools.skill_lifecycle {install|nightly|digest|archive}")
+    if action=="nightly": print(json.dumps(nightly_batch(canonical_repo_path()),indent=2)); return 0
+    if action=="reconcile":
+        logins={x.strip() for x in os.environ.get("HERMES_BOOTH_GITHUB_LOGINS","").split(",") if x.strip()}
+        if not logins: raise SystemExit("HERMES_BOOTH_GITHUB_LOGINS is required")
+        print(json.dumps(reconcile_open_batches(canonical_repo_path(),booth_logins=logins),indent=2)); return 0
+    raise SystemExit("usage: python -m tools.skill_lifecycle {install|nightly|reconcile|digest|archive}")
 if __name__=="__main__": raise SystemExit(main())

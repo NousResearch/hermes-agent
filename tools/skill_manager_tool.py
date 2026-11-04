@@ -10,6 +10,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 import contextvars as _ctxvars
 import hashlib
 import json
+import os
 from contextlib import ExitStack, suppress
 import logging
 import re
@@ -478,9 +479,12 @@ def _create_skill(name: str, content: str, category: str | None = None, *,
     if session_id:
         try:
             from tools.skill_lifecycle import create_proposal
+            canonical_repo = os.environ.get("HERMES_SKILLS_REPO")
+            if not canonical_repo:
+                raise ValueError("automatic skill creation requires configured HERMES_SKILLS_REPO")
             skill_dir = create_proposal(
                 name, content, session_id=session_id, risk=risk or "read-only",
-                why=why or {}, home=get_hermes_home())
+                why=why or {}, canonical_repo=Path(canonical_repo))
         except (OSError, ValueError) as exc:
             return _err(str(exc))
         result = {"success": True, "message": f"Skill '{name}' proposed (not active).",

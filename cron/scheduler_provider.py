@@ -16,6 +16,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def bootstrap_installed_lifecycle_jobs() -> None:
+    """Upgrade hook: an explicitly configured canonical repo arms lifecycle jobs on gateway start."""
+    import os
+    repo = os.environ.get("HERMES_SKILLS_REPO")
+    if not repo:
+        return
+    try:
+        from tools.skill_lifecycle import bootstrap_lifecycle
+        bootstrap_lifecycle(canonical_repo=Path(repo), migrate_profile=False)
+    except Exception:
+        logger.warning("skill lifecycle scheduler bootstrap failed", exc_info=True)
+
 # Cap for exponential tick backoff during fd exhaustion (interval doubled per failure).
 _EMFILE_BACKOFF_MAX_SECONDS = 15 * 60
 DEFAULT_MISFIRE_GRACE_MINUTES = 10
@@ -387,6 +400,7 @@ def fire_overdue_jobs(
 def resolve_cron_scheduler() -> CronScheduler:
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
+    bootstrap_installed_lifecycle_jobs()
     name = ""
     try:
         from hermes_cli.config import cfg_get, load_config

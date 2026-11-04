@@ -992,6 +992,45 @@ Migrations for the plugins that motivated this slot:
   that reaches into Settings; the settings *values* still go through
   `host.settings` (allowlisted keys) and `THEMES_AREA`.
 
+### Ordinary tool-run presentation {#tool-run-presentation}
+
+`TOOL_RUN_PRESENTATION_API_VERSION === 1` and `TOOL_RUN_PRESENTATION_AREA`
+(`'chat.toolRun.presentation'`) expose a **presentation-only preference**:
+
+```typescript
+ctx.register({
+  id: 'tool-presentation',
+  area: TOOL_RUN_PRESENTATION_AREA,
+  data: { apiVersion: 1, mode: 'individual' } satisfies ToolRunPresentationContribution
+})
+```
+
+- Modes are exactly `grouped` (native default) and `individual` (ordinary rows,
+  no group scaffold, summary or ticker). The host owns grouping, native statuses,
+  output, permissions, execution and ordering. Specialized cards stay native.
+- Register through `ctx` for disable/unload cleanup; dispose before replacing the
+  same ID to apply a change. With no valid active preference, the host is grouped.
+- Competing valid preferences resolve by lowest finite `order` (default `0`),
+  then ordinal namespaced contribution ID, independent of load order. Missing,
+  malformed, incompatible-version or throwing data payloads are ignored.
+  Existing registry enabled/when filtering still applies. Do not mutate an
+  existing data object; replace the registration to notify subscribers.
+- This does not override native hidden activity or manually dismissed rows,
+  expose tool data, or change the separate passive header API. A plugin should
+  gate the exact exported version/area and show unsupported status truthfully.
+- Native ToolRun and specialized card siblings remain mounted. A real mode change
+  changes only the ordinary row descendants' wrapper shape and remounts those
+  rows. Native message/tool IDs, results and persisted row/group disclosure
+  intent survive. Transient nested payload disclosure, focus/selection, scroll,
+  and third-party component-local state can reset. Same-mode replacements and
+  ordinary stream updates do not cause this presentation remount. A larger
+  transcript rewrite is deliberately avoided.
+- Keep user choices in plugin-scoped `ctx.storage`, not in the host's unrelated
+  appearance settings. No preference persists in core after plugin disposal.
+
+This is an unreleased, separately reviewable extension; the header API's earlier
+review does not approve this capability or any particular consumer plugin.
+
 ### Plugin settings pages (Settings → Plugins) {#plugin-settings-pages}
 
 **Settings → Plugins** is the one home for plugin preferences, laid out like

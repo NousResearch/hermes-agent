@@ -1893,6 +1893,14 @@ export {
   type ToolActivityHeaderContext,
   type ToolActivityHeaderContribution
 } from '@/lib/tool-activity-header'
+/** Native ordinary-run presentation. Lowest order, then ordinal id wins;
+ * dispose to withdraw. Missing/invalid preferences preserve grouped behavior. */
+export {
+  TOOL_RUN_PRESENTATION_API_VERSION,
+  TOOL_RUN_PRESENTATION_AREA,
+  type ToolRunPresentationContribution,
+  type ToolRunPresentationMode
+} from '@/lib/tool-run-presentation'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {

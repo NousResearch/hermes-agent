@@ -8,11 +8,12 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_authority import LiveSession, SessionAuthority
+from gateway.session_contract import Submission
 from hermes_state_runtime import (
     begin_runtime_epoch, claim_session_input, find_session_admission, list_session_admissions,
     recover_session_inputs,
 )
-from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
+from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 
 
 class Agent:
@@ -50,6 +51,19 @@ def interactive(db, sid='s', source='gui'):
     """The session was launched from an interactive local surface (Desktop by default): a local
     session's row records its frozen launch policy's source."""
     db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=? WHERE id=?', (source, sid)))
+
+
+def created_as(db, surface, sid='s'):
+    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET created_source=? WHERE id=?',
+                                                (surface, sid)))
+
+
+def _submit_with(authority, request_id, **payload_fields):
+    """Submit through the same admission path as ``_submit``, with extra prompt.submit fields
+    (e.g. ``clarify_batch=True``) forwarded by ``gateway/session_cli_turn.py``."""
+    payload = {'text': request_id, **payload_fields}
+    return authority.submit(ACTOR, Submission(request_id=request_id, ref=REF,
+                                              payload=payload, intent='queue'))
 
 
 def _connection(authority):
@@ -249,3 +263,65 @@ async def test_pending_rows_name_the_controls_the_owner_serves(tmp_path, monkeyp
                                                      for r in authority._pending_rows(REF))}
     assert pending['follower'].get('controls') == ['steer', 'replace']
     assert not pending['head'].get('controls'), 'a started row has no queued-row controls'
+
+
+@pytest.mark.asyncio
+async def test_a_local_stored_desktop_chat_still_names_its_queued_row_controls(tmp_path, monkeypatch):
+    """A Desktop chat stored with ``source='local'`` must still name Steer/Edit for its queued rows."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='local')
+    created_as(db, 'desktop')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit(authority, 'follower')
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert pending['follower'].get('controls') == ['steer', 'replace']
+
+
+@pytest.mark.asyncio
+async def test_a_cron_created_row_never_names_controls(tmp_path, monkeypatch):
+    """``source='local'`` alone is not interactive; a cron-created session must keep controls empty."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db, source='local')
+    created_as(db, 'cron')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit(authority, 'follower')
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert not pending['follower'].get('controls')
+
+
+@pytest.mark.asyncio
+async def test_a_cli_turn_envelope_of_viewer_facts_keeps_its_controls(tmp_path, monkeypatch):
+    """A ``cli_turn_v1`` carrying only the viewer preference ``clarify_batch`` is still text-only."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit_with(authority, 'follower', clarify_batch=True)
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert pending['follower'].get('controls') == ['steer', 'replace']
+
+
+@pytest.mark.asyncio
+async def test_a_cli_turn_envelope_with_api_text_stays_a_whole_turn(tmp_path, monkeypatch):
+    """``cli_turn_v1.api_text`` is turn input a steer would drop, so controls stay empty."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    interactive(db)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        await _submit(authority, 'head')
+        await _submit_with(authority, 'follower', api_text='voice prefix: ')
+        claim_session_input(db, epoch=authority.epoch, session_id='s')
+        pending = {row['input_id']: row for row in (asdict(authority._pending_receipt(r))
+                                                     for r in authority._pending_rows(REF))}
+    assert not pending['follower'].get('controls')

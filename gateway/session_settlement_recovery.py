@@ -318,8 +318,15 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                 try:
                     drop_producer_turn(authority, admission_id)
                     # The turn's post-delivery slot still runs (bg-review notice release, temp-bubble
-                    # cleanup, a deferred /goal verdict), as an adapter task's finally would; nothing
-                    # spawns from it: the review candidate is released unconfirmed below.
+                    # cleanup, a deferred /goal verdict), as an adapter task's finally would. The
+                    # drain's review entry is still held across this await: on the unknown path the
+                    # execution stamp is already cleared and the delivery retained, so a Discard that
+                    # commits the captured result inside this window takes the turn over
+                    # (``_resolved_unknown`` -> ``deliver_resolved`` -> ``deliver_settled`` ->
+                    # ``complete_settled_review``) and completes the review with the real delivery
+                    # outcome; the release below then finds nothing. Otherwise nothing spawns from
+                    # the slot and the candidate is released unconfirmed below. One release per token
+                    # either way.
                     await fire_post_delivery(authority, admission_id)
                 finally:
                     release_unsettled_review(authority, admission_id)

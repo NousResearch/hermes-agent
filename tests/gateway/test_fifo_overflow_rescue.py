@@ -261,12 +261,17 @@ class TestRescueOrphanedOverflow:
             _text_event("orphan", "o1")
         )
         adapter._pending_messages[session_key] = _text_event("busy-slot", "slot")
+        incoming = _text_event("new-msg", "new1")
 
-        rescued = runner._rescue_orphaned_overflow(session_key, adapter)
+        rescued = runner._rescue_orphaned_overflow(
+            session_key, adapter, incoming_event=incoming
+        )
 
         assert rescued is None
         assert adapter._pending_messages[session_key].text == "busy-slot"
         assert len(runner._session_state(session_key).conversation.queued_events) == 1
+        # Nothing was published, so the caller's base path still owns the incoming event.
+        assert incoming._gateway_accepted is False
 
     def test_noop_when_no_overflow(self):
         runner = _runner()
@@ -290,9 +295,10 @@ class TestRescueOrphanedOverflow:
         runner._session_state(session_key).conversation.queued_events.extend(
             [_text_event("orphan-1", "o1"), _text_event("orphan-2", "o2")]
         )
+        incoming = _text_event("new-msg", "new1")
 
         rescued = runner._rescue_orphaned_overflow(
-            session_key, adapter, incoming_event=_text_event("new-msg", "new1")
+            session_key, adapter, incoming_event=incoming
         )
         assert rescued is not None and rescued.text == "orphan-1"
 
@@ -302,6 +308,9 @@ class TestRescueOrphanedOverflow:
             e.text for e in runner._session_state(session_key).conversation.queued_events
         ]
         assert overflow_texts == ["new-msg"]
+        # Published into the chain == accepted, as upstream's separate ``_enqueue_fifo`` stamped
+        # it: the adapter's base path must not start the parked event a second time.
+        assert incoming._gateway_accepted is True
 
     def test_single_orphan_then_new_message_lands_in_slot(self):
         """With one orphan the slot is free after rescue, so the incoming message (published
@@ -313,11 +322,13 @@ class TestRescueOrphanedOverflow:
         runner._session_state(session_key).conversation.queued_events.append(
             _text_event("orphan-1", "o1")
         )
+        incoming = _text_event("new-msg", "new1")
 
         rescued = runner._rescue_orphaned_overflow(
-            session_key, adapter, incoming_event=_text_event("new-msg", "new1")
+            session_key, adapter, incoming_event=incoming
         )
         assert rescued is not None and rescued.text == "orphan-1"
 
         assert adapter._pending_messages[session_key].text == "new-msg"
         assert runner._session_state(session_key).conversation.queued_events == []
+        assert incoming._gateway_accepted is True

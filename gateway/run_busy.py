@@ -412,9 +412,13 @@ class GatewayBusySessionMixin:
                 remaining.append(overflow)
                 return True
 
-            self._apply_followup_queue_mutation(
+            published = self._apply_followup_queue_mutation(
                 adapter, session_key, _rescue_and_stage
             )
+            if published and incoming_event is not None:
+                # Parity with the separate ``_enqueue_fifo`` this transaction replaced: the
+                # incoming event is in the chain, so the adapter must not start it again.
+                incoming_event._gateway_accepted = True
             if not rescued:
                 return None
             head = rescued[0]

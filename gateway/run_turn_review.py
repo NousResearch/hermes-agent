@@ -16,6 +16,15 @@ a session authority. Ownership is released before the spawn hop, and a dropped c
 a body-free, owner-tagged slug. A finished admission stays bound until the next turn's
 ``bind_agent``: a hand-off that lands after a cancel completed the owner is dropped as
 ``delivery_unconfirmed``, never spawned through the facade.
+
+One admission, one spawn per delivery window. ``bind_agent`` runs once per turn of an in-band
+chain and drops the candidate it already holds (``REASON_QUEUED_FOLLOWUP``): when the in-task
+follow-up (``_run_agent_followup``) rebinds, the first turn's candidate is dropped although that
+reply was delivered, and a follow-up that yields no candidate of its own spawns nothing for the
+chain. Intended trade-off, not a leak: the token is released exactly once by the owner that
+delivers last, and the next admitted review replays the conversation snapshot, which still holds
+the dropped turn, so nothing is lost permanently. Pinned by
+``tests/gateway/test_background_review_followup_admission.py::test_recursive_gateway_turn_drops_nonterminal_review_candidate``.
 """
 
 from __future__ import annotations

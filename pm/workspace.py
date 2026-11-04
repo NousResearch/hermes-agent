@@ -282,11 +282,23 @@ def _buildable_member_name(plugin_dir: Path) -> str | None:
     return str(name) if name else None
 
 
+def _member_equality_ignored(directory, names):
+    """Ignore install provenance and tool caches only when comparing twins.
+
+    Keep the snapshot/stamp exclusions unchanged: these files still travel with
+    the chosen member, but differences in install time or tooling are not code.
+    """
+    return _member_ignored(directory, names) + [
+        name for name in names if name.startswith(".hermes-")
+        or name in {".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    ]
+
+
 def _same_member_source(a: Path, b: Path) -> bool:
     """True when two installed plugins carry an identical build-relevant source tree.
 
-    Compares the declaration files plus every file under the tree except the
-    directories a workspace snapshot ignores. Byte-level, path-order-stable.
+    Compares declaration files and source bytes, excluding snapshot omissions,
+    install provenance and tool caches. Byte-level, path-order-stable.
     """
     if a == b:
         return True
@@ -299,8 +311,8 @@ def _same_member_source(a: Path, b: Path) -> bool:
             yield source.name, source.read_bytes()
         if (path / "pyproject.toml").is_file():
             for directory, dirs, files in os.walk(path):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                dirs[:] = sorted(set(dirs) - set(_member_equality_ignored(directory, dirs)))
+                for name in sorted(set(files) - set(_member_equality_ignored(directory, files))):
                     entry = Path(directory) / name
                     yield entry.relative_to(path).as_posix(), (
                         os.readlink(entry) if entry.is_symlink() else entry.read_bytes())

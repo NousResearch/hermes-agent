@@ -163,15 +163,23 @@ def _db_identity(path) -> Optional[tuple[str, int, int]]:
 
 
 def _apply_barriers_only(conn: sqlite3.Connection) -> None:
+    """Initializer for a file this process already reconciled: barriers, plus ONE sqlite_master probe. The
+    inode key misses a state.db deleted and recreated onto a recycled inode (seen under load); a missing
+    ledger table there falls back to the full reconcile instead of failing every call with
+    "no such table"."""
     from hermes_state_repair import apply_durability_barriers
     apply_durability_barriers(conn)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_delegations'").fetchone() is None:
+        from hermes_state_schema import reconcile_state_schema
+        reconcile_state_schema(conn)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
+    from hermes_state_repair import apply_durability_barriers
     from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
-    _apply_barriers_only(conn)
+    apply_durability_barriers(conn)
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This

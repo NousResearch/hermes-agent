@@ -478,12 +478,15 @@ By default, plugins only update when you run `hermes plugins update`. Turning
 on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
 apply the same catalog re-pins and tracked Git pulls on its own. Both routes
 use the update security scan, and an unattended update never accepts a widened
-catalog pin, a caution scan verdict or new capabilities: those wait for you to
-run the update yourself. Auto-update does not manage pinned, manual, drifted,
-or pip-distribution rows. It runs on the gateway's housekeeping thread, so it
+catalog pin, new capabilities or a caution scan verdict on a Git update: those
+wait for you to run the update yourself. (A catalog re-pin accepts a caution
+verdict, because a reviewer read that pin when it was admitted to the catalog.)
+Auto-update does not manage pinned, manual, drifted, or pip-distribution rows,
+nor a catalog plugin you installed with `--ref`: that stays on the commit you
+chose until you run `hermes plugins update <name>`. It runs on the gateway's housekeeping thread, so it
 never delays starting a session, and an offline check costs one warning.
-Updated plugin code loads in new sessions; a running session keeps the code it
-already imported. The setting is per profile.
+Code the scheduled check updates loads in new sessions; a running session keeps
+the code it already imported. The setting is per profile.
 
 The same switch and an "Update all" action are on every surface:
 
@@ -495,8 +498,11 @@ The same switch and an "Update all" action are on every surface:
 | Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
 
 `/plugins update`, Desktop and the dashboard update without asking per plugin,
-so a plugin that needs a review (widened pin, caution scan) is listed as
-"needs review" with nothing changed; update it by name to review it. Two
+so a plugin that needs a review (widened pin, caution scan of a Git update) is
+listed as "needs review" with nothing changed; update it by name to review it.
+Each plugin they update is reloaded right away, as an update from the plugin's
+own Update action is: its MCP servers and skills reach open chats now, its
+Python tools load in new sessions. Two
 updates of the same plugin never run at once: the second one is refused and
 changes nothing.
 

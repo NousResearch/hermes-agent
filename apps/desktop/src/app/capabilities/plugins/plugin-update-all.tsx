@@ -10,6 +10,7 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $pluginAutoUpdate,
   $pluginUpdateAllRunning,
+  isPluginUpdateAllRunning,
   loadPluginAutoUpdate,
   setPluginAutoUpdate,
   updateAllAgentPlugins
@@ -24,7 +25,7 @@ export function PluginUpdateAllActions({ scope }: { scope: null | string }) {
   const p = t.skills.plugins
   const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
-  const running = useStore($pluginUpdateAllRunning) !== undefined
+  const running = isPluginUpdateAllRunning(useStore($pluginUpdateAllRunning), scope)
   const auto = useStore($pluginAutoUpdate)
   const autoForScope = auto && auto.profile === scope ? auto : null
 

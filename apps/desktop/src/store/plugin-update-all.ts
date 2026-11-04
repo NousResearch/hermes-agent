@@ -24,8 +24,27 @@ export interface PluginUpdateAllSummary {
   updated: number
 }
 
-/** Profile whose update-all is running (null = none). */
-export const $pluginUpdateAllRunning = atom<null | string | undefined>(undefined)
+/** Profiles whose update-all is running (the default profile is `''`): a run for one profile leaves
+ *  another profile's button enabled. */
+export const $pluginUpdateAllRunning = atom<ReadonlySet<string>>(new Set())
+
+const profileKey = (profile: null | string) => profile ?? ''
+
+export const isPluginUpdateAllRunning = (running: ReadonlySet<string>, profile: null | string) =>
+  running.has(profileKey(profile))
+
+function markRunning(profile: null | string, on: boolean) {
+  const next = new Set($pluginUpdateAllRunning.get())
+
+  if (on) {
+    next.add(profileKey(profile))
+  } else {
+    next.delete(profileKey(profile))
+  }
+
+  $pluginUpdateAllRunning.set(next)
+}
+
 export const $pluginAutoUpdate = atom<PluginAutoUpdateState | null>(null)
 
 // One minute per plugin is the single-update budget; a whole sweep gets ten.
@@ -40,7 +59,7 @@ export async function updateAllAgentPlugins(
   request: GatewayRequest,
   profile: null | string
 ): Promise<PluginUpdateAllSummary> {
-  $pluginUpdateAllRunning.set(profile)
+  markRunning(profile, true)
 
   try {
     const result = await request<PluginsManageResult>(
@@ -62,7 +81,7 @@ export async function updateAllAgentPlugins(
       failed: countOf(rows, 'failed')
     }
   } finally {
-    $pluginUpdateAllRunning.set(undefined)
+    markRunning(profile, false)
   }
 }
 

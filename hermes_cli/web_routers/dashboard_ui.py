@@ -235,7 +235,7 @@ async def _named_plugin_action(request: Request, name: str, action: Callable[[st
 
 @router.post("/api/dashboard/agent-plugins/update-all")
 async def post_agent_plugins_update_all(request: Request):
-    """Update every plugin with an update, unattended: a widened pin or a caution scan comes back
+    """Update every plugin with an update, unattended: a widened pin or a git update's caution scan comes back
     ``needs_review`` (nothing changed) for the plugin's own Update action to walk."""
     _require_token(request)
     from hermes_cli.plugins_auto_update import update_all_unattended

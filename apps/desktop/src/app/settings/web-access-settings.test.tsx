@@ -291,6 +291,32 @@ describe('WebAccessSettings', () => {
     expect(toast.message).toBe("The gateway didn't stop serving the web app within 90 seconds.")
   })
 
+  it('frees the controls once a restarting Start has gone unconfirmed as long as the restart wait', async () => {
+    // Start answered that it is restarting the gateway. The backend answering is that gateway, and
+    // no replacement ever answers, so the Start's answer is the last status the pane has.
+    const pending: WebAccessStatus = { ...OFF, enabled: true, mode: 'lan' }
+    mocked.startWebAccess.mockResolvedValue({
+      ...pending,
+      restart_pid: 9,
+      restart_started: true,
+      start_progress: { started_at: Date.now() / 1000, step: 'restarting' }
+    })
+    renderPane(OFF)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    mocked.getWebAccessStatus.mockRejectedValue(new Error('gateway restarting'))
+    vi.useFakeTimers()
+
+    try {
+      fireEvent.click(start)
+      await vi.advanceTimersByTimeAsync(92_000)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect((await screen.findByRole('button', { name: 'Restart gateway' })).hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByText('Restarting the gateway to serve the web app.')).toBeNull()
+  })
+
   it('names the cause when the restart exits without replacing the gateway', async () => {
     // The restart answered `restart_started` with its pid, then exited at once: the old gateway keeps
     // serving the old config. An older restart's failure (another pid) is not this one's.

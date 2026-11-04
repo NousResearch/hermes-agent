@@ -139,7 +139,7 @@ export function WebAccessSettings(): ReactElement | null {
   // backend nor shows anything.
   const available = useWebAccessAvailable()
 
-  const { data: status, error, refetch } = useQuery({
+  const { data: status, dataUpdatedAt, error, refetch } = useQuery({
     enabled: available,
     queryFn: getWebAccessStatus,
     queryKey: key,
@@ -171,10 +171,11 @@ export function WebAccessSettings(): ReactElement | null {
     return error ? <SettingsContent>{w.failed}</SettingsContent> : <SettingsSkeleton sections={[{ rows: 2 }]} />
   }
 
-  return <WebAccessForm queryKey={key} status={status} w={w} />
+  return <WebAccessForm queryKey={key} readAt={dataUpdatedAt} status={status} w={w} />
 }
 
-type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: WebAccessTranslations }
+/** `readAt`: when the backend last answered `status` (ms). */
+type FormProps = { queryKey: readonly unknown[]; readAt: number; status: WebAccessStatus; w: WebAccessTranslations }
 
 /** Where a start would serve the web app, as the saved config says: LAN unless it names a public URL. */
 function draftModeOf(status: WebAccessStatus): WebAccessMode {
@@ -219,13 +220,33 @@ function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): v
   notify({ kind: 'warning', message: result.restart_busy ? w.restartBusy : w.restartFailed, title: w.restartNeeded })
 }
 
+/** Whether `ms` have passed since `since` (epoch ms); re-renders once when they do. */
+function usePassed(since: number, ms: number): boolean {
+  const [passedSince, setPassedSince] = useState<null | number>(null)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setPassedSince(since), since + ms - Date.now())
+
+    return () => clearTimeout(timer)
+  }, [since, ms])
+
+  return passedSince === since
+}
+
 /** The Start in flight: this pane's, or one the backend reports and this pane did not send
  *  (another window's, or this pane's from before it was reopened), which holds the controls as this
  *  pane's own would. Until the request returns the status names its step, so the hook re-reads it;
- *  the restart wait polls on its own, and a backend older than that report sends no `start_progress`. */
-function useStartInFlight(status: WebAccessStatus, running: null | Running, queryKey: readonly unknown[]) {
+ *  the restart wait polls on its own, and a backend older than that report sends no `start_progress`.
+ *  A report the backend has not repeated for as long as a restart wait (its reads fail: it is the
+ *  gateway being restarted, and no replacement answers) no longer holds the controls. */
+function useStartInFlight(
+  status: WebAccessStatus,
+  running: null | Running,
+  queryKey: readonly unknown[],
+  readAt: number
+) {
   const queryClient = useQueryClient()
-  const reported = status.start_progress ?? null
+  const reported = usePassed(readAt, RESTART_TIMEOUT_MS) ? null : (status.start_progress ?? null)
   const busy: Busy = running?.kind ?? (reported ? 'start' : null)
   const stage: null | StartStage = busy === 'start' ? startStage(running, reported) : null
   const elapsed = useElapsedSeconds(stage !== null, undefined, running?.since ?? startedAtMs(reported))
@@ -240,10 +261,10 @@ function useStartInFlight(status: WebAccessStatus, running: null | Running, quer
   return { busy, elapsed, stage }
 }
 
-function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
+function WebAccessForm({ queryKey, readAt, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
   const [running, setRunning] = useState<null | Running>(null)
-  const { busy, elapsed, stage } = useStartInFlight(status, running, queryKey)
+  const { busy, elapsed, stage } = useStartInFlight(status, running, queryKey, readAt)
   const [mode, setMode] = useState<WebAccessMode>(draftModeOf(status))
   const [publicUrl, setPublicUrl] = useState(status.public_url)
   // The choice follows the saved config when it changes underneath the pane (a CLI edit picked up

@@ -17,10 +17,10 @@ from typing import Any
 import pytest
 
 pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
-from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig  # noqa: E402
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def _line_sig(body: bytes, secret: str) -> str:
@@ -125,7 +125,7 @@ async def test_prefixed_line_webhook_is_verified_by_the_named_profiles_secret_un
 async def test_shared_listener_adapter_records_its_public_ingress_url(mux_home, monkeypatch):
     """Runtime status carries the /p/<profile>/ URL so `gateway status` / the dashboard can show it."""
     writes: list[dict] = []
-    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: writes.append(kw))
+    monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
     coder = _line_adapter("secret-coder", "coder")
     coder._runtime_status_platform_key = "coder:line"
     runner = _Runner({"coder": {Platform("line"): coder}})

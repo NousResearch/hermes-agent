@@ -1,0 +1,20 @@
+name: hermes-routines
+title: Hermes Routines
+repo: https://github.com/crdesign8/hermes-routines
+sha: aa055f5851a9e9cacd0e8516f56c58f62c639292
+description: A minimal Routines page in Hermes Desktop that turns crontab's five cron.manage actions into a plain-language interface for non-developers - name a routine, pick a schedule, write the prompt, and pause or resume it. No cron syntax, no service, no database; routine data stays in the host.
+maintainer: crdesign8
+tier: community
+category: desktop
+docs_url: https://github.com/crdesign8/hermes-routines#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/crdesign8/hermes-routines/aa055f5851a9e9cacd0e8516f56c58f62c639292/docs/assets/hr-cover-04.png
+screenshots:
+  - https://raw.githubusercontent.com/crdesign8/hermes-routines/aa055f5851a9e9cacd0e8516f56c58f62c639292/docs/assets/hermes-routines-01.png
+  - https://raw.githubusercontent.com/crdesign8/hermes-routines/aa055f5851a9e9cacd0e8516f56c58f62c639292/docs/assets/hermes-routines-03.png
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

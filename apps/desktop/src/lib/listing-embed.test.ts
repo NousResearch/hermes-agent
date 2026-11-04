@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hostLabel, parseListings, specLine } from './listing-embed'
+import { hostLabel, parseListings } from './listing-embed'
 
 // Shaped like what the agent actually emits after a portal sweep.
 const REAL = JSON.stringify({
@@ -97,16 +97,6 @@ describe('parseListings', () => {
     const [listing] = parseListings('{"address":"x","facts":"private dock"}')
 
     expect(listing.facts).toEqual(['private dock'])
-  })
-})
-
-describe('specLine', () => {
-  it('joins only the specs that exist', () => {
-    const [full] = parseListings('{"address":"x","beds":3,"baths":2,"size":"2,136 sqft"}')
-    const [sparse] = parseListings('{"address":"x","beds":3}')
-
-    expect(specLine(full)).toBe('3 bd · 2 ba · 2,136 sqft')
-    expect(specLine(sparse)).toBe('3 bd')
   })
 })
 

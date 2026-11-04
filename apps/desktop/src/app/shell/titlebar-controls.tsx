@@ -4,7 +4,10 @@ import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useSta
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,23 +16,30 @@ import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
-import { toggleHud } from '@/store/hud'
+import { recordAction } from '@/store/desktop-metrics'
+import { canUseHud, toggleHud } from '@/store/hud'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
+  $leftSideOpen,
   $panesFlipped,
-  $sidebarOpen,
-  toggleFileBrowserOpen,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
+  toggleLeftSide,
   togglePanesFlipped,
-  toggleSidebarOpen
+  toggleRightSide
 } from '@/store/layout'
+import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
-import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
+import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
   titlebarButtonClass,
   titlebarIconSizeCss,
@@ -37,10 +47,11 @@ import {
 } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
 
-export interface TitlebarTool {
+export interface TitlebarTool extends Tiered {
   id: string
   label: string
   active?: boolean
+  expanded?: boolean
   className?: string
   disabled?: boolean
   hidden?: boolean
@@ -131,42 +142,86 @@ function useModifierHeld(): boolean {
   return held
 }
 
+interface SidebarEdge {
+  /** Whether the side reads as open, which picks the button's Show or Hide label. */
+  open: boolean
+  /** The button's aria-expanded; only the browser-hosted Desktop reports it. */
+  expanded?: boolean
+  toggle: () => void
+}
+
+/** The titlebar's two sidebar buttons. The browser-hosted Desktop's narrow layout has no hover to
+ * reveal by, so there the buttons read and drive the overlay itself, and they send an explicit open
+ * or close: a visible hover reveal is not pinned, and a generic toggle would pin it rather than
+ * perform the labelled Hide. A narrow native window keeps the docked toggles, which already route
+ * through the overlay's toggle. */
+function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
+  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const leftSideOpen = useStore($leftSideOpen)
+  const narrow = useStore($narrowViewport)
+  const overlayPanes = useStore($narrowOverlayPaneIds)
+  const browserHost = hostHas('narrowOverlayChrome')
+  const overlayChrome = narrow && browserHost
+  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
+
+  const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
+    const open = overlayChrome ? overlayPanes.has(id) : dockedOpen
+    const revealMode = open ? 'close' : 'open'
+
+    return {
+      open,
+      expanded: browserHost ? open : undefined,
+      toggle: overlayChrome
+        ? () => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: revealMode } }))
+        : toggleDocked
+    }
+  }
+
+  return {
+    left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
+    right: edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
+  }
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
-  const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
-  const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
+  const interfaceMode = useStore($interfaceMode)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+  // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
+  const shown = shownInMode(interfaceMode)
+  const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
 
   // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
   // only while that surface is up — so a non-empty area means a page is
   // actively projecting chrome into the band right now.
   const titleBarLeft = useContributions('titleBar.left')
-  const titleBarCenter = useContributions('titleBar.center')
   const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarCenter.length + titleBarRight.length > 0
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
-  // stay correct through flips and rearranges. $sidebarOpen ≙ left side,
-  // $fileBrowserOpen ≙ right side. Never an active highlight — plain
-  // show/hide affordances.
-  const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+  // stay correct through flips and rearranges. Both edges resolve their column
+  // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
+  // column, the sessions column, whatever is physically left / right. Never an
+  // active highlight — plain show/hide affordances.
+  const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
   const sidebarTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS.sidebar,
     actionId: 'view.toggleSidebar',
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
+    expanded: leftEdge.expanded,
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -175,6 +230,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const flipTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS['flip-panes'],
     actionId: 'view.flipPanes',
     icon: <TitlebarIcon name="arrow-swap" />,
     id: 'flip-panes',
@@ -186,10 +242,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const rightSidebarTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS['right-sidebar'],
     actionId: 'view.toggleRightSidebar',
     badge: panesFlipped ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
+    expanded: rightEdge.expanded,
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -202,6 +260,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // left titlebar stays free for tabs (#107351).
   const systemTools: TitlebarTool[] = [
     {
+      ...TITLEBAR_FIXED_TOOLS.settings,
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
@@ -212,6 +271,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
+      ...TITLEBAR_FIXED_TOOLS.layout,
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -232,11 +292,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       title: t.titlebar.layoutEditorTitle(formatModifierToken('mod'))
     },
     {
+      ...TITLEBAR_FIXED_TOOLS.hud,
       // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
       // text OVERRIDE, so a long sentence there replaces the short label and
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
       // from the action registry, same as every other tool here.
       actionId: 'view.toggleHud',
+      hidden: !canUseHud(),
       icon: <TitlebarIcon name="comment-discussion" />,
       id: 'hud',
       label: t.titlebar.enterHud,
@@ -249,20 +311,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const view = appViewForPath(location.pathname)
 
+  // Route changes can replace measured clusters without resizing the panels.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [location.pathname, pageOwnsTitlebar])
+
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
   if (isOverlayView(view)) {
     return null
   }
-
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
 
   const leftClusterClass = cn(
     titlebarToolClusterClass,
@@ -276,24 +335,34 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
-    const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
+    const pageTools = [...leftTools, ...tools].filter(visibleTool)
 
+    // Both markers are required even when a page contributes to only one side.
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+        </div>
+        <div
+          className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+          data-titlebar-cluster="right"
+        >
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 
   const visibleLeftTools = (
     appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
-  ).filter(tool => !tool.hidden)
+  ).filter(visibleTool)
 
-  const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(tool => !tool.hidden) : []
-  const visiblePaneTools = tools.filter(tool => !tool.hidden)
+  const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []
+  const visiblePaneTools = tools.filter(visibleTool)
+  const visibleRightFixedTools = [flipTool, rightSidebarTool].filter(visibleTool)
 
   return (
     <>
@@ -327,8 +396,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleSystemTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        <TitlebarToolButton navigate={navigate} tool={flipTool} />
-        <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        {visibleRightFixedTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
         <Slot area="titleBar.right" />
       </div>
     </>
@@ -369,12 +439,17 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   return (
     <Tip label={tooltipLabel} placement="toolbar">
       <Button
+        aria-expanded={tool.expanded}
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}
         className={className}
         data-tour={tool.tour}
         disabled={tool.disabled}
         onClick={event => {
+          if (tool.actionId) {
+            recordAction(tool.actionId, 'click')
+          }
+
           if (tool.to) {
             navigate(tool.to)
           }

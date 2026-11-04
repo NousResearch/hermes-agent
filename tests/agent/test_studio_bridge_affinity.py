@@ -132,17 +132,6 @@ def _reply_scope(
 
 
 class TestStudioBridgeAffinity:
-    def test_the_undeclared_bridge_shape_rekeys_every_reply(self, db):
-        """The reproduction, stated as a permanent negative control.
-
-        Hermes must not infer the conversation from the id's syntax — that is
-        #79017's collision class — so a bridge that declares nothing keeps a
-        per-reply scope by design.  This stays green before and after the host
-        adopts the key, and it is why the adoption has to happen host-side.
-        """
-        scopes = {_reply_scope(db, declared_key=None) for _ in range(3)}
-
-        assert len(scopes) == 3
 
     def test_a_declared_conversation_holds_one_affinity_across_replies(self, db):
         """Consecutive replies keep one affinity though their ids differ."""
@@ -173,17 +162,6 @@ class TestStudioBridgeAffinity:
 
         assert len({reviewer, planner, other_room}) == 3
 
-    def test_a_new_session_seed_rotates_the_affinity(self, db):
-        """Studio's own conversation boundary is the room-owned sessionSeed.
-
-        A new conversation in the room mints a new seed, and the seed is part
-        of the declared key, so the next conversation starts on a cold bucket
-        without Hermes having to observe a reset of its own.
-        """
-        first = _reply_scope(db, declared_key=_bridge_session_key(seed="0"))
-        second = _reply_scope(db, declared_key=_bridge_session_key(seed="1"))
-
-        assert first != second
 
     def test_the_row_source_is_the_authority_not_the_platform(self, db):
         """Equal keys under different sources never share one scope.

@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
   mergeInFlightMessages,
   persistInFlightTurnState,
+  purgeInFlightTurnJournals,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
@@ -104,26 +105,6 @@ describe('persistInFlightTurnState', () => {
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).not.toBeNull()
   })
 
-  it('writes only the current session instead of reading and rewriting the aggregate journal', () => {
-    const localStorage = window.localStorage
-    const storageConstructor = window.Storage
-
-    const spyTarget =
-      typeof storageConstructor === 'function' && localStorage instanceof storageConstructor
-        ? storageConstructor.prototype
-        : localStorage
-
-    const getItem = vi.spyOn(spyTarget, 'getItem')
-    const setItem = vi.spyOn(spyTarget, 'setItem')
-
-    persistInFlightTurnState(journalState())
-    vi.advanceTimersByTime(400)
-
-    expect(getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
-    expect(setItem).not.toHaveBeenCalledWith(STORAGE_KEY, expect.any(String))
-    expect(setItem).toHaveBeenCalledWith(sessionStorageKey('stored-1'), expect.any(String))
-  })
-
   it('keeps another session snapshot when one session settles', () => {
     persistInFlightTurnState(journalState())
     persistInFlightTurnState(journalState({ storedSessionId: 'stored-2' }))
@@ -168,6 +149,43 @@ describe('persistInFlightTurnState', () => {
     const entry = readInFlightTurnJournal('stored-1')
     const tail = entry?.messages.find(m => m.role === 'assistant')
     expect(tail?.parts).toEqual([{ type: 'text', text: 'partial answer grew' }])
+  })
+
+  it('checkpoints overdue commits without timer delivery and retains quiet-tail and settle behavior', () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+
+    const commit = (text: string) =>
+      persistInFlightTurnState(
+        journalState({
+          messages: [user('u1', 'do the thing'), assistant('assistant-stream-1', text, { pending: true })]
+        })
+      )
+
+    commit('first')
+    for (now = 1; now < 400; now += 1) {
+      commit(`progress-${now}`)
+    }
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    // Time passed, but Chromium has not delivered the trailing timer.
+    commit('checkpoint')
+    expect(recoverInFlightTurnJournal('stored-1', [user('u1', 'do the thing')]).messages.map(chatMessageText)).toEqual([
+      'do the thing',
+      'checkpoint'
+    ])
+
+    now = 401
+    commit('quiet tail')
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('checkpoint')
+    vi.advanceTimersByTime(400)
+    expect(chatMessageText(readInFlightTurnJournal('stored-1')!.messages[1])).toBe('quiet tail')
+
+    commit('pending before settle')
+    persistInFlightTurnState(journalState({ busy: false, streamId: null }))
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
   it('preserves a long user prompt exactly so recovery still matches its transcript row', () => {
@@ -675,12 +693,14 @@ describe('recoverInFlightTurnJournal', () => {
     // written to the DB (and may even belong to a different conversation).
     // Because no base user matches it, the fold used to treat the whole tail
     // as unknown and append it — duplicating the assistant answers below.
+    // Live rows never carry a durable id; the last committed turn's equal
+    // reply is what proves them stale.
     journalEntry([
       user('user-inflight-a3c2beb1', 'a stray user bubble that never persisted'),
       assistant('assistant-stream-1', 'the committed answer')
     ])
 
-    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
 
     expect(result.caughtUp).toBe(true)
@@ -691,13 +711,50 @@ describe('recoverInFlightTurnJournal', () => {
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 
+  // A steer typed before the first token journals `[prompt, steer, assistant]`.
+  // When only the prompt persisted, the prompt is the anchor: the steer and
+  // the partial reply are recovered under it, and the prompt is not repeated.
+  it('anchors a pre-token steer tail on the persisted prompt', () => {
+    journalEntry([
+      user('user-1', 'remove the session counts'),
+      user('user-2', 'hurry up'),
+      assistant('assistant-stream-1', 'Moving.')
+    ])
+
+    const base = [user('db-u1', 'remove the session counts')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.applied).toBe(true)
+    expect(result.messages.map(message => `${message.role}:${chatMessageText(message)}`)).toEqual([
+      'user:remove the session counts',
+      'user:hurry up',
+      'assistant:Moving.'
+    ])
+  })
+
+  it('retires a journal row by durable identity regardless of turn position', () => {
+    journalEntry([assistant('assistant-old', 'the committed answer', { rowId: 42 })])
+
+    const base = [
+      user('db-u1', 'the real prompt'),
+      assistant('db-a1', 'the committed answer', { rowId: 42 }),
+      user('db-u2', 'and then?'),
+      assistant('db-a2', 'done', { rowId: 43 })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toEqual(base)
+  })
+
   it('does not re-append committed answers when the journal tail has no user row', () => {
     // A tail captured after a partial hydrate can end on assistant rows with
     // no user prompt before them. The old code appended them verbatim, so the
     // transcript ended with a duplicate of an answer that was already settled.
     journalEntry([assistant('assistant-stream-1', 'the committed answer')])
 
-    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer', { rowId: 42 })]
     const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
 
     expect(result.caughtUp).toBe(true)
@@ -808,5 +865,42 @@ describe('mid-turn redirect corrections', () => {
     const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
 
     expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})
+
+describe('purgeInFlightTurnJournals', () => {
+  it("clears a busy session's journaled tail from localStorage (delete must reach the local copy)", () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+
+    expect(readInFlightTurnJournal('stored-1')?.messages.length).toBeGreaterThan(0)
+
+    purgeInFlightTurnJournals(['stored-1'])
+
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+  })
+
+  it('drains every id it is given, not just the stored tip', () => {
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-tip' }))
+    persistInFlightTurnState(journalState({ storedSessionId: 'lineage-root' }))
+    vi.advanceTimersByTime(400)
+
+    purgeInFlightTurnJournals(['stored-tip', 'lineage-root', null, undefined])
+
+    expect(readInFlightTurnJournal('stored-tip')).toBeNull()
+    expect(readInFlightTurnJournal('lineage-root')).toBeNull()
+  })
+
+  it('drops a pending throttled write so the tail cannot land after the purge', () => {
+    persistInFlightTurnState(journalState())
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    purgeInFlightTurnJournals(['stored-1'])
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 })

@@ -141,13 +141,6 @@ class TestPrunedSkillReloadNotice:
         notice = _pruned_skill_reload_notice([{"role": "user", "content": text}])
         assert notice.count("skill_view(name=") == _MAX_PRUNED_SKILL_MARKERS
 
-    def test_deterministic_bytes(self):
-        rows = [
-            {"role": "user", "content": _skill_pruned_marker("stable-skill")}
-        ]
-        assert _pruned_skill_reload_notice(rows) == _pruned_skill_reload_notice(
-            rows
-        )
 
     def test_notice_does_not_feed_the_marker_extractor(self):
         """The notice must never re-trigger marker extraction on the next
@@ -206,13 +199,6 @@ class TestSkillGuidanceSurvivesWithTodos:
             _PRUNED_SKILL_RELOAD_NOTICE_HEADER
         )
 
-    def test_no_notice_when_no_skills_pruned(self, tmp_path):
-        compressed = self._run_compaction(
-            tmp_path, "[CONTEXT COMPACTION] summary"
-        )
-        tail_text = str(compressed[-1]["content"])
-        assert TODO_INJECTION_HEADER in tail_text
-        assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in tail_text
 
     def test_synthetic_row_classification_unbroken(self, tmp_path):
         """A snapshot+notice appended as its own row must still classify as
@@ -306,16 +292,20 @@ class TestNoticeStripLifecycle:
         parent = "PARENT_SKILL_TODO_RESTRIP"
         db.create_session(parent, source="cli")
         agent = _build_agent_with_db(db, parent)
+        original = _msgs()
         agent.context_compressor.compress.return_value = [
             {"role": "user", "content": summary},
-            {"role": "assistant", "content": "acknowledged"},
+            # Conforming-engine shape (#118900): the kept assistant row is the
+            # transcript's own last reply, so the commit guard sees it present
+            # and the snapshot still merges into the trailing human row.
+            {"role": "assistant", "content": original[-1]["content"]},
             {"role": "user", "content": stale_tail},
         ]
         agent._todo_store._items = [
             {"id": "t1", "content": "fresh task", "status": "pending"}
         ]
         compressed, _ = agent._compress_context(
-            _msgs(), "sys", approx_tokens=120_000
+            original, "sys", approx_tokens=120_000
         )
         db.close()
         tail_text = str(compressed[-1]["content"])

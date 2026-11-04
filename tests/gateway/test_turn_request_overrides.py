@@ -85,7 +85,7 @@ def test_resolve_runtime_agent_kwargs_carries_request_overrides(monkeypatch):
         lambda *a, **k: dict(fake_runtime),
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider._get_model_config", lambda: {}
+        "hermes_cli.runtime_provider._get_model_config", dict
     )
     rk = gateway_run._resolve_runtime_agent_kwargs()
     assert rk["request_overrides"] == PROVIDER_OVERRIDES

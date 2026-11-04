@@ -41,8 +41,8 @@ Relay is for deployments where a hosted or shared connector service manages
 the platform side — for example multi-tenant hosting where one shared bot
 fronts many users' agents, or setups where you don't want bot tokens on the
 gateway machine. If you run your own bots directly, use the native platform
-adapters ([Telegram](/user-guide/messaging/telegram),
-[Discord](/user-guide/messaging/discord), etc.) instead.
+adapters ([Telegram](./telegram.md),
+[Discord](./discord.md), etc.) instead.
 
 ## Enrollment
 

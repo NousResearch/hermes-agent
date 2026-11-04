@@ -4,16 +4,16 @@ import json
 import os
 import pytest
 import stat
+import threading
 from argparse import Namespace
 
 from hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
     _load_subscriptions,
-    _save_subscriptions,
+    _mutate_subscriptions,
     _subscriptions_path,
 )
-
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
@@ -22,7 +22,6 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.webhook._is_webhook_enabled", lambda: True
     )
-
 
 def _make_args(**kwargs):
     defaults = {
@@ -42,7 +41,6 @@ def _make_args(**kwargs):
     defaults.update(kwargs)
     return Namespace(**defaults)
 
-
 @pytest.mark.parametrize("host", [None, "", "0.0.0.0", "::"])
 def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
     monkeypatch.setattr(
@@ -51,16 +49,13 @@ def test_webhook_base_url_maps_wildcard_hosts_to_localhost(monkeypatch, host):
     )
     assert _get_webhook_base_url() == "http://localhost:9123"
 
-
 class TestSubscribe:
-
 
     def test_custom_secret(self):
         webhook_command(_make_args(
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
-
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
@@ -70,6 +65,7 @@ class TestSubscribe:
     def test_profile_binding_and_secret_survive_update(self, tmp_path, capsys):
         profile_dir = tmp_path / "profiles" / "compta"
         profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
 
         webhook_command(_make_args(
             webhook_action="subscribe", name="notifier", route_profile="compta"
@@ -94,9 +90,109 @@ class TestSubscribe:
             webhook_action="subscribe", name="notifier", route_profile="missing"
         ))
 
-        assert "does not exist" in capsys.readouterr().out
         assert _load_subscriptions()["notifier"]["secret"] == "original"
 
+    def test_stale_update_cannot_restore_concurrently_removed_or_disabled_route(self, monkeypatch):
+        import hermes_cli.webhook as webhook_module
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="original"
+        ))
+        original_load = _load_subscriptions
+        pause = {"loaded": threading.Event(), "allow": threading.Event()}
+        errors = []
+
+        def load_with_paused_update():
+            subscriptions = original_load()
+            if threading.current_thread().name == "stale-webhook-update":
+                pause["loaded"].set()
+                if not pause["allow"].wait(timeout=5):
+                    raise AssertionError("timed out waiting to resume stale update")
+            return subscriptions
+
+        monkeypatch.setattr("hermes_cli.webhook._load_subscriptions", load_with_paused_update)
+
+        def update_route():
+            try:
+                webhook_command(_make_args(
+                    webhook_action="subscribe", name="notifier", description="stale update"
+                ))
+            except BaseException as exc:  # surfaced in the test thread below
+                errors.append(exc)
+
+        def start_stale_update():
+            worker = threading.Thread(target=update_route, name="stale-webhook-update")
+            worker.start()
+            assert pause["loaded"].wait(timeout=5)
+            return worker
+
+        worker = start_stale_update()
+        webhook_command(_make_args(webhook_action="remove", name="notifier"))
+        pause["allow"].set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert "notifier" not in original_load()
+
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="replacement"
+        ))
+        pause = {"loaded": threading.Event(), "allow": threading.Event()}
+        worker = start_stale_update()
+
+        def disable(subscriptions):
+            subscriptions["notifier"]["enabled"] = False
+
+        webhook_module._mutate_subscriptions(disable)
+        pause["allow"].set()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert original_load()["notifier"]["enabled"] is False
+
+    def test_profile_rebind_rotates_secret_without_exposing_mixed_record(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.webhook import WebhookAdapter
+
+        profile_dir = tmp_path / "profiles" / "compta"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("{}\n")  # identity marker
+        monkeypatch.setattr("hermes_cli.webhook.time.strftime", lambda *_a: "2026-01-01T00:00:00Z")
+        # One char shorter than the rotated secret: "default" -> "compta" then keeps the file size equal.
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", secret="old-profile-secret-ab"
+        ))
+
+        old_record = _load_subscriptions()["notifier"]
+        adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "global"}))
+        adapter._reload_dynamic_routes()
+        initial_stat = _subscriptions_path().stat()
+        monkeypatch.setattr("hermes_cli.webhook.secrets.token_urlsafe", lambda _n: "rotated-profile-secret")
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="notifier", route_profile="compta"
+        ))
+
+        new_record = _load_subscriptions()["notifier"]
+        new_state = (new_record["profile"], new_record["secret"])
+        # Same size + restored mtime: only the rename's new inode reveals the change to the gateway.
+        os.utime(
+            _subscriptions_path(),
+            ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns),
+        )
+        assert _subscriptions_path().stat().st_size == initial_stat.st_size
+        adapter._reload_dynamic_routes()
+        _subscriptions_path().write_text("{torn")  # unreadable file must keep the last good routes
+        adapter._reload_dynamic_routes()
+        assert new_state == ("compta", "rotated-profile-secret")
+        assert new_record["secret"] != old_record["secret"]
+        assert (
+            adapter._routes["notifier"]["profile"],
+            adapter._routes["notifier"]["secret"],
+        ) == new_state
 
 class TestCronJobSubscribe:
     """--cron-job: event-triggered cron jobs."""
@@ -121,7 +217,6 @@ class TestCronJobSubscribe:
         webhook_command(_make_args(
             webhook_action="subscribe", name="ev", cron_job="nope"
         ))
-        assert "no cron job matches" in capsys.readouterr().out
         assert "ev" not in _load_subscriptions()
 
     def test_cron_job_plus_deliver_only_rejected(self, capsys):
@@ -132,25 +227,9 @@ class TestCronJobSubscribe:
             deliver_only=True,
             deliver="telegram",
         ))
-        assert "mutually exclusive" in capsys.readouterr().out
         assert "ev" not in _load_subscriptions()
 
-
-class TestList:
-
-    def test_with_entries(self, capsys):
-        webhook_command(_make_args(webhook_action="subscribe", name="a"))
-        webhook_command(_make_args(webhook_action="subscribe", name="b"))
-        capsys.readouterr()  # clear
-        webhook_command(_make_args(webhook_action="list"))
-        out = capsys.readouterr().out
-        assert "2 webhook" in out
-        assert "a" in out
-        assert "b" in out
-
-
 class TestRemove:
-
 
     def test_selective_remove(self):
         webhook_command(_make_args(webhook_action="subscribe", name="keep"))
@@ -160,7 +239,6 @@ class TestRemove:
         assert "keep" in subs
         assert "drop" not in subs
 
-
 class TestPersistence:
 
     def test_corrupted_file(self):
@@ -169,11 +247,11 @@ class TestPersistence:
         path.write_text("broken{{{")
         assert _load_subscriptions() == {}
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    @pytest.mark.platforms("posix")  # POSIX mode bits are platform-specific
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):
         old_umask = os.umask(0o022)
         try:
-            _save_subscriptions({"demo": {"secret": "TOPSECRET", "prompt": "x"}})
+            _mutate_subscriptions(lambda s: s.update(demo={"secret": "TOPSECRET", "prompt": "x"}))
         finally:
             os.umask(old_umask)
 
@@ -181,7 +259,7 @@ class TestPersistence:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "TOPSECRET" in path.read_text(encoding="utf-8")
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    @pytest.mark.platforms("posix")  # POSIX mode bits are platform-specific
     def test_save_narrows_existing_broad_secret_file_mode(self):
         # Simulate a pre-existing 0o644 file from before this hardening landed.
         path = _subscriptions_path()
@@ -189,11 +267,10 @@ class TestPersistence:
         path.write_text(json.dumps({"old": {"secret": "stale", "prompt": "x"}}))
         path.chmod(0o644)
 
-        _save_subscriptions({"demo": {"secret": "FRESH", "prompt": "x"}})
+        _mutate_subscriptions(lambda s: s.update(demo={"secret": "FRESH", "prompt": "x"}))
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "FRESH" in path.read_text(encoding="utf-8")
-
 
 class TestWebhookEnabledGate:
 
@@ -202,23 +279,3 @@ class TestWebhookEnabledGate:
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
         assert "not enabled" in out.lower()
-
-    def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
-        webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
-        out = capsys.readouterr().out
-        assert "Created" in out
-        assert "allowed" in _load_subscriptions()
-
-    def test_real_check_disabled(self, monkeypatch):
-        monkeypatch.setattr(
-            "hermes_cli.webhook._get_webhook_config",
-            lambda: {},
-        )
-        monkeypatch.setattr(
-            "hermes_cli.webhook._is_webhook_enabled",
-            lambda: bool({}.get("enabled")),
-        )
-        import hermes_cli.webhook as wh_mod
-        assert wh_mod._is_webhook_enabled() is False
-

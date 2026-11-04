@@ -4,9 +4,10 @@ Spins up the REAL iron-proxy binary (auto-installed if not present), routes
 a curl request through it against a local fake upstream, and verifies that
 the Authorization header was swapped from a proxy token to a real secret.
 
-Gated on the network. Skipped by default in CI unless the user explicitly
-opts in with --run-e2e or HERMES_RUN_E2E=1.  This is intentional — the test
-downloads ~16MB and requires both `openssl` and `curl` to be present.
+Gated on the network: skipped unless HERMES_RUN_E2E=1 (no CI lane sets it;
+it is a manual smoke, see website/docs/developer-guide/egress-internals.md).
+This is intentional — the test downloads ~16MB and requires both `openssl`
+and `curl` to be present.
 """
 
 from __future__ import annotations
@@ -146,6 +147,7 @@ def test_iron_proxy_swaps_authorization_header_end_to_end(hermes_home, monkeypat
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         # Some iron-proxy versions return 200 with no body; only the swap matters.
@@ -253,6 +255,7 @@ def test_iron_proxy_swaps_x_api_key_header_end_to_end(hermes_home, monkeypatch):
             ],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         captured = _CaptureXApiKeyHandler.captured_key
@@ -352,6 +355,7 @@ def test_iron_proxy_management_reload_end_to_end(hermes_home, monkeypatch):
                 f"http://127.0.0.1:{upstream_port}/",
             ],
             capture_output=True, text=True,
+            check=False,
         )
         assert result.returncode == 0, f"curl failed: {result.stderr}"
         captured = _CaptureHandler.captured_auth

@@ -11,7 +11,7 @@ import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { switcherActive } from '@/store/session-switcher'
 
-import { isEditableTarget, isFocusWithin } from './combo'
+import { isEditableTarget, isFocusWithin, OVERLAY_SURFACE } from './combo'
 
 /** `composer.focus` defaults that need the surface/target gate. */
 export const isComposerFocusSoftCombo = (combo: string) => combo === '/' || combo === 'enter'
@@ -38,11 +38,6 @@ const ENTER_ACTIVATES = [
   '[role="tab"]',
   '[role="treeitem"]'
 ].join(',')
-
-// Overlays that cover the whole window (portaled to the body, or the overlay
-// shell itself) — one anywhere means the composer is behind it.
-const BLOCKING_OVERLAY =
-  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
 
 // Blockers that live INSIDE a chat surface. Inactive tabs stay mounted, so this
 // one has to be visible-scoped: a clarify card waiting in a background thread
@@ -104,8 +99,8 @@ export function isActivateOnEnterTarget(target: EventTarget | null): boolean {
 /**
  * True when a live clarify card binds THIS key, so type-to-focus must yield it.
  *
- * The card owns Enter plus the shortcuts it actually renders — `1..N+1` and
- * `A..` for its N choices and the trailing "Other" row. It does NOT own the
+ * The card owns Enter plus the shortcuts it actually renders — `1..N` and
+ * `A..` for its N choices. It does NOT own the
  * rest of the alphabet: typing a real message instead of picking an option is a
  * legitimate answer ("none of these"), and blanket-blocking every printable
  * left the user unable to start that message at all — the first letter vanished
@@ -126,8 +121,9 @@ export function clarifyCardOwnsKey(event: KeyboardEvent): boolean {
     return true
   }
 
-  // "Other" is the row past the last choice, hence the +1.
-  const rows = Number(card.getAttribute('data-clarify-choices')) + 1
+  // "Other" is the row past the last choice.
+  const rows =
+    Number(card.getAttribute('data-clarify-choices')) + (card.getAttribute('data-clarify-other') === 'false' ? 0 : 1)
 
   if (!Number.isFinite(rows)) {
     return false
@@ -156,7 +152,7 @@ export function composerFocusBlockedBySurface(): boolean {
     switcherActive() ||
     $workspaceIsPage.get() ||
     isFocusWithin('[data-terminal]') ||
-    Boolean(document.querySelector(BLOCKING_OVERLAY))
+    Boolean(document.querySelector(OVERLAY_SURFACE))
   )
 }
 
@@ -189,5 +185,6 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     return false
   }
 
-  return !(combo === 'enter' && isActivateOnEnterTarget(event.target))
+  // Space activates focused buttons too; it must not become a composer draft.
+  return !((combo === 'enter' || event.key === ' ') && isActivateOnEnterTarget(event.target))
 }

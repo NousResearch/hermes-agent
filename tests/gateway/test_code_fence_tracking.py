@@ -28,19 +28,13 @@ Test categories:
   I. Integration: what a fix would look like
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, ANY
+from unittest.mock import MagicMock
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, ensure_closed_code_fences
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
-
-def _len_with_indicator(text: str) -> int:
-    """Simulate the length after INDICATOR_RESERVE (10) is subtracted."""
-    return len(text)
-
 
 def _count_fences(text: str) -> int:
     """Count triple-backtick code fence markers in text."""
@@ -137,27 +131,6 @@ class TestTruncateMessageCarryLang:
 #  D. truncate_message — THE GAP: last chunk does not auto-close
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestTruncateMessageLastChunkGap:
-    """The final chunk (when ``remaining`` fits) is appended via the
-    early-break path at line 4853-4854 of base.py, which does NOT run
-    the fence-balance check.  If the remaining content has an odd count
-    of ```, so does the final chunk."""
-
-    def test_last_chunk_can_have_odd_fence_when_content_unclosed(self):
-        """Content with unclosed ``` where the last chunk fits → no fix."""
-        long_body = "\n".join(f"line{i}" for i in range(100))
-        content = f"```\n{long_body}"
-        # The first split happens at ~186 chars, last chunk is small
-        chunks = BasePlatformAdapter.truncate_message(content, 150)
-        assert len(chunks) >= 2
-        # The last chunk may have odd ``` because the remaining content
-        # (after carry_lang prefix) doesn't contain a closing ```
-        last = chunks[-1]
-        # Strip the (N/N) indicator
-        last_clean = last.rsplit(" (", 1)[0]
-        if _odd_fences(last_clean):
-            # This demonstrates the GAP — last chunk has unbalanced fence
-            pass  # Not asserting — the gap is real
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -195,62 +168,18 @@ class TestFilterAndAccumulate:
 #  F. _split_text_chunks — NO fence tracking (fallback final path)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestSplitTextChunks:
-    """GatewayStreamConsumer._split_text_chunks is a simple text splitter
-    with NO code-fence awareness.  Used by _send_fallback_final."""
-
-    def test_split_inside_fence_does_not_close(self):
-        """Split lands inside ``` → no auto-close."""
-        long = "\n".join(f"code{i}" for i in range(30))
-        text = f"```python\n{long}\n```"
-        chunks = GatewayStreamConsumer._split_text_chunks(text, 60)
-        assert len(chunks) >= 2
-        # First chunk may have odd ``` — no fence tracking
-        # Just verify chunks are of type str and non-empty
-        assert all(isinstance(c, str) and c for c in chunks)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  G. Reasoning truncation — model cut off mid-reasoning-block
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestReasoningTruncation:
-    """When the model runs out of tokens mid-reasoning-block."""
-
-    DISCORD_LIMIT = 2000
-
-    def test_short_truncation_unfixed(self):
-        """Fits in one message → truncate_message passes through unfixed."""
-        truncated = "💭 **Reasoning:**\n```\nI was thinking about"
-        chunks = BasePlatformAdapter.truncate_message(truncated, self.DISCORD_LIMIT)
-        assert chunks == [truncated]
-        assert _odd_fences(chunks[0])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  H. Stream consumer — unclosed fence in final send (GAP)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestStreamConsumerFinalSendGap:
-    """The stream consumer's normal final-send path (_send_or_edit via
-    run()) does not check for or fix unclosed ```.  The _accumulated
-    text goes to the adapter verbatim.
-
-    Note: This class uses synchronous tests because pytest-asyncio is not
-    installed in this project (existing stream consumer tests use it but
-    the conftest may register the marker differently).  We test the
-    accumulator behaviour directly.
-    """
-
-    def test_accumulator_has_no_fence_closing(self):
-        """Unit-level: _filter_and_accumulate does not track fence state."""
-        cfg = StreamConsumerConfig(buffer_only=True)
-        c = GatewayStreamConsumer(
-            adapter=MagicMock(), chat_id="12345", config=cfg,
-        )
-        c._filter_and_accumulate("A\n```\nunclosed")
-        assert "```" in c._accumulated
-        assert _odd_fences(c._accumulated), "GAP: no fence closing"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -307,125 +236,18 @@ class TestEnsureClosedCodeFences:
 #  J. Missing: edit path bypasses truncate_message (GAP G2/G3)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestEditPathBypass:
-    """When _send_or_edit has an existing _message_id, it calls
-    _edit_message() directly — bypassing truncate_message entirely.
-    This means code-fence tracking is NEVER applied to streaming edits."""
-
-    def test_edit_path_does_not_call_truncate_message(self):
-        """With _message_id set, _send_or_edit calls _edit_message
-        without passing through truncate_message."""
-        adapter = MagicMock()
-        adapter.edit_message = AsyncMock(return_value=MagicMock(
-            success=True, message_id="msg_1",
-        ))
-        adapter.MAX_MESSAGE_LENGTH = 2000
-        adapter.message_len_fn = len
-
-        config = StreamConsumerConfig(
-            buffer_only=False, transport="edit",
-            edit_interval=9999, buffer_threshold=9999,
-        )
-        consumer = GatewayStreamConsumer(
-            adapter=adapter, chat_id="12345", config=config,
-        )
-
-        # Simulate: already have a message to edit
-        consumer._message_id = "msg_1"
-        consumer._already_sent = True
-
-        # Spy on truncate_message
-        original = BasePlatformAdapter.truncate_message
-        called = []
-
-        def _spy(content, max_len, len_fn=None, **kw):
-            called.append(True)
-            return original(content, max_len, len_fn=len_fn, **kw)
-
-        with patch.object(BasePlatformAdapter, 'truncate_message', _spy):
-            import asyncio
-            result = asyncio.run(
-                consumer._send_or_edit("Hello world\n```\nunclosed",
-                                       finalize=True)
-            )
-
-        # truncate_message should NOT have been called — edit path
-        assert len(called) == 0, (
-            f"Edit path should NOT call truncate_message, called {len(called)} times"
-        )
-        # edit_message should have been called instead
-        adapter.edit_message.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  K. Missing: overflow split first chunk (GAP G3)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestOverflowSplitFenceGap:
-    """run() overflow split loop (lines 567-601) splits at newlines
-    without fence awareness.  The first chunk goes through edit path
-    (_send_or_edit with _message_id set) which has NO fence tracking."""
-
-    def test_overflow_split_first_chunk_no_fence_tracking(self):
-        """Simulate the overflow split loop's behaviour:
-        first chunk split inside ```, sent through edit path — no close."""
-        adapter = MagicMock()
-        adapter.edit_message = AsyncMock(return_value=MagicMock(
-            success=True, message_id="msg_1",
-        ))
-        adapter.MAX_MESSAGE_LENGTH = 2000
-        adapter.message_len_fn = len
-
-        config = StreamConsumerConfig(
-            buffer_only=False, transport="edit",
-            edit_interval=9999, buffer_threshold=9999,
-        )
-        consumer = GatewayStreamConsumer(
-            adapter=adapter, chat_id="12345", config=config,
-        )
-        consumer._message_id = "msg_1"
-        consumer._already_sent = True
-        consumer._edit_supported = True
-
-        # accumulated starts with ``` that gets split
-        consumer._accumulated = "```\n" + "\n".join(f"line{i}" for i in range(30)) + "\n```end"
-
-        # Safe limit small enough to force overflow
-        _safe_limit = 60
-        _raw_limit = 2000
-        _len_fn = len
-        _cp_budget = _len_fn(consumer._accumulated[:60])  # simulate
-
-        split_at = consumer._accumulated.rfind("\n", 0, _cp_budget)
-        chunk = consumer._accumulated[:split_at]
-        remaining = consumer._accumulated[split_at:].lstrip("\n")
-
-        # First chunk should have odd ``` (no close from edit path)
-        first_odd = _odd_fences(chunk)
-        # Second part (remaining) may or may not — depends on split point
-        # Just document the behaviour
-        if first_odd:
-            pass  # This demonstrates the gap: edit path doesn't close fence
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  L. Missing: fallback final with unclosed fence (GAP G4)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestFallbackFinalFenceGap:
-    """_send_fallback_final uses _split_text_chunks (no fence tracking)
-    then each chunk goes through adapter.send() → truncate_message().
-    But since _split_text_chunks already split to ≤ limit, truncate_message
-    returns the chunk verbatim — unclosed fence passes through."""
-
-    def test_split_text_chunks_preserves_unclosed_fence(self):
-        """_split_text_chunks split inside ``` — chunks still have odd ```"""
-        long = "\n".join(f"code{i}" for i in range(30))
-        text = f"```\n{long}\n```"
-        chunks = GatewayStreamConsumer._split_text_chunks(text, 80)
-        assert len(chunks) >= 2
-        # At least some chunks may have odd ``` (no fence tracking)
-        odd_ones = [c for c in chunks if _odd_fences(c)]
         # Just document: _split_text_chunks doesn't guarantee balanced fences
 
 

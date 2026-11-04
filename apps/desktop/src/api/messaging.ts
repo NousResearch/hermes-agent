@@ -4,6 +4,9 @@ import type {
   MessagingPlatformUpdate,
   PairingResponse,
   PairingUser,
+  RelayLinkCode,
+  RelayLinkCodeState,
+  RelayLinksResponse,
   TelegramOnboardingApplyResponse,
   TelegramOnboardingStartResponse,
   TelegramOnboardingStatusResponse,
@@ -54,6 +57,42 @@ export function testMessagingPlatform(
   })
 }
 
+// -- Team Gateway account links -----------------------------------------------
+// A relay-fronted instance reaches Telegram/Discord/Slack only through the shared bot; these mint
+// the one-time `/link <code>` that binds a chat account to this agent. The profile tag picks the
+// backend (a profile may point at another host); the relay itself serves that gateway's own profile.
+
+export function getRelayLinks(profile?: null | string): Promise<RelayLinksResponse> {
+  return hermesApi<RelayLinksResponse>({ ...profileScoped(profile), path: '/api/messaging/relay' })
+}
+
+export function requestRelayLink(platform: string, profile?: null | string): Promise<RelayLinkCode> {
+  return hermesApi<RelayLinkCode>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/link`,
+    method: 'POST'
+  })
+}
+
+export function getRelayLinkState(code: string, profile?: null | string): Promise<RelayLinkCodeState> {
+  return hermesApi<RelayLinkCodeState>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/link/${encodeURIComponent(code)}`
+  })
+}
+
+export function unlinkRelayAccount(
+  platform: string,
+  platformUserId: string,
+  profile?: null | string
+): Promise<{ unlinked: boolean }> {
+  return hermesApi<{ unlinked: boolean }>({
+    ...profileScoped(profile),
+    path: `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
+    method: 'DELETE'
+  })
+}
+
 // -- Telegram QR onboarding ---------------------------------------------------
 // Pairing state lives in the memory of the backend process that started it, so
 // every call in one flow carries the SAME profile scope — the Electron router
@@ -86,11 +125,13 @@ export function applyTelegramOnboarding(
   allowedUserIds: string[],
   profile?: null | string
 ): Promise<TelegramOnboardingApplyResponse> {
+  const scope = profileScoped(profile)
+
   return hermesApi<TelegramOnboardingApplyResponse>({
-    ...profileScoped(profile),
+    ...scope,
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
     method: 'POST',
-    body: { allowed_user_ids: allowedUserIds, ...profileScoped(profile) }
+    body: { allowed_user_ids: allowedUserIds, profile: scope.profile }
   })
 }
 
@@ -121,22 +162,26 @@ export function approvePairing(
   requestId: string,
   profile?: null | string
 ): Promise<{ ok: boolean; user: PairingUser }> {
+  const scope = profileScoped(profile)
+
   return hermesApi<{ ok: boolean; user: PairingUser }>({
-    ...profileScoped(profile),
+    ...scope,
     path: '/api/pairing/approve',
     method: 'POST',
     // These endpoints read the profile off the body, not the query string —
-    // `profileScoped()` alone would approve into the wrong profile's store.
-    body: { platform, request_id: requestId, ...profileScoped(profile) }
+    // the request scope alone would approve into the wrong profile's store.
+    body: { platform, request_id: requestId, profile: scope.profile }
   })
 }
 
 export function revokePairing(platform: string, userId: string, profile?: null | string): Promise<{ ok: boolean }> {
+  const scope = profileScoped(profile)
+
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...scope,
     path: '/api/pairing/revoke',
     method: 'POST',
-    body: { platform, user_id: userId, ...profileScoped(profile) }
+    body: { platform, user_id: userId, profile: scope.profile }
   })
 }
 
@@ -145,33 +190,36 @@ export function revokePairing(platform: string, userId: string, profile?: null |
 // shared JSON store the CLI/dashboard also drive. Enable mutates config and
 // best-effort restarts the gateway; subscription changes hot-reload.
 
-export function getWebhooks(): Promise<WebhooksResponse> {
+/** `profile` = the backend owner this view captured at mount; omitted → the
+ *  ambient request scope. Keyed explicitly so a view that survives an active
+ *  profile switch keeps talking to the profile it belongs to (#71352). */
+export function getWebhooks(profile?: null | string): Promise<WebhooksResponse> {
   return hermesApi<WebhooksResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks'
   })
 }
 
-export function enableWebhooks(): Promise<WebhookEnableResponse> {
+export function enableWebhooks(profile?: null | string): Promise<WebhookEnableResponse> {
   return hermesApi<WebhookEnableResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks/enable',
     method: 'POST'
   })
 }
 
-export function createWebhook(body: WebhookCreatePayload): Promise<WebhookCreateResponse> {
+export function createWebhook(body: WebhookCreatePayload, profile?: null | string): Promise<WebhookCreateResponse> {
   return hermesApi<WebhookCreateResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/webhooks',
     method: 'POST',
     body
   })
 }
 
-export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
+export function deleteWebhook(name: string, profile?: null | string): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
@@ -179,10 +227,11 @@ export function deleteWebhook(name: string): Promise<{ ok: boolean }> {
 
 export function setWebhookEnabled(
   name: string,
-  enabled: boolean
+  enabled: boolean,
+  profile?: null | string
 ): Promise<{ enabled: boolean; name: string; ok: boolean }> {
   return hermesApi<{ enabled: boolean; name: string; ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }

@@ -101,7 +101,7 @@ class TestMaintainPackHealth:
             (repo / f"p{i}.txt").write_text(f"{i}\n")
             _git(repo, "add", "-A")
             _git(repo, "commit", "-qm", f"c{i}")
-            sha = _git(repo, "rev-parse", f"HEAD^{{commit}}").stdout.strip()
+            sha = _git(repo, "rev-parse", "HEAD^{commit}").stdout.strip()
             # One pack per commit object: pipe the sha into pack-objects.
             subprocess.run(
                 ["git", "pack-objects", "-q", str(pack_dir / f"tpack{i}")],
@@ -113,12 +113,10 @@ class TestMaintainPackHealth:
         import cli
         from hermes_cli import worktree_ops
 
-        made = self._make_packs(repo, 6)
-        # Behavior contract, not a snapshot: different git builds consolidate
-        # differently while packs accumulate (CI produced 3-4 from 6 attempts;
-        # local git produces 6). All the fixture must guarantee is SPRAWL —
-        # strictly more packs than the threshold we set — so the maintenance
-        # pass has something real to consolidate.
+        made = self._make_packs(repo, 12)
+        # Behavior contract, not a snapshot: the geometric repack leaves a size progression
+        # (plus a cruft pack on newer git), so the exact count varies by git build. What must
+        # hold: sprawl went DOWN and lookups now go through one multi-pack-index.
         threshold = 2
         monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", threshold)
         assert made > threshold, f"fixture failed to produce sprawl (made={made})"
@@ -126,8 +124,8 @@ class TestMaintainPackHealth:
         cli._maintain_pack_health(str(repo))
 
         after = self._pack_count(repo)
-        assert after <= 2, f"expected consolidation, still {after} packs"
-        assert after < made, "pack count must strictly decrease"
+        assert after < made, f"pack count must strictly decrease (made={made}, after={after})"
+        assert (repo / ".git" / "objects" / "pack" / "multi-pack-index").exists()
 
     def test_noop_below_threshold(self, repo, monkeypatch):
         import cli
@@ -138,9 +136,104 @@ class TestMaintainPackHealth:
 
         cli._maintain_pack_health(str(repo))
 
-        assert self._pack_count(repo) == made, "below threshold must be a no-op"  # noqa: same-count contract
+        assert self._pack_count(repo) == made, "below threshold must be a no-op"
 
     def test_fail_soft_on_missing_pack_dir(self, tmp_path):
         from cli import _maintain_pack_health
 
         _maintain_pack_health(str(tmp_path / "not-a-repo"))  # must not raise
+
+    def test_pass_refreshes_a_stale_graph_in_a_treeless_clone_without_fetching(self, tmp_path):
+        """A graph that stopped covering HEAD makes every ``git tag --merged HEAD`` walk the gap. In a
+        partial clone over a Bloom graph, a write that recomputes changed paths lazy-fetches the tree
+        of every new commit (#127711): the refresh must write the graph and download nothing. Run from
+        a linked worktree, whose ``.git`` is a file: the object store is the clone's."""
+        import os
+        import time
+
+        from hermes_cli import worktree_ops
+
+        src = tmp_path / "src"
+        src.mkdir()
+        _git(src, "init", "-q")
+        _git(src, "config", "uploadpack.allowFilter", "true")
+
+        def commits(start, n):
+            for i in range(start, start + n):
+                (src / f"d{i % 3}").mkdir(exist_ok=True)
+                (src / f"d{i % 3}" / f"f{i}").write_text(f"{i}\n")
+                _git(src, "add", "-A")
+                _git(src, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "maintenance.auto=false",
+                     "-c", "gc.auto=0", "commit", "-qm", f"c{i}")
+
+        commits(0, 8)
+        clone = tmp_path / "clone"
+        _git(tmp_path, "clone", "-q", "--filter=tree:0", "--no-checkout", src.as_uri(), str(clone))
+        _git(clone, "commit-graph", "write", "--reachable", "--split", "--changed-paths", "--no-progress")
+        commits(8, 8)
+        _git(clone, "-c", "fetch.writeCommitGraph=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+             "fetch", "-q", "origin")
+        _git(clone, "update-ref", "HEAD", "FETCH_HEAD")
+        info = clone / ".git" / "objects" / "info"
+        old = time.time() - 3 * 86400
+        for graph in (info / "commit-graphs").iterdir():
+            os.utime(graph, (old, old))
+        linked = tmp_path / "linked"
+        _git(clone, "worktree", "add", "-q", "--no-checkout", "--detach", str(linked), "HEAD")
+        packs = sorted((clone / ".git" / "objects" / "pack").glob("*.pack"))
+
+        worktree_ops._maintain_pack_health(str(linked))
+
+        assert (info / "commit-graphs" / "commit-graph-chain").stat().st_mtime > time.time() - 300
+        assert (clone / ".git" / "hermes-commit-graph.fresh").is_file()
+        assert sorted((clone / ".git" / "objects" / "pack").glob("*.pack")) == packs, "the write lazy-fetched"
+        _git(clone, "commit-graph", "verify")
+
+
+class TestRepackStampede:
+    """Regression for the Sep 2026 shared-clone incident: every ``hermes -w`` launch started its
+    own full repack, and a timed-out repack left ``pack-objects`` running for days."""
+
+    def test_one_repack_per_clone_per_interval(self, repo, monkeypatch):
+        from hermes_cli import worktree_ops
+
+        monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", 0)
+        runs: list = []
+        monkeypatch.setattr(worktree_ops, "_run_bounded_repack", lambda root: runs.append(root))
+
+        for _ in range(3):  # three concurrent-ish launches sharing the clone
+            worktree_ops._maintain_pack_health(str(repo))
+        assert runs == [str(repo)], "N launches inside the interval must produce exactly one repack"
+
+        # A stale stamp (older than the interval) hands the slot to the next launch.
+        monkeypatch.setattr(worktree_ops, "_REPACK_MIN_INTERVAL", 0)
+        worktree_ops._maintain_pack_health(str(repo))
+        assert len(runs) == 2
+
+    @pytest.mark.platforms("linux")
+    def test_timeout_kills_the_whole_repack_tree(self, tmp_path, monkeypatch):
+        import os
+        import time
+
+        from hermes_cli import worktree_ops
+
+        # A stand-in ``git`` that forks a long-lived grandchild, the way repack forks pack-objects.
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        pidfile = tmp_path / "grandchild.pid"
+        shim = shim_dir / "git"
+        shim.write_text(f"#!/bin/sh\nsleep 300 &\necho $! > {pidfile}\nwait\n")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setattr(worktree_ops, "_REPACK_TIMEOUT", 1)
+
+        worktree_ops._run_bounded_repack(str(tmp_path))
+
+        grandchild = int(pidfile.read_text().strip())
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not Path(f"/proc/{grandchild}").exists():
+                return
+            time.sleep(0.05)
+        subprocess.run(["kill", "-9", str(grandchild)], check=False)
+        pytest.fail("pack-objects stand-in survived the repack timeout")

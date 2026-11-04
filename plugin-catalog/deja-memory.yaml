@@ -1,0 +1,17 @@
+name: deja-memory
+repo: https://github.com/vshulcz/deja-vu
+sha: 02d5228d6b8ae4ee6a25edad3b9a931c0e3045af
+subdir: extensions/hermes
+version: "0.1.0"
+description: "Memory from the coding sessions already on this machine — Claude Code, Codex, Cursor, Hermes and the other agents deja reads, including history from before it was installed. No model, no API key, no server. Disclosure — runs the separately installed, unpinned deja binary (brew install deja-vu) as a subprocess; deja reads Claude Code, Codex, Cursor, Hermes and other agents' local transcript files, keeps its index under ~/.cache/deja, receives the turns Hermes compresses so it can hand them back after compaction, and recalled text from those agents is injected into Hermes turns, with lines deja marks \"User said (this project)\" presented to the model as project rules to follow; nothing leaves the machine."
+maintainer: vshulcz
+tier: community
+category: memory
+platforms: [linux, macos, windows]
+docs_url: https://vshulcz.github.io/deja-vu/guide/memory-for-hermes.html
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

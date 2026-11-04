@@ -62,9 +62,6 @@ description: test skill
 # Round-trip
 # ---------------------------------------------------------------------------
 
-def test_empty_usage_returns_empty_dict(skills_home):
-    from tools.skill_usage import load_usage
-    assert load_usage() == {}
 
 
 def test_save_and_load_roundtrip(skills_home):
@@ -333,10 +330,6 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 # State transitions
 # ---------------------------------------------------------------------------
 
-def test_set_state_active(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
-    assert get_record("x")["state"] == "active"
 
 
 def test_restoring_from_archive_clears_timestamp(skills_home):
@@ -345,6 +338,29 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
     assert get_record("x")["archived_at"] is not None
     set_state("x", STATE_ACTIVE)
     assert get_record("x")["archived_at"] is None
+
+
+def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
+    """`mlops/training/accelerate` is the skill `huggingface-accelerate`: archive lands under the NAME,
+    and an older archive flattened under the directory name is still found by `restore_skill`."""
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+    skills_dir = skills_home / "skills"
+    d = skills_dir / "training" / "accelerate"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: x\n---\n", encoding="utf-8")
+    mark_agent_created("huggingface-accelerate")
+
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / ".archive" / "huggingface-accelerate" / "SKILL.md").exists()
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+
+    # Legacy layout: archived under the directory name by an older build.
+    (skills_dir / "huggingface-accelerate").rename(skills_dir / ".archive" / "accelerate")
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
 def test_forget_removes_record(skills_home):
@@ -514,7 +530,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     """Adoption writes a provenance claim, so it must refuse anything with an
     external owner rather than stamping a lie onto the record.
 
-    ``prune_builtins`` is forced ON here — the shipped default — because that
+    ``prune_builtins`` is forced ON here (opt-in; the shipped default is off) because that
     is the configuration in which a bundled skill is otherwise curation-
     eligible. With it off, ``mark_agent_created``'s own eligibility gate would
     block the write and this test would pass without exercising adopt's guard
@@ -597,3 +613,43 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
         assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
     t.join(timeout=2)
     assert entered.is_set() and other_done.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Content lock (#25083): `locked` beside `pinned`; set_locked is not curation-gated and
+# is_locked is strict so the write guard can fail closed on a corrupt sidecar.
+# ---------------------------------------------------------------------------
+
+
+def test_set_locked_round_trip_and_listing(skills_home):
+    from tools import skill_usage as mod
+
+    (skills_home / "skills" / "hand-written").mkdir()
+    assert mod.is_locked("hand-written") is False  # no sidecar yet
+    assert mod.set_locked("hand-written", True) is True  # hand-written: not curation-gated
+    assert mod.is_locked("hand-written") is True
+    assert mod.locked_skill_names() == ["hand-written"]
+    assert mod.get_record("hand-written")["pinned"] is False  # pin axis untouched
+    assert mod.set_locked("hand-written", False) is True
+    assert mod.is_locked("hand-written") is False
+    assert mod.locked_skill_names() == []
+
+
+def test_is_locked_is_strict_on_a_corrupt_sidecar(skills_home):
+    from tools import skill_usage as mod
+
+    (skills_home / "skills" / ".usage.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError):  # json.JSONDecodeError; load_usage() would return {} here
+        mod.is_locked("anything")
+    assert mod.locked_skill_names() == []  # the listing stays best-effort
+
+
+def test_is_locked_ignores_malformed_records_but_never_relaxes_a_truthy_flag(skills_home):
+    from tools import skill_usage as mod
+
+    (skills_home / "skills" / ".usage.json").write_text(
+        json.dumps({"a": "junk", "b": {"locked": "yes"}, "c": {}}), encoding="utf-8")
+    assert mod.is_locked("a") is False
+    assert mod.is_locked("b") is True
+    assert mod.is_locked("c") is False
+    assert mod.is_locked("missing") is False

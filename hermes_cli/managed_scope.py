@@ -15,9 +15,15 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
-import yaml
 
-from utils import file_signature
+# Stale-module bridge: this module binds ``utils`` names at import time, so a fresh
+# import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
+# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
+from utils import fast_safe_load, file_cache_version, file_signature  # file_signature: bound for the bridge above
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +31,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MANAGED_DIR = Path("/etc/hermes")
 
 _CACHE_LOCK = threading.Lock()
-# path_key -> (*file_signature, parsed)
-_CONFIG_CACHE: Dict[str, tuple] = {}
-_ENV_CACHE: Dict[str, tuple] = {}
+# path_key -> (*file_cache_version, parsed)
+_CONFIG_CACHE: dict[str, tuple] = {}
+_ENV_CACHE: dict[str, tuple] = {}
 
 
 def _under_pytest() -> bool:
@@ -60,7 +66,7 @@ def invalidate_managed_cache() -> None:
         _ENV_CACHE.clear()
 
 
-def _cached_read(path: Path, cache: Dict[str, tuple], parse):
+def _cached_read(path: Path, cache: dict[str, tuple], parse):
     """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
 
     ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
@@ -71,7 +77,7 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         st = path.stat()
     except OSError:
         return None  # absent
-    key = file_signature(st)
+    key = file_cache_version(path, st)
     path_key = str(path)
     with _CACHE_LOCK:
         hit = cache.get(path_key)
@@ -79,7 +85,7 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
             return copy.deepcopy(hit[len(key)])
     try:
         parsed = parse(path)
-    except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
+    except Exception as exc:
         logger.warning(
             "managed scope: failed to parse %s: %s — IGNORING this managed file. "
             "Admin policy from this file is NOT being applied. Fix and restart.",
@@ -90,7 +96,7 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     return parsed
 
 
-def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
+def _load_managed_file(name: str, cache: dict[str, tuple], parse) -> dict:
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
@@ -99,16 +105,21 @@ def _load_managed_file(name: str, cache: Dict[str, tuple], parse) -> dict:
 
 
 def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
-    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: yaml.safe_load(p.read_text(encoding="utf-8")) or {})
+    """Parsed managed config.yaml, or {} when absent/malformed (fail-open). Always {} under a config
+    backend that takes config and locks from elsewhere (remote mode, D18; boot warns about the file)."""
+    from hermes_cli.config_backend import get_config_backend
+
+    if not get_config_backend().honors_managed_config():
+        return {}
+    return _load_managed_file("config.yaml", _CONFIG_CACHE, lambda p: fast_safe_load(p.read_text(encoding="utf-8-sig")) or {})
 
 
-def load_managed_env() -> Dict[str, str]:
+def load_managed_env() -> dict[str, str]:
     """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
     return _load_managed_file(".env", _ENV_CACHE, _parse_managed_env)
 
 
-def _parse_managed_env(path: Path) -> Dict[str, str]:
+def _parse_managed_env(path: Path) -> dict[str, str]:
     from agent.secret_scope import load_env_file
 
     path.read_text(encoding="utf-8-sig")  # load_env_file swallows decode errors; an admin file must fail LOUD
@@ -138,7 +149,7 @@ def apply_managed_overlay(config: dict) -> dict:
             managed_expanded = dict(managed_expanded)
             managed_expanded["model"] = {"default": managed_expanded["model"]}
         return _deep_merge(config, managed_expanded)
-    except Exception:  # noqa: BLE001 — overlay must never break a caller
+    except Exception:
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config
 
@@ -167,3 +178,11 @@ def is_key_managed(dotted_key: str) -> bool:
 def is_env_managed(name: str) -> bool:
     """True if the env var name is pinned by the managed .env layer."""
     return name in load_managed_env()
+
+
+def pinned_terminal_backend() -> Optional[str]:
+    """The non-empty ``terminal.backend`` the managed config pins, or None. An empty or null value
+    names no backend to run, so it pins nothing."""
+    terminal = apply_managed_overlay({}).get("terminal")
+    backend = terminal.get("backend") if isinstance(terminal, dict) else None
+    return (backend.strip() or None) if isinstance(backend, str) else None

@@ -14,7 +14,7 @@ profile's path is used.  They are the productionized form of the manual smoke
 probes used to confirm the bug class.
 """
 
-import threading
+import os
 from pathlib import Path
 
 import pytest
@@ -67,7 +67,7 @@ class TestSkillsHubPathResolution:
         assert a_seen != b_seen
 
     def test_hub_derived_paths_follow_override(self, two_profiles):
-        prof_a, prof_b = two_profiles
+        _prof_a, prof_b = two_profiles
         import tools.skills_hub as sh
 
         b_lock = _under_override(prof_b, lambda: Path(sh.LOCK_FILE))
@@ -101,14 +101,14 @@ class TestRichSentStorePathResolution:
     """gateway/rich_sent_store.py must honor the override, not read os.environ."""
 
     def test_store_path_follows_override(self, two_profiles, monkeypatch):
-        prof_a, prof_b = two_profiles
+        _prof_a, prof_b = two_profiles
         # Ensure no ambient HERMES_HOME env masks the test.
         monkeypatch.delenv("HERMES_HOME", raising=False)
         import gateway.rich_sent_store as rss
 
         b_seen = _under_override(prof_b, lambda: rss._store_path())
         assert b_seen.startswith(str(prof_b))
-        assert b_seen.endswith("state/rich_sent_index.json")
+        assert b_seen.endswith(os.path.join("state", "rich_sent_index.json"))
 
 
 class TestGatewayHooksDirResolution:
@@ -174,7 +174,7 @@ class TestCheckpointManagerPathResolution:
         assert a_seen != b_seen
 
     def test_store_path_follows_override(self, two_profiles):
-        prof_a, prof_b = two_profiles
+        _prof_a, prof_b = two_profiles
         import tools.checkpoint_manager as cm
 
         b_seen = _under_override(prof_b, lambda: cm._store_path())
@@ -205,23 +205,6 @@ class TestStickerCachePathResolution:
 class TestThreadContextPropagation:
     """Worker threads must inherit the spawning turn's profile override."""
 
-    def test_raw_thread_loses_override(self, two_profiles):
-        """Document the underlying hazard: a bare thread does NOT inherit it."""
-        _prof_a, prof_b = two_profiles
-        seen = {}
-
-        def worker():
-            seen["home"] = str(get_hermes_home())
-
-        def run():
-            t = threading.Thread(target=worker)
-            t.start()
-            t.join()
-
-        _under_override(prof_b, run)
-        # A bare thread falls back to the process default — this is WHY the fix
-        # primitive is needed.  (Asserted as the hazard, not the desired state.)
-        assert seen["home"] != str(prof_b)
 
 
     def test_run_async_worker_preserves_override(self, two_profiles):

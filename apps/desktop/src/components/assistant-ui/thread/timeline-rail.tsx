@@ -46,7 +46,9 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
     const measure = () => {
       const rem = parseFloat(getComputedStyle(element.ownerDocument.documentElement).fontSize)
 
-      if (Number.isFinite(rem) && rem > 0) {setPitch(rem * 0.4375)}
+      if (Number.isFinite(rem) && rem > 0) {
+        setPitch(rem * 0.4375)
+      }
     }
 
     const observer = new ResizeObserver(measure)
@@ -62,7 +64,10 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
     frame.current = 0
 
     for (const bar of root.current?.querySelectorAll<HTMLElement>('[data-slot="timeline-bar"]') ?? []) {
-      const width = `${Number(timelineBarWidth(Number(bar.dataset.index), activeIndex, hover.current).toFixed(4))}rem`
+      const width =
+        pointerY.current === null
+          ? '0.5rem'
+          : `${Number(timelineBarWidth(Number(bar.dataset.index), activeIndex, hover.current).toFixed(4))}rem`
 
       if (bar.style.width !== width) {
         bar.style.width = width

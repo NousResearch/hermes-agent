@@ -1,10 +1,12 @@
 import { flushSync } from 'react-dom'
 
 import { $activeTreeGroup, $hoveredTreeGroup, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { isEditableTarget, OVERLAY_SURFACE } from '@/lib/keybinds/combo'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { $composerPopout } from '@/store/composer-popout'
 
 import { $floatingComposerOwner, type FloatingComposerOwner } from './floating-state'
-import { focusComposerInput, markActiveComposer } from './focus'
+import { EDIT_COMPOSER_ROOT, focusComposerInput, markActiveComposer } from './focus'
 import { placeCaretEnd } from './rich-editor'
 
 const surfaces = new Map<string, Omit<FloatingComposerOwner, 'id'>>()
@@ -13,7 +15,40 @@ const carets = new WeakMap<HTMLElement, Range>()
 let pointer: { x: number; y: number } | null = null
 let pointerDownTarget: Element | null = null
 let keyboardNavigation = false
+let floatingLayerFocused = false
 let reconcileQueued = false
+
+/** The inline message edit lives in the transcript, outside every composer
+ * host, and takes focus programmatically when a bubble is clicked. That focus
+ * is the user's choice, not a delayed callback to redirect: stealing it hands
+ * the caret back to the pane composer, and the edit's blur guard then cancels
+ * the edit ~80ms after it opened (#112935). */
+const inInlineEdit = (el: Element | null) => Boolean(el?.closest(EDIT_COMPOSER_ROOT))
+
+/** The native overflow menu (⋮ → Download, Playback speed) of an inline
+ * <audio controls>/<video controls> lives in the element's user-agent shadow
+ * root, so its focus is retargeted to the AUDIO/VIDEO host. Redirecting that
+ * focus to the pane composer — on focusin or on the next pointermove — made
+ * Chromium close the menu the instant it opened (#135225). */
+const inNativeMediaControls = (el: Element | null) => Boolean(el?.closest('audio[controls], video[controls]'))
+
+/** A caret the user placed in a live text-entry surface outside every composer
+ * — the clarify answer box, the transcript find bar, a dialog field — is their
+ * own focus, exactly like the inline edit: moving the pointer must not hand the
+ * caret back to the pane composer, and a refused redirect must leave that
+ * element's focusin visible to React. Composer editors are excluded, so
+ * hover-switching between panes keeps behaving as before (#114245). */
+const keepsOwnFocus = (el: Element | null) =>
+  inNativeMediaControls(el) ||
+  inInlineEdit(el) ||
+  (isEditableTarget(el) && !el?.closest('[data-slot="composer-rich-input"]'))
+
+/** Focus inside an open floating layer — a popover, menu, listbox or dialog
+ * portaled over the transcript — is the user's own as well. Radix moves focus
+ * into such a layer when it opens and dismisses it the moment focus leaves, so
+ * pulling the caret back to the pane composer on the very next pointermove
+ * closed the message reaction picker before the pointer could reach it. */
+const inFloatingLayer = (el: Element | null) => Boolean(el?.closest(OVERLAY_SURFACE))
 
 function rememberCaret(editor: EventTarget | null) {
   const selection = window.getSelection()
@@ -33,10 +68,28 @@ const releasePointer = () => {
   pointerDownTarget = null
 }
 
+/** A non-collapsed selection anchored outside the composer editor is the user
+ * selecting transcript text: focusing the composer must not clear it. */
+function selectionOutsideComposer(): boolean {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return false
+  }
+
+  const { anchorNode } = selection
+  const anchorEl = anchorNode instanceof Element ? anchorNode : (anchorNode?.parentElement ?? null)
+
+  return !anchorEl?.closest('[data-slot="composer-rich-input"]')
+}
+
+/** Every focus-follow branch (pointermove and focusin) funnels here, so the
+ * selection and floating-layer guards live at this chokepoint rather than at
+ * one call site. */
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
-  if (!owner) {
+  if (!owner || isTouchInteraction() || selectionOutsideComposer() || inFloatingLayer(document.activeElement)) {
     return
   }
 
@@ -136,7 +189,7 @@ function trackPointer(event: PointerEvent) {
     active.dataset.slot === 'composer-rich-input' &&
     active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
 
-  if (event.type === 'pointermove' && !alreadyTyping) {
+  if (event.type === 'pointermove' && !isTouchInteraction(event) && !alreadyTyping && !keepsOwnFocus(active)) {
     focusSelectedComposer()
   }
 }
@@ -152,6 +205,13 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
+  // A closing portal can detach its focused node before restoring its opener,
+  // leaving relatedTarget null. Keep the last focus origin across that teardown.
+  const fromFloatingLayer =
+    floatingLayerFocused || inFloatingLayer(event.relatedTarget instanceof Element ? event.relatedTarget : null)
+
+  floatingLayerFocused = inFloatingLayer(target)
+
   const hostId = target.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
 
   if (hostId === $floatingComposerOwner.get()?.id) {
@@ -164,11 +224,24 @@ function trackFocus(event: FocusEvent) {
     return
   }
 
-  // A delayed focus/restore isn't a navigation gesture. A clicked control or
-  // keyboard Tab still keeps its normal focus, without redirecting to the input.
-  if (keyboardNavigation || (pointerDownTarget && target.contains(pointerDownTarget))) {
+  // Navigation selects the recipient without moving the caret. Tab headers
+  // must update the owning split too, while retaining their roving focus.
+  if (
+    target.closest('[role="tab"]') ||
+    isTouchInteraction() ||
+    keyboardNavigation ||
+    fromFloatingLayer ||
+    keepsOwnFocus(target) ||
+    (pointerDownTarget && target.contains(pointerDownTarget))
+  ) {
     flushSync(() => selectSurface(id))
   } else {
+    // A refused redirect leaves focus where it landed: that element's focusin
+    // must still reach React and other root listeners.
+    if (selectionOutsideComposer()) {
+      return
+    }
+
     event.stopImmediatePropagation()
     const owner = $floatingComposerOwner.get()
 
@@ -199,6 +272,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
   surfaces.set(id, surface)
 
   if (surfaces.size === 1) {
+    floatingLayerFocused = inFloatingLayer(document.activeElement)
     window.addEventListener('pointermove', trackPointer, true)
     window.addEventListener('pointerdown', trackPointer, true)
     window.addEventListener('focusin', trackFocus, true)
@@ -234,6 +308,7 @@ export function registerFloatingComposer(id: string, surface: Omit<FloatingCompo
       pointer = null
       pointerDownTarget = null
       keyboardNavigation = false
+      floatingLayerFocused = false
     }
   }
 }

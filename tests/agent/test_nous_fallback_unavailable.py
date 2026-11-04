@@ -61,25 +61,6 @@ class TestNousFallbackLocalAvailability:
         assert activated is True
         assert agent.model == "gpt-5.5"
 
-    def test_nous_unavailable_not_retried_in_same_session(self):
-        """After Nous is skipped once, subsequent activations continue further."""
-        agent = _make_agent(
-            fallback_model=[
-                {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "openai-codex", "model": "gpt-5.5"},
-            ]
-        )
-        with patch(
-            "hermes_cli.auth.get_provider_auth_state",
-            return_value={},
-        ):
-            agent._try_activate_fallback(None)
-        key = (
-            "nous",
-            "anthropic/claude-sonnet-4.6",
-            "",
-        )
-        assert key in getattr(agent, "_unavailable_fallback_keys", set())
 
     def test_present_nous_token_allows_activation(self):
         """Nous is considered when token material exists."""

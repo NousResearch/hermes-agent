@@ -1,0 +1,21 @@
+name: smolmachines
+repo: https://github.com/smol-machines/hermes-smolmachines
+sha: 093371b13c99685e992e0621aa8e36e2b71645be
+subdir: ""
+description: "smol machines' own plugin: runs Hermes's terminal, file and code tools in a smol machine, a microVM with its own Linux kernel on this computer (macOS on Apple Silicon, or Linux with KVM), as a terminal backend (`hermes config set terminal.backend smolmachines`). It needs no Docker and no account. Disclosure: installs the `smolmachines` Python SDK (>=1.27.2,<2), which carries the VM engine. Everything runs on this computer: the plugin always asks the SDK for a local machine, so nothing is sent to smol machines' cloud, even with SMOL_CLOUD_TOKEN set or the smol CLI signed in (Hermes strips SMOL_CLOUD_TOKEN from the commands it runs). Creating a machine pulls its image (default `python:3.12-slim`, from Docker Hub), and the engine pulls with this computer's Docker registry login when one is configured (`~/.docker/config.json`, including a credential helper such as the macOS keychain), read-only and sent only to the registry being pulled from. A machine has outbound network access and mounts nothing from this computer. With `terminal.container_persistent` (the Hermes default) each Hermes home and session keeps one machine, which keeps running after Hermes exits until stopped or deleted with the smolvm CLI, otherwise the machine is deleted when the session ends. Because the machine is a disposable sandbox, Hermes skips its dangerous-command prompts there, as it does for its other container backends."
+maintainer: smol-machines
+title: smol machines
+version: "0.1.0"
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/smol-machines/hermes-smolmachines#readme
+platforms: [linux, macos]
+known_issues:
+  - "The engine stops a command once it has printed 11 MiB. Hermes gets the output up to that point, marked OUTPUT TRUNCATED. Send large output to a file in the machine."
+  - "The plugin imports tools.environments.base.FileFetchError (in Hermes since 0.21.6), the error fetch_file is documented to raise. It is outside the documented-name allowlist, so a Hermes release that moves it can break file delivery until the plugin is updated."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

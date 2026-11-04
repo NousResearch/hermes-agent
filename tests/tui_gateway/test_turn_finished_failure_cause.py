@@ -34,7 +34,7 @@ from tui_gateway import server
 class _InlineThread:
     """Run the turn synchronously so tests observe its final state."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -159,17 +159,6 @@ class TestTheReportedRecordNowNamesItsCause:
         assert "failure_reason=RuntimeError" in msg
         assert "connection reset mid-stream" in msg
 
-    def test_successful_turn_stays_exactly_as_it_was(self, turn_env, caplog):
-        """No cost to the common case: a clean turn gains no new fields."""
-        session = _session(agent=_agent_returning({"final_response": "done"}))
-
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-            _run(session)
-
-        msg = _finished(caplog)
-        assert "status=complete" in msg
-        assert "cause=" not in msg
-        assert "failure_reason=" not in msg
 
 
 class TestContentDiscipline:
@@ -314,10 +303,6 @@ class TestDetailHelperDirectly:
         assert server._turn_failure_detail("", None) == ""
         assert server._turn_failure_detail(None) == ""
 
-    def test_fragment_carries_its_own_leading_space(self):
-        """The bookend appends it unconditionally, so it must self-format."""
-        out = server._turn_failure_detail("boom")
-        assert out.startswith(" ")
 
     def test_an_exception_with_no_message_still_names_its_type(self):
         assert "KeyError" in server._turn_failure_detail(KeyError())

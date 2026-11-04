@@ -34,19 +34,17 @@ export interface StripZone {
   /** Panes currently rendered as chips — chrome-hidden and narrow-collapsed
    *  panes are already filtered out. */
   shown: readonly StripPane[]
-  /** ANOTHER zone in the layout also hosts a main tile (a chat, a page, a
-   *  preview). Auto reads it as "the user is working in tiles". */
-  siblingMainZone?: boolean
 }
 
 /**
  * A pane is STRANDED without a strip when the strip is the only thing carrying
- * its handle: a lone closeable tile needs its ✕, a lone tool panel needs a chip
- * to grab. The uncloseable workspace is not strandable — it cannot be closed
- * or lost, so a lone chat is free to be chromeless. Hide-only chrome (sessions
- * / Bots) is the same: the panes stay, Show/Hide is a separate verb, and a
- * hidden strip comes back via ⌘⌥T. Treating it as stranded at any count made
- * Hide tabs a silent no-op on the sessions sidebar.
+ * its handle: a lone main tile needs its ✕ and +, a lone tool panel needs a
+ * chip to grab. The workspace cannot leave the tree, but Close still empties
+ * it to a draft and + still opens a tab — chromeless is a dead zone for those
+ * handles. Hide-only chrome (sessions / Bots) is different: the panes stay,
+ * Show/Hide is a separate verb, and a hidden strip comes back via ⌘⌥T.
+ * Treating side chrome as stranded at any count made Hide tabs a silent no-op
+ * on the sessions sidebar.
  *
  * This outranks an explicit `never` on purpose. "Hide the strip" is a request
  * about chrome, never a request to make a surface unreachable, and a zone that
@@ -67,7 +65,7 @@ function stranded(shown: readonly StripPane[]): boolean {
 
   const [only] = shown
 
-  return only.collapsePane || (!only.uncloseable && only.placement === 'main')
+  return only.collapsePane || only.placement === 'main'
 }
 
 export function resolveTabStripVisible(zone: StripZone): boolean {
@@ -90,19 +88,10 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
     return zone.mode === 'always'
   }
 
-  // Auto: a lone pane is not a "tab", so it goes without a strip; two or more
-  // need one to switch between them.
-  if (zone.shown.length > 1) {
-    return true
-  }
-
-  // …except a lone MAIN tile once a second main zone exists. Dragging a
-  // session out of the chat strip into its own zone left the workspace alone
-  // in main: the tile kept its tab (stranded), main lost its tab and its "+",
-  // and two chats side by side read as "my tabs disappeared". Tiles are a
-  // tabbed workflow, so every main zone keeps its strip while there is more
-  // than one; a chat that is the whole window is still chromeless.
-  return Boolean(zone.siblingMainZone) && zone.shown.some(pane => pane.placement === 'main')
+  // Auto: two or more panes need a strip to switch between them. A lone main
+  // tile never reaches here (it is stranded above), so what is left alone is
+  // standing side chrome, which goes without.
+  return zone.shown.length > 1
 }
 
 /**
@@ -120,13 +109,10 @@ export function tabStripVisibleForZone(zone: {
   paneFor: (id: string) => Contribution | undefined
   /** Panes currently rendered as chips. */
   shown: readonly string[]
-  /** Another zone in the layout hosts a main tile too (`$mainTileZoneCount`). */
-  siblingMainZone: boolean
 }): boolean {
   return resolveTabStripVisible({
     headerVeto: paneChrome(zone.paneFor(zone.active)).headerVeto,
     mode: effectiveTabStripMode(zone.mode),
-    siblingMainZone: zone.siblingMainZone,
     shown: zone.shown.map(id => {
       const chrome = paneChrome(zone.paneFor(id))
 

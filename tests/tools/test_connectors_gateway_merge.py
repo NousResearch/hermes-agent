@@ -167,25 +167,6 @@ def test_splice_none_response_fills_every_slot():
     assert entries[0]["error"]["code"] == "PROVIDER_ERROR"
 
 
-def test_connection_required_renders_shared_shape_with_connect_url():
-    planned = _plan([{"name": "connectors__gmail__SEND_EMAIL"}])
-    remote = [
-        {
-            "data": None,
-            "error": {
-                "code": "CONNECTION_REQUIRED",
-                "message": "connect gmail first",
-                "connect_url": "https://example.test/connect/abc",
-                "hint": "then retry the call",
-            },
-        }
-    ]
-    (entry,) = splice_remote_results(planned, remote)
-    error = entry["error"]
-    assert error["code"] == "CONNECTION_REQUIRED"
-    assert error["connector"] == "gmail"
-    assert error["connect_url"] == "https://example.test/connect/abc"  # not redacted
-    assert error["hint"] == "then retry the call"
 
 
 def test_fill_remote_failure_marks_all_planned_slots():

@@ -19,6 +19,49 @@ def _ensure_redaction_enabled(monkeypatch):
 
 class TestKnownPrefixes:
 
+    def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):
+        """A key whose body carries dots must never leave a cleartext tail, and the
+        prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
+        ``cat``/``grep`` path (code_file=True, the reporter's surface) and on the
+        file-read path, where the mask must be the non-reusable sentinel."""
+        from agent.redact import redact_terminal_output
+
+        dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
+        multi_dot_sk = "sk-ws-" + "H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "ABCDEFGHIJKLMNOP"
+        zhipu = "50aaed1234567890abcdef1234567890" + "." + "ZpSh99AbCdEfGh12"
+        yaml = f"a:\n  api_key: {dotted_sk}\nb:\n  api_key: {zhipu}\nc:\n  api_key: {multi_dot_sk}\n"
+
+        term = redact_terminal_output(yaml, "cat /tmp/keys.yaml")
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in term, term
+        # Display masks (``sk-pro...EFGH``) contain ``..``, which no real key does:
+        # a second pass over an already-masked token must be a no-op, not ``***``
+        # (tool_executor redacts browser_type args, then build_tool_preview
+        # redacts them again).
+        assert redact_sensitive_text("sk-pro...EFGH", force=True) == "sk-pro...EFGH"
+
+        read = redact_sensitive_text(yaml, file_read=True)
+        assert "«redacted:sk-…»" in read and "«redacted-secret»" in read, read
+        for secret_tail in ("abcdefgh1234567890_XYZ", "ZpSh99", "MEUCIQC6UnD", "EEPXREE"):
+            assert secret_tail not in read, read
+
+    def test_dotted_and_prefixless_matchers_leave_benign_tokens_alone(self):
+        """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
+        content-hash filenames (incl. ``<sha>.bundle`` / ``<md5>.sqlite3``), bare
+        git shas, short ``sk-`` fragments and a 31-char id must stay byte-identical."""
+        from agent.redact import redact_terminal_output
+
+        benign = (
+            "blob 0123456789abcdef0123456789abcdef.png\n"
+            "git bundle create 0123456789abcdef0123456789abcdef01234567.bundle\n"
+            "/cache/0123456789abcdef0123456789abcdef.sqlite3\n"
+            "cp " + "a1" * 18 + ".example\n"
+            "commit 0123456789abcdef0123456789abcdef01234567\n"
+            "sk-short sk-abc.def\n"
+            "release=" + "a" * 31 + ".ZpSh99AbCdEfGh12\n"
+        )
+        assert redact_terminal_output(benign, "git log --stat") == benign
+        assert redact_sensitive_text(benign, file_read=True) == benign
 
 
 
@@ -58,6 +101,36 @@ class TestKnownPrefixes:
             "the glossary explains gitlab tokens",   # no prefix at all
             "glpat-short",                            # suffix under 10 chars
             "myglpat-AbCdEfGhIjKlMnOpQrSt",           # embedded — lookbehind blocks
+        ]:
+            assert redact_sensitive_text(benign) == benign
+
+    def test_context7_api_key_prefix(self):
+        """Context7 keys carry a fixed vendor prefix (``ctx7sk-``) and must redact on every surface.
+
+        The generic ``sk-`` family cannot catch them: the matcher's lookbehind
+        rejects a prefix preceded by a word char, and here the ``sk-`` sits
+        INSIDE ``ctx7sk-`` - so a bare Context7 key passed through unmasked
+        (#142576).
+        """
+        # NOTE: prefix + suffix CONCATENATION so no contiguous token literal
+        # exists in this file - GitHub push protection blocks realistic
+        # vendor-token-shaped literals.
+        token = ("ctx7sk-" + "0" * 8 + "-" + "0" * 4 + "-" + "0" * 4
+                 + "-" + "0" * 4 + "-" + "0" * 12)
+        for surface in (
+            f"key is {token}\n",
+            f'["{token}"]\n',
+            f"headers:\n  CONTEXT7_API_KEY: {token}\nurl: https://mcp.context7.com/mcp\n",
+            f"CONTEXT7_API_KEY={token}\n",
+        ):
+            assert token not in redact_sensitive_text(surface, force=True), surface
+
+    def test_context7_prefix_requires_word_boundary_and_length(self):
+        """Prose and embedded identifiers must not false-positive."""
+        for benign in [
+            "the glossary explains context7 keys",
+            "ctx7sk-short",
+            "myctx7sk-" + "A" * 20,
         ]:
             assert redact_sensitive_text(benign) == benign
 
@@ -332,6 +405,21 @@ class TestJsonFields:
         result = redact_sensitive_text(text)
         assert result == text
 
+    @pytest.mark.parametrize("depth", [1, 2])
+    def test_json_field_inside_json_encoded_string_is_masked_and_stays_valid(self, depth):
+        # A tool result wrapping a config dump escapes its quotes; the plain JSON rule never saw the value.
+        import json
+        key = "AQ.Ab8RN6Jx2kq9Zs0VwT4yLm3PbQe7HcUfGdA1nX5oIr"
+        text = json.dumps({"api_key": key, "token": "CPU", "model": "gemini"})
+        for _ in range(depth):
+            text = json.dumps({"output": text})
+        result = redact_sensitive_text(text)
+        assert key not in result and '\\"token\\": \\"CPU\\"'.replace("\\", "\\" * (2 ** depth - 1)) in result
+        inner = result
+        for _ in range(depth):
+            inner = json.loads(inner)["output"]
+        assert json.loads(inner)["model"] == "gemini"
+
 
 class TestPythonReprFields:
     @pytest.mark.parametrize(
@@ -485,6 +573,31 @@ class TestTelegramTokens:
         text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
+
+    def test_long_digit_run_completes_fast(self):
+        """A long digit run with no ``:<token>`` after it must stay linear.
+
+        Without the run-start lookbehind, ``\\d{8,}`` retried from every digit
+        of the run (quadratic while holding the GIL): a 2 MB Unity asset diff
+        with a ``_typelessdata: 000...`` line pinned a core for hours inside
+        terminal-output redaction. The colon is what routes the text through
+        the Telegram pass.
+        """
+        import time
+
+        text = "_typelessdata: " + "0" * 100_000 + "\n"
+        t0 = time.perf_counter()
+        assert redact_sensitive_text(text, force=True) == text
+        assert time.perf_counter() - t0 < 2.0
+
+    def test_token_after_long_digit_run_still_redacted(self):
+        # The lookbehind must not change matching: a real token whose id
+        # starts its own digit run is still masked, digits embedded in a
+        # longer run are not an id.
+        text = "0" * 1000 + " bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
+        result = redact_sensitive_text(text, force=True)
+        assert "ABCDEfghij" not in result
+        assert "123456789:***" in result
 
 
 class TestPassthrough:
@@ -679,7 +792,12 @@ class TestStrictUrlCredentialRedaction:
             (
                 "//user:NET_SECRET@x.test/path",
                 "NET_SECRET",
-                "//user:***@x.test/path",
+                "//***:***@x.test/path",
+            ),
+            (
+                "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
+                "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
+                "https://***:***@llm-proxy.example/v1",
             ),
         ],
     )
@@ -1336,7 +1454,7 @@ class TestHermesHomePathClassification:
     ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
 
     def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
-        import agent.file_safety as file_safety
+        from agent import file_safety
         from agent.redact import _is_secret_file_arg
 
         home = tmp_path / "hermes"  # no ".hermes" segment
@@ -1545,3 +1663,34 @@ class TestRedactForEgress:
         from agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
+
+
+class TestWebappLaunchLinks:
+    """``hermes webapp`` prints a link that signs a browser in as the user: one with the gateway's
+    browser credential after ``#hermes-session=`` (what older gateways printed on macOS), or a one-use
+    launch ticket after ``/webapp/launch#ticket=``. Either opens the user's Hermes until it is spent or
+    replaced, so when Hermes runs the command through its terminal tool neither reaches the transcript.
+    The rest of the link stays readable."""
+
+    CREDENTIAL = "Zq7_" + "k3Lm" * 9 + "x9-"  # the shape secrets.token_urlsafe(32) prints: 43 characters
+
+    def test_the_browser_credential_in_a_link_is_masked(self):
+        from agent.redact import redact_terminal_output
+
+        link = "http://127.0.0.1:9120/?profile=work#hermes-session=" + self.CREDENTIAL
+        out = redact_terminal_output(f"Open this link in your browser:\n  {link}\n", "hermes webapp")
+        assert self.CREDENTIAL not in out
+        assert "http://127.0.0.1:9120/?profile=work#hermes-session=" in out
+
+    def test_a_launch_ticket_is_masked(self):
+        from agent.redact import redact_terminal_output
+
+        link = "http://127.0.0.1:9120/webapp/launch#ticket=" + self.CREDENTIAL + "&query=%3Fprofile%3Dwork"
+        out = redact_terminal_output(f"Open this one-use link:\n  {link}\n", "hermes webapp --no-open")
+        assert self.CREDENTIAL not in out
+        assert "http://127.0.0.1:9120/webapp/launch#ticket=" in out and "&query=%3Fprofile%3Dwork" in out
+        assert self.CREDENTIAL not in redact_sensitive_text(link)
+
+    def test_code_that_builds_such_a_link_is_left_alone(self):
+        source = "target.hash = `hermes-session=${token}`\nconst FRAGMENT_KEY = 'hermes-session'\n"
+        assert redact_sensitive_text(source, code_file=True) == source

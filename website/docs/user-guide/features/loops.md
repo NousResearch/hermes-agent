@@ -31,6 +31,14 @@ What you'll see:
 2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Hermes injects the wakeup and runs a normal turn against current state.
 3. **Repeat** — every 5 minutes after that, until a stop condition fires or you stop it.
 
+While a loop stands, every surface keeps it in view with a live countdown to the next wakeup:
+
+| Surface | Where |
+|---|---|
+| Classic CLI | A row in the live-work dock above the prompt: `↻ loop · every 5m · 2 runs · next in 4m · <prompt>` (minute steps, seconds in the last minute; `running now` during a wakeup; the pause reason when paused). Collapsed with Ctrl+R it shrinks to `↻ loop next in 4m`. |
+| TUI | The same row under the goal bar. |
+| Desktop | The loop card above the composer: `Loop active · 2 runs · next 00:04:12`, counting every second. |
+
 Loop a slash command just as easily:
 
 ```
@@ -85,6 +93,8 @@ Examples:
 
 Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
+In the desktop app and dashboard chat, the backend keeps firing an active loop after you close the window or the app disconnects: a session with an active `/loop` (or `/heartbeat`) is exempt from the disconnected-session reaper, so the wakeups and their results are waiting when you reopen it. The exemption ends when the loop stops, pauses, or reaches its tick budget, and the session is then collected normally. The backend process itself must keep running: if it exits with the app, nothing fires until it is back. For unattended loops, run the session on a long-lived backend (a remote `hermes serve`, or the dashboard).
+
 ## Mixing with `/goal`
 
 Both features inject synthetic turns at idle boundaries, so they follow one rule: **an active goal owns the session.** While a `/goal` is actively driving (judge saying "continue"), loop wakeups defer. The loop resumes using idle time as soon as the goal finishes, pauses, or parks itself on a wait barrier (`/goal wait`, or the judge's automatic WAIT verdict). A parked goal plus a `/loop` is a natural combo: the goal waits on the big async thing while the loop keeps a heartbeat on something else.
@@ -93,7 +103,7 @@ A real user message always wins over both — wakeups only fire while the sessio
 
 ## Behavior details
 
-- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact.
+- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact. In the messaging gateway a wakeup is not a reply to the message that set the loop, so its output is posted to the chat/topic without quoting that message.
 - **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as `/goal`.
 - **One loop per session.** Setting a new `/loop` replaces the old one. Run several loops by running several sessions (or use cron for a fleet of schedules).
 - **Interrupting a wakeup turn (Ctrl+C) pauses the loop** — recoverable with `/loop resume`, so cancel actually means cancel.

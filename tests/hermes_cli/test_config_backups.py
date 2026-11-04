@@ -1,4 +1,5 @@
 """config.yaml backups: one dir, deduped, bounded — never a pile of siblings in HERMES_HOME."""
+import os
 from pathlib import Path
 
 from hermes_cli.config_backups import backup_config, list_config_backups
@@ -21,6 +22,24 @@ def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
     assert len(kept) == 2 and kept[0].read_text() == "model: 2\n"
     # Nothing left beside config.yaml in the home root.
     assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["config.yaml"]
+
+
+def test_same_size_edit_within_one_mtime_tick_is_still_backed_up(tmp_path: Path, monkeypatch):
+    # Coarse-timestamp filesystems leave an immediate rewrite with the old mtime; dedupe must
+    # compare content, not trust a (size, mtime) signature.
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model: a\n")
+    stamps = iter(f"2026010100000{i}" for i in range(10))
+    monkeypatch.setattr("hermes_cli.config_backups.time.strftime", lambda _fmt: next(stamps))
+
+    assert backup_config(cfg, "pre-setup") is not None
+    assert backup_config(cfg, "pre-setup") is None
+    before = cfg.stat()
+    cfg.write_text("model: b\n")
+    os.utime(cfg, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    second = backup_config(cfg, "pre-setup")
+    assert second is not None and second.read_text() == "model: b\n"
 
 
 def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):

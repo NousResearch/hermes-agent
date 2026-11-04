@@ -107,12 +107,14 @@ def _install_fake_argv(monkeypatch, argv_by_pid):
     )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestUninspectableHolderInstanceScope:
     def test_other_instance_argv_is_not_a_holder_of_our_db(self, tmp_path, monkeypatch):
         """RED: fd dir unreadable + argv proves the process belongs to a
         DIFFERENT Hermes home → not a holder of our state.db."""
-        db_path = tmp_path / "state.db"
+        # A real ``.hermes`` home, as on the field host this test is drawn from: the install
+        # location can only identify a home that is itself part of an install layout.
+        db_path = tmp_path / ".hermes" / "state.db"
         _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
         _install_fake_argv(monkeypatch, {222: DEMO_HOME_ARGV})
 
@@ -137,3 +139,102 @@ class TestUninspectableHolderInstanceScope:
             holders = hermes_state_holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == [222], argv
             assert holders[0][1].startswith("uninspectable holder:"), argv
+
+    def test_install_root_argv_still_holds_a_profile_store_under_it(self, tmp_path, monkeypatch):
+        """One process per host serves EVERY profile, so argv naming only the install root does
+        not prove the process is another instance: it holds ``<root>/profiles/<name>/state.db``
+        too. A DIFFERENT install root is still proof."""
+        root = tmp_path / ".hermes"
+        db_path = root / "profiles" / "b" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        multiplexer = ["hermes", "--home", str(root), "gateway", "run"]
+        other_install = ["hermes", "--home", "/home/demo/.hermes", "gateway", "run"]
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: multiplexer})
+        assert [pid for pid, _ in hermes_state_holders.foreign_state_db_holders(db_path)] == [222]
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: other_install})
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
+
+    def test_shared_binary_plus_another_profile_selection_is_dismissed(self, tmp_path, monkeypatch):
+        """argv[0] is the SHARED install binary, so it cannot prove a hold of profile b's store.
+
+        Every hermes process on a normal host runs ``<root>/venv/bin/hermes``; counting that token
+        as proof made ``hermes -p other chat -q`` an uninspectable holder of every OTHER profile's
+        state.db, deferring its FTS rebuild and auto-VACUUM for as long as the sibling lived
+        (#92401, inside a single install). The process's own ``-p``/``--profile`` selection decides.
+        """
+        root = tmp_path / ".hermes"
+        db_path = root / "profiles" / "b" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        shared_binary = str(root / "venv" / "bin" / "hermes")
+
+        for argv, expected in (
+            ([shared_binary, "-p", "other", "chat", "-q"], []),
+            ([shared_binary, "--profile=other", "gateway", "run"], []),
+            # Control: the sibling that DOES serve profile b is still a fail-closed holder.
+            ([shared_binary, "-p", "b", "gateway", "run"], [222]),
+            # Control: no selection at all stays fail-closed (it may be the multiplexer).
+            ([shared_binary, "gateway", "run"], [222]),
+        ):
+            _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+            _install_fake_argv(monkeypatch, {222: argv})
+            holders = hermes_state_holders.foreign_state_db_holders(db_path)
+            assert [pid for pid, _ in holders] == expected, argv
+
+    def test_token_naming_another_profiles_store_is_dismissal_evidence(self, tmp_path, monkeypatch):
+        """A token positively naming ANOTHER profile's store is the strongest dismissal there is.
+
+        It sits under our install root, so a blanket own-prefix test read the strongest evidence of
+        a different scope as proof of ours.
+        """
+        root = tmp_path / ".hermes"
+        db_path = root / "profiles" / "b" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        other_store = root / "profiles" / "other" / "state.db"
+
+        for argv in (
+            ["hermes", f"--db={other_store}", "sessions", "optimize"],
+            [str(root / "venv" / "bin" / "hermes"), "sessions", str(other_store)],
+        ):
+            _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+            _install_fake_argv(monkeypatch, {222: argv})
+            assert hermes_state_holders.foreign_state_db_holders(db_path) == [], argv
+
+    def test_unrelated_install_under_a_non_hermes_profiles_tree_stays_dismissed(
+        self, tmp_path, monkeypatch
+    ):
+        """``<X>/profiles/<n>/state.db`` does not make all of ``<X>`` ours.
+
+        A raw ``basename == "profiles"`` test promoted any such parent to the install root, so an
+        unrelated Hermes install living under it was counted as a holder — the literal two-instance
+        shape #92401 was filed about. The canonical ``named_profile_home`` predicate requires the
+        parent to be a real Hermes home.
+        """
+        work = tmp_path / "work"
+        db_path = work / "profiles" / "b" / "state.db"
+        db_path.parent.mkdir(parents=True)
+        unrelated_home = work / "demo" / ".hermes"
+        unrelated_home.mkdir(parents=True)
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(
+            monkeypatch, {222: ["hermes", "--hermes-home", str(unrelated_home), "gateway", "run"]})
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
+
+    def test_custom_home_is_not_dismissed_by_the_install_location(self, tmp_path, monkeypatch):
+        """A store at a custom HERMES_HOME is SERVED BY the binary under ``~/.hermes``.
+
+        Dismissing on that argv[0] admitted auto-VACUUM and the FTS rebuild under the live
+        multiplexer that holds the store. argv[0] locates the install, never the home.
+        """
+        db_path = tmp_path / "custom-store" / "state.db"
+        db_path.parent.mkdir(parents=True)
+
+        _install_fake_proc(monkeypatch, db_path.parent, unreadable_pids=(222,))
+        _install_fake_argv(
+            monkeypatch, {222: ["/home/u/.hermes/venv/bin/hermes", "gateway", "run"]})
+        holders = hermes_state_holders.foreign_state_db_holders(db_path)
+        assert [pid for pid, _ in holders] == [222]

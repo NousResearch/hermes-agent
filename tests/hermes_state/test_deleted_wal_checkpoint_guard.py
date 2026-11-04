@@ -60,7 +60,7 @@ def _unlink_sidecars(db_path: Path) -> None:
             os.unlink(sidecar)
 
 
-@pytest.mark.linux_only  # deleted-WAL write halt uses Linux unlink semantics
+@pytest.mark.platforms("linux")  # deleted-WAL write halt uses Linux unlink semantics
 def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
     """A writer halted by DeletedWalGenerationError must not checkpoint (periodic, VACUUM or close) nor run FTS repair."""
     path = tmp_path / "state.db"
@@ -92,7 +92,7 @@ def test_close_after_halt_runs_no_checkpoint(tmp_path, force_wal):
         )
 
 
-@pytest.mark.linux_only  # deleted-WAL write halt uses Linux unlink semantics
+@pytest.mark.platforms("linux")  # deleted-WAL write halt uses Linux unlink semantics
 def test_halt_disables_close_time_checkpoint(tmp_path, force_wal):
     """On 3.12+ the halt must also call _disable_close_time_checkpoint()."""
     import sqlite3

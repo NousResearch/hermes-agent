@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import {
   runSessionControlAction,
   type SessionControlAction,
@@ -136,7 +137,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
   const copyCriterionText = useCallback(
     async (text: string) => {
       try {
-        await navigator.clipboard.writeText(text)
+        await writeClipboardText(text)
         onFeedback(null, ctrl.copySuccess)
       } catch {
         onFeedback(ctrl.copyFailure, null)
@@ -339,9 +340,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                       : ctrl.waitBarrierTitle}
                   </StatusControlRow>
                 )}
-                {!goal.wait_barrier && goal.paused_reason && (
-                  <StatusControlRow>{goal.paused_reason}</StatusControlRow>
-                )}
+                {!goal.wait_barrier && goal.paused_reason && <StatusControlRow>{goal.paused_reason}</StatusControlRow>}
                 {!goal.wait_barrier && !goal.paused_reason && goal.last_reason && (
                   <StatusControlRow>{goal.last_reason}</StatusControlRow>
                 )}
@@ -364,7 +363,11 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                   <StatusRow
                     className="text-[0.68rem] font-medium text-muted-foreground/75"
                     leading={
-                      <span aria-hidden="true" className="inline-flex text-muted-foreground/70" data-slot="criteria-state-marker">
+                      <span
+                        aria-hidden="true"
+                        className="inline-flex text-muted-foreground/70"
+                        data-slot="criteria-state-marker"
+                      >
                         <Codicon name="checklist" size="0.8rem" />
                       </span>
                     }
@@ -490,7 +493,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
               <textarea
                 aria-label={ctrl.criterionLabel}
                 autoFocus
-                className="w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-primary"
+                className="w-full rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-hidden focus:ring-1 focus:ring-primary"
                 disabled={isBusy}
                 onChange={e => setNewCriterionText(e.target.value)}
                 placeholder={ctrl.addCriterionPlaceholder}

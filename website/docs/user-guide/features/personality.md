@@ -274,10 +274,10 @@ At a high level, the prompt stack includes:
 
 ## Related docs
 
-- [Context Files](/user-guide/features/context-files)
-- [Configuration](/user-guide/configuration)
-- [Tips & Best Practices](/guides/tips)
-- [SOUL.md Guide](/guides/use-soul-with-hermes)
+- [Context Files](./context-files.md)
+- [Configuration](../configuration.md)
+- [Tips & Best Practices](../../guides/tips.md)
+- [SOUL.md Guide](../../guides/use-soul-with-hermes.md)
 
 ## CLI appearance vs conversational personality
 

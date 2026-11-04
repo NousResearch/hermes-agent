@@ -109,3 +109,25 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
     headers = agent._client_kwargs["default_headers"]
     assert "Authorization" not in headers
     assert headers["X-Route"] == "b"
+
+
+def test_codex_rotation_keeps_proxy_override(monkeypatch):
+    """#40913: a 401/429 rotation adopts the pool row, whose stored URL is the canonical ChatGPT
+    endpoint; with HERMES_CODEX_BASE_URL set the rotated client must keep targeting the proxy."""
+    from agent.credential_pool import PooledCredential
+
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/backend-api/codex/")
+    entry = PooledCredential(provider="openai-codex", id="second", label="second", auth_type="oauth",
+                             priority=1, source="manual:device_code", access_token="tok-second",
+                             base_url="https://chatgpt.com/backend-api/codex")
+    agent = SimpleNamespace(
+        api_mode="codex_responses", provider="openai-codex", model="gpt-5.3-codex", api_key="tok-first",
+        base_url="http://127.0.0.1:8787/backend-api/codex",
+        _client_kwargs={"api_key": "tok-first", "base_url": "http://127.0.0.1:8787/backend-api/codex"},
+        _reapply_route_client_config=MagicMock(), _replace_primary_openai_client=MagicMock(),
+    )
+
+    assert AIAgent._swap_credential(agent, entry) is True
+    assert agent.base_url == "http://127.0.0.1:8787/backend-api/codex"
+    assert agent._client_kwargs["base_url"] == "http://127.0.0.1:8787/backend-api/codex"
+    assert agent.api_key == "tok-second"

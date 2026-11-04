@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent, PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
@@ -6,6 +6,7 @@ import type { GatewayEventPayload } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 
 import type { ClientSessionState } from '../../../../types'
+import type { SegmentStamp } from '../segment-identity'
 
 export interface GatewayEventDeps {
   activeGatewayProfile: string
@@ -13,14 +14,18 @@ export interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
-  appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number) => void
+  appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number, stamp?: null | SegmentStamp) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean, occurredAt?: number) => void
   completeAssistantMessage: (
     sessionId: string,
     text: string,
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
-    occurredAt?: number
+    occurredAt?: number,
+    persistedTurn?: PersistedTurn | null,
+    responseTransformed?: boolean,
+    status?: string,
+    responseReused?: boolean
   ) => void
   failAssistantMessage: (
     sessionId: string,
@@ -29,7 +34,13 @@ export interface GatewayEventDeps {
     surface?: ErrorSurface | null
   ) => void
   flushQueuedDeltas: (sessionId?: string) => void
-  finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
+  dropQueuedDeltas: (sessionId?: string) => void
+  finalizeInterimAssistantMessage: (
+    sessionId: string,
+    text: string,
+    occurredAt?: number,
+    stamp?: null | SegmentStamp
+  ) => void
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,

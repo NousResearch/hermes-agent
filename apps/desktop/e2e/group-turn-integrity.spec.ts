@@ -1,10 +1,16 @@
+import os from 'node:os'
+import path from 'node:path'
+
+import { writeEnvFile } from '../../../tests-js/scripts/mock-provider-config'
 import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
+const SHOTS = path.join(os.tmpdir(), 'botmode-campaign')
 const FIRST_REPLY = 'FIRST_REPLY: initial work completed'
 const FOLLOWUP_REPLY = 'FOLLOWUP_REPLY: subsequent work completed'
+const BOT_KICKOFF = 'Hey, tell me about yourself!'
 let fixture: MockBackendFixture | null = null
 
 async function publicLog(page: MockBackendFixture['page']) {
@@ -35,10 +41,41 @@ async function createAgent(page: MockBackendFixture['page'], name: string, title
   await expect(page.getByRole('button', { name: new RegExp(`^${title}\\b`) }).first()).toBeVisible({ timeout: 30_000 })
 }
 
+// These tests pin the Desktop-courier (legacy) room engine. A current gateway
+// reports itself as the room owner in groups.capabilities, so New Group Chat
+// builds a gateway-owned room instead; the courier engine opens only for a
+// gateway that answers { driver: false, persistent_process: false } with no
+// room-owner markers. Answer just that probe that way. Member turns, sessions
+// and inference still run through the real backend.
+async function answerAsCourierGateway(page: MockBackendFixture['page']): Promise<void> {
+  await page.evaluate(() => {
+    const send = WebSocket.prototype.send
+
+    WebSocket.prototype.send = function(data) {
+      let frame: any = null
+
+      try { frame = JSON.parse(String(data)) } catch { frame = null }
+
+      if (frame?.method === 'groups.capabilities') {
+        (window as any).__courierProbes = ((window as any).__courierProbes || 0) + 1
+        const result = { driver: false, persistent_process: false }
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }) })))
+      } else {
+        send.call(this, data)
+      }
+    }
+  })
+}
+
 async function createRoom(page: MockBackendFixture['page']) {
+  await answerAsCourierGateway(page)
   await openBots(page)
   await createAgent(page, 'programmer', 'Programmer')
   await createAgent(page, 'reviewer', 'Reviewer')
+  // Each new bot's birth opens its Bot Chat and sends the kickoff; a late one
+  // foregrounds that tab over the room. Build the room after both landed.
+  await expect.poll(() => fixture!.mock.receivedPrompts.filter(p => p.includes(BOT_KICKOFF)).length, { timeout: 60_000 }).toBe(2)
+  await openBots(page)
 
   await page.getByRole('button', { name: 'New bot or group chat' }).click()
   await page.getByRole('menuitem', { name: 'New Group Chat' }).click()
@@ -57,7 +94,7 @@ async function createRoom(page: MockBackendFixture['page']) {
   await expect(groupTab).toBeVisible({ timeout: 20_000 })
   await expect(groupTab).toHaveAttribute('aria-selected', 'true')
   await expect(groupComposer).toBeVisible()
-
+  expect(await page.evaluate(() => (window as any).__courierProbes)).toBeGreaterThan(0)
 
   return groupComposer
 }
@@ -67,6 +104,9 @@ test.beforeEach(async () => {
     holdFirstCompletionContaining: 'LANE_A_FIRST',
     replyForPrompt: prompt => prompt.includes('LANE_A_FOLLOWUP') ? FOLLOWUP_REPLY : prompt.includes('LANE_A_FIRST') ? FIRST_REPLY : MOCK_REPLY
   } })
+  // Bots created below copy this .env; without the provider's key_env every
+  // member turn is refused ("No API key for custom provider 'Mock'").
+  writeEnvFile(fixture.sandbox.hermesHome, 'e2e-mock-key', fixture.mockUrl)
   await waitForAppReady(fixture, 120_000)
 })
 
@@ -83,7 +123,7 @@ test('group follow-up waits for its active member and retains the reply', async 
   await groupComposer.press('Enter')
   await fixture!.mock.waitForHeldCompletion()
   console.log('PRODUCTION CLOCK: first inference held; no second submit before provider release.')
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-held.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-held.png') })
   await page.getByRole('button', { name: 'Reply in thread', exact: true }).click()
   const replyComposer = page.getByRole('textbox', { name: 'Reply in thread', exact: true })
   await replyComposer.fill('@programmer LANE_A_FOLLOWUP')
@@ -110,7 +150,7 @@ test('group follow-up waits for its active member and retains the reply', async 
   expect(fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_A_FIRST'))).toHaveLength(1)
   expect(fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_A_FOLLOWUP'))).toHaveLength(1)
   console.log('PRODUCTION CLOCK: released; exact public log', JSON.stringify(log))
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-followup-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-followup-after.png') })
 })
 
 test('quiet group still harvests a late answer after sixty observation ticks', async () => {
@@ -150,7 +190,7 @@ test('quiet group still harvests a late answer after sixty observation ticks', a
   await page.waitForTimeout(1000)
   expect((await publicLog(page)).filter(entry => entry.from === 'programmer').map(entry => entry.text)).toEqual([FIRST_REPLY])
   console.log('ACCELERATED DEADLINE/OBSERVATION CLOCK ONLY: exact late public log', JSON.stringify(await publicLog(page)))
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-late-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-late-after.png') })
 })
 
 test('a rejected member turn stays visible when the room settles', async () => {
@@ -190,7 +230,7 @@ test('a rejected member turn stays visible when the room settles', async () => {
   expect(await page.evaluate(() => (window as any).__rejected)).toBe(1)
   expect((await publicLog(page)).filter(entry => entry.from !== 'You')).toEqual([])
   await expect(page.getByRole('button', { name: /^Activity/ })).toContainText('Programmer hit an error')
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-error-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-error-after.png') })
 
   // One epoch: A fails, B waits, the user retries A, then B and A fail.
   // The retry is explicit and after A's failure, unlike the prequeued sends above.
@@ -231,5 +271,5 @@ test('Stop clears a queued follow-up and a direct mention resumes the held membe
   await groupComposer.press('Enter')
   await expect.poll(() => fixture!.mock.receivedPrompts.some(p => p.includes('LANE_A_RESUME')), { timeout: 60000 }).toBe(true)
   await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible()
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-stop-resume.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-stop-resume.png') })
 })

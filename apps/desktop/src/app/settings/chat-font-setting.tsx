@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { CHAT_FONT_SUGGESTIONS, normalizeChatFontFamily, setChatFontFamilyFromConfig } from '@/themes/chat-font'
+import {
+  CHAT_FONT_SUGGESTIONS,
+  normalizeChatFontFamily,
+  resolveChatFontFamily,
+  setChatFontFamilyFromConfig
+} from '@/themes/chat-font'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
+import { ComboboxInput } from './combobox-input'
 import { getNested, setNested } from './helpers'
 import { ListRow } from './primitives'
 
@@ -30,7 +35,7 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
+  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
   // The seed effect refuses to reseed while the query still carries the
   // previous profile's stamp. A structurally-shared refetch keeps the object
@@ -80,7 +85,7 @@ export function ChatFontSetting() {
 
       // Sparse patch: PUT /api/config deep-merges; echoing the cached snapshot
       // would overwrite keys other surfaces changed since it loaded.
-      void saveHermesConfig(setNested({}, CONFIG_PATH, value))
+      void saveHermesConfig(setNested({}, CONFIG_PATH, value), writeScope)
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)
@@ -106,7 +111,7 @@ export function ChatFontSetting() {
     }, AUTOSAVE_DELAY_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed])
+  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed, writeScope])
 
   const update = (value: string) => {
     saveVersionRef.current += 1
@@ -122,26 +127,27 @@ export function ChatFontSetting() {
       below={
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-3">
-            <Input
+            <ComboboxInput
               aria-label={copy.chatFontTitle}
               className="flex-1"
               disabled={draft === null}
-              list="hermes-chat-font-families"
-              onChange={event => update(event.target.value)}
+              onChange={update}
+              options={CHAT_FONT_SUGGESTIONS}
               placeholder={copy.chatFontPlaceholder}
+              renderOption={font => (
+                <span style={{ fontFamily: resolveChatFontFamily(font, 'var(--dt-font-sans)') }}>{font}</span>
+              )}
               value={value}
             />
             <Button disabled={!value || draft === null} onClick={() => update('')} size="inline" variant="text">
               {copy.chatFontReset}
             </Button>
           </div>
-          <datalist id="hermes-chat-font-families">
-            {CHAT_FONT_SUGGESTIONS.map(font => (
-              <option key={font} value={font} />
-            ))}
-          </datalist>
           {/* Inherits --dt-font-sans, so it IS the live result, not a simulation. */}
-          <div aria-label={copy.chatFontPreview} className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)">
+          <div
+            aria-label={copy.chatFontPreview}
+            className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
+          >
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.chatFontPreview}
             </span>

@@ -14,7 +14,6 @@ web_extract all failed on Kimi Coding Plan users.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -74,39 +73,6 @@ def test_endpoint_speaks_anthropic_messages(url, expected, label):
 
 
 
-def test_maybe_wrap_anthropic_sdk_missing_falls_back():
-    """ImportError on anthropic SDK returns plain client with warning."""
-    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
-
-    plain_client = MagicMock(name="plain_openai")
-
-    def _raise_import(*args, **kwargs):
-        raise ImportError("no anthropic SDK")
-
-    with patch(
-        "agent.anthropic_adapter.build_anthropic_client",
-        side_effect=_raise_import,
-    ):
-        # The ImportError is caught on the `from ... import` line inside
-        # _maybe_wrap_anthropic, which runs before build_anthropic_client is
-        # called. To exercise the ImportError path we need to patch the
-        # module lookup itself.
-        import sys as _sys
-        saved = _sys.modules.get("agent.anthropic_adapter")
-        _sys.modules["agent.anthropic_adapter"] = None  # force ImportError
-        try:
-            result = _maybe_wrap_anthropic(
-                plain_client, "kimi-for-coding", "sk-kimi-test",
-                "https://api.kimi.com/coding", api_mode=None,
-            )
-        finally:
-            if saved is not None:
-                _sys.modules["agent.anthropic_adapter"] = saved
-            else:
-                _sys.modules.pop("agent.anthropic_adapter", None)
-
-    assert result is plain_client
-    assert not isinstance(result, AnthropicAuxiliaryClient)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +96,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
     # sk-kimi- prefix triggers /coding endpoint auto-detection
     monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-faketesttoken123")
 
-    client, model = resolve_provider_client("kimi-coding", "kimi-for-coding")
+    client, _model = resolve_provider_client("kimi-coding", "kimi-for-coding")
     assert client is not None, "Should resolve a client"
     assert isinstance(client, AnthropicAuxiliaryClient), (
         "Kimi Coding Plan endpoint (api.kimi.com/coding) speaks Anthropic "

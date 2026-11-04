@@ -12,6 +12,8 @@ from pathlib import Path
 from contextlib import suppress
 from typing import Optional
 
+from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+
 
 def _constants_path(getter_name: str) -> Path:
     """Call ``hermes_constants.<getter_name>()`` (local import avoids cycles); ``~/.hermes`` on any failure."""
@@ -69,9 +71,34 @@ def _resolve_target(path: str) -> Optional[Path]:
     return None
 
 
-def _home_and_resolved(path: str) -> tuple[str, str]:
-    """``(realpath(~), realpath(expanduser(path)))`` — the write-guard coordinate pair."""
-    return tuple(os.path.realpath(os.path.expanduser(p)) for p in ("~", str(path)))
+def _guard_homes(path: str = "") -> set[str]:
+    """Every home the write guards must cover. Process ``~`` alone is wrong whenever the
+    process HOME is not the OS user's real home — ``TERMINAL_HOME_MODE=profile``,
+    containers, and spawned workers pin ``HOME`` to ``{HERMES_HOME}/home``, which leaves
+    the real home's credential paths unguarded against absolute-path writes while file
+    tools happily write there (and ``_expand_tilde`` may route ``~`` to yet another
+    home). Deny/approval lists are built over the union: process home, real home,
+    subprocess home, and the profile home. A ``~name/...`` input resolves to a named
+    account's home, which joins the set so ``~root/.ssh/authorized_keys`` stays denied."""
+    homes = {os.path.expanduser("~")}
+    with suppress(Exception):
+        from hermes_constants import get_real_home, get_subprocess_home, _profile_home_path
+
+        for candidate in (get_real_home(), get_subprocess_home(), _profile_home_path()):
+            if candidate:
+                homes.add(str(candidate))
+    raw = str(path)
+    if len(raw) > 1 and raw.startswith("~") and raw[1] not in "/\\":
+        name = raw[1:].split("/", 1)[0].split("\\", 1)[0]
+        expanded = os.path.expanduser(f"~{name}")
+        if not expanded.startswith("~"):
+            homes.add(expanded)
+    return {os.path.realpath(h) for h in homes}
+
+
+def _homes_and_resolved(path: str) -> tuple[set[str], str]:
+    """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair."""
+    return _guard_homes(path), os.path.realpath(os.path.expanduser(str(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +188,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     # root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
+    # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
@@ -170,8 +197,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     hermes_files = (
         ".env", ".anthropic_oauth.json",
         os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
+        *SECRET_CACHE_STORES,
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
@@ -181,12 +207,15 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
+
+
 def build_write_denied_prefixes(home: str) -> list[str]:
     """Return sensitive directory prefixes that must never be written."""
     paths = [
-        *(os.path.join(home, d) for d in (".ssh", ".aws", ".gnupg", ".kube")),
+        *(os.path.join(home, *d.split("/")) for d in HOME_CREDENTIAL_DIRS),
         "/etc/sudoers.d", "/etc/systemd",
-        *(os.path.join(home, *d) for d in ((".docker",), (".azure",), (".config", "gh"), (".config", "gcloud"))),
     ]
     return [os.path.realpath(p) + os.sep for p in paths]
 
@@ -214,29 +243,54 @@ def build_write_approval_paths(home: str) -> set[str]:
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
 # rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
-# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
-# browser-profile/ (copied cookies / Login Data) hold credential material.
+# mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
+# browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
+# browser credential and its grants to native apps) hold credential material.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+_HERMES_PROTECTED_SUBPATHS = (
+    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
 
 
-def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed."""
+def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
+    """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
+
+    ``entry=True`` is for ops that unlink/rename the directory entry itself (a
+    symlink, not its target): the entry — parent realpath'd, final component
+    kept — is vetted as well as the target it resolves to."""
     # NT/device-namespace check runs on the RAW string, before realpath():
     # resolving such a path is itself the NTLM-leak trigger, and namespace
     # prefixes defeat string-prefix denylist comparison after normalization.
     if is_nt_namespace_path(path):
         return "nt_namespace"
-    home, resolved = _home_and_resolved(path)
+    homes, resolved = _homes_and_resolved(path)
 
+    # The runtime's own interpreter/venv is never agent-writable (an overwrite
+    # bricks the next start exactly like a delete, #58748) — and this must fire
+    # BEFORE the approval-gated allow so ~/.ssh-style gating cannot re-open it.
+    from agent.runtime_self_protection import is_protected_path, split_entry
+
+    if is_protected_path(path) or (entry and is_protected_path(path, follow=False)):
+        return "credential"
+    denial = _classify_resolved_write_denial(homes, resolved)
+    if denial or not entry:
+        return denial
+    parent, leaf = split_entry(os.path.expanduser(str(path)))
+    entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
+    return _classify_resolved_write_denial(homes, entry_path)
+
+
+def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
+    """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
-    if resolved in build_write_approval_paths(home):
+    if any(resolved in build_write_approval_paths(home) for home in homes):
         return None
 
-    if resolved in build_write_denied_paths(home) or any(
-        resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home)
+    if any(
+        resolved in build_write_denied_paths(home)
+        or any(resolved.startswith(prefix) for prefix in build_write_denied_prefixes(home))
+        for home in homes
     ):
         return "credential"
 
@@ -258,9 +312,10 @@ def is_write_denied(path: str) -> bool:
     return _classify_write_denial(path) is not None
 
 
-def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
-    """Return a user/model-facing error when writes to ``path`` are blocked."""
-    denial = _classify_write_denial(path)
+def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False) -> Optional[str]:
+    """Return a user/model-facing error when writes to ``path`` are blocked
+    (``entry``: see :func:`_classify_write_denial`)."""
+    denial = _classify_write_denial(path, entry=entry)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (
@@ -275,8 +330,8 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    home, resolved = _home_and_resolved(path)
-    return resolved in build_write_approval_paths(home)
+    homes, resolved = _homes_and_resolved(path)
+    return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
 # Secret-bearing project-local env file basenames, blocked anywhere on disk.
@@ -290,10 +345,9 @@ _DID_SUFFIX = (
 
 # Exact-file credential stores under HERMES_HOME / <root>. The agent never
 # needs these directly — provider tools consume them through internal channels.
-# bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
 _CREDENTIAL_FILE_NAMES = (
     "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
-    os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
+    os.path.join("auth", "google_oauth.json"), *SECRET_CACHE_STORES,
 )
 
 # Directory-prefix read denies under HERMES_HOME / <root>: (subdir, message for
@@ -308,8 +362,13 @@ _READ_DENIED_DIRS = (
      "is inside the Hermes real-profile browser snapshot (copied cookies/logins) and cannot be read directly."),
     # vault.key + vault.json.enc sit side by side; key + ciphertext = plaintext, so the whole dir is one credential.
     ("vault",
-     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault_fill).",
-     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault_fill resolves them server-side)."),
+     "is the Hermes credential vault directory and cannot be read directly (secrets are filled server-side by browser_vault).",
+     "is inside the Hermes credential vault (encrypted secrets + local key) and cannot be read directly (browser_vault resolves them server-side)."),
+    # session-token is the Webapp's browser credential (a bare token no redaction pattern masks); the
+    # rest are its grants to native apps and its Web Access registration.
+    ("webapp",
+     "is the Hermes Webapp sign-in directory and cannot be read directly.",
+     "is a Hermes Webapp sign-in file (the browser credential or its sign-in records) and cannot be read directly."),
 )
 
 
@@ -318,7 +377,7 @@ def get_read_block_error(path: str) -> Optional[str]:
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
     stores under HERMES_HOME and the global root (exact files, plus anything
-    under ``mcp-tokens/`` and ``browser-profile/``), and project-local ``.env``
+    under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
     Callers that resolve relative paths against a non-process cwd (e.g.
@@ -371,7 +430,7 @@ def raise_if_read_blocked(path: str) -> None:
     """
     try:
         blocked = get_read_block_error(path)
-    except Exception:  # noqa: BLE001 - guard must never break local-file loading
+    except Exception:
         return
     if blocked:
         raise ValueError(blocked)
@@ -465,86 +524,3 @@ def get_container_mirror_warning(path: str, mirror_prefix: str | None = None) ->
         "the real HERMES_HOME.",
         "after explicit user direction, retry",
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
-
-def classify_cross_profile_target(path: str) -> Optional[dict]:
-    """Classify a write target as cross-profile if it lands in another
-    profile's scoped area (skills/plugins/cron/memories).
-
-    Returns ``None`` when the target is outside Hermes scope, or is inside
-    the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
-    returns a dict with:
-
-      * ``active_profile``: name of the profile the agent is running as
-      * ``target_profile``: name of the profile the path belongs to
-      * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
-      * ``target_path``: the resolved path string
-
-    The caller decides what to do with the result — surface a warning to
-    the model, prompt the user, or (with explicit consent /
-    ``cross_profile=True``) proceed anyway.
-    """
-    try:
-        target = Path(os.path.expanduser(str(path))).resolve()
-        root_real = _hermes_root_path().resolve()
-    except (OSError, RuntimeError):
-        return None
-
-    target_profile: Optional[str] = None
-    area: Optional[str] = None
-
-    try:
-        rel = target.relative_to(root_real)
-    except ValueError:
-        return None
-
-    parts = rel.parts
-    if not parts:
-        return None
-
-    if parts[0] in PROFILE_SCOPED_AREAS:
-        # ``<root>/<area>/...`` → default profile.
-        target_profile = "default"
-        area = parts[0]
-    elif (
-        parts[0] == "profiles"
-        and len(parts) >= 3
-        and parts[2] in PROFILE_SCOPED_AREAS
-    ):
-        # ``<root>/profiles/<name>/<area>/...`` → named profile.
-        target_profile = parts[1]
-        area = parts[2]
-    else:
-        return None
-
-    active_profile = _resolve_active_profile_name()
-    if target_profile == active_profile:
-        # In-profile write — not a cross-profile event.
-        return None
-
-    return {
-        "active_profile": active_profile,
-        "target_profile": target_profile,
-        "area": area,
-        "target_path": str(target),
-    }
-
-def get_cross_profile_warning(path: str) -> Optional[str]:
-    """RETIRED (maintainer decision): always returns ``None``.
-
-    The cross-profile write guard was removed — profiles were never
-    isolated (same OS user; the terminal tool writes anywhere), so the
-    block was ceremony that cost every schema real tokens and taught a
-    bypass arg. The system prompt's active-profile hint remains the only
-    steering; the classifier below survives for that hint and for
-    diagnostics. Kept as a stub so external callers/plugins fail soft.
-    """
-    return None
-# ---- END PLUGIN-COMPAT ----

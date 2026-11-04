@@ -92,9 +92,18 @@ export const zhHant: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "目前記憶提供者",
+    noProvider: "無 — 僅內建",
+    builtinLayer: "內建層",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的記憶，獨立於任何外部提供者。兩者預設都會載入工作階段；設定開關 (memory.memory_enabled / memory.user_profile_enabled) 可分別關閉。外部提供者是對它們的補充，絕不會取代它們。",
+  },
+
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步驟（重新執行 `hermes update` 以完成）",
     actions: "動作",
     agent: "代理",
     activeSessions: "使用中工作階段",
@@ -162,9 +171,14 @@ export const zhHant: Translations = {
     deleteSelectedConfirmMessage:
       "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
+    selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    workspace: "工作區",
+    workspaceDefault: "預設",
+    workspaceRescan: "重新掃描儲存庫",
+    workspaceCustom: "其他路徑…",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -323,6 +337,8 @@ export const zhHant: Translations = {
     disableRuntime: "停用",
     enableAfterInstall: "安裝後啟用",
     enableRuntime: "啟用",
+    toggleTakesEffectAfterRestart:
+      "已儲存 — 重新啟動閘道以套用變更。",
     forceReinstall: "強制重新安裝（先刪除既有資料夾）",
     headline:
       "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",

@@ -857,6 +857,7 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   ultrafast?: boolean
+  daybreak?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
@@ -1631,6 +1632,7 @@ export interface GroupsStateParams {
 export interface GroupsStateResult {
   room: Room
   driver_status?: RoomDriverStatus | null
+  context?: RoomContext | null
 }
 /** ``HostedRoomService.status(room_id)``; ``pending_actions`` rows are the exact attempt (``hosted_room_service.attempt_action``: ``kind`` + ``member_id``/``task_id``/``execution_generation``) or the driver's approval action (``kind: approval`` + run/session/approval context), or a stalled room preparation's Retry (``task_id`` ``prepare:<room_id>``, ``member_id`` the members not woken). ``member_activity`` lists live tasks in admission order (absent from older gateways). ``last_error`` is this room's last preparation failure, null once one succeeds. */
 export interface RoomDriverStatus {
@@ -1641,17 +1643,30 @@ export interface RoomDriverStatus {
   pending_actions: Record<string, unknown>[]
   member_activity?: RoomMemberActivity[]
   last_error?: string | null
+  max_rounds?: number | null
   peer_routes: PeerRouteStatus[]
 }
-/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. */
+/** One live room task: ``status`` is ``queued``, ``running`` or ``stopping``. ``thread_id`` and ``round_index`` name the thread and 0-based round it works in; ``started_at`` is when it began running; ``tool`` (the tool it is in now) and ``progress_at`` (its last frame) come only from the process running the turn. */
 export interface RoomMemberActivity {
   member_id: string
   status: string
+  thread_id?: string | null
+  round_index?: number | null
+  started_at?: number | null
+  tool?: string | null
+  progress_at?: number | null
 }
 export interface PeerRouteStatus {
   room_id: string
   member_id: string
   status: string
+}
+/** ``gateway/hosted_room_context.py::room_context``: the purpose and shared notes every member's turn prompt carries (inside the user-role message). */
+export interface RoomContext {
+  purpose: string
+  notes: string
+  routing?: 'everyone' | 'lead'
+  lead_member_id?: string
 }
 export interface GroupsSendParams {
   profile?: string | null
@@ -1673,6 +1688,19 @@ export interface GroupsRenameParams {
 }
 export interface GroupsRenameResult {
   room: Room
+}
+export interface GroupsContextParams {
+  profile?: string | null
+  room_id: string
+  event_id: string
+  purpose: string
+  notes: string
+  routing?: 'everyone' | 'lead' | null
+  lead_member_id?: string | null
+}
+export interface GroupsContextResult {
+  context: RoomContext
+  event: RoomEvent
 }
 export interface GroupsLogParams {
   profile?: string | null
@@ -2388,6 +2416,14 @@ export interface FailedDelegation {
   error?: string | null
   dispatched_at?: number | null
   completed_at?: number | null
+}
+export interface SubagentRosterResult {
+  sessions?: SubagentRosterEntry[]
+}
+export interface SubagentRosterEntry {
+  session_id: string
+  subagents?: number
+  background?: number
 }
 export interface SubagentIdParams {
   session_id: string
@@ -4275,6 +4311,7 @@ export interface McpServerRuntimeRow {
   status: McpRuntimeStatus
   source: McpServerSource
   plugin?: string | null
+  needs_auth?: boolean
 }
 export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
@@ -4718,6 +4755,7 @@ export interface CanonicalSessionInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   source: string
   model?: string | null
   lazy: boolean
@@ -5052,6 +5090,7 @@ export interface CanonicalSnapshotInfo {
   tool_availability?: Record<string, unknown> | null
   tool_availability_warnings?: string[] | null
   unknown_toolsets?: string[] | null
+  usage?: Usage | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null
@@ -6166,6 +6205,8 @@ export interface RpcMethods {
   'groups.attachment.upload': { params: GroupsAttachmentUploadParams; result: RoomAttachment }
   /** Describe the hosted-room protocol implemented by this gateway. */
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
+  /** Set one hosted room's purpose and shared notes; members see them from the next message. */
+  'groups.context': { params: GroupsContextParams; result: GroupsContextResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. */
@@ -6492,6 +6533,8 @@ export interface RpcMethods {
   'subagent.interrupt': { params: SubagentIdParams; result: SubagentInterruptResult }
   /** Live children owned by this session (other sessions' children never leak). */
   'subagent.list': { params: SessionParams; result: SubagentListResult }
+  /** Per-conversation counts of live delegated children and running background processes, limited to conversations stored in the named profile (launch profile when omitted). Needs no attached session. */
+  'subagent.roster': { params: ProfileParams; result: SubagentRosterResult }
   /** Queue steering text into a live delegated child owned by this session. */
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
@@ -6620,6 +6663,7 @@ export const RPC_METHODS = [
   'groups.attachment.download',
   'groups.attachment.upload',
   'groups.capabilities',
+  'groups.context',
   'groups.create',
   'groups.demote',
   'groups.disband',
@@ -6783,6 +6827,7 @@ export const RPC_METHODS = [
   'spawn_tree.save',
   'subagent.interrupt',
   'subagent.list',
+  'subagent.roster',
   'subagent.steer',
   'subagent.tail',
   'subscription.change',

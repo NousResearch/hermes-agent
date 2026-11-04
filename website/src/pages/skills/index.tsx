@@ -231,6 +231,27 @@ const SOURCE_CONFIG: Record<
     border: "rgba(163, 230, 53, 0.2)",
     icon: "\u{2756}",
   },
+  Notion: {
+    label: "Notion",
+    color: "#e5e7eb",
+    bg: "rgba(229, 231, 235, 0.08)",
+    border: "rgba(229, 231, 235, 0.2)",
+    icon: "\u{25A0}",
+  },
+  Airtable: {
+    label: "Airtable",
+    color: "#fcb400",
+    bg: "rgba(252, 180, 0, 0.08)",
+    border: "rgba(252, 180, 0, 0.2)",
+    icon: "\u{25A6}",
+  },
+  Shopify: {
+    label: "Shopify",
+    color: "#95bf47",
+    bg: "rgba(149, 191, 71, 0.08)",
+    border: "rgba(149, 191, 71, 0.2)",
+    icon: "\u{25B2}",
+  },
 };
 
 const SOURCE_ORDER = [
@@ -253,6 +274,9 @@ const SOURCE_ORDER = [
   "Weights & Biases",
   "Qdrant",
   "Pinecone",
+  "Notion",
+  "Airtable",
+  "Shopify",
 ];
 
 function highlightMatch(text: string, query: string): React.ReactNode {

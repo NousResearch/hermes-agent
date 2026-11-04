@@ -76,6 +76,14 @@ export interface CanonicalGroupMessages {
   leadBadge: string
   assignment: string
   assignmentFallback: string
+  routedTo: string
+  routedEveryone: string
+  routedFallback: string
+  pausedAfter: string
+  continueDiscussion: string
+  continued: string
+  routingAuto: string
+  routingAutoHint: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -156,7 +164,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'The lead picks who takes it; @mentions and @everyone still go straight to those members.',
     leadBadge: 'Lead',
     assignment: '{lead} gave this to {names}',
-    assignmentFallback: '{lead} is taking this'
+    assignmentFallback: '{lead} is taking this',
+    routedTo: 'Assigned to {names}',
+    routedEveryone: 'Assigned to everyone',
+    routedFallback: 'Couldn\'t choose who answers, so everyone will',
+    pausedAfter: 'Paused after {count} messages',
+    continueDiscussion: 'Continue',
+    continued: 'Continued',
+    routingAuto: 'Pick who answers automatically',
+    routingAutoHint: 'A quick model call picks who a message is for. @mentions still go straight to the people you name.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -235,7 +251,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'リーダーが担当者を選びます。@メンションと @everyone はそのまま宛先のメンバーに届きます。',
     leadBadge: 'リーダー',
     assignment: '{lead} が {names} に割り当てました',
-    assignmentFallback: '{lead} が担当します'
+    assignmentFallback: '{lead} が担当します',
+    routedTo: '{names} に割り当てました',
+    routedEveryone: '全員に割り当てました',
+    routedFallback: '回答者を選べなかったため、全員が回答します',
+    pausedAfter: '{count} 件のメッセージの後で一時停止しました',
+    continueDiscussion: '続ける',
+    continued: '再開しました',
+    routingAuto: '回答者を自動で選ぶ',
+    routingAutoHint: '短いモデル呼び出しで、メッセージの宛先を選びます。@メンションはそのまま指名した相手に届きます。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -314,7 +338,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由负责人决定谁来处理；@提及和 @everyone 仍直接发给对应成员。',
     leadBadge: '负责人',
     assignment: '{lead} 把这条交给了 {names}',
-    assignmentFallback: '{lead} 亲自处理'
+    assignmentFallback: '{lead} 亲自处理',
+    routedTo: '已分配给 {names}',
+    routedEveryone: '已分配给所有人',
+    routedFallback: '无法确定由谁回答，所以所有人都会回答',
+    pausedAfter: '在 {count} 条消息后暂停',
+    continueDiscussion: '继续',
+    continued: '已继续',
+    routingAuto: '自动选择回答者',
+    routingAutoHint: '一次快速的模型调用会判断消息是发给谁的。@提及仍直接发给你点名的人。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -393,7 +425,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由負責人決定誰來處理；@提及和 @everyone 仍直接送給對應成員。',
     leadBadge: '負責人',
     assignment: '{lead} 把這則交給了 {names}',
-    assignmentFallback: '{lead} 親自處理'
+    assignmentFallback: '{lead} 親自處理',
+    routedTo: '已指派給 {names}',
+    routedEveryone: '已指派給所有人',
+    routedFallback: '無法決定由誰回答，所以所有人都會回答',
+    pausedAfter: '在 {count} 則訊息後暫停',
+    continueDiscussion: '繼續',
+    continued: '已繼續',
+    routingAuto: '自動選擇回答者',
+    routingAutoHint: '一次快速的模型呼叫會判斷訊息是給誰的。@提及仍直接送給你點名的人。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -472,7 +512,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'يختار القائد من يتولاها؛ الإشارات @ و@everyone تصل مباشرة إلى أصحابها.',
     leadBadge: 'القائد',
     assignment: 'أسند {lead} هذه الرسالة إلى {names}',
-    assignmentFallback: 'يتولى {lead} هذه الرسالة'
+    assignmentFallback: 'يتولى {lead} هذه الرسالة',
+    routedTo: 'أُسندت إلى {names}',
+    routedEveryone: 'أُسندت إلى الجميع',
+    routedFallback: 'تعذّر اختيار من يجيب، لذا سيجيب الجميع',
+    pausedAfter: 'توقفت مؤقتًا بعد {count} رسالة',
+    continueDiscussion: 'متابعة',
+    continued: 'تمت المتابعة',
+    routingAuto: 'اختيار من يجيب تلقائيًا',
+    routingAutoHint: 'يختار استدعاء سريع للنموذج لمن الرسالة. الإشارات @ تصل مباشرة إلى من تسمّيهم.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -554,7 +602,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
     leadBadge: 'Ведущий',
     assignment: '{lead} передал(а) это: {names}',
-    assignmentFallback: '{lead} берёт это на себя'
+    assignmentFallback: '{lead} берёт это на себя',
+    routedTo: 'Назначено: {names}',
+    routedEveryone: 'Назначено всем',
+    routedFallback: 'Не удалось выбрать, кто ответит, поэтому ответят все',
+    pausedAfter: 'Пауза после сообщений: {count}',
+    continueDiscussion: 'Продолжить',
+    continued: 'Продолжено',
+    routingAuto: 'Выбирать отвечающих автоматически',
+    routingAutoHint: 'Быстрый вызов модели определяет, кому адресовано сообщение. @упоминания по-прежнему идут прямо тем, кого вы назвали.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -635,7 +691,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Le responsable choisit qui s\'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.',
     leadBadge: 'Responsable',
     assignment: '{lead} a confié ceci à {names}',
-    assignmentFallback: '{lead} s\'en charge'
+    assignmentFallback: '{lead} s\'en charge',
+    routedTo: 'Attribué à {names}',
+    routedEveryone: 'Attribué à tout le monde',
+    routedFallback: 'Impossible de choisir qui répond, donc tout le monde répondra',
+    pausedAfter: 'En pause après {count} messages',
+    continueDiscussion: 'Continuer',
+    continued: 'Reprise',
+    routingAuto: 'Choisir automatiquement qui répond',
+    routingAutoHint: 'Un appel rapide au modèle choisit à qui s\'adresse un message. Les @mentions vont toujours directement aux personnes nommées.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -717,7 +781,15 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
     leadBadge: 'Leitung',
     assignment: '{lead} hat das an {names} gegeben',
-    assignmentFallback: '{lead} übernimmt das'
+    assignmentFallback: '{lead} übernimmt das',
+    routedTo: 'Zugewiesen an {names}',
+    routedEveryone: 'Allen zugewiesen',
+    routedFallback: 'Konnte nicht wählen, wer antwortet, daher antworten alle',
+    pausedAfter: 'Pausiert nach {count} Nachrichten',
+    continueDiscussion: 'Fortsetzen',
+    continued: 'Fortgesetzt',
+    routingAuto: 'Automatisch wählen, wer antwortet',
+    routingAutoHint: 'Ein kurzer Modellaufruf wählt, an wen eine Nachricht gerichtet ist. @Erwähnungen gehen weiterhin direkt an die genannten Personen.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -798,6 +870,14 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
     leadBadge: 'Líder',
     assignment: '{lead} se lo dio a {names}',
-    assignmentFallback: '{lead} se encarga'
+    assignmentFallback: '{lead} se encarga',
+    routedTo: 'Asignado a {names}',
+    routedEveryone: 'Asignado a todos',
+    routedFallback: 'No se pudo elegir quién responde, así que responderán todos',
+    pausedAfter: 'En pausa tras {count} mensajes',
+    continueDiscussion: 'Continuar',
+    continued: 'Reanudado',
+    routingAuto: 'Elegir automáticamente quién responde',
+    routingAutoHint: 'Una llamada rápida al modelo elige a quién va dirigido un mensaje. Las @menciones siguen yendo directamente a quienes nombras.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

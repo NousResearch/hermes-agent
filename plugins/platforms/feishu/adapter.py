@@ -1583,17 +1583,6 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
         self._chat_locks: collections.OrderedDict[str, asyncio.Lock] = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: dict[str, dict[str, Any]] = {}
-        # Auto-mention: track inbound sender by message_id (precise, no cross-talk).
-        # On send(), the final reply's reply_to (= triggering message_id) → _inbound_sender_by_msg
-        # → inject @tag. Bot senders → force text mode (card <at> is invisible to bots).
-        # Human senders → keep card mode (card <at> has visual effect for humans).
-        # Progress bubbles / status notices / cronjob pushes carry no reply_to → never auto-mention.
-        self._inbound_sender_by_msg: OrderedDict[str, dict[str, Any]] = OrderedDict()  # msg_id → {open_id, name, is_bot}
-        self._INBOUND_SENDER_CACHE_SIZE = 500
-        self._auto_mentioned_turns: set[str] = set()  # msg_ids where @tag already injected
-        self._mention_name_map: dict[str, dict[str, str]] = {}  # chat_id → {lowercase_name → open_id}
-        self._chat_members_cache: dict[str, tuple[float, dict[str, str]]] = {}  # chat_id → (ts, {lowercase_name → open_id})
-        self._CHAT_MEMBERS_TTL = 300  # 5 min cache
         self._message_text_cache: OrderedDict[str, Optional[str]] = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -1924,54 +1913,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
 
-        # --- Auto-mention sender in group chat replies ---
-        # The final agent reply is sent with reply_to=<triggering message_id> (see
-        # base._send_final_text). Progress bubbles / status notices / cronjob pushes pass
-        # reply_to=None on Feishu, so they never trigger auto-mention (no bot loops).
-        # Look up the triggering message's sender by that id.
-        # Bot sender → inject @tag + force text mode (card <at> invisible to bots).
-        # Human sender → inject @tag + keep card mode (card <at> works for humans).
-        force_text_for_bot = False
-        _trigger_msg_id = reply_to or (metadata or {}).get("reply_to_message_id")
-        _trigger_sender = self._inbound_sender_by_msg.get(_trigger_msg_id) if _trigger_msg_id else None
-        if _trigger_sender:
-            sender_oid = _trigger_sender.get("open_id", "")
-            sender_name = _trigger_sender.get("name") or "User"
-            sender_is_bot = _trigger_sender.get("is_bot", False)
-            if sender_is_bot:
-                force_text_for_bot = True
-            if sender_oid and _trigger_msg_id not in self._auto_mentioned_turns:
-                at_tag = f'<at user_id="{sender_oid}">{sender_name}</at> '
-                formatted = at_tag + formatted
-                self._auto_mentioned_turns.add(str(_trigger_msg_id))
-                logger.info("[Feishu] Auto-mention %s %s (%s) in group %s%s",
-                            "bot" if sender_is_bot else "user", sender_name, sender_oid,
-                            chat_id, ", forcing text mode" if sender_is_bot else "")
-
-        # --- Resolve @name patterns in group chat content ---
-        # Scan for @name text (not already inside an <at> tag), look up name in merged
-        # member map (API humans + learned bots), replace with real <at> tags.
-        # Forces text mode when any mention is resolved.
-        import re as _re
-        _at_pattern = _re.compile(r'(?<!user_id=")@([\w\u4e00-\u9fff]+)')
-        _at_matches = _at_pattern.findall(formatted)
-        if _at_matches and chat_id:
-            _mention_map = await self._resolve_mention_map(chat_id)
-            for raw_name in _at_matches:
-                oid = _mention_map.get(raw_name.lower())
-                if oid:
-                    at_tag = f'<at user_id="{oid}">{raw_name}</at>'
-                    formatted = formatted.replace(f'@{raw_name}', at_tag, 1)
-                    force_text_for_bot = True
-                    logger.info("[Feishu] Resolved @%s → %s in group %s", raw_name, oid, chat_id)
-
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
         # markdown reply may be plain prose that fails the per-chunk regex and would
         # otherwise render as literal ``**bold`` / fences while other chunks render.
         # Lock the decision at the whole-message level so every chunk consistently
         # uses the same format (interactive card for markdown content).
-        prefer_card = bool(_MARKDOWN_HINT_RE.search(formatted)) and not force_text_for_bot
+        prefer_card = bool(_MARKDOWN_HINT_RE.search(formatted))
         last_response = None
 
         async def _send_plain(chunk: str) -> Any:
@@ -2412,59 +2360,6 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
-
-    async def _get_chat_members_map(self, chat_id: str) -> dict[str, str]:
-        """Return {lowercase_name → open_id} for human members of a group chat.
-
-        Results are cached for ``_CHAT_MEMBERS_TTL`` seconds.  Bot members are NOT
-        returned by the Feishu API (documented limitation), so bot mappings come
-        exclusively from ``_mention_name_map`` (accumulated from inbound messages).
-        """
-        import time as _time
-        cached = self._chat_members_cache.get(chat_id)
-        if cached and (_time.time() - cached[0]) < self._CHAT_MEMBERS_TTL:
-            return dict(cached[1])
-        if not self._client:
-            return {}
-        members_map: dict[str, str] = {}
-        try:
-            from lark_oapi.api.im.v1 import GetChatMembersRequestBuilder
-            page_token: str | None = None
-            for _ in range(20):  # safety cap
-                builder = (GetChatMembersRequestBuilder()
-                           .chat_id(chat_id)
-                           .member_id_type("open_id")
-                           .page_size(100))
-                if page_token:
-                    builder = builder.page_token(page_token)
-                request = builder.build()
-                response = await self._run_blocking(self._client.im.v1.chat_members.get, request)
-                if not response or not getattr(response, "success", lambda: False)():
-                    break
-                data = getattr(response, "data", None)
-                items = getattr(data, "items", None) or []
-                for member in items:
-                    name = getattr(member, "name", "") or ""
-                    mid = getattr(member, "member_id", "") or ""
-                    if name and mid:
-                        members_map[name.lower()] = mid
-                page_token = getattr(data, "page_token", None) or None
-                has_more = getattr(data, "has_more", False)
-                if not has_more or not page_token:
-                    break
-            self._chat_members_cache[chat_id] = (_time.time(), members_map)
-        except Exception:
-            logger.debug("[Feishu] Failed to fetch chat members for %s", chat_id, exc_info=True)
-        return dict(members_map)
-
-    async def _resolve_mention_map(self, chat_id: str) -> dict[str, str]:
-        """Merge human members (from API) + bot/learned mappings into one lookup."""
-        merged: dict[str, str] = {}
-        # 1) Human members from API
-        merged.update(await self._get_chat_members_map(chat_id))
-        # 2) Bot + learned mappings from inbound messages (overrides API if conflict)
-        merged.update(self._mention_name_map.get(chat_id, {}))
-        return merged
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
@@ -3153,24 +3048,6 @@ class FeishuAdapter(BasePlatformAdapter):
             channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
             timestamp=datetime.now(),
         )
-
-        # --- Track sender by message_id for auto-mention in group replies ---
-        if chat_type != "p2p" and chat_id and message_id:
-            sender_name = sender_profile.get("user_name") or ""
-            self._inbound_sender_by_msg[message_id] = {
-                "open_id": sender_primary, "name": sender_name, "is_bot": is_bot,
-            }
-            # LRU eviction
-            while len(self._inbound_sender_by_msg) > self._INBOUND_SENDER_CACHE_SIZE:
-                self._inbound_sender_by_msg.popitem(last=False)
-            name_map = self._mention_name_map.setdefault(chat_id, {})
-            if sender_name:
-                name_map[sender_name.lower()] = sender_primary
-            for mention_ref in mentions:
-                m_name = getattr(mention_ref, "name", "") or ""
-                m_oid = getattr(mention_ref, "open_id", "") or ""
-                if m_name and m_oid:
-                    name_map[m_name.lower()] = m_oid
 
         await self._dispatch_inbound_event(normalized)
 

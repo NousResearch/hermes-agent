@@ -11,6 +11,8 @@ from agent.usage_pricing import (
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
+    usage_reports_cache_metrics,
+    usage_reports_full_prompt_metrics,
 )
 
 
@@ -36,6 +38,58 @@ def test_astra_whole_request_price_tier_includes_cache_writes():
         + Decimal(100_001) * entry.cache_write_cost_per_million_above
     ) / Decimal(1_000_000)
     assert below.amount_usd < above.amount_usd
+
+
+@pytest.mark.parametrize("as_sdk", [False, True])
+def test_cache_metrics_distinguish_reported_zero_from_missing(as_sdk):
+    reported_zero = {
+        "prompt_tokens": 1_000,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    missing = {"prompt_tokens": 1_000}
+    null_detail = {
+        "prompt_tokens": 1_000,
+        "prompt_tokens_details": {"cached_tokens": None},
+    }
+    if as_sdk:
+        from openai.types.completion_usage import CompletionUsage, PromptTokensDetails
+
+        def sdk(payload):
+            values = dict(payload)
+            if "prompt_tokens_details" in values:
+                values["prompt_tokens_details"] = PromptTokensDetails.model_construct(**values["prompt_tokens_details"])
+            return CompletionUsage.model_construct(**values)
+
+        reported_zero, missing, null_detail = map(sdk, (reported_zero, missing, null_detail))
+
+    assert usage_reports_cache_metrics(reported_zero) is True
+    assert usage_reports_cache_metrics(missing) is False
+    assert usage_reports_cache_metrics(null_detail) is False
+
+
+def test_minimax_m3_cache_and_context_telemetry_are_route_aware():
+    usage = {"input_tokens": 1_000, "cache_read_input_tokens": 128}
+
+    for provider, base_url in (
+        ("minimax-oauth", ""),
+        ("custom", "https://api.minimax.io/anthropic"),
+    ):
+        kwargs = {
+            "provider": provider,
+            "api_mode": "anthropic_messages",
+            "model": "MiniMax-M3",
+            "base_url": base_url,
+        }
+        assert usage_reports_cache_metrics(usage, **kwargs) is False
+        assert usage_reports_full_prompt_metrics(usage, **kwargs) is False
+
+    reliable = {
+        "provider": "minimax-cn",
+        "api_mode": "anthropic_messages",
+        "model": "MiniMax-M2.7",
+    }
+    assert usage_reports_cache_metrics(usage, **reliable) is True
+    assert usage_reports_full_prompt_metrics(usage, **reliable) is True
 
 
 _MODELS_DEV_REGISTRY = {

@@ -6,7 +6,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -318,18 +320,61 @@ def s6_service_up(service_dir: Path) -> bool:
     return result.returncode == 0 and result.stdout.split() == ["true"]
 
 
-def _chown_hermes(path: Path) -> None:
-    """Root-created slot entries belong to the current, possibly remapped hermes account."""
+def _root_hermes_account():
+    """The current (possibly remapped) hermes account when running as root, else None."""
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
-        return
+        return None
     import pwd
 
     try:
-        account = pwd.getpwnam("hermes")
+        return pwd.getpwnam("hermes")
     except KeyError:
         # Outside the image there may be no hermes account; retain the existing owner.
-        return
-    os.chown(path, account.pw_uid, account.pw_gid)
+        return None
+
+
+def _chown_hermes(path: Path) -> None:
+    """Root-created slot entries belong to the current, possibly remapped hermes account."""
+    account = _root_hermes_account()
+    if account is not None:
+        os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+
+
+def _require_root_controlled(path: Path, *, private: bool) -> os.stat_result:
+    """lstat ``path`` and refuse it unless only root can rename or modify it.
+
+    ``private`` additionally requires a 0700-style directory that nobody else can traverse.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0:
+        raise RuntimeError(f"{path} must be a root-owned directory, not a symlink")
+    if private and st.st_mode & 0o077:
+        raise RuntimeError(f"{path} must not be accessible to group or others")
+    if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:
+        raise RuntimeError(f"{path} must not be writable by group or others")
+    return st
+
+
+def _root_staging_dir(scandir: Path) -> Path:
+    """Root-private build area beside ``scandir``, on the same filesystem.
+
+    The gateway scandir is hermes-owned, so anything root builds inside it can be renamed and
+    swapped for a symlink mid-build, redirecting root's chmod/chown/writes. Root therefore builds
+    slots in ``.<scandir>.staging`` (root, 0700) and publishes them with one atomic rename. Every
+    ancestor must be root-controlled, or an unprivileged user could rename the staging dir away.
+    """
+    parent = scandir.parent
+    for ancestor in (parent, *parent.parents):
+        _require_root_controlled(ancestor, private=False)
+    staging = parent / f".{scandir.name}.staging"
+    try:
+        os.mkdir(staging, 0o700)
+    except FileExistsError:
+        pass
+    st = _require_root_controlled(staging, private=True)
+    if os.stat(scandir).st_dev != st.st_dev:
+        raise RuntimeError(f"{staging} and {scandir} must share a filesystem for an atomic publish")
+    return staging
 
 
 def _seed_supervise_skeleton(svc_dir: Path) -> None:
@@ -425,6 +470,18 @@ class S6ServiceManager:
 
     def __init__(self, scandir: Path = S6_DYNAMIC_SCANDIR) -> None:
         self.scandir = scandir
+
+    @staticmethod
+    def _s6(cmd: str, *args: str, timeout: float = 5, check: bool = False):
+        """Run an s6 tool against the hermes-owned tree, as hermes when called as root.
+
+        s6-svc/s6-svscanctl/s6-svwait open FIFOs and fifodirs inside that tree; as root they would
+        follow a hermes-planted symlink and write to or create entries in any root-owned path.
+        """
+        if _root_hermes_account() is not None:
+            return _s6_run("s6-setuidgid", "hermes", f"{_S6_BIN_DIR}/{cmd}", *args,
+                           timeout=timeout, check=check)
+        return _s6_run(cmd, *args, timeout=timeout, check=check)
 
     def _service_dir(self, profile: str) -> Path:
         validate_profile_name(profile)
@@ -551,7 +608,7 @@ class S6ServiceManager:
         if not service_dir.is_dir():
             raise GatewayNotRegisteredError(_profile_from_service(name))
         try:
-            _s6_run("s6-svc", action_flag, str(service_dir), check=True)
+            self._s6("s6-svc", action_flag, str(service_dir), check=True)
         except subprocess.CalledProcessError as exc:
             raise S6CommandError(
                 service=name, action=action_label, returncode=exc.returncode, stderr=exc.stderr or ""
@@ -567,7 +624,7 @@ class S6ServiceManager:
         Never parse the human status line: s6 2.15 prints ``up (pid N pgid N) Ss``, which the old
         ``(pid N)`` regex never matched, so the planned-stop marker was silently skipped.
         """
-        result = _s6_run("s6-svstat", "-o", ",".join(fields), str(self.scandir / name))
+        result = self._s6("s6-svstat", "-o", ",".join(fields), str(self.scandir / name))
         if result.returncode != 0:
             return None
         values = result.stdout.split()
@@ -621,7 +678,7 @@ class S6ServiceManager:
         if ``s6-svscanctl`` fails.
         """
         svc_dir = self._service_dir(profile)
-        if svc_dir.exists():
+        if os.path.lexists(svc_dir):
             raise ValueError(f"profile gateway {profile!r} already registered at {svc_dir}")
         # Build atomically in a DOT-PREFIXED sibling (``.gateway-<profile>.tmp``) then rename:
         # s6-svscan skips dot entries, so a concurrent rescan (cont-init reconciler, sibling
@@ -629,10 +686,18 @@ class S6ServiceManager:
         # ROOT on the ``.tmp`` (it already has ``type``/``run``), mkdir ``supervise/`` root-owned
         # 0700, and our ``_seed_supervise_skeleton`` would EACCES on ``supervise/event`` — the
         # arm64-only CI flake on test_s6_unregister_removes_service_dir_in_live_container.
-        tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        tmp_dir.mkdir(parents=True)
+        #
+        # Root never builds inside the hermes-owned scandir: hermes could swap the dot dir for a
+        # symlink mid-build and redirect root's writes, chmods and chowns. Root builds in a
+        # root-private staging dir instead and publishes with a single rename.
+        if _root_hermes_account() is not None:
+            tmp_dir = Path(tempfile.mkdtemp(prefix=f"{svc_dir.name}.",
+                                            dir=_root_staging_dir(self.scandir)))
+        else:
+            tmp_dir = svc_dir.with_name("." + svc_dir.name + ".tmp")
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir.mkdir(parents=True)
 
         def _write_script(path: Path, text: str) -> None:
             path.write_text(text, encoding="utf-8")
@@ -656,11 +721,12 @@ class S6ServiceManager:
                 if path.is_dir() and path in (tmp_dir, tmp_dir / "log"):
                     path.chmod(0o755)
                 _chown_hermes(path)
-            tmp_dir.rename(svc_dir)
+            # rename(2) never follows a symlink at svc_dir and refuses a non-empty directory.
+            os.rename(tmp_dir, svc_dir)
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
-        result = _s6_run("s6-svscanctl", "-a", str(self.scandir))
+        result = self._s6("s6-svscanctl", "-a", str(self.scandir))
         if result.returncode != 0:
             # No supervisor is watching it — leaving the directory would be confusing.
             shutil.rmtree(svc_dir, ignore_errors=True)
@@ -678,9 +744,9 @@ class S6ServiceManager:
         svc_dir = self._service_dir(profile)
         if not svc_dir.exists():
             return
-        _s6_run("s6-svc", "-d", str(svc_dir))
-        _s6_run("s6-svwait", "-D", "-t", "10000", str(svc_dir), timeout=15)
-        _s6_run("s6-svscanctl", "-an", str(self.scandir))
+        self._s6("s6-svc", "-d", str(svc_dir))
+        self._s6("s6-svwait", "-D", "-t", "10000", str(svc_dir), timeout=15)
+        self._s6("s6-svscanctl", "-an", str(self.scandir))
         # No synchronous "scan completed" handshake — -a/-n just set a flag s6-svscan reads on its
         # next loop; 200ms is comfortably above that resolution.
         time.sleep(0.2)

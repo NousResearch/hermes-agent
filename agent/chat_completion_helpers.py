@@ -51,7 +51,7 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
-from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated, log_runaway_cut
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3051,6 +3051,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Own watch: the display takes one reasoning representation per chunk, but the plain
         # field is persisted either way and need not mirror the details.
         detail_watch = RunawayStreamWatch()
+        from agent.draft_acceptance_watch import DraftAcceptanceWatch
+        accept_watch = DraftAcceptanceWatch.for_base_url(getattr(self.agent, "base_url", None))
         runaway = None
 
         llamacpp = _streams_llamacpp(self.agent)
@@ -3106,6 +3108,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._mark_finish_seen(_diag, finish_reason)
                 continue
 
+            if accept_watch is not None and accept_watch.poll():
+                runaway = f"output (every speculative draft accepted for {accept_watch.full_accept_seconds():.0f} s)"
+                break
             choice = chunk.choices[0]
             delta = choice.delta
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
@@ -3200,7 +3205,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if runaway:
             _close_half_read_stream("runaway_stream_close_failed")
-            self._log_runaway_cut(runaway)
+            log_runaway_cut(self.agent, self.api_kwargs, runaway)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
@@ -3216,12 +3221,6 @@ class _StreamingCall(StreamingWaitMonitor):
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
         return response
-
-    def _log_runaway_cut(self, channel: str) -> None:
-        logger.warning(
-            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
-            getattr(self.agent, "log_prefix", ""), channel, self.api_kwargs.get("model", "unknown"),
-            getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -3477,7 +3476,7 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.agent._interrupt_requested:
             return None
         if runaway:
-            self._log_runaway_cut(runaway)
+            log_runaway_cut(self.agent, self.api_kwargs, runaway)
             # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"

@@ -38,7 +38,7 @@ async def test_timed_out_triage_script_is_killed(monkeypatch):
         if getattr(aw, "__qualname__", "") != "Process.communicate":
             return await real_wait_for(aw, timeout)
         aw.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _hung_script)
     monkeypatch.setattr(asyncio, "wait_for", _expire)
@@ -49,7 +49,7 @@ async def test_timed_out_triage_script_is_killed(monkeypatch):
     [proc] = spawned
     try:
         await real_wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         pytest.fail("timed-out gmail-triage script was left running")

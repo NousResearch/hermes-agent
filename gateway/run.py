@@ -2550,57 +2550,6 @@ def _build_document_context_note(
         f"of asking the user to paste the contents.]")
 
 
-def _format_duration(seconds: float) -> str:
-    total = max(0, round(seconds))
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-async def _probe_audio_duration(path: str) -> Optional[str]:
-    """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure."""
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".wav":
-        try:
-            def _wav_duration() -> float:
-                import wave
-                with wave.open(path, "rb") as wf:
-                    frames = wf.getnframes()
-                    rate = wf.getframerate() or 1
-                    return frames / float(rate)
-            return _format_duration(await asyncio.to_thread(_wav_duration))
-        except Exception:
-            pass
-    if ext in (".ogg", ".opus", ".oga"):
-        try:
-            def _ogg_duration() -> float:
-                from mutagen.oggopus import OggOpus
-                return float(OggOpus(path).info.length)
-            return _format_duration(await asyncio.to_thread(_ogg_duration))
-        except Exception:
-            pass
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode == 0:
-            return _format_duration(float(stdout.decode().strip()))
-    except Exception:
-        pass
-    finally:
-        if proc is not None and proc.returncode is None:
-            # wait_for() only cancels communicate(): a hung ffprobe would keep running under the gateway.
-            from agent.deadline import kill_process_tree
-            await asyncio.to_thread(kill_process_tree, proc.pid)
-
-    return None
-
-
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
     """Consume and return the pending event; media metadata is kept so follow-ups re-enter preprocessing.
     """

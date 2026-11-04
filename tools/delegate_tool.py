@@ -899,6 +899,9 @@ def adopt_session_delegation_mode(agent: Any) -> None:
 
 # --- Registry ---
 from tools.registry import registry, tool_error
+from tools.delegate_tool_call_args import (
+    NEVER_FORWARDED_KEYS, model_top_level_keys, stray_call_argument_error,
+)
 
 def _model_background_value(args: dict, parent_agent=None) -> bool:
     """Background flag for the MODEL-facing dispatch path (registry fallback). Top-level delegations always run in the
@@ -908,7 +911,26 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     the intercept is bypassed. Direct Python callers keep the synchronous default."""
     return not getattr(parent_agent, "_delegate_depth", 0) > 0
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+_MODEL_HIDDEN_TASK_FIELDS = NEVER_FORWARDED_KEYS  # same trusted-transport set the top-level gate exempts
+
+#: Top-level names the model may send delegate_task, frozen from the real signature at import
+#: (see tools/delegate_tool_call_args.py); the stray-argument gate refuses anything outside it.
+MODEL_TOP_LEVEL_KEYS = model_top_level_keys(delegate_task)
+
+def _model_facing_dispatch(args: dict, parent_agent=None) -> str:
+    """The registry handler's body (the fallback when the live intercept is bypassed): refuse model
+    fields ``delegate_task`` can never receive — a routing ``option`` beside a single ``goal`` used
+    to evaporate here and silently spawn the child on the backend's default route — then forward."""
+    stray = stray_call_argument_error(args, MODEL_TOP_LEVEL_KEYS)
+    if stray:
+        return tool_error(stray)
+    return delegate_task(
+        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        max_iterations=args.get("max_iterations"), role=args.get("role"),
+        background=_model_background_value(args, parent_agent), output_schema=args.get("output_schema"),
+        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        parent_agent=parent_agent,
+    )
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     """Drop trusted-config-only task fields from model-supplied tasks (same list object back when nothing changed)."""
@@ -921,13 +943,7 @@ registry.register(
     name="delegate_task",
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
-    ),
+    handler=lambda args, **kw: _model_facing_dispatch(args, kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

@@ -1343,7 +1343,18 @@ class AIAgent(
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
-        from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
+        from tools.delegate_tool import (
+            MODEL_TOP_LEVEL_KEYS, _strip_model_hidden_task_fields, delegate_task as _delegate_task,
+        )
+        from tools.delegate_tool_call_args import stray_call_argument_error
+        from tools.registry import tool_error
+        # A field the callee can't receive (e.g. a routing `option` sent beside `goal` instead of
+        # inside a tasks entry) would vanish here and silently reroute the child: refuse loudly.
+        # The accepted set is frozen at delegate_tool import, never re-derived from a callee that
+        # tests (or future wrappers) may have patched.
+        stray = stray_call_argument_error(function_args, MODEL_TOP_LEVEL_KEYS)
+        if stray:
+            return tool_error(stray)
         # Top-level MODEL delegations run in the background (handle returned, results re-enter as messages),
         # unless the session's delegate_task is the joined variant (one-shot, delegation.gateway_mode inline).
         # An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and owns no gateway
@@ -1352,6 +1363,7 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
+            output_schema=function_args.get("output_schema"),
             background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,

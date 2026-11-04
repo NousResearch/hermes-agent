@@ -27,7 +27,7 @@ _GUARD_SCRIPTS = (
     "scripts/check-windows-footguns.py", "scripts/check_bash_shebangs.py",
     "scripts/check_no_tmp_literals.py", "scripts/check_detached_spawns.py", "scripts/install_root_lint.py",
     "scripts/check_config_yaml_writers.py", "scripts/check_config_yaml_readers.py",
-    "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
+    "scripts/check_profile_create_entry.py", "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py",
 )

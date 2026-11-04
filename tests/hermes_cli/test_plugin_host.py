@@ -341,3 +341,26 @@ def register(ctx):
         manager.unload()
         manager._plugin_host().shutdown()
     assert service.result(result["handle"]).summary == "host child done"
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("isolation", ["host", "in_process"])
+def test_failed_register_runs_its_on_unload_cleanup(tmp_path, monkeypatch, isolation):
+    # A register() that queued cleanup and then raised must have that cleanup run, in either mode.
+    marker = tmp_path / "cleaned"
+    body = f'''
+from pathlib import Path
+def register(ctx):
+    ctx.on_unload(lambda: Path({str(marker)!r}).write_text("cleaned"))
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body}, isolation=isolation)
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+        assert marker.is_file(), "the failed load's on_unload cleanup never ran"
+    finally:
+        manager.unload()
+        if isolation == "host":
+            manager._plugin_host().shutdown()

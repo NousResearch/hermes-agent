@@ -121,6 +121,7 @@ class GatewayChatView:
         # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
         # guarded model switch stays a refusal instead of a prompt.
         self._composer = None
+        self._confirming = False  # a modal question owns the composer: Enter answers it
         # `/undo` puts the removed message back in the composer for the next prompt.
         self.prefill = ""
 
@@ -452,10 +453,13 @@ class GatewayChatView:
         print(f"\n!!! {confirmation_title(refusal)} !!!\n{refusal['confirm_message']}\n")
         for index, (_, label, detail) in enumerate(choices, 1):
             print(f"  {index}. {label} \u2014 {detail}")
+        self._confirming = True
         try:
             raw = await self._read_line(self._composer, t("cli.model.confirm_choice_prompt"))
         except (KeyboardInterrupt, EOFError):
             raw = ""
+        finally:
+            self._confirming = False
         if not self.failure and confirm_choice(raw, choices) == "once":
             return True
         print(t("cli.model.switch_cancelled"))
@@ -600,7 +604,12 @@ class GatewayChatView:
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
             # The classic status bar's leading segments: model, then the attached session.
-            prompt = PromptSession(erase_when_done=True,
+            from hermes_cli.cli_vim_enter import vim_composer_session_kwargs
+            from hermes_cli.config import load_config_readonly
+            # display.vim_mode: Vim INSERT Enter inserts a newline, Esc then Enter submits.
+            vim_kw = vim_composer_session_kwargs(load_config_readonly(),
+                                                 composer_active=lambda: not self._confirming)
+            prompt = PromptSession(erase_when_done=True, **vim_kw,
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None

@@ -270,6 +270,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+B` | Start/stop voice recording when voice mode is enabled (`voice.record_key`, default: `ctrl+b`) |
 | `Ctrl+G` | Open the current input buffer in `$EDITOR` (vim/nvim/nano/VS Code/etc.). Save and quit to send the edited text as the next prompt — ideal for long, multi-paragraph prompts. |
 | `Ctrl+X Ctrl+E` | Emacs-style alternate binding for the external editor (same behavior as `Ctrl+G`). |
+
 | `Ctrl+S` | **Stash the prompt.** Parks the current draft and clears the composer so you can send something else first. Press `Ctrl+S` again on an empty composer to bring the draft back (cursor at the end, attached images restored). Repeated presses build a stack rather than overwriting, so an earlier draft is never silently lost — with two or more stashed, `Ctrl+S` opens a browse panel (`↑`/`↓` to navigate, `Enter` to restore, `D` to discard, `Esc` or `Ctrl+S` to close). A `📌 N` badge in the status bar shows how many drafts are parked. Multi-line drafts round-trip exactly, including blank lines. The stash lives in memory for the session only — nothing is written to disk, since drafts often contain secrets. |
 | `Ctrl+C` | Clear a typed draft first (even while the agent works); with an empty prompt, interrupt the agent (double-press within 2s to force exit) |
 | `Ctrl+T` / `F6` | Open the full-screen live work monitor (subagents and background processes) without losing the composer draft. The live dock appears automatically above the status bar; arrows select a worker or process, `Enter` shows its recent log, `s` steers a worker, and `x` requests stop with confirmation. See [Monitoring subagents](./features/delegation.md#monitoring-running-subagents-agents). |
@@ -278,6 +279,26 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
+
+### Vim multiline composition
+
+With `display.vim_mode: true`, the classic CLI composer treats Enter as editing in
+INSERT/REPLACE mode: it inserts a newline at the caret without sending, even during
+an active turn. Press Esc to enter NORMAL, then Enter to submit the complete draft
+through the existing command, queue or busy-input route. A literal trailing backslash
+stays literal in this mode; Enter itself supplies the newline.
+
+Enter cancels an incomplete Vim command (count, operator, visual selection or single
+replacement) without sending. Modal answers and selected completions keep their own
+Enter behavior. Without Vim mode, Enter retains its existing behavior.
+
+Alt+Enter remains a newline. Many terminals encode Alt+Enter exactly like a very fast
+Esc followed by Enter; wait for NORMAL before pressing Enter to send. The existing
+modified-Enter shortcuts are unchanged in the full classic CLI.
+
+This applies to the classic CLI, including gateway-attached chat. Ink TUI Vim support
+is tracked separately in [PR #118517](https://github.com/NousResearch/hermes-agent/pull/118517).
+
 
 **Multiline paste preview.** When you paste a multi-line block, the CLI echoes a compact single-line preview (`[pasted: 47 lines, 1,842 chars — press Enter to send]`) instead of dumping the whole payload into the scrollback. The full content is still what gets sent; this is just display polish.
 

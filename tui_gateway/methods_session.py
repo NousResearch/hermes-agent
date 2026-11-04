@@ -833,41 +833,6 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
-def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reattach an already-live session. The resume lock covers only the grace-atomic part (client-gone check,
-    transport attach, reap cancel) so expiry stays atomic; the payload is built after release because it waits
-    on the session's history_lock, which the global lock must never wait on. _live_session_payload ATTACHES this
-    caller alongside the client(s) already streaming instead of taking the slot from them."""
-    with _session_resume_lock:
-        if (refusal := _resume_attach_live_locked(ctx, sid, session)) is not None:
-            return refusal
-    return _resume_reuse_payload(ctx, sid, session)
-
-
-def _resume_attach_live_locked(ctx: _Resume, sid: str, session: dict) -> dict | None:
-    """Reattach with _session_resume_lock already held (including the eager double-check): the refusal, or None
-    once the transport is bound and the reap cancelled."""
-    if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
-        return refusal
-    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-    _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
-    return None
-
-
-def _resume_reuse_payload(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Resume payload for a session already attached by _resume_attach_live_locked. Caller holds no resume lock."""
-    payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    inline_images=ctx.inline_images)
-    payload["resumed"] = ctx.target
-    if ctx.defer_history:
-        payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
-                       message_count=int(session.get("resume_message_count") or payload["message_count"]))
-    # A lazy watch session never owns a run loop — overlay the child-run registry.
-    if session.get("agent") is None and _child_run_active(ctx.target, ctx.profile_home):
-        payload.update(running=True, status="streaming")
-    return _ok(ctx.rid, payload)
-
-
 def _resume_response(
     ctx: _Resume, sid: str, record: dict, *, info: dict, display: list = (), count_source: list | None = None,
     messages: list | None = None, message_count: int | None = None, running: bool = False,
@@ -984,6 +949,7 @@ def _resume_eager(ctx: _Resume) -> dict:
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
+            refusal = _resume_attach_live_locked(ctx, *live)
         else:
             try:
                 with _profile_build_scope(ctx.profile_home):
@@ -1018,7 +984,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 return _err(ctx.rid, 5000, resume_failed_message(e))
             session = _sessions.get(sid) or {}
     if live is not None:
-        return _resume_reuse_live(ctx, *live)
+        return refusal or _resume_reuse_payload(ctx, *live)
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),

@@ -14,7 +14,7 @@ def _live_session(key):
     return dict(
         transport=server._detached_ws_transport,
         running=True,
-        history={},
+        history=[],
         history_lock=threading.Lock(),
         session_key=key,
         agent=SimpleNamespace(

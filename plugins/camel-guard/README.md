@@ -16,7 +16,7 @@ hermes plugins enable camel-guard
 ```
 
 Before catalog admission, install the reviewed repository at its full commit
-SHA with `hermes plugins install https://github.com/nativ3ai/hermes-camel-guard --ref <SHA> --subdir plugin`.
+SHA with `hermes plugins install "https://github.com/nativ3ai/hermes-camel-guard#plugin" --ref <SHA> --enable`.
 The mode starts **off**, and traces start **off**. Add this to the active
 profile's `config.yaml`:
 

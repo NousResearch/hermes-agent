@@ -639,6 +639,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway import local_viewer_events
             authority.register_clarify(session_id, generation, entry,
                                        timeout_s=local_viewer_events.prompt_timeout_s(self, "clarify"))
+            # A session-stream client (API server) does not subscribe to the live event stream,
+            # so hand the prompt to its SSE queue explicitly; without this the turn parks on the
+            # clarify wait until it times out and the question is never seen.
+            notify = getattr(self._ctx._status_adapter, "notify_clarify_prompt", None)
+            if callable(notify):
+                with suppress(Exception):
+                    notify(session_id=session_id, entry=entry, generation=generation,
+                           session_key=self._ctx.session_key or "")
         return result
 
     def _clarify_callback_sync(self, questions) -> dict:

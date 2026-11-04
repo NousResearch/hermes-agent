@@ -31,16 +31,6 @@ from typing import Any, Dict, List, Optional, Tuple
 _PROFILE_REJECTED = object()
 
 
-def _prefix_names_served_profile(profile: str) -> bool:
-    """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
-    single-profile gateway answering /p/<x>/ served the owner's toolsets under another URL."""
-    try:
-        from hermes_cli.profiles import profile_matches_home
-        return profile_matches_home(profile)
-    except Exception:
-        return False
-
-
 # Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None)
@@ -115,6 +105,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_clarify import notify_clarify_prompt as _notify_clarify_prompt
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
@@ -3218,6 +3209,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``POST /v1/runs/{run_id}/approval`` (#58856). Keyed by the run id (never the shared
         session key) so concurrent turns on one session can't cross-resolve."""
         self._run_approval_sessions[run_id] = run_id
+        self._run_event_queues[run_id] = events  # clarify prompts ride this run's SSE too
 
         def _approval_notify(approval_data: dict[str, Any]) -> None:
             event = _approval_request_event(run_id, approval_data, message_id=message_id)
@@ -4085,3 +4077,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         """Return basic info about the API server."""
         return {"name": "API Server", "type": "api", "host": self._host, "port": self._port}
+
+
+# The clarify delivery body lives in a sibling module (this facade is over its line cap); bind it
+# here so run_turn_runner's ``getattr(status_adapter, "notify_clarify_prompt", None)`` finds it.
+APIServerAdapter.notify_clarify_prompt = _notify_clarify_prompt

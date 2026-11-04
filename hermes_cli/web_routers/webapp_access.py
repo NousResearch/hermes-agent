@@ -63,13 +63,16 @@ def _reported(record: Optional[dict]) -> Optional[dict]:
     return None if record is None else {"step": record["step"], "started_at": record["started_at"]}
 
 
-def _restart_settled(record: dict, status: dict) -> bool:
-    """A Start whose request answered ends once a gateway serves the config it wrote, or the restart
-    it asked for exited without replacing the old one."""
+def _restart_settled(record: dict, status: dict, instance: Optional[tuple]) -> bool:
+    """A Start whose request answered ends once a gateway other than the one its restart replaces
+    (*instance* answers now) serves the config it wrote, or that restart exited without replacing
+    it. The gateway it replaces may serve an earlier Start's config on the same port."""
     if "restart_pid" not in record:
         return False
     failure = status.get("restart_failure") or {}
-    return failure.get("pid") == record["restart_pid"] or webapp_access.serves_config(status)
+    if failure.get("pid") == record["restart_pid"]:
+        return True
+    return instance not in (None, record["replaces"]) and webapp_access.serves_config(status)
 
 
 def _drop(gateway: Optional[str], record: dict) -> None:
@@ -176,9 +179,15 @@ async def webapp_access_status(profile: Optional[str] = None):
     # Before the status round trip: a Start that ends during it is still reported, so the pane polls
     # again rather than showing that config change undone until its next refetch.
     start = _start_in_flight(gateway)
-    status = await _in_gateway_home(gateway, lambda: {
-        **webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)})
-    while start is not None and _restart_settled(start, status):
+    followed = any("restart_pid" in r for r in _STARTS.get(gateway, ()))
+
+    def read():
+        # The gateway's identity first: one replaced between the two reads then still counts as old.
+        instance = webapp_access.gateway_instance() if followed else None
+        return instance, {**webapp_access.access_status(), "restart_failure": _gateway_restart_failure(gateway)}
+
+    instance, status = await _in_gateway_home(gateway, read)
+    while start is not None and _restart_settled(start, status, instance):
         _drop(gateway, start)
         start = _start_in_flight(gateway)
     return {**status, "start_progress": _reported(start)}
@@ -205,11 +214,12 @@ async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
             await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
             record["step"] = "restarting"
             await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url, port), config_write=True)
+            replaces = await _in_gateway_home(gateway, webapp_access.gateway_instance)
             result = await _restart(gateway, "turning on Web Access")
             if result.get("restart_started") and result.get("restart_pid") is not None:
                 # Followed past the request: until the restarted gateway serves this config, a pane
                 # opened now shows the Start restarting, not the saved change waiting for a restart.
-                record.update(restart_pid=result["restart_pid"],
+                record.update(restart_pid=result["restart_pid"], replaces=replaces,
                               follow_until=time.monotonic() + _RESTART_FOLLOW_SECONDS)
             else:
                 _drop(gateway, record)

@@ -133,8 +133,14 @@ async def _open_rfb(profile_home: Path):
         except (OSError, ValueError):
             _sandbox_sock = None
         if _sandbox_sock is not None and _sandbox_sock.exists():
-            reader, writer = await asyncio.open_unix_connection(str(_sandbox_sock))
-            return reader, writer, None
+            try:
+                reader, writer = await asyncio.open_unix_connection(str(_sandbox_sock))
+            except OSError:
+                # A socket file outlives the Xvnc that owned it; the branches below decide what is
+                # actually running.
+                pass
+            else:
+                return reader, writer, None
         if _bd_runtime.sandbox_screen_running():
             relay = _bd_runtime.open_rfb_stream()
         else:

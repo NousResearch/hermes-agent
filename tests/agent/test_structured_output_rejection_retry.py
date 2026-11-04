@@ -103,6 +103,75 @@ class TestIsStructuredOutputRejection:
         assert _is_structured_output_rejection(exc) is False
 
 
+# Verbatim shape from #148590. Gateways deliver it as an SSE ``error`` event after a committed 200, so the
+# SDK raises it with status_code=200; a non-streamed call to the same endpoint answers a plain 400.
+_VERTEX_POLICY_SENTENCE = (
+    "Organization Policy constraint constraints/vertexai.allowedPartnerModelFeatures violated for "
+    "`projects/p` attempting to use a disallowed feature structured_outputs for Partner model claude-sonnet-5-5."
+)
+_VERTEX_GATEWAY_REMEDY = (
+    "output_config.format is not enabled for this model in this project "
+    "(Vertex org-policy: constraints/vertexai.allowedPartnerModelFeatures -> structured_outputs). "
+    "Retry without output_config.format."
+)
+
+
+def _with_status(message, status):
+    exc = RuntimeError(message)
+    exc.status_code = status
+    return exc
+
+
+class TestVertexOrgPolicyRejection:
+    """The org policy refuses only the format field, whichever status carries the refusal."""
+
+    @pytest.mark.parametrize("status", [200, 400])
+    @pytest.mark.parametrize("message", [
+        _VERTEX_POLICY_SENTENCE,
+        _VERTEX_GATEWAY_REMEDY,
+        f"{_VERTEX_POLICY_SENTENCE} {_VERTEX_GATEWAY_REMEDY}",
+    ])
+    def test_policy_refusal_is_a_structured_output_rejection(self, message, status):
+        assert _is_structured_output_rejection(_with_status(message, status)) is True
+
+    @pytest.mark.parametrize("message", [
+        "Overloaded",
+        "Rate limit exceeded",
+        "attempting to use a disallowed feature web_search for Partner model claude-sonnet-5-5",
+        "output_config: Extra inputs are not permitted",
+    ])
+    def test_other_stream_errors_keep_the_status_guard(self, message):
+        assert _is_structured_output_rejection(_with_status(message, 200)) is False
+
+    def test_title_call_recovers_from_a_status_200_refusal(self):
+        client = MagicMock()
+        client.base_url = "https://gateway.example/v1"
+        client.chat.completions.create.side_effect = [
+            _with_status(f"{_VERTEX_POLICY_SENTENCE} {_VERTEX_GATEWAY_REMEDY}", 200),
+            _dummy_response(),
+        ]
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "claude-sonnet-5-5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "claude-sonnet-5-5")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"response_format": dict(_TITLE_RESPONSE_FORMAT)},
+            )
+
+        assert result == {"ok": True}
+        calls = client.chat.completions.create.call_args_list
+        assert len(calls) == 2
+        assert "response_format" in (calls[0].kwargs.get("extra_body") or {})
+        assert "response_format" not in (calls[1].kwargs.get("extra_body") or {})
+
+
 class TestWithoutStructuredOutputFormat:
     """The kwargs scrubber removes the field on both call shapes."""
 

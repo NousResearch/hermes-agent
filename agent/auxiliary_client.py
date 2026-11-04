@@ -3327,24 +3327,24 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     """Provider 400/422 rejecting the structured-output field, on either wire: OpenAI ``response_format``
     (incl. vLLM's ``guided_grammar``/xgrammar failures) or Anthropic ``output_config.format`` ("Extra inputs
     are not permitted"). Callers tolerate an unconstrained reply, so the reaction is one retry without it."""
+    err_lower = str(exc).lower()
+    # Vertex org policy refusing the field. Precedes the status guard: gateways send it as an SSE ``error``
+    # event after a committed 200, which the SDK raises with status_code=200.
+    if _contains_any(err_lower, ("disallowed feature structured_outputs", "output_config.format is not enabled")):
+        return True
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
-    err_lower = str(exc).lower()
     # vLLM grammar-backend failures name the translated parameter, not ours.
     if _contains_any(err_lower, ("guided_grammar", "xgrammar", "compile_grammar_error")):
         return True
-    if "extra inputs are not permitted" in err_lower and (
-        "response_format" in err_lower or "output_config" in err_lower
-    ):
-        return True
-    if "response_format" in err_lower and "unavailable" in err_lower:
+    if "extra inputs are not permitted" in err_lower and _contains_any(err_lower, ("response_format", "output_config")):
         return True
     # Gateways that validate the request body with a strict pydantic model reject the
     # OBJECT-form json_schema by shape ("str type expected" on response_format.json_schema,
     # 422) rather than by naming the feature. The field is what they refuse; the retry
     # without it is the same remedy, so treat the shape error as a rejection too.
-    if "response_format" in err_lower and "json_schema" in err_lower:
+    if "response_format" in err_lower and _contains_any(err_lower, ("unavailable", "json_schema")):
         return True
     # Gemini native names its own generationConfig keys, never ours: "Function calling with a response
     # mime type: 'application/json' is unsupported" (pre-Gemini-3 + tools via a proxy), or an

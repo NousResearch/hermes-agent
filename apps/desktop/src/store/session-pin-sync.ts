@@ -23,7 +23,7 @@
 
 import { atom } from 'nanostores'
 
-import { ambientOwnerConnectionId } from '@/api/client'
+import { ambientOwnerConnectionId, exactOwnerFor } from '@/api/client'
 import { setSessionPinnedRemote } from '@/hermes'
 import { onConnectionScopeChange } from '@/lib/connection-scoped'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
@@ -228,7 +228,16 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
   unconfirmed.set(id, { at: Date.now(), value: pinned })
   applyRowPinned(id, pinned, profile)
 
-  return setSessionPinnedRemote(id, pinned, profile).then(
+  // K4″: the loaded row is the owner witness. A tagged row pins the PATCH to
+  // the backend that owns it; an untagged in-scope row passes explicit null
+  // (base routing, immune to a stale resolver hint); no row at all (a foreign
+  // in-set id — loadedRowFor filters other gateways' rows out) passes
+  // undefined, so the api layer's default ladder lookup resolves the owner and
+  // routes the write (D2).
+  const row = loadedRowFor(id)
+  const owner = row ? (row.connection_id?.trim() ? exactOwnerFor(id, row) : null) : undefined
+
+  return setSessionPinnedRemote(id, pinned, profile, owner).then(
     () => {
       // Deliberately NOT cleared here: a list request issued before this PATCH
       // can still land after the ack carrying the pre-write value. The guard

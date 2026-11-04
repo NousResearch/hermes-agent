@@ -114,7 +114,7 @@ describe('unarchiveSession', () => {
 
     await act(() => handle.unarchiveSession('arch-1'))
 
-    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, undefined)
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, undefined, null, undefined)
     expect($archivedSessions.get().map(session => session.id)).toEqual(['arch-2'])
     expect($sessions.get().map(session => session.id)).toEqual(['arch-1'])
     expect($sessions.get()[0]?.archived).toBe(false)
@@ -140,7 +140,7 @@ describe('unarchiveSession', () => {
 
     await act(() => handle.unarchiveSession('arch-1'))
 
-    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage')
+    expect(vi.mocked(setSessionArchived)).toHaveBeenCalledWith('arch-1', false, 'sage', null, undefined)
   })
 
   it('keeps the archived row when the restore RPC fails', async () => {

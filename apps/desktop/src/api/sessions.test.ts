@@ -8,9 +8,11 @@ vi.mock('./client', () => ({
   ambientOwnerConnectionId: vi.fn(() => 'prometheus'),
   capabilityScoped: vi.fn(),
   connectionScoped: vi.fn(() => ({})),
+  exactOwnerFor: vi.fn(() => null),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
+  ownerConnectionPin: vi.fn(() => null),
   profileScoped: vi.fn(() => ({})),
   sessionReadOwnerPin: vi.fn(() => ({}))
 }))

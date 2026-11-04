@@ -114,7 +114,7 @@ describe('removeSession × archived view store', () => {
 
     await act(() => handle.removeSession('arch-1'))
 
-    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', undefined)
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', undefined, null)
     expect($archivedSessions.get().map(session => session.id)).toEqual(['arch-2'])
   })
 
@@ -137,6 +137,6 @@ describe('removeSession × archived view store', () => {
 
     await act(() => handle.removeSession('arch-1'))
 
-    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage', null)
   })
 })

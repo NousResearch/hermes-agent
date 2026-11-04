@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setSessionArchived } from '@/hermes'
+import { deleteSession, setSessionArchived } from '@/hermes'
 import { en } from '@/i18n/en'
 import { $messagingSessions, $sessions, setMessagingSessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -14,8 +14,11 @@ vi.mock('@/i18n', () => ({ useI18n: () => ({ t: en }) }))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getHermesConfigRecord: vi.fn().mockResolvedValue({ config: {} }),
+  deleteSession: vi.fn().mockResolvedValue({ ok: true }),
   setSessionArchived: vi.fn().mockResolvedValue(undefined)
 }))
+
+vi.mock('@/store/confirm', () => ({ confirm: vi.fn().mockResolvedValue(true) }))
 
 // The settings page loads its archived list through the paginating store helper,
 // which reads the sessions API module directly — mock that seam, not the barrel.
@@ -67,10 +70,53 @@ describe('SessionsSettings unarchive', () => {
 
     await act(async () => fireEvent.click(button))
 
-    await waitFor(() => expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, undefined))
+    await waitFor(() => expect(setSessionArchived).toHaveBeenCalledWith('matrix-1', false, undefined, null, undefined))
     expect($messagingSessions.get().map(session => session.id)).toEqual(['matrix-1'])
     expect($messagingSessions.get()[0]?.archived).toBe(false)
     expect($sessions.get()).toEqual([])
+  })
+})
+
+describe('SessionsSettings routes by the archived row in hand (D2)', () => {
+  const taggedRow = {
+    ...archivedMatrixSession,
+    connection_id: 'local',
+    id: 'tagged-1',
+    profile: 'default'
+  } as SessionInfo
+
+  beforeEach(() => {
+    listEveryArchivedSession.mockReset().mockResolvedValue([taggedRow])
+    vi.mocked(setSessionArchived).mockClear()
+    vi.mocked(deleteSession).mockClear()
+  })
+
+  it('restore passes the tagged row as the exact owner', async () => {
+    render(<SessionsSettings />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
+
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() =>
+      expect(setSessionArchived).toHaveBeenCalledWith(
+        'tagged-1',
+        false,
+        'default',
+        { connectionId: 'local', profile: 'default' },
+        'default'
+      )
+    )
+  })
+
+  it('permanent delete passes the tagged row as the exact owner', async () => {
+    render(<SessionsSettings />)
+    const button = await screen.findByRole('button', { name: en.settings.sessions.deletePermanently })
+
+    await act(async () => fireEvent.click(button))
+
+    await waitFor(() =>
+      expect(deleteSession).toHaveBeenCalledWith('tagged-1', 'default', { connectionId: 'local', profile: 'default' })
+    )
   })
 })
 

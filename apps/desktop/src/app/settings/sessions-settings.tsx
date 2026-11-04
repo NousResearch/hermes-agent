@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
+import { type ExactOwner, exactOwnerFor } from '@/api/client'
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -50,6 +51,13 @@ interface SessionsSettingsProps {
   subpage?: string
 }
 
+// Row-in-hand rule (D2): Settings holds the archived row, so its mutations route
+// by it — a tagged row pins the write to its backend; an untagged row passes
+// explicit null so a stale resolver hint cannot redirect it.
+function rowOwner(session: SessionInfo): ExactOwner | null {
+  return session.connection_id?.trim() ? exactOwnerFor(session.id, session) : null
+}
+
 export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
   useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
 
@@ -92,7 +100,8 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
       setBusyId(session.id)
 
       try {
-        await setSessionArchived(session.id, false, session.profile)
+        const owner = rowOwner(session)
+        await setSessionArchived(session.id, false, session.profile, owner, owner ? (session.profile ?? '') : undefined)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
@@ -124,7 +133,7 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
       setBusyId(session.id)
 
       try {
-        await deleteSession(session.id, session.profile)
+        await deleteSession(session.id, session.profile, rowOwner(session))
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)

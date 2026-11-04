@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
+import { type ExactOwner, exactOwnerFor } from '@/api/client'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import {
   extendRefreshPageToOverlap,
@@ -3068,6 +3069,16 @@ export function useSessionActions({
           }
         : profile
 
+      // D2 row-in-hand rule for the DELETE: an untagged removed row passes
+      // explicit null so a stale resolver hint cannot redirect it; no row at all
+      // leaves the ladder's default lookup to decide. (A tagged row is already
+      // pinned by the base object-scope removedOwner, which stays authoritative.)
+      const removedExactOwner: ExactOwner | null | undefined = removed
+        ? removed.connection_id?.trim()
+          ? exactOwnerFor(storedSessionId, removed)
+          : null
+        : undefined
+
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -3134,7 +3145,7 @@ export function useSessionActions({
           }).catch(() => undefined)
         }
 
-        await deleteSession(storedSessionId, removedOwner)
+        await deleteSession(storedSessionId, removedOwner, removedExactOwner)
 
         dropTranscriptTailEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll
@@ -3256,6 +3267,23 @@ export function useSessionActions({
         return
       }
 
+      // D2: the row in hand is the only safe owner witness — dropListedSession
+      // below evicts it before the RPC, so the exact owner must be captured
+      // now. A tagged row pins the PATCH to the backend that owns it (D1 pins
+      // a 'local' row back to this device under the legacy remote); an untagged
+      // row passes explicit null (base routing, immune to a stale resolver
+      // hint); no row at all leaves the ladder to decide. ownerProfile is the
+      // row's own stamp, for the pin eligibility check only (r5 W1‴).
+      const archivedOwner: ExactOwner | null | undefined = archived
+        ? archived.connection_id?.trim()
+          ? exactOwnerFor(storedSessionId, archived)
+          : null
+        : undefined
+
+      // Only a tagged row's own stamp may override the eligibility profile; a
+      // rowless (ladder) owner is checked against the resolved profile as base.
+      const archivedOwnerProfile = archivedOwner ? (archived?.profile ?? '') : undefined
+
       const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -3274,7 +3302,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, profile, archivedOwner, archivedOwnerProfile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
@@ -3322,8 +3350,23 @@ export function useSessionActions({
       const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const profile = archived?.profile?.trim() || undefined
 
+      // D2: restore routes by the archived row in hand — a tagged row pins the
+      // PATCH to its backend; an untagged row passes explicit null; no row
+      // (never loaded into the archived view) leaves the ladder to decide.
+      const unarchiveOwner: ExactOwner | null | undefined = archived
+        ? archived.connection_id?.trim()
+          ? exactOwnerFor(storedSessionId, archived)
+          : null
+        : undefined
+
       try {
-        await setSessionArchived(storedSessionId, false, profile)
+        await setSessionArchived(
+          storedSessionId,
+          false,
+          profile,
+          unarchiveOwner,
+          unarchiveOwner ? (archived?.profile ?? '') : undefined
+        )
 
         // Drop the archived-view row first so the view reflects the restore
         // even when the session cannot be re-listed below (e.g. it belongs to

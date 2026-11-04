@@ -493,10 +493,11 @@ describe('connection-qualified session deletion', () => {
       await actions?.removeSession('shared-session')
     })
 
-    expect(deleteSession).toHaveBeenCalledWith('shared-session', {
-      connectionId: 'source-a',
-      profile: 'worker'
-    })
+    expect(deleteSession).toHaveBeenCalledWith(
+      'shared-session',
+      { connectionId: 'source-a', profile: 'worker' },
+      { connectionId: 'source-a', profile: 'worker' }
+    )
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'worker', 'session.close', {
       session_id: 'runtime-shared'
     })
@@ -6757,7 +6758,7 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
       await handle.removeSession('tg-winefox-1')
     })
 
-    expect(mockDeleteSession).toHaveBeenCalledWith('tg-winefox-1', 'winefox')
+    expect(mockDeleteSession).toHaveBeenCalledWith('tg-winefox-1', 'winefox', null)
     expect($messagingSessions.get()).toEqual([])
     expect($sessions.get()).toEqual([])
   })
@@ -6794,7 +6795,7 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     })
 
     expect(mockGetSession).toHaveBeenCalled()
-    expect(mockDeleteSession).toHaveBeenCalledWith('tg-1', 'winefox')
+    expect(mockDeleteSession).toHaveBeenCalledWith('tg-1', 'winefox', null)
     expect($messagingSessions.get()).toEqual([])
     expect($sessions.get()).toEqual([])
     expect($sessionSeenCounts.get().winefox?.['tg-1']).toBeUndefined()
@@ -6830,7 +6831,7 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
       await handle.archiveSession('tg-arch')
     })
 
-    expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox')
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('tg-arch', true, 'winefox', null, undefined)
     expect($messagingSessions.get()).toEqual([])
   })
 
@@ -6856,7 +6857,7 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
       await handle.removeSession('desk-1')
     })
 
-    expect(mockDeleteSession).toHaveBeenCalledWith('desk-1', 'default')
+    expect(mockDeleteSession).toHaveBeenCalledWith('desk-1', 'default', null)
     expect($sessions.get()).toEqual([])
   })
 

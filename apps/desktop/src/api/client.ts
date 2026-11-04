@@ -723,10 +723,18 @@ export function connectionScoped(): { connectionId?: string } {
 // so api/ helpers can name the backend an UNTAGGED request lands on without
 // importing the heavy session store — which would close a module cycle
 // through @/hermes.
-let _apiLocalMode = false
+let _apiLocalMode: boolean | null = null
 
 export function setApiRequestLocalMode(local: boolean): void {
   _apiLocalMode = local
+}
+
+/** True when the window's primary is the LEGACY global remote: no registry
+ *  tag and local mode explicitly off, so an untagged request leaves this
+ *  machine. The boot window (mode still null, before store/session's
+ *  setConnection ran) is NOT legacy remote — the base rule applies there. */
+export function ambientIsLegacyRemote(): boolean {
+  return $apiRequestScope.get().connectionId == null && _apiLocalMode === false
 }
 
 /** The connection an ambient (untagged) request is served by: the registry
@@ -838,6 +846,63 @@ export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): 
   _sessionOwnerResolver = resolver
 }
 
+/** A session's EXACT owner, normalized (H1): the backend that owns the row,
+ *  as a non-empty connection id plus the profile that backend answers for. */
+export type ExactOwner = { connectionId: string; profile: string; targetProfile?: string }
+
+/** The owner stamp a listed row carries (structural subset of SessionInfo). */
+export type OwnerStampedRow = { connection_id?: null | string; profile?: null | string }
+
+/** Resolve `id`'s exact owner (H2): the concrete row's stamp first — a caller
+ *  holding the row cannot be redirected by a stale resolver hint — then the
+ *  owner resolver, else null (bare-string / unknown ⇒ no exact owner). */
+export function exactOwnerFor(id: string, row?: OwnerStampedRow | null): ExactOwner | null {
+  const rowConnection = row?.connection_id?.trim()
+
+  if (row && rowConnection) {
+    return { connectionId: rowConnection, profile: row.profile || 'default' }
+  }
+
+  const resolved = _sessionOwnerResolver?.(id)
+
+  if (resolved && typeof resolved !== 'string') {
+    const connectionId = String(resolved.connectionId ?? '').trim()
+
+    if (connectionId) {
+      return {
+        connectionId,
+        profile: String(resolved.profile ?? '').trim(),
+        ...(resolved.targetProfile ? { targetProfile: String(resolved.targetProfile).trim() } : {})
+      }
+    }
+  }
+
+  return null
+}
+
+/** The connection pin an edit owned by `owner` must carry (H4): null when the
+ *  ambient connection already serves it; the owner's connection otherwise —
+ *  'local' included under the legacy global remote, where an untagged request
+ *  leaves this machine (D1). During the boot window (mode still unknown) the
+ *  base read rule applies: only a non-'local' owner pins. */
+export function ownerConnectionPin(owner?: ExactOwner | null): string | null {
+  if (!owner) {
+    return null
+  }
+
+  const ambient = ambientOwnerConnectionId()
+
+  if (ambient !== undefined) {
+    return owner.connectionId === ambient ? null : owner.connectionId
+  }
+
+  if (ambientIsLegacyRemote()) {
+    return owner.connectionId
+  }
+
+  return owner.connectionId === 'local' ? null : owner.connectionId
+}
+
 /** The connection pin a session-scoped READ must carry for `id`, or {} when
  *  the caller already pinned a connection, no exact owner is known, or the
  *  owner is the ambient connection. Pins 'local' too (the only way back to
@@ -849,15 +914,15 @@ export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { conne
     return {}
   }
 
-  const owner = _sessionOwnerResolver?.(id)
+  const owner = exactOwnerFor(id)
 
-  if (!owner || typeof owner === 'string') {
+  if (!owner) {
     return {}
   }
 
-  const connectionId = String(owner.connectionId ?? '').trim()
+  const connectionId = ownerConnectionPin(owner)
 
-  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+  if (!connectionId) {
     return {}
   }
 
@@ -893,7 +958,7 @@ export function sessionFileOwnerScope(id: string): { connectionId?: string; prof
     return null
   }
 
-  const connectionId = String(owner.connectionId ?? '').trim()
+  const connectionId = ownerConnectionPin(exactOwnerFor(id))
 
-  return connectionId && connectionId !== (ambientOwnerConnectionId() ?? 'local') ? { connectionId, profile } : { profile }
+  return connectionId ? { connectionId, profile } : { profile }
 }

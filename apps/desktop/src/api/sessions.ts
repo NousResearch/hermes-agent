@@ -16,9 +16,12 @@ import {
   ambientOwnerConnectionId,
   capabilityScoped,
   connectionScoped,
+  type ExactOwner,
+  exactOwnerFor,
   getApiRequestConnection,
   getApiRequestProfile,
   hermesApi,
+  ownerConnectionPin,
   type ProfileScope,
   profileScoped,
   sessionReadOwnerPin
@@ -398,10 +401,76 @@ export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionM
   })
 }
 
-function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+/** Options for {@link mutateSessionHttp}: `owner` is the captured exact owner
+ *  (an explicit null means "checked, no exact owner" and is honoured — never
+ *  re-resolved); `ownerProfile` is the row's own stamped profile, used only
+ *  for the pin eligibility check (r5 W1‴); `fillAmbientProfile` reproduces
+ *  base's ambient fill for the legacy string form, set only by the four PATCH
+ *  wrappers. */
+type SessionMutationOwnerOpts = { owner?: ExactOwner | null; ownerProfile?: string; fillAmbientProfile?: boolean }
+
+/** True when the caller's raw profile may ride an owner-pinned edit: empty, or
+ *  naming the owner's own (target) profile. Anything else is an explicit
+ *  conflicting profile — the caller names another backend's row, so the edit
+ *  keeps the base construction. */
+function profileEligibleForOwner(rawProfile: string, owner: ExactOwner): boolean {
+  const raw = rawProfile.trim()
+
+  return !raw || raw === owner.profile.trim() || raw === owner.targetProfile?.trim()
+}
+
+/** The raw caller profile the eligibility check sees: the row's own stamped
+ *  profile when the owner came from the row rung, else the positional argument
+ *  (an object without a connection contributes its profile, N8). */
+function rawMutationProfile(profile: ProfileScope | undefined, ownerProfile: string | undefined): string {
+  if (ownerProfile !== undefined) {
+    return ownerProfile
+  }
+
+  if (typeof profile === 'string') {
+    return profile
+  }
+
+  return profile && typeof profile === 'object' && profile.profile != null ? String(profile.profile) : ''
+}
+
+/** ONE scope for a fenced edit: the snapshot read, the write, the fence key
+ *  and the MissingMutationSnapshotRoute fallback all travel together, so the
+ *  destination cannot move mid-edit. A caller that already pinned a connection
+ *  with an object scope stays authoritative (base); otherwise the session's
+ *  exact owner pins the edit to the backend that owns the row (D2), and the
+ *  legacy global remote pins 'local' owners back to this device (D1). */
+function mutationScope(
+  id: string,
+  profile: ProfileScope | undefined,
+  opts: SessionMutationOwnerOpts
+): { connectionId?: null | string; profile?: string } {
+  if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
+    return { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
+  }
+
+  const owner = opts.owner !== undefined ? opts.owner : exactOwnerFor(id)
+  const pin = owner ? ownerConnectionPin(owner) : null
+
+  if (owner && pin && profileEligibleForOwner(rawMutationProfile(profile, opts.ownerProfile), owner)) {
+    return { connectionId: pin, profile: owner.targetProfile || owner.profile }
+  }
+
+  // No pin (no exact owner, ambient-equal owner, boot base rule, or an
+  // explicit conflicting profile): EXACT base construction. Only the legacy
+  // string form is ambient-filled, and only where base filled it; objects
+  // never go through sessionWriteProfile.
+  const scopeProfile = opts.fillAmbientProfile && (profile == null || typeof profile === 'string')
+    ? sessionWriteProfile(profile ?? undefined)
+    : profile
+
+  return { connectionId: getApiRequestConnection(), ...sessionScoped(scopeProfile) }
+}
+
+function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope, opts: SessionMutationOwnerOpts = {}): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
-  const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
+  const scope = mutationScope(id, profile, opts)
   const path = `/api/sessions/${encodeURIComponent(id)}`
   const query = new URLSearchParams(scope.profile ? { profile: scope.profile } : {})
   const suffix = query.size ? `?${query}` : ''
@@ -423,16 +492,16 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
   return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
 }
 
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+export function setSessionArchived(id: string, archived: boolean, profile?: string | null, owner?: ExactOwner | null, ownerProfile?: string): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, profile, { owner, ownerProfile, fillAmbientProfile: true })
 }
 
-export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
+export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null, owner?: ExactOwner | null, ownerProfile?: string): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { pinned }, profile, { owner, ownerProfile, fillAmbientProfile: true })
 }
 
-export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
+export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null, owner?: ExactOwner | null, ownerProfile?: string): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { unread }, profile, { owner, ownerProfile, fillAmbientProfile: true })
 }
 
 // Full-text search over one profile's sessions. Pass the profile the caller is
@@ -715,10 +784,10 @@ export async function getAllSessionMessages(
   return { session_id: resolvedSessionId, messages }
 }
 
-export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'DELETE', {}, profile)
+export function deleteSession(id: string, profile?: ProfileScope, owner?: ExactOwner | null): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'DELETE', {}, profile, { owner })
 }
 
-export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
-  return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
+export function renameSession(id: string, title: string, profile?: string | null, owner?: ExactOwner | null, ownerProfile?: string): Promise<{ ok: boolean; title: string }> {
+  return mutateSessionHttp(id, 'PATCH', { title }, profile, { owner, ownerProfile, fillAmbientProfile: true })
 }

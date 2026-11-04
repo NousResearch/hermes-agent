@@ -282,6 +282,60 @@ def test_bare_pick_of_a_shadowed_custom_entry_keeps_the_profiles_route(tmp_path,
         assert model['key_env'] == 'DEEPSEEK_ENTRY_KEY', extra
 
 
+def test_bare_pick_of_another_shadowed_entry_freezes_that_entrys_route(tmp_path, monkeypatch):
+    """A pick of a configured entry's bare key is that entry even when the profile runs another
+    provider.
+
+    ``_with_entry_pick`` only recognized a pick of the entry the PROFILE runs, so picking any
+    other configured endpoint whose key is shadowed by a built-in (``providers: deepseek`` while
+    the profile runs codex) froze the bare spelling. Raw resolution then sent the chat to the
+    built-in — no key on that machine — and the next build fell back to another provider, while
+    the picker kept showing the endpoint's model.
+    """
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('DEEPSEEK_API_KEY', 'OPENAI_API_KEY'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('DEEPSEEK_ENTRY_KEY', 'sk-entry')
+    new_style = {'providers': {'deepseek': {'name': 'deepseek', 'api': 'https://api.deepseek.com',
+                                            'key_env': 'DEEPSEEK_ENTRY_KEY', 'transport': 'chat_completions',
+                                            'default_model': 'deepseek-flash'}}}
+    legacy = {'custom_providers': [{'name': 'deepseek', 'base_url': 'https://api.deepseek.com',
+                                    'key_env': 'DEEPSEEK_ENTRY_KEY', 'model': 'deepseek-flash'}]}
+    for extra in (new_style, legacy):
+        cfg = {**extra, 'model': {'default': 'gpt-6.1-sol-900k', 'provider': 'openai-codex',
+                                  'base_url': 'https://chatgpt.com/backend-api/codex',
+                                  'api_mode': 'codex_responses'}}
+        policy = build_policy(dict(cwd=str(tmp_path), model='deepseek-flash', provider='deepseek'), cfg)
+        model = policy.config()['model']
+        assert model['provider'] == 'custom:deepseek', extra
+        with frozen_runtime_config(policy.config()):
+            runtime = resolve_runtime_provider(requested='custom:deepseek', target_model='deepseek-flash')
+        assert (runtime['provider'], runtime['base_url'], runtime['api_key']) == \
+            ('custom', 'https://api.deepseek.com', 'sk-entry'), (extra, runtime)
+
+
+def test_a_builtin_pick_stays_builtin_when_only_an_entrys_name_matches(tmp_path, monkeypatch):
+    """The same rule keeps a real built-in pick out of a private endpoint: only an entry's KEY is
+    that entry, and a ``providers:`` block without an endpoint is tuning for the built-in."""
+    from gateway.session_policy import build_policy
+    monkeypatch.delenv('OPENROUTER_API_KEY', raising=False)
+    cfg = {
+        'providers': {
+            'work': {'name': 'OpenRouter', 'api': 'https://private.example/v1',
+                     'key_env': 'PRIVATE_ENTRY_KEY'},
+            'deepseek': {'stale_timeout_seconds': 600},  # tuning for the built-in, no endpoint
+        },
+        'model': {'default': 'gpt-6.1-sol-900k', 'provider': 'openai-codex',
+                  'base_url': 'https://chatgpt.com/backend-api/codex'},
+    }
+    for pick in ('openrouter', 'deepseek'):
+        model = build_policy(dict(cwd=str(tmp_path), model='some-model', provider=pick),
+                             cfg).config()['model']
+        assert model['provider'] == pick, (pick, model)
+        assert model.get('key_env') != 'PRIVATE_ENTRY_KEY', pick
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

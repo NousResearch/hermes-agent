@@ -538,20 +538,22 @@ def _keeps_profile_route(picked, config):
 
 
 def _with_entry_pick(params, config):
-    """*params* with a provider pick of the held entry's bare config key spelled as its ``custom:<key>``.
+    """*params* with a provider pick of a configured entry's bare config key spelled as its ``custom:<key>``.
 
     A configured entry keyed like a canonical built-in (`providers: deepseek`) is shadowed by the
     built-in in raw provider resolution, so the bare spelling would route, and be frozen, as a
-    different provider than the entry the profile runs (#140107). Only the held entry's bare key
-    is that entry (Desktop's guard). A keyed entry's display name is not; a keyless legacy
-    ``custom_providers:`` entry's is (``configured_entry_key``). A bare ``custom`` pick is the billing
-    class a client echoed from the runtime, not a route: on a bare ``custom`` profile with an endpoint
-    it is that profile's route unless it picks another endpoint, or another entry lists a model that
-    is not the profile's default; otherwise it names the configured entry serving its endpoint/model
-    (the profile's own first), else (no endpoint picked) the profile's own entry. A launch key for an
-    entry the model alone chose is refused. Other picks stay as they came.
+    different provider than the entry the user picked (#140107). Any configured entry's own bare
+    key is that entry, not only the one the profile runs: the picker identifies every custom row by
+    its key, and a profile that runs a built-in still has rows for the other configured endpoints.
+    A keyed entry's display name is not its key; a keyless legacy ``custom_providers:`` entry's is
+    (``configured_entry_identity``). A bare ``custom`` pick is the billing class a client echoed
+    from the runtime, not a route: on a bare ``custom`` profile with an endpoint it is that
+    profile's route unless it picks another endpoint, or another entry lists a model that is not
+    the profile's default; otherwise it names the configured entry serving its endpoint/model
+    (the profile's own first), else (no endpoint picked) the profile's own entry. A launch key for
+    an entry the model alone chose is refused. Other picks stay as they came.
     """
-    from gateway.session_route_identity import configured_entry_key, profile_route_identity
+    from gateway.session_route_identity import configured_entry_identity, profile_route_identity
     picked = params.get('provider')
     if not isinstance(picked, str):
         return params
@@ -572,9 +574,10 @@ def _with_entry_pick(params, config):
             # The model alone chose this entry: a launch key the user gave is never sent to a host they did not name.
             _refuse('api_key', f'{healed} was chosen by model; name it with --provider or --base-url to use a launch key')
         return {**params, 'provider': healed} if healed else params
-    if identity == 'auto' or picked.strip().lower() != (configured_entry_key(identity, config) or None):
+    entry_identity = configured_entry_identity(picked, config)
+    if not entry_identity:
         return params
-    return {**params, 'provider': identity}
+    return {**params, 'provider': entry_identity}
 
 
 def _apply_launch_overrides(params, config):

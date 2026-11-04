@@ -51,6 +51,49 @@ def configured_entry_key(identity: str, config: dict) -> str:
     return identity.split(':', 1)[1].strip()
 
 
+def configured_entry_identity(pick: str, config: dict) -> str:
+    """``custom:<key>`` when *pick* is a configured entry's bare config KEY, else ``''``.
+
+    Desktop identifies a custom endpoint's row by its bare key (``inventory._apply_custom_aliases``),
+    while raw provider resolution sends a bare name that is a canonical built-in to the built-in —
+    so that spelling has to become the entry's ``custom:<key>`` before it is frozen as a route
+    (#140107). Only the KEY names the entry: a keyed entry's display name may be a real built-in's
+    slug (``providers.work.name: OpenRouter``), and a pick of that built-in is not this endpoint.
+    A ``providers:`` block with no endpoint is tuning for the built-in of that name, never a custom
+    entry (#110402). A legacy ``custom_providers:`` entry has no key, so its normalized display
+    name is its key (``custom_provider_slug``), as Desktop's ``customDefaultSupersedesPick`` did.
+    """
+    pick = str(pick or '').strip().lower()
+    if not pick or not isinstance(config, dict):
+        return ''
+    from hermes_cli.providers import custom_provider_slug
+
+    providers = config.get('providers')
+    if isinstance(providers, dict):
+        from hermes_cli.config import is_provider_enabled
+        for key, entry in providers.items():
+            if not isinstance(entry, dict) or str(key).strip().lower() != pick:
+                continue
+            if not is_provider_enabled(entry):
+                return ''
+            if not any(str(entry.get(field) or '').strip() for field in ('api', 'url', 'base_url')):
+                return ''
+            return custom_provider_slug(str(entry.get('name') or ''), str(key))
+
+    legacy = config.get('custom_providers')
+    if isinstance(legacy, list):
+        for entry in legacy:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get('name') or '').strip()
+            if not name or not any(str(entry.get(field) or '').strip() for field in ('base_url', 'url', 'api')):
+                continue
+            identity = custom_provider_slug(name)
+            if identity == f'custom:{pick}':
+                return identity
+    return ''
+
+
 def profile_route_identity(config: dict) -> str:
     """The identity the profile's own ``model`` block resolves to — ``custom`` for an endpoint with
     no provider named (or ``auto``), which already routes to ``custom`` at that URL."""

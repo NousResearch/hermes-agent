@@ -118,6 +118,32 @@ def test_revoking_the_grant_closes_the_relayed_socket(live_gateway):
         assert (closed.value.code, closed.value.reason) == (4401, "Gateway relay revoked")
 
 
+@pytest.mark.usefixtures("voice")
+def test_a_gateway_removed_while_its_socket_dials_does_not_keep_that_socket(live_gateway, monkeypatch):
+    # "Remove here only" while the hub is still dialing: the socket is not live yet when the removal
+    # closes the gateway's sockets, so it must not open on the row that is gone.
+    import websockets.asyncio.client
+
+    from hermes_cli import webapp_relay_gateways
+
+    hub, _there, row = _pair_live(live_gateway)
+    url = _relayed_url(hub, row, _SPEAK, "speak-stream")
+    dial = websockets.asyncio.client.connect
+
+    def removed_mid_dial(*args, **kwargs):
+        identity = {"user_id": "stub-user-1", "provider": "stub", "issuer": ""}
+        assert webapp_relay_gateways.remove(live_gateway.app.home, identity, row["id"]) is not None
+        webapp_relay_proxy.close_gateway_sockets(row["id"])  # what the Remove route does next
+        return dial(*args, **kwargs)
+
+    monkeypatch.setattr(websockets.asyncio.client, "connect", removed_mid_dial)
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with hub.websocket_connect(url, headers=ORIGIN) as ws:
+            ws.send_text(json.dumps({"text": "Hello there.", "done": True}))
+            ws.receive_json()
+    assert (closed.value.code, closed.value.reason) == (4404, "Gateway removed")
+
+
 def _rpc(ws, rid, method, params=None):
     ws.send_text(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}))
     while (frame := ws.receive_json()).get("id") != rid:

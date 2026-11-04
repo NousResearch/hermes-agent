@@ -17,7 +17,7 @@ Hermes routes each model family through the API that serves it best:
 | Model family | API route | Why |
 |---|---|---|
 | Anthropic Claude | Anthropic SDK (`AnthropicBedrock`) | Prompt caching, thinking budgets, adaptive thinking — features not exposed via Converse |
-| OpenAI GPT-6 (Astra, Sol, Luna), GPT-6.1 Sol, GPT-5.6 (Sol, Terra, Luna), GPT-5.5 with a bare `openai.*` ID | Bedrock Mantle **OpenAI Responses** endpoint (`bedrock-mantle.<region>.api.aws/openai/v1`) | Bedrock Mantle serves the bare in-Region ID. `bedrock-runtime` does not accept it |
+| OpenAI GPT-6 (Astra, Sol, Luna), GPT-6.1 (Sol, Terra), GPT-5.6 (Sol, Terra, Luna), GPT-5.5, GPT-5.4 with a bare `openai.*` ID | Bedrock Mantle **OpenAI Responses** endpoint (`bedrock-mantle.<region>.api.aws/openai/v1`) | Bedrock Mantle serves the bare in-Region ID. `bedrock-runtime` does not accept it |
 | The same OpenAI models with a `us.` or `global.` inference-profile ID | Native **Converse API** (`bedrock-runtime`) | Cross-Region profiles exist only on `bedrock-runtime`, and the model cards list Converse as supported there |
 | Everything else (Nova, DeepSeek, Llama, GPT-OSS, …) | Native **Converse API** (`bedrock-runtime`) | Full Bedrock feature set: Guardrails, inference profiles, streaming |
 
@@ -131,12 +131,14 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 | Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Fastest Claude |
 | OpenAI GPT-6 Astra | `openai.gpt-6-astra` | Most capable OpenAI model, 1,050,000-token window |
 | OpenAI GPT-6.1 Sol | `openai.gpt-6.1-sol` | 1M-token window. Mantle in-Region access is `us-east-1` only |
+| OpenAI GPT-6.1 Terra | `openai.gpt-6.1-terra` | Balanced Terra tier, 1,050,000-token window |
 | OpenAI GPT-6 Sol | `openai.gpt-6-sol` | Coding and agentic work, 1,050,000-token window |
 | OpenAI GPT-6 Luna | `openai.gpt-6-luna` | Focused, high-volume tasks, 1,050,000-token window |
 | OpenAI GPT-5.6 Sol | `openai.gpt-5.6-sol` | 1,050,000-token window |
 | OpenAI GPT-5.6 Terra | `openai.gpt-5.6-terra` | Balanced, 1,050,000-token window |
 | OpenAI GPT-5.6 Luna | `openai.gpt-5.6-luna` | Fast, affordable, 1,050,000-token window |
 | OpenAI GPT-5.5 | `openai.gpt-5.5` | Mantle only, no inference profiles |
+| OpenAI GPT-5.4 | `openai.gpt-5.4` | 1,050,000-token window |
 | Amazon Nova Pro | `us.amazon.nova-pro-v1:0` | Amazon's flagship |
 | Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | Fastest, cheapest |
 | DeepSeek V3.2 | `deepseek.v3.2` | Strong open model |

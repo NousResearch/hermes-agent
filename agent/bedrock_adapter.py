@@ -86,8 +86,8 @@ _BEDROCK_OPENAI_PROFILE_PREFIXES: tuple[str, ...] = _BEDROCK_PROFILE_PREFIXES + 
 # OpenAI-compatible endpoint; its geo/global profile form is served by bedrock-runtime, where these
 # cards list Converse as supported. Narrow allowlist so GPT-OSS models stay on the native path.
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: tuple[str, ...] = (
-    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6-sol", "openai.gpt-6-luna",
-    "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+    "openai.gpt-6-astra", "openai.gpt-6.1-sol", "openai.gpt-6.1-terra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+    "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna", "openai.gpt-5.4",
 )
 _BEDROCK_OPENAI_MODEL_IDS_LOWER = frozenset(m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
@@ -1504,13 +1504,25 @@ BEDROCK_CONTEXT_LENGTHS: dict[str, int] = {
     **dict.fromkeys((
         "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
+    # Open-weight and third-party models: the "Context window" field of each AWS card
+    # (docs.aws.amazon.com/bedrock/latest/userguide/model-card-<vendor>-<model>.html, read 2026-11-04). Their
+    # model_metadata rows are vendor-direct windows (often larger), so they get their own rows. A card above the
+    # model_metadata row for the same id (MiniMax M2, DeepSeek V3.2, Nemotron 3, Qwen3 235B/Next/VL) waits for that
+    # row first, as every entry here stays <= it; Llama 4 is #106492 (measured windows differ from the cards).
+    "amazon.nova-2-lite": 1_000_000, "ai21.jamba-1-5": 256_000,
+    **dict.fromkeys(("google.gemma-4-26b", "google.gemma-4-31b"), 256_000),
+    **dict.fromkeys(("minimax.minimax-m2.1", "minimax.minimax-m2.5"), 196_000),
+    **dict.fromkeys(("mistral.devstral-2", "mistral.mistral-large-3"), 256_000),
+    **dict.fromkeys(("moonshotai.kimi-k2.5", "moonshot.kimi-k2-thinking", "moonshotai.kimi-k2-thinking"), 256_000),
+    "moonshotai.kimi-k3": 1_000_000, "qwen.qwen3-coder": 256_000,
+    "zai.glm-4.7": 203_000, "zai.glm-5": 200_000, "zai.glm-5.3": 1_000_000,
     # OpenAI on Bedrock: docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html. GPT-6.1 Sol's
     # card states "1M tokens"; the other cards state 1,050,000. 272K is the long-context PRICING tier
     # boundary on these cards, not the window. Each entry stays <= model_metadata.DEFAULT_CONTEXT_LENGTHS.
     "openai.gpt-6.1-sol": 1_000_000,
     **dict.fromkeys((
-        "openai.gpt-6-astra", "openai.gpt-6-sol", "openai.gpt-6-luna",
-        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
+        "openai.gpt-6-astra", "openai.gpt-6.1-terra", "openai.gpt-6-sol", "openai.gpt-6-luna",
+        "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna", "openai.gpt-5.4",
     ), 1_050_000),
 }
 

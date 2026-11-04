@@ -69,7 +69,7 @@ export interface AgentPluginRow {
   servers?: AgentPluginServer[]
 }
 
-export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string'
+export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string' | 'text'
 
 /** One `config_schema` key of a plugin manifest. Secrets never carry a value:
  *  `env` names the `.env` variable, `has_value` whether it is set. */
@@ -84,6 +84,9 @@ export interface PluginSettingField {
   choices?: string[]
   env?: string
   has_value?: boolean
+  /** A multiline field's visible lines and its dim example text. */
+  rows?: number
+  placeholder?: string
 }
 
 export const normalizeAgentPluginRow = (row: AgentPluginRow): AgentPluginRow => ({

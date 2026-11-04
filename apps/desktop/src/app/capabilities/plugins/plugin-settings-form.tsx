@@ -38,7 +38,8 @@ const INITIAL_TEXT: Record<PluginSettingFieldType, (field: PluginSettingField) =
   json: field => (field.value === undefined || field.value === null ? '' : JSON.stringify(field.value, null, 2)),
   number: field => (field.value === undefined || field.value === null ? '' : String(field.value)),
   secret: () => '',
-  string: field => String(field.value ?? '')
+  string: field => String(field.value ?? ''),
+  text: field => String(field.value ?? '')
 }
 
 /** Text → wire value; a thrown Error is the field's validation message. */
@@ -69,7 +70,8 @@ const COERCE: Record<Exclude<PluginSettingFieldType, 'secret'>, (raw: string, fi
 
     return n
   },
-  string: raw => raw
+  string: raw => raw,
+  text: raw => raw
 }
 
 const TEXT_CLASS = 'h-7 text-xs'
@@ -145,6 +147,22 @@ function SecretControl({ disabled, field, id, onChange, raw, secretSetHint }: Co
   )
 }
 
+/** A multiline string: the field's `rows` sets the visible height and its
+ *  `placeholder` is the dim example a user sees before typing. */
+function TextControl({ disabled, field, id, onChange, raw }: ControlProps) {
+  return (
+    <Textarea
+      className="min-h-16 text-sm"
+      disabled={disabled}
+      id={id}
+      onChange={e => onChange(e.currentTarget.value)}
+      placeholder={field.placeholder ?? ''}
+      rows={field.rows ?? 4}
+      value={raw}
+    />
+  )
+}
+
 function JsonControl({ disabled, id, onChange, raw }: ControlProps) {
   return (
     <Textarea
@@ -166,7 +184,8 @@ export const FIELD_CONTROLS: Record<PluginSettingFieldType, (props: ControlProps
   json: JsonControl,
   number: NumberControl,
   secret: SecretControl,
-  string: StringControl
+  string: StringControl,
+  text: TextControl
 }
 
 export function initialDraft(fields: PluginSettingField[]): PluginSettingsDraft {

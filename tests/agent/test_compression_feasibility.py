@@ -347,6 +347,31 @@ def test_an_unreadable_compression_route_never_stops_the_main_request():
     assert agent._compression_feasibility_checked is False
 
 
+def test_the_probe_reads_provider_entries_as_configured_now(monkeypatch, tmp_path):
+    """A provider entry's per-model ``context_length`` is read from config.yaml when the compression model
+    is measured, not from the entry list captured at agent start: an edit that shrinks the summariser's
+    pin is what the probe uses."""
+    from agent.conversation_compression import check_compression_model_feasibility
+    import json
+    home = tmp_path / "home"
+    home.mkdir()
+    entry = {"name": "work-gateway", "base_url": "http://gateway.invalid/v1",
+             "models": {"small": {"context_length": 80_000}}}
+    (home / "config.yaml").write_text(json.dumps({"custom_providers": [entry]}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._custom_providers = [{**entry, "models": {"small": {"context_length": 900_000}}}]  # agent start
+    client = MagicMock(base_url="http://gateway.invalid/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")):
+        check_compression_model_feasibility(agent)
+    assert compressor.threshold_tokens == 80_000
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 

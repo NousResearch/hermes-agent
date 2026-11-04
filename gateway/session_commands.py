@@ -31,7 +31,7 @@ _HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review',
                                'login', 'autoprune'})
 # Idle-path commands the messaging gateway answers by rewriting the turn (``_hm_cmd_<name>``,
 # gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
-_PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'moa', 'blueprint', 'egress'})
+_PROMPT_COMMANDS = frozenset({'plan', 'learn', 'correct', 'init', 'moa', 'blueprint', 'egress'})
 # Per-session settings: the messaging handler itself, made session-correct for a local session
 # (gateway/session_setting_commands.py). Admission-fenced like any control.
 _SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',

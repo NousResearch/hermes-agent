@@ -680,6 +680,26 @@ _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
 
 
+def _cmd_correct(rid, params, session, name, arg):
+    """/correct: search the host's memory + learned skills, then submit the fix prompt.
+
+    With no hits there is nothing to fix, so this answers with the search result as
+    display-only ``exec`` output instead of starting a turn that could only reply.
+    """
+    from agent.correct_prompt import (build_correct_prompt, no_hits_message, parse_correction,
+                                      search_terms, usage_message)
+    from agent.learning_mutations import search_learned_text
+
+    wrong, _right = parse_correction(arg)
+    terms = search_terms(wrong)
+    if not terms:
+        return _ok(rid, {"type": "exec", "output": usage_message()})
+    found = search_learned_text(terms)
+    if not found["hits"]:
+        return _ok(rid, {"type": "exec", "output": no_hits_message(found["terms"] or terms)})
+    return _ok(rid, {"type": "send", "message": build_correct_prompt(arg, found)})
+
+
 def _cmd_init(rid, params, session, name, arg):
     """/init: build the AGENTS.md prompt against the SESSION's active directory, then submit it
     as a normal turn (the live agent does the scan and the write). The desktop app launches the
@@ -998,7 +1018,8 @@ def _cmd_skills(rid, params, session, name, arg):
 
 
 _SLASH_BUILTINS = {
-    "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
+    "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "correct": _cmd_correct,
+    "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress,

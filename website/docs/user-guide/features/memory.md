@@ -260,6 +260,30 @@ See [Session Search Tool](../sessions.md#session-search-tool) for the three call
 
 **Memory** is for critical facts that should always be in context. **Session search** is for "did we discuss X last week?" queries where the agent needs to recall specifics from past conversations.
 
+## Correcting a Wrong Fact (`/correct`)
+
+When a fact turns out to be wrong, it is usually saved in more than one place: an entry in `MEMORY.md` or `USER.md`, a line in a skill the agent wrote, often both. `/correct` fixes them together:
+
+```
+/correct <what is wrong> -> <what it should say>
+```
+
+The **host** does the search, not the agent: there is no full-text search over skills in the model tools (`skills_list` returns names and descriptions only), and on a remote terminal backend (Docker, SSH, Modal) the skills directory is not visible to `search_files`. The search is literal and case-insensitive over the built-in memory files plus the `SKILL.md` and `references/*.md` of skills the agent created or edited — bundled, hub-installed and protected skills are excluded. Give several fragments separated by commas to search them all:
+
+```
+/correct port 8080, localhost -> port 9090, 127.0.0.1
+```
+
+What happens next:
+
+1. The hits are listed for the agent — file, line and the text as it stands.
+2. The agent shows a **numbered preview** of every proposed change (before and after) and waits. Nothing is edited before you answer yes or list the numbers you want.
+3. Skill edits go through `skill_manage` only, so each one lands in the skill ledger. To undo one, find its id with `hermes curator ledger` and run `hermes curator rollback <entry_id>` — that restores just that change. Do **not** run bare `hermes curator rollback`: with no entry id it replaces the whole skills directory from a snapshot and undoes unrelated work. This undo needs the skill ledger, which is on by default (`skills.ledger` in `config.yaml`). Memory edits have **no undo**, which is why the preview comes first.
+
+The listed text is quoted from your own store, and a learned skill can carry text from an untrusted page, so the agent is told to treat every snippet as data rather than instructions. Memory edits also obey your existing `memory.write_approval` setting: when it is on, `/correct`'s memory changes are staged for approval like any other memory write.
+
+If the search finds nothing, the command says so and suggests other wording; it does **no** model turn and changes nothing.
+
 ## Learning Journey (`/journey`)
 
 The learning journey is a timeline view of everything Hermes has learned — saved skills and memory entries plotted over time (oldest at top, newest at bottom), with a playable "constellation" scrubber that replays the build-up. The same graph data drives three surfaces:

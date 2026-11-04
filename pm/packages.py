@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import long_root, native
+from pm.filesystem import long_root, native, read_bytes_or_none
 from pm.package import (
     DebPackage,
     InstallError,
@@ -759,6 +760,8 @@ class Npm(BinaryPackage):
 # The pinned git artifact is a self-extracting 7z: only hosts where PE images
 # execute can stage it (tests patch this flag).
 _HOST_IS_WINDOWS = os.name == "nt"
+# ``helper = helper-selector`` in PortableGit's system config, whatever its spacing and line ends.
+_PICKER_HELPER = re.compile(rb"^([ \t]*helper[ \t]*=[ \t]*)helper-selector(?=[ \t]*\r?$)", re.MULTILINE)
 
 
 @register
@@ -843,6 +846,22 @@ class Git(BinaryPackage):
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        super().stage(store, staged, version, target)
+        for rel, data in self.restage_edits(staged, target).items():
+            (staged / rel).write_bytes(data)
+
+    def restage_edits(self, root: Path, target: str) -> dict[str, bytes]:
+        """PortableGit's ``etc/gitconfig`` names ``helper-selector``, a picker window git opens on
+        every credential lookup, so unattended git (cron scripts, the gateway, the agent's terminal)
+        waits on it with nobody to answer (#148552). Name the Git Credential Manager PortableGit
+        also ships, as the Git for Windows installer does. scripts/install.ps1 makes the same edit."""
+        shipped = read_bytes_or_none(root / "etc" / "gitconfig")
+        if shipped is None:
+            return {}
+        fixed = _PICKER_HELPER.sub(rb"\1manager", shipped)
+        return {"etc/gitconfig": fixed} if fixed != shipped else {}
 
 
 @register

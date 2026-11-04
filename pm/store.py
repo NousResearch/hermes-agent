@@ -348,6 +348,40 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     state, not package bytes — the digest is over what pm published."""
     import hashlib
 
+    digest = hashlib.sha256()
+    for rel, path in _tree_files(root, skip_metadata=skip_metadata):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        for block in _entry_blocks(path):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def edited_tree_digests(root: Path, edits: dict[str, bytes]) -> tuple[str, str]:
+    """``(tree_digest(root), the tree_digest root will have once *edits* replace those files)``,
+    from one read of the tree. *edits* maps posix relpaths of existing files to their new bytes."""
+    import hashlib
+
+    current, edited = hashlib.sha256(), hashlib.sha256()
+    seen = set()
+    for rel, path in _tree_files(root, skip_metadata=True):
+        for digest in (current, edited):
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+        for block in _entry_blocks(path):
+            current.update(block)
+            if rel not in edits:
+                edited.update(block)
+        if rel in edits:
+            edited.update(edits[rel])
+            seen.add(rel)
+    if seen != edits.keys():
+        raise ValueError(f"edits name files missing from {root}: {sorted(edits.keys() - seen)}")
+    return current.hexdigest(), edited.hexdigest()
+
+
+def _tree_files(root: Path, *, skip_metadata: bool) -> list[tuple[str, Path]]:
+    """``(posix relpath, path)`` of every file and link :func:`_tree_digest` hashes, sorted."""
     files: list[tuple[str, Path]] = []
     for dirpath, dirnames, filenames in os.walk(root):
         descend = []
@@ -364,18 +398,16 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
                 continue
             files.append((path.relative_to(root).as_posix(), path))
     files.sort(key=lambda item: item[0])
+    return files
 
-    digest = hashlib.sha256()
-    for rel, path in files:
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        if path.is_symlink() or is_junction(path):
-            digest.update(os.readlink(path).encode("utf-8"))
-        else:
-            with open(path, "rb") as f:
-                for block in iter(lambda: f.read(1024 * 1024), b""):
-                    digest.update(block)
-    return digest.hexdigest()
+
+def _entry_blocks(path: Path):
+    """What a tree entry contributes: a link's target text (links are data), else its bytes."""
+    if path.is_symlink() or is_junction(path):
+        yield os.readlink(path).encode("utf-8")
+        return
+    with open(path, "rb") as f:
+        yield from iter(lambda: f.read(1024 * 1024), b"")
 
 
 class Store:
@@ -469,18 +501,22 @@ class Store:
         return target
 
     @contextmanager
-    def install_lock(self):
-        """Serialize writers using the same advisory lock as runtime publication."""
+    def install_lock(self, *, wait: bool = True):
+        """Serialize writers using the same advisory lock as runtime publication. Yields whether
+        the lock is held: ``wait=False`` tries once, for work that can be left to a later run."""
         from pm.filesystem import lock_fd
         self.root.mkdir(parents=True, exist_ok=True)
         lock = self.root / ".install.lock"
         fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
+            if not wait:
+                yield lock_fd(fd, wait=False)
+                return
             # A second `hermes pm install` behind an sdist build otherwise sits
             # silent for minutes; say what it is waiting on.
             if not lock_fd(fd, wait=True, timeout=2):
                 print(f"waiting for {lock} (another PM operation holds it)", file=sys.stderr, flush=True)
                 lock_fd(fd, wait=True)
-            yield
+            yield True
         finally:
             os.close(fd)

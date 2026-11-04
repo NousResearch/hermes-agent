@@ -143,6 +143,13 @@ class Package:
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         """Post-unpack fixups inside the scratch dir. Default: nothing."""
 
+    def restage_edits(self, root: Path, target: str) -> dict[str, bytes]:
+        """Files under *root* (a staged tree or a published entry) whose bytes ``stage`` now writes
+        differently, as posix relpath -> new bytes; empty when *root* is already current. A pure read:
+        pm applies the edits, so a ``stage`` fix also reaches entries published before it
+        (:func:`pm.install.restage_recorded`). A ``stage`` that edits files reports them here too."""
+        return {}
+
     def binary(self, entry: Path, target: str) -> Optional[Path]:
         return None
 

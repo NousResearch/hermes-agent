@@ -15,12 +15,12 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import native, remove_tree, retry_held
+from pm.filesystem import durable_write_bytes, native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, digest_matches, merge_tree, tree_digest
+from pm.store import Store, current_target, digest_matches, edited_tree_digests, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
 
@@ -385,11 +385,66 @@ def _refresh_recorded_env(package, facts, store, entry, previous, target) -> Non
     """An entry's env is derived from the package code, not its bytes: when the code changes it (a
     variable renamed or retired), re-record it so stores installed earlier match what admission
     compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
-    env = package.env(entry, target)
-    if facts.env_for(package.name, store.root) != env:
-        facts.record(package.name, previous["version"], previous["entry"], env, store.root,
-                     target=previous.get("target"), artifacts=previous.get("artifacts"),
-                     digest=previous.get("digest"))
+    if facts.env_for(package.name, store.root) != package.env(entry, target):
+        _rerecord(package, facts, store, entry, previous, target, digest=previous.get("digest"))
+
+
+def _rerecord(package, facts, store, entry, previous, target, *, digest) -> None:
+    """Record *previous* again with the env the package code derives now and *digest*."""
+    facts.record(package.name, previous["version"], previous["entry"], package.env(entry, target), store.root,
+                 target=previous.get("target"), artifacts=previous.get("artifacts"), digest=digest)
+
+
+def _restage_in_place(package, facts, store, previous, target) -> None:
+    """Carry a ``stage`` fix (:meth:`Package.restage_edits`) to the entry *previous* records, without
+    a re-fetch. The caller holds the install lock. One read of the tree both confirms the bytes still
+    match the recorded digest (anything else is left for a verified reinstall) and yields the digest
+    after the edits, so the record follows the write at once."""
+    entry = store.entry(previous["entry"])
+    edits = package.restage_edits(entry, target)
+    if not edits:
+        return
+    recorded = previous.get("digest")
+    try:
+        current, edited = edited_tree_digests(entry, edits)
+        if current != recorded and not digest_matches(entry, recorded):
+            LOG.warning("%s: %s no longer matches its recorded digest; not editing it in place",
+                        package.name, entry.name)
+            return
+        with store.scratch() as scratch:
+            for index, (rel, data) in enumerate(edits.items()):
+                replacement = scratch / str(index)
+                durable_write_bytes(replacement, data)
+                retry_held(lambda src=replacement, dst=entry / rel: os.replace(src, dst))
+    except OSError as error:
+        # Typically a Windows hold on the file: the old bytes stand, and the next update retries.
+        LOG.warning("%s: could not update %s in place: %s", package.name, entry.name, error)
+        return
+    _rerecord(package, facts, store, entry, previous, target, digest=edited)
+
+
+def restage_recorded() -> None:
+    """:func:`_restage_in_place` for every entry recorded in the writable store. ``hermes update``
+    calls it from the new tree, so a ``stage`` fix reaches installs published before it. Opportunistic:
+    while another writer holds the store, the fixes wait for the next update."""
+    store = Store(paths.writable_store_root())
+    facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
+    target = current_target()
+    entries = {name: fact["entry"] for name in _lockfile().names()
+               if (fact := facts.get(name)) and "entry" in fact}
+    pending = [name for name, entry in entries.items()
+               if get_package(name).restage_edits(store.entry(entry), target)]
+    if not pending:
+        return
+    with store.install_lock(wait=False) as held:
+        if not held:
+            LOG.info("tool store busy; staging fixes for %s wait for the next update", ", ".join(pending))
+            return
+        facts.reload()
+        for name in pending:
+            previous = facts.get(name)
+            if previous and previous.get("entry") == entries[name]:
+                _restage_in_place(get_package(name), facts, store, previous, target)
 
 
 def _refresh_found_env(package, location, target, operation) -> None:
@@ -476,6 +531,7 @@ def _install(
                 and not _fresh_copy):
             if facts is not None:
                 _refresh_recorded_env(package, facts, store, entry, previous, target)
+                _restage_in_place(package, facts, store, facts.get(package.name), target)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:

@@ -92,6 +92,15 @@ def _get_oneshot_max_children() -> int:
     )
 
 
+def _get_prefix_stagger_seconds() -> float:
+    """delegation.prefix_stagger_seconds: longest a batch sibling waits for the first child's response to start so
+    its request reads the shared prompt cache (0 = off, the default). See tools/delegate_tool_prefix_gate.py."""
+    return _knob(
+        "prefix_stagger_seconds", None, lambda v: min(60.0, max(0.0, float(v))), 0.0,
+        "delegation.prefix_stagger_seconds=%r is not a number; the launch stagger is off",
+    )
+
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 

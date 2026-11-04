@@ -225,7 +225,7 @@ def _maybe_title_session_at_turn_start(
     if not session_db or not session_id:
         return
     platform = str(getattr(agent, "platform", "") or "").lower()
-    if platform in _UNTITLED_PLATFORMS:
+    if platform in _UNTITLED_PLATFORMS or getattr(agent, "skip_title", False):
         return
     from agent.oneshot_footprint import agent_is_oneshot
     if agent_is_oneshot(agent):  # nothing shows a one-shot's title, and the call is a second paid request

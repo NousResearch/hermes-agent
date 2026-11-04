@@ -480,7 +480,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  // Inline images on/off changes which rows reserve image rows: a fresh bucket.
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${ui.inlineImages ? '1' : '0'}:${detailsLayoutKey}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -507,6 +508,7 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        inlineImages: ui.inlineImages,
         leadGap: hasLeadGap(
           prevRenderedMsg(i => virtualRows[i]?.msg, index, {
             commandOverride: ui.detailsModeCommandOverride,
@@ -529,6 +531,7 @@ export function useMainApp(gw: GatewayClient) {
       thinkingDetailsVisible,
       toolsDetailsVisible,
       ui.compact,
+      ui.inlineImages,
       ui.detailsMode,
       ui.detailsModeCommandOverride,
       ui.sections,
@@ -542,7 +545,8 @@ export function useMainApp(gw: GatewayClient) {
       for (const row of virtualRows) {
         const h = heights.get(row.key)
 
-        if (h) {
+        // 0 is a real measurement (a row that draws nothing), not a miss.
+        if (h !== undefined) {
           activeHeightCache.set(row.key, h)
         }
       }

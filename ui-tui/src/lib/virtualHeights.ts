@@ -67,12 +67,14 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   return n
 }
 
-// Until an image row mounts and Yoga measures it, assume full-height images.
-// A row's attachments sit under its text after a one-row gap.
-const imageRows = (msg: Msg) => (msg.images?.length ? 1 + msg.images.length * INLINE_IMAGE_MAX_ROWS : 0)
+// Until an image row mounts and Yoga measures it, assume full-height images,
+// unless `display.inline_images` is off and none will draw. A row's
+// attachments sit under its text after a one-row gap.
+const imageRows = (msg: Msg, inlineImages: boolean) =>
+  inlineImages && msg.images?.length ? 1 + msg.images.length * INLINE_IMAGE_MAX_ROWS : 0
 
 // Rows whose height doesn't depend on wrapped text; null for the rest.
-const fixedKindHeight = (msg: Msg, leadGap: boolean): null | number => {
+const fixedKindHeight = (msg: Msg, leadGap: boolean, inlineImages: boolean): null | number => {
   if (msg.kind === 'intro') {
     return msg.info?.version ? 9 : 5
   }
@@ -87,7 +89,7 @@ const fixedKindHeight = (msg: Msg, leadGap: boolean): null | number => {
 
   // A tool's image: no text line and no gap above it, only its group boundary.
   if (msg.kind === 'image') {
-    return (msg.images?.length ?? 0) * INLINE_IMAGE_MAX_ROWS + (leadGap ? 1 : 0)
+    return inlineImages ? (msg.images?.length ?? 0) * INLINE_IMAGE_MAX_ROWS + (leadGap ? 1 : 0) : 0
   }
 
   return null
@@ -99,6 +101,7 @@ export const estimatedMsgHeight = (
   {
     compact,
     details,
+    inlineImages = true,
     leadGap = false,
     thinkingVisible = details,
     thinkingExpanded = thinkingVisible,
@@ -108,6 +111,7 @@ export const estimatedMsgHeight = (
   }: {
     compact: boolean
     details: boolean
+    inlineImages?: boolean
     leadGap?: boolean
     thinkingExpanded?: boolean
     thinkingVisible?: boolean
@@ -116,7 +120,7 @@ export const estimatedMsgHeight = (
     withSeparator?: boolean
   }
 ) => {
-  const fixed = fixedKindHeight(msg, leadGap)
+  const fixed = fixedKindHeight(msg, leadGap, inlineImages)
 
   if (fixed !== null) {
     return fixed
@@ -151,7 +155,7 @@ export const estimatedMsgHeight = (
     }
   }
 
-  h += imageRows(msg)
+  h += imageRows(msg, inlineImages)
 
   if (msg.role === 'user' || msg.kind === 'diff') {
     // Top + bottom blank line.

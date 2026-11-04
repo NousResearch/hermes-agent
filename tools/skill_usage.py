@@ -641,10 +641,19 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
 
 def archive_skill(skill_name: str) -> tuple[bool, str]:
     """Move a curator-eligible skill dir to ``.archive/`` (flattened; timestamp suffix on collision). Never hub;
-    bundled built-ins only with ``curator.prune_builtins`` (and then suppressed from re-seeding)."""
+    bundled built-ins only with ``curator.prune_builtins`` (and then suppressed from re-seeding).
+
+    A user lock wins over every eligibility axis: this is the one mutation every archive path funnels
+    through (``curator archive``, ``curator prune``, ``skill_manage``'s delete, the learning mutations),
+    so the refusal lives here rather than in each caller."""
     skill_dir = _find_skill_dir(skill_name)
     if skill_dir is None and _find_external_skill_dir(skill_name) is not None:
         return False, _external_read_only_message(skill_name)
+    from tools.skill_lock import is_locked_skill
+    locked = locked_skill_names()  # keyed by directory name; rows carry the frontmatter name
+    if locked and is_locked_skill(skill_name, locked):
+        return False, (f"skill '{skill_name}' is locked by the user; unlock it with "
+                       f"`hermes curator unlock {skill_name}` to archive it")
     if not is_curation_eligible(skill_name, skill_dir):
         if is_protected_builtin(skill_name):
             return False, f"skill '{skill_name}' is a protected built-in; it backs load-bearing UX and is never archived or consolidated"

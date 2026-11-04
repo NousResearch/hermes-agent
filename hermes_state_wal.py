@@ -189,16 +189,46 @@ _cross_vm_warned_lock = threading.Lock()
 _cross_vm_existing_wal_warned_paths: set[str] = set()
 _cross_vm_existing_wal_warned_lock = threading.Lock()
 
-# Network filesystems (#110848 remainder): WAL shared-memory (the -shm mmap plus fcntl locks) is unsafe across
-# them for concurrent writers, but single-writer homes on NFS/CIFS are a legitimate working shape, so the
-# fresh-DB WAL refusal deliberately does NOT extend here. An on-disk WAL database on one is warned about, once,
-# with the offline remedy; a fresh database keeps today's behaviour (WAL enabled). Generic FUSE stays out because
-# it can be local (ntfs3g, loopback): only the network instance (sshfs) is listed.
-_NETWORK_FS_FSTYPES = frozenset({"nfs", "nfs4", "cifs", "smb", "smb2", "sshfs", "fuse.sshfs"})
+# Network filesystems (#110848 remainder): every WAL -shm lock/unlock is a server round trip there, and the Linux
+# NFS client flushes the mmapped -shm around each one. With several connections in ONE process (SessionDB: a writer
+# plus up to 8 pooled readers) a field deployment saw threads parked 20-90 s in fcntl(F_SETLK) on state.db-shm,
+# while DELETE mode on the same mount kept reads under 100 ms. So a NEW store on one starts in DELETE unless
+# ``database.journal_mode`` is set explicitly (``_network_fs_new_store_mode``); an existing WAL store is never
+# live-downgraded and gets one WARNING with the offline remedy. Generic FUSE stays out because it can be local
+# (ntfs3g, loopback): only the network instance (sshfs) is listed. smb3 is how some kernels report SMB 3 mounts.
+_NETWORK_FS_FSTYPES = frozenset({"nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "sshfs", "fuse.sshfs"})
 _network_fs_cache: Dict[str, bool] = {}
 _network_fs_cache_lock = threading.Lock()
 _network_fs_warned_paths: set[str] = set()
 _network_fs_warned_lock = threading.Lock()
+_network_fs_new_store_warned_paths: set[str] = set()
+_network_fs_new_store_warned_lock = threading.Lock()
+
+
+def _journal_mode_explicitly_configured() -> bool:
+    """Whether the operator's own config.yaml sets ``database.journal_mode`` (the merged config always carries
+    the ``wal`` default, so it cannot tell "chose WAL" from "never chose"). An unreadable config counts as
+    configured, so the caller keeps the long-standing WAL default rather than guessing."""
+    try:
+        from hermes_cli.config import read_raw_config_readonly
+        from hermes_cli.config_read_errors import FailedConfigRead
+        raw = read_raw_config_readonly()
+    except Exception:
+        return True
+    if isinstance(raw, FailedConfigRead):
+        return True
+    database = (raw or {}).get("database")
+    return isinstance(database, dict) and isinstance(database.get("journal_mode"), str)
+
+
+def _network_fs_new_store_mode(conn: sqlite3.Connection) -> bool:
+    """True when a database this connection is about to put into WAL sits on a network filesystem and the
+    operator never chose a journal mode: the caller then leaves it in its current (rollback) mode."""
+    db_file = _connection_db_file(conn)
+    if not db_file or not _path_on_network_fs(db_file) or _journal_mode_explicitly_configured():
+        return False
+    _log_once("network_fs_new_store", db_file)
+    return True
 
 
 def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> str:
@@ -371,6 +401,11 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
                                       "where WAL shared-memory silently corrupts")
         _log_once("cross_vm_fs", db_label)
         return _set_journal_mode_no_wait(conn, "DELETE") or "delete"
+    # Network filesystem, journal mode never configured: do not ENABLE WAL (see _NETWORK_FS_FSTYPES). No pragma
+    # is issued at all, so a fresh file stays in SQLite's default DELETE and an existing rollback-journal file
+    # keeps its mode; an on-disk WAL file returned above. require_wal callers still get WAL.
+    if not require_wal and _network_fs_new_store_mode(conn):
+        return current_mode or "delete"
     return _enable_wal(conn, db_label, require_wal, current_mode)
 
 
@@ -612,13 +647,20 @@ _ONCE_LOGS = {
         "or move the database onto a native volume (e.g. a named Docker volume). This message fires once per process "
         "per database."),
     "network_fs_existing_wal": (_network_fs_warned_lock, "_network_fs_warned_paths", logging.WARNING,
-        # WARNING, one step below cross-VM: single-writer WAL on NFS/CIFS is a common working shape, so this is a
-        # risk signal for concurrent writers, not an active-corruption alarm. Never live-downgrade here either.
-        "%s: existing WAL-mode database is on a network filesystem (nfs/cifs/smb/sshfs). SQLite WAL shared-memory "
-        "is unsafe across network filesystems once writers are concurrent, and Hermes does not live-downgrade an "
-        "on-disk WAL database. If more than one process will write this database: stop every Hermes process using "
-        "it and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file (set `database.journal_mode: delete` "
-        "in config.yaml to keep it), or move the database onto local disk. This message fires once per process per "
+        # WARNING, one step below cross-VM: this is a stall and concurrent-writer risk, not an active-corruption
+        # alarm. Never live-downgrade here either; the remedy is offline, by the operator.
+        "%s: existing WAL-mode database is on a network filesystem (nfs/cifs/smb/sshfs). Every WAL shared-memory "
+        "(-shm) lock is a network round trip there, so concurrent connections can stall for tens of seconds, and "
+        "concurrent writers risk silent corruption. Hermes does not live-downgrade an on-disk WAL database. To "
+        "switch it: stop every Hermes process using it, run `hermes sessions set-journal-mode delete` (add `--db "
+        "PATH` for a store other than state.db), and set `database.journal_mode: delete` in config.yaml; or move "
+        "the database onto local disk. This message fires once per process per database."),
+    "network_fs_new_store": (_network_fs_new_store_warned_lock, "_network_fs_new_store_warned_paths", logging.WARNING,
+        # WARNING: an operator-visible default that differs from every other filesystem, with its override.
+        "%s: database is on a network filesystem (nfs/cifs/smb/sshfs); not enabling WAL because its shared-memory "
+        "locks are network round trips that stall concurrent connections. Using the rollback journal "
+        "(journal_mode=DELETE). Set `database.journal_mode: wal` in config.yaml to force WAL, or "
+        "`database.journal_mode: delete` to make this choice explicit. This message fires once per process per "
         "database."),
 }
 

@@ -170,6 +170,18 @@ describe('the MCP setup card', () => {
     )
   })
 
+  it('shows the whole launch line without hover: no clamp, no tooltip-only tail', () => {
+    const target = `node srv.js ${'--log-level=info '.repeat(12)}--exec ~/.ssh/steal.js`
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch: { kind: 'stdio', target } }] })
+    const { container } = renderTool()
+
+    const line = container.querySelector<HTMLElement>('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${target}`)
+    expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden/)
+    expect(line?.hasAttribute('title')).toBe(false)
+  })
+
   it('lists every target once settled, in the same three words as the connector card', () => {
     renderTool({
       settled_by: 'continue',

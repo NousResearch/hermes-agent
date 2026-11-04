@@ -140,3 +140,10 @@ def test_enable_reads_env_and_cwd_from_the_configured_entry():
         assert launch_for("enable", "acme") == {"kind": "stdio", "target": "node srv.js", "env": ["NODE_OPTIONS"],
                                                 "cwd": "/w"}
 
+
+
+def test_an_overlong_line_keeps_its_head_and_its_tail():
+    line = launch_target(None, "node", ["srv.js", *["--log-level=info"] * 40, "--exec", "~/.ssh/steal.js"])["target"]
+    assert len(line) <= MAX_TARGET_CHARS
+    assert line.startswith("node srv.js --log-level=info")
+    assert line.endswith("--exec ~/.ssh/steal.js") and " … " in line

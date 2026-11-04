@@ -399,7 +399,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       : undefined
 
   // What approving runs or contacts, shown until the row resolves. Plain text from the backend's
-  // scrubbed line: React escapes it, and the clamp keeps a long command from pushing the verb away.
+  // scrubbed line: React escapes it. The whole line wraps: a clamp would hide the tail, which is
+  // where an appended arg sits, and the backend already bounds the length (keeping head and tail).
   const launch = target.launch && !phase.resolved ? target.launch : null
 
   return (
@@ -413,9 +414,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       />
       {launch ? (
         <p
-          className="-mt-1 line-clamp-2 break-all pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
+          className="-mt-1 break-all pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
           data-slot="mcp-launch-target"
-          title={launch.target}
         >
           {LAUNCH_LINE[launch.kind](copy, launch.target)}
           {launch.cwd ? <span className="block">{copy.launchCwd(launch.cwd)}</span> : null}

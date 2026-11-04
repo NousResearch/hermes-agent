@@ -39,6 +39,7 @@ class FailoverReason(enum.Enum):
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
     upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
     upstream_blocked = "upstream_blocked"  # 403 from a WAF/CDN/proxy in front of the provider — key is healthy, fallback
+    region_blocked = "region_blocked"  # 403 by the provider's region/territory policy — key is healthy, another provider can serve it
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
     timeout = "timeout"                  # Connection/read timeout — rebuild client + retry
@@ -460,6 +461,18 @@ _UPSTREAM_BLOCKED_PATTERNS = (
     "challenge-error-text", "__cf_chl", "cf-error-details", "attention required! | cloudflare",
 )
 
+# A provider refusing the request BY REGION (OpenAI's ``unsupported_country_region_territory`` and
+# aggregator wordings such as "this model is not available in your country"). The request reached
+# the provider and the key was accepted, so key guidance and rotation are wrong (#148727) — and so
+# is the WAF advice attached to upstream_blocked: the body names a region, not a proxy. Region
+# wording is what separates these from a bare 403, which stays auth.
+_REGION_BLOCKED_CODES = frozenset({"unsupported_country_region_territory"})
+_REGION_BLOCKED_PATTERNS = (
+    "unsupported_country_region_territory", "country, region, or territory not supported",
+    "not available in your country", "not available in your region", "not supported in your region",
+    "user location is not supported", "region is not supported",
+)
+
 
 # ── Verdicts and rule tables ────────────────────────────────────────────
 # A verdict is the ClassifiedError kwargs a stage decided on: ``reason`` plus
@@ -484,6 +497,8 @@ _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_UPSTREAM_BLOCKED = _v(_R.upstream_blocked, **_ABORT_FALLBACK)
+# Region-restricted like upstream_blocked: no retry helps, another provider (or a supported egress) can.
+_V_REGION_BLOCKED = _v(_R.region_blocked, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 # Another account in the same pool may hold the entitlement; the credential itself is healthy.
 _V_MODEL_ENTITLEMENT = _v(_R.model_entitlement, retryable=False, **_ROTATE_FALLBACK)
@@ -1080,6 +1095,11 @@ def _status_403(c: _Ctx) -> Verdict:
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
     if billing:
         return _V_BILLING
+    # The provider itself refuses the request by region/territory (#148727): the key reached it and
+    # was accepted, so this is not auth and rotation is wrong. Checked before the WAF markers so a
+    # provider body that mentions both still reads as a region refusal.
+    if c.code in _REGION_BLOCKED_CODES or any(p in c.msg for p in _REGION_BLOCKED_PATTERNS):
+        return _V_REGION_BLOCKED
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
     # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
     # 403 and on established block/challenge markers; any other 403 stays auth.

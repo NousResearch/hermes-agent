@@ -1792,7 +1792,7 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.image_too_large: "image payload too large",
     FailoverReason.model_not_found: "model not found",
     FailoverReason.provider_policy_blocked: "provider policy blocked the request",
-    FailoverReason.content_policy_blocked: "content policy blocked the request",
+    FailoverReason.content_policy_blocked: "content policy blocked the request", FailoverReason.region_blocked: "provider does not serve this region",
     FailoverReason.format_error: "request format rejected",
     FailoverReason.role_alternation: "adjacent same-role messages rejected",
     FailoverReason.invalid_encrypted_content: "encrypted reasoning state rejected",

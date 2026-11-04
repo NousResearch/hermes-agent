@@ -1006,6 +1006,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
+    FailoverReason.region_blocked: "The provider does not serve requests from your region",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
@@ -1083,6 +1084,14 @@ def nonretryable_client_error_result(
             "      and model access are probably fine. Relays often reject the SDK's default User-Agent:",
             "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
             "      or check the proxy/WAF rules and your network.",
+        )
+    # A region/territory refusal (#148727): the provider answered and accepted the key, so the way
+    # forward is another provider (or an egress in a served region), never the credential.
+    if classified.reason == FailoverReason.region_blocked:
+        _vlines(
+            agent,
+            "   💡 The provider doesn't serve this region for this model — the key itself was accepted.",
+            "      Switch providers (or egress from a supported region) with /model.",
         )
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.

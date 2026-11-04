@@ -12,6 +12,20 @@ Hermes Agent integrates with Telegram as a full-featured conversational bot. Onc
 
 The **Messaging → Telegram** page in the [dashboard](../features/web-dashboard.md) and the [desktop app](../desktop.md) has a **Create with QR** button. Scan the code (or open the link) in Telegram; Hermes creates the bot for you, detects your Telegram user ID, writes `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` into your profile's `.env`, and restarts the gateway. If you prefer to create the bot yourself, follow the manual steps below.
 
+## Hermes Cloud with Team Gateway
+
+On a Hermes Cloud instance with Team Gateway on, Telegram (and Discord and Slack) reach your agent through a shared Hermes bot. A bot of your own does not run there: the gateway switches direct connections off at every start so the instance can sleep when idle. The Telegram card shows **Via Team Gateway** instead of **Create with QR**.
+
+When Nous Portal manages who can reach the agent (agents created in the Portal), link your account from the Portal: the card lists the linked accounts and its **Link accounts in Nous Portal** button opens the agent there. Use **Message platforms** on the agent to get the link code.
+
+Otherwise the card links the account itself:
+
+1. Click **Link Telegram**. Hermes shows a one-time message such as `/link AB12CD`, a QR code and an **Open Telegram** button.
+2. Scan the QR code with your phone (or click the button) to open the shared bot, and send it that message from the Telegram account you want to use.
+3. The card lists the account once the bot sees the message. From then on, message the shared bot to talk to your agent.
+
+The gateway must be running for the button to work, because it holds the Team Gateway connection. To run your own bot beside the shared one instead, set `GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true` in the instance's environment. That keeps a live Telegram connection open, so the instance never sleeps.
+
 ## Step 1: Create a Bot via BotFather
 
 Every Telegram bot requires an API token issued by [@BotFather](https://t.me/BotFather), Telegram's official bot management tool.

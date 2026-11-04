@@ -5,6 +5,7 @@ export interface SimplifiedAgentsCopy {
   description: string
   offerTitle: string
   offerDescription: string
+  offerRevert: string
   yes: string
   no: string
   chats: string
@@ -29,9 +30,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   en: {
     title: 'Simplified agent mode',
     description: 'Show chats and agents in a simpler sidebar.',
-    offerTitle: 'Try simplified agent mode?',
+    offerTitle: 'Try the new Hermes sidebar?',
     offerDescription:
-      'We have a new setting for a simpler sidebar with pinned chats, chats, and agents. Would you like to try it? You can change this later in Settings → Appearance → Window layout.',
+      'Hermes is developing a simpler sidebar with pinned chats, conversations grouped by agent, and easier access to your tools. Would you like to opt in and try it?',
+    offerRevert: 'You can switch back at any time by turning off this setting:',
     yes: 'Yes, try it',
     no: 'No, keep current sidebar',
     chats: 'Chats',
@@ -54,9 +56,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   fr: {
     title: 'Mode agents simplifié',
     description: 'Afficher les discussions et les agents dans une barre latérale simplifiée.',
-    offerTitle: 'Essayer le mode agents simplifié ?',
+    offerTitle: 'Essayer la nouvelle barre latérale Hermes ?',
     offerDescription:
-      'Un nouveau réglage simplifie la barre latérale : discussions épinglées, discussions et agents. Voulez-vous essayer ? Vous pourrez revenir en arrière dans Paramètres → Apparence → Disposition de la fenêtre.',
+      'Hermes développe une barre latérale plus simple avec des discussions épinglées, des conversations regroupées par agent et un accès plus facile à vos outils. Voulez-vous l’essayer ?',
+    offerRevert: 'Vous pouvez revenir en arrière à tout moment en désactivant ce réglage :',
     yes: 'Oui, essayer',
     no: 'Non, conserver la barre actuelle',
     chats: 'Discussions',
@@ -79,9 +82,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   de: {
     title: 'Vereinfachter Agentenmodus',
     description: 'Chats und Agenten in einer einfacheren Seitenleiste anzeigen.',
-    offerTitle: 'Vereinfachten Agentenmodus ausprobieren?',
+    offerTitle: 'Die neue Hermes-Seitenleiste ausprobieren?',
     offerDescription:
-      'Eine neue Einstellung vereinfacht die Seitenleiste mit angehefteten Chats, Chats und Agenten. Möchten Sie sie ausprobieren? Änderbar unter Einstellungen → Erscheinungsbild → Fensterlayout.',
+      'Hermes entwickelt eine einfachere Seitenleiste mit angehefteten Chats, nach Agenten gruppierten Gesprächen und leichterem Zugriff auf deine Werkzeuge. Möchtest du sie ausprobieren?',
+    offerRevert: 'Du kannst jederzeit zurückwechseln, indem du diese Einstellung ausschaltest:',
     yes: 'Ja, ausprobieren',
     no: 'Nein, aktuelle Seitenleiste behalten',
     chats: 'Chats',
@@ -104,9 +108,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   es: {
     title: 'Modo de agentes simplificado',
     description: 'Mostrar chats y agentes en una barra lateral más sencilla.',
-    offerTitle: '¿Probar el modo de agentes simplificado?',
+    offerTitle: '¿Probar la nueva barra lateral de Hermes?',
     offerDescription:
-      'Una nueva opción simplifica la barra lateral con chats fijados, chats y agentes. ¿Quieres probarla? Puedes cambiarla en Ajustes → Apariencia → Diseño de ventana.',
+      'Hermes está desarrollando una barra lateral más sencilla con chats fijados, conversaciones agrupadas por agente y acceso más fácil a tus herramientas. ¿Quieres probarla?',
+    offerRevert: 'Puedes volver cuando quieras desactivando este ajuste:',
     yes: 'Sí, probar',
     no: 'No, mantener la barra actual',
     chats: 'Chats',
@@ -129,9 +134,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   ja: {
     title: 'シンプルなエージェントモード',
     description: 'チャットとエージェントをシンプルなサイドバーに表示します。',
-    offerTitle: 'シンプルなエージェントモードを試しますか？',
+    offerTitle: 'Hermesの新しいサイドバーを試しますか？',
     offerDescription:
-      '固定したチャット、チャット、エージェントを表示する新しいサイドバー設定です。試しますか？設定 → 外観 → ウィンドウレイアウトで変更できます。',
+      'Hermesでは、ピン留めしたチャット、エージェントごとにまとめた会話、ツールへのアクセスを備えた、よりシンプルなサイドバーを開発しています。試してみませんか？',
+    offerRevert: '次の設定をオフにすると、いつでも元に戻せます：',
     yes: 'はい、試す',
     no: 'いいえ、現在の表示を維持',
     chats: 'チャット',
@@ -154,8 +160,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   zh: {
     title: '简化智能体模式',
     description: '在更简洁的侧边栏中显示聊天和智能体。',
-    offerTitle: '试用简化智能体模式？',
-    offerDescription: '新增侧边栏设置，显示置顶聊天、聊天和智能体。要试用吗？之后可在设置 → 外观 → 窗口布局中更改。',
+    offerTitle: '试用 Hermes 的新侧边栏？',
+    offerDescription:
+      'Hermes 正在开发更简洁的侧边栏，包含置顶聊天、按智能体分组的会话，以及更便捷的工具入口。要选择试用吗？',
+    offerRevert: '您可以随时关闭以下设置，切回原来的侧边栏：',
     yes: '是，试用',
     no: '否，保留当前侧边栏',
     chats: '聊天',
@@ -178,8 +186,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   'zh-hant': {
     title: '簡化代理模式',
     description: '在更簡潔的側邊欄中顯示聊天與代理。',
-    offerTitle: '試用簡化代理模式？',
-    offerDescription: '新增側邊欄設定，顯示釘選聊天、聊天與代理。要試用嗎？之後可在設定 → 外觀 → 視窗配置中變更。',
+    offerTitle: '試用 Hermes 的新側邊欄？',
+    offerDescription:
+      'Hermes 正在開發更簡潔的側邊欄，包含釘選聊天、依代理分組的對話，以及更便利的工具入口。要選擇試用嗎？',
+    offerRevert: '您可以隨時關閉以下設定，切回原本的側邊欄：',
     yes: '是，試用',
     no: '否，保留目前側邊欄',
     chats: '聊天',
@@ -202,9 +212,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   ru: {
     title: 'Упрощённый режим агентов',
     description: 'Показывать чаты и агентов в упрощённой боковой панели.',
-    offerTitle: 'Попробовать упрощённый режим агентов?',
+    offerTitle: 'Попробовать новую боковую панель Hermes?',
     offerDescription:
-      'Новая настройка упрощает боковую панель: закреплённые чаты, чаты и агенты. Попробовать? Изменить выбор можно в Настройки → Оформление → Макет окна.',
+      'Hermes разрабатывает более простую боковую панель с закреплёнными чатами, беседами по агентам и удобным доступом к инструментам. Хотите попробовать?',
+    offerRevert: 'Вы можете в любой момент вернуться, выключив эту настройку:',
     yes: 'Да, попробовать',
     no: 'Нет, оставить текущую панель',
     chats: 'Чаты',
@@ -227,9 +238,10 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
   ar: {
     title: 'وضع الوكلاء المبسط',
     description: 'عرض المحادثات والوكلاء في شريط جانبي أبسط.',
-    offerTitle: 'هل تريد تجربة وضع الوكلاء المبسط؟',
+    offerTitle: 'هل تريد تجربة الشريط الجانبي الجديد من Hermes؟',
     offerDescription:
-      'إعداد جديد لشريط جانبي أبسط يعرض المحادثات المثبتة والمحادثات والوكلاء. هل تريد تجربته؟ يمكنك تغييره لاحقًا في الإعدادات ← المظهر ← تخطيط النافذة.',
+      'يطوّر Hermes شريطًا جانبيًا أبسط يضم المحادثات المثبتة والمحادثات المجمّعة حسب الوكيل، مع وصول أسهل إلى أدواتك. هل تريد الاشتراك في تجربته؟',
+    offerRevert: 'يمكنك الرجوع في أي وقت بإيقاف هذا الإعداد:',
     yes: 'نعم، جرّبه',
     no: 'لا، احتفظ بالشريط الحالي',
     chats: 'المحادثات',

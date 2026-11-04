@@ -16,21 +16,16 @@ import { useLocation, useNavigate } from 'react-router'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
-import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
-import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
-import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
-import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
-import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -172,6 +167,7 @@ import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { MainWindowOverlays } from './main-window-overlays'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
@@ -1279,31 +1275,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
-      {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
-        <DesktopOnboardingOverlay
-          enabled={gatewayState === 'open'}
-          onCompleted={() => {
-            void refreshHermesConfig()
-            void refreshCurrentModel()
-            void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-          }}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {!isAuxiliaryWindow() && <OnboardingEnd />}
-      {!isAuxiliaryWindow() && (
-        <SharedMetricsConsentDialog
-          enabled={gatewayState === 'open'}
-          profile={activeGatewayProfile}
-          requestGateway={requestGateway}
-        />
-      )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      <MainWindowOverlays
+        enabled={gatewayState === 'open'}
+        onCompleted={() => {
+          void refreshHermesConfig()
+          void refreshCurrentModel()
+          void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+        }}
+        onSelectModel={selectModel}
+        profile={activeGatewayProfile}
+        requestGateway={requestGateway}
+      />
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

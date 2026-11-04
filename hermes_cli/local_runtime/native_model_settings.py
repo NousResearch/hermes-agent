@@ -509,13 +509,21 @@ def reset_model_settings(model_id: str, root: Path | str,
 
 def resolve_native_request_settings(
         model_id: str,
-        request: Mapping[str, Any] | None = None) -> tuple[dict, dict]:
+        request: Mapping[str, Any] | None = None,
+        *, inherited: bool = True) -> tuple[dict, dict]:
     """Resolve effective settings for a live request on the active profile.
 
     Returns ``(standard_fields, extra_body)`` for the OpenAI wire: request
     values win over saved overrides, which win over publisher GGUF metadata
     and curated catalog hints. The caller merges ``extra_body`` PER KEY into
     any extensions it already holds.
+
+    ``inherited=False`` drops the publisher/catalog layers so only values the
+    USER chose (explicit request + saved model settings) are returned. Live
+    dispatch uses that: llama-server already applies publisher/catalog values
+    as its own launch defaults, and re-sending them per request would override
+    a hand-edited ``presets.ini``. The settings API keeps ``inherited=True`` to
+    display the full effective ladder.
     """
     from hermes_constants import get_hermes_home
 
@@ -524,6 +532,8 @@ def resolve_native_request_settings(
     resolution = _service(get_hermes_home()).resolve(
         key, NATIVE_CHAT_SCHEMA,
         request=decoded,
-        publisher=gguf_sampling_metadata(model_id),
-        catalog=catalog_sampling_defaults(model_id))
+        publisher=gguf_sampling_metadata(model_id) if inherited else None,
+        catalog=catalog_sampling_defaults(model_id) if inherited else None)
     return split_request_fields(NATIVE_CHAT_SCHEMA, resolution)
+
+

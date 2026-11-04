@@ -31,7 +31,7 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
-from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_local import _streams_llamacpp, merge_native_local_settings, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -1436,6 +1436,11 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     transport = agent._get_transport()
+    # Managed llama.cpp: the staged artifact's saved native settings feed this
+    # request; explicit per-request values keep precedence, extensions merge
+    # per key into extra_body (see chat_completion_local). No-op for everyone
+    # else; settings-store trouble never blocks inference.
+    request_overrides = merge_native_local_settings(agent, request_overrides)
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
 
     _is_qwen = agent._is_qwen_portal()

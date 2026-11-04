@@ -259,3 +259,52 @@ async def test_compaction_without_any_todo_state_leaves_transcript_unchanged(tod
             assert await compact(_history()) == _compressed_tail()
     finally:
         empty.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial", [False, True], ids=["full", "partial"])
+async def test_plugin_compress_restores_summarised_tasks(todo_db, tmp_path, monkeypatch, partial):
+    for msg in _history():
+        todo_db.append_message("sess-todo", msg["role"], msg["content"])
+    engine = SimpleNamespace(compress=lambda *a, **k: _compressed_tail())
+    monkeypatch.setattr("gateway.session_mutation_compress._plugin_engine", lambda *a: engine)
+    result, _ = await _canonical_compress(todo_db, tmp_path, monkeypatch,
+                                         {"partial": True, "keep_last": 2} if partial else {})
+    _assert_todo_carried(result["messages"])
+    assert result["engine_owner"].context_compressor is engine
+    if partial:
+        assert result["messages"][-2]["content"] == _history()[-2]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["noop", "compress_error", "fold_error"])
+async def test_plugin_todo_fold_preserves_noop_and_failure_cleanup(todo_db, tmp_path, monkeypatch, outcome):
+    from gateway import compaction_todo_hydration as hydration
+
+    for msg in _history():
+        todo_db.append_message("sess-todo", msg["role"], msg["content"])
+    before = todo_db.get_messages_as_conversation("sess-todo")
+    events = []
+
+    def compress(messages, **kwargs):
+        events.append("compress")
+        if outcome == "compress_error":
+            raise RuntimeError("compress failed")
+        return messages if outcome == "noop" else _compressed_tail()
+
+    def fold(*args):
+        events.append("fold")
+        raise RuntimeError("fold failed")
+
+    engine = SimpleNamespace(compress=compress, on_session_end=lambda *a: events.append("end"))
+    monkeypatch.setattr("gateway.session_mutation_compress._plugin_engine", lambda *a: engine)
+    monkeypatch.setattr(hydration, "fold_todos_for_compaction", fold)
+    if outcome == "noop":
+        result, _ = await _canonical_compress(todo_db, tmp_path, monkeypatch)
+        assert result["status"] == "noop"
+        assert events == ["compress", "end"]
+    else:
+        with pytest.raises(RuntimeError, match="fold failed" if outcome == "fold_error" else "compress failed"):
+            await _canonical_compress(todo_db, tmp_path, monkeypatch)
+        assert events == (["compress", "fold", "end"] if outcome == "fold_error" else ["compress", "end"])
+    assert todo_db.get_messages_as_conversation("sess-todo") == before

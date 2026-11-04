@@ -74,7 +74,10 @@ async def prepare_compress(authority, live, payload, prepared):
             engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'])
             if engine is not None:
                 try:
-                    return _engine_compress(engine, head, tail, messages, request, memory_context), engine
+                    compressed = _engine_compress(engine, head, tail, messages, request, memory_context)
+                    if compressed is not None:
+                        compressed = fold_todos_for_compaction(messages, compressed, authority.db, snapshot['target'])
+                    return compressed, engine
                 except BaseException:
                     if resident is None:
                         _end_engine(engine, snapshot['target'], messages)

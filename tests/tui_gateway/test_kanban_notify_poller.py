@@ -14,6 +14,8 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -79,6 +81,7 @@ class TestCollectKanbanNotifications:
         assert "shipped the fix" in first[0]
         rows = _sub_rows(tid)
         assert len(rows) == 1, "done must retain the originating session"
+        assert rows[0]["claim_owner_pid"] is None
         first_cursor = rows[0]["last_event_id"]
 
         # The retained subscription must not replay the completed event.
@@ -139,6 +142,19 @@ class TestCollectKanbanNotifications:
         rows = _sub_rows(tid)
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
+
+    def test_format_failure_rewinds_claim_for_next_poll(self):
+        tid = _create_subscribed_task()
+        _complete(tid)
+
+        with patch("tui_gateway.server._format_kanban_event_text", side_effect=RuntimeError("format failed")):
+            with pytest.raises(RuntimeError, match="format failed"):
+                _collect_kanban_notifications(_session())
+
+        assert _sub_rows(tid)[0]["claim_owner_pid"] is None
+        retried = _collect_kanban_notifications(_session())
+        assert len(retried) == 1
+        assert tid in retried[0]
 
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")

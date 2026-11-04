@@ -1,78 +1,83 @@
 """What an MCP consent row will run or contact, worded for the card before the user approves.
 
 Install reads the catalog manifest's transport; enable and authorize read the configured
-``mcp_servers`` entry. The line is display-only. It never carries env values or headers, and its
-text is scrubbed before it leaves the process: the value of a secret-named flag (``--api-key=…``,
-``--token …``, ``-p``/``-k``/``-t`` spaced or attached, an ``Authorization`` header arg), args
-shaped like encoded key material (masked whole), URL userinfo, query values and fragment, opaque
-URL path segments (hosted MCP URLs often embed the key in the path), then the standard redaction.
+``mcp_servers`` entry. The line is display-only and never carries env values or headers.
+
+The card exists so the user consents to what will run, so hiding execution is worse than showing a
+secret. The line is never cut, and a value is masked only when its own name says it is secret: a long
+flag such as ``--api-key=…`` / ``--token …`` / ``--token:…``, a ``GITHUB_TOKEN=…`` assignment, an
+``Authorization:`` / ``Cookie:`` / API-key header arg, a URL userinfo password, a secret-named URL
+query value (``?token=``, ``?key=``). Positional args, short flags (``-p``, ``-k``, ``-t``), packages,
+images, scripts and URL paths are always shown, even when one of them is a key: the user approves
+that exact command. Invisible and composing code points render as escapes.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
+import unicodedata
 from typing import Any, Optional
 
-from agent.redact import (
-    SECRET_HEADER_NAME_LIST,
-    redact_for_egress,
-    redact_sensitive_text,
-    sanitize_command_for_display,
-)
+from agent.redact import SECRET_HEADER_NAME_LIST, sanitize_command_for_display
 
-_SECRET_FLAG_RE = re.compile(
-    r"^--?[A-Za-z0-9_.-]*(?:key|token|secret|passw(?:or)?d|pass|pwd|auth|credential|bearer|cookie)"
-    r"[A-Za-z0-9_.-]*$",
-    re.IGNORECASE,
-)
-# One-letter flags that conventionally take a password, key or token (``mysql -p``, ``-k <key>``),
-# in both the spaced (``-p value``) and the attached (``-pvalue``) form.
-_SECRET_SHORT_FLAGS = frozenset("pPkt")
-# ``Authorization: <scheme> <value>`` and the API-key header family, as one ``-H`` arg.
+# A flag or query name that says its value is secret, after camelCase/snake_case fold to kebab. The
+# word ends its segment (``--access-token``, ``--apikey``; not ``--tokenizer``, ``--max-tokens``),
+# ``auth`` is a whole segment (not ``--author``), and ``pass``/``pwd`` are the whole name.
+_SECRET_NAME_RE = re.compile(
+    r"(?:token|secret|passw(?:or)?d|api-?key|credentials?|private-?key|bearer)(?=-|$)"
+    r"|(?:^|-)auth(?:orization)?(?=-|$)|^(?:pass|pwd)$")
+# Names for where a secret lives or how it is supplied, not the secret: ``--token-file``,
+# ``--password-stdin``, ``--auth-type``; ``--no-auth`` is a switch, so the next arg is not its value.
+_NOT_A_VALUE_RE = re.compile(
+    r"-(?:file|path|dir|env|var|name|url|uri|stdin|prompt|type|mode|method|scheme|helper|cmd|command)$"
+    r"|^(?:no|disable|enable|skip|use|with|without)-")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# ``KEY=VALUE`` (an ``env`` prefix, a ``-e`` value): the key's last identifier carries the name.
+_ASSIGN_RE = re.compile(r"^([^\s=]*?)([A-Za-z_][A-Za-z0-9_]*)=(.*)$", re.DOTALL)
+_SECRET_ENV_RE = re.compile(r"TOKEN|SECRET|PASSW(?:OR)?D|API_?KEY|AUTH(?!OR(?!IZ))|CREDENTIAL|PRIVATE_?KEY",
+                            re.IGNORECASE)
+# One header arg, alone or as ``--header=…`` / attached ``-H…``: the auth scheme stays, the value goes.
+_HEADER_NAMES = "|".join(sorted({"cookie", *SECRET_HEADER_NAME_LIST}, key=len, reverse=True))
 _SECRET_HEADER_ARG_RE = re.compile(
-    rf"^((?:--header=)?(?:Proxy-)?Authorization:\s*(?:[A-Za-z][\w.+-]*\s+)?|(?:--header=)?"
-    rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})\s*:\s*).+$",
-    re.IGNORECASE,
+    rf"^((?:--header[=:]?|-H)?\s*(?:(?:proxy-)?authorization\s*:\s*(?:(?:bearer|basic|token|digest)\s+)?"
+    rf"|(?:{_HEADER_NAMES})\s*:\s*))\S.*$",
+    re.IGNORECASE | re.DOTALL,
 )
-# An arg that reads as encoded key material, not a path, package or word: a long base64/url-safe run
-# with mixed case and digits, a long letters+digits run, or a long hex run. Masked whole: a
-# prefix and suffix of a base64 config blob can be most of a short key.
-_BLOB_RE = re.compile(r"[A-Za-z0-9+/_-]{20,}={0,2}")
-_HEX_RE = re.compile(r"[0-9a-fA-F]{32,}")
+_LONG_FLAG_RE = re.compile(r"--([^=:]+)([=:]?)")
 
 
-def _is_blob(value: str) -> bool:
-    if value.startswith(("/", "-")) or not _BLOB_RE.fullmatch(value):
-        return False
-    if _HEX_RE.fullmatch(value):
-        return True
-    has_digit = any(c.isdigit() for c in value)
-    mixed = any(c.isupper() for c in value) and any(c.islower() for c in value)
-    # A slash-separated run of lowercase words and digits is a path, not base64.
-    return has_digit and (mixed or (len(value) >= 32 and "/" not in value)) and any(c.isalpha() for c in value)
+def _is_secret_name(name: str) -> bool:
+    """True when a flag's or query parameter's own name says its value is a secret."""
+    norm = _CAMEL_RE.sub("-", name).lower().replace("_", "-").replace(".", "-")
+    return bool(_SECRET_NAME_RE.search(norm)) and not _NOT_A_VALUE_RE.search(norm)
 
 
 def _mask_arg(arg: str) -> tuple[str, bool]:
     """``(shown, mask_next)`` for one argv entry."""
-    header = _SECRET_HEADER_ARG_RE.match(arg)
-    if header:
+    if header := _SECRET_HEADER_ARG_RE.match(arg):
         return f"{header.group(1)}***", False
-    flag, sep, value = arg.partition("=")
-    if _SECRET_FLAG_RE.match(flag):
-        return (f"{flag}=***", False) if sep else (arg, True)
-    if len(arg) >= 2 and arg[0] == "-" and arg[1] in _SECRET_SHORT_FLAGS:
-        return (arg, True) if len(arg) == 2 else (f"{arg[:2]}***", False)
-    if sep and _is_blob(value):
-        return f"{flag}=***", False
-    return ("***" if _is_blob(arg) else arg), False
+    if arg.startswith("--"):
+        flag = _LONG_FLAG_RE.match(arg)
+        if flag and _is_secret_name(flag.group(1)):
+            return (f"{flag.group(0)}***", False) if flag.group(2) else (arg, True)
+        # ``--env=GITHUB_TOKEN=…``: the assignment's own key names the secret.
+        if flag and flag.group(2) and (inner := _ASSIGN_RE.match(arg[flag.end():])) \
+                and _SECRET_ENV_RE.search(inner.group(2)):
+            return f"{flag.group(0)}{inner.group(1)}{inner.group(2)}=***", False
+        return arg, False
+    assign = None if arg.startswith("-") else _ASSIGN_RE.match(arg)
+    if assign and _SECRET_ENV_RE.search(assign.group(2)):
+        return f"{assign.group(1)}{assign.group(2)}=***", False
+    return arg, False
 
 
 def _mask_flag_values(args: list[str]) -> list[str]:
     out: list[str] = []
     mask_next = False
     for arg in args:
-        # A long flag right after a value-taking flag is the next flag, not its value (``-p --verbose``).
+        # A long flag right after a secret flag is the next flag, not its value (``--token --exec x``
+        # fails to parse as a token): masking it would hide what runs.
         if mask_next and not arg.startswith("--"):
             out.append("***")
             mask_next = False
@@ -82,75 +87,57 @@ def _mask_flag_values(args: list[str]) -> list[str]:
     return out
 
 
-# Tab and newline are the two controls the approval sanitizer keeps; the card draws one line.
-_LINE_BREAKS = str.maketrans({"\t": "\\t", "\n": "\\n"})
-# Scrubbed first, then the middle cut, so a secret straddling the cut is already masked.
-MAX_TARGET_CHARS = 400
-_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s]+", re.IGNORECASE)
-# A path segment that reads as a credential, not a route: long and url-safe with letters and digits,
-# or shorter but mixed-case with digits (``/v1/Ab3dEf9hIj12/sse``).
-_OPAQUE_SEGMENT_RE = re.compile(
-    r"(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
-    r"|(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])[A-Za-z0-9_-]{12,}")
+_URL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s]+")
+
+
+def _mask_query_pair(pair: str) -> str:
+    key, eq, _value = pair.partition("=")
+    # ``?key=`` is an API key in a URL (``?key=AIza…``); as a flag, ``--key`` is often a key *file*.
+    return f"{key}=***" if eq and (key.lower() == "key" or _is_secret_name(key)) else pair
 
 
 def _mask_url(match: re.Match[str]) -> str:
-    """Userinfo, every query value and the fragment become ``***``; opaque path segments too. The host,
-    path words and query keys stay, so the user still sees where the line connects."""
+    """A userinfo password and secret-named query values become ``***``. Host, path, other query
+    values and the fragment stay: the path of a ``deno run https://…`` URL is the code that runs."""
     url = match.group(0)
     head, sep, rest = url.partition("://")
-    rest, hash_, _fragment = rest.partition("#")
+    rest, hash_, fragment = rest.partition("#")
     rest, qmark, query = rest.partition("?")
     authority, slash, path = rest.partition("/")
-    if "@" in authority:
-        authority = "***@" + authority.rpartition("@")[2]
-    out = f"{head}{sep}{authority}"
-    if slash:
-        out += "/" + "/".join("***" if _OPAQUE_SEGMENT_RE.fullmatch(seg) else seg for seg in path.split("/"))
+    userinfo, at, host = authority.rpartition("@")
+    if at and ":" in userinfo:
+        authority = f"{userinfo.partition(':')[0]}:***@{host}"
+    out = f"{head}{sep}{authority}{slash}{path}"
     if qmark:
-        out += "?" + "&".join(
-            f"{key}=***" if eq else key
-            for key, eq, _value in (pair.partition("=") for pair in query.split("&")))
-    return out + ("#***" if hash_ else "")
+        out += "?" + "&".join(_mask_query_pair(pair) for pair in query.split("&"))
+    return out + hash_ + fragment
 
 
 # Tab and newline are the two controls the approval sanitizer keeps; the card draws one line.
 _LINE_BREAKS = str.maketrans({"\t": "\\t", "\n": "\\n"})
-# Scrubbed first, then the middle cut, so a secret straddling the cut is already masked.
-MAX_TARGET_CHARS = 400
-_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s]+", re.IGNORECASE)
-# A path segment that reads as a credential, not a route: long and url-safe with letters and digits,
-# or shorter but mixed-case with digits (``/v1/Ab3dEf9hIj12/sse``).
-_OPAQUE_SEGMENT_RE = re.compile(
-    r"(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}"
-    r"|(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])[A-Za-z0-9_-]{12,}")
 
 
-def _mask_url_path(match: re.Match[str]) -> str:
-    url = match.group(0)
-    head, sep, rest = url.partition("://")
-    host, slash, path = rest.partition("/")
-    if not slash:
-        return url
-    return f"{head}{sep}{host}/" + "/".join(
-        "***" if _OPAQUE_SEGMENT_RE.fullmatch(seg) else seg for seg in path.split("/"))
+def _escape_composing(ch: str) -> str:
+    # A combining mark draws over the letter before it (``pk\u0336g`` reads as a struck ``k``) and
+    # U+FFFC draws as a box. Other non-ASCII letters stay as written (homoglyphs are out of scope).
+    if ch == "\ufffc" or unicodedata.category(ch) in ("Mn", "Me"):
+        return ch.encode("unicode_escape").decode("ascii")
+    return ch
 
 
 def _visible(text: str) -> str:
-    """Every control, format (bidi overrides/isolates, zero-width, BOM, soft hyphen) and separator
-    code point as a visible escape such as ``\\u202e``: the line must read as the argv runs, and the
-    user should see that an arg is unusual rather than a cleaned-up version of it."""
-    return sanitize_command_for_display(text.translate(_LINE_BREAKS))
+    """Every control, format (bidi overrides/isolates, zero-width, BOM, soft hyphen), separator and
+    combining code point as a visible escape such as ``\\u202e``: the line must read as the argv runs,
+    and the user should see that an arg is unusual rather than a cleaned-up version of it."""
+    shown = sanitize_command_for_display(text.translate(_LINE_BREAKS))
+    return shown if shown.isascii() else "".join(map(_escape_composing, shown))
 
 
 def scrub(text: str) -> str:
-    text = _URL_RE.sub(_mask_url, " ".join(_visible(text).split()))
-    text = redact_for_egress(redact_sensitive_text(text, force=True, redact_url_credentials=True))
-    if len(text) <= MAX_TARGET_CHARS:
-        return text
-    # The middle goes, never the tail: the last args are where an appended `--exec` would sit.
-    tail = MAX_TARGET_CHARS // 3
-    return f"{text[: MAX_TARGET_CHARS - tail - 3]} … {text[-tail:]}"
+    """The whole line, never cut: every argument the user approves is on the card. The shape-based
+    secret redactor is not run here: it masks positionals that merely look like keys (a package
+    named ``sk-…``, a JWT-shaped script arg), and the card must not hide what runs."""
+    return _URL_RE.sub(_mask_url, " ".join(_visible(text).split()))
 
 
 def _env_keys(env: Any) -> list[str]:

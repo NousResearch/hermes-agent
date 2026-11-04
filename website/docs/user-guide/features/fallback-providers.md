@@ -39,6 +39,39 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+#### Try the profile default before the backup chain
+
+Set `fallback_to_default: true` to try the current profile's default model before
+its configured backups when a manually selected session model fails:
+
+```yaml
+model:
+  provider: openrouter
+  default: anthropic/claude-sonnet-4
+fallback_to_default: true   # false by default
+fallback_providers:
+  - provider: anthropic
+    model: claude-sonnet-4
+```
+
+The order is **session model → this profile's default → configured fallbacks**.
+Specify both `model.provider` and `model.default`; incomplete model blocks are
+ignored rather than guessing a provider. The default's endpoint, API mode and
+credential references are retained. It is read from configuration when the
+chain is loaded, so later default-model edits do not require updating a second
+copy in `fallback_providers`.
+
+Repeated configured routes are deduplicated, and a route matching the failed
+session primary is skipped even after another fallback was activated. Distinct
+endpoints remain eligible. The manual session selection is not overwritten;
+existing cooldown and primary-restoration behavior still applies. An active
+cooldown keeps its current chain until refresh is eligible.
+
+This is an opt-in for the **active profile**, not inheritance from the profile
+named `default`. Consumers that inherit the main fallback policy also receive
+this route; explicitly pinned child/job policies remain isolated. Disabling the
+flag restores the configured-chain-only behavior.
+
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
 ```yaml

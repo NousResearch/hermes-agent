@@ -1,5 +1,3 @@
-import { useCallback, useEffect, useRef } from 'react'
-
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveListResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
@@ -110,22 +108,20 @@ export async function backgroundSessionNotices(
   return watch.update(asRpcResult<SessionActiveListResponse>(raw)?.sessions ?? rows, focused)
 }
 
-/** The live-session poll's hook: feed it each poll's rows; it marks the focused session as shown
- * and writes the notices into the focused transcript. */
-export function useBackgroundSessionNotices(
+// One per process, like the overlay and server-request stores: the TUI has one transcript.
+const watch = createBackgroundSessionWatch()
+
+/** The live-session poll's entry: marks the focused session as shown and writes the notices for
+ * the sessions this view left running into the focused transcript. */
+export function noteLiveSessions(
   gw: Pick<GatewayClient, 'isCanonical' | 'request'>,
-  sid: null | string,
+  rows: LiveRow[],
   sys: (text: string) => void
 ) {
-  const watch = useRef(createBackgroundSessionWatch()).current
+  const focused = getUiState().sid
+  watch.focus(focused)
 
-  useEffect(() => watch.focus(sid), [sid, watch])
-
-  return useCallback(
-    (rows: LiveRow[]) =>
-      void backgroundSessionNotices(watch, gw, rows, getUiState().sid)
-        .then(notices => notices.forEach(sys))
-        .catch(() => {}),
-    [gw, sys, watch]
-  )
+  void backgroundSessionNotices(watch, gw, rows, focused)
+    .then(notices => notices.forEach(sys))
+    .catch(() => {})
 }

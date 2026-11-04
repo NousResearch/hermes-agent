@@ -41,8 +41,8 @@ Library (Artifacts), and Routines (Scheduled jobs). Capabilities includes Connec
 Tools, and Maintenance. The gear at the bottom opens an index of existing settings and utilities;
 these shortcuts preserve each destination's current profile and gateway scope.
 
-Enabled plugins that contribute pages appear above the session lists. Their rows open the page,
-and their gears open the matching plugin settings. Pinned chats also remain under their agents.
+Enabled plugins that contribute pages appear below a divider in the Capabilities menu.
+Select a page to open it; use Plugins in the same menu to manage plugin settings. Pinned chats also remain under their agents.
 Pinned rows show the profile name; rows under an agent show age and a pin marker when applicable.
 Agents are grouped by gateway; clicking an agent opens its settings. New session lets you choose
 an agent when there is more than one; Start blank uses the current gateway's default agent.

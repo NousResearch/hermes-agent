@@ -105,8 +105,7 @@ def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
     monkeypatch.setattr(
-        agent_init,
-        "_client_kwargs_from_routed",
+        "agent.agent_init_clients._client_kwargs_from_routed",
         lambda client, timeout: {"api_key": "k"},
     )
 

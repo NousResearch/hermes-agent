@@ -2490,7 +2490,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         api_mode=runtime.get("api_mode"),
         request_overrides=runtime.get("request_overrides"),
         acp_command=runtime.get("command"),
-        acp_args=runtime.get("args"),
+        acp_args=runtime.get("args"), acp_cwd=runtime.get("acp_cwd"),
         max_iterations=setup.max_iterations,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,

@@ -230,6 +230,7 @@ def _build_child_agent(
     override_reasoning_effort: Any = None,
     profile_home: Optional[Path] = None,
     override_service_tier: Optional[str] = None,  # a route's checked speed tier (tools/delegate_tool_tuning.py)
+    *, override_acp_cwd: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair. ``profile_home`` builds (and later runs,
@@ -276,6 +277,7 @@ def _build_child_agent(
             override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
             override_acp_command=override_acp_command,
             override_acp_args=override_acp_args,
+            override_acp_cwd=override_acp_cwd,
             routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
         )
         if override_service_tier:
@@ -434,6 +436,7 @@ def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) ->
         "override_request_overrides": creds.get("request_overrides"),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
+        "override_acp_cwd": creds.get("acp_cwd"),
         "override_service_tier": creds.get("service_tier"),
         "routing_cfg": routing_cfg,
     }
@@ -908,7 +911,7 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     the intercept is bypassed. Direct Python callers keep the synchronous default."""
     return not getattr(parent_agent, "_delegate_depth", 0) > 0
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
+_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args", "acp_cwd"}
 
 def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     """Drop trusted-config-only task fields from model-supplied tasks (same list object back when nothing changed)."""

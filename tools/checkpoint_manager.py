@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -145,6 +146,14 @@ DEFAULT_EXCLUDES = [
     "*.7z",
     "*.rar",
     "*.iso",
+    # Virtual disk images can be hundreds of GB or TB; never hash them into
+    # the shared checkpoint object store.
+    "*.vhdx",
+    "*.vhd",
+    "*.qcow2",
+    "*.qcow",
+    "*.vmdk",
+    "*.evm",
     # Secrets
     ".env",
     ".env.*",
@@ -391,30 +400,45 @@ def _run_git(
     try:
         # NUL-delimited git output contains literal filenames, not text lines.
         text_options = {} if "-z" in args else {"text": True, "encoding": "utf-8", "errors": "replace"}
-        result = subprocess.run(
+        creationflags = windows_hide_flags()
+        if os.name == "nt":
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             **text_options,
-            timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
             stdin=subprocess.DEVNULL,
             # Checkpoints fire several bare git calls per turn from the
             # console-less desktop/gateway backend; suppress the per-call
             # conhost flash on Windows (no-op on POSIX).
-            creationflags=windows_hide_flags(),
-            check=False,
+            creationflags=creationflags,
+            start_new_session=os.name != "nt",
         )
-        ok = result.returncode == 0
-        stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
-        stderr = result.stderr.decode("utf-8", errors="replace").strip() if "-z" in args else result.stderr.strip()
-        if not ok and result.returncode not in allowed_returncodes:
+        stdout_raw, stderr_raw = process.communicate(timeout=timeout)
+        ok = process.returncode == 0
+        stdout = os.fsdecode(stdout_raw) if "-z" in args else stdout_raw.strip()
+        stderr = stderr_raw.decode("utf-8", errors="replace").strip() if "-z" in args else stderr_raw.strip()
+        if not ok and process.returncode not in allowed_returncodes:
             logger.error(
                 "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
+                " ".join(cmd), process.returncode, stderr,
             )
         return ok, stdout, stderr
     except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True, stdin=subprocess.DEVNULL, check=False,
+            )
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.communicate()
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
         logger.error(msg, exc_info=True)
         return False, "", msg
@@ -429,6 +453,15 @@ def _run_git(
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
+
+
+def _stage_args(oversize: list[str]) -> list[str]:
+    """Build git-add arguments that never stage known oversize paths."""
+    args = ["add", "-A"]
+    if oversize:
+        args.extend(["--", "."])
+        args.extend(f":(exclude,top,literal){path}" for path in oversize)
+    return args
 
 
 def _git_out(args: list[str], store: Path, working_dir: str, rc: Optional[set[int]] = None) -> str:
@@ -1294,7 +1327,7 @@ class CheckpointManager:
                     checkout_targets.append(rel)
                 elif self._exceeds_size_cap(Path(abs_dir) / rel):
                     # Absent from the checkpoint because ``max_file_size_mb``
-                    # kept it out (_drop_oversize_from_index), not because
+                    # kept it out (_oversize_paths), not because
                     # Hermes created it. Deleting it would not restore a prior
                     # state — no checkpoint holds one — it would destroy the
                     # only copy. The ledger records a content hash, not whether
@@ -1461,20 +1494,23 @@ class CheckpointManager:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stage with per-project index.  Include a per-stage file-size filter
-        # via ``core.bigFileThreshold`` is not what we want — instead, we
-        # rely on the exclude file for broad patterns and post-stage prune
-        # any path whose size exceeds max_file_size_mb.
+        # Find oversize paths before ``git add``.  Removing them from the
+        # index after staging is too late: git has already hashed their bytes
+        # into the shared object store.
+        oversize = self._oversize_paths(store, working_dir, index_file)
+        if oversize:
+            self._remove_from_index(store, working_dir, index_file, oversize)
+
+        # Stage with per-project index.  Pathspec exclusions keep oversized
+        # files out of git's object database from the beginning.
+        add_args = _stage_args(oversize)
         ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
+            add_args, store, working_dir,
             timeout=_GIT_TIMEOUT * 2, index_file=index_file,
         )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
-
-        if self.max_file_size_mb > 0:
-            self._drop_oversize_from_index(store, working_dir, index_file)
 
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
@@ -1564,7 +1600,7 @@ class CheckpointManager:
     def _exceeds_size_cap(self, path: Path) -> bool:
         """Whether *path* is larger than ``max_file_size_mb``.
 
-        The same test :meth:`_drop_oversize_from_index` applies when building a
+        The same test :meth:`_oversize_paths` applies when building a
         checkpoint, so "excluded from the checkpoint" and "refused deletion at
         restore" agree on one definition. A cap of 0 disables it, and an
         unstattable path is not claimed to be oversize.
@@ -1577,22 +1613,18 @@ class CheckpointManager:
         except OSError:
             return False
 
-    def _drop_oversize_from_index(
+    def _oversize_paths(
         self, store: Path, working_dir: str, index_file: Path,
-    ) -> None:
-        """Remove any staged file larger than ``max_file_size_mb`` from the index.
-
-        Lets the agent keep snapshotting source code while refusing to
-        swallow generated assets (datasets, model weights, logs, videos).
-        """
+    ) -> list[str]:
+        """Return checkpoint paths over the configured cap without reading their contents."""
         if self.max_file_size_mb <= 0:
-            return
+            return []
         ok, stdout, _ = _run_git(
-            ["ls-files", "--cached", "-z"],
+            ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             store, working_dir, index_file=index_file,
         )
         if not ok or not stdout:
-            return
+            return []
         # NUL separators preserve whitespace within each literal filename.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
@@ -1603,17 +1635,23 @@ class CheckpointManager:
         oversize = [
             rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
         ]
-        if not oversize:
+        return oversize
+
+    def _remove_from_index(
+        self, store: Path, working_dir: str, index_file: Path, paths: list[str],
+    ) -> None:
+        """Remove *paths* from the checkpoint index without touching user files."""
+        if not paths:
             return
         logger.debug(
             "Checkpoint: dropping %d oversize file(s) (>%d MB) from index",
-            len(oversize), self.max_file_size_mb,
+            len(paths), self.max_file_size_mb,
         )
         # Use --pathspec-from-file for safety with many paths.
         # Chunk into manageable batches.
         BATCH = 200
-        for i in range(0, len(oversize), BATCH):
-            chunk = oversize[i:i + BATCH]
+        for i in range(0, len(paths), BATCH):
+            chunk = paths[i:i + BATCH]
             _run_git(
                 ["rm", "--cached", "--quiet", "--"] + chunk,
                 store, working_dir, index_file=index_file,

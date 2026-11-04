@@ -12,7 +12,7 @@ import { notifyError } from '@/store/notifications'
 import type { SkillInfo } from '@/types/hermes'
 
 import { parseFrontmatter } from './frontmatter'
-import { isEditableProvenance } from './skill-provenance'
+import { isArchivableProvenance, isEditableProvenance } from './skill-provenance'
 import { skillsQueryKey } from './skills-data'
 
 export function SkillDetail({
@@ -82,14 +82,14 @@ export function SkillDetail({
       <div className="grid gap-1">
         <div className="flex items-center gap-2">
           {editable && (
-            <>
-              <Button onClick={onEdit} size="xs" variant="text">
-                {t.skills.edit}
-              </Button>
-              <Button className="text-destructive hover:text-destructive" onClick={onArchive} size="xs" variant="text">
-                {t.skills.archive}
-              </Button>
-            </>
+            <Button onClick={onEdit} size="xs" variant="text">
+              {t.skills.edit}
+            </Button>
+          )}
+          {isArchivableProvenance(skill.provenance) && (
+            <Button className="text-destructive hover:text-destructive" onClick={onArchive} size="xs" variant="text">
+              {t.skills.archive}
+            </Button>
           )}
           <Button
             aria-pressed={locked}

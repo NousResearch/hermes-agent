@@ -1,0 +1,22 @@
+name: understudy
+title: Understudy
+repo: https://github.com/stffinfcti/understudy
+sha: e0920f9e3641f0e24afe6ee01b21322c070920fd
+description: "Audition cheaper models on your real Hermes history before you switch. Understudy replays a sample of your past decisions (replies and tool calls) on candidate models through Hermes's own credentials, has a blind judge compare each step with what your current model actually did, and reports how often each candidate could have taken over (with a 95% confidence interval), its critical misses, a per-category breakdown and projected monthly cost. Two tools, /understudy, hermes understudy, and a Desktop page with an inline scorecard. Disclosure — reads this profile's session history read-only; sends redacted excerpts of past conversations to the candidate models and the judge model you pick, through ctx.llm on your existing provider credentials (every audition is capped by budget_usd); reads Hermes's local models.dev cache for list prices; writes run records and reports under plugin-data/understudy; runs a background worker thread only while an audition runs; requests the llm.model_override and llm.provider_override capabilities; no telemetry, no other network calls."
+maintainer: stffinfcti
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/stffinfcti/understudy#readme
+version: "1.0.0"
+image: https://raw.githubusercontent.com/stffinfcti/understudy/e0920f9e3641f0e24afe6ee01b21322c070920fd/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/stffinfcti/understudy/e0920f9e3641f0e24afe6ee01b21322c070920fd/docs/scorecard.png
+platforms: []
+capabilities:
+  provides_tools:
+    - understudy_audition
+    - understudy_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

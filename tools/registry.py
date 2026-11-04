@@ -981,7 +981,7 @@ class ToolRegistry:
         # dispatch so aliases/plugins cannot bypass it.
         try:
             from tools.skill_lifecycle import tool_allowed
-            if not tool_allowed(kwargs.get("session_id"), name):
+            if not tool_allowed(kwargs.get("session_id"), name, args):
                 return tool_error(
                     "Proposed skills run read-only in their creating session; write, send, and secret tools are disabled.",
                     error_type="proposed_skill_capability")

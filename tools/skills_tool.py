@@ -639,7 +639,7 @@ def skill_view(
         if proposal := proposal_for_session(name, session_id):
             from agent.skill_utils import TIER_LOCAL
             roots = [(TIER_LOCAL, proposal.parent)] + roots
-            restrict_session(session_id)
+            restrict_session(session_id, proposal)
         all_dirs = [d for _t, d in roots]
         error, skill_dir, skill_md = locate_skill(name, local_category_name, roots)
         if error is not None:

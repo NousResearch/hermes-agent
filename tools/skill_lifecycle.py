@@ -101,22 +101,59 @@ def create_proposal(name: str, content: str, *, session_id: str, risk: str, why:
     return target
 
 
-def proposal_for_session(name: str, session_id: str | None, home: Path | None = None) -> Path | None:
-    candidate = roots(home)[1] / name; meta = proposal_metadata(candidate)
-    return candidate if candidate.is_dir() and session_id and meta.get("creating_session_id") == session_id else None
+def proposal_for_session(name: str, session_id: str | None, home: Path | None = None,
+                         canonical_repo: Path | None = None) -> Path | None:
+    """Return a canonical or profile draft only to its exact creating session."""
+    candidates: list[Path] = []
+    repo = canonical_repo or os.environ.get("HERMES_SKILLS_REPO")
+    if repo:
+        candidates.append(canonical_repo_path(Path(repo)) / "skills" / "proposed" / name)
+    candidates.append(roots(home)[1] / name)
+    for candidate in candidates:
+        meta = proposal_metadata(candidate)
+        if candidate.is_dir() and session_id and meta.get("creating_session_id") == session_id:
+            return candidate
+    return None
 
 
-_RESTRICTED_SESSIONS: set[str] = set()
+_RESTRICTED_SESSIONS: dict[str, tuple[Path, ...]] = {}
 _SAFE_TOOLS = frozenset({"skills_list", "skill_view", "read_file", "search_files", "web_search", "web_extract", "vision_analyze"})
-def restrict_session(session_id: str | None) -> None:
-    if session_id: _RESTRICTED_SESSIONS.add(session_id)
-def tool_allowed(session_id: str | None, tool_name: str) -> bool:
-    return not session_id or session_id not in _RESTRICTED_SESSIONS or tool_name in _SAFE_TOOLS
+_SECRET_NAME = re.compile(r"^(?:\.env(?:\..*)?|auth\.json|credentials?|keychain|secrets?|tokens?)$", re.IGNORECASE)
+_SECRET_QUERY = re.compile(r"(?:\.env|auth(?:\\?\.)json|credentials?|keychain|secrets?|tokens?)", re.IGNORECASE)
+def restrict_session(session_id: str | None, safe_root: Path | None = None) -> None:
+    if session_id:
+        safe_roots = _RESTRICTED_SESSIONS.get(session_id, ())
+        if safe_root is not None:
+            safe_roots = tuple(dict.fromkeys((*safe_roots, Path(safe_root).resolve())))
+        _RESTRICTED_SESSIONS[session_id] = safe_roots
 
-def assert_secret_access_allowed(session_id: str | None) -> None:
-    """Call before any profile secret provider is constructed or .env is read."""
-    if session_id and session_id in _RESTRICTED_SESSIONS:
-        raise PermissionError("proposed-skill sessions cannot load secrets")
+
+def _safe_local_access(tool_name: str, args: dict[str, Any], safe_roots: tuple[Path, ...]) -> bool:
+    if tool_name == "vision_analyze":
+        image_url = str(args.get("image_url", ""))
+        if image_url.startswith(("http://", "https://", "data:")):
+            return True
+        raw_path = image_url
+    elif tool_name in {"read_file", "search_files"}:
+        raw_path = str(args.get("path", "."))
+    else:
+        return True
+    path = Path(raw_path).expanduser().resolve()
+    if any(_SECRET_NAME.fullmatch(part) for part in path.parts):
+        return False
+    if tool_name == "search_files" and _SECRET_QUERY.search(str(args.get("pattern", ""))):
+        return False
+    if not safe_roots:
+        return False
+    return any(path == root or path.is_relative_to(root) for root in safe_roots)
+
+
+def tool_allowed(session_id: str | None, tool_name: str, args: dict[str, Any] | None = None) -> bool:
+    if not session_id or session_id not in _RESTRICTED_SESSIONS:
+        return True
+    if tool_name not in _SAFE_TOOLS:
+        return False
+    return _safe_local_access(tool_name, args or {}, _RESTRICTED_SESSIONS[session_id])
 
 
 @dataclass(frozen=True)

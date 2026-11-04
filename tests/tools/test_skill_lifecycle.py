@@ -9,6 +9,8 @@ from tools.skill_lifecycle import (
     trusted_booth_approvals,
     write_batch_report,
 )
+from pathlib import Path
+from tools.registry import ToolRegistry
 
 SKILL = """---
 name: safe-reader
@@ -34,13 +36,63 @@ def test_proposal_is_session_bound_and_not_in_active_catalog(tmp_path):
     assert not (tmp_path / "skills" / "active" / "safe-reader").exists()
 
 
+def test_canonical_proposal_loads_only_for_creating_session(tmp_path, monkeypatch):
+    from tools import skills_tool
+    repo = tmp_path / "canonical"
+    (repo / ".git").mkdir(parents=True)
+    path = create_proposal("safe-reader", SKILL, session_id="creator-canonical", risk="read-only",
+                           why=WHY, canonical_repo=repo)
+    monkeypatch.setenv("HERMES_SKILLS_REPO", str(repo))
+    monkeypatch.setattr(skills_tool, "skill_search_dirs", lambda: ([], tmp_path / "installed"))
+    loaded = json.loads(skills_tool.skill_view(
+        "safe-reader", session_id="creator-canonical", preprocess=False))
+    denied = json.loads(skills_tool.skill_view("safe-reader", session_id="other", preprocess=False))
+    assert proposal_for_session("safe-reader", "creator-canonical") == path
+    assert proposal_for_session("safe-reader", "other") is None
+    assert loaded["success"] is True and loaded["skill_dir"] == str(path)
+    assert denied["success"] is False
+
+
 def test_loading_proposal_restricts_creating_session_only():
-    restrict_session("creator-policy-test")
-    assert tool_allowed("creator-policy-test", "read_file")
+    restrict_session("creator-policy-test", Path.cwd())
+    assert tool_allowed("creator-policy-test", "read_file", {"path": str(Path.cwd())})
     assert not tool_allowed("creator-policy-test", "write_file")
     assert not tool_allowed("creator-policy-test", "imessage")
     assert not tool_allowed("creator-policy-test", "memory")
     assert tool_allowed("other", "write_file")
+
+
+def test_dispatch_blocks_secret_paths_before_handler_and_leaves_other_sessions_unchanged(tmp_path):
+    fixture = tmp_path / "proposal" / "fixtures" / "report.txt"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("safe", encoding="utf-8")
+    calls = []
+    reg = ToolRegistry()
+
+    def schema(name):
+        return {"name": name, "description": name,
+                "parameters": {"type": "object", "properties": {}}}
+
+    for name in ("read_file", "search_files", "terminal", "connectors__execute", "read_file_alias"):
+        reg.register(name=name, toolset="test", schema=schema(name),
+                     handler=lambda args, _name=name: calls.append((_name, args)) or json.dumps({"ok": True}))
+    session = "dispatch-secret-policy-test"
+    restrict_session(session, fixture.parent.parent)
+    assert json.loads(reg.dispatch("read_file", {"path": str(fixture)}, session_id=session))["ok"]
+    denied = (
+        ("read_file", {"path": str(fixture.parent.parent / ".env")}),
+        ("read_file", {"path": str(tmp_path / "auth.json")}),
+        ("search_files", {"path": str(fixture.parent.parent), "pattern": ".*credentials.*"}),
+        ("terminal", {"command": "cat anything"}),
+        ("connectors__execute", {}),
+        ("read_file_alias", {"path": str(fixture)}),
+    )
+    for name, args in denied:
+        result = json.loads(reg.dispatch(name, args, session_id=session))
+        assert result["error_type"] == "proposed_skill_capability"
+    assert calls == [("read_file", {"path": str(fixture)})]
+    assert json.loads(reg.dispatch(
+        "read_file", {"path": str(tmp_path / ".env")}, session_id="ordinary"))["ok"]
 
 
 def test_scan_rejects_all_required_danger_classes(tmp_path):

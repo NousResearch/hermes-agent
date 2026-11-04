@@ -2,8 +2,9 @@
 
 The far end of the PTY plays the terminal: it answers the probe the way VS Code's xterm.js was
 measured to answer with ``terminal.integrated.enableImages`` on (sixel reply + DA1) and off
-(DA1 only), optionally late. After the probe the child reads its tty the way the prompt would:
-any reply byte left there would have been typed into the user's prompt.
+(DA1 only), optionally late, then types ``hi``. After the probe the child reads its tty and feeds
+it to prompt_toolkit's parser with the CLI's input tables, as the prompt would: ``typed`` is what
+would land in the user's prompt.
 """
 
 from __future__ import annotations
@@ -24,6 +25,9 @@ _REPO = str(Path(__file__).resolve().parents[2])
 _CHILD = textwrap.dedent("""
     import os, select, sys, termios, tty
     from agent import terminal_image
+    from hermes_cli.pt_input_extras import install_ignored_terminal_sequences
+    from prompt_toolkit.input.vt100_parser import Vt100Parser
+    from prompt_toolkit.keys import Keys
     result = terminal_image.probe_vscode_images()
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -32,8 +36,14 @@ _CHILD = textwrap.dedent("""
     while select.select([fd], [], [], 0.3)[0]:
         leaked += os.read(fd, 256)
     termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    install_ignored_terminal_sequences()
+    presses = []
+    parser = Vt100Parser(presses.append)
+    parser.feed(leaked.decode())
+    parser.flush()
+    typed = "".join(p.data for p in presses if p.key is not Keys.Ignore)
     print("RESULT", result, terminal_image.supports_iterm_images(),
-          terminal_image.resolve_inline_mode("auto", overlays=True), "leaked=%d" % len(leaked), flush=True)
+          terminal_image.resolve_inline_mode("auto", overlays=True), "typed=%r" % typed, flush=True)
 """)
 
 _ON = b"\x1b[?1;0;4096S\x1b[?62;4;9;22c"
@@ -64,6 +74,8 @@ def _run(reply: bytes, delay: float) -> str:
             if not answered and b"\x1b[c" in out:
                 time.sleep(delay)  # health: allow HX013 -- the late reply IS the scenario under test
                 os.write(master, reply)
+                time.sleep(0.02)  # health: allow HX013 -- the user's keys arrive after the reply
+                os.write(master, b"hi")
                 answered = True
     finally:
         os.close(master)
@@ -76,9 +88,12 @@ def _run(reply: bytes, delay: float) -> str:
 @pytest.mark.parametrize(
     ("reply", "delay", "expected"),
     [
-        (_ON, 0, "RESULT True True iterm leaked=0"),  # enableImages on
-        (_OFF, 0, "RESULT False False unicode leaked=0"),  # enableImages off: DA1 only
-        (_ON, 0.08, "RESULT True True iterm leaked=0"),  # past the 50 ms deadline, inside the drain
+        (_ON, 0, "RESULT True True iterm typed='hi'"),  # enableImages on
+        (_OFF, 0, "RESULT False False unicode typed='hi'"),  # enableImages off: DA1 only
+        (_ON, 0.08, "RESULT True True iterm typed='hi'"),  # past the 50 ms deadline, inside the drain
+        # Past every wait: the probe misses it, and the prompt's parser drops it.
+        (_ON, 0.3, "RESULT False False unicode typed='hi'"),
+        (_OFF, 0.3, "RESULT False False unicode typed='hi'"),
     ],
 )
 def test_vscode_probe_reads_its_reply_and_leaves_nothing_for_the_prompt(reply, delay, expected):

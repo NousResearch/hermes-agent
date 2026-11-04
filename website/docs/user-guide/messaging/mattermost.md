@@ -222,7 +222,8 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
+| `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). With `MATTERMOST_REPLY_MODE=thread`, replies in a thread the bot has joined need no `@mention`. |
+| `MATTERMOST_THREAD_REQUIRE_MENTION` | `false` | Set to `true` to keep requiring `@mention` inside threads the bot has joined. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.

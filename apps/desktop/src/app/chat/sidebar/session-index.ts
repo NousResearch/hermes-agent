@@ -1,3 +1,4 @@
+import { sessionPinWriteKey } from '@/lib/session-pin-key'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
@@ -83,6 +84,7 @@ export function resolvePinnedSessions(
     // A pin write of ours the row predates — under either identity, since the
     // fence is keyed on the durable id and the row may surface as its tip.
     if (
+      unconfirmedPinWrites.has(sessionPinWriteKey(session)) ||
       unconfirmedPinWrites.has(session.id) ||
       (session._lineage_root_id != null && unconfirmedPinWrites.has(session._lineage_root_id))
     ) {

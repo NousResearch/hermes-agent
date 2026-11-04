@@ -427,8 +427,12 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
 }
 
-export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { pinned }, sessionWriteProfile(profile))
+export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  const scope = profile && typeof profile === 'object'
+    ? { ...profile, profile: sessionWriteProfile(profile.profile) }
+    : sessionWriteProfile(profile)
+
+  return mutateSessionHttp(id, 'PATCH', { pinned }, scope)
 }
 
 export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {

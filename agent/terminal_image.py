@@ -106,12 +106,16 @@ def probe_vscode_images() -> bool | None:
             if not chunk or _DA1_REPLY.search(buf):
                 break
     finally:
-        # TCSAFLUSH drops a partial reply; the short drain catches one still in flight.
-        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
-        drain = time.monotonic() + 0.05
+        # A reply past the deadline: drain it while still in cbreak (in canonical mode a reply
+        # without a newline is invisible to select and would reach the prompt as typed text).
+        # Skipped once the DA1 fence arrived, so a normal start pays no extra wait.
+        drain = time.monotonic() + (0 if _DA1_REPLY.search(buf) else 0.05)
         while (left := drain - time.monotonic()) > 0 and select.select([fd], [], [], left)[0]:
-            if not os.read(fd, 256):
+            chunk = os.read(fd, 256)
+            buf += chunk
+            if not chunk or _DA1_REPLY.search(buf):
                 break
+        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
     _VSCODE_IMAGES = _SIXEL_REPLY in buf
     return _VSCODE_IMAGES
 

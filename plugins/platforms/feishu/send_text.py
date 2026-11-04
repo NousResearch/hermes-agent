@@ -1,15 +1,18 @@
 """Raw text/post delivery shared by public sends and explicit standalone delivery."""
 
 import json
+import logging
 from typing import Any
 
 from gateway.platforms.base import SendResult
+
+logger = logging.getLogger(f"{__package__}.adapter")
 
 
 async def send_text_direct(
     self, chat_id: str, content: str, reply_to: str | None = None, metadata: dict[str, Any] | None = None,
 ) -> SendResult:
-    from .adapter import _MARKDOWN_HINT_RE, _POST_CONTENT_INVALID_RE, _strip_markdown_to_plain_text, logger
+    from .adapter import _MARKDOWN_HINT_RE, _POST_CONTENT_INVALID_RE, _strip_markdown_to_plain_text
 
     if not self._client:
         return SendResult(success=False, error="Not connected")
@@ -51,5 +54,5 @@ async def send_text_direct(
 
         return self._finalize_send_result(last_response, "send failed")
     except Exception as exc:
-        logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+        logger.exception("[Feishu] Send error: %s", exc)
         return SendResult(success=False, error=str(exc))

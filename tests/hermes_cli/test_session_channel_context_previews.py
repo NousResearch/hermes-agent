@@ -67,6 +67,15 @@ def test_attachment_only_turn_keeps_a_preview(db):
     assert strip_channel_context(content) == content
 
 
+@pytest.mark.parametrize("typed", ["", "  \n", "\u00a0", "\u3000", "\x0b", "\x0c", "hi"])
+def test_sql_and_python_agree_on_a_blank_remainder(db, typed):
+    content = f"[note]\n\n{_turn(typed)}"
+    _seed(db, "s1", content)
+    (row,) = db.list_sessions_rich(limit=10)
+    falls_back = strip_channel_context(content) == content
+    assert row["preview"].startswith("[note]") is falls_back
+
+
 def test_auto_loaded_skill_behind_context_shows_the_request(db, tmp_path, monkeypatch):
     # A channel-bound skill is prepended to event.text before the context is joined.
     skills_dir = tmp_path / "skills"

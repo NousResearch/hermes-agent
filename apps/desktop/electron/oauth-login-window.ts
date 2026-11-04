@@ -25,6 +25,7 @@ import { isWakingAgentLoadFailure } from './oauth-navigation'
 export interface OauthLoginWindowLike {
   destroy: () => void
   focus: () => void
+  hide: () => void
   isDestroyed: () => boolean
   isVisible: () => boolean
   loadURL: (url: string, options?: unknown) => Promise<unknown>
@@ -266,6 +267,16 @@ export function startOauthLoginWindow<S>(
                 () => finish(error instanceof Error ? error : new Error(String(error))),
                 wakeBudgetMs
               )
+
+              // An edge that held the first connection past the reveal already showed the
+              // window; the retries would only show failed loads in it.
+              try {
+                if (live.isVisible()) {
+                  live.hide()
+                }
+              } catch {
+                // window torn down
+              }
             }
 
             if (revealTimer) {

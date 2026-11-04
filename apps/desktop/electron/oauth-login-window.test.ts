@@ -9,7 +9,8 @@ const GATEWAY = 'https://fedora.example.ts.net'
 const HANG = Symbol('hang')
 
 /** A login window double that records visibility and lets a test fire events.
- *  Each load rejects with the next queued failure (or hangs on HANG), then succeeds. */
+ *  Each load rejects with the next queued failure (at once, or `{ after, error }` later; HANG
+ *  never settles), then succeeds. */
 function fakeWindow(loadFailures: unknown[] = []) {
   const closed: Array<() => void> = []
   const navigations: Array<(event: unknown, url: string) => void> = []
@@ -23,6 +24,9 @@ function fakeWindow(loadFailures: unknown[] = []) {
     focus: () => {
       state.focused += 1
     },
+    hide: () => {
+      state.visible = false
+    },
     isDestroyed: () => state.destroyed,
     isVisible: () => state.visible,
     loadURL: async url => {
@@ -34,6 +38,12 @@ function fakeWindow(loadFailures: unknown[] = []) {
 
         if (failure === HANG) {
           return new Promise(() => {})
+        }
+
+        if (failure && typeof failure === 'object' && 'after' in failure) {
+          const { after, error } = failure as { after: number; error: Error }
+
+          return new Promise((_resolve, reject) => setTimeout(() => reject(error), after))
         }
 
         throw failure
@@ -221,6 +231,28 @@ test('an agent that answered is not cut off by the wake budget while the user si
 
   await vi.advanceTimersByTimeAsync(120_000)
   expect(h.windows[0].state).toMatchObject({ destroyed: false, shown: true })
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
+})
+
+test('a window revealed before the first reset hides while the agent wakes', async () => {
+  // The edge holds the first connection past the 2.5 s reveal, then resets it.
+  const h = harness({ present: false }, [{ after: 3_000, error: reset() }, reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.visible).toBe(true)
+
+  await vi.advanceTimersByTimeAsync(500)
+  expect(h.windows[0].state).toMatchObject({ loads: 1, visible: false })
+
+  await vi.advanceTimersByTimeAsync(2_000)
+  expect(h.windows[0].state).toMatchObject({ loads: 3, visible: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.visible).toBe(true)
 
   h.cookie.present = true
   h.windows[0].navigate()

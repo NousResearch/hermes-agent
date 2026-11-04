@@ -26,6 +26,9 @@ describe('isWakingAgentLoadFailure', () => {
       true
     )
     expect(isWakingAgentLoadFailure(new Error('ERR_EMPTY_RESPONSE (-324)'))).toBe(true)
+    expect(isWakingAgentLoadFailure(new Error('ERR_CONNECTION_CLOSED (-100)'))).toBe(true)
+    // Deliberate: a host without an edge in front refuses until the agent listens.
+    expect(isWakingAgentLoadFailure(new Error('ERR_CONNECTION_REFUSED (-102)'))).toBe(true)
   })
 
   it('fails fast on errors a wake cannot fix', () => {

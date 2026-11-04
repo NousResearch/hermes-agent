@@ -1,14 +1,14 @@
 name: cursor-subscription-directsdk
 repo: https://github.com/arnavprabhu/CursorProviderHermes
-sha: dfd680f4a9b6625db5cecd4f33781a3a6e0bfe9b
+sha: ad2eb15e0a3863778c7d770fba1e3db6fedfe3ed
 title: Cursor Subscription (DirectSDK)
-description: "Experimental model provider that runs Hermes turns on your Cursor plan through Cursor's official Python SDK (cursor-sdk), with Hermes tools registered as native Cursor custom tools: each tool callback parks until Hermes has executed the call under its own approvals, then the same Cursor run continues, so parallel calls arrive as one batch and tool rounds keep the model's native context and prompt cache. `hermes auth add cursor-subscription-directsdk` runs Cursor's official browser sign-in with Cursor-side persistence off and stores the minted, revocable 90-day user API key in Hermes' credential pool (CURSOR_API_KEY also works). Disclosure — sends the full conversation, Hermes' system prompt, tool schemas, tool results and user images to Cursor with your key; installs cursor-sdk 1.3.1 from PyPI (hash-pinned, about 200 MB, includes Cursor's bundled node bridge) into the plugin's own .venv and runs it as a long-lived sidecar that starts that bridge on loopback; Cursor's built-in tools are disabled (tools=[\"mcp\"]), and local Cursor agent state lives under $HERMES_HOME/cache/cursor-subscription-directsdk and is deleted when each conversation closes."
+description: "Experimental model provider that runs Hermes turns on your Cursor plan through Cursor's official Python SDK (cursor-sdk), with Cursor Auto offered as `cursor-auto`, and Hermes tools registered as native Cursor custom tools: each tool callback parks until Hermes has executed the call under its own approvals, then the same Cursor run continues, so parallel calls arrive as one batch and tool rounds keep the model's native context and prompt cache. `hermes auth add cursor-subscription-directsdk` runs Cursor's official browser sign-in with Cursor-side persistence off and stores the minted, revocable 90-day user API key in Hermes' credential pool (CURSOR_API_KEY also works). Disclosure — sends the full conversation, Hermes' system prompt, tool schemas, tool results and user images to Cursor with your key; installs cursor-sdk 1.3.1 from PyPI (hash-pinned, about 200 MB, includes Cursor's bundled node bridge) into the plugin's own .venv and runs it as a long-lived sidecar that starts that bridge on loopback; Cursor's built-in tools are disabled (tools=[\"mcp\"]), and local Cursor agent state lives under $HERMES_HOME/cache/cursor-subscription-directsdk and is deleted when each conversation closes."
 maintainer: arnavprabhu
 tier: community
 category: models
 requires_hermes: ">=0.22.6"
 docs_url: https://github.com/arnavprabhu/CursorProviderHermes#readme
-version: "0.2.0"
+version: "0.3.0"
 readme: true
 platforms:
   - linux

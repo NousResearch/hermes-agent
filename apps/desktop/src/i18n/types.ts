@@ -4246,6 +4246,12 @@ export interface Translations extends NoticeTranslations {
     imageAttachFailed: string
     attachFailed: string
     pastedContent: string
+    pastedContentLoading: string
+    pastedContentMissing: string
+    pastedContentReadFailed: (error: string) => string
+    pastedContentTruncated: string
+    pastedContentCopy: string
+    pastedContentInsert: string
     pasteAttachFailed: string
     attachImages: string
     clipboard: string

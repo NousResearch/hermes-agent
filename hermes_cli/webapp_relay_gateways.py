@@ -188,8 +188,10 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
         raise PairingError(f"Could not reach {pairing['url']} from this gateway ({type(exc).__name__}).") from exc
     if response.status_code != 200:
         raise PairingError(f"{pairing['url']} refused the pairing ({response.status_code}).")
-    grant = response.json()
-    granted = {"user_id": grant.get("subject"), "provider": grant.get("provider"), "issuer": grant.get("issuer") or ""}
+    grant = _grant_in(response)
+    if grant is None:
+        raise PairingError(f"{pairing['url']} did not answer the pairing with a grant. Pair again from Settings.")
+    granted = {"user_id": grant["subject"], "provider": grant["provider"], "issuer": grant["issuer"]}
     if granted != identity:
         # Approved there as someone else: this hub will not act as that account. The spoke keeps a
         # grant nobody here uses; revoke it so it does not linger, and say so when that fails.
@@ -212,13 +214,32 @@ async def finish_pairing(home, *, identity: dict[str, str], state: str, code: st
     return row
 
 
+def _grant_in(response) -> Optional[dict[str, Any]]:
+    """The grant a token response names, checked once here, or None: what is stored and signed for
+    later (the grant id lands in revoke URLs) comes only from here."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    grant_id, subject, provider = body.get("grant_id"), body.get("subject"), body.get("provider")
+    issuer, scopes = body.get("issuer") or "", body.get("scopes", [])
+    if (not isinstance(grant_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", grant_id)
+            or not isinstance(subject, str) or not subject or not isinstance(provider, str) or not provider
+            or not isinstance(issuer, str) or not isinstance(scopes, list)
+            or not all(isinstance(scope, str) for scope in scopes)):
+        return None
+    return {"grant_id": grant_id, "subject": subject, "provider": provider, "issuer": issuer,
+            "scopes": sorted({s for s in scopes if s in _scopes()})}
+
+
 def _record(home, pairing: dict[str, Any], grant: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
     with _lock:
         rows = _read(home)
         row = {"id": _slug(pairing["label"], {r["id"] for r in rows}), "label": pairing["label"],
                "url": pairing["url"], "grant_id": grant["grant_id"], "subject": identity["user_id"],
-               "provider": identity["provider"], "issuer": identity["issuer"],
-               "scopes": sorted(s for s in grant.get("scopes", []) if isinstance(s, str)),
+               "provider": identity["provider"], "issuer": identity["issuer"], "scopes": grant["scopes"],
                "added_at": int(time.time())}
         rows.append(row)
         _write(home, rows)

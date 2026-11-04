@@ -41,6 +41,8 @@ class _ByHost(httpx.AsyncBaseTransport):
 
 def _evil_gateway(gateway_a, seen: dict) -> Starlette:
     async def token(_request: Request):
+        if "token_body" in seen:
+            return Response(seen["token_body"], media_type="application/json")
         return JSONResponse({"grant_id": seen["grant_id"], "subject": seen.get("subject", "stub-user-1"),
                              "provider": "stub", "issuer": "", "scopes": []})
 
@@ -268,6 +270,28 @@ def test_a_pairing_approved_as_someone_else_says_when_its_grant_was_not_revoked(
     detail = dict(urllib.parse.parse_qsl(seen["back"].split("?", 1)[1]))["relay_detail"]
     assert seen.get("revoke_calls") == 1
     assert "could not be revoked" in detail and "503" in detail, detail
+
+
+_GRANT = {"grant_id": "evil-grant", "subject": "stub-user-1", "provider": "stub", "issuer": "", "scopes": []}
+
+
+@pytest.mark.parametrize("body", [
+    "<html>Signed out</html>", "[]", "{}", "null",
+    json.dumps({**_GRANT, "grant_id": "../../api/gateway/restart"}),
+    json.dumps({**_GRANT, "grant_id": 7}),
+    json.dumps({**_GRANT, "scopes": "terminal"}),
+    json.dumps({**_GRANT, "scopes": [{}]}),
+    json.dumps({**_GRANT, "scopes": [["files"]]}),
+])
+def test_a_pairing_answered_with_no_grant_fails_like_any_refused_pairing(relay_app, monkeypatch, body):
+    # A proxy's page, or a gateway that answers 200 with something else: the callback must not
+    # fail with a server error after spending the pairing, nor save what it got.
+    browser = relay_app.browser()
+    _sign_in(browser)
+    row, seen = _with_evil(relay_app, monkeypatch, browser, token_body=body)
+    assert row is None and "relay=failed" in seen["back"], seen["back"]
+    detail = dict(urllib.parse.parse_qsl(seen["back"].split("?", 1)[1]))["relay_detail"]
+    assert "did not answer the pairing with a grant" in detail, detail
 
 
 def _listed(browser) -> list[str]:

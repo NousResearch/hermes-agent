@@ -226,6 +226,30 @@ def _response_headers(response) -> dict:
             if name.lower() not in _STRIPPED_RESPONSE_HEADERS}
 
 
+#: hard ceiling for one raw request body on the channel. Callers (the plugin
+#: bridge) enforce their own, smaller product cap; this only bounds memory.
+CHANNEL_BODY_MAX = 256 * 1024 * 1024
+
+
+def _request_body_parts(json_body, raw_body) -> tuple[bytes | None, dict]:
+    """JSON body, or a raw byte body (audio clip upload) — never both.
+
+    Raw bytes go out verbatim with ``application/octet-stream`` unless the
+    caller supplies its own Content-Type (the clip's mime). Content-Length is
+    computed by the transport and can never be set by a caller.
+    """
+    if raw_body is None:
+        return _json_body_parts(json_body)
+    if json_body is not None:
+        raise ValueError("pass either json_body or raw_body, not both")
+    if not isinstance(raw_body, (bytes, bytearray, memoryview)):
+        raise ValueError("raw_body must be bytes")
+    data = bytes(raw_body)
+    if len(data) > CHANNEL_BODY_MAX:
+        raise ValueError(f"raw_body larger than {CHANNEL_BODY_MAX} bytes")
+    return data, {"Content-Type": "application/octet-stream"}
+
+
 def _json_body_parts(json_body) -> tuple[bytes | None, dict]:
     if json_body is None:
         return None, {}
@@ -604,8 +628,8 @@ class MediaRuntimeController:
 
     # -- authenticated sidecar request channel --------------------------------
 
-    def request(self, method: str, path: str, *, json_body=None, query=None,
-                headers=None, timeout: float = 60.0) -> ChannelResponse:
+    def request(self, method: str, path: str, *, json_body=None, raw_body=None,
+                query=None, headers=None, timeout: float = 60.0) -> ChannelResponse:
         """One authenticated request to OUR OWN sidecar (never another host).
 
         ``path`` must be a relative ``/api/...`` path (guarded by
@@ -620,7 +644,7 @@ class MediaRuntimeController:
         serves.
         """
         verb, target, caller = self._channel_prelude(method, path, headers)
-        body, type_headers = _json_body_parts(json_body)
+        body, type_headers = _request_body_parts(json_body, raw_body)
         response = self._channel_send(verb, target, body, {**type_headers, **caller},
                                       query, timeout)
         try:
@@ -631,8 +655,8 @@ class MediaRuntimeController:
             with suppress(Exception):
                 response.close()
 
-    def stream_request(self, method: str, path: str, *, json_body=None, query=None,
-                       headers=None, timeout: float = 60.0,
+    def stream_request(self, method: str, path: str, *, json_body=None, raw_body=None,
+                       query=None, headers=None, timeout: float = 60.0,
                        chunk_size: int = 65536) -> MediaStream:
         """Streaming variant of :meth:`request` for large media / SSE bodies.
 
@@ -642,7 +666,7 @@ class MediaRuntimeController:
         closes when the iterator is exhausted or closed.
         """
         verb, target, caller = self._channel_prelude(method, path, headers)
-        body, type_headers = _json_body_parts(json_body)
+        body, type_headers = _request_body_parts(json_body, raw_body)
         response = self._channel_send(verb, target, body, {**type_headers, **caller},
                                       query, timeout)
         return MediaStream(response, chunk_size=chunk_size)

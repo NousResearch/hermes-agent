@@ -21,6 +21,7 @@ Everything runs against real subprocesses on ephemeral 127.0.0.1 ports only.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -171,6 +172,25 @@ class Handler(BaseHTTPRequestHandler):
             STATE["expire_next"] = False
             _write_receipt()
             self._json(200, self._token())
+            return
+        if path == "/api/inference/audio/inputs":
+            # upstream shape: RAW bytes body, ?name=, Content-Type = the clip's mime
+            if STATE["expire_next"]:
+                STATE["expire_next"] = False
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self._json(401, {"detail": "Token has been expired or revoked."})
+                return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b""
+            if self.headers.get("Authorization") != "Bearer " + TOKENS["access"]:
+                self._json(401, {"detail": "Not authenticated"})
+                return
+            import hashlib
+            name = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
+            self._json(200, {"id": "in-1", "name": name, "size": len(raw),
+                             "sha256": hashlib.sha256(raw).hexdigest(),
+                             "content_type": self.headers.get("Content-Type"),
+                             "url": "/api/inference/audio/inputs/in-1/file"})
             return
         self._json(404, {"detail": "Not Found"})
 
@@ -639,3 +659,92 @@ def test_stream_sse_yields_incrementally(tmp_path, live):
     assert len(events) == 4, "SSE lines must surface per event, not one blob"
     assert events[0].strip() == b"data: event-0"
     assert stream.headers["content-type"] == "text/event-stream"
+
+
+# ---------------------------------------------------------------------------
+# raw request bodies (audio clip upload): additive to the JSON-only channel
+# ---------------------------------------------------------------------------
+
+_CLIP = bytes(range(256)) * 600          # 153 600 bytes, NUL and non-UTF-8 included
+_UPLOAD = "/api/inference/audio/inputs"
+
+
+def test_raw_body_is_uploaded_verbatim_with_the_callers_content_type(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    resp = ctl.request("POST", _UPLOAD, query={"name": "my clip.wav"}, raw_body=_CLIP,
+                       headers={"Content-Type": "audio/wav"})
+    assert resp.status == 200
+    rec = json.loads(resp.body)
+    assert rec["size"] == len(_CLIP)
+    assert rec["sha256"] == hashlib.sha256(_CLIP).hexdigest()
+    assert rec["content_type"] == "audio/wav"
+    assert rec["name"] == "my clip.wav"
+    assert _debug(ctl)["last_auth"].startswith("Bearer ")
+
+
+def test_raw_body_defaults_to_octet_stream(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    rec = json.loads(ctl.request("POST", _UPLOAD, raw_body=b"abc").body)
+    assert rec["content_type"] == "application/octet-stream"
+
+
+def test_raw_body_and_json_body_are_mutually_exclusive_and_nothing_is_sent(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    hits = _debug(ctl)["hits"]
+    with pytest.raises(ValueError):
+        ctl.request("POST", _UPLOAD, json_body={"a": 1}, raw_body=b"x")
+    assert _debug(ctl)["hits"] == hits + 1      # only the debug read itself: nothing was sent
+
+
+@pytest.mark.parametrize("bad", ["a string", 12, {"k": "v"}, [1, 2]])
+def test_raw_body_must_be_bytes_like(tmp_path, live, bad):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    with pytest.raises(ValueError):
+        ctl.request("POST", _UPLOAD, raw_body=bad)
+
+
+def test_raw_body_over_the_cap_is_refused_before_anything_is_sent(tmp_path, live, monkeypatch):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    monkeypatch.setattr(mr, "CHANNEL_BODY_MAX", 1024)
+    before = _debug(ctl)["hits"]
+    with pytest.raises(ValueError):
+        ctl.request("POST", _UPLOAD, raw_body=b"x" * 1025)
+    assert _debug(ctl)["hits"] == before + 1      # the debug read itself, no upload
+    assert json.loads(ctl.request("POST", _UPLOAD, raw_body=b"x" * 1024).body)["size"] == 1024
+
+
+def test_raw_upload_survives_a_401_refresh_and_retry_with_identical_bytes(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live, mode="rotate")   # first protected call 401s
+    assert status.state == "running", status.detail
+    resp = ctl.request("POST", _UPLOAD, raw_body=_CLIP, headers={"Content-Type": "audio/wav"})
+    assert resp.status == 200
+    rec = json.loads(resp.body)
+    assert rec["sha256"] == hashlib.sha256(_CLIP).hexdigest()
+    assert _debug(ctl)["refreshes"] == 1
+
+
+def test_caller_still_cannot_forge_framing_headers_on_a_raw_upload(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    for forged in ({"Content-Length": "1"}, {"Authorization": "Bearer x"}, {"Host": "evil"}):
+        with pytest.raises(ValueError):
+            ctl.request("POST", _UPLOAD, raw_body=b"abc", headers=forged)
+
+
+def test_stream_request_accepts_a_raw_body_too(tmp_path, live):
+    ctl, status, _ = _started(tmp_path, live)
+    assert status.state == "running", status.detail
+    stream = ctl.stream_request("POST", _UPLOAD, raw_body=_CLIP,
+                                headers={"Content-Type": "audio/mpeg"})
+    try:
+        assert stream.status == 200
+        rec = json.loads(b"".join(stream))
+    finally:
+        stream.close()
+    assert rec["sha256"] == hashlib.sha256(_CLIP).hexdigest()
+    assert rec["content_type"] == "audio/mpeg"

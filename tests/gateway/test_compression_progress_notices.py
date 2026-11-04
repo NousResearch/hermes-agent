@@ -25,13 +25,13 @@ from gateway.run import _prepare_gateway_status_message
 # Chat surfaces the opt-in must deliver to (subset of the noise-filter
 # suite's CHAT_PLATFORMS; telegram + discord are the required anchors).
 CHAT_PLATFORMS = ["telegram", "discord", "slack", "whatsapp"]
+RATE_LIMIT_WAIT_MESSAGE = "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)..."
 
 # Noisy statuses that are NOT routine compression progress — they must stay
 # suppressed on chat platforms even when progress_notices is enabled.
 NON_COMPRESSION_NOISE = [
     "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
-    "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⚠️ Max retries (3) exhausted — trying fallback...",
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     (
@@ -74,6 +74,17 @@ def test_enabled_still_suppresses_non_compression_noise(
     suppressed on chat surfaces even when progress_notices is enabled.
     """
     assert _prepare_gateway_status_message(platform, "warn", message) is None
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("telegram", f"⚠️ {RATE_LIMIT_WAIT_MESSAGE}"), ("discord", None),
+     ("slack", None), ("whatsapp", None)],
+)
+def test_progress_opt_in_keeps_rate_limit_notice_telegram_only(
+    progress_notices_enabled, platform, expected
+):
+    assert _prepare_gateway_status_message(platform, "warn", RATE_LIMIT_WAIT_MESSAGE) == expected
 
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "default"])

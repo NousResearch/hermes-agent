@@ -204,15 +204,15 @@ def _prepare(root: Path) -> Path:
         if os.name != "nt" and root.stat().st_uid != os.getuid():  # windows-footgun: ok — POSIX only
             raise
         # A foreign Windows ACL can deny FILE_WRITE_ATTRIBUTES even when this process can
-        # still use the existing mailbox. Hardening must not abort recovery. The poller
-        # re-enters twice a second, so WARNING once per dir and DEBUG after.
+        # still use the existing mailbox. Hardening must not abort recovery. The owner's
+        # receipt reads and writes re-enter this lock, so WARNING once per dir and DEBUG after.
         level = logging.DEBUG if root in _warned_unhardened else logging.WARNING
         _warned_unhardened.add(root)
         log.log(level, "bot_live_delivery: could not harden mailbox directory %s (%s)", root, exc)
     if created:
-        # Only a fresh mailbox dir needs its parents durably linked; the live
-        # poller re-enters this lock twice a second per profile, and two
-        # directory fsyncs per idle poll was measurable disk churn for nothing.
+        # Only a fresh mailbox dir needs its parents durably linked; the owner's
+        # receipt reads and writes re-enter this lock, and two directory fsyncs
+        # per call would be disk churn for nothing.
         fsync_directory(root.parent)
         fsync_directory(root.parent.parent)
     lock = root / ".lock"
@@ -250,9 +250,8 @@ def _ticket_shape_error(path: Path, record: dict[str, Any]) -> str | None:
     """Why a parsed ticket is unusable by the scans, or None when it is well-formed.
 
     A ticket that parses as JSON but lost a field (truncated rewrite, foreign
-    writer, hand edit) used to raise KeyError/TypeError out of the sequence
-    scan and the claim sweep — wedging admission and delivery for the whole
-    profile exactly like corrupt JSON would.
+    writer, hand edit) would otherwise raise KeyError/TypeError out of a
+    directory scan and wedge delivery for the whole profile.
     """
     owner = record.get("owner")
     created_at, sequence = record.get("created_at"), record.get("sequence", record.get("created_at"))

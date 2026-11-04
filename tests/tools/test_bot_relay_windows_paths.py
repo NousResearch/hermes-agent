@@ -13,10 +13,7 @@ Two failures on a Windows desktop install talking to a remote gateway:
    which service contexts (systemd units, desktop launchers, non-login
    SSH shells) do not provide, so delivery died with ENOENT. ``_hermes_cli``
    resolves the CLI next to this gateway's own interpreter (the venv
-   bin/Scripts sibling), falling back to the bare name. The #93091
-   turn-lock recognition in bot_mode_dm matches the CLI element by
-   basename so resolved absolute paths (and ``hermes.exe``) still take
-   the per-profile lock.
+   bin/Scripts sibling), falling back to the bare name.
 """
 
 import shlex
@@ -24,9 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm
 from tools import bot_relay
-import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}

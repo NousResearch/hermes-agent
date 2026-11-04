@@ -356,7 +356,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         return _err(f"@{_handle(resolved, roster)} messaged you this turn and your final response already goes back "
                     "to them: put your reply in it instead of messaging them. Do not retry.")
     # Local teammates are admitted through the profile authority; the argv only names the
-    # profile for the runner's lock/home lookups and is never executed.
+    # profile for the runner's home lookup and is never executed.
     return _start_delivery([_hermes_cli(), "-p", resolved], content, f"@{_handle(resolved, roster)}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
@@ -991,8 +991,8 @@ def _delivery_main(args: list[str]) -> int:
         return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
-        # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the
-        # same vocabulary-guarded classification the relay lane applies.
+        # back to the sender (#93091), with the same vocabulary-guarded classification the relay
+        # lane applies.
         from tools.bot_failure_reasons import delivery_failure_reason
 
         print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))

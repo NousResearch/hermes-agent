@@ -23,7 +23,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_cli.subcommands import peer as peer_mod
 from hermes_state import SessionDB
-from tools import bot_live_delivery as mailbox
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
 
@@ -36,17 +35,11 @@ def _app(adapter):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("target", "open_in_desktop", "owner_replies", "status", "content", "turn_ran_here"),
-    [
-        ("scratch", True, True, 200, "ran here", True),
-        ("bot-chat", True, False, 200, "ran here", True),
-        ("bot-chat", False, False, 200, "ran here", True),
-    ],
+    ("target", "open_in_desktop"),
+    [("scratch", True), ("bot-chat", True), ("bot-chat", False)],
     ids=["other-session", "bot-chat-open-in-a-viewer", "bot-chat-not-open"],
 )
-async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
-    tmp_path, monkeypatch, target, open_in_desktop, owner_replies, status, content, turn_ran_here
-):
+async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target, open_in_desktop):
     """Without a profile authority nothing else may execute the Bot Chat's turn: a Desktop viewer
     lease is not an owner, so the turn runs here and no mailbox delivery is admitted."""
     home = tmp_path.resolve()
@@ -70,20 +63,10 @@ async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
             async with TestClient(TestServer(_app(adapter))) as cli:
                 resp = await cli.post(f"/api/sessions/{target}/chat", json={"message": "ping", "author": AUTHOR})
                 body = await resp.json()
-        assert resp.status == status, body
-        assert run.called is turn_ran_here
-        admitted = sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
-        if turn_ran_here:
-            assert body["message"]["content"] == content
-            assert not admitted
-            return
-        [record] = [json.loads(path.read_text()) for path in admitted]
-        assert (record["message"], record["author"], record["owner"]["live_session_id"]) == ("ping", AUTHOR, "live-1")
-        assert body["delivery_id"] == record["delivery_id"]
-        if status == 200:
-            assert body["message"]["content"] == content
-        else:
-            assert (body["object"], body["status"]) == ("hermes.session.chat.queued", "queued")
+        assert resp.status == 200, body
+        assert run.called
+        assert body["message"]["content"] == "ran here"
+        assert not sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
     finally:
         if lease is not None:
             lease.release()
@@ -107,28 +90,20 @@ def _runs_app(adapter):
     return app
 
 
-async def _poll_terminal(cli, run_id, *, until=("completed", "failed", "cancelled"), tries=100):
+async def _poll_terminal(cli, run_id, *, tries=100):
     status = {}
     for _ in range(tries):
         status = await (await cli.get(f"/v1/runs/{run_id}")).json()
-        if status.get("status") in until:
+        if status.get("status") in ("completed", "failed", "cancelled"):
             break
         await asyncio.sleep(0.05)
     return status
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("target", "receipt", "stop", "expected", "turn_ran_here"),
-    [
-        ("scratch", None, False, ("completed", "ran here"), True),
-        ("bot-chat", None, False, ("completed", "ran here"), True),
-    ],
-    ids=["other-session-runs-here", "bot-chat-runs-here-without-an-authority"],
-)
-async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
-    tmp_path, monkeypatch, target, receipt, stop, expected, turn_ran_here
-):
+@pytest.mark.parametrize("target", ["scratch", "bot-chat"],
+                         ids=["other-session-runs-here", "bot-chat-runs-here-without-an-authority"])
+async def test_a_peer_run_into_a_bot_chat_without_an_authority_runs_here(tmp_path, monkeypatch, target):
     """`peer run` into the Bot Chat with no authority to hand it to runs here like any other
     session; the run keeps its run_id and `peer status` keeps working."""
     home = tmp_path.resolve()
@@ -158,28 +133,11 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
                 resp = await cli.post("/v1/runs", json={"input": "ping", "session_id": target, "author": AUTHOR})
                 body = await resp.json()
                 assert resp.status == 202, body
-                run_id = body["run_id"]
-                if stop:
-                    status = await _poll_terminal(cli, run_id, until=("running",))
-                    assert status["status"] == "running"
-                    assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
-                status = await _poll_terminal(cli, run_id)
-        assert status["status"] == expected[0], status
-        assert bool(ran_here) is turn_ran_here
-        admitted = sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
-        if turn_ran_here:
-            assert status["output"] == expected[1] and not admitted
-            return
-        [record] = [json.loads(path.read_text()) for path in admitted]
-        assert (record["message"], record["author"], record["owner"]["live_session_id"]) == ("ping", AUTHOR, "live-1")
-        assert status["delivery_id"] == record["delivery_id"]
-        if expected[0] == "completed":
-            assert status["output"] == expected[1] and status["completed"] is True
-        elif expected[0] == "failed":
-            assert status["reason"] == expected[1] and "429" in status["error"]
-        else:
-            assert status["interrupted"] is True and status["completed"] is False
-        assert run_id not in adapter._active_run_tasks, "the run retired like an executor-backed one"
+                status = await _poll_terminal(cli, body["run_id"])
+        assert status["status"] == "completed", status
+        assert ran_here
+        assert status["output"] == "ran here"
+        assert not sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
     finally:
         lease.release()
         db.close()

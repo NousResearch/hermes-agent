@@ -143,3 +143,5 @@ def test_launcher_shape_preserves_profile(tmp_path, monkeypatch, name):
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: [("researcher", target)])
     argv = [str(tmp_path / name), "-p", "researcher", "chat"]
     assert bot_mode_dm._local_delivery_home(argv) == target
+    assert bot_mode_dm._local_delivery_home([f"C:\\venv\\Scripts\\{name}", "-p", "researcher", "chat"]) == target
+    assert bot_mode_dm._local_delivery_home(["python", "-m", "whatever"]) is None

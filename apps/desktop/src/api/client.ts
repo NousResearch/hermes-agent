@@ -50,6 +50,8 @@ const ATTACH_REQUIRED = new Set([
   'approval.respond',
   'clarify.respond',
   'session.interrupt',
+  'session.redirect',
+  'session.steer',
   'prompt.cancel',
   'session.rewind',
   'prompt.steer_queued',

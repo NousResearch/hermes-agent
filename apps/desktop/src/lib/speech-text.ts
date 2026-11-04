@@ -32,13 +32,21 @@ const FILENAME_EXT_RE =
 
 const UUID_RE = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
 const HASH_PREFIX_HEX_RE = /\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}/gi
-const HEX_RUN_RE = /[0-9a-fA-F]{7,64}/
+const HEX_RUN_RE = /^[0-9a-fA-F]{7,64}$/
 const IDENTIFIER_TOKEN_RE = /[A-Za-z0-9_./~@-]+/g
-const DATE_TOKEN_RE = /^\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?$/
+// ISO ("2026-11-16", "2026/06/02") and the day-first / dotted forms most locales write
+// ("16/11", "17/11/2026", "16-11-2026", "16.11.2026") — #148906.
+const DATE_TOKEN_RE =
+  /^(?:\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?|(?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])(?:[./-](?:\d{2}|\d{4}))?)$/
 
 function isDenseIdentifier(token: string): boolean {
-  if (token.includes('@') || DATE_TOKEN_RE.test(token)) {
-    return false // email addresses, dates ("2026-09-28", "2026/06/02")
+  if (token.includes('@')) {
+    return false // email addresses
+  }
+
+  // A sentence-final period is not part of the token: `... on 2026-11-16.` is still a date.
+  if (DATE_TOKEN_RE.test(token.replace(/\.+$/, ''))) {
+    return false // dates ("2026-09-28", "16/11", "17/11/2026")
   }
 
   if (/^(?:~\/|\.\.?\/|\/)/.test(token)) {
@@ -53,9 +61,9 @@ function isDenseIdentifier(token: string): boolean {
     return true
   }
 
-  // Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs
-  // ("defaced") are legitimate words and stay.
-  if (HEX_RUN_RE.test(token) && /\d/.test(token)) {
+  // Hex-hash runs ("73688014f78", "e3b0c442..."). A run with no hex letter is a decimal number
+  // a voice reads out ("978303529"), and digit-free runs ("defaced") are words: both stay.
+  if (HEX_RUN_RE.test(token) && /[a-fA-F]/.test(token)) {
     return true
   }
 

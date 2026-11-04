@@ -9,8 +9,8 @@ from tests.gateway.test_discord_connect import FakeBot, _ensure_discord_mock
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform
+from gateway.config import PlatformConfig
 
 
 class _LiveBot(FakeBot):
@@ -40,7 +40,9 @@ async def test_transport_badges_preserve_live_watchdog_and_fatal_state(monkeypat
     monkeypatch.setattr(
         "gateway.status.acquire_scoped_lock", lambda *a, **k: (True, None)
     )
-    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "gateway.status_scoped_locks.release_scoped_lock", lambda *a, **k: None
+    )
     monkeypatch.setattr(discord_platform.commands, "Bot", lambda **k: _LiveBot(**k))
     monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
     monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())

@@ -360,13 +360,15 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
             # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
             gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         platform_snapshot = runtime.get("platforms") or {}
-        if runtime is local_runtime and liveness.pid_is_local and liveness.pid is not None:
-            # A successor can own gateway.pid before its first status stamp. Never
-            # borrow its predecessor's platform badges, or compare a remote PID locally.
+        live_pid = local_liveness_pid(liveness)
+        if runtime is not remote_health_body and live_pid is not None:
+            # A successor can own gateway.pid before its first status stamp. Never borrow its
+            # predecessor's platform badges, whichever local record (own or multiplexer) was
+            # selected above, and never compare a remote container's PID with this host.
             writer_pid = _pid_from_record(runtime)
-            process_changed = writer_pid is not None and writer_pid != liveness.pid
+            process_changed = writer_pid is not None and writer_pid != live_pid
             if not process_changed and writer_pid is not None and runtime.get("start_time") is not None:
-                live_start = await run_in_threadpool(_get_process_start_time, liveness.pid)
+                live_start = await run_in_threadpool(_get_process_start_time, live_pid)
                 process_changed = _start_times_conflict(runtime.get("start_time"), live_start)
             if process_changed:
                 platform_snapshot = {}

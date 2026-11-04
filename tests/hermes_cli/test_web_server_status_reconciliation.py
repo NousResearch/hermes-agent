@@ -6,10 +6,14 @@ from unittest.mock import AsyncMock
 from starlette.testclient import TestClient
 
 
+import pytest
+
+
+@pytest.mark.parametrize("served_by_multiplexer", [False, True])
 def test_snapshot_identity_survives_http_projection_and_startup_cleanup(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, served_by_multiplexer
 ):
-    import gateway.status as status
+    from gateway import status
     import hermes_cli.web_server as server
     import hermes_cli.web_routers.status as route
     import hermes_cli.web_server_gateway as gateway_web
@@ -22,9 +26,23 @@ def test_snapshot_identity_survives_http_projection_and_startup_cleanup(
     }
     live = {"pid": 4242, "start": 111.0}
     monkeypatch.setattr(status, "get_running_pid_cached", lambda *a, **k: live["pid"])
-    monkeypatch.setattr(status, "read_runtime_status", lambda *a, **k: snapshot)
+    # When served, the profile's own record is a distinguishable leftover, so a
+    # connected badge can only come from the selected multiplexer record.
+    own_record = (
+        {**snapshot, "platforms": {"discord": {"state": "disconnected"}}}
+        if served_by_multiplexer
+        else snapshot
+    )
+    monkeypatch.setattr(status, "read_runtime_status", lambda *a, **k: own_record)
     monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda *a, **k: None)
     monkeypatch.setattr(status, "_get_process_start_time", lambda pid: live["start"])
+    # Hermetic: never read the host's real multiplexer topology. When served, the
+    # multiplexer's own record is selected, and it must obey the same writer rule.
+    monkeypatch.setattr(
+        status,
+        "multiplexer_liveness_for_profile",
+        lambda *a, **k: (live["pid"], snapshot) if served_by_multiplexer else None,
+    )
     monkeypatch.setattr(
         gateway_web, "_load_configured_gateway_platforms", lambda: {"discord"}
     )

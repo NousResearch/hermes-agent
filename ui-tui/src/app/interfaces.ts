@@ -35,6 +35,7 @@ import type {
   VaultUnlockReq
 } from '../types.js'
 
+import type { SessionTabAction } from './sessionTabsStore.js'
 import type { SubmissionDestination } from './submissionDestination.js'
 
 export interface StateSetter<T> {
@@ -306,6 +307,7 @@ export interface OverlayState {
   widget: ActiveWidget | null
   journey: boolean
   modelPicker: boolean | { refresh?: boolean }
+
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
@@ -401,9 +403,19 @@ export interface ComposerActions {
   /** Attach an image by path in as a token. */
   attachImagePath: (path: string) => void
   clearIn: () => void
-  stage?: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem
+  stage?: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem
   dequeue: (retry?: boolean) => QueueItem | undefined
-  enqueue: (text: string, display?: string, destination?: SubmissionDestination, attachments?: QueueItem['attachments']) => QueueItem | void
+  enqueue: (
+    text: string,
+    display?: string,
+    destination?: SubmissionDestination,
+    attachments?: QueueItem['attachments']
+  ) => QueueItem | void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   prependQueue: (item: QueueItem, destination?: SubmissionDestination) => void
@@ -423,6 +435,8 @@ export interface ComposerActions {
 }
 
 export interface ComposerRefs {
+  inputRef?: MutableRefObject<string>
+  inputBufRef?: MutableRefObject<string[]>
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
@@ -456,6 +470,7 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
+  sessionTabAction?: (action: SessionTabAction) => void
   appendMessage: (msg: Msg) => void
   cancelClarify: () => void
   die: () => void
@@ -578,6 +593,7 @@ export interface SlashHandlerContext {
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
+    tabAction?: (action: SessionTabAction) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => Promise<void> | void
@@ -587,8 +603,13 @@ export interface SlashHandlerContext {
   transcript: {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
-    send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
-      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
+    send: (
+      text: string,
+      showUserMessage?: boolean,
+      displayText?: string,
+      expandOverride?: (value: string) => string,
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }
+    ) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -601,6 +622,7 @@ export interface SlashHandlerContext {
 }
 
 export interface AppLayoutActions {
+  sessionTabAction?: (action: SessionTabAction) => void
   answerApproval: (choice: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void

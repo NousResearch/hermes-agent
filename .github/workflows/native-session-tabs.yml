@@ -1,0 +1,40 @@
+name: Native session tabs
+
+on:
+  push:
+    branches: [feat/native-tui-session-tabs-20261030]
+  pull_request:
+    paths:
+      - ui-tui/**
+      - hermes_cli/tui_capabilities.py
+      - tests/hermes_cli/test_tui_capabilities.py
+      - .github/workflows/native-session-tabs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  native-tabs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Prepare the repository's locked runtimes and isolated test interpreter
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+      - name: Install the TUI and its workspace dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund --workspace=hermes-tui --workspace=@hermes/ink --workspace=@hermes/shared --include-workspace-root
+      - name: Full TUI checks
+        working-directory: ui-tui
+        run: |
+          npm run build:ink
+          npm run typecheck
+          npm run i18n:keys:check
+          npm test -- --maxWorkers=2
+          npm run lint
+          npm run build
+      - name: Real CLI capability and parser tests
+        run: scripts/run_tests.sh tests/hermes_cli/test_tui_capabilities.py tests/hermes_cli/test_top_level_value_flags_parity.py --file-retries 0 -j 2

@@ -4,6 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { highlightMask, highlightsStable } from '../domain/composerHighlights.js'
+import { sessionTabShortcut } from '../domain/sessionTabs.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import {
@@ -1909,6 +1910,7 @@ export const shouldPassThroughToGlobalHandler = (
   key: Key,
   voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
 ): boolean =>
+  Boolean(sessionTabShortcut(input, key)) ||
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||

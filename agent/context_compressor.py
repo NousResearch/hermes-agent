@@ -15,7 +15,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
 from agent.compression_marker import (
-    ELISION_MARKER_MAX_LEN,
     _elision_marker,
     elide,
     elide_middle,
@@ -41,7 +40,7 @@ from agent.context_compressor_tail import (
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
-from agent.compaction_user_quotes import _build_verbatim_user_section
+from agent.context_compressor_user_quotes import _build_verbatim_user_section
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND

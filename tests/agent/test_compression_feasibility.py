@@ -738,3 +738,32 @@ def test_a_route_edited_during_the_probe_is_probed_again(monkeypatch, tmp_path):
         ensure_compression_feasibility_checked(agent, 200_000)
     assert probes == ["small", "large"]
 
+
+def test_a_moved_compression_route_clears_the_previous_summarisers_cooldown():
+    """A failure cooldown belongs to the summariser that failed: switching the compression route clears
+    it (in memory and in the session row), so preflight does not hold the replacement back."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+    import time
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    session_db = MagicMock()
+    session_db.get_compression_failure_cooldown.return_value = None
+    compressor.bind_session_state(session_db, "s1")
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    old = {"compression": {"provider": "custom", "model": "retired", "base_url": "http://localhost/v1"}}
+    new = {"compression": {"provider": "custom", "model": "replacement", "base_url": "http://localhost/v1"}}
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", return_value=900_000):
+        with session_auxiliary_scope(old):
+            ensure_compression_feasibility_checked(agent, 200_000)
+            compressor._summary_failure_cooldown_until = time.monotonic() + 300  # the retired model failed
+            assert compressor.get_active_compression_failure_cooldown()
+        with session_auxiliary_scope(new):
+            ensure_compression_feasibility_checked(agent, 200_000)
+    assert compressor.get_active_compression_failure_cooldown() is None
+    session_db.clear_compression_failure_cooldown.assert_called_with("s1")

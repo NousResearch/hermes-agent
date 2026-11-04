@@ -15,7 +15,8 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
-import { useGatewayGroupRooms } from './canonical-group-registry'
+import { $canonicalRoomLive } from './canonical-group-details'
+import { bindGatewayGroupRoom, useGatewayGroupRooms } from './canonical-group-registry'
 import { CanonicalGroupRow } from './canonical-group-row'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
@@ -273,6 +274,7 @@ export function BotsPane() {
   const groupClarify = useValue($groupClarify)
   const groupRooms = useValue($groupChats)
   const gatewayRooms = useGatewayGroupRooms()
+  const gatewayRoomLive = useValue($canonicalRoomLive)
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
@@ -351,6 +353,7 @@ export function BotsPane() {
     rowKindFilter,
     groupRooms,
     gatewayRooms,
+    gatewayRoomLive,
     activeRosterKeys,
     gatewayOptions,
     activityOf,
@@ -416,7 +419,7 @@ export function BotsPane() {
   useReconcileRosterOwner(data, error, selectionHydrated, roster, sourceSnapshot, allMeta)
 
   const staleNotice =
-    error && !live && roster.length
+    error && !live && (roster.length || gatewayRooms.length)
       ? 'Roster refresh failed — showing the last good list.' +
         (gatewayUp ? '' : ' Waiting for the gateway to reconnect…')
       : null
@@ -439,11 +442,14 @@ export function BotsPane() {
     />
   )
 
+  // Move up / down reorders Desktop rooms; gateway rooms keep recency order.
+  const desktopGroupRows = sortedGroupRows.filter(row => !row.gateway)
+
   const renderGroupRow = ({ gateway, ...row }: RosterGroupRow) => gateway ? (
     <CanonicalGroupRow
       active={groupChatName === gateway.key}
       key={gateway.key}
-      onOpen={() => openGroupChat(gateway.key, 'key')}
+      onOpen={() => openGroupChat(bindGatewayGroupRoom(gateway), 'key')}
       room={gateway}
     />
   ) : (
@@ -459,7 +465,7 @@ export function BotsPane() {
       onDisband={setDeletingGroup}
       onNewSection={target => setSectionDialog({ group: target, mode: 'create' })}
       onOpen={group => openGroupChat(group, 'name')}
-      sortedGroupRows={sortedGroupRows}
+      sortedGroupRows={desktopGroupRows}
     />
   )
 
@@ -508,7 +514,7 @@ export function BotsPane() {
         staleNotice,
         isLoading,
         initialRosterLoading,
-        roster,
+        listedCount: roster.length + gatewayRooms.length,
         error,
         gatewayUp,
         refetch,

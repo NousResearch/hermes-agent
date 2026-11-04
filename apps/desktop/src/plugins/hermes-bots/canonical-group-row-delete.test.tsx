@@ -82,13 +82,15 @@ it('deletes a gateway group from its row menu: confirm, disband on its gateway, 
   const onOpen = vi.fn()
   renderGatewayRooms(onOpen)
   const dialog = await openDeleteConfirm()
-  const key = Object.keys($canonicalGroupBindings.get()).find(k => k.startsWith('canonical:'))!
+  const key = 'canonical:local:default:room-1'
   $groupChatWorkspace.set(key)
 
   expect(dialog.getByText('Launch crew')).toBeTruthy()
   fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  // The re-read after the disband no longer lists it.
+  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
   const disband = requestProfile.mock.calls.filter(([, method]) => method === 'groups.disband')
   expect(disband).toHaveLength(1)
   expect(disband[0][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
@@ -126,6 +128,7 @@ it('closes the tab and selection opened under the room name, and leaves another 
   fireEvent.click((await openDeleteConfirm()).getByRole('button', { name: 'Disband' }))
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  await waitFor(() => expect(requestProfile.mock.calls.filter(([, method]) => method === 'groups.list').length).toBeGreaterThan(1))
   expect(closeAlias).toHaveBeenCalledTimes(1)
   expect($groupChatWorkspace.get()).toBeNull()
   expect(closeOther).not.toHaveBeenCalled()

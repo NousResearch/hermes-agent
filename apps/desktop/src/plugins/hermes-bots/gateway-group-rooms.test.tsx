@@ -35,7 +35,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   }
 })
 
-import { refreshGatewayGroupRooms } from './canonical-group-registry'
+import { $canonicalGroupBindings, forgetCanonicalGroup, refreshGatewayGroupRooms } from './canonical-group-registry'
 import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
 
 const gatewayState = () => gateway.state as ReturnType<typeof atom<string>>
@@ -54,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $canonicalGroupBindings.set({})
   vi.clearAllMocks()
   gatewayState().set('connecting')
   connectionId().set('local')
@@ -99,4 +100,19 @@ it('lists nothing, and says nothing, on a connection with no registry id or no g
   const older = renderGatewayRooms()
   await waitFor(() => expect(requestProfile).toHaveBeenCalled())
   expect(older.container.textContent).toBe('')
+})
+
+it('a disbanded room never comes back: not from a slow read, a failed re-read or a bind', async () => {
+  gatewayState().set('open')
+  renderGatewayRooms()
+  await screen.findByRole('button', { name: 'Launch crew' })
+  expect($canonicalGroupBindings.get()).toEqual({})
+
+  // The gateway still answers with the room (a read issued before the disband), then fails.
+  forgetCanonicalGroup({ connectionId: 'local', profile: 'default', roomId: 'room-1', roomName: 'Launch crew' })
+  requestProfile.mockResolvedValueOnce({ rooms: [room], next_offset: null }).mockRejectedValue(new Error('offline'))
+  await act(async () => { refreshGatewayGroupRooms() })
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())
+  expect($canonicalGroupBindings.get()).toEqual({})
 })

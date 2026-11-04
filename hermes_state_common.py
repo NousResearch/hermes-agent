@@ -58,18 +58,37 @@ def escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-_PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
-# User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
-# the typed request sits at the tail (auto-load) or behind the instruction marker.
-# No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
-_PREVIEW_SCAFFOLDED_SQL = (
-    f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
-    f" OR m.content LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
 _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+# A turn that carries an adapter's ``MessageEvent.channel_context`` is persisted as
+# ``{channel_context}{CHANNEL_CONTEXT_MESSAGE_MARKER}{text}`` (gateway/run_inbound.py). Previews show what the
+# user typed, so they start after the first marker; the stored content stays as the model saw it.
+CHANNEL_CONTEXT_MESSAGE_MARKER = "\n\n[New message]\n"
+
+
+def strip_channel_context(text: str) -> str:
+    """*text* after the first channel-context marker, or *text* unchanged when it has none."""
+    _context, marker, typed = text.partition(CHANNEL_CONTEXT_MESSAGE_MARKER)
+    return typed if marker else text
+
+
+_PREVIEW_SOURCE_SQL = (
+    f"(CASE WHEN INSTR(m.content, {_sql_literal(CHANNEL_CONTEXT_MESSAGE_MARKER)}) > 0"
+    f" THEN SUBSTR(m.content, INSTR(m.content, {_sql_literal(CHANNEL_CONTEXT_MESSAGE_MARKER)})"
+    f" + {len(CHANNEL_CONTEXT_MESSAGE_MARKER)}) ELSE m.content END)")
+_PREVIEW_CONTENT_SQL = f"REPLACE(REPLACE({_PREVIEW_SOURCE_SQL}, X'0A', ' '), X'0D', ' ')"
+# User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
+# the typed request sits at the tail (auto-load) or behind the instruction marker.
+# A channel-bound auto-load scaffold sits behind the channel context, so both read the preview source.
+# No LIKE wildcards in either prefix, so no ESCAPE clause is needed.
+_PREVIEW_SCAFFOLDED_SQL = (
+    f"({_PREVIEW_SOURCE_SQL} LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
+    f" OR {_PREVIEW_SOURCE_SQL} LIKE '{AUTO_LOAD_SCAFFOLD_SQL_LIKE}')")
 
 
 # ``display_metadata`` flag stamped on the user row a busy-queue accept writes (#111868/#121374
@@ -139,7 +158,7 @@ _PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
 _PREVIEW_RAW_SELECT = (
     f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL} THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
     f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL} THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
-    f" WHEN {_PREVIEW_SCAFFOLDED_SQL} AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
+    f" WHEN {_PREVIEW_SCAFFOLDED_SQL} AND LENGTH({_PREVIEW_SOURCE_SQL}) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW * 2})"

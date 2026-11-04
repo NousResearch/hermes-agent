@@ -32,6 +32,7 @@ from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
     unauthorized_owner_hint,
 )
+from hermes_state_common import CHANNEL_CONTEXT_MESSAGE_MARKER
 from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -1424,7 +1425,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):
-            message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+            message_text = f"{event.channel_context}{CHANNEL_CONTEXT_MESSAGE_MARKER}{message_text}"
         return message_text
 
     @staticmethod

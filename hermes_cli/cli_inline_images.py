@@ -21,7 +21,7 @@ import os
 import sys
 from collections.abc import Iterable
 
-from agent.terminal_image import InlineImage, local_image_path, render_inline_image, resolve_inline_mode
+from agent.terminal_image import InlineImage, half_block, local_image_path, render_inline_image, resolve_inline_mode
 
 _INDENT = "  "
 _MAX_COLS = 64
@@ -30,17 +30,6 @@ _MAX_ROWS = 16
 
 def _zero_width(seq: str) -> str:
     return f"\001{seq}\002"
-
-
-def _half_block(top, bottom) -> str:
-    (tr, tg, tb, ta), (br, bg, bb, ba) = top, bottom
-    if ta < 32 and ba < 32:
-        return "\x1b[0m "
-    if ba < 32:
-        return f"\x1b[0m\x1b[38;2;{tr};{tg};{tb}m▀"
-    if ta < 32:
-        return f"\x1b[0m\x1b[38;2;{br};{bg};{bb}m▄"
-    return f"\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
 
 
 def _passthrough(seq: str) -> str:
@@ -63,7 +52,7 @@ def image_rows(image: InlineImage) -> list[tuple[str, str]]:
         up = f"\x1b[{image.rows - 1}A" if image.rows > 1 else ""
         draw = f"\x1b7{up}\x1b[{len(_INDENT)}C{_passthrough(image.transmit)}\x1b8"
         return [("", "")] * (image.rows - 1) + [("", draw)]
-    return [(_INDENT + "".join(_half_block(t, b) for t, b in row) + "\x1b[0m", "") for row in image.cells]
+    return [(_INDENT + "".join(half_block(t, b) for t, b in row) + "\x1b[0m", "") for row in image.cells]
 
 
 def print_inline_images(cli, paths: Iterable) -> None:

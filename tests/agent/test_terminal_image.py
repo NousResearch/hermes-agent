@@ -169,13 +169,13 @@ def test_kitty_render_is_a_virtual_placement_sized_to_its_placeholder(tmp_path):
     assert image is not None
     assert image.cols == 60 and 1 <= image.rows <= 16
     assert len(image.placeholder) == image.rows
-    assert all(row.count(terminal_image.KITTY_PLACEHOLDER) == image.cols for row in image.placeholder)
+    assert all(row.count("\U0010eeee") == image.cols for row in image.placeholder)
     assert image.transmit.startswith("\x1b_G") and image.transmit.endswith("\x1b\\")
-    assert "U=1" in image.transmit and f"i={image.image_id}" in image.transmit
+    image_id = int(image.color[1:], 16)  # the placeholder color names the image
+    assert "U=1" in image.transmit and f"i={image_id}," in image.transmit
     assert f"c={image.cols}" in image.transmit and f"r={image.rows}" in image.transmit
-    assert image.color == terminal_image.kitty_color_hex(image.image_id)
     # Pet ids own [1, 0x7FFF]; an image must never replace the mascot.
-    assert 0x7FFF < image.image_id <= 0xFFFFFF
+    assert 0x7FFF < image_id <= 0xFFFFFF
 
 
 def test_render_respects_caps_and_never_upscales(tmp_path):
@@ -198,7 +198,7 @@ def test_edited_file_gets_a_new_image_id(tmp_path):
     first = render_inline_image(path, mode="kitty", max_cols=20, max_rows=8)
     _png(tmp_path / "a.png", (400, 201))
     second = render_inline_image(path, mode="kitty", max_cols=20, max_rows=8)
-    assert first is not None and second is not None and first.image_id != second.image_id
+    assert first is not None and second is not None and first.color != second.color
 
 
 def test_unreadable_image_renders_nothing(tmp_path):

@@ -49,3 +49,17 @@ it('reports a failed search instead of presenting it as an empty successful resu
   await waitFor(() => expect(result.current.failed).toBe(true))
   expect(result.current.pending).toBe(false)
 })
+
+it('keeps ordinary search matches but routes the reserved canonical chat through its dedicated row', async () => {
+  $profiles.set([{ name: 'research', is_default: false }] as typeof $profiles.value)
+  vi.spyOn(api, 'hermesApi').mockResolvedValue({
+    results: [
+      { ...hit, session_id: 'canonical-tip', title: 'Bot Chat' },
+      { ...hit, session_id: 'ordinary', title: 'Bot Chat notes' },
+      { ...hit, session_id: 'untitled', title: null }
+    ]
+  })
+  const { result } = renderHook(() => useSimplifiedSessionSearch('found'))
+  await waitFor(() => expect(result.current.pending).toBe(false))
+  expect(result.current.rows.map(row => row.id)).toEqual(['ordinary', 'untitled'])
+})

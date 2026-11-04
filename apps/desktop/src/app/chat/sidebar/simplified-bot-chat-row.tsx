@@ -7,9 +7,11 @@ import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
 import { botRosterKey } from '@/plugins/hermes-bots/data'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
+import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
 import type { RosterRow } from '@/plugins/hermes-bots/types'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $sessionTiles } from '@/store/session-states'
 
 import type { SimplifiedAgent } from './use-simplified-agents'
 
@@ -17,6 +19,7 @@ export function SimplifiedBotChatRow({ agent }: { agent: SimplifiedAgent }) {
   const opened = useStore($openBotChat)
   const pending = useStore($pendingBotOpen)
   const focused = useStore($focusedStoredSessionId)
+  const tiles = useStore($sessionTiles)
 
   const bot: RosterRow = {
     name: agent.profile,
@@ -30,10 +33,14 @@ export function SimplifiedBotChatRow({ agent }: { agent: SimplifiedAgent }) {
   const key = botRosterKey(bot)
   const loading = pending?.key === key
 
+  const tile = tiles.find(item => item.storedSessionId === focused)
+
   const selected =
-    opened?.key === key &&
     Boolean(focused) &&
-    (opened.openedSessionId === focused || opened.openedRegistryId === focused)
+    ((tile?.workspaceMode === 'bots' &&
+      tile.workspaceOwnerKey === botWorkspaceOwnerKey(bot) &&
+      tile.workspaceTabTitle === CANONICAL_CHAT_TITLE) ||
+      (opened?.key === key && (opened.openedSessionId === focused || opened.openedRegistryId === focused)))
 
   return (
     <RowButton

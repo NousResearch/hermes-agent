@@ -16,9 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
-# payload cap — that one is enforced post-resize at the call sites.
-_MAX_INGEST_BYTES = 50 * 1024 * 1024
+# Raw-bytes INGEST budget for local/sandbox/data: sources (250 MiB): big enough for full-res
+# camera/scan images, which call sites downscale before the 20MB provider payload cap. HTTP
+# downloads keep their own 50MB stream cap (vision_tools._VISION_MAX_DOWNLOAD_BYTES).
+_MAX_INGEST_BYTES = 250 * 1024 * 1024
 
 
 class ImageResolutionError(Exception):
@@ -75,12 +76,25 @@ async def resolve_image_source(
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
-        data = await asyncio.to_thread(host_target.read_bytes)
+        data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Any path was host-readable, so a miss means the file doesn't exist.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     return await _resolve_container_fallback(p, ctx, s, permitted)
+
+
+def _read_host_bytes_bounded(path: Path, src: str) -> bytes:
+    """Read a host file with the ingest cap enforced DURING the read. ``read_bytes()`` buffered the
+    whole file before ``_finalize`` checked its size; ``read(cap+1)`` bounds the allocation even when
+    ``st_size`` under-reports (procfs-style files), and the honest-size check reads nothing at all."""
+    if path.stat().st_size > _MAX_INGEST_BYTES:
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+    with path.open("rb") as fh:
+        data = fh.read(_MAX_INGEST_BYTES + 1)
+    if len(data) > _MAX_INGEST_BYTES:
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
+    return data
 
 
 def _guard_credential_read(host_target: Path, src: str) -> None:
@@ -270,7 +284,7 @@ async def _resolve_container_fallback(
 def _finalize(
     data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
 ) -> ResolvedImage:
-    """Chokepoint: 50MB ingest cap + type check. Images by magic bytes; video (opt-in) by
+    """Chokepoint: ingest cap + type check. Images by magic bytes; video (opt-in) by
     extension + mp4 sniff — enough because every downstream consumer re-validates."""
     from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
     if len(data) > _MAX_INGEST_BYTES:

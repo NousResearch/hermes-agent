@@ -154,7 +154,17 @@ def _nvidia_vram() -> tuple[int, int] | None:
             capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
+        # Sum every visible GPU: nvidia-smi emits one CSV row per card and
+        # llama.cpp can span the whole box, not just card 0. Reading only the
+        # first row under-budgeted multi-GPU systems and silently spilled a
+        # fitting model's FFN weights to CPU RAM (major tok/s regression).
+        total_mib = free_mib = 0
+        for line in out.stdout.strip().splitlines():
+            t, f = (int(x) for x in line.split(","))
+            total_mib += t
+            free_mib += f
+        if total_mib <= 0 or free_mib < 0:
+            return None
         return total_mib << 20, free_mib << 20
     return None
 

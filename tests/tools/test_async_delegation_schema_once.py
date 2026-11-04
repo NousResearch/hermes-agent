@@ -63,6 +63,19 @@ def test_a_replaced_database_is_reconciled_again(home, reconcile_calls):
     assert ad.get_durable_delegation("d-1") is not None
 
 
+def test_a_recreated_database_on_a_recycled_inode_still_gets_its_ledger(home, monkeypatch, reconcile_calls):
+    """The filesystem may hand the recreated state.db the deleted file's inode, so the identity key matches:
+    the one-row sqlite_master probe must still notice the missing ledger table and reconcile."""
+    monkeypatch.setattr(ad, "_db_identity", lambda path: (str(path), 1, 1))  # every file looks the same
+    _sweep_once()
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (home / f"state.db{suffix}").unlink(missing_ok=True)
+    ad._persist_dispatch({"delegation_id": "d-2", "session_key": "", "origin_ui_session_id": "ui",
+                          "parent_session_id": "p", "dispatched_at": time.time()})
+    assert ad.get_durable_delegation("d-2") is not None
+    assert len(reconcile_calls) == 2
+
+
 def test_each_database_is_reconciled_on_its_own(tmp_path, reconcile_calls):
     _sweep_once()
     other = tmp_path / "other-home"

@@ -1552,8 +1552,14 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
 def _is_image_part(part: Any) -> bool:
-    """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``).
+
+    Membership is gated on ``str`` because tool results carry arbitrary JSON: a JSON-Schema union such
+    as ``{"type": ["string", "null"]}`` hashes a list here and raises ``TypeError``, which escapes
+    compression's error handling and leaves an over-limit session permanently uncompressed (#107628).
+    """
+    ptype = part.get("type") if isinstance(part, dict) else None
+    return isinstance(ptype, str) and ptype in _IMAGE_PART_TYPES
 
 
 def _content_has_images(content: Any) -> bool:
@@ -1630,7 +1636,10 @@ def _summary_part_text(part: Any) -> str:
     ptype = part.get("type")
     if ptype == "text":
         return part.get("text", "")
-    return _image_part_label(part) if ptype in _IMAGE_PART_TYPES else f"[{ptype or 'attachment'}]"
+    # Same non-scalar ``type`` hazard as ``_is_image_part``: check the value before hashing it.
+    if isinstance(ptype, str) and ptype in _IMAGE_PART_TYPES:
+        return _image_part_label(part)
+    return f"[{ptype or 'attachment'}]"
 
 
 def _image_part_label(part: dict[str, Any]) -> str:

@@ -33,10 +33,11 @@ from tools.approval_detection import (
     detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
+    _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
+from tools.approval_provenance import allowlisted_result, preapproved_result
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
 
@@ -666,20 +667,48 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
-    """``(pattern_keys, description)`` still needing consent, or None. The first match plus every
-    content-level rule (credential upload, invisible Unicode) each need their own approval, so an
-    approved pipe-to-shell cannot wave through the credential upload in the same command; overlapping
-    verb rules keep the first key only. ``approved(key)`` is the session or permanent check."""
+def _command_findings(command: str) -> list[tuple[str, str]]:
+    """``[(pattern_key, description)]`` that each need their own consent; empty when clean. The first
+    match plus every content-level rule (credential upload, invisible Unicode), so an approved
+    pipe-to-shell cannot wave through the credential upload in the same command; overlapping verb
+    rules keep the first key only."""
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
-        return None
-    findings = [(pattern_key, description)]
-    findings += [(key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+        return []
+    return [(pattern_key, description)] + [
+        (key, key) for key in detect_content_rule_keys(command) if key != pattern_key]
+
+
+def _pending_findings(findings: list[tuple[str, str]], approved) -> tuple[list[str], str] | None:
+    """``(pattern_keys, description)`` of *findings* still needing consent, or None.
+    ``approved(key)`` is the session or permanent check."""
     pending = [(key, text) for key, text in findings if not approved(key)]
     if not pending:
         return None
     return [key for key, _ in pending], "; ".join(text for _, text in pending)
+
+
+def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
+    """:func:`_pending_findings` over :func:`_command_findings` of *command*."""
+    return _pending_findings(_command_findings(command), approved)
+
+
+def _approved_with_provenance(findings: list[tuple[str, str]]) -> dict:
+    """Approved result for a command whose *findings* (possibly none) an earlier answer covers.
+    Called only after the session/permanent check passed, so it only labels the decision."""
+    if not findings:
+        return _approved()
+    return preapproved_result(
+        findings, lambda key: "permanent" if _is_permanently_approved(key) else "session")
+
+
+def _allowlisted(command: str) -> dict:
+    """Approved result for a ``command_allowlist`` match; names the entry when the command was flagged."""
+    findings = _command_findings(command)
+    rule = _matching_permanent_allowlist_entry(command)
+    if not findings or rule is None:
+        return _approved()
+    return allowlisted_result(rule, "; ".join(text for _, text in findings))
 
 
 def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
@@ -1136,11 +1165,12 @@ def check_dangerous_command(command: str, env_type: str,
     if _yolo_active():
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _allowlisted(command)
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    findings = _command_findings(command)
+    pending = _pending_findings(findings, lambda key: is_approved(session_key, key))
     if pending is None:
-        return _approved()
+        return _approved_with_provenance(findings)
     keys, description = pending
     return _run_approval_gate(
         pattern_key=keys[0], pattern_keys=keys, description=description, display_target=command,
@@ -1203,7 +1233,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
+        return _allowlisted(command)
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     # Outside CLI/gateway/ask flows we never block on approvals: each
@@ -1216,9 +1246,10 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    findings = _command_findings(command)
+    pending = _pending_findings(findings, lambda key: is_approved(session_key, key))
     if pending is None:
-        return _approved()
+        return _approved_with_provenance(findings)
     keys, description = pending
     # One combined prompt; a session/always answer persists every key in it.
     return _human_decision(

@@ -199,6 +199,20 @@ def ingress_fingerprint(payload, raw=None):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+# Native event fields an adapter fills in on arrival, not from the provider: the history a thread's
+# first reply re-fetches in a fresh process. A redelivery of the same message may differ in these alone.
+_ARRIVAL_EVENT_FIELDS = ('channel_context',)
+
+
+def _committed_arrival_context(payload, retained):
+    """*payload* with the committed row's arrival-derived event fields (present or absent) in place."""
+    event = {key: value for key, value in payload['native_text_v1'].get('event', {}).items()
+             if key not in _ARRIVAL_EVENT_FIELDS}
+    committed = retained['native_text_v1'].get('event', {})
+    event.update({key: committed[key] for key in _ARRIVAL_EVENT_FIELDS if key in committed})
+    return {**payload, 'native_text_v1': {**payload['native_text_v1'], 'event': event}}
+
+
 def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
     """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
     under a fresh disposable staging name, so its captured path differs from the committed one.
@@ -211,7 +225,10 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     committed before fingerprints, is compared exactly as above.
 
     Arrival time is not retry identity either: an adapter with no provider time (email) stamps each
-    fetch with local time, so the committed row's ``timestamp`` stands in before any comparison."""
+    fetch with local time, so the committed row's ``timestamp`` stands in before any comparison. The
+    same holds for the thread history an adapter re-fetches for the first reply of a thread in a fresh
+    process (Slack's ``channel_context``, after a restart): the committed row's stands in (or its
+    absence does), so a provider's redelivery of the message is the admission it already is."""
     fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
@@ -220,6 +237,8 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     if 'timestamp' in retained.get('native_text_v1', {}) and 'native_text_v1' in payload:
         payload = {**payload, 'native_text_v1': {**payload['native_text_v1'],
                                                  'timestamp': retained['native_text_v1']['timestamp']}}
+    if row is not None and 'native_text_v1' in retained and 'native_text_v1' in payload:
+        payload = _committed_arrival_context(payload, retained)
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained

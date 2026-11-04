@@ -734,7 +734,7 @@ hermes skills check                               # Check installed hub skills f
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
-hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
+hermes skills resolve google-workspace            # Review a pending bundled update (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
@@ -1067,43 +1067,49 @@ Inside a running session:
 
 Taps are stored in `~/.hermes/skills/.hub/taps.json` (created on demand).
 
-## Bundled skill updates (`hermes skills reset`)
+## Bundled skill updates (`hermes skills resolve`)
 
-Hermes ships with a set of bundled skills in `skills/` inside the repo. On install and on every `hermes update`, a sync pass copies those into `~/.hermes/skills/` and records a manifest at `~/.hermes/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).
+On install, startup, and `hermes update`, Hermes syncs bundled skills into the active profile's `skills/` directory. Its `.bundled_manifest` records the last accepted **upstream** hash, while byte-preserving upstream snapshots live under `HERMES_HOME/skill-updates/`, outside active skill content.
 
-On each sync, Hermes recomputes the hash of your local copy and compares it to the origin hash:
+- **Pristine copy:** accept the new bundled package.
+- **Customized copy with a known base:** three-way merge the previous upstream snapshot, your current files, and the new upstream package. Clean merges apply automatically, retaining local changes. The new base is upstream content, **not** the merged copy, so later upstream changes can merge again.
+- **Conflict or unknown legacy base:** leave your entire active package and baseline unchanged. Save a pending review outside `skills/`; subsequent unattended updates do not replace that evidence or your edits.
+- **Deleted skills:** remain deleted. A skill removed upstream is not automatically deleted from your profile.
 
-- **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
-- **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+Text merging uses `git merge-file` when available. Missing Git, overlapping text changes, incompatible additions/deletions, and both-sides binary edits require manual review. One-sided binary changes are copied byte-for-byte. Generated runtime caches (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and bytecode paired with a `.py`) are excluded from package tracking. LF content remains LF on Windows.
 
-Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
+### Resolve a pending update
 
-The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
-
-`hermes skills reset` is the escape hatch:
+The update report prints the command for each pending skill:
 
 ```bash
-# Safe: clears the manifest entry for this skill. Your current copy is preserved,
-# but the next sync re-baselines against it so future updates work normally.
-hermes skills reset google-workspace
-
-# Full restore: also deletes your local copy and re-copies the current bundled
-# version. Use this when you want the pristine upstream skill back.
-hermes skills reset google-workspace --restore
-
-# Non-interactive (e.g. in scripts or TUI mode) — skip the --restore confirmation.
-hermes skills reset google-workspace --restore --yes
+hermes skills resolve google-workspace
 ```
 
-The same command works in chat as a slash command:
+This shows the review directory with `base/`, `local/`, `upstream/`, and editable `merged/` trees, plus conflicting paths. `merged/` includes clean changes and keeps the local side of conflicting files; it is a **review draft**, not necessarily a resolved combination. Compare the trees and edit, add, or delete files in `merged/` as needed. With an interactive terminal the command offers an acceptance menu (default: leave pending). Without a terminal it only prints instructions unless `--accept` is explicit:
 
-```text
-/skills reset google-workspace
-/skills reset google-workspace --restore
+```bash
+hermes skills resolve google-workspace --accept merged    # accept your reviewed combination
+hermes skills resolve google-workspace --accept local     # keep local, acknowledge this upstream revision
+hermes skills resolve google-workspace --accept upstream  # discard local changes in favor of this revision
 ```
+
+Acceptance requires the active files and manifest still to match the pending review's starting point. If you edited the active skill after the conflict, refresh the review explicitly, then inspect it again:
+
+```bash
+hermes skills resolve google-workspace --refresh
+```
+
+Refreshing archives the previous review as `superseded-*`. Acceptance archives the originals and reviewed artifacts as `accepted-*`. Both stay under `skill-updates/`. Repeating an already completed resolution is harmless. A newer upstream revision received while a conflict was pending is handled by the next sync, using the accepted revision as its base.
+
+### Older installations
+
+A hash alone cannot reconstruct missing historical files. If the currently bundled package exactly matches a recorded origin hash, Hermes can recover that upstream base safely, even if your local copy is customized. An exact pristine local copy can also update directly. Otherwise an old manifest (including name-only entries) requires explicit reconciliation through `resolve`; Hermes never guesses that customized local content is an upstream base. With an unknown base, compare `local/` and `upstream/` and build `merged/` yourself, or explicitly choose either side.
+
+`hermes skills list-modified` and `hermes skills diff <name>` still inspect customizations. `hermes skills reset <name>` clears tracking without deleting your active files, but is not a substitute for resolving a pending review. `reset <name> --restore --yes` replaces local content with bundled content; back up customizations before using it.
 
 :::note Profiles
-Each profile has its own `.bundled_manifest` under its own `HERMES_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
+Each profile owns its manifest, snapshots, and pending reviews. Use `hermes -p coder skills resolve <name>` to review that profile only. Resolution is a terminal CLI command, not a chat slash command.
 :::
 
 ### Slash commands (inside chat)

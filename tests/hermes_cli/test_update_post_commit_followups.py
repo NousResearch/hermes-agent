@@ -128,7 +128,12 @@ def test_failed_web_build_does_not_skip_the_tui(tmp_path, monkeypatch, capsys):
     assert "npm run build exited 1" in str(failure.value)
 
 
-def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("assume_yes,gateway_mode", [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_failed_config_migration_is_owed_and_later_maintenance_runs(
+    tmp_path, monkeypatch, capsys, assume_yes, gateway_mode,
+):
     from hermes_cli import update_cmd, update_cmd_maint as maint
 
     calls = []
@@ -136,8 +141,10 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
     from hermes_cli import update_windows_acl
     monkeypatch.setattr(update_windows_acl, "repair_windows_home_acl", lambda: calls.append("repair_windows_home_acl"))
     for name in ("_verify_and_restore_state_dbs_post_update", "_invalidate_live_plugin_catalog_caches",
-                 "_print_bundled_skills_sync_report", "_sync_profiles_after_update"):
+                 "_sync_profiles_after_update"):
         monkeypatch.setattr(maint, name, lambda name=name: calls.append(name))
+    skill_sync_options = []
+    monkeypatch.setattr(maint, "_print_bundled_skills_sync_report", lambda **kw: skill_sync_options.append(kw))
     monkeypatch.setattr("hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
     monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
 
@@ -156,8 +163,9 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
     update_receipt.begin_update_receipt()
     owed: list = []
     assert maint._run_post_update_maintenance(
-        assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+        assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=None,
         had_desktop_app_before_update=False, pre_update_version=None, followups=owed) is True
+    assert skill_sync_options == [{"interactive": not assume_yes and not gateway_mode}]
     assert [step for step, _ in owed] == ["config_migration"]
     assert calls[0] == "repair_windows_home_acl"
     assert ("commit_graph", update_cmd._m().PROJECT_ROOT) in calls

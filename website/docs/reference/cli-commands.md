@@ -1447,6 +1447,11 @@ hermes skills update
 hermes skills config
 hermes skills reset google-workspace
 hermes skills reset google-workspace --restore --yes
+hermes skills resolve google-workspace                     # review a pending bundled update
+hermes skills resolve google-workspace --accept merged     # accept reviewed merged/ files
+hermes skills resolve google-workspace --accept local      # retain local, acknowledge upstream
+hermes skills resolve google-workspace --accept upstream   # replace local with pending upstream
+hermes skills resolve google-workspace --refresh           # archive stale review and recompute
 hermes skills opt-out                  # stop future bundled-skill seeding (nothing deleted)
 hermes skills opt-out --remove --yes   # also delete UNMODIFIED bundled skills
 hermes skills opt-in --sync            # undo: remove marker and re-seed now

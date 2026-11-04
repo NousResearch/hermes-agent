@@ -83,9 +83,9 @@ def test_genuine_edits_next_to_cache_are_preserved(skill_tree, edited_path):
     _write(src, "references/new-upstream.md", "new upstream documentation")
     assert [entry["name"] for entry in list_user_modified_bundled_skills()] == ["demo"]
     result = ss.sync_skills(quiet=True)
-    assert result["user_modified"] == ["demo"]
+    assert result["updated"] == ["demo"]
     assert (dest / edited_path).read_text() == "user-owned content"
-    assert not (dest / "references/new-upstream.md").exists()
+    assert (dest / "references/new-upstream.md").read_text() == "new upstream documentation"
 
 
 def test_source_cache_is_neither_seeded_nor_recorded(skill_tree):

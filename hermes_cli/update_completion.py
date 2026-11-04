@@ -89,11 +89,16 @@ def run_completion(request: dict) -> dict:
         # The child joins the update tree's checkout lock: it inherits the locked fd (POSIX)
         # or dies with us (Windows job: created suspended, bound, then resumed, so nothing it
         # starts runs outside the job), so the lock is never free while it runs.
+        # CREATE_NO_WINDOW gives a Windows console application a different input
+        # console: isatty() still succeeds, but the operator's keys never arrive.
+        # Keep interactive completion on the parent's console; the parent only
+        # drains output while the child owns input. Headless runs stay hidden.
         proc = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             # detached-spawn: ok — awaited; holds the checkout lock fd so an update finishes atomically even if this parent dies
             **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
-               {"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}))
+               {"creationflags": CREATE_SUSPENDED | (0 if sys.stdin.isatty() and request["stdout_isatty"]
+                                                      else subprocess.CREATE_NO_WINDOW)}))
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
             # A failure here unwinds through the cleanup below, never orphans the child.

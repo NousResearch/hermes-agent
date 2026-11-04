@@ -373,6 +373,8 @@ class RollbackCheckpoint(Result):
     hash: str = ""
     timestamp: str = ""
     message: str = ""
+    # One line of the prompt the checkpoint was taken for; absent when it is unlinked or the prompt is gone.
+    prompt_preview: str = ""
 
 
 class RollbackListResult(Result):
@@ -430,6 +432,33 @@ class RollbackDiffResult(Result):
 
 method("rollback.diff", params=RollbackDiffParams, result=RollbackDiffResult,
        doc="Diff between a checkpoint and the working tree, with an ANSI rendering sized to the TUI.")
+
+
+class RollbackForPromptParams(Params):
+    session_id: str
+    # Stored row id of a user message: the id ``session.mutate rewind`` and the rewind picker address.
+    message_id: int
+    profile: str | None = None
+
+
+class PromptCheckpoint(Result):
+    workdir: str = ""
+    hash: str = ""
+    short_hash: str = ""
+    timestamp: str = ""
+    message: str = ""
+    prompt_uid: str = ""
+    # Files that differ between this checkpoint and the working tree now (what restoring it touches).
+    files_changed_since: int = 0
+
+
+class RollbackForPromptResult(Result):
+    enabled: bool
+    checkpoints: list[PromptCheckpoint] = Field(default_factory=list)
+
+
+method("rollback.for_prompt", params=RollbackForPromptParams, result=RollbackForPromptResult,
+       doc="Read-only: the session's checkpoints taken for a user message or after it, per working directory.")
 
 
 # ── cron.manage ───────────────────────────────────────────────────────────────────────────────

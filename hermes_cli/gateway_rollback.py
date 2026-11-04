@@ -20,7 +20,8 @@ def _t(key, **kw):
 def _checkpoint_rows(result):
     """``rollback.list`` rows as ``format_checkpoint_list`` reads them."""
     return [{"hash": c.get("hash", ""), "short_hash": (c.get("hash") or "")[:7], "timestamp": c.get("timestamp", ""),
-             "reason": c.get("message", "")} for c in result.get("checkpoints") or []]
+             "reason": c.get("message", ""), "prompt_preview": c.get("prompt_preview", "")}
+            for c in result.get("checkpoints") or []]
 
 
 def rollback(cli, connection, command):

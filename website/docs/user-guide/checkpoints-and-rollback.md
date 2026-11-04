@@ -143,6 +143,23 @@ Hermes responds with a formatted list showing change statistics:
   /rollback <N> <file>      restore a single file from checkpoint N
 ```
 
+### Which prompt a checkpoint belongs to
+
+A checkpoint taken while Hermes answers a prompt records which prompt that was: the session id and the prompt's message id, kept in the checkpoint's commit message. No prompt text is copied into the store. `/rollback` looks the text up in `state.db` when it lists, and adds one line under the checkpoint:
+
+```text
+  1. 4270a8c  2026-03-16 04:36  before patch  (1 file, +1/-0)
+       ↳ prompt: “rename the config loader”
+```
+
+- For checkpoints a "turn" is one agent iteration (one round of tool calls), so a prompt that edits files over several rounds owns several checkpoints, all linked to it.
+- Checkpoints taken before this existed, checkpoints taken when Hermes could not tell which prompt was running, and checkpoints whose prompt has since been deleted show no quote. They list and restore exactly as before.
+- The link is the message's durable id, so it still resolves after `/compress`. It names the session the checkpoint was taken in, so a session branched from that one starts with none.
+- Nothing is recorded while `checkpoints.enabled` is `false` (the default). Trimming to `max_snapshots` keeps the link.
+- The quote appears in the `/rollback` list of the classic CLI, the TUI and messaging platforms. The Desktop checkpoint list is unchanged.
+
+A client that needs the checkpoints for one prompt and the prompts after it (for example a picker offering to restore files along with the conversation) can call the TUI gateway method `rollback.for_prompt` with `session_id` and `message_id` (the stored row id of a user message, as `session.mutate rewind` addresses it). It returns, per working directory, the session's checkpoints taken for that prompt or later, newest first, and for each how many files differ from the working tree now (`files_changed_since`, what restoring it would touch). It is read-only.
+
 ## Inspecting the Store from the Shell
 
 ```bash

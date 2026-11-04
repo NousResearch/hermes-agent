@@ -210,6 +210,30 @@ it('/rollback list, diff and restore call the owner\'s rollback verbs with main\
   expect(setHistoryItems).toHaveBeenCalled()
 })
 
+it('/rollback list quotes the prompt a checkpoint was taken for, and only for a linked checkpoint', async () => {
+  const { panel, slash } = harness({
+    'rollback.list': {
+      enabled: true,
+      checkpoints: [
+        { hash: 'abcdef1234567', timestamp: 't2', message: 'before write_file', prompt_preview: 'fix the login bug' },
+        { hash: '1234567abcdef', timestamp: 't1', message: 'before terminal: rm x' }
+      ]
+    }
+  })
+
+  slash('/rollback')
+  await flush()
+
+  expect(panel).toHaveBeenCalledWith('Rollback checkpoints', [
+    {
+      rows: [
+        ['1. abcdef1234', 't2 · before write_file · “fix the login bug”'],
+        ['2. 1234567abc', 't1 · before terminal: rm x']
+      ]
+    }
+  ])
+})
+
 it('/rollback restore names the hand-edits it kept, oversize skips and failed deletions, as main\'s CLI does', async () => {
   const { slash, sys } = harness({
     'rollback.restore': {

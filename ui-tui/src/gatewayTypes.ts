@@ -536,6 +536,8 @@ export interface BrowserManageResponse {
 export interface RollbackCheckpoint {
   hash: string
   message?: string
+  /** One line of the prompt the checkpoint was taken for; absent when it is unlinked or the prompt is gone. */
+  prompt_preview?: string
   timestamp?: string
 }
 

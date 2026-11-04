@@ -349,6 +349,24 @@ class IterationStart:
     _turn_exit_reason: Any
 
 
+def _begin_checkpoint_turn(agent: Any, messages: Any) -> None:
+    """Reset the per-iteration checkpoint dedup, naming the prompt this iteration answers.
+
+    Only when checkpoints are on: the prompt's durable ``message_uid`` is minted on the live message
+    here (the stamp its first flush applies and persists), so with checkpoints off no message is
+    touched and this is the bare ``new_turn()`` it replaces. No usable user message means the
+    checkpoint is simply recorded unlinked."""
+    manager = agent._checkpoint_mgr
+    if manager.enabled is not True:
+        return manager.new_turn()
+    from agent.message_metadata import stamp_message_uid
+
+    index = getattr(agent, "_persist_user_message_idx", None)
+    message = messages[index] if isinstance(index, int) and 0 <= index < len(messages) else None
+    uid = stamp_message_uid(message) if isinstance(message, dict) and message.get("role") == "user" else None
+    manager.new_turn(session_id=getattr(agent, "session_id", None), prompt_uid=uid)
+
+
 def begin_iteration(
     agent: Any, *, messages: Any, conversation_history: Any, original_user_message: Any,
     api_call_count: Any, interrupted: Any, _turn_exit_reason: Any,
@@ -377,7 +395,7 @@ def begin_iteration(
         agent._persist_session(messages, conversation_history)
 
     # Reset per-turn checkpoint dedup so each iteration can take one snapshot.
-    agent._checkpoint_mgr.new_turn()
+    _begin_checkpoint_turn(agent, messages)
 
     if agent._interrupt_requested:
         interrupted = True

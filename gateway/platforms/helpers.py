@@ -130,6 +130,38 @@ def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: 
     return hook(adapter, str(chat_id), str(anchor), metadata)
 
 
+def typing_refresh_wanted(adapter: Any, event: MessageEvent) -> bool:
+    """Whether this turn should show a typing indicator at all: False when the adapter has it
+    disabled, when the event is a scheduled heartbeat (proactive work has nothing to say yet), and
+    when the authorization gate the message handler runs will drop the message (#149024).
+
+    That last one is the fix for a real leak: ``_process_message_background`` starts the refresh
+    loop before ``_handle_message``, so on a platform where strangers can reach the bot — Signal
+    linked as a secondary device on the owner's own number — ``sendTyping`` went to an unauthorized
+    contact as the owner, and only then was the message dropped. The verdict is the runner's own
+    (the handler asks the same question), so the indicator cannot disagree with admission. Internal
+    events are admitted without an allowlist, and a missing runner or a raising verdict keeps the
+    indicator: this probe must never be the reason a conversation loses its status bubble."""
+    if not getattr(getattr(adapter, "config", None), "typing_indicator", True):
+        return False
+    if getattr(event, "_heartbeat_session_id", None):
+        return False
+    if getattr(event, "internal", False):
+        return True
+    runner = getattr(adapter, "gateway_runner", None)
+    if runner is None:
+        runner = getattr(getattr(adapter, "_message_handler", None), "__self__", None)
+    check = getattr(runner, "_is_user_authorized_for_source", None)
+    source = getattr(event, "source", None)
+    if source is None or not callable(check):
+        return True
+    try:
+        return bool(check(source))
+    except Exception:
+        logger.debug("Typing indicator authorization probe failed; keeping the indicator", exc_info=True)
+        return True
+
+
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
 # underscore, code fence markers, inline code, headings. Links and the newline
 # squeeze run after these, in that order (see ``strip_markdown``).

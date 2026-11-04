@@ -5,6 +5,7 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from 'react'
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { ASSIGNMENT_EVENT_KIND, CanonicalGroupAssignmentRow } from './canonical-group-lead'
+import { CanonicalGroupContinuedRow, CanonicalGroupPausedRow, type CanonicalGroupPausedRowProps, CanonicalGroupRoutedRow, CONTINUED_EVENT_KIND, isBoundedActivity, ROUTED_EVENT_KIND } from './canonical-group-routed'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 import { type RoomHandoff, roomHandoffs, type RoomLogEvent } from './group-room-status'
 import { fill, ROOM_AVATAR_SIZE, RoomActivityRow, RoomMessage, RoomNoticeRow } from './group-room-ui'
@@ -31,6 +32,8 @@ interface CanonicalGroupHistoryProps {
   onReply?: (member: CanonicalRoomMember | undefined, text: string, thread: string | undefined, author: string) => void
   /** A member's face; the workspace passes the Bot Mode avatar. */
   avatarFor?: (name: string, size: number) => ReactNode
+  /** Continue/Stop for a paused discussion; absent `maxContinues` (older runtime) keeps the plain limit notice. */
+  pause?: Pick<CanonicalGroupPausedRowProps, 'busy' | 'onContinue' | 'onStop'> & { maxContinues?: number }
 }
 
 /** The server stamps every `groups.send` from this Desktop as this principal, so it has no name of its own. */
@@ -166,7 +169,7 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply }: CanonicalGroupHistoryProps) {
+export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
   const roster = new Map(members.map(member => [member.member_id, member]))
   const handoffsAfter = new Map<number, RoomHandoff[]>()
@@ -192,9 +195,12 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
   ])
 
   return <>{events.map(event => <Fragment key={event.seq}>
-    {event.kind === ASSIGNMENT_EVENT_KIND
-      ? <CanonicalGroupAssignmentRow event={event} members={members} />
-      : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />}
+    {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={members} />
+      : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={members} />
+        : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
+          : pause && typeof pause.maxContinues === 'number' && isBoundedActivity(event)
+            ? <CanonicalGroupPausedRow busy={pause.busy} event={event} events={events} maxContinues={pause.maxContinues} onContinue={pause.onContinue} onStop={pause.onStop} />
+            : <HistoryRow avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} notices={notices} onReply={onReply} roster={roster} />}
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>

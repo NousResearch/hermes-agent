@@ -23,6 +23,7 @@ GROUP_METHODS = {
     'groups.attachment.upload': 'session:submit',
     'groups.attachment.download': 'session:read',
     'groups.stop': 'session:control',
+    'groups.continue': 'session:control',
     'groups.retry': 'session:control',
     'groups.discard': 'session:control',
     'groups.approve': 'session:approve',
@@ -40,6 +41,7 @@ _FIELDS = {
     'groups.attachment.upload': {'room_id', 'upload_id', 'kind', 'name', 'mime', 'data_base64'},
     'groups.attachment.download': {'room_id', 'event_id', 'attachment_id'},
     'groups.stop': {'room_id', 'cancel_id'},
+    'groups.continue': {'room_id', 'discussion_event_id'},
     'groups.retry': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.discard': {'room_id', 'member_id', 'task_id', 'execution_generation'},
     'groups.approve': {'room_id', 'member_id', 'task_id', 'execution_generation',
@@ -101,7 +103,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         if not status.get('running') or status.get('stopping'):
             service = None
 
-    execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    execution_methods = {'groups.send', 'groups.stop', 'groups.continue', 'groups.retry', 'groups.discard',
+                         'groups.approve'}
     admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
@@ -269,6 +272,8 @@ def _execution_control(service, method, params):
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
             params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+        'groups.continue': lambda: {'continued': True, 'event': service.continue_room(
+            params.get('room_id'), discussion_event_id=str(params.get('discussion_event_id') or ''))},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,

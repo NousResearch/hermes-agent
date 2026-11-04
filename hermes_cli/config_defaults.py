@@ -779,6 +779,9 @@ DEFAULT_CONFIG = {
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        # Group Chats with routing "auto": one short JSON call picks who answers an unaddressed message
+        # (tui_gateway/hosted_room_router_call.py). A fast/cheap model is recommended.
+        "group_router": _aux(20),
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),

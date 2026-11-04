@@ -1319,7 +1319,8 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.text_verbosity = _verbosity or None
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
-    # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
+    # (ALL models, unlike enforcement), environment probing (the local toolchain probe and the
+    # remote-backend sandbox probe), Bot Mode protocol section.
     for _key in (
         "stall_guards", "task_completion_guidance", "parallel_tool_call_guidance",
         "environment_probe", "bot_mode_protocol",

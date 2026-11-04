@@ -70,6 +70,7 @@ def test_environment_probe_flag_gates_backend_probe(flag):
         patch("agent.prompt_builder.load_soul_md", return_value=""),
         patch("agent.prompt_builder.build_environment_hints",
               side_effect=lambda probe_backend=True: seen.append(probe_backend) or ""),
+        patch("tools.env_probe.get_environment_probe_line", return_value=""),
     ):
         build_system_prompt_parts(_make_agent(_environment_probe=flag))
     assert seen == [flag]

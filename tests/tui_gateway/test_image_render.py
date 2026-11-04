@@ -76,3 +76,16 @@ def test_canonical_local_viewer_frames_carry_the_image(photo):
     assert complete_fields(turn, "c2", "terminal", {"command": "ls"}, '{"output": "' + photo.replace("\\", "/") + '"}')["image_path"] is None
     assert complete_fields(turn, "c3", "vision_analyze", {"image_url": photo}, '{"success": false, "error": "x"}',
                            is_error=True)["image_path"] is None
+
+
+def test_deeply_nested_tool_result_still_completes(monkeypatch, photo):
+    # A result too deep for the JSON decoder must not drop the whole tool.complete.
+    from gateway.local_viewer_events import complete_fields
+
+    deep = "[" * 100_000 + "]" * 100_000
+    assert complete_fields(SimpleNamespace(), "c1", "vision_analyze", {"image_url": photo}, deep)["image_path"] == photo
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda event_type, sid, payload=None: events.append((event_type, payload)))
+    monkeypatch.setitem(server._sessions, "deep-sid", {"tool_progress_mode": "all", "tool_started_at": {}, "edit_snapshots": {}})
+    server._on_tool_complete("deep-sid", "t1", "vision_analyze", {"image_url": photo}, deep)
+    assert [payload["image_path"] for event, payload in events if event == "tool.complete"] == [photo]

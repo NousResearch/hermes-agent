@@ -1,0 +1,30 @@
+# Catalog entry proposed to the Hermes optional MCP catalog.
+manifest_version: 1
+name: faxforagents
+connector_slug: faxforagents
+description: Prepare and quote faxes, send with approval, check delivery, cancel, and read received faxes.
+source: https://faxforagents.com/mcp/
+transport:
+  type: http
+  url: https://mcp.faxforagents.com/mcp/
+auth:
+  type: oauth
+suggest:
+  keywords:
+    - fax
+    - faxforagents
+    - fax for agents
+    - send fax
+    - fax inbox
+  hosts:
+    - faxforagents.com
+    - app.faxforagents.com
+    - mcp.faxforagents.com
+post_install: |
+  Complete the Fax for Agents browser consent flow when Hermes requests authentication.
+  Restart your Hermes session after authentication to load the tools.
+  Run hermes mcp test faxforagents to check your connection.
+  Review tool access with hermes mcp configure faxforagents.
+  Confirm the account environment before sending.
+  Live sends spend wallet funds and require quote-bound approval or an allowing delegated policy.
+  This connection cannot approve its own sends or change delegated policies.

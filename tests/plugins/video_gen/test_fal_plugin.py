@@ -156,6 +156,22 @@ def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
     assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
 
 
+def test_heygen_video_payload_matches_declared_schema():
+    """HeyGen Video declares a lower-case 480p/768p/1080p/2k enum, int duration 5-15 and
+    `seed`; there is no audio toggle and the i2v schema has no aspect_ratio. Only those
+    keys may reach the endpoint (the managed gateway forwards everything verbatim)."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload, _normalize_family_key
+
+    meta = FAL_FAMILIES["heygen-video"]
+    assert _normalize_family_key("heygen/heygen-video/image-to-video") == "heygen-video"
+    t2v = _build_payload(meta, prompt="x", image_url=None, duration=30, aspect_ratio="21:9", resolution="2K",
+                         negative_prompt="blurry", audio=False, seed=7)
+    assert t2v == {"prompt": "x", "seed": 7, "aspect_ratio": "21:9", "resolution": "2k", "duration": 15}
+    i2v = _build_payload(meta, prompt="x", image_url="https://i.png", duration=2, aspect_ratio="16:9", resolution="720p",
+                         negative_prompt=None, audio=None, seed=None)
+    assert i2v == {"prompt": "x", "image_url": "https://i.png", "resolution": "768p", "duration": 5}
+
+
 def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
     """Catalog-shape guard: a family without a text endpoint must error cleanly
     instead of submitting to a None endpoint. Every cataloged family is now

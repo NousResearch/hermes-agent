@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from agent.memory_provider import spawn_context_thread
 from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 
@@ -101,7 +102,8 @@ class RouterCalls:
             finally:
                 with self._lock:
                     self._inflight.discard(key)
-        threading.Thread(target=run, name=f"hosted-room-router-{key[0][:16]}", daemon=True).start()
+        # The owner's profile scope is bound explicitly inside ask_router (_profile_runtime_scope).
+        spawn_context_thread(run, name=f"hosted-room-router-{key[0][:16]}").start()
         return True
 
     def inflight(self, key: tuple[str, str]) -> bool:

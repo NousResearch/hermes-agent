@@ -263,16 +263,27 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0, descri
     return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
 
 
-def prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
+def prompt_choice(
+    question: str,
+    choices: list,
+    default: int = 0,
+    description: str | None = None,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
     """Prompt for a choice from a list with arrow key navigation. Escape cancels an active setup
     wizard; outside setup it keeps the default (the curses component owns its own numbered
-    fallback, so a cancel result must never open another prompt). Ctrl+C exits the wizard."""
+    fallback, so a cancel result must never open another prompt). Ctrl+C exits the wizard.
+
+    A cancel is reported as a negative index, so it is distinct from an *explicit* selection of
+    the default item. Only cancel prints "Skipped (keeping current)"; selecting the default is a
+    real choice and must reach the caller. ``cancel_returns`` lets a caller whose default is a
+    real option (rather than "keep current") map a cancel back onto a safe exit index.
+    """
     idx = _curses_prompt_choice(question, choices, default, description=description)
     if idx < 0:
-        return default
-    if idx == default:
         _info("  Skipped (keeping current)", None)
-        return default
+        return default if cancel_returns is None else cancel_returns
     print()
     return idx
 

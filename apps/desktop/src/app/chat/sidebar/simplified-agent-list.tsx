@@ -160,7 +160,7 @@ export function SimplifiedAgentList({
 
                   return (
                     <div aria-label={`${agent.label} · ${agent.gateway}`} key={agent.id} role="group">
-                      <div className="group/agent grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2">
+                      <div className="grid min-h-8.5 grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-center gap-1 px-2">
                         {group.length > 1 ? (
                           <Tip label={toggleLabel}>
                             <Button
@@ -195,7 +195,6 @@ export function SimplifiedAgentList({
                         <Tip label={t.sidebar.newSessionIn(agent.label)}>
                           <Button
                             aria-label={t.sidebar.newSessionIn(agent.label)}
-                            className="opacity-0 group-hover/agent:opacity-100 group-focus-within/agent:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
                             onClick={() => {
                               recordAction('session.new', 'click')
                               recordIaAction('ia.new_session.agent_row')

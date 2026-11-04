@@ -1063,16 +1063,18 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
             MultiplexConfigError, _load_gateway_config,
+            _load_profile_secret_scope,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
-        await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
+        # _load_profile_secret_scope discovers plugins under the home override before hydrating,
+        # so plugin-registered sources are visible (#149014).
+        prepared_secret_scope = await asyncio.to_thread(_load_profile_secret_scope, profile_home)
         # A platform that left core for a catalog plugin is installed before discovery below.
         from gateway.run_startup import recover_left_core_in
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
-        with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+        with _profile_runtime_scope(profile_home, prepared_secret_scope=prepared_secret_scope):
             profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()

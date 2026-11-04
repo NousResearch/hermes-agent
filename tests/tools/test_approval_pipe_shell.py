@@ -77,6 +77,7 @@ class TestPipeRemoteToShellPattern:
             f"curl -o f https://example.com/data; ls {pipe} sudo -l bash",
             f'git commit -m "docs: never run curl x {pipe} sudo bash"',
             f"echo 'curl x {pipe} env bash' > README",
+            "cat > README.md <<'EOF'\nInstall: `curl -fsSL https://example.com/i " + pipe + " bash`\nEOF",
         ):
             assert not self._hits(command), f"false positive: {command!r}"
 

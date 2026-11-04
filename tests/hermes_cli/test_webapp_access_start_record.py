@@ -53,11 +53,13 @@ def nous(monkeypatch):
 @pytest.fixture()
 def gateway(monkeypatch):
     """The gateway as its control socket answers: the old one, serving no Webapp, until a test puts
-    its replacement in place. A restart is recorded and answers with its child's pid."""
+    its replacement in place (another ``instance``). A restart is recorded and answers with its
+    child's pid."""
     import hermes_cli.web_server_gateway as gw
     from hermes_cli import webapp_access
 
-    state = {"now": {"state": "off", "url": None, "reason": None}, "restarts": [], "failure": None,
+    state = {"now": {"state": "off", "url": None, "reason": None}, "instance": (1000, 1), "restarts": [],
+             "failure": None,
              "restart": {"restart_started": True, "restart_action": "gateway-restart", "restart_pid": RESTART_PID}}
 
     def restart(_profile, *, what, label):
@@ -65,9 +67,14 @@ def gateway(monkeypatch):
         return dict(state["restart"])
 
     monkeypatch.setattr(webapp_access, "_gateway_state", lambda _home: dict(state["now"]))
+    monkeypatch.setattr(webapp_access, "gateway_instance", lambda: state["instance"])
     monkeypatch.setattr(gw, "_restart_gateway_after", restart)
     monkeypatch.setattr(gw, "gateway_restart_failure", lambda _profile: state["failure"])
     return state
+
+
+def _serving(port: int) -> dict:
+    return {"state": "serving", "url": f"http://192.168.1.50:{port}", "reason": None}
 
 
 @pytest.fixture()
@@ -207,7 +214,21 @@ def test_a_start_is_reported_restarting_until_the_restarted_gateway_serves_it(cl
     # The request answered; the old gateway still serves no Webapp.
     assert _progress(client) == answer["start_progress"]
 
-    gateway["now"] = {"state": "serving", "url": f"http://192.168.1.50:{port}", "reason": None}
+    gateway["now"], gateway["instance"] = _serving(port), (1001, 2)
+    assert _progress(client) is None
+
+
+def test_the_gateway_a_start_restarts_does_not_end_it_by_serving_an_earlier_config_on_its_port(
+        client, nous, gateway, instant_build):
+    # An earlier Start's gateway serves the Webapp on this port; only its replacement reads this
+    # Start's mode and address.
+    port = client.get("/api/webapp-access/status").json()["port"]
+    gateway["now"] = _serving(port)
+
+    assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
+
+    assert _progress(client)["step"] == "restarting"
+    gateway["instance"] = (1001, 2)
     assert _progress(client) is None
 
 
@@ -239,3 +260,23 @@ def test_a_refused_restart_ends_the_start_with_its_request(client, nous, gateway
     assert response.status_code == 200 and response.json()["restart_started"] is False
     assert response.json()["start_progress"] is None
     assert _progress(client) is None
+
+
+def test_the_gateway_instance_is_the_process_its_control_socket_answers_from(monkeypatch, tmp_path):
+    import json
+    import os
+
+    from gateway.control_socket import GatewayControlServer
+    from gateway.status import get_process_start_time
+    from hermes_cli import webapp_access, webapp_launcher
+
+    server = GatewayControlServer(tmp_path)
+    monkeypatch.setattr(webapp_launcher, "_control", lambda _home, verb, params=None: json.loads(
+        server.handle_request_line(json.dumps({"protocol": 1, "id": 1, "verb": verb}).encode(), "same-user")))
+    assert webapp_access.gateway_instance() == (os.getpid(), get_process_start_time(os.getpid()))
+
+    def unreachable(_home, _verb, params=None):
+        raise webapp_launcher.GatewayUnreachable("no socket")
+
+    monkeypatch.setattr(webapp_launcher, "_control", unreachable)
+    assert webapp_access.gateway_instance() is None

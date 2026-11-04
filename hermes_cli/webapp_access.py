@@ -392,6 +392,20 @@ def access_status() -> dict:
     }
 
 
+def gateway_instance() -> Optional[tuple]:
+    """The gateway process answering for the home in scope, ``(pid, start_time)``, or None when none
+    answers. The Webapp address a gateway reports names only its port, so this is what tells the
+    gateway a restart put in place from the one it replaced."""
+    from hermes_cli.webapp_launcher import GatewayUnreachable, _control
+
+    try:
+        response = _control(gateway_home(), "identify")
+    except GatewayUnreachable:
+        return None
+    result = response.get("result") if response.get("ok") else None
+    return (result.get("pid"), result.get("start_time")) if isinstance(result, dict) else None
+
+
 def serves_config(status: dict) -> bool:
     """Whether the gateway in *status* (:func:`access_status`) serves the Webapp its config turns
     on, on the configured port, so it has restarted onto that config. The pane decides the same way."""

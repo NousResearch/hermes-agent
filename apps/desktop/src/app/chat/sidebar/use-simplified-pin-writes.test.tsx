@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import * as sessionsApi from '@/api/sessions'
+import * as iaMetrics from '@/store/ia-metrics'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { simplifiedPins } from './simplified-session-model'
@@ -16,6 +17,8 @@ afterEach(() => {
 })
 
 it('shows a pin immediately, ignores repeat clicks during the write, and fences stale refreshes', async () => {
+  const record = vi.fn()
+  vi.spyOn(iaMetrics, 'captureIaRecorder').mockReturnValue(record)
   let resolve!: (value: unknown) => void
 
   const write = vi.spyOn(sessionsApi, 'mutateSessionHttp').mockImplementation(
@@ -36,6 +39,7 @@ it('shows a pin immediately, ignores repeat clicks during the write, and fences 
   await act(async () => {
     await result.current.setPinned(row, true)
   })
+  expect(record).not.toHaveBeenCalled()
   expect(write).toHaveBeenCalledTimes(1)
   expect(write).toHaveBeenCalledWith(
     'chat',
@@ -47,6 +51,7 @@ it('shows a pin immediately, ignores repeat clicks during the write, and fences 
     resolve({ ok: true })
     await request
   })
+  expect(record.mock.calls).toEqual([['ia.pin.pinned']])
   expect(refresh).toHaveBeenCalledOnce()
   expect(result.current.pending(row)).toBe(false)
   expect(simplifiedPins([{ ...row }], [], new Set(), result.current.value)).toHaveLength(1)
@@ -91,6 +96,8 @@ it('rolls back a rejected write and permits retry', async () => {
 })
 
 it('keeps owner identity across gateway changes and does not roll back an acknowledged write on refresh failure', async () => {
+  const record = vi.fn()
+  vi.spyOn(iaMetrics, 'captureIaRecorder').mockReturnValue(record)
   vi.spyOn(sessionsApi, 'mutateSessionHttp').mockResolvedValue({ ok: true })
   const refresh = vi.fn().mockRejectedValue(new Error('refresh failed'))
 
@@ -101,6 +108,7 @@ it('keeps owner identity across gateway changes and does not roll back an acknow
   await act(async () => {
     await expect(result.current.setPinned(row, true)).rejects.toThrow('refresh failed')
   })
+  expect(record.mock.calls).toEqual([['ia.pin.pinned']])
   expect(result.current.value(row)).toBe(true)
   expect(result.current.value({ ...row, profile: 'other' })).toBeUndefined()
   rerender({ owner: 'gateway-b' })

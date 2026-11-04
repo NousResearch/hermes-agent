@@ -529,7 +529,7 @@ session/bot/profile names, paths and setting values never leave.
 | Metric | Dimensions | Question it answers |
 |---|---|---|
 | `hermes.desktop.feature_use` | area (panes, command palette, model/session pickers, voice, Bot Mode, skins, projects, each settings page, full pages, `other`) | Which Desktop areas are used at all, counted at most once per area per UTC day per profile (latched in the profile's local database, so a second window or a backend restart never re-counts). |
-| `hermes.desktop.action_use` | action (the app's built-in command/keybinding ids plus a few named buttons; plugin commands and numbered slot shortcuts are `other`, collapsed in the app before anything is kept), via (`click`/`shortcut`/`palette`/`menu`), count bucket | Which buttons and commands people press, and how: aggregated in the app per profile and reported once per finished day (no per-press rows). The row lands in the period of the day it describes, not the day it was sent; each day is recorded once per profile however many windows or backend restarts report it, and a day older than 8 days is dropped. |
+| `hermes.desktop.action_use` | action (the app's built-in command/keybinding ids plus a few named buttons; plugin commands and numbered slot shortcuts are `other`, collapsed in the app before anything is kept), via (`click`/`shortcut`/`palette`/`menu`/`state`), count bucket | Which buttons and commands people press, and how: aggregated in the app per profile and reported once per finished day (no per-press rows). The row lands in the period of the day it describes, not the day it was sent; each day is recorded once per profile however many windows or backend restarts report it, and a day older than 8 days is dropped. |
 | `hermes.desktop.mode_use` | mode (`sessions`/`bots`), active-minutes bucket, messages-sent bucket, bot-count bucket | How Desktop time splits between Bot Mode and regular Sessions. One row per mode used that day, in that day's period (same once-per-profile-per-day latch as `action_use`); active time sums gaps between interactions of up to 5 minutes. |
 | `hermes.desktop.friction` | kind (`notice_dismissed`, `error_toast`, `renderer_crash`, `backend_disconnect`, `slow_frame`), detail (notice id, error category, crash reason, drop reason, frame-duration bucket) | What gets in the way. Error toasts carry only their code-defined category; renderer crashes are recorded by the app shell only when the crashed window's own profile collects, and reported by a window of that profile after it comes back; slow frames are long frames while the window is visible, capped per day. |
 | `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
@@ -569,6 +569,49 @@ Actions arrive with the next finished-day report and can be delayed until the
 app runs again; use event period rather than upload date and allow for lag.
 Consent withdrawal stops observation and must not count as sidebar rejection.
 No profile names, gateway addresses, session content, or new identity fields are added.
+
+##### IA redesign interaction counters
+
+With Simplified agent mode enabled, `hermes.desktop.action_use` also accepts
+closed `ia.*` action codes. These reuse the same per-profile collection gate,
+finished-day aggregation, count buckets, retention and opt-in package sender.
+There is no new endpoint, account identifier, or analytics SDK. Collection
+requires `enabled`; outbound packages still require `send` as well. Switching
+the sidebar on does not grant either permission. Unknown codes collapse to
+`other` on both sides. No messages, search strings, chat titles, session IDs,
+profile names, gateway addresses, plugin names or free-text reasons are added.
+Async pin outcomes are discarded after consent, scope or sidebar-mode changes.
+
+| Action family | What it measures |
+| --- | --- |
+| `ia.rail.*`, `ia.drawer.*` | Rail destination clicks, settings drawer opens and menu-group selections. Plugin destinations share the single `plugin` code. Existing keybinding action counters retain shortcut/palette attribution. |
+| `ia.view.*`, `ia.transition.*` | Visible visits and previous-to-current area transitions, including focused chat tiles. Settings and plugin pages are coarse categories, not individual routes. |
+| `ia.backtrack.*` | A→B→A with less than 5 seconds spent in B. This is a navigation pattern, not a dissatisfaction verdict. |
+| `ia.dwell.*` | Visible visit duration buckets: below 5s, 5–30s, 30s–5m, at least 5m. Recorded on area exit or document hide; hidden time is excluded. This is not active reading time or an exact sum of seconds. A crash can lose an unfinished visit. |
+| `ia.session.*` | Session-open requests from Pinned, agent lists, or search, including modifier-click opens. Not a guarantee that loading completed. |
+| `ia.section.*` | User-initiated Pinned/agent/gateway expand and collapse; automatic pinned-chat reveals do not count. |
+| `ia.search.*` | Focus, settled nonempty searches, results/empty/partial failure, result selection and clearing. Queries must settle for 500ms after requests complete. Local matches are included. `early` means a settled search within 10 seconds of sidebar mount, a discovery proxy rather than proof of confusion. |
+| `ia.pin.*` | Request source and confirmed pin/unpin or write failure. Repeated clicks while a write is in flight do not produce additional outcomes. Refresh failure after an acknowledged write is not a pin failure. |
+| `ia.new_session.*` | Sidebar/command/agent-row entry points; picker opened, opened while no stored chat is focused, agent/default selected, or explicitly dismissed. Command entry includes shortcut and command dispatch; existing `session.new` counters distinguish shortcut/palette. |
+| `ia.gateway.*` | Popover opening state, system/logs clicks, reconnect requests, and agent-settings clicks against a known-offline gateway. |
+
+`via=state` distinguishes observations and async outcomes from user clicks;
+these observations do not feed rage-click detection. Reports remain daily
+bucketed counts, not event timelines or exact click totals. Pairing a particular
+navigation with a particular shortcut is not supported. Use matching client
+and gateway releases. If an older gateway rejects `via=state`, the client retries
+the daily report once without IA counters, preserving the existing metrics;
+network errors are not retried by this compatibility path. A consent or scope
+change cancels that retry. Other unknown codes still normalize to `other`.
+
+Deferred: authoritative pin totals and per-profile pin distributions (loaded
+sidebar rows are paginated), reconnect success/duration (the current handler
+can resolve without an established connection), first-message latency, blank
+session abandonment and subsequent agent switches (require draft/tile lifecycle
+correlation), and “dead end” classification (reading a page without clicking is
+not necessarily a failure). No cross-profile tracking is added to approximate
+these. There is no claim of per-section action coverage inside existing pages;
+rail and drawer counts measure navigation, not every control on the destination.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

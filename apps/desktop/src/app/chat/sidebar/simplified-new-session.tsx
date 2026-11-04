@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -16,7 +16,9 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { recordAction } from '@/store/desktop-metrics'
+import { recordIaAction } from '@/store/ia-metrics'
 import { $activeGatewayProfile, $profileColors, $profiles } from '@/store/profile'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { SIMPLIFIED_NEW_SESSION_EVENT } from '@/store/simplified-new-session'
 
@@ -32,12 +34,33 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   const profiles = useStore($profiles)
   const colors = useStore($profileColors)
   const [open, setOpen] = useState(false)
+  const picked = useRef(false)
   const ranked = rankNewSessionAgents(agents, sessions, owner, profile)
   const defaultProfile = profiles.find(item => item.is_default)?.name ?? 'default'
 
+  function changeOpen(next: boolean, source: 'sidebar' | 'command' = 'sidebar') {
+    if (next && !open) {
+      picked.current = false
+
+      if (source === 'sidebar') {
+        recordIaAction('ia.new_session.sidebar')
+      }
+
+      recordIaAction('ia.new_session.picker_opened')
+
+      if (!$focusedStoredSessionId.get()) {
+        recordIaAction('ia.new_session.picker_on_new')
+      }
+    } else if (!next && open && !picked.current) {
+      recordIaAction('ia.new_session.dismissed')
+    }
+
+    setOpen(next)
+  }
+
   function request() {
     if (agents.length > 1) {
-      setOpen(true)
+      changeOpen(true, 'command')
     } else if (agents.length === 1) {
       startSimplifiedAgentSession(agents[0])
     } else {
@@ -52,6 +75,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
       }
 
       event.preventDefault()
+      recordIaAction('ia.new_session.command')
       request()
     }
 
@@ -67,6 +91,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
         recordAction('session.new', 'click')
 
         if (agents.length <= 1) {
+          recordIaAction('ia.new_session.sidebar')
           request()
         }
       }}
@@ -83,7 +108,7 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   }
 
   return (
-    <DropdownMenu onOpenChange={setOpen} open={open}>
+    <DropdownMenu onOpenChange={changeOpen} open={open}>
       <DropdownMenuTrigger asChild>{button}</DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72">
         <DropdownMenuLabel>{c.newSessionIn}</DropdownMenuLabel>
@@ -91,7 +116,11 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
           <DropdownMenuItem
             aria-label={`${agent.label} · ${agent.gateway}`}
             key={agent.id}
-            onSelect={() => startSimplifiedAgentSession(agent)}
+            onSelect={() => {
+              picked.current = true
+              recordIaAction('ia.new_session.specific', 'menu')
+              startSimplifiedAgentSession(agent)
+            }}
           >
             <ProfileGlyph
               color={resolveProfileColor(agent.profile, colors)}
@@ -104,7 +133,11 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          onSelect={() => startSimplifiedAgentSession({ connectionId: owner, profile: defaultProfile })}
+          onSelect={() => {
+            picked.current = true
+            recordIaAction('ia.new_session.default', 'menu')
+            startSimplifiedAgentSession({ connectionId: owner, profile: defaultProfile })
+          }}
         >
           <Codicon name="circle-outline" />
           <span className="flex flex-col">

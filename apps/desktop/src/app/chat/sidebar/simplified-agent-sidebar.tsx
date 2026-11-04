@@ -8,6 +8,7 @@ import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionMatchesSearch } from '@/lib/session-search'
+import { recordIaAction } from '@/store/ia-metrics'
 import { $pinnedSessionIds } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $newChatProfile } from '@/store/profile'
@@ -34,6 +35,7 @@ import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
+import { useIaSearchMetrics } from './use-ia-search-metrics'
 import { useSimplifiedAgents, useSimplifiedOwner } from './use-simplified-agents'
 import { useSimplifiedPinWrites } from './use-simplified-pin-writes'
 import { useSimplifiedSessionSearch } from './use-simplified-session-search'
@@ -90,11 +92,13 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
     row => !row.hidden && !row.archived && !removed.has(row.id) && !removed.has(sessionRowKey(row))
   )
 
+  useIaSearchMetrics(query.trim(), search.pending, search.failed, rows.length)
   const agents = useSimplifiedAgents(rows)
   const pinned = simplifiedPins(all, pinIds, unconfirmed, pinWrites.value)
   const pinnedIds = new Set(pinned.map(row => sessionRowKey(row)))
 
   const shared = {
+    searching: Boolean(query.trim()),
     activeSessionId,
     pinnedIds,
     pinPending: pinWrites.pending,
@@ -167,6 +171,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           containerClassName="mx-0 gap-2.5 px-2 opacity-60 focus-within:opacity-100"
           loading={search.pending}
           onChange={setQuery}
+          onFocus={() => recordIaAction('ia.search.opened')}
           placeholder={t.sidebar.searchPlaceholder}
           value={query}
         />

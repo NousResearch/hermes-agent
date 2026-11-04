@@ -13,6 +13,8 @@ import {
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
+import { recordIaAction } from '@/store/ia-metrics'
+import type { IA_ACTIONS } from '@/store/ia-metrics-contract'
 
 import { COMMAND_CENTER_ROUTE, SETTINGS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
@@ -80,14 +82,21 @@ export function SimplifiedSettingsMenu({ onNavigate }: { onNavigate: (item: Side
         { label: s.advanced, route: settings('config:advanced') }
       ]
     }
-  ]
+  ] as const
 
-  function open(route: string, label: string, icon: string) {
+  function open(route: string, label: string, icon: (typeof IA_ACTIONS.drawer)[number] | 'settings-gear') {
+    recordIaAction(`ia.drawer.${icon === 'settings-gear' ? 'settings' : icon}`, 'menu')
     onNavigate({ id: route, label, route, icon: props => <Codicon name={icon} {...props} /> })
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={open => {
+        if (open) {
+          recordIaAction('ia.drawer.opened')
+        }
+      }}
+    >
       <Tip label={t.commandCenter.settings}>
         <DropdownMenuTrigger asChild>
           <Button aria-label={t.commandCenter.settings} size="icon" variant="ghost">
@@ -130,7 +139,12 @@ export function SimplifiedSettingsMenu({ onNavigate }: { onNavigate: (item: Side
             {t.catalog.documentation}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
-            <DropdownMenuItem onSelect={() => openExternalLink('https://hermes-agent.nousresearch.com/docs/')}>
+            <DropdownMenuItem
+              onSelect={() => {
+                recordIaAction('ia.drawer.documentation', 'menu')
+                openExternalLink('https://hermes-agent.nousresearch.com/docs/')
+              }}
+            >
               {t.catalog.documentation}
             </DropdownMenuItem>
             <DropdownMenuItem

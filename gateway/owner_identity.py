@@ -20,6 +20,11 @@ def host_owner_subject() -> str:
     return owner_worker_subject()
 
 
+def is_host_owner(subject) -> bool:
+    """Whether *subject* is the machine owner's own OS identity."""
+    return bool(subject) and subject == host_owner_subject()
+
+
 def principal_subject(identity: dict) -> str:
     """The subject a connection acts as. Whatever the private control channel or a native grant
     minted (provider ``local``: Desktop, the TUI, the CLI, a managed worker) keeps its subject; every

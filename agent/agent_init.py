@@ -1193,10 +1193,10 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
                     kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
-    for _ident in _GATEWAY_IDENTITY_PARAMS:
-        _val = getattr(agent, f"_{_ident}")
-        if _val:
-            kwargs[_ident] = _val
+    from gateway.owner_identity import is_host_owner
+    kwargs.update({_ident: _val for _ident in _GATEWAY_IDENTITY_PARAMS if (_val := getattr(agent, f"_{_ident}"))})
+    if is_host_owner(agent._user_id):
+        kwargs["user_is_owner"] = True
     if agent.session_cwd:
         kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping

@@ -598,14 +598,17 @@ class HostedRoomService:
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
         gateway_id, epoch = self._owned_authority(room_id)
-        hosted_rooms.request_room_stop(
+        fence = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
             expected_epoch=epoch)
         pending = 0
         with self._policy_lock:
             tasks = {
                 (task["identity"].room_id, task["identity"].task_id): task
-                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)}
+                for task in self._list_tasks(room_id, _STOPPABLE_STATUSES)
+                # A replay retains its original fence; work admitted afterward belongs to the
+                # next message. Disband must drain all work before deleting the room.
+                if require_acknowledged or int(task["payload"]["source_event_seq"]) < int(fence["seq"])}
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))

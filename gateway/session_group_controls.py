@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import uuid
 import weakref
 
 from hermes_state_runtime import RuntimeStoreError
@@ -280,7 +281,7 @@ def _execution_control(service, method, params):
     handlers = {
         'groups.send': send,
         'groups.stop': lambda: {'cancelled': service.stop_room(
-            params.get('room_id'), cancel_id=params.get('cancel_id') or 'desktop-stop')},
+            params.get('room_id'), cancel_id=params.get('cancel_id') or uuid.uuid4().hex)},
         'groups.retry': attempt_control,
         'groups.discard': attempt_control,
         'groups.approve': approve,

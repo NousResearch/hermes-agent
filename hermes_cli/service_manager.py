@@ -318,28 +318,27 @@ def s6_service_up(service_dir: Path) -> bool:
     return result.returncode == 0 and result.stdout.split() == ["true"]
 
 
-# UID/GID of the in-image ``hermes`` user; hardcoded to match what ``stage2-hook.sh`` enforces
-# (tests/docker/test_uid_remap.py). Only matters for root callers; the gateway scandir's
-# s6-supervise already runs as hermes.
-_HERMES_UID = 10000
-_HERMES_GID = 10000
-
-
 def _chown_hermes(path: Path) -> None:
+    """Root-created slot entries belong to the current, possibly remapped hermes account."""
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    import pwd
+
     try:
-        os.chown(path, _HERMES_UID, _HERMES_GID)
-    except PermissionError:
-        # Already running as hermes → the dir is hermes-owned by default; swallowing keeps root
-        # and unprivileged callers on one code path.
-        pass
+        account = pwd.getpwnam("hermes")
+    except KeyError:
+        # Outside the image there may be no hermes account; retain the existing owner.
+        return
+    os.chown(path, account.pw_uid, account.pw_gid)
 
 
 def _seed_supervise_skeleton(svc_dir: Path) -> None:
     """Pre-create hermes-owned ``supervise/`` and top-level ``event/`` inside a service directory.
 
-    s6-supervise (root) creates ``event/``/``supervise/`` 0700 and the control FIFO 0600, so the
-    hermes user gets EACCES on every ``s6-svc``/``s6-svstat``. s6 treats EEXIST as success and skips
-    its chown/chmod fix-up, so seeding before ``s6-svscanctl -a`` makes s6-supervise inherit our
+    s6-supervise creates ``event/``/``supervise/`` 0700 and the control FIFO 0600. Root
+    registration must seed these for the current hermes account before its unprivileged
+    supervisor starts. s6 treats EEXIST as success and skips its chown/chmod fix-up, so
+    seeding before ``s6-svscanctl -a`` makes s6-supervise inherit our
     ownership. ``log/`` gets the same skeleton (its own supervise instance) or unregister teardown
     EACCESes on the logger. Idempotent: existing entries (possibly live FIFOs) are left untouched.
 
@@ -651,6 +650,12 @@ class S6ServiceManager:
             # Mirrors container_boot._register_gateway_slot when start=False.
             if not start_now:
                 (tmp_dir / "down").touch()
+            # Publish a fully hermes-owned slot, not just its control skeleton. Explicit
+            # directory modes keep root's restrictive umask from hiding run/log/run.
+            for path in [tmp_dir, *tmp_dir.rglob("*")]:
+                if path.is_dir() and path in (tmp_dir, tmp_dir / "log"):
+                    path.chmod(0o755)
+                _chown_hermes(path)
             tmp_dir.rename(svc_dir)
         except Exception:
             shutil.rmtree(tmp_dir, ignore_errors=True)

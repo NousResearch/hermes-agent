@@ -214,7 +214,7 @@ async def test_transcript_structured_result_after_snapshot_is_restored():
     assert built[0]._todo_store.snapshot() == {"todos": _TODOS, "revision": 4}
 
 
-async def _canonical_compress(db, tmp_path, monkeypatch, payload=None):
+async def _canonical_compress(db, tmp_path, monkeypatch, payload=None, compressed_head=None):
     from contextlib import nullcontext
     from gateway.session_mutation_compress import prepare_compress
     from agent.context_compressor import ContextCompressor
@@ -223,7 +223,7 @@ async def _canonical_compress(db, tmp_path, monkeypatch, payload=None):
     monkeypatch.setattr("gateway.session_policy.restore_policy", lambda _: policy)
     monkeypatch.setattr("gateway.session_policy.policy_scope", lambda *a, **k: nullcontext())
     monkeypatch.setattr(ContextCompressor, "__init__", lambda *a, **k: None)
-    tail = _compressed_tail()
+    tail = _compressed_tail() if compressed_head is None else compressed_head
     tail[0]["_compressed_summary"] = True
     monkeypatch.setattr(ContextCompressor, "compress", lambda *a, **k: json.loads(json.dumps(tail)))
     runner = SimpleNamespace(_resolve_session_agent_runtime=lambda **_: ("test/model", {}))
@@ -243,7 +243,44 @@ async def test_canonical_compress_restores_summarised_tasks(todo_db, tmp_path, m
     _assert_todo_carried(result["messages"])
     expected = TodoStore()
     expected.restore(_TODOS, revision=3)
-    assert result["messages"][-1]["content"].endswith(expected.format_for_injection())
+    assert any(msg["content"].endswith(expected.format_for_injection()) for msg in result["messages"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plugin", [False, True], ids=["builtin", "plugin"])
+@pytest.mark.parametrize("head_role", ["user", "assistant"], ids=["human-head", "no-human-head"])
+async def test_compress_here_keeps_tail_verbatim_with_archived_todos(
+    todo_db, tmp_path, monkeypatch, plugin, head_role,
+):
+    from hermes_cli.partial_compress import split_history_for_partial_compress
+
+    for msg in _history():
+        todo_db.append_message("sess-todo", msg["role"], msg["content"])
+    before = todo_db.get_messages_as_conversation("sess-todo")
+    _, retained = split_history_for_partial_compress(before, 2)
+    tail_bytes = json.dumps(retained, ensure_ascii=False).encode("utf-8")
+    head = [{"role": "assistant", "content": "Summary", "_compressed_summary": True}]
+    if head_role == "user":
+        head.append({"role": "user", "content": "Earlier work summarised"})
+    if plugin:
+        engine = SimpleNamespace(compress=lambda *a, **k: json.loads(json.dumps(head)))
+        monkeypatch.setattr("gateway.session_mutation_compress._plugin_engine", lambda *a: engine)
+    result, _ = await _canonical_compress(
+        todo_db, tmp_path, monkeypatch, {"focus": "here 2"}, compressed_head=head,
+    )
+    messages = result["messages"]
+    assert json.dumps(messages[-len(retained):], ensure_ascii=False).encode("utf-8") == tail_bytes
+    _assert_todo_carried(messages[:-len(retained)])
+    expected = TodoStore()
+    expected.restore(_TODOS, revision=3)
+    assert messages[-len(retained) - 1] == {"role": "assistant", "content": ""}
+    snapshot_row = messages[-len(retained) - 2]
+    if head_role == "user":
+        assert snapshot_row["content"] == "Earlier work summarised\n\n" + expected.format_for_injection()
+    else:
+        assert snapshot_row == {"role": "user", "content": expected.format_for_injection(),
+                                "_todo_snapshot_synthetic": True}
+    assert todo_db.get_messages_as_conversation("sess-todo") == before
 
 
 @pytest.mark.asyncio

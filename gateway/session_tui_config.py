@@ -237,14 +237,22 @@ def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
     from hermes_cli.models import resolve_fast_mode_overrides
     with _profile_runtime_scope(Path(connection.authority.profile_id)):
         agent = connection.authority.agent(ref)
-        model = getattr(agent, 'model', None) or (policy.current_model(connection.authority) if policy else None)
-        provider = getattr(agent, 'provider', None) or (policy.provider if policy else None)
-        base_url = getattr(agent, 'base_url', None) or (policy.base_url if policy else None)
+        config, model = policy.effective(connection.authority, secrets=False) if policy else ({}, None)
+        route = config.get('model') or {}
+        provider, base_url = route.get('provider'), route.get('base_url')
+        if policy is not None and policy.follows_profile:
+            from gateway.session_policy import route_launch_key
+            access_token = route_launch_key(connection.authority, policy, config) or route.get('api_key')
+        else:
+            model = getattr(agent, 'model', None) or model
+            provider = getattr(agent, 'provider', None) or provider
+            base_url = getattr(agent, 'base_url', None) or base_url
+            access_token = getattr(agent, 'api_key', None)
         if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url) is None:
             return []
         options = ['normal', 'fast', 'auto', 'cold']
         if include_ultrafast and ultrafast_offered(model, provider=provider, base_url=base_url,
-                                                   access_token=getattr(agent, 'api_key', None)):
+                                                   access_token=access_token):
             options.append('ultrafast')
         return options
 

@@ -103,52 +103,113 @@ export const AGENT_MESSAGE_RE =
 // created, art backfill still running), and a permanent negative cache
 // froze the 🤖 glyph until an app restart.
 const AGENT_AVATAR_CACHE_MAX = 128
-export const agentAvatarCache = new LruCache<string, { at: number; url: null | string }>(AGENT_AVATAR_CACHE_MAX)
+interface AvatarProfile {
+  avatar_rev?: number | null
+  has_avatar?: boolean
+  name: string
+}
+
+export const agentAvatarCache = new LruCache<string, { at: number; rev?: number | null; url: null | string }>(
+  AGENT_AVATAR_CACHE_MAX
+)
 const AVATAR_MISS_TTL_MS = 30_000
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
+let avatarCacheGateway = $gateway.get()
 
-// Observer pattern for cache mutations: Components can subscribe to cache changes
-// for a specific handle and re-render when the avatar URL updates (e.g., from a
-// server push or another component's refresh).
+// One revision probe per window, not one timer/RPC per rendered notice.
+// Only mounted senders are watched; image bytes are fetched on revision change.
 const cacheObservers = new Map<string, Set<() => void>>()
+let avatarRefreshTimer: ReturnType<typeof setInterval> | undefined
+let avatarRefreshBusy = false
 
-export function subscribeToCacheChange(handle: string, callback: () => void): () => void {
-  const key = handle.toLowerCase()
-  if (!cacheObservers.has(key)) {
-    cacheObservers.set(key, new Set())
+function profileForHandle(profiles: AvatarProfile[], key: string) {
+  return (
+    profiles.find(profile => profile.name.toLowerCase() === key) ??
+    (key === 'hermes' ? profiles.find(profile => profile.name === 'default') : undefined)
+  )
+}
+
+async function refreshVisibleAvatars() {
+  const gateway = $gateway.get()
+
+  if (!gateway || avatarRefreshBusy) {
+    return
   }
-  cacheObservers.get(key)!.add(callback)
 
-  // Return unsubscribe function
-  return () => {
-    cacheObservers.get(key)?.delete(callback)
+  avatarRefreshBusy = true
+
+  try {
+    const res = await gateway.request<{ profiles?: AvatarProfile[] }>('profiles.list', { include_sessions: false })
+
+    if ($gateway.get() !== gateway) {
+      return
+    }
+
+    await Promise.all([...cacheObservers.keys()].map(key => resolveAgentAvatar(key, res?.profiles ?? [])))
+  } catch {
+    // A disconnected backend must not erase already painted art.
+  } finally {
+    avatarRefreshBusy = false
   }
 }
 
-function notifyCacheChange(handle: string): void {
-  const key = handle.toLowerCase()
-  const observers = cacheObservers.get(key)
-  if (observers) {
-    for (const callback of observers) {
-      try {
-        callback()
-      } catch (e) {
-        console.error('[avatar cache observer error]', e)
-      }
+export function subscribeToCacheChange(handle: string, callback: () => void): () => void {
+  const key = handle.trim().toLowerCase()
+  const observers = cacheObservers.get(key) ?? new Set<() => void>()
+  observers.add(callback)
+  cacheObservers.set(key, observers)
+
+  if (avatarRefreshTimer === undefined) {
+    avatarRefreshTimer = setInterval(() => void refreshVisibleAvatars(), AVATAR_MISS_TTL_MS)
+  }
+
+  return () => {
+    observers.delete(callback)
+
+    if (!observers.size) {
+      cacheObservers.delete(key)
+    }
+
+    if (!cacheObservers.size && avatarRefreshTimer !== undefined) {
+      clearInterval(avatarRefreshTimer)
+      avatarRefreshTimer = undefined
     }
   }
 }
 
-export async function resolveAgentAvatar(handle: string): Promise<null | string> {
+function notifyCacheChange(handle: string): void {
+  for (const callback of cacheObservers.get(handle) ?? []) {
+    callback()
+  }
+}
+
+export async function resolveAgentAvatar(handle: string, roster?: AvatarProfile[]): Promise<null | string> {
   const key = handle.trim().toLowerCase()
 
   if (!key) {
     return null
   }
 
-  const hit = agentAvatarCache.get(key)
+  const gateway = $gateway.get()
 
-  if (hit) {
+  if (avatarCacheGateway !== gateway) {
+    avatarCacheGateway = gateway
+    agentAvatarInflight.clear()
+
+    for (const cachedKey of [...agentAvatarCache.keys()]) {
+      agentAvatarCache.delete(cachedKey)
+    }
+  }
+
+  const hit = agentAvatarCache.get(key)
+  const profile = roster ? profileForHandle(roster, key) : undefined
+
+  const changed =
+    roster !== undefined &&
+    ((!profile?.has_avatar && hit?.url !== null) ||
+      (profile?.avatar_rev !== undefined && profile.avatar_rev !== hit?.rev))
+
+  if (hit && !changed) {
     if (hit.url !== null) {
       return hit.url
     }
@@ -165,25 +226,25 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
     return inflight
   }
 
+  let revision: number | null | undefined
+
   const run = (async (): Promise<null | string> => {
     try {
-      const gateway = $gateway.get()
-
       if (!gateway) {
         return null
       }
 
-      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>('profiles.list', {
-        include_sessions: false
-      })
+      const profiles =
+        roster ??
+        (
+          await gateway.request<{ profiles?: AvatarProfile[] }>('profiles.list', {
+            include_sessions: false
+          })
+        )?.profiles ??
+        []
 
-      const profiles = res?.profiles ?? []
-      let profile = profiles.find(p => p.name.toLowerCase() === key)
-
-      // 'hermes' is the conventional alias for the primary profile.
-      if (!profile && key === 'hermes') {
-        profile = profiles.find(p => p.name === 'default')
-      }
+      const profile = profileForHandle(profiles, key)
+      revision = profile?.avatar_rev
 
       if (!profile?.has_avatar) {
         return null
@@ -196,17 +257,24 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
       return asset?.found && asset.data ? asset.data : null
     } catch {
-      // Older gateway (no profiles.* RPCs) or transient failure — the 🤖
-      // glyph fallback is always correct.
-      return null
-    } finally {
-      agentAvatarInflight.delete(key)
+      revision = hit?.rev
+
+      return hit?.url ?? null
     }
   })()
 
   agentAvatarInflight.set(key, run)
   const out = await run
-  agentAvatarCache.set(key, { at: Date.now(), url: out })
+
+  if (agentAvatarInflight.get(key) === run) {
+    agentAvatarInflight.delete(key)
+  }
+
+  if ($gateway.get() !== gateway) {
+    return avatarCacheGateway === $gateway.get() ? agentAvatarCache.get(key)?.url ?? null : null
+  }
+
+  agentAvatarCache.set(key, { at: Date.now(), rev: revision, url: out })
   notifyCacheChange(key)
 
   return out
@@ -236,9 +304,8 @@ export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
     }
   }, [handle])
 
-  // Subscribe to cache mutations: if another source updates the avatar in the cache,
-  // this component will render the fresh URL (e.g., server push, art backfill completion,
-  // or another tab updating the avatar). When url is null (avatar removed), resymbolize to 🤖.
+  // Keep notices already on screen in sync with the shared revision probe.
+  // Null is a real update: a removed avatar must restore the robot fallback.
   useEffect(() => {
     const unsubscribe = subscribeToCacheChange(handleLower, () => {
       const cached = agentAvatarCache.get(handleLower)

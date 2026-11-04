@@ -1,30 +1,33 @@
 name: shortrizz
 repo: https://github.com/mojomast/hermes-shortrizz
-sha: 4abcb7d11239a3a5121f451fc159a01d1c593bff
-version: "0.1.0"
+sha: 5b1dbd4bc096427611d424b18972927d27171e95
+version: "0.2.0"
 description: >-
   Skill id shortrizz:shortrizz-clipper. Self-hosted AI clipper: turn a long
   video (yt-dlp URL or local file) into captioned 9:16 shorts. Transcribes on
-  CPU with faster-whisper, picks 30-60 s moments with an LLM (or a built-in
-  heuristic), reframes with face tracking and burns in word-by-word captions
-  (Hormozi, MrBeast, Abdaal or custom styles). Writes MP4s, clips.json and an
-  HTML gallery. Renders run as background jobs; poll shortrizz_status.
-  Publishing is a dry-run plan only; nothing is uploaded. Downloads the video
-  you name with yt-dlp; the optional LLM call sends the transcript to the
-  OpenAI-compatible endpoint you configure. Needs ffmpeg on PATH. Only clip
-  content you have rights to.
+  CPU with faster-whisper, picks moments with an LLM (or a built-in
+  heuristic), reframes with face tracking and burns in face-aware
+  word-by-word captions (Hormozi, MrBeast, Abdaal or custom styles).
+  Optional edits: filler/restart cuts, cold-open hook, emoji pops, tight
+  20-35 s mode, skipping moments used by earlier runs, and a stock Kokoro
+  narrator intro/CTA (weights download on first use; never clones voices).
+  Writes MP4s, clips.json and an HTML gallery. Renders run as background
+  jobs; poll shortrizz_status. Publishing is a dry-run plan only; nothing is
+  uploaded. Downloads the video you name with yt-dlp; the optional LLM call
+  sends the transcript to the OpenAI-compatible endpoint you configure. Needs
+  ffmpeg on PATH. Only clip content you have rights to.
 maintainer: mojomast
 tier: community
 category: tools
 title: Shortrizz
-docs_url: https://github.com/mojomast/hermes-shortrizz/blob/4abcb7d11239a3a5121f451fc159a01d1c593bff/README.md
+docs_url: https://github.com/mojomast/hermes-shortrizz/blob/5b1dbd4bc096427611d424b18972927d27171e95/README.md
 readme: true
 platforms: []
-image: https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/banner.png
+image: https://raw.githubusercontent.com/mojomast/hermes-shortrizz/5b1dbd4bc096427611d424b18972927d27171e95/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/styles.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/gallery.jpg
-  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/contact-sheet.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/5b1dbd4bc096427611d424b18972927d27171e95/docs/media/styles.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/5b1dbd4bc096427611d424b18972927d27171e95/docs/media/gallery.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/5b1dbd4bc096427611d424b18972927d27171e95/docs/media/contact-sheet.jpg
 capabilities:
   provides_tools:
     - shortrizz_make_shorts

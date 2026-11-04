@@ -342,10 +342,16 @@ _PS_FORCE = r"-fo(?:r(?:c(?:e)?)?)?\b"
 _PS_FORCE_ONLY_F = r"-f(?:o(?:r(?:c(?:e)?)?)?)?\b"
 _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 # powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
-# (sudo, env, cmd /c, ssh <host>), with an optional directory prefix (`C:\\...\\powershell.exe`).
+# (sudo -u bob, env FOO=1, timeout 5, xargs, wsl, cmd /c, ssh -p 22 <host>; option tokens may carry
+# one value; ssh and cmd /c may quote the remote command), with an optional directory prefix (`C:\\...\\powershell.exe`). The prefix excludes
+# `(){}` and backticks so a run of them is not re-scanned from every position (quadratic).
+_PS_LAUNCHER_OPTIONS = r"(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?|\s+\w+=\S*)*"
 _PS_EXE_AT_COMMAND_POSITION = (
-    r"(?:^|[;&|({`\n]|\b(?:sudo|env|exec|nohup|start)\s|\bcmd(?:\.exe)?\s+/[ck]\s|\bssh\s+[^\s;&|-]\S*\s)"
-    r"\s*(?:[^\s;&|\"']*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+    r"(?:^|[;&|({`\n]"
+    r"|\b(?:sudo|doas|env|exec|nohup|start|time|nice|command|xargs|wsl|busybox|timeout\s+\S+)"
+    + _PS_LAUNCHER_OPTIONS + r"\s"
+    r"|\bcmd(?:\.exe)?\s+/[ck]\s+[\"']?|\bssh(?:\s+-\S+(?:\s+[^\s;&|-]\S*)?)*\s+[^\s;&|-]\S*\s+[\"']?)"
+    r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
 DANGEROUS_PATTERNS = [
@@ -376,8 +382,8 @@ DANGEROUS_PATTERNS = [
     # position (or behind sudo/cmd /c/ssh <host>) and the quote must open its first non-flag argument,
     # so `echo powershell "gci | ri"`, `pwsh -v; jq ".a | del(.b)"` and `cd ~/powershell-scripts &&
     # git grep "a|rd"` stay quiet, and an outer-shell `powershell -c Get-Date; rm notes.txt` is left
-    # to the rm rules.
-    (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+["\'][^"\'\n]*[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
+    # to the rm rules. The span runs to the OUTER quote, so a nested `'C:\\work dir'` cannot end it.
+    (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+(?:"[^"\n]*|\'[^\'\n]*)[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
      "Windows PowerShell destructive delete (later in the script)"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
@@ -638,10 +644,15 @@ DANGEROUS_PATTERNS_COMPILED = [
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
-    # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`); a quoted script PowerShell really
-    # runs is matched by the anchored "later in the script" rule instead.
-    "PowerShell destructive delete (alias after pipe)",
 })
+# A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
+# quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.
+_PS_PIPE_ALIAS_DESCRIPTION = "PowerShell destructive delete (alias after pipe)"
+_PS_QUOTED_SCRIPT_LAUNCHER_RE = re.compile(
+    r"(?<![\w.-])(?:ssh|iex|invoke-expression|invoke-command|icm|pwsh|powershell|wsl|runas|start-process"
+    r"|start-job|saps)(?:\.exe)?(?![\w-])|\bcmd(?:\.exe)?\s+/[ck]\b",
+    _RE_FLAGS,
+)
 
 # Content-level rules (ported from tirith in #133832, where they were separate findings with their own
 # keys). They describe WHAT the command carries rather than which verb runs it, so a command that also
@@ -1767,6 +1778,12 @@ def _word_may_run_curl_or_wget(word: str) -> bool:
     return not unquoted.startswith("-") and not _ENV_ASSIGNMENT_RE.fullmatch(word) and ("$" in word or "`" in word)
 
 
+def _quoted_text_is_executed(variant: str, masked_lower: str) -> bool:
+    """Whether an unquoted launcher (ssh, cmd /c, iex, a pipe into pwsh) or a shell carrier runs the
+    command's quoted text as code, so the pipe-alias rule must not treat it as prose."""
+    return bool(_PS_QUOTED_SCRIPT_LAUNCHER_RE.search(masked_lower)) or _contains_shell_carrier(variant)
+
+
 def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = None):
     """Yield the description (= pattern key) of every dangerous match, in detection order; may repeat.
     *only* restricts the scan to those pattern rules and skips the parser-limit, execution-flag and
@@ -1784,12 +1801,15 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in patterns:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS or description == _PS_PIPE_ALIAS_DESCRIPTION:
                 if masked_lower is None:
                     masked_lower = _lower_preserving_flags(
                         _mask_quoted_prose(command_variant)
                     )
-                if pattern_re.search(masked_lower):
+                if pattern_re.search(masked_lower) or (
+                    description == _PS_PIPE_ALIAS_DESCRIPTION and pattern_re.search(command_lower)
+                    and _quoted_text_is_executed(command_variant, masked_lower)
+                ):
                     yield description
             elif description == _CREDENTIAL_UPLOAD_DESCRIPTION:
                 matches = list(pattern_re.finditer(command_lower))

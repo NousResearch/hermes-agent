@@ -109,7 +109,27 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
-def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
+def _seed_editable_members(seed_text: str) -> set[str]:
+    """Read exact editable package sources, not comments or path substrings."""
+    import tomllib
+
+    try:
+        document = tomllib.loads(seed_text)
+    except tomllib.TOMLDecodeError:
+        # This is only a representative preference; uv diagnoses a bad seed.
+        return set()
+    members = set()
+    packages = document.get("package", [])
+    for package in packages if isinstance(packages, list) else []:
+        source = package.get("source", {}) if isinstance(package, dict) else {}
+        editable = source.get("editable") if isinstance(source, dict) else None
+        if isinstance(editable, str):
+            members.add(editable)
+    return members
+
+
+def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *,
+                        source: Path, seed_text: str = "") -> None:
     """Snapshot core and plugin build inputs into a fresh generation."""
     source = source.resolve()
     if root.resolve() == source or source.is_relative_to(root.resolve()):
@@ -119,27 +139,34 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = []
-    buildable = {}  # [project].name -> (source tree, installed identity)
+    selected = []  # (source tree, installed identity), in config order
+    buildable = {}  # [project].name -> indices of distinct fold groups
+    seeded = _seed_editable_members(seed_text)
     for identity, entry in member_sources(plugin_dirs).items():
         if not _is_member_candidate(entry):
             continue
-        # A buildable member keeps its declared [project].name (uv verifies it
-        # against the metadata its backend produces), so the same buildable
-        # plugin enabled in two profiles sharing a gateway would declare one
-        # name twice and fail `uv lock` with "Two workspace members are both
-        # named …". Fold only copies with identical source bytes AND effective
-        # external path inputs; equal declarations can resolve sibling paths
-        # against different installed identities, including staged sources.
+        # Buildable members keep their declared name. Fold only equal source
+        # bytes AND effective external path inputs, resolved against installed
+        # identities even when a Mapping supplies separate staged sources.
         name = _buildable_member_name(entry)
-        if name is not None:
-            seen = buildable.get(name)
-            if (seen is not None and _same_member_source(seen[0], entry)
-                    and _external_member_source_paths(seen[0], seen[1])
+        groups = buildable.setdefault(name, []) if name is not None else []
+        for index in groups:
+            seen_entry, seen_identity = selected[index]
+            if (_same_member_source(seen_entry, entry)
+                    and _external_member_source_paths(seen_entry, seen_identity)
                     == _external_member_source_paths(entry, identity)):
-                continue
-            buildable[name] = (entry, identity)
-        members.append(_workspace_member(entry, root, identity=identity).relative_to(root).as_posix())
+                # Decide before copying: a prior lock can still ask uv to load
+                # the old editable path even if config order has changed.
+                if (f"plugin-sources/{_member_key(identity)}" in seeded
+                        and f"plugin-sources/{_member_key(seen_identity)}" not in seeded):
+                    selected[index] = (entry, identity)
+                break
+        else:
+            groups.append(len(selected))
+            selected.append((entry, identity))
+
+    members = [_workspace_member(entry, root, identity=identity).relative_to(root).as_posix()
+               for entry, identity in selected]
 
     if members:
         import tomllib
@@ -462,9 +489,11 @@ def lock_and_sync(
     if root.exists() or root.is_symlink():
         raise InstallError("venv", f"workspace must be fresh: {root}")
     if replay is None:
-        _generate_pyproject(plugin_dirs, root, source=source)
+        seed_bytes = seed_lock.read_bytes() if seed_lock is not None else b""
+        _generate_pyproject(plugin_dirs, root, source=source,
+                            seed_text=seed_bytes.decode("utf-8-sig", errors="replace"))
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            (root / "uv.lock").write_bytes(seed_bytes)
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

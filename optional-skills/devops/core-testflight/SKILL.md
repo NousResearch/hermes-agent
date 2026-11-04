@@ -1,7 +1,7 @@
 ---
 name: core-testflight
-description: Verify, prepare, and install exact iOS builds through TestFlight using Core Secrets and App Store Connect.
-version: 2.0.0
+description: Verify exact iOS TestFlight builds and device installation.
+version: 3.0.0
 author: Peter Beddow, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -22,6 +22,25 @@ Use this procedure for Accessible Core iOS TestFlight work. Keep these states se
 6. that exact build is installed on the intended device.
 
 Never use one state as proof of another. Never claim `DONE` until the requested installation state is directly evidenced.
+
+This skill treats a release receipt as historical evidence, not as proof of what is currently installed. Every release attempt must produce a current provenance report that ties one GitHub commit to one Xcode Cloud run, one TestFlight build, and one device readback. Use the checker shipped at `scripts/verify-release-provenance.py`; a failed or unavailable device readback is `BLOCKED`, never `DONE`.
+
+## Required release record
+
+Before building, create a new, non-overwriting release record with these sections:
+
+```text
+GitHub commit:
+Xcode Cloud build:
+TestFlight build:
+Target build:
+PHN-01 installed build:
+Installation method:
+Verification evidence:
+Outcome: DONE / BLOCKED / FAILED
+```
+
+The current record must contain the exact bundle ID, marketing version, target build number, GitHub ref and 40-character commit SHA, Xcode Cloud workflow/run IDs, Xcode Cloud source commit and build number, TestFlight build record and availability, target device identifier, installation method, and fresh device evidence containing the installed `CFBundleVersion`. A historical receipt may be linked for context but cannot fill a missing current field.
 
 ## Safety and ownership
 
@@ -44,28 +63,21 @@ Record these values before acting. Never substitute “latest,” a workflow num
 - intended tester/device;
 - source commit and Xcode Cloud workflow.
 
-For the verified Accessible Capture release:
-
-```text
-bundle ID: com.accessiblecore.capture
-marketing version: 1.0
-build: 72
-source commit: 1c89ab662722a53f7189ae01f3f8d26654fb157f
-ref: native-auth-client
-Xcode Cloud workflow: Capture
-workflow ID: E38EEB84-A954-4181-BEEF-D5FC9502DADC
-TestFlight group: Accessible Core
-```
+Do not copy current release values from an earlier receipt. The examples under `examples/` are historical records only; the current target must be written from the active GitHub checkout, Xcode Cloud run, TestFlight read, and device readback.
 
 ## Source and Xcode Cloud
 
-From the established native checkout, inspect before pushing:
+From the established native checkout, inspect before building or pushing:
 
 ```bash
 git status --short
 git diff --check
 git rev-parse HEAD
+git branch --show-current
+git ls-remote origin refs/heads/{ref}
 ```
+
+Classify every untracked path as `pre-existing`, `intended`, or `generated-and-reviewed` in the current release record. An unclassified path blocks the release. Ensure every intended source change is committed and the exact commit is present on the authoritative GitHub ref before building. Never use `rm`, checkout, reset, or overwrite to make the checkout appear clean; preserve existing receipts and write a new receipt/report path for each attempt.
 
 The existing workflow watches `native-auth-client` and is triggered by a source-ref change:
 
@@ -73,7 +85,9 @@ The existing workflow watches `native-auth-client` and is triggered by a source-
 git push origin native-auth-client
 ```
 
-Do not create a no-op commit merely to force a run. Confirm that the Xcode Cloud run identifies the requested source commit exactly, completed successfully, and produced the requested version/build. A local build, simulator launch, archive, or Xcode Cloud check alone does not prove TestFlight availability.
+Do not create a no-op commit merely to force a run. Confirm that the Xcode Cloud run identifies the requested GitHub commit exactly, completed successfully, and produced the requested version/build. Record the workflow ID, run ID, source commit, archive status, and build number in the current report. A local build, simulator launch, archive, or Xcode Cloud check alone does not prove TestFlight availability.
+
+After Xcode Cloud succeeds, perform a separate fresh App Store Connect/TestFlight read for that exact build. Record the build record ID, processing/QC/compliance state, group membership, tester visibility, and source/build tuple. Xcode Cloud success and TestFlight availability are separate gates; either missing gate blocks installation.
 
 If Xcode Cloud reports `action_required`, `Preparing build for App Store Connect failed`, or another preparation failure, record that failure separately. Do not change signing, build numbers, or workflow configuration just to force another run.
 
@@ -231,7 +245,9 @@ Try all agent-controlled steps first:
 4. wait for installation to finish;
 5. inspect the device for the exact bundle ID and `CFBundleVersion`.
 
-`xcrun devicectl` provides device discovery, process launch, and app inspection, but it does not provide a supported command to press TestFlight's in-app Install control. Do not substitute `devicectl device install app`, `ios-deploy`, or a local IPA: those are direct installs, not TestFlight installation.
+`xcrun devicectl` provides device discovery, process launch, and app inspection, but it does not provide a supported command to press TestFlight's in-app Install control. Do not substitute `devicectl device install app`, `ios-deploy`, or a local IPA for a requested TestFlight installation; if a direct installation is intentionally used for a separate development test, record it as `direct-device-install`, not TestFlight.
+
+After installation, read the current app record from PHN-01 using a reliable, structured device inspection method. Require the current record to identify the exact bundle ID, marketing version, and `CFBundleVersion`. Compare the read `CFBundleVersion` with the intended build number. A missing app record, an empty result, a socket failure, an owner statement without a named build, a successful launch, or a historical receipt is not installation evidence. If the installed version cannot be read reliably, preserve the last verified installed state and report `BLOCKED`.
 
 Therefore:
 
@@ -259,7 +275,7 @@ Parse the structured result and require:
 - installed `CFBundleVersion` equals the target build number;
 - the device and app record are current, not a stale saved file.
 
-A successful `process launch` is not installation evidence. In the verified November 2026 run, `devicectl device info apps` did not enumerate the TestFlight-installed record even though Peter directly confirmed that Build 72 was installed. In that situation, preserve the command result, accept Peter's direct confirmation of the exact build as the installation evidence, and do not pretend that the device tool independently supplied the version. If Peter only says “it is installed” without naming the exact build, the installed gate remains incomplete.
+If the structured result is empty, missing the target app, missing `CFBundleVersion`, or cannot be read, preserve the last verified installed build and report `BLOCKED`. Do not replace this gate with a historical receipt, TestFlight visibility, a successful launch, or owner confirmation. A release can be marked `DONE` only after the current device readback matches the intended build.
 
 ## Mandatory release receipt
 
@@ -284,9 +300,15 @@ After exact installation evidence:
 python3 scripts/verify-testflight-receipt.py RECEIPT.json --require installed
 ```
 
-The receipt is the communication boundary. Preserve failed validation as evidence of a missing gate; never edit unknown values merely to make validation pass.
+The receipt is the historical communication boundary. Preserve failed validation as evidence of a missing gate; never edit unknown values merely to make validation pass. Before declaring a release complete, also validate the separate current provenance report:
 
-## Verified Build 72 record
+```bash
+python3 optional-skills/devops/core-testflight/scripts/verify-release-provenance.py CURRENT-RELEASE.json
+```
+
+This checker rejects commit mismatches, unclassified untracked files, mismatched build numbers, unavailable TestFlight state, and any device result that does not contain a fresh matching `CFBundleVersion`.
+
+## Historical Build 72 record
 
 The tested receipt is:
 
@@ -304,15 +326,17 @@ The record shows Build 72 as `VALID`, internally testable, compliance complete, 
 
 ## Final reporting
 
-Report separately:
+For every release, report exactly:
 
-- source published;
-- Xcode Cloud archive;
-- App Store Connect processing/compliance;
-- group assignment;
-- tester access;
-- tester-visible build;
-- installed build;
-- any remaining physical or tooling limitation.
+```text
+GitHub commit: <40-character SHA>
+Xcode Cloud build: <workflow ID / run ID / source commit / archive status / build>
+TestFlight build: <record ID / availability / processing / QC / compliance / tester visibility>
+Target build: <marketing version / build number / bundle ID>
+PHN-01 installed build: <fresh CFBundleVersion read, or BLOCKED>
+Installation method: <TestFlight, or direct-device-install for a separate development test>
+Verification evidence: <current device readback path and result>
+Outcome: DONE / BLOCKED / FAILED
+```
 
-Never report TestFlight success from an Xcode Cloud result or TestFlight launch alone. Never say Peter needs to do nothing while an agent-owned verification remains, a background process is active, or the exact installation evidence is missing.
+Never report `DONE` when PHN-01's current installed build is unknown or does not equal the target. Never report a direct-device-install as a TestFlight installation. Keep historical receipts immutable and separate from the current release report. Never say Peter needs to do nothing while an agent-owned provenance or installation gate remains.

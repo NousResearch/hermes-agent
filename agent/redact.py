@@ -253,8 +253,12 @@ _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0
 # passed; only the value is masked. ``-p`` is scoped to a container ``login`` because
 # everywhere else it is a port or a path.
 # Each quote style is matched on its own, so ``"Abc'def ghi"`` is consumed whole instead of
-# falling back to ``\S+`` at the apostrophe and leaving the tail visible.
-_QUOTED_FLAG_VALUE = r"\"[^\"\n]+\"|'[^'\n]+'|\S+"
+# falling back to ``\S+`` at the apostrophe and leaving the tail visible. A double-quoted
+# value honours backslash escapes (``"a\"b c"``) and a single-quoted one the shell's
+# ``'\''`` splice, and either may span a newline. The body is capped and possessive: an
+# unterminated quote falls back to ``\S+`` after at most 512 characters instead of
+# rescanning the rest of the text from every flag.
+_QUOTED_FLAG_VALUE = r"\"(?:\\[\s\S]|[^\"\\]){1,512}+\"|'(?:'\\''|[^']){1,512}+'|\S+"
 _CLI_SECRET_FLAG_RE = re.compile(
     r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
     r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
@@ -278,8 +282,9 @@ _CLI_LOGIN_P_RE = re.compile(
 _CONNSTR_SECRET_KEY_RE = re.compile(
     r"(?P<flag>(?<![^;,?&'\"\s])(?:AccountKey|SharedAccessKey|(?P<sas>SharedAccessSignature))"
     r"(?:=|[ \t]*+=[ \t]*+(?=[A-Za-z+/]*[0-9])(?=[A-Za-z0-9+/]{16,}={0,2}(?![\w.(]))))"
-    # A SAS value is itself a query string (``sv=…&sig=…``): it runs to the next ``;``.
-    r"(?P<value>(?(sas)[^;\s'\"]+|[^;\s'\"&]+))",
+    # A SAS value is itself a query string (``sv=…&sig=…``): it runs through the ``sig=``
+    # parameter and stops there, or at a ``;`` / ``)`` / ``,`` / ``|`` / backtick delimiter.
+    r"(?P<value>(?(sas)(?:(?!sig=)[^;\s'\"&),`|]++&)*+(?:sig=)?[^;\s'\"&),`|]*+|[^;\s'\"&]+))",
     re.IGNORECASE,
 )
 
@@ -490,7 +495,7 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # ``signing_key`` / ``privateKey`` are credentials at any length, the same policy
     # is_secret_field_name applies to mappings, so JSON text and dicts agree.
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
-            or _is_qualified_key_name(key)
+            or (_is_qualified_key_name(key) and not _CONFIG_PLACEHOLDER_VALUE_RE.fullmatch(value))
             or _looks_like_opaque_credential(value))
 
 
@@ -841,8 +846,16 @@ def _mask_token(token: str) -> str:
     return mask_secret(token, head=6, tail=4, floor=18)
 
 
-# Output of an earlier pass: masking it again would erase the kind it keeps visible.
-_REDACTION_MARKER_PREFIXES = ("***", "«redacted", "[REDACTED")
+# Output of an earlier pass: masking it again would erase the kind it keeps visible. Only a
+# value that IS a marker is skipped; ``***MyRealPass9`` or ``"«redacted:ghp_…» tail"`` still
+# carries cleartext. An unquoted ``[REDACTED PRIVATE KEY]`` reaches here cut at its space.
+_REDACTION_MARKER_RE = re.compile(r"\*{3}|«redacted(?::[^»\s]*|-secret)»|\[REDACTED(?: PRIVATE KEY\])?")
+
+
+def _is_redaction_marker(match: "re.Match[str]", value: str) -> bool:
+    if value == "[REDACTED":
+        return match.string.startswith(" PRIVATE KEY]", match.end("value"))
+    return _REDACTION_MARKER_RE.fullmatch(value) is not None
 
 
 def _mask_flag_value(match: "re.Match[str]", mask=None) -> str:
@@ -852,7 +865,7 @@ def _mask_flag_value(match: "re.Match[str]", mask=None) -> str:
     so a file read never hands back a head/tail value shaped like a usable key (#35519)."""
     value = match.group("value")
     stripped = value.strip("'\"")
-    if not stripped or stripped.startswith(_REDACTION_MARKER_PREFIXES):
+    if not stripped or _is_redaction_marker(match, stripped.strip()):
         return match.group(0)
     # ``--password=$DB_PASS`` / ``--token=${TOKEN}`` name a variable; the reference is
     # not the credential and masking it would make the command unreplayable.
@@ -959,6 +972,9 @@ def _is_python_repr_secret_key(key: str) -> bool:
     return _is_qualified_key_name(key)
 
 
+# A qualified key masks short values too, except a sample or switch that cannot be the
+# credential: ``{"encryptKey": "true"}``, ``master_key: default``, ``"<your key>"``.
+_CONFIG_PLACEHOLDER_VALUE_RE = re.compile(r"<[^<>]*>|true|false|yes|no|null|none|default", re.IGNORECASE)
 _KEY_SECRET_QUALIFIERS = frozenset({
     "secret", "private", "signing", "encryption", "encrypt", "master", "hmac",
     "symmetric", "access",

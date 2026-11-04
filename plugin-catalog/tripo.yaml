@@ -1,7 +1,7 @@
 name: tripo
-title: Tripo 3D
+title: Tripo3D
 repo: https://github.com/Tripo-Developer/tripo-hermes-plugin
-sha: f0dad15fc43040d8e6835aababcf445d9da4c75d
+sha: f758f554c99acb86f7b1ad2700619f1dcf00264a
 version: "0.1.0"
 description: >-
   Tripo's official plugin, made by VAST, the company behind Tripo. Tripo's own tripo-cli (pinned

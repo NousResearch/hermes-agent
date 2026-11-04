@@ -2009,6 +2009,17 @@ def _configured_compression_context_length(agent: Any) -> Optional[int]:
         return None
 
 
+def _configured_custom_providers(agent: Any) -> Optional[list]:
+    """The provider entries as configured now, for measuring the compression model (a side task reads
+    them from config.yaml); the list captured at agent start when config cannot be read."""
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        return get_compatible_custom_providers(load_config_readonly())
+    except Exception:
+        logger.debug("Provider entries unreadable; using the ones from agent start", exc_info=True)
+        return getattr(agent, "_custom_providers", None)
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
@@ -2070,7 +2081,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
         else:
             aux_context = get_model_context_length(
                 aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
-                provider=_aux_provider, custom_providers=agent._custom_providers,
+                provider=_aux_provider, custom_providers=_configured_custom_providers(agent),
             )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:

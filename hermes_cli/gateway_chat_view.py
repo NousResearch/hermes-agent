@@ -121,6 +121,7 @@ class GatewayChatView:
         # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
         # guarded model switch stays a refusal instead of a prompt.
         self._composer = None
+        self._confirming = False
         # `/undo` puts the removed message back in the composer for the next prompt.
         self.prefill = ""
 
@@ -452,10 +453,13 @@ class GatewayChatView:
         print(f"\n!!! {confirmation_title(refusal)} !!!\n{refusal['confirm_message']}\n")
         for index, (_, label, detail) in enumerate(choices, 1):
             print(f"  {index}. {label} \u2014 {detail}")
+        self._confirming = True
         try:
             raw = await self._read_line(self._composer, t("cli.model.confirm_choice_prompt"))
         except (KeyboardInterrupt, EOFError):
             raw = ""
+        finally:
+            self._confirming = False
         if not self.failure and confirm_choice(raw, choices) == "once":
             return True
         print(t("cli.model.switch_cancelled"))
@@ -601,7 +605,12 @@ class GatewayChatView:
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
             # The classic status bar's leading segments: model, then the attached session.
-            prompt = PromptSession(**configure_gateway_prompt_session_kwargs(self.model, self.session_id))
+            from hermes_cli.config_effective import load_user_config_effective
+            composer_config = await asyncio.to_thread(load_user_config_effective)
+            prompt = PromptSession(**configure_gateway_prompt_session_kwargs(
+                self.model, self.session_id, composer_config,
+                blocked=lambda: self._confirming,
+                toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} "))
             prompt_symbol = get_active_prompt_symbol("❯ ")
             self._composer = prompt if sys.stdin.isatty() else None
             with patch_stdout():

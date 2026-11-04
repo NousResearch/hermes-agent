@@ -134,6 +134,12 @@ def test_focus_mode_and_modal_changes_reset_armed_state(monkeypatch):
     modal["open"] = False
     assert not _armed(app, state)  # no stale arming after the modal closes
 
+    # A reused PromptSession resets its app before the next prompt; no follower survives it.
+    _press(app, " ")
+    app.reset()
+    app.vi_state.input_mode = InputMode.NAVIGATION
+    assert not _armed(app, state)
+
     modal["open"] = True
     _press(app, " ")
     assert not _armed(app, state)
@@ -221,3 +227,46 @@ def test_status_bar_vim_mode_label_reflects_leader():
 
     app.vi_state.input_mode = InputMode.INSERT
     assert cli_mod.HermesCLI._vim_mode_label(stub) == "INSERT"
+
+def test_gateway_modal_gate_and_live_toolbar():
+    modal = {"open": False}
+    live = {"model": "first", "session": "one"}
+    kwargs = configure_gateway_prompt_session_kwargs("ignored", "ignored", {"display": {"vim_mode": True}},
+        blocked=lambda: modal["open"], toolbar=lambda: f"{live['model']} {live['session']}")
+    app, buf, _ = _app(kwargs["key_bindings"], text="", cursor=0)
+    with set_app(app):
+        assert kwargs["bottom_toolbar"]() == "first one"
+        live.update(model="second", session="two")
+        assert kwargs["bottom_toolbar"]() == "second two"
+        _press(app, " ")
+        assert "[LEADER]" in kwargs["bottom_toolbar"]()
+        modal["open"] = True
+        assert kwargs["bottom_toolbar"]() == ""
+        modal["open"] = False
+        assert "[LEADER]" not in kwargs["bottom_toolbar"]()
+        modal["open"] = True
+        _press(app, " ", "p")
+        assert buf.text == ""
+
+
+def test_registered_cli_bindings_only_accept_main_composer(monkeypatch):
+    from cli import HermesCLI
+    from prompt_toolkit.widgets import TextArea
+
+    monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture",
+                    base_url="http://127.0.0.1:1/v1")
+    cli._tui_init_run_state()
+    cli._vim_mode = True
+    main, other = TextArea(), TextArea()
+    cli._input_area = main
+    app = Application(layout=Layout(HSplit([main, other]), focused_element=other),
+                      key_bindings=cli._tui_build_key_bindings(), editing_mode=EditingMode.VI,
+                      input=DummyInput(), output=DummyOutput())
+    app.timeoutlen = None
+    app.vi_state.input_mode = InputMode.NAVIGATION
+    _press(app, " ")
+    assert not _armed(app, cli._vim_leader_state)
+    app.layout.focus(main)
+    _press(app, " ")
+    assert _armed(app, cli._vim_leader_state)

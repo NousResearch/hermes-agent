@@ -45,6 +45,7 @@ class VimLeaderState:
         self._control: Any = None
         self._skip_next_key_hook = False
         self._hooked_processor: Any = None
+        self._hooked_app: Any = None
 
     def arm(self, app: Any) -> None:
         self._control = app.layout.current_control
@@ -53,6 +54,17 @@ class VimLeaderState:
         if self._hooked_processor is not app.key_processor:
             app.key_processor.after_key_press += self._after_key_press
             self._hooked_processor = app.key_processor
+        if self._hooked_app is not app:
+            app.on_reset += self._reset
+            app.before_render += self._check_context
+            self._hooked_app = app
+
+    def _reset(self, _app: Any) -> None:
+        self.disarm()
+        self._skip_next_key_hook = False
+
+    def _check_context(self, app: Any) -> None:
+        self.is_armed(app)
 
     def disarm(self) -> None:
         self._control = None
@@ -166,13 +178,18 @@ def is_vim_mode_enabled(config: Optional[dict[str, Any]] = None) -> bool:
 
 def configure_gateway_prompt_session_kwargs(
     model: str, session_id: str, config: Optional[dict[str, Any]] = None,
+    *, blocked: Callable[[], bool] = lambda: False,
+    toolbar: Optional[Callable[[], str]] = None,
 ) -> dict[str, Any]:
     """PromptSession kwargs for ``gateway_chat_view``; Vi mode + leader when ``display.vim_mode``."""
     vim_enabled = is_vim_mode_enabled(config)
-    state = VimLeaderState()
+    state = VimLeaderState(blocked)
 
     def _toolbar() -> str:
-        base = f" \u2624 {model} \u2502 {session_id} "
+        if blocked():
+            state.disarm()
+            return ""
+        base = toolbar() if toolbar is not None else f" \u2624 {model} \u2502 {session_id} "
         return base + "\u2502 [LEADER] " if vim_enabled and state.is_armed() else base
 
     kwargs: dict[str, Any] = {"erase_when_done": True, "bottom_toolbar": _toolbar}

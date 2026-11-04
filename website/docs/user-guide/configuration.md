@@ -2776,7 +2776,13 @@ backend alike. Each server process reads them once at startup: restart every
 process sharing that room store after changing them.
 
 These are ceilings, not targets or a guarantee of task completion. Discussions
-can settle early, and Stop and approval gates remain in effect.
+can settle early, and Stop and approval gates remain in effect. Reaching one pauses
+the discussion; **Continue** in the room (`groups.continue`) grants it one more
+budget of `max_rounds` and `max_messages`, at most 5 times per discussion.
+
+Rooms set to pick who answers automatically (Room settings, `routing: auto`) make
+one short JSON model call per unaddressed message through `auxiliary.group_router`
+(provider/model/timeout like every other auxiliary task; default timeout 20 s).
 
 ## Unauthorized DM Behavior
 

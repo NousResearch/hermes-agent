@@ -1616,6 +1616,32 @@ export const jaOverrides = {
     restartNow: '今すぐ再起動',
     restarting: '再起動中…',
     restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'ボットトークン不要',
+      intro: (platform: string) => `${platform} は共有の Hermes ボット経由でこのエージェントに届きます。${platform} アカウントをリンクし、ボットにメッセージを送るとエージェントと話せます。`,
+      link: (platform: string) => `${platform} をリンク`,
+      linkAnother: (platform: string) => `別の ${platform} アカウントをリンク`,
+      linkedAccounts: 'リンク済みアカウント',
+      unlink: 'リンク解除',
+      unlinkFailed: 'アカウントのリンクを解除できませんでした',
+      stepOpen: (platform: string) => `1. スマートフォンでコードを読み取るか、${platform} でボットを開きます。`,
+      stepSend: '2. リンクしたいアカウントから、ボットに次のメッセージを送ります:',
+      open: (platform: string) => `${platform} を開く`,
+      copy: 'メッセージをコピー',
+      copied: 'コピーしました',
+      copyFailed: (command: string) => `コピーできませんでした。${command} と入力してください。`,
+      waiting: 'ボットがメッセージを受け取るのを待っています。コードは1回だけ使えます。',
+      linked: (platform: string) => `${platform} アカウントをリンクしました。ボットにメッセージを送るとエージェントと話せます。`,
+      expired: 'コードは使われる前に期限切れになりました。新しいコードを取得してもう一度お試しください。',
+      refused: (platform: string) => `${platform} がリンクを拒否しました。新しいコードを取得してもう一度お試しください。`,
+      qrAlt: (platform: string) => `共有 ${platform} ボットの QR コード`,
+      managed: 'Team Gateway が管理',
+      managedNote: (platform: string) => `このインスタンスではメッセージを Team Gateway が扱うため、ゲートウェイは起動のたびに ${platform} の直接接続をオフにします。リレーと併用するには、ゲートウェイの環境に GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true を設定してください（直接接続があるとインスタンスがゼロまでスケールダウンできず、メッセージが二重に届くことがあります）。`,
+      managedIntro: 'このエージェントのアカウントは Nous Portal からリンクします。',
+      openPortal: 'Nous Portal でアカウントをリンク',
+      noNewAccount: (platform: string) => `コードは無効になり、新しいアカウントは表示されませんでした。${platform} アカウントが一覧にない場合は、新しいコードを取得してもう一度お試しください。`
+    },
     telegramQr: {
       title: 'Telegram ボットの接続方法を選択',
       subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
@@ -2924,7 +2950,9 @@ export const jaOverrides = {
       ultra: 'ウルトラ',
       sendsOnRoute: (level: string) => `このルートでは ${level} を送信`,
       updateFailed: 'モデルオプションの更新に失敗しました',
-      fastFailed: '高速モードの更新に失敗しました'
+      fastFailed: '高速モードの更新に失敗しました',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak の更新に失敗しました'
     },
     gatewayMenu: {
       gateway: 'ゲートウェイ',

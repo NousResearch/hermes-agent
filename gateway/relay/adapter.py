@@ -17,7 +17,8 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from functools import partial
+from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 # Native admission refusals a redelivery cannot change (sender, route or payload).
 _PERMANENT_REFUSALS = frozenset({'permission_denied', 'invalid_params', 'admission_conflict',
                                  'profile_mismatch', 'not_found'})
+
+
+class _MediaNotDelivered(NamedTuple):
+    """The send_media lane was available but a local file never reached the platform."""
+    reason: str
+
 
 # The drain-path going-idle ACK budget must stay strictly under the runner's
 # default adapter disconnect timeout (5s) or cancellation fires before
@@ -423,12 +430,14 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         subject: Any = None,
         platform: Optional[str] = None,
         surface_declines: bool = False,
+        surface_ambiguous: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Emit one best-effort, op-gated frame; None when the caller must fall back.
 
         None covers every unavailability: op not advertised (probe the descriptor
         instead of parsing a connector error), no transport, transport raised, or a
-        structured connector decline (logged at ``decline_level``; None = silent).
+        structured connector decline (logged at ``decline_level``; None = silent);
+        a lost ack too, unless ``surface_ambiguous`` (a fallback there would re-send).
         """
         op = action["op"]
         if self._transport is None or not self.descriptor.supports_op(op):
@@ -441,6 +450,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             logger.debug("relay %s transport failure", op, exc_info=True)
             return None
         if not result.get("success"):
+            if surface_ambiguous and result.get("ambiguous"):  # frame sent, outcome unknown
+                return result
             # P5(b): an AUTHORIZATION decline is not lane unavailability. This
             # helper's `None` means "lane absent — do your fallback", and the
             # fallbacks re-address the SAME chat by another route (media -> a
@@ -1098,7 +1109,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 value = getattr(src, attr, None)
                 if value:
                     cache[chat] = str(value)
-            # Triggering message ts for the typing/status lane's synthetic thread anchor.
+            # Latest message ts: the status anchor for typing frames that carry no turn's own anchor.
             message_id, _chat = _event_ids(event)
             if message_id:
                 self._last_inbound_ts_by_chat[chat] = str(message_id)
@@ -1483,23 +1494,28 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         return effective_reply_to
 
     def _with_status_thread_anchor(
-        self, chat_id: str, metadata: Optional[dict[str, Any]]
+        self, chat_id: str, metadata: Optional[dict[str, Any]], anchor: Optional[str] = None
     ) -> dict[str, Any]:
-        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's
-        status line is THREAD-scoped and the typing lane's metadata carries no anchor
-        for a top-level DM, so synthesize it from the per-chat inbound-ts cache. Shared
-        by ``send_typing`` and ``stop_typing`` — the clear MUST target the same thread
-        the heartbeat set or the status sticks until Slack's timeout."""
+        """Copy ``metadata`` with the typing/status thread anchor applied. Slack's status
+        line is THREAD-scoped and a top-level DM turn's metadata names no thread, so its
+        status sits on ``anchor``, the turn's own message. A turn fixes it at start
+        (``status_metadata_for_turn``) and its refreshes and clear reuse it: the clear MUST
+        target the thread the heartbeat set or the status sticks. Without one (event-less
+        callers) it falls back to the chat's latest inbound ts, which a later message moves."""
         md = dict(metadata or {})
         if (
             not (md.get("thread_id") or md.get("thread_ts"))
             and self._platform_by_chat.get(str(chat_id)) == _SLACK
             and self._chat_type_by_chat.get(str(chat_id)) == "dm"
         ):
-            anchor = self._last_inbound_ts_by_chat.get(str(chat_id))
+            anchor = anchor or self._last_inbound_ts_by_chat.get(str(chat_id))
             if anchor:
-                md["thread_id"] = anchor
+                md["thread_id"] = str(anchor)
         return md
+
+    def status_metadata_for_turn(self, chat_id: str, anchor: str, metadata: Optional[dict]) -> dict[str, Any]:
+        """``helpers.typing_metadata_for_turn`` hook: the turn's typing metadata, status anchor fixed."""
+        return self._with_status_thread_anchor(chat_id, metadata, anchor)
 
     async def edit_message(
         self,
@@ -1587,13 +1603,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         """One ``typing`` frame (``content`` None = omit; "" = Slack clear). Cosmetic: never raises."""
         # Thread anchor for the status surface. Slack's status line ("is thinking…" in the thread's replies
         # footer — works with plain chat:write, confirmed on native no-assistant bots) is THREAD-only: the
-        # connector's typing case no-ops without a thread_ts. But the typing lane's metadata (base.py
-        # _thread_metadata_for_source) has no anchor for a top-level DM — source.thread_id is None — so
-        # every heartbeat was silently dropped. In thread-per-message mode the turn's thread root IS the
-        # triggering message ts (run.py's synthetic root); synthesize it here from the per-chat inbound
-        # cache, exactly like native send_typing resolves thread_ts from metadata.message_id. Flat mode
-        # (reply_in_thread=false) keeps the no-anchor no-op: there is no thread and must not be one
-        # (#18859).
+        # connector's typing case no-ops without a thread_ts. A top-level DM turn's typing metadata already
+        # names its own message (fixed at turn start); see _with_status_thread_anchor for the fallback.
         md = self._with_status_thread_anchor(chat_id, metadata)
         frame: dict[str, Any] = {"op": "typing", "chat_id": chat_id, "metadata": self._with_scope(chat_id, md)}
         if content is not None:
@@ -1686,12 +1697,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         filename: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
-    ) -> Optional[SendResult]:
+    ) -> Optional[SendResult | _MediaNotDelivered]:
         """Egress one media object via the connector's ``send_media`` op. ``source`` is
         a LOCAL path (uploaded to /relay/media first — the connector cannot reach our
         filesystem) or an already-public URL (passed through). None when the lane is
-        unavailable (op not advertised, no transport, upload failed, connector
-        decline) so each caller falls back to its pre-media behaviour."""
+        unavailable (op not advertised, no transport, no media client) so each caller
+        falls back to its pre-media behaviour; ``_MediaNotDelivered`` when the lane was
+        there but a LOCAL file never reached the platform (upload failed after its
+        retries, connector decline/transport failure): the caller still falls back, but
+        reports the send failed (``_send_local_media``)."""
         if self._transport is None or not self.descriptor.supports_op("send_media"):
             return None
         source_url = source
@@ -1699,9 +1713,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             client = self._get_media_client()
             if client is None:
                 return None
-            uploaded = await client.upload(source, filename=filename)
+            uploaded, why = await client.upload_with_error(source, filename=filename)
             if not uploaded:
-                return None
+                return _MediaNotDelivered(f"relay media upload failed: {why}")
             source_url = uploaded
         # Same Slack thread-anchor contract as the text lane: media frames go through
         # the connector's Slack sender too (threadTs() reads metadata only).
@@ -1718,12 +1732,13 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         }
         if filename:
             action["filename"] = filename
-        # A capacity decline (size cap, platform rejection) is logged and the
-        # caller's fallback still delivers the caption/notice; an
-        # AUTHORIZATION decline must NOT degrade that way (surface_declines).
-        result = await self._gated_op(chat_id, action, surface_declines=True)
+        # Capacity decline -> caller's fallback notice; AUTHORIZATION decline never degrades.
+        result = await self._gated_op(chat_id, action, surface_declines=True, surface_ambiguous=True)
         if result is None:
-            return None
+            return _MediaNotDelivered("connector did not deliver the attachment") if source_is_path else None
+        if result.get("ambiguous"):  # ack lost: possibly delivered (as cron's live-send timeout); no notice/re-send
+            logger.warning("relay send_media to %s unconfirmed (ack lost): %s", chat_id, result.get("error"))
+            return SendResult(success=True, raw_response={"ambiguous": True, "error": result.get("error")})
         if not result.get("success"):
             # An AUTHORIZATION refusal, surfaced by _gated_op. Returning None
             # would hand the caller back to its fallback — a DIFFERENT op
@@ -1752,73 +1767,58 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             chat_id, image_url, caption=caption, reply_to=reply_to, metadata=metadata
         )
 
-    async def send_image_file(
-        self,
-        chat_id: str,
-        image_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="image", source=image_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_image_file(
-            chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    # The local-file overrides share ``_send_local_media`` (send_media lane, else the base
+    # fallback notice; a file the lane dropped is reported as a failed send).
+    async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
+                              reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                              **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "image", image_path, caption, reply_to, metadata, partial(
+            super().send_image_file, chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="voice", source=audio_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_voice(
-            chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "voice", audio_path, caption, reply_to, metadata, partial(
+            super().send_voice, chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_video(
-        self,
-        chat_id: str,
-        video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        result = await self._send_media(
-            chat_id, media_kind="video", source=video_path, source_is_path=True,
-            caption=caption, reply_to=reply_to, metadata=metadata,
-        )
-        return result if result is not None else await super().send_video(
-            chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata, **kwargs
-        )
+    async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "video", video_path, caption, reply_to, metadata, partial(
+            super().send_video, chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata,
+            **kwargs))
 
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
-        **kwargs,
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        return await self._send_local_media(chat_id, "document", file_path, caption, reply_to, metadata, partial(
+            super().send_document, chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to,
+            metadata=metadata, **kwargs), filename=file_name)
+
+    async def _send_local_media(
+        self, chat_id: str, media_kind: str, path: str, caption: Optional[str], reply_to: Optional[str],
+        metadata: Optional[dict[str, Any]], fallback: Callable[[], Awaitable[SendResult]],
+        filename: Optional[str] = None,
     ) -> SendResult:
+        """One local file through the send_media lane, else ``fallback`` (the base caption +
+        "couldn't send" notice). When the lane was available but the file still never arrived,
+        the notice goes out exactly as before, yet the send is reported FAILED: cron, the
+        send_message tool and the turn tracker must not record a dropped attachment as sent.
+        ``failure_notice_sent`` stops the turn dispatcher from posting a second notice."""
         result = await self._send_media(
-            chat_id, media_kind="document", source=file_path, source_is_path=True,
-            caption=caption, filename=file_name, reply_to=reply_to, metadata=metadata,
+            chat_id, media_kind=media_kind, source=path, source_is_path=True, caption=caption,
+            filename=filename, reply_to=reply_to, metadata=metadata,
         )
-        return result if result is not None else await super().send_document(
-            chat_id, file_path, caption=caption, file_name=file_name, reply_to=reply_to, metadata=metadata, **kwargs
+        if isinstance(result, SendResult):
+            return result
+        shown = await fallback()
+        if result is None:
+            return shown
+        return SendResult(
+            success=False, message_id=shown.message_id, error=f"attachment not delivered: {result.reason}",
+            raw_response={"failure_notice_sent": bool(shown.success), "fallback": shown.raw_response},
         )
 
     # ── Phase 3 interactive: prompt + react ──────────────────────────────

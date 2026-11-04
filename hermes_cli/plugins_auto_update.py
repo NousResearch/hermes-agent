@@ -53,6 +53,19 @@ def plugin_update_lock(target: Path) -> Iterator[None]:
         yield
 
 
+# ── installs the user held ────────────────────────────────────────────────────────────────────
+
+HELD_WITH_REF = "held with --ref (installed off the catalog pin); `hermes plugins update {name}` moves it"
+
+
+def held_with_ref(record: Any) -> bool:
+    """A catalog install the user put on a commit of their choosing (``install <name> --ref <sha>``:
+    ``pinned`` with an empty ``catalog.pin``). Only an explicit ``hermes plugins update <name>`` moves
+    it: unattended paths would otherwise silently undo a deliberate rollback."""
+    block = record.get("catalog") if isinstance(record, dict) else None
+    return isinstance(block, dict) and record.get("pinned") is True and not block.get("pin")
+
+
 # ── the auto-update switch ────────────────────────────────────────────────────────────────────
 
 def auto_update_state() -> dict[str, Any]:
@@ -118,8 +131,10 @@ def update_all_unattended() -> dict[str, Any]:
     results = run_checks(plugins_dir)
     record_check_results(results, checked)
     plan = plan_update_all(results)
-    return {"results": [_apply_one(row.name) for row in plan.movable],
-            "skipped": [{"name": row.name, "reason": reason} for row, reason in plan.skipped],
+    held = [row for row in plan.movable if held_with_ref(checked.get(row.name))]
+    return {"results": [_apply_one(row.name) for row in plan.movable if row not in held],
+            "skipped": [{"name": row.name, "reason": reason} for row, reason in plan.skipped]
+                       + [{"name": row.name, "reason": HELD_WITH_REF.format(name=row.name)} for row in held],
             "current": plan.current}
 
 
@@ -162,7 +177,8 @@ def plugins_slash_action(parts: list[str]) -> list[str]:
 
 def catalog_pins_behind(home: Path) -> list[str]:
     """Catalog installs under *home* whose installed pin is not the in-tree catalog's pin. Offline:
-    reads the install records and the catalog shipped with this checkout."""
+    reads the install records and the catalog shipped with this checkout. An install held with
+    ``--ref`` is not behind: the user chose that commit."""
     from hermes_cli.plugin_catalog import get_catalog_entry
     from hermes_cli.plugins_cmd_catalog import at_catalog_pin
     from hermes_cli.plugins_provenance import read_sidecar_rows
@@ -170,7 +186,7 @@ def catalog_pins_behind(home: Path) -> list[str]:
     behind = []
     for name, row in read_sidecar_rows(home / "plugins").items():
         block = row.get("catalog") if isinstance(row, dict) else None
-        if not isinstance(block, dict) or not block.get("name"):
+        if not isinstance(block, dict) or not block.get("name") or held_with_ref(row):
             continue
         entry = get_catalog_entry(str(block["name"]))
         if entry is not None and not at_catalog_pin(block, entry.sha):

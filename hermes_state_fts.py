@@ -236,6 +236,38 @@ def base_source_view_is_stale(cursor: sqlite3.Cursor) -> bool:
     return row is not None and _stored_form(row[0]) != _expected_stored_sql(FTS_SQL, "VIEW", "messages_fts_src")
 
 
+# The rows each external-content index should hold. ``COUNT(*)`` on the FTS table itself reads its content view, not
+# the index, so parity counts the docsize shadow (one row per indexed rowid). ``messages_fts_src`` is 1:1 with
+# ``messages``.
+_FTS_PROJECTION_SOURCES = (("messages_fts", "messages"), ("messages_fts_trigram", "messages_fts_trigram_src"))
+
+
+def fts_projection_counts(cursor: sqlite3.Cursor) -> dict[str, tuple[int, int]]:
+    """``{table: (indexed rows, source rows)}`` for each present FTS table. COUNT(*) over every row: operator
+    paths only (optimize-storage, recover), never the open path."""
+    present = _stored_vtables(cursor)
+    return {
+        table: (int(cursor.execute(f"SELECT COUNT(*) FROM {table}_docsize").fetchone()[0]),
+                int(cursor.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0]))
+        for table, source in _FTS_PROJECTION_SOURCES if table in present
+    }
+
+
+def fts_projection_short(cursor: sqlite3.Cursor) -> bool:
+    """An index on the current layout does not hold exactly its source rows (#72716 follow-up).
+
+    The open-time empty check probes only whether the base index has any row, so a truncated trigram index, or a
+    base index missing most of ``messages``, used to be stamped complete with nothing for optimize-storage to do.
+    An older layout is optimize-storage's demote work already, and an unrecognised one is left alone.
+    """
+    if not fts_layout_current(cursor):
+        return False
+    try:
+        return any(indexed != source for indexed, source in fts_projection_counts(cursor).values())
+    except sqlite3.OperationalError:
+        return True  # docsize shadow or source view missing under a present index: it cannot be complete
+
+
 # FTS5 shadow tables the virtual-table engine owns. `sqlite3 .recover` re-emits them
 # as ordinary tables but cannot re-emit the CREATE VIRTUAL TABLE row, so every later
 # CREATE VIRTUAL TABLE fails with "fts5: error creating shadow table <name>: table

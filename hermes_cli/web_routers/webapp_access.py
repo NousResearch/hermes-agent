@@ -39,7 +39,8 @@ _CHANGE_POLL_SECONDS = 0.05
 # minutes: the pane says what is happening, and a pane opened meanwhile shows the Start running
 # instead of offering it. A record lives from the request's arrival (``preparing`` while another
 # change holds the lock) until the restart it asked for serves the new config, fails, is replaced
-# by a Stop or Restart, or outlasts the pane's own wait for it. Mutated on the event loop only.
+# by a Stop, a Restart or a later Start's restart, or outlasts the pane's own wait for it. Mutated
+# on the event loop only.
 _STARTS: dict[Optional[str], list[dict]] = {}
 #: How long a Start's restart is followed after its request answers: as long as the pane waits.
 _RESTART_FOLLOW_SECONDS = 90.0
@@ -85,7 +86,8 @@ def _drop(gateway: Optional[str], record: dict) -> None:
 
 
 def _drop_followed(gateway: Optional[str]) -> None:
-    """A Stop or Restart replaces the restart a finished Start is followed by."""
+    """A Stop, a Restart or a later Start's restart replaces the restart a finished Start is
+    followed by."""
     for record in [r for r in _STARTS.get(gateway, ()) if "restart_pid" in r]:
         _drop(gateway, record)
 
@@ -219,6 +221,7 @@ async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
             if result.get("restart_started") and result.get("restart_pid") is not None:
                 # Followed past the request: until the restarted gateway serves this config, a pane
                 # opened now shows the Start restarting, not the saved change waiting for a restart.
+                _drop_followed(gateway)
                 record.update(restart_pid=result["restart_pid"], replaces=replaces,
                               follow_until=time.monotonic() + _RESTART_FOLLOW_SECONDS)
             else:

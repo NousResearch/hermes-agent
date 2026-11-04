@@ -4,6 +4,7 @@ All functions are stateless; AIAgent._build_system_prompt() combines the pieces
 with memory and ephemeral prompts.
 """
 
+import codecs
 import contextvars
 import json
 import logging
@@ -50,6 +51,21 @@ def _get_context_file_read_timeout() -> float:
     return _CONTEXT_FILE_READ_TIMEOUT_SECS
 
 
+def _read_text_any_bom(path: Path, encoding: str) -> str:
+    """``path.read_text(encoding)``, except a UTF-16 BOM file decodes as UTF-16 instead of raising.
+
+    Windows PowerShell 5.1 (``Out-File``, ``>``) writes UTF-16 with a BOM; read as UTF-8 that raised and
+    the context file (AGENTS.md, SOUL.md, ...) was silently skipped.
+    """
+    try:
+        return path.read_text(encoding=encoding)
+    except UnicodeDecodeError:
+        raw = path.read_bytes()
+        if not raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            raise
+        return raw.decode("utf-16").replace("\r\n", "\n").replace("\r", "\n")  # read_text's newlines
+
+
 def _read_text_with_timeout(
     path: Path, timeout: Optional[float] = None, encoding: str = "utf-8-sig"
 ) -> Optional[str]:
@@ -66,7 +82,7 @@ def _read_text_with_timeout(
 
     def _reader() -> None:
         try:
-            result.put((True, path.read_text(encoding=encoding)))
+            result.put((True, _read_text_any_bom(path, encoding)))
         except Exception as exc:  # re-raised on the caller thread
             result.put((False, exc))
 

@@ -244,3 +244,20 @@ def test_managed_worker_turn_carries_the_committed_surface_to_the_model(tmp_path
     assert turns['plain'] == ('main-model', 'PLAIN_TURN'), 'the following typed turn carries no surface'
     # The voice route rewrites only its own request's model identity; main-model turns share one prefix.
     assert len({r['messages'][0]['content'] for r in model.requests if r['model'] == 'main-model'}) == 1
+
+
+def test_over_limit_voice_context_keeps_the_newest_turns():
+    """A live-voice window over the limit reaches the model as "Recent spoken conversation, newest
+    last", so the clipped head must be the OLDEST lines: dropping the tail drops what the user just
+    said. The clip also has to start at a line boundary and stay stable when a managed turn re-checks
+    it through admission again."""
+    from gateway.session_surface import admit_surface, _VOICE_CONTEXT_LIMIT
+
+    lines = [f'User: line {i:03d} ' + 'x' * 60 for i in range(150)]
+    kept = admit_surface({'surface': 'voice-live', 'voice_context': '\n'.join(lines)})['surface_v1']['voice_context']
+
+    assert len(kept) <= _VOICE_CONTEXT_LIMIT
+    assert kept.splitlines()[-1] == lines[-1], 'the newest line the user just said must survive'
+    assert lines[0] not in kept
+    assert kept.startswith('User: line '), 'the window starts at a turn, not mid-line'
+    assert admit_surface({'surface': 'voice-live', 'voice_context': kept})['surface_v1']['voice_context'] == kept

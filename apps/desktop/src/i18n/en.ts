@@ -4212,10 +4212,7 @@ export const en: Translations = {
           action: 'Compact conversation',
           busyHint: 'Finish or stop the current reply first',
           confirm: 'Compact',
-          failed: 'Compaction failed',
           hint: 'Summarize older context to make room. Continue in this same conversation.',
-          pending: 'compression still running in the background',
-          progress: 'compressing context...',
           question: 'Compress this chat into a summary?',
           working: 'Compacting…'
         },
@@ -4286,9 +4283,12 @@ export const en: Translations = {
     terminalCloseAll: 'Close all',
     terminalNewOn: 'New terminal on…',
     terminalGatewayRemoved: 'Removed gateway',
-    terminalGatewayRemovedBody: "The gateway this terminal ran on was removed, so it can't reopen. Close this tab.",
-    terminalGatewayNoShellBody: "This gateway has no shell access, so this terminal can't reopen. Close this tab.",
-    terminalDisconnectedBody: 'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
+    terminalGatewayRemovedBody:
+      'The gateway this terminal ran on was removed, so it can\'t reopen. Close this tab.',
+    terminalGatewayNoShellBody:
+      'This gateway has no shell access, so this terminal can\'t reopen. Close this tab.',
+    terminalDisconnectedBody:
+      'Terminal disconnected. Press Enter to start a new shell; scrollback is preserved.',
     terminalDropUploadFailed: name => `Could not upload ${name}`,
     terminalDropTooLargeTitle: 'Too large to upload',
     terminalDropTooLarge: (names, limit) => `Each file can be up to ${limit}. Not uploaded: ${names}`,

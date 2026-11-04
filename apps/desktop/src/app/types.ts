@@ -62,22 +62,16 @@ export interface SessionCompressResponse {
   host_ack?: {
     output?: string
   }
-  /** `false` with `lock_held` when another process holds the compression lock
-   *  for this session: the request was answered, nothing was compressed. */
-  compressed?: boolean
   info?: {
     title?: string
     usage?: Partial<UsageStats>
   }
-  lock_held?: boolean
   messages?: SessionMessage[]
   /** Set with `status: 'pending'` when the gateway's compute-host wait expired
    *  while compression is still running; the transcript refreshes from the
    *  pushed session.info / `compacted` status edge (#97948). */
   message?: string
   removed?: number
-  /** `compressed` | `aborted` | `pending` (in-process route); `noop` |
-   *  `preview` (canonical owner); absent on a committed canonical receipt. */
   status?: string
   summary?: {
     aborted?: boolean

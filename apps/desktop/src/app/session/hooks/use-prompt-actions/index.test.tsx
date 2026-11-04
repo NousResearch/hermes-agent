@@ -4,7 +4,6 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SESSION_COMPRESS_TIMEOUT_MS } from '@/app/session/compress-session'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
 import { textPart } from '@/lib/chat-messages'
@@ -36,6 +35,7 @@ import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
 import { clearStoredJournal, storedJournal } from './prepared-submissions-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
+import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 
 // Suites in this file reuse the same stored-id constants. The module-level single-flight resume map
 // (and drift-recovery cache) would otherwise leak a never-settling in-flight promise from one test into the next.

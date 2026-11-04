@@ -7,7 +7,6 @@ import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
 import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
-import type { CompressSessionOutcome } from '@/app/session/compress-session'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextMeterDetail, ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -92,7 +91,6 @@ interface StatusbarItemsOptions {
   changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
   chatOpen: boolean
   commandCenterOpen: boolean
-  compressConversation?: (sessionId: string) => Promise<CompressSessionOutcome>
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
   gatewayState: string
@@ -139,7 +137,6 @@ export function useStatusbarItems({
   changeSessionCwd,
   chatOpen,
   commandCenterOpen,
-  compressConversation,
   extraLeftItems,
   extraRightItems,
   gatewayState,
@@ -329,17 +326,7 @@ export function useStatusbarItems({
     sessionId: activeSessionId
   })
 
-  // The gauge's one verb. State lives in the hook (not the popover) because a
-  // manual compress is LLM-bound: the dropdown closes long before the summary
-  // lands, and the action must survive that. The claim follows the chat's
-  // DURABLE id so a stale-runtime re-mint mid-flight cannot re-enable the
-  // button over the running call.
-  const compactConversation = useCompactConversation({
-    busy,
-    compress: compressConversation,
-    sessionId: activeSessionId,
-    storedSessionId: primaryFocused ? selectedStoredSessionId : (focusedStateStoredId ?? focusedStoredSessionId)
-  })
+  const compactConversation = useCompactConversation({ busy, sessionId: activeSessionId })
 
   // The breakdown wins whenever we have one, for two reasons: it reports the
   // MEASURED occupancy once the backend has it (falling back to the estimate

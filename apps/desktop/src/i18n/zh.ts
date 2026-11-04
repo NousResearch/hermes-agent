@@ -4055,10 +4055,7 @@ export const zhOverrides = {
           action: '压缩对话',
           busyHint: '请先完成或停止当前回复',
           confirm: '压缩',
-          failed: '压缩失败',
           hint: '总结较早的上下文以腾出空间，继续当前对话。',
-          pending: '压缩仍在后台进行',
-          progress: '正在压缩上下文…',
           question: '将此对话压缩为摘要？',
           working: '正在压缩…'
         },
@@ -4130,9 +4127,12 @@ export const zhOverrides = {
     terminalCloseAll: '关闭全部',
     terminalNewOn: '新建终端于…',
     terminalGatewayRemoved: '已移除的网关',
-    terminalGatewayRemovedBody: '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
-    terminalGatewayNoShellBody: '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
-    terminalDisconnectedBody: '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
+    terminalGatewayRemovedBody:
+      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody:
+      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody:
+      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 

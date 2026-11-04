@@ -60,3 +60,31 @@ def test_unconfigured_provider_sends_no_session_header():
             headers = build_api_kwargs(agent, _MSGS).get("extra_headers") or {}
             assert _HEADER not in headers and "x-opencode-session" not in headers
         assert _HEADER not in _aux_headers("sess-A")
+
+
+def test_hermes_native_session_and_trace_headers():
+    from agent.opencode_affinity import (
+        HERMES_SESSION_HEADER,
+        HERMES_TRACE_HEADER,
+        custom_provider_session_affinity_headers,
+        merge_session_affinity_headers,
+    )
+
+    # Boolean True enables both x-hermes-session-id and x-hermes-trace-id
+    with patch("hermes_cli.config.get_custom_provider_session_affinity_header", return_value=True):
+        headers = custom_provider_session_affinity_headers(_BASE, "sess-native")
+        assert headers[HERMES_SESSION_HEADER] == "sess-native"
+        assert headers[HERMES_TRACE_HEADER].startswith("htr-")
+
+    # Explicit canonical header name enables trace header as well
+    with patch("hermes_cli.config.get_custom_provider_session_affinity_header", return_value="x-hermes-session-id"):
+        headers = custom_provider_session_affinity_headers(_BASE, "sess-native-named")
+        assert headers[HERMES_SESSION_HEADER] == "sess-native-named"
+        assert headers[HERMES_TRACE_HEADER].startswith("htr-")
+
+    # Pinned caller trace ID is preserved during merge
+    with patch("hermes_cli.config.get_custom_provider_session_affinity_header", return_value=True):
+        kwargs = {"extra_headers": {"x-hermes-trace-id": "pinned-trace"}}
+        merged = merge_session_affinity_headers(kwargs, None, _BASE, "sess-pinned")
+        assert merged["extra_headers"][HERMES_SESSION_HEADER] == "sess-pinned"
+        assert merged["extra_headers"][HERMES_TRACE_HEADER] == "pinned-trace"

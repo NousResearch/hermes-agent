@@ -28,6 +28,8 @@ import uuid
 from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
+HERMES_SESSION_HEADER = "x-hermes-session-id"
+HERMES_TRACE_HEADER = "x-hermes-trace-id"
 
 
 def opencode_transport(provider: Optional[str], model: Optional[str], base_url: Optional[str]) -> tuple[Optional[str], str]:
@@ -115,7 +117,7 @@ def custom_provider_session_affinity_headers(
     base_url: Optional[str],
     session_id: Optional[str] = None,
 ) -> dict[str, str]:
-    """Return ``{<session_affinity_header>: <key>}`` when the route's provider entry declares one, else ``{}``."""
+    """Return session affinity / trace headers when the route's provider entry declares one, else ``{}``."""
     try:
         from hermes_cli.config import get_custom_provider_session_affinity_header
 
@@ -125,7 +127,24 @@ def custom_provider_session_affinity_headers(
     if not header:
         return {}
     key = resolve_affinity_key(session_id)
-    return {header: key} if key else {}
+    if not key:
+        return {}
+
+    # Standard Hermes session & trace headers when configured as True, "hermes" or "default"
+    if header is True or (isinstance(header, str) and header.lower() in ("true", "hermes", "default")):
+        return {
+            HERMES_SESSION_HEADER: key,
+            HERMES_TRACE_HEADER: f"htr-{uuid.uuid4().hex[:16]}",
+        }
+
+    # When explicitly configured as the canonical x-hermes-session-id header, emit trace id as well
+    if isinstance(header, str) and header.lower() == HERMES_SESSION_HEADER:
+        return {
+            HERMES_SESSION_HEADER: key,
+            HERMES_TRACE_HEADER: f"htr-{uuid.uuid4().hex[:16]}",
+        }
+
+    return {header: key}
 
 
 def merge_session_affinity_headers(

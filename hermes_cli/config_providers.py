@@ -8,7 +8,7 @@ so tests patching that module still intercept the call.
 
 import logging
 import re
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 from hermes_cli.route_identity import normalize_route_base_url
@@ -270,7 +270,11 @@ def _normalize_custom_provider_entry(
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
-    _put("session_affinity_header", _stripped("session_affinity_header"))
+    session_affinity_header = entry.get("session_affinity_header")
+    if isinstance(session_affinity_header, bool):
+        normalized["session_affinity_header"] = session_affinity_header
+    elif isinstance(session_affinity_header, str) and session_affinity_header.strip():
+        normalized["session_affinity_header"] = session_affinity_header.strip()
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -515,14 +519,18 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
 def get_custom_provider_session_affinity_header(
     base_url: str,
     custom_providers: Optional[list[dict[str, Any]]] = None,
-    config: Optional[dict[str, Any]] = None) -> str:
-    """Header NAME declared as ``session_affinity_header`` on the route-matching entry, else "".
+    config: Optional[dict[str, Any]] = None,
+) -> Union[str, bool]:
+    """Header NAME declared as ``session_affinity_header`` on the route-matching entry,
+    or True to emit standard Hermes headers (``x-hermes-session-id`` / ``x-hermes-trace-id``), else "".
 
     Opt-in per provider (default off): Hermes never ships a session identifier to an endpoint
     that did not ask for one (#86241).
     """
     for entry in _entries_for_route(base_url, custom_providers, config):
         header = entry.get("session_affinity_header")
+        if isinstance(header, bool):
+            return header
         if isinstance(header, str) and header.strip():
             return header.strip()
     return ""

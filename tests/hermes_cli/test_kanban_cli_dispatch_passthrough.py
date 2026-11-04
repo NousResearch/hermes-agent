@@ -96,3 +96,35 @@ def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypat
     )
 
 
+def _parse_kanban(argv):
+    from hermes_cli.kanban_parser import build_parser
+
+    root = argparse.ArgumentParser()
+    build_parser(root.add_subparsers(dest="command"))
+    return root.parse_args(["kanban", *argv])
+
+
+@pytest.mark.parametrize("verb", ["dispatch", "daemon"])
+def test_cli_failure_limit_honours_config_and_flag_wins(isolated_kanban_home, monkeypatch, verb):
+    """``kanban.failure_limit`` reaches the CLI dispatcher like it does the
+    gateway one; an explicit ``--failure-limit`` still overrides it."""
+    with open(os.path.join(isolated_kanban_home, "config.yaml"), "w") as fh:
+        fh.write("kanban:\n  failure_limit: 5\n")
+
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    captured = []
+    monkeypatch.setattr(
+        kbd, "dispatch_once",
+        lambda conn, **kw: (captured.append(kw["failure_limit"]), kanban_db.DispatchResult())[1],
+    )
+    monkeypatch.setattr(
+        kbd, "run_daemon", lambda **kw: captured.append(kw["failure_limit"]),
+    )
+    extra = ["--dry-run"] if verb == "dispatch" else ["--force"]
+
+    assert kb_cli.kanban_command(_parse_kanban([verb, *extra])) == 0
+    assert kb_cli.kanban_command(_parse_kanban([verb, *extra, "--failure-limit", "3"])) == 0
+    assert captured == [5, 3]

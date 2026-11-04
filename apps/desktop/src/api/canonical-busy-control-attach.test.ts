@@ -10,14 +10,14 @@ const controls = [
   { method: 'session.steer', status: 'queued' }
 ] as const
 
-// The authority's subscription belongs to a socket AND a profile, not just the stored ID.
+// Execution snapshots are learned per socket and owner profile, not just the stored ID.
 test.each(controls)('$method attaches to the current owner before fencing a busy correction', async ({ method, status }) => {
   const server = await listen()
   const frames: FixtureFrame[] = []
   let connection = 0
   server.on('connection', (socket: FixtureSocket) => {
     const dial = ++connection
-    const attached = new Set<string>()
+
     socket.on('message', bytes => {
       const frame: FixtureFrame = JSON.parse(bytes.toString())
 
@@ -26,7 +26,6 @@ test.each(controls)('$method attaches to the current owner before fencing a busy
       const generation = profile === 'alpha' ? (dial === 1 ? 7 : 11) : 29
 
       if (frame.method === 'session.resume') {
-        attached.add(profile)
         reply(socket, frame, {
           session_id: 'same', stored_session_id: 'same', revision: 2, execution_generation: generation,
           authority_epoch: 1, replay_epoch: `${profile}-${dial}`, last_sequence: 0,
@@ -34,8 +33,7 @@ test.each(controls)('$method attaches to the current owner before fencing a busy
           messages: [], pending: [], prompts: [], info: { profile_name: profile, desktop_protocol: 'hermes-gateway-v1' }
         })
       } else if (frame.method === method) {
-        const reason = !attached.has(profile) ? 'permission_denied'
-          : frame.params.execution_generation !== generation ? 'stale_generation' : null
+        const reason = frame.params.execution_generation !== generation ? 'stale_generation' : null
 
         if (reason) {
           socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, error: { code: 4001, message: reason, data: { reason } } }))

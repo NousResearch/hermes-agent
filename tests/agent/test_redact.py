@@ -1737,6 +1737,7 @@ class TestFlagAndKeyShapedCredentials:
         "deploy --api-key S3cretPassw0rd!x",
         "docker login -p S3cretPassw0rd!x -u bob",
         "kinit --password 'S3cretPassw0rd!x' bob",
+        "tool --password correcthorsebatteryS3cretPassw0rd!x",
     ])
     def test_a_secret_passed_as_a_flag_is_masked(self, command):
         out = redact_sensitive_text(command, force=True)
@@ -1746,6 +1747,21 @@ class TestFlagAndKeyShapedCredentials:
     def test_a_flag_reference_or_a_number_is_not_a_credential(self):
         for text in ("deploy --token=$DEPLOY_TOKEN", "cmd --password ${DB_PASS}", "wait --token 60", "run -p 8080:80"):
             assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize("text", [
+        "Usage: tool [--password PASSWORD] [--token TOKEN]",
+        "  --password TEXT   database password\n  --token TEXT      API token",
+        "Use --token to pass a token; the --secret flag is deprecated.",
+        "psql --password -h db -U app",
+        "docker build --secret id=npmrc,src=.npmrc .",
+        "gcloud auth --credentials ~/.config/gcloud/creds.json",
+        "docker login ghcr.io; docker run -p 8080:80 nginx",
+    ])
+    def test_help_text_prose_and_paths_after_a_flag_stay_readable(self, text):
+        from agent.redact import redact_for_egress
+
+        assert redact_sensitive_text(text, force=True) == text
+        assert redact_for_egress(text) == text
 
     def test_connection_string_keys_are_masked(self):
         text = (

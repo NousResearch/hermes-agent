@@ -13910,9 +13910,12 @@ async function savedSessionWindowExists(window: SavedSessionWindow): Promise<boo
   }
 }
 
-// Called once, after the primary window's own creation/restore path
-// (app.whenReady → 'activate' → createWindow) — never on an ordinary
-// 'activate' with no saved state, and never if the user is already quitting.
+// Called once, after the primary window's own creation path — on the
+// ordinary cold-start path that is app.whenReady → installApplicationMenuAfterFirstWindow
+// → createWindow(), and (as a fallback guarded by the same one-shot flag)
+// from the dock-click 'activate' edge case where the main window was closed
+// before this ran. Never on an ordinary 'activate' with no saved state, and
+// never if the user is already quitting.
 async function restoreWindowSessionsOnce() {
   const state = readWindowSessionState()
 
@@ -19553,6 +19556,17 @@ app.whenReady().then(() => {
     createWindow
   })
 
+  // Pop-out session windows from the last quit, restored exactly once per
+  // launch, strictly AFTER the primary window's own creation path above
+  // (installApplicationMenuAfterFirstWindow calls createWindow()
+  // synchronously) — this is the actual cold-start path on every ordinary
+  // launch/relaunch, not just the dock-click 'activate' edge case below.
+  // Never auto-triggered by anything but the user's own next app start.
+  if (!windowSessionsRestoreAttempted) {
+    windowSessionsRestoreAttempted = true
+    void restoreWindowSessionsOnce()
+  }
+
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
 
@@ -19569,11 +19583,10 @@ app.whenReady().then(() => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
 
-      // Pop-out session windows from the last quit, restored exactly once
-      // per launch, strictly AFTER the primary window's own creation path
-      // above — never on a later dock-click 'activate' that recreates a
-      // user-closed main window, and never auto-triggered by anything but
-      // the user's own next app start.
+      // Edge case: the user closed the main window (leaving pop-outs open)
+      // then dock-clicked/relaunched without ever hitting the cold-start
+      // restore above in this process lifetime. windowSessionsRestoreAttempted
+      // still guards against a double-restore if cold start already ran it.
       if (!windowSessionsRestoreAttempted) {
         windowSessionsRestoreAttempted = true
         void restoreWindowSessionsOnce()

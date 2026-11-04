@@ -253,6 +253,7 @@ function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
               title={c.skills}
             />
             <SettingRow onClick={() => openPanel('capabilities', 'connectors')} title={c.connectors} />
+            <SettingRow onClick={() => openPanel('capabilities', 'plugins')} title={t.skills.tabPlugins} />
           </Section>
           <Section title={c.memory}>
             <SettingRow detail={value('memory.provider')} onClick={() => settings('memory')} title={c.provider} />

@@ -1,6 +1,6 @@
 import type * as ReactQuery from '@tanstack/react-query'
-import { act, cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { $apiRequestScope } from '@/api/client'
@@ -16,7 +16,11 @@ vi.mock('@tanstack/react-query', async importOriginal => ({
 vi.mock('../hooks/use-config-record', () => ({ useHermesConfigRecord: () => ({}) }))
 vi.mock('../capabilities/skills/skills-data', () => ({ useSkillsQuery: () => ({}) }))
 vi.mock('../capabilities/toolsets/toolsets-data', () => ({ useToolsetsQuery: () => ({}) }))
-vi.mock('../capabilities', () => ({ CapabilitiesView: () => null }))
+vi.mock('../capabilities', () => ({
+  CapabilitiesView: ({ fixedProfile, fixedConnection }: { fixedProfile: string; fixedConnection: string }) => (
+    <div>Capabilities {fixedConnection}/{fixedProfile} {useLocation().search}</div>
+  )
+}))
 vi.mock('../messaging', () => ({ MessagingView: () => null }))
 vi.mock('../settings', () => ({ SettingsView: () => <div>Editing {$settingsScopeProfile.get()}</div> }))
 
@@ -40,5 +44,20 @@ it('sets the profile before mounting a deep-linked editor and unmounts it when t
   expect(screen.queryByText('Editing other')).toBeNull()
   act(() => $apiRequestScope.setKey('connectionId', 'beta'))
   expect(screen.queryByText('Editing research')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
+})
+
+it('opens Plugins for the selected agent and removes its editor when the owner changes', () => {
+  $activeGatewayProfile.set('research')
+  $apiRequestScope.set({ profile: 'research', connectionId: 'alpha' })
+  render(
+    <MemoryRouter initialEntries={['/settings?agent=research&connection=alpha']}>
+      <AgentSettingsView onClose={() => {}} owner={{ connectionId: 'alpha', profile: 'research' }} />
+    </MemoryRouter>
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Plugins' }))
+  expect(screen.getByText('Capabilities alpha/research ?agent=research&connection=alpha&panel=capabilities&tab=plugins')).toBeTruthy()
+  act(() => $activeGatewayProfile.set('default'))
+  expect(screen.queryByText(/Capabilities alpha/)).toBeNull()
   expect(screen.getByRole('button', { name: 'Open agent' })).toBeTruthy()
 })

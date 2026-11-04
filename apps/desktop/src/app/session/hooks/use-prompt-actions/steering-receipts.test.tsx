@@ -1,7 +1,9 @@
 import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { dropSessionState, publishSessionState, setLiveTurnBackend } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './index-test-utils'
 
@@ -85,5 +87,35 @@ describe('usePromptActions correction receipts', () => {
     // It joined this turn: the stream is sealed above the correction, and nothing says "queued".
     expect(capturedStates.at(-1)?.streamId).toBeNull()
     expect($notifications.get()).toEqual([])
+  })
+
+  it('steers when the backend confirms a turn the stale slice calls settled (#141973)', async () => {
+    // A long-lived or reattached pane can hold a settled slice while its turn still runs: the
+    // owning backend is asked, and only its "running" lets the correction through.
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState(RUNTIME_SESSION_ID))
+
+    const release = setLiveTurnBackend({
+      request: vi.fn(async () => ({ sessions: [{ id: RUNTIME_SESSION_ID, status: 'working' }] })) as never
+    })
+
+    try {
+      const requestGateway = vi.fn(async () => ({ status: 'redirected' }) as never)
+
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness
+          busyRef={{ current: true }}
+          onReady={h => (handle = h)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+
+      expect(await handle!.redirectPrompt('still running')).toBe(true)
+      expect(requestGateway).toHaveBeenCalledWith('session.redirect', { session_id: RUNTIME_SESSION_ID, text: 'still running' })
+    } finally {
+      release()
+      dropSessionState(RUNTIME_SESSION_ID)
+    }
   })
 })

@@ -10,6 +10,8 @@ import { RoomHeader } from './group-room-ui'
 interface CanonicalGroupHeaderProps {
   busy: boolean
   canStop: boolean
+  /** The room's own connection, so member faces resolve that connection's bot meta. */
+  connectionId?: null | string
   detailsOpen: boolean
   onBack?: () => void
   onDetails: () => void
@@ -22,7 +24,7 @@ interface CanonicalGroupHeaderProps {
 }
 
 /** Title (opens the details panel), each member's live chip, and quiet icon actions. */
-export function CanonicalGroupHeader({ busy, canStop, detailsOpen, onBack, onDetails, onDisband, onRename, onStop, room, statuses, working }: CanonicalGroupHeaderProps) {
+export function CanonicalGroupHeader({ busy, canStop, connectionId, detailsOpen, onBack, onDetails, onDisband, onRename, onStop, room, statuses, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
   const [renaming, setRenaming] = useState<null | string>(null)
   const [ending, setEnding] = useState(false)
@@ -47,7 +49,7 @@ export function CanonicalGroupHeader({ busy, canStop, detailsOpen, onBack, onDet
         {action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
       </>}
       working={working}>
-      <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} statuses={statuses} />
+      <CanonicalGroupRoster connectionId={connectionId} label={labels.members} labels={labels} members={room?.members} statuses={statuses} />
     </RoomHeader>
     {renaming !== null && <form className="flex items-center gap-2 px-3 py-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
       <Input aria-label={labels.renameLabel} autoFocus onChange={event => setRenaming(event.target.value)} value={renaming} />

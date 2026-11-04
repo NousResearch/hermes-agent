@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- protected_instruction_allowlist_dirs: the 5 added lines are the new default key plus the doc block that explains its security behaviour (allowlist trees never cover the live surface; extra patterns and project-local .hermes config still gate inside them). config_defaults.py is the pure-data leaf where a config default and its user-facing docs belong, so the growth is at this existing chokepoint rather than offset into a sibling module.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

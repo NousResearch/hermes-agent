@@ -175,6 +175,11 @@ export function installBrowserDesktopBridge(): boolean {
       }
     },
     openSessionWindow: async (sessionId, opts) => {
+      // A window boots on this page's gateway, which does not hold another gateway's chats.
+      if (opts?.connectionId && opts.connectionId !== LOCAL_CONNECTION_ID) {
+        return { error: 'A chat on another gateway opens in this tab, not in a new window.', ok: false }
+      }
+
       const target = sessionWindowTarget(window.location.href, sessionId, opts)
 
       return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }

@@ -305,6 +305,19 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(workspaceCwdForNewSession('notes')).toBe('')
   })
 
+  it('opens a relayed chat in this tab only, not in a window that boots on this gateway', async () => {
+    servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+
+    const result = await desktop.openSessionWindow('m1', { connectionId: 'mini', profile: 'research' })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/another gateway/)
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it('lists the profiles of every relayed gateway in the agent roster', async () => {
     servingGateway()
     const roster = await install().getAgentRoster!()

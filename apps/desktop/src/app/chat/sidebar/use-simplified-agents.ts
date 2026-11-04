@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 
 import { $apiRequestScope } from '@/api/client'
 import { settingsScopeLabel } from '@/app/settings/profile-scope'
+import type { DesktopConnectionKind } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -17,6 +18,8 @@ export interface SimplifiedAgent {
   label: string
   connectionId: string | null
   gateway: string
+  connectionKind?: DesktopConnectionKind
+  targetProfile?: string
 }
 
 export function useSimplifiedOwner() {
@@ -44,7 +47,9 @@ export function useSimplifiedAgents(sessions: SessionInfo[]) {
       profile: agent.profile,
       label: agent.profile,
       connectionId: agent.connectionId,
-      gateway: agent.connectionLabel
+      gateway: agent.connectionLabel,
+      connectionKind: agent.connectionKind,
+      targetProfile: agent.targetProfile
     })
   }
 
@@ -54,6 +59,11 @@ export function useSimplifiedAgents(sessions: SessionInfo[]) {
       id,
       profile: profile.name,
       label: settingsScopeLabel(profile),
+      connectionKind:
+        agents.get(id)?.connectionKind ??
+        roster?.sources.find(source => source.connectionId === owner)?.kind ??
+        registry?.connections.find(connection => connection.id === owner)?.kind,
+      targetProfile: agents.get(id)?.targetProfile,
       connectionId: owner,
       gateway:
         roster?.sources.find(source => source.connectionId === owner)?.label ??

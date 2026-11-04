@@ -132,7 +132,10 @@ it('keeps server-pinned chats reachable and resumes the exact session', () => {
     .getByRole('button', { name: /Agent settings: default/ })
     .closest('[role=group]') as HTMLElement
 
-  expect(within(agentGroup).getByText('Regular chat')).toBeTruthy()
+  const botChat = within(agentGroup).getByRole('button', { name: 'Bot Chat' })
+  const regularChat = within(agentGroup).getByText('Regular chat')
+  expect(botChat.compareDocumentPosition(regularChat) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(within(research).getAllByRole('button', { name: 'Bot Chat' })).toHaveLength(1)
   expect(within(agentGroup).queryByText('Pinned plan')).toBeNull()
   expect(screen.queryByText('Chats', { exact: true })).toBeNull()
   expect(within(agentGroup).queryByLabelText('Agents: default')).toBeNull()

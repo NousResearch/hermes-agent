@@ -26,7 +26,7 @@ import { setSettingsScope } from '@/store/settings-scope'
 import { SimplifiedGatewayHeader } from './simplified-gateway-header'
 import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import { useFleetRoster } from './use-fleet-roster'
-import type { useSimplifiedAgents } from './use-simplified-agents'
+import type { SimplifiedAgent, useSimplifiedAgents } from './use-simplified-agents'
 
 export function SimplifiedAgentList({
   agents,
@@ -41,7 +41,7 @@ export function SimplifiedAgentList({
   agents: ReturnType<typeof useSimplifiedAgents>
   expanded: Record<string, boolean>
   onToggle: (id: string, open: boolean) => void
-  renderSessions: (sessions: SessionInfo[]) => ReactNode
+  renderSessions: (sessions: SessionInfo[], agent: SimplifiedAgent) => ReactNode
 }) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -207,7 +207,7 @@ export function SimplifiedAgentList({
                           </Button>
                         </Tip>
                       </div>
-                      {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [])}
+                      {agentOpen && renderSessions(sessionsByAgent.get(agent.id) ?? [], agent)}
                     </div>
                   )
                 })}

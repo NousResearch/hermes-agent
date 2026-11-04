@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from functools import partial
 import logging
 import os
 import uuid
@@ -285,7 +286,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"}, **flags)
         if not (flags.get("safe_mode") or flags.get("ignore_user_config")):
-            snapshot = await self._initial_reasoning(client, snapshot)
+            snapshot = await self._reconcile_reasoning(client, snapshot)
         session_id = snapshot["session_id"]
         await self._adopt(session_id, snapshot)
         if mcp_servers:
@@ -295,13 +296,31 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await self._request_live_reasoning(client, session_id)
         return NewSessionResponse(session_id=session_id, **await self._session_fields(session_id, info, session_id))
 
-    async def _initial_reasoning(self, client, snapshot):
-        """Constrain a new session's default through the existing durable owner control."""
+    @staticmethod
+    def _validate_reasoning_snapshot(info, snapshot):
+        observed = snapshot.get("info") or {}
+        if any(observed.get(key) != info.get(key) for key in ("model", "provider")):
+            raise GatewayClientError("revision_conflict")
+
+    @staticmethod
+    def _default_effort(model, metadata):
+        from acp_adapter.config_options import constrain_reasoning, reasoning_effort
+        from hermes_cli.config import load_config
+        from hermes_constants import resolve_reasoning_config
+        configured = resolve_reasoning_config(load_config(), model)
+        constrained = constrain_reasoning(configured, metadata)
+        return None if constrained == configured else reasoning_effort(constrained)
+
+    async def _reconcile_reasoning(self, client, snapshot):
+        """Constrain an attached session through the existing durable, idle-only owner control."""
         from acp_adapter.config_options import constrain_reasoning, reasoning_effort
         from acp_adapter.model_catalog import model_metadata
         from hermes_constants import parse_reasoning_effort
 
         info = snapshot.get("info") or {}
+        launch = info.get("launch_request") or {}
+        if launch.get("safe_mode") or launch.get("ignore_user_config"):
+            return snapshot
         metadata = await asyncio.to_thread(model_metadata, info.get("model", ""), info.get("provider", ""))
         if "reasoning_efforts" not in metadata:
             return snapshot
@@ -311,7 +330,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return snapshot
         session_id = snapshot["session_id"]
         payload = {"effort": reasoning_effort(constrained)}
-        await self._mutations.apply(client, session_id, "reasoning", payload)
+        await self._mutations.apply(
+            client, session_id, "reasoning", payload, validate=partial(self._validate_reasoning_snapshot, info))
         refreshed = await client.rpc("session.resume", session_id=session_id)
         self._mutations.acknowledge(session_id, "reasoning", payload)
         return refreshed
@@ -397,6 +417,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # capability, idle only), as the workspace move above, instead of refusing the thread.
             await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
+        snapshot = await self._reconcile_reasoning(client, snapshot)
         await self._adopt(session_id, snapshot)
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
@@ -488,7 +509,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         child = result['branched_session_id']
         if self._moved(info, cwd):
             await self._move_workspace(client, child, cwd)
-        await self._adopt(child, await client.rpc('session.resume', session_id=child))
+        snapshot = await self._reconcile_reasoning(client, await client.rpc('session.resume', session_id=child))
+        await self._adopt(child, snapshot)
         if payload or session_id in self._editor_mcp:
             self._editor_mcp[child] = payload or self._editor_mcp[session_id]
         self._mutations.acknowledge(session_id, 'branch', payload)
@@ -612,7 +634,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         = ``/reasoning reset``). Another id is accepted so editors do not fail on their own config writes,
         as main did. The reply is the full list, read back from the owner."""
         from acp.schema import SetSessionConfigOptionResponse
-        from acp_adapter.config_options import REASONING_CONFIG_ID, config_options, reasoning_choices
+        from acp_adapter.config_options import REASONING_CONFIG_ID, config_options, current_metadata, reasoning_choices
         from acp_adapter.gateway_session_meta import current_mode, model_state
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
         editor_id, session_id = session_id, self._held_session(session_id)
@@ -629,12 +651,12 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             models = await asyncio.to_thread(model_state, info)
             if value not in reasoning_choices(models):
                 raise GatewayClientError("invalid_params")
-            def validate(snapshot):
-                observed = snapshot.get("info") or {}
-                if any(observed.get(key) != info.get(key) for key in ("model", "provider")):
-                    raise GatewayClientError("revision_conflict")
-            await self._idle_control(session_id, "reasoning", {"effort": None if value == "default" else value},
-                                     "Reasoning effort", validate=validate)
+            effort = None if value == "default" else value
+            metadata = current_metadata(models)
+            if value == "default" and "reasoning_efforts" in metadata:
+                effort = await asyncio.to_thread(self._default_effort, info.get("model", ""), metadata)
+            await self._idle_control(session_id, "reasoning", {"effort": effort},
+                                     "Reasoning effort", validate=partial(self._validate_reasoning_snapshot, info))
         info = await (await self._client()).rpc("session.info", session_id=session_id)
         models = await asyncio.to_thread(model_state, info)
         return SetSessionConfigOptionResponse(config_options=config_options(

@@ -121,3 +121,82 @@ async def test_a_model_change_during_effort_validation_cannot_enable_reasoning_o
         await agent.set_config_option("reasoning_effort", ref.session_id, "high")
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     assert policy.reasoning_config == {"enabled": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice,expected", [
+    (CHOICE_B, {"enabled": True, "effort": "medium"}),
+    (None, {"enabled": True, "effort": "low"}),
+    ("custom:relay:one:legacy", {"enabled": True, "effort": "low"}),
+])
+async def test_default_reset_resolves_profile_level_within_explicit_capabilities(
+    owned_editor, choice, expected,
+):
+    from gateway.session_policy import policy_for_source
+
+    agent, authority, ref, _db = owned_editor
+    if choice:
+        await agent.set_config_option("model", ref.session_id, choice)
+    else:
+        await agent.set_config_option("reasoning_effort", ref.session_id, "high")
+    reply = await agent.set_config_option("reasoning_effort", ref.session_id, "default")
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    assert policy.reasoning_config == expected
+    thought = next(option for option in reply.config_options if option.category == "thought_level")
+    assert thought.current_value == expected["effort"]
+    if choice != CHOICE_B:
+        from hermes_state_local import local_receipt
+        saved = json.loads(local_receipt(authority.db, ref.session_id)["policy"]["config_json"])
+        assert saved["session_pins"]["reasoning"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["load_session", "resume_session", "fork_session"])
+@pytest.mark.parametrize("levels,expected", [
+    ([], {"enabled": False}),
+    (["low"], {"enabled": True, "effort": "low"}),
+])
+async def test_gateway_lifecycle_reconciles_changed_capabilities(owned_editor, declared_models, method, levels, expected):
+    from gateway.session_policy import policy_for_source
+
+    agent, authority, ref, db = owned_editor
+    home, config, write = declared_models
+    await agent.set_config_option("reasoning_effort", ref.session_id, "high")
+    prompt = db.get_session(ref.session_id)["system_prompt"]
+    config["providers"]["relay:one"]["models"][MODEL_A]["reasoning_efforts"] = levels
+    write()
+    reply = await getattr(agent, method)(cwd=str(home), session_id=ref.session_id, mcp_servers=[])
+    session_id = reply.session_id if method == "fork_session" else ref.session_id
+    policy = policy_for_source(authority.runner, authority.sessions[session_id].source)
+    assert policy.reasoning_config == expected
+    assert db.get_session(ref.session_id)["system_prompt"] == prompt
+    thoughts = [option for option in reply.config_options if option.category == "thought_level"]
+    if levels:
+        assert thoughts[0].current_value == "low"
+        assert [choice.value for choice in thoughts[0].options] == ["low"]
+    else:
+        assert thoughts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["session_busy", "unknown_execution"])
+async def test_lifecycle_reconciliation_preserves_the_owner_guard(owned_editor, declared_models, reason):
+    from gateway.session_policy import policy_for_source
+
+    agent, authority, ref, _db = owned_editor
+    home, config, write = declared_models
+    await agent.set_config_option("reasoning_effort", ref.session_id, "high")
+    config["providers"]["relay:one"]["models"][MODEL_A]["reasoning_efforts"] = []
+    write()
+    original = agent._gateway.rpc
+
+    async def rpc(method, **params):
+        if method == "session.mutate" and params.get("operation") == "reasoning":
+            raise GatewayRPCError(reason)
+        return await original(method, **params)
+
+    agent._gateway.rpc = rpc
+    with pytest.raises(GatewayClientError, match=reason):
+        await agent.resume_session(cwd=str(home), session_id=ref.session_id, mcp_servers=[])
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    assert policy.reasoning_config == {"enabled": True, "effort": "high"}

@@ -380,6 +380,12 @@ system prompt. Model and effort changes return the full `configOptions` list and
 publish `config_option_update`, including when the model's available levels change.
 The legacy `models` and `modes` fields remain available to older clients.
 
+The `default` reset resolves the profile's default for the selected model and
+constrains it to any explicit effort list before applying it. Load, resume, and
+fork also recheck declared capabilities, so a saved pin cannot keep reasoning
+enabled after its list becomes empty. These corrections use the normal idle-session
+controls and retain the guards for active or lost turns.
+
 ## Host integration
 
 Older ACP hosts may still set this variable on the Hermes subprocess they

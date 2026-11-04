@@ -218,6 +218,14 @@ Restore, fork, and model switches reapply pins only within the selected model's
 declared capability. Neither path rewrites past conversation text for an effort
 change.
 
+Gateway default resets resolve profile configuration and constrain it before
+committing the effort. An already supported default keeps the owner's reset/unpin
+semantics; only a default that needs constraining is sent as a concrete effort.
+New/load/resume/fork reconcile the snapshot through that
+same guarded reasoning mutation before adopting it. The mutation's validation
+checks the model/provider identity against its authoritative CAS snapshot;
+busy/unknown-execution refusals and retained retry identities remain unchanged.
+
 ## Current limitations
 
 - ACP sessions are persisted to the shared `~/.hermes/state.db` (SessionDB) and transparently restored across process restarts; they appear in `session_search`

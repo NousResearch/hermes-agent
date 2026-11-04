@@ -78,6 +78,8 @@ async def _exercise(peer, cwd):
     assert options["model"]["currentValue"] == CHOICE_B
     assert options["thought_level"]["currentValue"] == "medium"
     assert [choice["value"] for choice in options["thought_level"]["options"]] == ["medium"]
+    reset = await peer.rpc("session/set_config_option", sessionId=session_id, configId="reasoning_effort", value="default")
+    assert _selectors(reset)["thought_level"]["currentValue"] == "medium"
     await _turn(peer, session_id, "WS_SHARED_METADATA_SECOND")
 
     picked = await peer.rpc("session/set_config_option", sessionId=session_id, configId="model", value=CHOICE_OFF)
@@ -202,3 +204,47 @@ async def test_a_gateway_session_starting_on_an_empty_effort_list_disables_reaso
         body = model_peer.requests[-1]
         assert (body["model"], body.get("reasoning_effort")) == (MODEL_OFF, "none"), body
         _evidence("gateway-empty-default", peer.frames, model_peer.requests)
+
+
+@pytest.mark.asyncio
+async def test_gateway_review_lifecycle_changes_reach_the_recording_endpoint(daemon, tmp_path, model_peer):
+    home = daemon[0]
+    _configure(home, f"http://127.0.0.1:{model_peer.server_port}/v1")
+    frames = []
+    async with editor(daemon, tmp_path) as peer:
+        await peer.rpc("initialize", protocolVersion=1, clientCapabilities={})
+        created = await peer.rpc("session/new", cwd=str(tmp_path), mcpServers=[])
+        session_id = created["result"]["sessionId"]
+        await peer.rpc("session/set_config_option", sessionId=session_id, configId="reasoning_effort", value="high")
+        await _turn(peer, session_id, "WS_SHARED_REVIEW_HIGH")
+        config = json.loads((home / "config.yaml").read_text())
+        config["providers"]["relay:one"]["models"][MODEL_A]["reasoning_efforts"] = ["low"]
+        (home / "config.yaml").write_text(json.dumps(config))
+        forked = await peer.rpc("session/fork", sessionId=session_id, cwd=str(tmp_path), mcpServers=[])
+        assert _selectors(forked)["thought_level"]["currentValue"] == "low"
+        await _turn(peer, forked["result"]["sessionId"], "WS_SHARED_REVIEW_FORK_LOW")
+        config["providers"]["relay:one"]["models"][MODEL_A]["reasoning_efforts"] = []
+        (home / "config.yaml").write_text(json.dumps(config))
+        frames.extend(peer.frames)
+
+    async with editor(daemon, tmp_path) as peer:
+        await peer.rpc("initialize", protocolVersion=1, clientCapabilities={})
+        loaded = await peer.rpc("session/load", sessionId=session_id, cwd=str(tmp_path), mcpServers=[])
+        assert "thought_level" not in _selectors(loaded)
+        await _turn(peer, session_id, "WS_SHARED_REVIEW_LOAD_OFF")
+        config["providers"]["relay:one"]["models"][MODEL_A]["reasoning_efforts"] = ["low"]
+        (home / "config.yaml").write_text(json.dumps(config))
+        resumed = await peer.rpc("session/resume", sessionId=session_id, cwd=str(tmp_path), mcpServers=[])
+        assert _selectors(resumed)["thought_level"]["currentValue"] == "low"
+        await _turn(peer, session_id, "WS_SHARED_REVIEW_RESUME_LOW")
+        frames.extend(peer.frames)
+
+    for marker, effort in [
+        ("WS_SHARED_REVIEW_HIGH", "high"), ("WS_SHARED_REVIEW_FORK_LOW", "low"),
+        ("WS_SHARED_REVIEW_LOAD_OFF", "none"), ("WS_SHARED_REVIEW_RESUME_LOW", "low"),
+    ]:
+        matches = [body for body in model_peer.requests if marker in json.dumps(next(
+            (message.get("content") for message in reversed(body.get("messages", [])) if message.get("role") == "user"),
+            None))]
+        assert (matches[-1]["model"], matches[-1].get("reasoning_effort")) == (MODEL_A, effort)
+    _evidence("gateway-review-lifecycle", frames, model_peer.requests)

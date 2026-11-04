@@ -329,11 +329,12 @@ export const MessageLine = memo(function MessageLine({
       </Box>
 
       <MessageImages cols={cols} msg={msg} spaced t={t} />
-      {msg.role === 'user' && msg.pastes?.length ? (
-        <Box marginLeft={gutterWidth} width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>
-          <PasteSections pastes={msg.pastes} t={t} />
-        </Box>
-      ) : null}
+      <PasteSections
+        marginLeft={gutterWidth}
+        pastes={msg.pastes}
+        t={t}
+        width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+      />
     </Box>
   )
 })

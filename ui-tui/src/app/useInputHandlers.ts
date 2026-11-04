@@ -212,6 +212,21 @@ export function shouldDetachEditedHistoryInput(historyIdx: null | number, histor
   return historyIdx !== null && value !== history[historyIdx]
 }
 
+/** Ctrl+<letter> chords that act without disturbing a typed draft. */
+const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) => void> = {
+  // Ctrl+O opens the model picker — the same overlay `/model` opens, but
+  // reachable without clearing what you've typed to run the command. Works
+  // mid-stream: picking a model writes the session model (config.set), which
+  // the next turn reads while the in-flight turn keeps streaming.
+  o: () => patchOverlayState({ modelPicker: true }),
+  // Ctrl+P expands the paste chip at the cursor into editable text, or folds
+  // it back. With no chip in the composer it opens/closes the paste sections
+  // of messages already sent.
+  p: ({ actions, state }) =>
+    void (actions.togglePaste(getInputSelection()?.start ?? state.input.length) || togglePasteSections()),
+  t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -754,26 +769,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    // Ctrl+O opens the model picker without disturbing a typed draft — the
-    // same overlay `/model` opens, but reachable without clearing what you've
-    // typed to run the command. Works mid-stream: picking a model writes the
-    // session model (config.set), which the next turn reads while the in-flight
-    // turn keeps streaming.
-    if (isCtrl(key, ch, 't')) {
-      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
-    }
+    const chord = key.ctrl ? CTRL_CHORDS[ch.toLowerCase()] : undefined
 
-    // Ctrl+P: expand the paste chip at the cursor into editable text, or fold
-    // it back. With no chip in the composer it opens/closes the paste sections
-    // of messages already sent.
-    if (isCtrl(key, ch, 'p') && !key.meta && !key.shift) {
-      const sel = getInputSelection()
-
-      return void (cActions.togglePaste(sel?.start ?? cState.input.length) || togglePasteSections())
-    }
-
-    if (isCtrl(key, ch, 'o')) {
-      return patchOverlayState({ modelPicker: true })
+    if (chord) {
+      return chord(composer)
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

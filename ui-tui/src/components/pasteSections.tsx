@@ -14,12 +14,26 @@ import { Accordion } from './accordion.js'
  * stays the message's text, the full paste opens on a click (or Ctrl+P for
  * every section at once) and shows exactly what the model received.
  */
-export const PasteSections = memo(function PasteSections({ pastes, t }: { pastes: PasteSection[]; t: Theme }) {
+export const PasteSections = memo(function PasteSections({
+  marginLeft,
+  pastes,
+  t,
+  width
+}: {
+  marginLeft: number
+  pastes?: PasteSection[]
+  t: Theme
+  width: number
+}) {
   const T = useT().chatBits.messageLine
   const allOpen = useStore($pasteSectionsOpen)
 
+  if (!pastes?.length) {
+    return null
+  }
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginLeft={marginLeft} width={width}>
       {pastes.map((paste, i) => (
         <PasteSectionRow allOpen={allOpen} key={i} paste={paste} t={t} title={T.pasteSection(i + 1)} />
       ))}
@@ -66,5 +80,20 @@ function PasteSectionRow({
         <Text color={t.color.text}>{paste.text}</Text>
       </Box>
     </Accordion>
+  )
+}
+
+/** The composer's Ctrl+P hint: shown while a paste chip is in the draft, or expanded in it. */
+export function PasteHint({ hint, indent, t }: { hint: null | 'collapse' | 'expand'; indent: number; t: Theme }) {
+  const T = useT().composer
+
+  if (!hint) {
+    return null
+  }
+
+  return (
+    <Box marginLeft={indent}>
+      <Text color={t.color.muted}>{hint === 'collapse' ? T.pasteCollapseHint : T.pasteExpandHint}</Text>
+    </Box>
   )
 }

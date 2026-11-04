@@ -692,7 +692,9 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
                 else:
                     logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
-                safe_servers[name] = dict(cfg)
+                # Rendered like native entries: a raw ``${VAR}`` here reads as a changed definition
+                # on every transport rebuild and swaps the running header for the literal placeholder.
+                safe_servers[name] = _interpolate_env_vars(dict(cfg))
     except Exception:
         logger.debug("Failed to load portable MCP servers", exc_info=True)
 

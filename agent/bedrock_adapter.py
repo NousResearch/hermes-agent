@@ -1528,6 +1528,13 @@ BEDROCK_CONTEXT_LENGTHS: dict[str, int] = {
 
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000  # unknown Bedrock models
 _DEFAULT_WINDOW_WARNED: set = set()  # one fallback WARNING per model id per process
+# Issuers whose model_metadata.DEFAULT_CONTEXT_LENGTHS family rows match their Bedrock cards (card sweep
+# 2026-11-04, 34 cards: 27 equal, 6 below, 1 above: GPT-6.1 Sol at 1,050,000 vs its 1M card, which has its own
+# row above). A model one of them ships on Bedrock before this table lists it takes that catalog family window
+# (GPT-6.1 Terra was 128K here while the catalog had 1,050,000). Other issuers' catalog rows are vendor-direct
+# windows that overstate Bedrock (Llama 3 8B: card 8K, "llama" 131,072; Qwen3 32B: card 32K, "qwen" 131,072),
+# so those models keep the default.
+_CATALOG_FAMILY_ID_RE = re.compile(r"(?:^|[./])(?:anthropic|openai|xai)\.([a-z0-9][a-z0-9.:-]*)$")
 
 # Probe padding tiers (tokens): a wildly oversized payload yields an opaque InternalServerException
 # instead of a clean ValidationException.
@@ -1565,32 +1572,49 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     return None
 
 
+def bedrock_static_context_length(model_id: str) -> Optional[int]:
+    """Offline window: the table row (longest substring), else the catalog family window for a covered issuer
+    (``_CATALOG_FAMILY_ID_RE``); None when neither knows the model. An application-profile ARN reads only the
+    per-process profile cache, so display callers never make a control-plane call."""
+    if _APPLICATION_PROFILE_ARN_RE.search(model_id):
+        model_id = _inference_profile_model_cache.get(model_id, model_id)
+    lowered = model_id.lower()
+    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in lowered]
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    family = _CATALOG_FAMILY_ID_RE.search(lowered)
+    if family is None:
+        return None
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, family.group(1))
+    return hit[1] if hit else None
+
+
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
-    """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
-    only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4").
-    An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
+    """Context window: live probe (if ``probe`` and ``region``) → static table → catalog family → default. The
+    table is fallback only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via
+    "opus-4"). An application-inference-profile ARN is first resolved to the model it wraps (#114476)."""
     profile_arn = model_id if _APPLICATION_PROFILE_ARN_RE.search(model_id) else ""
     if profile_arn:
         model_id = _resolve_inference_profile_model_id(profile_arn, region)
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    if matches:
-        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    known = bedrock_static_context_length(model_id)
+    if known:
+        return known
+    override = ("Set model.context_length, or model_overrides.bedrock.<model id>.context_window, in config.yaml "
+                "if the model's window is larger.")
     if profile_arn:
         logger.warning(
-            "Bedrock inference profile %s resolved no known model window; using the %s default. "
-            "Grant bedrock:GetInferenceProfile or set model.context_length explicitly if the "
-            "wrapped model has a larger window.",
-            profile_arn,
-            f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+            "Bedrock inference profile %s resolved no known model window; using the static %s-token fallback "
+            "(not a detected limit). Grant bedrock:GetInferenceProfile, or: %s",
+            profile_arn, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
     elif model_id not in _DEFAULT_WINDOW_WARNED:
         _DEFAULT_WINDOW_WARNED.add(model_id)
         logger.warning(
             "Bedrock model %s has no known context window; using the static %s-token fallback "
-            "(not a detected limit). Set model.context_length in config.yaml if the model's window is larger.",
-            model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}",
+            "(not a detected limit). %s", model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 

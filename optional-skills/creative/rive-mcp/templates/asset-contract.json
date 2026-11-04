@@ -1,0 +1,56 @@
+{
+  "template": true,
+  "status": "unresolved-design-contract-not-an-authored-asset",
+  "purpose": "Replace with the actual cause, visual consequence and stable result",
+  "source": {
+    "owner": null,
+    "license": null,
+    "editor_file_url": null,
+    "editor_file_id": null,
+    "editor_version": null,
+    "native_revision_path": null,
+    "runtime_export_path": null,
+    "authoring_route": null,
+    "cli_version": null,
+    "rml_source_directory": null,
+    "signing_status": null,
+    "watermark_status": null
+  },
+  "foundation": {
+    "authority": "project design system or approved visual brief",
+    "source_revision": null,
+    "token_roles": {},
+    "font_rights_verified": false
+  },
+  "runtime": {
+    "package": null,
+    "version": null,
+    "matched_wasm": null,
+    "target": null,
+    "required_features": [],
+    "artboard": null,
+    "stateMachine": null,
+    "viewModel": null,
+    "instance": null,
+    "gpu_canvas": false,
+    "shader_targets": []
+  },
+  "properties": [],
+  "host_contract": {
+    "business_state_owner": "host",
+    "accessible_controls": "semantic host DOM/native controls",
+    "motion": "explicit user intent plus live reduced-motion policy",
+    "fallback": "compose before runtime integration",
+    "network": "approved local assets; no implicit CDN fallback",
+    "cleanup": "remove owned runtime and observers; invalidate stale loads"
+  },
+  "proof": {
+    "schema_readback": null,
+    "primary_case": null,
+    "transfer_case": null,
+    "failure_and_recovery": null,
+    "visual_review": null,
+    "clean_reproduction": null,
+    "editable_source_reopen": null
+  }
+}

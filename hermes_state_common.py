@@ -72,15 +72,22 @@ CHANNEL_CONTEXT_MESSAGE_MARKER = "\n\n[New message]\n"
 
 
 def strip_channel_context(text: str) -> str:
-    """*text* after the first channel-context marker, or *text* unchanged when it has none."""
+    """*text* after the first channel-context marker, or *text* unchanged when it has none.
+
+    An empty remainder (an attachment-only turn: its notes sit in front of the context) keeps
+    *text*, so the preview never goes blank."""
     _context, marker, typed = text.partition(CHANNEL_CONTEXT_MESSAGE_MARKER)
-    return typed if marker else text
+    return typed if marker and typed.strip() else text
 
 
+_PREVIEW_TYPED_SQL = (
+    f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(CHANNEL_CONTEXT_MESSAGE_MARKER)})"
+    f" + {len(CHANNEL_CONTEXT_MESSAGE_MARKER)})")
+# Mirrors strip_channel_context(), including the fallback for an empty remainder.
 _PREVIEW_SOURCE_SQL = (
     f"(CASE WHEN INSTR(m.content, {_sql_literal(CHANNEL_CONTEXT_MESSAGE_MARKER)}) > 0"
-    f" THEN SUBSTR(m.content, INSTR(m.content, {_sql_literal(CHANNEL_CONTEXT_MESSAGE_MARKER)})"
-    f" + {len(CHANNEL_CONTEXT_MESSAGE_MARKER)}) ELSE m.content END)")
+    f" AND TRIM({_PREVIEW_TYPED_SQL}, ' ' || CHAR(9, 10, 13)) <> ''"
+    f" THEN {_PREVIEW_TYPED_SQL} ELSE m.content END)")
 _PREVIEW_CONTENT_SQL = f"REPLACE(REPLACE({_PREVIEW_SOURCE_SQL}, X'0A', ' '), X'0D', ' ')"
 # User-invoked and gateway auto-load scaffolds both get the head+tail excerpt window:
 # the typed request sits at the tail (auto-load) or behind the instruction marker.

@@ -58,6 +58,15 @@ def test_message_without_context_is_unchanged(db):
     assert row["preview"] == "plain question with two lines"
 
 
+def test_attachment_only_turn_keeps_a_preview(db):
+    # Media notes are prepended after the context join, so nothing follows the marker.
+    content = f"[The user sent an image: 'a.png'.]\n\n{_turn('')}"
+    _seed(db, "s1", content)
+    (row,) = db.list_sessions_rich(limit=10)
+    assert row["preview"].startswith("[The user sent an image: 'a.png'.]")
+    assert strip_channel_context(content) == content
+
+
 def test_auto_loaded_skill_behind_context_shows_the_request(db, tmp_path, monkeypatch):
     # A channel-bound skill is prepended to event.text before the context is joined.
     skills_dir = tmp_path / "skills"

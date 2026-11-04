@@ -190,6 +190,23 @@ def run_scheduled_check(
         _tick_lock.release()
 
 
+def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callable[[str], None], log) -> None:
+    """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
+    where the user put it."""
+    from hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
+
+    for r in updates:
+        if getattr(r, "klass", "") not in ("git", "catalog"):
+            continue
+        if held_with_ref(checked_installs.get(r.name)):
+            log.info("plugin %s not auto-updated: %s", r.name, HELD_WITH_REF.format(name=r.name))
+            continue
+        try:
+            apply_updates_fn(r.name)
+        except (Exception, SystemExit):
+            log.warning("auto-apply of %s failed", r.name, exc_info=True)
+
+
 def _run_check_locked(
     *,
     run_checks_fn: Callable[..., list],
@@ -248,13 +265,7 @@ def _run_check_locked(
     # widened catalog pin or a too-new requires_hermes without a terminal. Pinned/manual/drift/pip
     # are never auto-applied (their update_available is False/None or their class excludes it).
     if apply_updates_fn and updates and auto_apply_enabled(config_get):
-        for r in updates:
-            if getattr(r, "klass", "") not in ("git", "catalog"):
-                continue
-            try:
-                apply_updates_fn(r.name)
-            except (Exception, SystemExit):
-                log.warning("auto-apply of %s failed", r.name, exc_info=True)
+        _auto_apply(updates, checked_installs, apply_updates_fn, log)
 
     # stamp the marker AFTER a completed run (even a failed one — a
     # failing check retrying every tick would hammer the network)

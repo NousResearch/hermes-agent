@@ -111,3 +111,48 @@ def test_hermes_update_names_catalog_pins_it_moved_and_rearms_the_check(home, mo
     report_catalog_updates_after_hermes_update(home, [])
     assert "1 plugin update(s) from the new catalog in this profile: cat-plug" in capsys.readouterr().out
     assert not marker.exists()
+
+
+def _held_install_metadata(home):
+    """`hermes plugins install cat-plug --ref <older sha>`: pinned, off the catalog pin (empty `pin`), next
+    to a catalog install that is simply behind its pin."""
+    (home / "plugins" / ".install-metadata.json").write_text(json.dumps({
+        "held": {"pinned": True, "revision": "a" * 40,
+                 "catalog": {"name": "held", "sha": "a" * 40, "pin": ""}},
+        "behind": {"pinned": True, "revision": "a" * 40,
+                   "catalog": {"name": "behind", "sha": "a" * 40, "pin": "a" * 40}}}), encoding="utf-8")
+
+
+def test_auto_apply_leaves_a_catalog_install_held_with_ref_alone(home, caplog):
+    """A user who rolled a catalog plugin back with --ref keeps it there: the tick moves only the
+    install that is merely behind its pin, and names the held one."""
+    from hermes_cli import plugins_cadence as cad
+
+    _held_install_metadata(home)
+    applied = []
+    rows = [_Row("held", "catalog"), _Row("behind", "catalog")]
+    with caplog.at_level("INFO"):
+        cad.run_scheduled_check(run_checks_fn=lambda _dir: rows, plugins_dir=home / "plugins",
+                                apply_updates_fn=applied.append,
+                                config_get=lambda _s, key: True if key == "auto_apply" else 24)
+    assert applied == ["behind"]
+    assert "held with --ref" in caplog.text
+
+
+def test_update_all_and_hermes_update_notice_skip_a_held_catalog_install(home, monkeypatch, capsys):
+    from hermes_cli import plugin_catalog, plugins_cmd_update, plugins_updates
+    from hermes_cli.plugins_auto_update import catalog_pins_behind, update_all_unattended
+
+    _held_install_metadata(home)
+    monkeypatch.setattr(plugins_updates, "run_checks", lambda _dir: [_Row("held", "catalog"), _Row("behind", "catalog")])
+    calls = []
+    monkeypatch.setattr(plugins_cmd_update, "dashboard_update_user_plugin",
+                        lambda name, **kw: calls.append(name) or {"ok": True, "name": name})
+    out = update_all_unattended()
+    assert calls == ["behind"]
+    assert [s["name"] for s in out["skipped"]] == ["held"] and "--ref" in out["skipped"][0]["reason"]
+
+    entries = [plugin_catalog.PluginCatalogEntry(name=n, repo="https://example.invalid/r", sha="c" * 40,
+                                                 description="d", maintainer="m") for n in ("held", "behind")]
+    monkeypatch.setattr(plugin_catalog, "load_catalog", lambda catalog_dir=None: entries)
+    assert catalog_pins_behind(home) == ["behind"]

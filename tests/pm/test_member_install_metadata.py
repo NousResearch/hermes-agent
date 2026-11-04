@@ -32,7 +32,7 @@ def test_install_metadata_only_affects_snapshot_not_folding(tmp_path, staged, no
         inputs[identity] = source
 
     first, second = inputs
-    assert members_stamp({first: inputs[first]}) != members_stamp({second: inputs[second]})
+    assert members_stamp({first: inputs[first]}) != members_stamp({first: inputs[second]})
     root = tmp_path / "workspace"
     _generate_pyproject(inputs if staged else list(inputs), root, source=core)
     members = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]

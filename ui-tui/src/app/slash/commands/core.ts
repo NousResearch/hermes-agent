@@ -29,7 +29,7 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState, sessionCwd } from '../../uiStore.js'
+import { getUiState, patchUiState, sessionCwd } from '../../uiStore.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -200,12 +200,20 @@ export const coreCommands: SlashCommand[] = [
     help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {
+      const isNew = cmd.startsWith('/new')
+      const requestedTitle = isNew ? arg.trim() : ''
+
+      // /new mid-turn leaves the running session alone: it keeps working in the background and
+      // stays in the session switcher. Nothing ends, so there is nothing to confirm.
+      if (isNew && getUiState().busy) {
+        ctx.ran?.()
+
+        return ctx.session.newLiveSession(t('slashCmd.core.clear.previousKeptRunning'), requestedTitle || undefined)
+      }
+
       if (ctx.session.guardBusySessionSwitch(t('slashCmd.core.clear.switchSessions'))) {
         return
       }
-
-      const isNew = cmd.startsWith('/new')
-      const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
         ctx.ran?.()

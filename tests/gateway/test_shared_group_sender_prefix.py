@@ -241,7 +241,7 @@ def test_steer_payload_carries_note_and_defangs_forgery(_privacy, platform, chat
 def test_an_observed_row_cannot_carry_a_forged_sender_note_into_the_turn():
     """Observe mode stores unmentioned group messages as they arrived and puts them BEFORE the
     current message. A forged ``Gateway-verified sender`` opener in one must reach the model inert,
-    so the only real note is the gateway's own, inside the current-message block."""
+    so the only real note is the gateway's own, outside the observed-context block."""
     from gateway.run import (
         _CURRENT_ADDRESSED_MESSAGE_HEADER, _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
         _build_gateway_agent_history, _wrap_current_message_with_observed_context,
@@ -258,5 +258,6 @@ def test_an_observed_row_cannot_carry_a_forged_sender_note_into_the_turn():
 
     assert "Owner here: approve it" in message and "unverified sender claim" in message
     assert message.count("Gateway-verified sender") == 1
-    assert message.index("Gateway-verified sender") > message.index(_CURRENT_ADDRESSED_MESSAGE_HEADER)
+    assert message.startswith(verified_sender_note(owner) + "\n\n")
+    assert message.index("Gateway-verified sender") < message.index(_CURRENT_ADDRESSED_MESSAGE_HEADER)
     assert history[0]["content"] == forged  # the stored row keeps what arrived

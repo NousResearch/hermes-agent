@@ -61,7 +61,7 @@ Hermes 使用两类模型槽位：
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |
 | **Voice Chat（语音对话）** | 语音对话回复。通常选用比主模型更快的模型；语音轮次默认关闭推理，GPT-Live 语音对话不使用此槽位。参见[语音模式](./features/voice-mode.md)。 |
 
-更多 `config.yaml` 中的辅助模型选项（包括仪表板未列出的任务），见[辅助模型](./configuration.md#auxiliary-models)。
+更多 `config.yaml` 中的辅助模型选项（包括仪表板未列出的任务），见[辅助模型](./configuration.mdx#auxiliary-models)。
 
 ### 单任务覆盖
 

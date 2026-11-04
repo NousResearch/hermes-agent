@@ -1,0 +1,26 @@
+# Catalog entry for the Hermes plugin catalog. The sha is the v0.1.0 release commit.
+name: faxforagents
+title: Fax for Agents
+repo: https://github.com/faxforagents/hermes-integration
+sha: "af0aa44b1fe1e28a2016165818d528efd4072da4"
+version: "0.1.0"
+description: >-
+  Fax preparation, quotes, approved sending, delivery status, cancellation, and inbox reading.
+  The portable package starts faxforagents-mcp 0.4.1 through npx and sends data to api.faxforagents.com.
+  MCP also exposes guidance, capabilities, balance, document previews, review requests, and billed extraction.
+  Write-capable calls use the Hermes untrusted gate.
+  Live sends require quote-bound approval or an allowing delegated policy and spend wallet funds.
+maintainer: faxforagents
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/faxforagents/hermes-integration#readme
+readme: true
+platforms: []
+capabilities:
+  # MCP tools are discovered at runtime. No native tools or hooks register.
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - FAXFORAGENTS_API_KEY

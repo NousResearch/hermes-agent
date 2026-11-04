@@ -2,10 +2,11 @@
 
 Contracts:
 - the card payload names the command line / URL before consent; the model's result does not
-- credentials in args and URLs never reach the line, and control characters are flattened
+- credentials in args and URLs never reach the line; invisible and reordering characters show as escapes
 """
 
 import json
+import unicodedata
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -67,7 +68,21 @@ def test_launch_line_never_carries_a_credential(url, command, args, secret):
     assert len(line) <= MAX_TARGET_CHARS
 
 
-def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_flattens_controls():
+def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_escapes_controls():
     line = launch_target(None, "bash\x1b]0;pwned\x07", ["<img src=x onerror=alert(1)>", "my file.js"])["target"]
-    assert line == "bash ]0;pwned '<img src=x onerror=alert(1)>' 'my file.js'"
+    assert line == "bash\\x1b]0;pwned\\x07 '<img src=x onerror=alert(1)>' 'my file.js'"
     assert launch_target("https://mcp.linear.app/sse", "node", [])["kind"] == "remote"
+
+
+@pytest.mark.parametrize("arg,shown", [
+    ("safe\u202egnp.evil", "safe\\u202egnp.evil"),   # RLO: would render reversed
+    ("np\u200bx", "np\\u200bx"),                     # zero-width space
+    ("a\u2066b\u2069c", "a\\u2066b\\u2069c"),          # bidi isolates
+    ("\ufeffx\u00ady", "\\ufeffx\\xady"),               # BOM, soft hyphen
+    ("a\u200d\u200e\u200fb", "a\\u200d\\u200e\\u200fb"),  # ZWJ, LRM, RLM
+    ("line\nbreak", "'line\\nbreak'"),                # whitespace inside one arg: quoted
+])
+def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, shown):
+    line = launch_target(None, "node", [arg])["target"]
+    assert line == f"node {shown}"
+    assert all(unicodedata.category(c) != "Cf" for c in line)

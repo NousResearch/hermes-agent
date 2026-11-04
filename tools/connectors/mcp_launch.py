@@ -13,15 +13,15 @@ import re
 import shlex
 from typing import Any, Optional
 
-from agent.redact import redact_for_egress, redact_sensitive_text
+from agent.redact import redact_for_egress, redact_sensitive_text, sanitize_command_for_display
 
 _SECRET_FLAG_RE = re.compile(
     r"^--?[A-Za-z0-9_.-]*(?:key|token|secret|passw(?:or)?d|pass|pwd|auth|credential|bearer|cookie)"
     r"[A-Za-z0-9_.-]*$",
     re.IGNORECASE,
 )
-# C0/C1 controls and line breaks: the card draws one line, and a crafted arg must not carry escapes.
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+# Tab and newline are the two controls the approval sanitizer keeps; the card draws one line.
+_LINE_BREAKS = str.maketrans({"\t": "\\t", "\n": "\\n"})
 # Scrubbed first, then cut, so a secret straddling the cut is already masked.
 MAX_TARGET_CHARS = 400
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s]+", re.IGNORECASE)
@@ -57,8 +57,15 @@ def _mask_url_path(match: re.Match[str]) -> str:
         "***" if _OPAQUE_SEGMENT_RE.fullmatch(seg) else seg for seg in path.split("/"))
 
 
+def _visible(text: str) -> str:
+    """Every control, format (bidi overrides/isolates, zero-width, BOM, soft hyphen) and separator
+    code point as a visible escape such as ``\\u202e``: the line must read as the argv runs, and the
+    user should see that an arg is unusual rather than a cleaned-up version of it."""
+    return sanitize_command_for_display(text.translate(_LINE_BREAKS))
+
+
 def scrub(text: str) -> str:
-    text = _URL_RE.sub(_mask_url_path, " ".join(_CONTROL_RE.sub(" ", text).split()))
+    text = _URL_RE.sub(_mask_url_path, " ".join(_visible(text).split()))
     text = redact_for_egress(redact_sensitive_text(text, force=True, redact_url_credentials=True))
     return text if len(text) <= MAX_TARGET_CHARS else text[: MAX_TARGET_CHARS - 1] + "…"
 

@@ -35,25 +35,21 @@ def _refuse_managed_keys(*key_paths: str) -> None:
                 "and cannot be changed. Contact your administrator to modify it.", code="config_key_managed")
 
 
-def _refuse_managed_model_pick(reasoning_effort: str = "", result=None, *, queued: bool = False) -> None:
+def _refuse_managed_model_pick(reasoning_effort: str = "", result=None) -> None:
     """A persisting /model pick writes persist_model_selection's whole plan (model.default/provider/
-    base_url/api_mode always; context_length and stale credential keys cleared only when the raw block
-    holds them), plus agent.reasoning_effort when ``--reasoning`` parses: refused whole before anything
-    is switched, persisted or queued. With the resolved ``result``: its exact plan. A ``queued`` pick
-    resolves only at turn start, so every clear it may make counts. Neither: the always-written keys."""
+    base_url/api_mode always; context_length and stale credential keys cleared only when the route
+    changed), plus agent.reasoning_effort when ``--reasoning`` parses: refused whole before anything
+    is switched or persisted. Without ``result`` (before resolution, or a pick queued mid-turn): the
+    always-written keys. With the resolved ``result``: its exact plan, conditional clears included."""
     from hermes_cli import managed_scope
     from hermes_constants import parse_reasoning_effort
     if not managed_scope.managed_config_keys():
         return
     plan = ["default", "provider", "base_url", "api_mode"]
-    if result is not None or queued:
+    if result is not None:
         from hermes_cli.config import read_user_config_raw
-        held = read_user_config_raw().get("model")
-        if result is not None:
-            from hermes_cli.model_switch import model_selection_config_updates
-            plan = list(model_selection_config_updates(result, held))
-        elif isinstance(held, dict):
-            plan += [k for k in ("context_length", "api_key", "api", "key_env", "api_key_env") if k in held]
+        from hermes_cli.model_switch import model_selection_config_updates
+        plan = list(model_selection_config_updates(result, read_user_config_raw().get("model")))
     effort_key = ("agent.reasoning_effort",) if parse_reasoning_effort(reasoning_effort or None) else ()
     _refuse_managed_keys(*(f"model.{key}" for key in plan), *effort_key)
 
@@ -127,11 +123,13 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
     from hermes_cli.model_switch import resolve_persist_behavior
-    # A persisting pick is refused NOW: queued, it would be acked here and fail only at turn start, as a
-    # generic error event. resolve_persist_behavior, not --global alone: persist_switch_by_default counts.
+    # A persisting pick that writes a pinned key is refused NOW, not acked and dropped at turn start.
+    # resolve_persist_behavior, not --global alone: persist_switch_by_default counts. Only the keys it
+    # always writes: a conditional clear depends on the route resolved at turn start, where
+    # _apply_model_switch checks the exact plan before anything is switched or saved.
     if not getattr(parsed, "is_reset", False) and resolve_persist_behavior(
             parsed.is_global, parsed.is_session, is_once=parsed.is_once, explicit_provider=parsed.explicit_provider):
-        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""), queued=True)
+        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""))
     try:
         pending_model = parsed.model_input
     except Exception:

@@ -49,6 +49,8 @@ class PrefixCacheGate:
     @classmethod
     def for_children(cls, children: list, max_wait_s: float) -> Optional[PrefixCacheGate]:
         """A gate for ``children`` (``(index, task, child)`` tuples), or None when there is nothing to share."""
+        # The leader is always task 0 (it is submitted first, so it always gets a worker): an uncached task 0
+        # leaves the batch ungated even when later tasks share a cached route with each other.
         if max_wait_s <= 0 or len(children) < 2 or not _caches_prompts(children[0][2]):
             return None
         return cls(children[0][2], max_wait_s)

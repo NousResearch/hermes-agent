@@ -109,11 +109,11 @@ def test_resolvable_assignee_keeps_existing_spawn(dispatch_profile, monkeypatch,
 
 def _owner_policy(profile, task):
     from gateway.run import _load_gateway_config
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
     from hermes_cli.kanban_db_dispatch import _worker_profile_scope
 
-    actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
+    actor = SessionActor("owner", str(profile), frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(profile)), actor=actor, native_owner=True)
     params = dict(board="work", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     with _worker_profile_scope(str(profile)):

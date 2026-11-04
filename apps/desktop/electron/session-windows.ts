@@ -201,6 +201,10 @@ function createSessionWindowRegistry() {
     openOrFocus,
     get: key => windows.get(key),
     has: key => windows.has(key),
+    // Read-only enumeration for quit-time persistence (window-session-state.ts).
+    // Callers must never mutate through this — the registry stays the single
+    // writer of `windows`.
+    entries: () => [...windows.entries()],
     get size() {
       return windows.size
     }

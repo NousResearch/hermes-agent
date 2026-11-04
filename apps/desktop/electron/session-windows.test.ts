@@ -164,6 +164,20 @@ test('registry opens one window per session and focuses on re-open', () => {
   assert.equal(win.calls.focus, 1, 'second open focuses the existing window')
 })
 
+test('registry.entries() enumerates live windows by session id and drops on close', () => {
+  const registry = createSessionWindowRegistry()
+  const a = makeFakeWindow()
+  const b = makeFakeWindow()
+  registry.openOrFocus('s1', () => a)
+  registry.openOrFocus('s2', () => b)
+
+  assert.deepEqual(new Map(registry.entries()), new Map([['s1', a], ['s2', b]]))
+
+  a.emit('closed')
+
+  assert.deepEqual(new Map(registry.entries()), new Map([['s2', b]]))
+})
+
 test('registry restores + shows a minimized/hidden window on re-open', () => {
   const registry = createSessionWindowRegistry()
   const win = makeFakeWindow()

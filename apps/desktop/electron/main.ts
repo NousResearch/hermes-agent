@@ -675,6 +675,13 @@ import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
 import {
+  restoredSessionWindowOptions,
+  restoreSessionWindows,
+  sanitizeWindowSessionState,
+  type SavedSessionWindow,
+  serializeWindowSessionState
+} from './window-session-state'
+import {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
@@ -1363,6 +1370,11 @@ const DESKTOP_CONNECTIONS_REGISTRY_PATH = path.join(app.getPath('userData'), 'co
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+// Pop-out session windows that existed at last quit — composed alongside
+// window-state.json (main geometry) and the renderer's own sessionTiles.v2 /
+// layoutTree.v2 (main-window tabs), never duplicating either schema. See
+// window-session-state.ts.
+const DESKTOP_WINDOW_SESSION_STATE_PATH = path.join(app.getPath('userData'), 'window-session-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -13662,6 +13674,11 @@ function installPreviewGuestPreload() {
 // builder live in session-windows.ts so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
+// webContents.id -> launch params, for window-session-state.ts's quit-time
+// capture. The registry itself is keyed by sessionId only, so this is the one
+// place that remembers which (connectionId, profile, watch) opened each window.
+const sessionWindowLaunchInfo = new Map<number, { connectionId: string | null; sessionId: string; profile: string | null; watch: boolean }>()
+
 const minimizeToTray = createMinimizeToTray({
   preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
   getIconPath: getAppIconPath,
@@ -13696,17 +13713,28 @@ function focusWindow(win) {
   }
 }
 
+// Pop-out windows restored from the last quit (window-session-state.ts) carry
+// their saved geometry through `bounds`; an ordinary open (from the sidebar
+// or `openOrFocus`) passes none and gets the usual fixed compact size.
 function spawnSecondaryWindow({
   connectionId,
   sessionId,
   profile,
-  watch
-}: { connectionId?: null | string; sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
+  watch,
+  bounds
+}: {
+  connectionId?: null | string
+  sessionId?: string
+  profile?: null | string
+  watch?: boolean
+  bounds?: { width: number; height: number; x?: number; y?: number }
+} = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
-    width: SESSION_WINDOW_MIN_WIDTH,
-    height: SESSION_WINDOW_MIN_HEIGHT,
+    width: bounds?.width ?? SESSION_WINDOW_MIN_WIDTH,
+    height: bounds?.height ?? SESSION_WINDOW_MIN_HEIGHT,
+    ...(bounds && Number.isFinite(bounds.x) && Number.isFinite(bounds.y) ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
@@ -13781,12 +13809,129 @@ function spawnSecondaryWindow({
     'Session window'
   )
 
+  // Launch params for window-session-state.ts's quit-time capture (#t_34954b7b).
+  // Session id / profile / connection id only, mirroring what was actually
+  // passed to this factory — never anything from the live connection route.
+  sessionWindowLaunchInfo.set(win.webContents.id, { connectionId: connectionId ?? null, sessionId, profile: profile ?? null, watch: Boolean(watch) })
+  win.once('closed', () => {
+    sessionWindowLaunchInfo.delete(win.webContents.id)
+  })
+
   return win
 }
 
-// Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
+// Open (or focus) a standalone window for a single chat session. `bounds`
+// (window-session-state.ts restore only) is passed through to the factory and
+// ignored on an ordinary open/focus of an existing window.
+function createSessionWindow(
+  sessionId,
+  { connectionId = null, profile = null, watch = false, bounds = undefined } = {} as {
+    connectionId?: null | string
+    profile?: null | string
+    watch?: boolean
+    bounds?: { width: number; height: number; x?: number; y?: number }
+  }
+) {
+  return sessionWindows.openOrFocus(sessionId, () =>
+    spawnSecondaryWindow({ connectionId, sessionId, profile, watch, bounds })
+  )
+}
+
+// ─── Pop-out session-window persistence (window-session-state.ts) ─────────
+// Composes window-state.json (main geometry) and the renderer's own
+// sessionTiles.v2 / layoutTree.v2 (main-window tabs): this file only
+// remembers which EXTRA pop-out windows existed, so "don't make me re-pop-out
+// every window" works without duplicating either existing schema.
+
+function captureWindowSessionState(): SavedSessionWindow[] {
+  const windows: SavedSessionWindow[] = []
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) {
+      continue
+    }
+
+    const launch = sessionWindowLaunchInfo.get(win.webContents.id)
+
+    if (!launch) {
+      continue
+    }
+
+    const { x, y, width, height } = win.getNormalBounds()
+
+    windows.push({
+      connectionId: launch.connectionId,
+      profile: launch.profile,
+      sessionId: launch.sessionId,
+      watch: launch.watch,
+      geometry: { x, y, width, height, isMaximized: win.isMaximized() }
+    })
+  }
+
+  return windows
+}
+
+function persistWindowSessionState() {
+  try {
+    const windows = captureWindowSessionState()
+    fs.mkdirSync(path.dirname(DESKTOP_WINDOW_SESSION_STATE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_WINDOW_SESSION_STATE_PATH, serializeWindowSessionState(windows))
+  } catch (err) {
+    rememberLog(`[window-sessions] persist failed: ${err?.message || err}`)
+  }
+}
+
+function readWindowSessionState() {
+  try {
+    return sanitizeWindowSessionState(JSON.parse(fs.readFileSync(DESKTOP_WINDOW_SESSION_STATE_PATH, 'utf8')))
+  } catch {
+    return null
+  }
+}
+
+// A deleted/renamed session must never block startup — same honesty standard
+// as the rest of the file: existence is actually probed (scoped GET through
+// the normal backend-resolution path), never assumed.
+async function savedSessionWindowExists(window: SavedSessionWindow): Promise<boolean> {
+  const connection = window.connectionId
+    ? await ensureRegistryBackend(window.connectionId, window.profile)
+    : await ensureBackend(window.profile)
+
+  try {
+    await fetchJsonForBackend(connection, `/api/sessions/${encodeURIComponent(window.sessionId)}`)
+
+    return true
+  } catch (error: any) {
+    if (String(error?.message || '').startsWith('404')) {
+      return false
+    }
+
+    throw error
+  }
+}
+
+// Called once, after the primary window's own creation/restore path
+// (app.whenReady → 'activate' → createWindow) — never on an ordinary
+// 'activate' with no saved state, and never if the user is already quitting.
+async function restoreWindowSessionsOnce() {
+  const state = readWindowSessionState()
+
+  if (!state || state.windows.length === 0) {
+    return
+  }
+
+  await restoreSessionWindows(state, {
+    exists: savedSessionWindowExists,
+    open: window =>
+      createSessionWindow(window.sessionId, {
+        connectionId: window.connectionId,
+        profile: window.profile,
+        watch: window.watch,
+        bounds: restoredSessionWindowOptions(window, screen.getAllDisplays())
+      }),
+    quitting: () => appQuitting || quitInProgress,
+    log: rememberLog
+  })
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -14021,6 +14166,7 @@ let petOverlayWindow = null
 // persisted popped-out flag survives for the next boot's restorePetOverlay
 // (#55920).
 let appQuitting = false
+let windowSessionsRestoreAttempted = false
 // Real quit proceeding; see shouldQuitOnLastChatClosed (#130810).
 let quitInProgress = false
 // Set while a close is in flight: Electron's close() is async and can be
@@ -19422,6 +19568,16 @@ app.whenReady().then(() => {
     // activation (restore + show + focus), not the ambient showInactive path.
     if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow()
+
+      // Pop-out session windows from the last quit, restored exactly once
+      // per launch, strictly AFTER the primary window's own creation path
+      // above — never on a later dock-click 'activate' that recreates a
+      // user-closed main window, and never auto-triggered by anything but
+      // the user's own next app start.
+      if (!windowSessionsRestoreAttempted) {
+        windowSessionsRestoreAttempted = true
+        void restoreWindowSessionsOnce()
+      }
     } else {
       activateWindow(mainWindow)
     }
@@ -19611,6 +19767,12 @@ app.on('before-quit', event => {
   // (#55920).
   appQuitting = true
   quitInProgress = true
+
+  // Enumerate every pop-out session window while they are still alive (quit
+  // is proceeding but nothing has been destroyed yet). Never activated
+  // against this running process — it only takes effect the NEXT time the
+  // user starts Hermes Desktop (see restoreWindowSessionsOnce, 'activate').
+  persistWindowSessionState()
 
   minimizeToTray.beginQuit()
   mainProcessLagWatchdog.stop()

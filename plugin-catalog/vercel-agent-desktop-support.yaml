@@ -1,9 +1,9 @@
 name: vercel-agent-desktop-support
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 8b18b89973e654eb7aa479d1cc4b32cb9b3b0307
+sha: 3758cad83f6d8c7ac5c05de52dc319b7923d9770
 subdir: public/vercel-agent-desktop-support
 description: "Vercel Agent Desktop Support: operate Windows apps through the accessibility tree instead of the screen. Reads a window's real UI as roles, names, states and refs, then clicks, fills a field, selects an option, toggles a checkbox, scrolls, sends a key combo, and manages windows and the clipboard. Actions are semantic and headless by default, so they do not take focus, move the cursor or synthesize keystrokes, and they fail closed rather than guess. desktop_install downloads the official vercel-labs/agent-desktop release for the running Windows target, verifies the archive against a sha256 pinned in the plugin, and proves the install by running version and status. Disclosure — the plugin runs the agent-desktop executable as a child process with arguments it builds; starting or closing a program, installing the binary, and the first call that auto-installs a missing binary go through Hermes's approval prompt (Hermes Agent v2026.7.7 or newer); desktop_install is the only tool that uses the network, and a release without a digest pinned in the plugin is refused; it reads window titles, labels, field values and the clipboard on request, which can contain private content. Windows only."
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/8b18b89973e654eb7aa479d1cc4b32cb9b3b0307/public/vercel-agent-desktop-support/docs/hero.png
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/3758cad83f6d8c7ac5c05de52dc319b7923d9770/public/vercel-agent-desktop-support/docs/hero.png
 maintainer: apoapostolov
 tier: community
 category: automation

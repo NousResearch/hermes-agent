@@ -140,7 +140,7 @@ def _non_negative_int(value: Any) -> int:
 
 def activity_count(record: dict[str, Any]) -> int:
     """Total observed use+view+patch events."""
-    return sum(_int_or_zero(record.get(key)) for key in ("use_count", "view_count", "patch_count"))
+    return sum(_non_negative_int(record.get(key)) for key in ("use_count", "view_count", "patch_count"))
 
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
@@ -663,7 +663,7 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"failed to create archive dir: {e}"
     if dest.exists():
-        dest = dest.with_name(f"{skill_dir.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
+        dest = dest.with_name(f"{skill_name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     # complete_package: consolidation may have re-homed support files first, so a disk-only capture can come
     # back hollow; the fill from the newest curator backup keeps rollback restorable.
     return _relocate(skill_dir, dest, skill_name, "archive", complete_package=True, skill=skill_name)

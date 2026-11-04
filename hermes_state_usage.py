@@ -422,7 +422,9 @@ class SessionUsageMixin:
                     "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                     (own_profile, session_id))
             self._record_model_usage(conn, session_id, task=task, **usage)
-        self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        from hermes_state_lineage import session_lineage_guard
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

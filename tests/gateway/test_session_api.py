@@ -773,6 +773,29 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
 
 
 @pytest.mark.asyncio
+async def test_create_session_refuses_sibling_profile_owner(adapter, session_db, monkeypatch):
+    from pathlib import Path
+
+    root = Path(session_db.db_path).parent
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_home = root / "profiles" / "science"
+    profile_home.mkdir(parents=True)
+    profile_db = SessionDB(profile_home / "state.db")
+    try:
+        profile_db.create_session("api-dual-owned", "tui")
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/api/sessions", json={"id": "api-dual-owned"})
+            assert response.status == 409, await response.text()
+            payload = await response.json()
+            assert payload["error"]["code"] == "session_id_owned_elsewhere"
+        assert session_db.get_session("api-dual-owned") is None
+        assert profile_db.get_session("api-dual-owned") is not None
+    finally:
+        profile_db.close()
+
+
+@pytest.mark.asyncio
 async def test_session_model_lock_endpoint_then_chat_reuses_persisted_lock_and_provider_credentials(
     adapter,
     session_db,

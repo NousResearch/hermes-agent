@@ -15,6 +15,7 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_state_errors import SessionActiveWriteGuardError
+from hermes_state_lineage import session_lineage_guard
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
@@ -367,7 +368,7 @@ class SessionSessionsMixin:
         conn.execute(_INHERIT_PARENT_ROUTING_SQL, (session_id,))
 
     def _insert_session_row(
-        self, session_id: str, source: str, model: str | None = None, model_config: dict[str, Any] | None = None,
+        self: Any, session_id: str, source: str, model: str | None = None, model_config: dict[str, Any] | None = None,
         system_prompt: str | None = None, user_id: str | None = None, session_key: Optional[str] = None,
         chat_id: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
         parent_session_id: str | None = None, cwd: str | None = None, profile_name: Optional[str] = None,
@@ -410,8 +411,11 @@ class SessionSessionsMixin:
                       parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
                       git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
                       transport_profile=transport_profile)
-        self._execute_write(lambda conn: insert_session_row_in_transaction(self, conn, **params),
-                            patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        # Keep the cross-store owner lock through commit: without it two profiles can both
+        # observe an absent id, insert it into separate SQLite files, and fork one Bot Chat.
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_write(lambda conn: insert_session_row_in_transaction(self, conn, **params),
+                                patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create (upsert) a session record. Returns the session_id."""
@@ -422,6 +426,13 @@ class SessionSessionsMixin:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
         return session_id
+
+    def list_session_lineage_rows(self: Any) -> list[dict[str, Any]]:
+        """Read the minimal metadata used to report ids duplicated across profile stores."""
+        with self._read_ctx() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT id, ended_at, end_reason, profile_name, session_key, message_count FROM sessions"
+            ).fetchall()]
 
     def set_expiry_finalized(self, session_id: str, finalized: bool = True) -> None:
         """Mirror ``SessionEntry.expiry_finalized`` so it survives a lost sessions.json.
@@ -477,10 +488,38 @@ class SessionSessionsMixin:
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session ended; the first end_reason wins (a compression split must keep
         ``'compression'`` even if a stale end_session() lands later); reopen_session() to re-end."""
-        self._execute_write(lambda conn: self._end_and_bump(
-            conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
-            (time.time(), end_reason, session_id), session_id, end_reason,
-        ))
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_write(lambda conn: self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (time.time(), end_reason, session_id), session_id, end_reason,
+            ))
+
+    def end_session_as_adopted(self: Any, session_id: str) -> bool:
+        """Retire an adopted donor without reopening it, even if it already has an end stamp."""
+        reason = "adopted_by_profile"
+
+        def _do(conn):
+            row = conn.execute("SELECT ended_at, end_reason FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return False
+            self._retire_undrained_queue_rows_conn(conn, session_id)
+            if row["ended_at"] is None:
+                self._end_and_bump(
+                    conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                    (time.time(), reason, session_id), session_id, reason,
+                )
+            elif row["end_reason"] != reason:
+                changed = conn.execute(
+                    "UPDATE sessions SET end_reason = ? WHERE id = ? AND end_reason IS NOT ?",
+                    (reason, session_id, reason),
+                ).rowcount
+                if changed:
+                    self._bump_conversation_generation(conn, session_id, reason)
+            return True
+
+        # This is called by the cross-profile move while its outer session_lineage_guard
+        # still covers import and retirement; do not add an independent nested ownership check.
+        return bool(self._execute_write(_do))
 
     def _end_and_bump(self, conn, sql: str, params: tuple, session_id: str, reason: str) -> int:
         """Run an end-stamp UPDATE; only a boundary this call actually wrote advances the
@@ -513,10 +552,11 @@ class SessionSessionsMixin:
         after a restart the marked row would otherwise stay active and visible on every
         mount until the next send. Idempotent; returns the number of rows retired.
         """
-        return self._execute_write(
-            lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_write(
+                lambda conn: self._retire_undrained_queue_rows_conn(conn, session_id))
 
-    def reopen_session(self, session_id: str) -> None:
+    def reopen_session(self: Any, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
         children, skipping explicit fork/delegate provenance and children that predate the parent itself.
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
@@ -539,7 +579,8 @@ class SessionSessionsMixin:
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)
-        self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
         """Durably mark an intentional reset boundary on live rows or rows with a *recoverable* accidental
@@ -556,11 +597,12 @@ class SessionSessionsMixin:
         # /new and policy auto-resets promote rather than end_session, so the
         # generation advances here too — same transaction, only when written.
         try:
-            return bool(self._execute_write(lambda conn: self._end_and_bump(
-                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND (ended_at IS NULL "
-                f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
-                (now, reason, session_id), session_id, reason,
-            )))
+            with session_lineage_guard(self.db_path, session_id):
+                return bool(self._execute_write(lambda conn: self._end_and_bump(
+                    conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND (ended_at IS NULL "
+                    f"OR end_reason IN ({_RECOVERABLE_END_REASONS_SQL}))",
+                    (now, reason, session_id), session_id, reason,
+                )))
         except Exception:
             return False
 
@@ -1001,7 +1043,7 @@ class SessionSessionsMixin:
     # the recovery/promotion SQL so literals cannot drift).
     RECOVERABLE_END_REASONS = _RECOVERABLE_END_REASONS
 
-    def unarchive_recoverable_session(self, session_id: str) -> bool:
+    def unarchive_recoverable_session(self: Any, session_id: str) -> bool:
         """Un-archive a session archived by a recoverable accident (ws_orphan_reap, agent_close);
         deliberate archives are left alone. True when un-archived.
 
@@ -1015,30 +1057,32 @@ class SessionSessionsMixin:
         """
         if not session_id:
             return False
-        try:
-            row = self.get_session(session_id)
-        except Exception:
-            return False
-        if not row or not row.get("archived"):
-            return False
-        # The accidental stamp lives on the live TIP; judge recoverability there.
-        tip = row
-        try:
-            tip_id = self.get_compression_tip(session_id) or session_id
-            if tip_id != session_id:
-                tip = self.get_session(tip_id) or row
-        except Exception:
-            pass
-        if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
-            return False
-        if not self.set_session_archived(session_id, False):
-            return False
-        # Clear the accidental end stamp, or a LATER deliberate archive (which never
-        # writes end_reason) would auto-resurrect on the next lookup.
-        self._write_sql(
-            "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
-        )
-        return True
+        # Hold the same home-wide lock used by create/resume through the recovery write.
+        with session_lineage_guard(self.db_path, session_id):
+            try:
+                row = self.get_session(session_id)
+            except Exception:
+                return False
+            if not row or not row.get("archived"):
+                return False
+            # The accidental stamp lives on the live TIP; judge recoverability there.
+            tip = row
+            try:
+                tip_id = self.get_compression_tip(session_id) or session_id
+                if tip_id != session_id:
+                    tip = self.get_session(tip_id) or row
+            except Exception:
+                pass
+            if (tip.get("end_reason") or "") not in self.RECOVERABLE_END_REASONS:
+                return False
+            if not self.set_session_archived(session_id, False):
+                return False
+            # Clear the accidental end stamp, or a LATER deliberate archive (which never
+            # writes end_reason) would auto-resurrect on the next lookup.
+            self._write_sql(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (tip["id"],),
+            )
+            return True
 
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).

@@ -15,6 +15,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKE
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _INSERT_MESSAGE_SQL, _parse_tool_calls
+from hermes_state_lineage import session_lineage_guard
 
 # _INSERT_MESSAGE_SQL's columns in bind order, so a row rewrite can diff _message_row_params by name.
 _MESSAGE_ROW_COLUMNS = tuple(
@@ -270,5 +271,6 @@ class SessionPruneRewriteMixin:
         self._ensure_display_order(session_id)  # every row holds its stored slot before one is carried over
         # _execute_transcript_write restores each dict's row state (id/digest/timestamp) on rollback, so a
         # failed or retried commit never leaves the replacements stamped with an uncommitted digest.
-        return self._execute_transcript_write(
-            _do, [replacement for _, replacement in changes])
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_transcript_write(
+                _do, [replacement for _, replacement in changes])

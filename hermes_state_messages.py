@@ -27,6 +27,7 @@ from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
+from hermes_state_lineage import session_lineage_guard
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -425,7 +426,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
-        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def append_messages_batch(
         self, session_id: str, messages: list[dict[str, Any]], compression_lock_holder: Optional[str] = None,
@@ -443,10 +445,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
-        return self._execute_transcript_write(lambda conn: self._append_messages_in_transaction(
-            conn, session_id, messages, compression_lock_holder=compression_lock_holder,
-            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
-            messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_transcript_write(lambda conn: self._append_messages_in_transaction(
+                conn, session_id, messages, compression_lock_holder=compression_lock_holder,
+                turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
+                messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def _append_messages_in_transaction(self, conn, session_id, messages, *,
             compression_lock_holder=None, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
@@ -513,7 +516,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             conn.execute("UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
                 (_scrub_surrogates(display_kind), self._encode_display_metadata(display_metadata), row[0]))
             return True
-        return self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_write(_do)
 
     def _reaction_list(self, meta: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
         """Well-formed (dict) reactions stored under ``REACTIONS_METADATA_KEY``."""
@@ -544,7 +548,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 meta.pop(self.REACTIONS_METADATA_KEY, None)
             conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta) if meta else None, message_row_id))
             return reactions
-        return self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_write(_do)
 
     def get_message_reactions(self, session_id: str, message_row_id: int) -> list[dict[str, Any]]:
         """Reaction list persisted on one message row (never ``None``)."""
@@ -593,7 +598,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 if changed:
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))
             return pending
-        return self._execute_write(_do)
+        with session_lineage_guard(self.db_path, lineage):
+            return self._execute_write(_do)
 
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> Optional[int]:
@@ -741,7 +747,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             self.replace_messages_in_transaction(
                 conn, session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
                 reject_active_turn_lease=reject_active_turn_lease)
-        self._execute_transcript_write(_do, messages)
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_transcript_write(_do, messages)
 
     def replace_messages_in_transaction(self, conn, session_id: str, messages: list[dict[str, Any]], *,
                                         active_only: bool = False, archive_dropped: bool = False,
@@ -944,11 +951,12 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         above the watermark or left unnamed) is not cloned: the carried copy is its one live row and the
         original takes rewind flags (#137197).
         """
-        return self._execute_transcript_write(lambda conn: self._archive_and_compact_on_conn(
-            conn, session_id, compacted_messages, model_config_patch=model_config_patch,
-            watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
-            carried_messages=carried_messages, covered_ids=covered_ids,
-            unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
+        with session_lineage_guard(self.db_path, session_id):
+            return self._execute_transcript_write(lambda conn: self._archive_and_compact_on_conn(
+                conn, session_id, compacted_messages, model_config_patch=model_config_patch,
+                watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
+                carried_messages=carried_messages, covered_ids=covered_ids,
+                unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
 
     def _archive_and_compact_on_conn(
             self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
@@ -1050,13 +1058,15 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
         if display_metadata is None:
+            with session_lineage_guard(self.db_path, session_id):
+                return self._write_rowcount(
+                    "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+                    (self._encode_content(content), row_id, session_id))
+        with session_lineage_guard(self.db_path, session_id):
             return self._write_rowcount(
-                "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-                (self._encode_content(content), row_id, session_id))
-        return self._write_rowcount(
-            "UPDATE messages SET content = ?, api_content = NULL, display_metadata = ? "
-            "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), self._encode_display_metadata(display_metadata), row_id, session_id))
+                "UPDATE messages SET content = ?, api_content = NULL, display_metadata = ? "
+                "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+                (self._encode_content(content), self._encode_display_metadata(display_metadata), row_id, session_id))
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
@@ -1066,9 +1076,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         glue the two turns into one. The durable row is preserved (inactive), never deleted."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
-        return self._write_rowcount(
-            "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
-            (row_id, session_id))
+        with session_lineage_guard(self.db_path, session_id):
+            return self._write_rowcount(
+                "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
+                (row_id, session_id))
 
     def resolve_active_row_id(self, session_id: str, row_id: int) -> Optional[int]:
         """The active row that still carries *row_id*'s message: *row_id* itself while active, else the one
@@ -1099,9 +1110,10 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         """
         if not session_id or not display_kind:
             return 0
-        return self._write_rowcount(
-            "UPDATE messages SET active = 0 WHERE session_id = ? AND display_kind = ? AND active = 1",
-            (session_id, _scrub_surrogates(display_kind)))
+        with session_lineage_guard(self.db_path, session_id):
+            return self._write_rowcount(
+                "UPDATE messages SET active = 0 WHERE session_id = ? AND display_kind = ? AND active = 1",
+                (session_id, _scrub_surrogates(display_kind)))
 
     def _display_dedupe_key(self, row) -> tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -1250,7 +1262,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             self._reconcile_display_orders(conn, session_id)
             return True
 
-        return bool(self._execute_write(_do))
+        with session_lineage_guard(self.db_path, session_id):
+            return bool(self._execute_write(_do))
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool) -> list[Any]:
@@ -1868,7 +1881,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             replacement_uid = replacement_id and conn.execute(
                 "SELECT message_uid FROM messages WHERE id = ?", (replacement_id,)).fetchone()[0]
             return target_row, ids, head_id, replacement_id, replacement_uid
-        target_row, rewound, new_head_id, replacement_message_id, replacement_message_uid = self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id):
+            target_row, rewound, new_head_id, replacement_message_id, replacement_message_uid = self._execute_write(_do)
         # Decode for the prompt-buffer prefill without a second fallible DB operation.
         target_row["content"] = self._decode_content(target_row.get("content"))
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
@@ -1950,7 +1964,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         def _do(conn):
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-        self._execute_write(_do)
+        with session_lineage_guard(self.db_path, session_id):
+            self._execute_write(_do)
 
     def purge_stale_tool_call_markers(self, *, dry_run: bool = False, backup: bool = True) -> dict[str, Any]:
         """Permanently clear bare tool-call marker content ("[memory]") left by pre-fix sessions

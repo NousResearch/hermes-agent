@@ -113,6 +113,9 @@ class _EmptyStore:
     def list_gateway_routing_rows(self):
         return []
 
+    def list_session_lineage_rows(self):
+        return []
+
     def key_profiles_for_chat(self, platform, chat_id):
         return set()
 
@@ -168,6 +171,7 @@ class RepairPlan:
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
         self.findings: list[Finding] = []
         self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
+        self._dual_home_ids: set[str] = set()
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
@@ -179,6 +183,7 @@ class RepairPlan:
 
     # -- scan --
     def scan(self, session: _Session) -> RepairPlan:
+        self._scan_dual_home(session)
         for store in self.stores:
             self._scan_sessions(session, store)
             self._scan_topics(session, store)
@@ -189,12 +194,39 @@ class RepairPlan:
             self._scan_sessions_json(self.routing_store)
         return self
 
+    def _scan_dual_home(self, session: _Session) -> None:
+        """Report cross-store copies before ordinary repair planning; never auto-move them."""
+        by_id: dict[str, list[tuple[Store, dict[str, Any]]]] = {}
+        for store in self.stores:
+            for row in session.db(store).list_session_lineage_rows():
+                by_id.setdefault(str(row["id"]), []).append((store, row))
+        for session_id, copies in sorted(by_id.items()):
+            if len(copies) < 2:
+                continue
+            self._dual_home_ids.add(session_id)
+            details = []
+            for store, row in sorted(copies, key=lambda pair: pair[0].profile):
+                state = "live" if row.get("ended_at") is None else "ended"
+                details.append(
+                    f"{store.profile}={state}, messages={row.get('message_count')}, "
+                    f"profile_name={row.get('profile_name')!r}"
+                )
+            self._add(Finding(
+                "dual_home", ",".join(sorted(store.profile for store, _ in copies)), session_id,
+                "; ".join(details),
+                reason=("session ids present in multiple state.db files require an explicit canonical-owner "
+                        "decision; automatic move/relabel could fork a live Bot Chat"),
+            ))
+
     def _scan_sessions(self, session: _Session, store: Store) -> None:
         db = session.db(store)
         crossed = db.find_crossed_profile_sessions(store.profile)
         moving: set[str] = set()
         held = _ledgered_lineages([r for r in crossed["foreign"] if self._would_move(store, r)])
         for row in crossed["foreign"]:
+            if row["id"] in self._dual_home_ids:
+                moving.add(row["id"])
+                continue
             if row["id"] in held:
                 moving.add(row["id"])  # neither relabelled nor severed in place: it is a stray
                 self._add(Finding(
@@ -204,7 +236,7 @@ class RepairPlan:
                 continue
             self._plan_foreign_row(store, row, moving)
         for row in crossed["mislabelled"]:
-            if row["id"] in moving:
+            if row["id"] in moving or row["id"] in self._dual_home_ids:
                 continue  # the move stamps the right label
             self._add(Finding(
                 "mislabelled", store.profile, row["id"],
@@ -213,7 +245,7 @@ class RepairPlan:
                 _fix=lambda s, st=store, sid=row["id"]: {
                     "relabelled": s.db(st).relabel_sessions_to_key_profile([sid])}))
         for row in crossed["crossed_parents"]:
-            if row["id"] in moving:
+            if row["id"] in moving or row["id"] in self._dual_home_ids:
                 continue  # the import drops a parent that is not in the target store
             self._add(Finding(
                 "crossed_parent", store.profile, row["id"],
@@ -380,10 +412,11 @@ class RepairPlan:
 class _MoveBatch:
     """Every session moving from one store to another, moved together: export all, import all
     (parents before children, so a moved child keeps its moved parent), then delete from the source.
-    Row by row, deleting a parent would detach the children still waiting in the source. Copy
-    precedes delete, so a crash between the two leaves a duplicate the next run settles
-    (``present`` on import, then the delete). A row that fails is that row's failure alone: the
-    rest of the batch still moves, and only its lineage (descendants, and the parent it still
+    The batch holds each lineage lock across export, import and source deletion, so writers cannot
+    race the transfer. A crash after import can still leave a duplicate; the cross-store fence then
+    fails closed rather than guessing which copy is canonical. Row by row, deleting a parent would
+    detach the children still waiting in the source. A row that fails is that row's failure alone:
+    the rest of the batch still moves, and only its lineage (descendants, and the parent it still
     points at in the source) waits with it for the next run."""
 
     def __init__(self, src: Store, dst: Store) -> None:
@@ -406,6 +439,13 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
+        from hermes_state_lineage import session_lineage_guard
+        with contextlib.ExitStack() as locks:
+            for sid in sorted(set(self.ids)):
+                locks.enter_context(session_lineage_guard(src_db.db_path, sid))
+            return self._run_locked(session, src_db, dst_db)
+
+    def _run_locked(self, session: _Session, src_db: Any, dst_db: Any) -> dict[str, dict[str, int]]:
         from hermes_state_profile_repair import SessionLedgeredError
         payloads: dict[str, Optional[dict[str, Any]]] = {}
         for sid in self.ids:
@@ -424,7 +464,8 @@ class _MoveBatch:
                     f"its parent {parent} did not move; kept in the {self.src.profile} store with it")
                 continue
             try:
-                outcome = dst_db.import_moved_session(payload, profile_name=self.dst.profile)
+                outcome = dst_db.import_moved_session(
+                    payload, profile_name=self.dst.profile, transfer_from=self.src.db_path)
             except Exception as exc:
                 self._errors[sid] = exc
                 continue

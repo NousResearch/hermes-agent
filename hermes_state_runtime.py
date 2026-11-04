@@ -12,6 +12,7 @@ from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
+from hermes_state_lineage import session_lineage_guard
 
 
 class SessionGoneEvent(NamedTuple):
@@ -951,7 +952,7 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
 
 
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
-                         operation, payload, handlers):
+                         operation, payload, handlers, lineage_ids=()):
     """The one worker receipt transaction every ``worker.persist`` family shares.
 
     An exact (execution, sequence, digest) retry returns the stored result; otherwise the
@@ -1002,4 +1003,5 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             from hermes_state_runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    with session_lineage_guard(db.db_path, (session_id, *lineage_ids)):
+        return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)

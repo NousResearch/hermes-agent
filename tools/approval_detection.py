@@ -334,10 +334,12 @@ def detect_hardline_command(command: str) -> tuple:
 
 # ---- Dangerous command patterns -----------------------------------------------------------
 # PowerShell accepts any unambiguous parameter prefix (``-r`` is ``-Recurse``, ``-fo`` is
-# ``-Force``), so spelling the switches out in full misses ``ri -r -fo``. ``-f`` alone stays out
-# because it is ambiguous with ``-Filter``.
+# ``-Force``), so spelling the switches out in full misses ``ri -r -fo``. On Remove-Item and
+# Remove-ItemProperty ``-f`` alone is ambiguous with ``-Filter`` and refuses to run; on
+# Stop-Process and Stop-Service ``-Force`` is the only F parameter, so ``-f`` already means it.
 _PS_RECURSE = r"-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b"
 _PS_FORCE = r"-fo(?:r(?:c(?:e)?)?)?\b"
+_PS_FORCE_ONLY_F = r"-f(?:o(?:r(?:c(?:e)?)?)?)?\b"
 _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
 
 DANGEROUS_PATTERNS = [
@@ -361,11 +363,12 @@ DANGEROUS_PATTERNS = [
     # PowerShell runs the verb as default positional arg (no -Command needed); anchor the verb to command
     # position (after leading -Flag switches and optional -Command/-c) so `-File c:\del-logs\run.ps1` is not caught.
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b(?:\s+-\S+)*\s+(?:-(?:command|c)\s+)?["\']?' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete"),
-    # The same delete behind a pipeline in a positional script string: Windows PowerShell runs
-    # `powershell -NoProfile "gci C:\\data | ri -r -fo"` as a command, and the verb no longer sits at
-    # command position, so the rule above walks past it. A destructive switch is still required, so
-    # read-only pipelines (`gci | measure`) stay quiet.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\|\s*' + _PS_DELETE_VERB + r'\b[^\n]*?\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "Windows PowerShell destructive delete (piped, abbreviated switches)"),
+    # The same delete later in the script: `powershell -NoProfile "gci C:\\data | ri -r -fo"` (Windows
+    # PowerShell runs a positional argument as the command) puts the verb after a pipe, `;` or a
+    # `{ }` block, where the rule above walks past it. Like that rule, no switch is required:
+    # `gci -Recurse -File | ri` deletes every file with none. The separator must sit inside the quoted
+    # script, so an outer-shell `powershell -c Get-Date; rm notes.txt` is left to the rm rules.
+    (r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n"\']*["\'][^"\'\n]*[|;{(]\s*' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete (later in the script)"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
@@ -387,7 +390,7 @@ DANGEROUS_PATTERNS = [
     (r'\b(?:iex|invoke-expression)\s*\(\s*(?:iwr|invoke-webrequest|invoke-restmethod|irm)\b', "execute remote content via Invoke-Expression"),
     # Force process kills — Windows analogue of pkill -9.
     (r'\btaskkill\b[^\n]*\s/f\b', "force kill processes (taskkill /F)"),
-    (r'\bstop-process\b[^\n]*\s' + _PS_FORCE, "force kill processes (Stop-Process -Force)"),
+    (r'\bstop-process\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force kill processes (Stop-Process -Force)"),
     # Volume/disk destruction — Windows analogue of mkfs / dd.
     (r'\bformat-volume\b', "format filesystem (Format-Volume)"),
     (r'\bclear-disk\b', "wipe disk (Clear-Disk)"),
@@ -407,7 +410,7 @@ DANGEROUS_PATTERNS = [
     (r'\breg(?:\.exe)?\s+delete\b', "registry delete (reg delete)"),
     (r'\bremove-itemproperty\b[^\n]*\s' + _PS_FORCE, "registry value delete (Remove-ItemProperty -Force)"),
     # Windows service/system stop — analogue of systemctl stop.
-    (r'\bstop-service\b[^\n]*\s' + _PS_FORCE, "force stop service (Stop-Service -Force)"),
+    (r'\bstop-service\b[^\n]*\s' + _PS_FORCE_ONLY_F, "force stop service (Stop-Service -Force)"),
     (r'\bsc(?:\.exe)?\s+(?:stop|delete)\b', "stop/delete service (sc)"),
     # Windows-form credential paths; the POSIX ~/.ssh patterns never match drive-letter or backslash spellings.
     (r'\busers[\\/][^\\/\s]+[\\/]\.ssh\b', "access to SSH keys (Windows path)"),

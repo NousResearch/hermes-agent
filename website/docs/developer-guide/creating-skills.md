@@ -438,4 +438,4 @@ Hermes can now consume third-party skills from multiple external discovery model
 - Agent Skills v0.2 well-known endpoints served from `/.well-known/agent-skills/index.json`
 - legacy v0.1 well-known endpoints served from `/.well-known/skills/index.json`
 
-If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace. Hermes prefers the v0.2 endpoint, where each `skill-md` entry has an explicit `url` for the skill file, and falls back to the v0.1 endpoint for existing publishers.
+If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace. Hermes prefers the v0.2 endpoint, where each `skill-md` entry has an explicit `url` and the required `sha256:` digest for the skill file, and falls back to the v0.1 endpoint for existing publishers. Hermes rejects unknown schemas, malformed or mismatched digests, and oversized responses.

@@ -788,7 +788,7 @@ hermes skills install skills-sh/vercel-labs/json-render/json-render-react --forc
 
 This is URL-based discovery from sites that publish an Agent Skills well-known index. It is not a single centralized hub — it is a web discovery convention.
 
-For a site or docs root, Hermes tries Agent Skills v0.2 at `/.well-known/agent-skills/index.json` first. A v0.2 `skill-md` entry advertises the exact skill file in its `url` field; Hermes validates and fetches that URL directly, so it does not have to follow a name-based directory layout. If the v0.2 endpoint is unavailable, Hermes falls back to the legacy v0.1 `/.well-known/skills/index.json` layout and its `files` arrays.
+For a site or docs root, Hermes tries Agent Skills v0.2 at `/.well-known/agent-skills/index.json` first. A v0.2 `skill-md` entry advertises the exact skill file in its `url` field and its required `sha256:` digest. Hermes validates the schema, fetches the URL through its SSRF and redirect guards, bounds the index and skill response sizes, and verifies the digest before using the file. If the v0.2 endpoint is unavailable, Hermes falls back to the legacy v0.1 `/.well-known/skills/index.json` layout and its `files` arrays.
 
 - v0.2 discovery path: `/.well-known/agent-skills/index.json`
 - Example legacy v0.1 endpoint: [Mintlify docs skills index](https://mintlify.com/docs/.well-known/skills/index.json)

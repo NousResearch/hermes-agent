@@ -96,7 +96,7 @@ export function VoiceProviderFields({
         await saveHermesConfigRecord(diffConfig(baselineRef.current ?? {}, snapshot), writeScope ?? profile)
         baselineRef.current = snapshot
         // Cache reads can pause offline; they must not hold up IPC writes.
-        void refetchConfig().catch(err => notifyError(err, t.settings.config.autosaveFailed))
+        void refetchConfig({ throwOnError: true }).catch(err => notifyError(err, t.settings.config.autosaveFailed))
       } catch (err) {
         notifyError(err, t.settings.config.autosaveFailed)
       }

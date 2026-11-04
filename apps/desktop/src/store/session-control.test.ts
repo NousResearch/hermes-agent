@@ -358,6 +358,31 @@ describe('session-control store', () => {
     expect($sessionControlBySession.get().returning!.snapshot!.revision).toBe('post-switch-current')
   })
 
+  it('does not reuse a read generation when a closed session id comes back', async () => {
+    const staleRead = deferred<unknown>()
+    const currentRead = deferred<unknown>()
+    useGateway(
+      vi
+        .fn()
+        .mockImplementationOnce(() => staleRead.promise)
+        .mockImplementationOnce(() => currentRead.promise)
+    )
+
+    const stale = refreshSessionControl('reopened')
+    clearSessionControl('reopened')
+    const current = refreshSessionControl('reopened')
+
+    staleRead.resolve({ control: { ...FULL_SNAPSHOT, revision: 'before-close' } })
+    await stale
+
+    expect($sessionControlBySession.get().reopened).toMatchObject({ loading: true, snapshot: null })
+
+    currentRead.resolve({ control: { ...FULL_SNAPSHOT, revision: 'after-reopen' } })
+    await current
+
+    expect($sessionControlBySession.get().reopened!.snapshot!.revision).toBe('after-reopen')
+  })
+
   it('does not let a late read overwrite a newer event', async () => {
     const slow = deferred<unknown>()
     useGateway(vi.fn(() => slow.promise))

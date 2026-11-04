@@ -140,6 +140,9 @@ const HEARTBEAT_STATUSES = new Set<SessionControlHeartbeatStatus>(['active', 'pa
 const DISPATCH_TYPES = new Set<SessionControlDispatch['type']>(['exec', 'send'])
 const ERROR_LIMIT = 240
 
+// Request and event generations share one counter that never goes back, so a token is never reissued:
+// clearing the maps (a gateway switch, a closed session) cannot let a stale response pass for a new one.
+let lastGeneration = 0
 const versions = new Map<string, number>()
 const eventVersions = new Map<string, number>()
 
@@ -498,7 +501,7 @@ function currentVersion(sessionId: string): number {
 }
 
 function advanceVersion(sessionId: string): number {
-  const next = currentVersion(sessionId) + 1
+  const next = ++lastGeneration
   versions.set(sessionId, next)
 
   return next
@@ -509,7 +512,7 @@ function currentEventVersion(sessionId: string): number {
 }
 
 function advanceEventVersion(sessionId: string): number {
-  const next = currentEventVersion(sessionId) + 1
+  const next = ++lastGeneration
   eventVersions.set(sessionId, next)
 
   return next
@@ -606,7 +609,8 @@ export function clearSessionControl(sessionId: string): void {
     return
   }
 
-  advanceVersion(sessionId)
+  versions.delete(sessionId)
+  eventVersions.delete(sessionId)
   const entries = $sessionControlBySession.get()
 
   if (!(sessionId in entries)) {
@@ -620,15 +624,13 @@ export function clearSessionControl(sessionId: string): void {
 /**
  * Wipes every entry — the gateway-switch seam. Entries are keyed by runtime
  * session id and a different backend mints new ids, so nothing here can be
- * reused; in-flight reads/actions from the old backend are invalidated by the
- * version bump so a late response cannot repopulate the map.
+ * reused; in-flight reads/actions from the old backend lose their generation,
+ * so a late response cannot repopulate the map.
  */
 export function clearAllSessionControl(): void {
-  for (const sessionId of new Set([...versions.keys(), ...Object.keys($sessionControlBySession.get())])) {
-    advanceVersion(sessionId)
-  }
-
   $sessionControlBySession.set({})
+  versions.clear()
+  eventVersions.clear()
 }
 
 function beginRead(sessionId: string, background: boolean): number {

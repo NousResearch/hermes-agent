@@ -9,6 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as ConfigApi from '@/api/config'
 import { bindConfigReadOrigin } from '@/api/config'
 import { queryClient } from '@/lib/query-client'
+import { $notifications } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
@@ -157,6 +158,45 @@ describe('ConfigSettings autosave', () => {
       expect(saveHermesConfig).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
+    }
+  })
+
+  it.each(['settings', 'voice'])('reports a %s refresh that exhausts its retries', async surface => {
+    getHermesConfigRecord.mockResolvedValueOnce({ checkpoints: { enabled: false }, stt: { openai: { model: 'whisper-1' } } })
+    getHermesConfigRecord.mockRejectedValue(new Error('refresh failed'))
+    $notifications.set([])
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      if (surface === 'settings') {
+        renderConfigSettings()
+        await screen.findByRole('switch')
+      } else {
+        const { VoiceProviderFields } = await import('./voice-provider-fields')
+        render(
+          <QueryClientProvider client={queryClient}>
+            <VoiceProviderFields profile="default" providerKey="openai" section="stt" />
+          </QueryClientProvider>
+        )
+        await screen.findByDisplayValue('whisper-1')
+      }
+
+      await act(async () => {
+        if (surface === 'settings') {
+          screen.getByRole('switch').click()
+        } else {
+          fireEvent.change(screen.getByDisplayValue('whisper-1'), { target: { value: 'gpt-4o-transcribe' } })
+        }
+
+        await vi.advanceTimersByTimeAsync(700)
+      })
+      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      // React Query retries a failed read three times (1s, 2s, 4s) before the refetch settles as an error.
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      await waitFor(() => expect($notifications.get().filter(n => n.kind === 'error')).toHaveLength(1))
+    } finally {
+      vi.useRealTimers()
+      $notifications.set([])
     }
   })
 

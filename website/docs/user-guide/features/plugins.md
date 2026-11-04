@@ -474,10 +474,36 @@ it prints the list and updates nothing unless you pass `--yes`; with `--yes`,
 consent prompts fail closed as in any non-interactive update (new
 capabilities stay ungranted, a widened catalog pin is not applied).
 
-By default, plugins only update when you run `hermes plugins update`. Setting
-`plugins.auto_apply: true` opts tracked Git plugins into unattended updates.
-Both routes use the update security scan. Auto-apply does not manage pinned,
-manual, drifted, or pip-distribution rows.
+By default, plugins only update when you run `hermes plugins update`. Turning
+on auto-update (`plugins.auto_apply: true`) lets the gateway's scheduled check
+apply the same catalog re-pins and tracked Git pulls on its own. Both routes
+use the update security scan, and an unattended update never accepts a widened
+catalog pin, a caution scan verdict or new capabilities: those wait for you to
+run the update yourself. Auto-update does not manage pinned, manual, drifted,
+or pip-distribution rows. It runs on the gateway's housekeeping thread, so it
+never delays starting a session, and an offline check costs one warning.
+Updated plugin code loads in new sessions; a running session keeps the code it
+already imported. The setting is per profile.
+
+The same switch and an "Update all" action are on every surface:
+
+| Surface | Update all | Auto-update |
+|---|---|---|
+| CLI | `hermes plugins update` | `hermes plugins auto-update [on\|off]` |
+| Chat (classic CLI and TUI) | `/plugins update` | `/plugins auto-update [on\|off]` |
+| Desktop app | Plugins tab, **Update all** | Plugins tab, **Auto-update** switch |
+| Web dashboard | Plugins page, **Update all** | Plugins page, **Auto-update** switch |
+
+`/plugins update`, Desktop and the dashboard update without asking per plugin,
+so a plugin that needs a review (widened pin, caution scan) is listed as
+"needs review" with nothing changed; update it by name to review it. Two
+updates of the same plugin never run at once: the second one is refused and
+changes nothing.
+
+`hermes update` can move catalog pins. Installed catalog plugins stay on their
+old pin until updated, so the update names them for every profile and asks
+that profile's gateway to check again on its next tick (which applies them
+when auto-update is on).
 
 If a manifest changes or introduces `update_url`, Hermes refuses the new address
 until you approve it with `hermes plugins trust-update-url NAME`. This is a

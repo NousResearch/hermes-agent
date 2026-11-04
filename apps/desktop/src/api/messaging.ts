@@ -1,5 +1,4 @@
 import type {
-  DiscordBotCheckResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
@@ -56,6 +55,18 @@ export function testMessagingPlatform(
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })
+}
+
+/** `POST /api/messaging/discord/check`: what Discord reports for the saved bot token. */
+export interface DiscordBotCheckResponse {
+  app_id: string
+  bot_name: string
+  bot_settings_url: string
+  invite_url: string
+  message_content: boolean
+  owners: { id: string; username: string }[]
+  server_count: null | number
+  server_members: boolean
 }
 
 export function checkDiscordBot(profile?: null | string): Promise<DiscordBotCheckResponse> {

@@ -2,11 +2,12 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorBanner } from '@/components/ui/error-state'
-import { checkDiscordBot } from '@/hermes'
+import { checkDiscordBot, type DiscordBotCheckResponse, type MessagingPlatformInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink } from '@/lib/icons'
-import type { DiscordBotCheckResponse, MessagingPlatformInfo } from '@/types/hermes'
+
+import { routerErrorText } from './router-error-text'
 
 export interface DiscordBotCheckProps {
   platform: MessagingPlatformInfo
@@ -29,7 +30,7 @@ export function DiscordBotCheck({ platform, scopeProfile }: DiscordBotCheckProps
     try {
       setResult(await checkDiscordBot(scopeProfile))
     } catch (checkError) {
-      setError(String(checkError))
+      setError(routerErrorText(checkError))
     } finally {
       setBusy(false)
     }

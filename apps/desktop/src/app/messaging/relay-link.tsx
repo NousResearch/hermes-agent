@@ -17,6 +17,8 @@ import { openExternalLink } from '@/lib/external-link'
 import { Copy, ExternalLink, QrCode } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
+import { routerErrorText } from './router-error-text'
+
 const POLL_MS = 3000
 // Consecutive poll failures before the panel stops waiting and shows the error.
 const MAX_POLL_ERRORS = 5
@@ -32,27 +34,6 @@ async function renderQr(payload: string): Promise<string> {
   const QRCode = await import('qrcode')
 
   return QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 1, width: 192 })
-}
-
-// The IPC bridge hands a router refusal over as "Error invoking remote method 'hermes:api': Error:
-// 409: {"detail":{"code":…,"message":…}}"; the card shows the connector's sentence, not the envelope.
-function relayErrorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error)
-  const text = (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/s)?.[1] ?? raw).replace(/^Error:\s*/, '')
-  const body = text.match(/^\d{3}:\s*(\{.*\})$/s)?.[1]
-
-  if (!body) {
-    return text
-  }
-
-  try {
-    const detail = (JSON.parse(body) as { detail?: unknown }).detail
-    const message = typeof detail === 'string' ? detail : (detail as undefined | { message?: unknown })?.message
-
-    return typeof message === 'string' && message ? message : text
-  } catch {
-    return text
-  }
 }
 
 function accountLabel(account: RelayLinkedAccount): string {
@@ -98,7 +79,7 @@ export function RelayLinkSetup({
       return row?.accounts ?? []
     } catch (loadError) {
       setAccounts(null)
-      setError(relayErrorText(loadError))
+      setError(routerErrorText(loadError))
 
       return null
     }
@@ -172,7 +153,7 @@ export function RelayLinkSetup({
         if (failures >= MAX_POLL_ERRORS || hasExpired(link)) {
           setLink(null)
           setQrDataUrl('')
-          setError(relayErrorText(pollError))
+          setError(routerErrorText(pollError))
 
           return
         }
@@ -211,7 +192,7 @@ export function RelayLinkSetup({
       const target = result.bot_url ?? botUrl
       setQrDataUrl(target ? await renderQr(target) : '')
     } catch (startError) {
-      setError(relayErrorText(startError))
+      setError(routerErrorText(startError))
     } finally {
       setBusy(false)
     }

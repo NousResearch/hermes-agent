@@ -117,10 +117,19 @@ def test_require_root_controlled(monkeypatch, st_mode, st_uid, private, ok):
 
 
 def test_root_staging_refuses_unprivileged_ancestor(tmp_path, monkeypatch):
-    """Test dirs are owned by the test user, which stands in for an untrusted ancestor."""
+    """An ancestor owned by a non-root account (here: the scandir's parent) is refused."""
     monkeypatch.setattr(sm.os, "geteuid", lambda: 0)
     scandir = tmp_path / "scan"
     scandir.mkdir()
+    real_lstat = sm.os.lstat
+
+    def lstat(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
+        if Path(path) != tmp_path:
+            return SimpleNamespace(st_mode=st.st_mode & ~0o022, st_uid=0)
+        return SimpleNamespace(st_mode=st.st_mode, st_uid=10000)
+
+    monkeypatch.setattr(sm.os, "lstat", lstat)
     with pytest.raises(RuntimeError, match="root-owned"):
         sm._root_staging_dir(scandir)
     assert not (tmp_path / ".scan.staging").exists()

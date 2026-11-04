@@ -148,9 +148,31 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    reasoning_override: dict | None = None
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+
+
+def session_provider(state: SessionState) -> str:
+    from hermes_cli.runtime_provider_custom import session_provider_identity
+    return session_provider_identity(
+        getattr(state.agent, "provider", None), getattr(state.agent, "requested_provider", None),
+        getattr(state.agent, "base_url", None), state.model)
+
+
+def apply_reasoning_override(state: SessionState, override: dict | None) -> None:
+    """Apply a session pin to request settings without rebuilding its prompt or agent."""
+    from acp_adapter.config_options import constrain_reasoning
+    from acp_adapter.model_catalog import model_metadata
+
+    metadata = model_metadata(
+        state.model, session_provider(state),
+        str(getattr(state.agent, "base_url", "") or ""))
+    state.reasoning_override = constrain_reasoning(override, metadata) if override is not None else None
+    current = state.reasoning_override if state.reasoning_override is not None else getattr(
+        state.agent, "reasoning_config", None)
+    state.agent.reasoning_config = constrain_reasoning(current, metadata)
 
 
 class SessionManager:
@@ -201,9 +223,13 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
+        agent = self._make_agent(
+            session_id=new_id, cwd=cwd, model=original.model or None,
+            requested_provider=session_provider(original) or None,
+            base_url=getattr(original.agent, "base_url", None), api_mode=getattr(original.agent, "api_mode", None))
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    reasoning_override=original.reasoning_override)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -305,10 +331,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True,
+                       reasoning_override: dict | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
                              history=history, cancel_event=threading.Event())
+        apply_reasoning_override(state, reasoning_override)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -350,9 +378,11 @@ class SessionManager:
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         for key in ("provider", "base_url", "api_mode"):
-            value = getattr(state.agent, key, None)
+            value = session_provider(state) if key == "provider" else getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        if state.reasoning_override is not None:
+            session_meta["reasoning_config"] = dict(state.reasoning_override)
 
         try:
             if db.get_session(state.session_id) is None:
@@ -485,8 +515,10 @@ class SessionManager:
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
+        reasoning = meta.get("reasoning_config")
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False,
+                                    reasoning_override=reasoning if isinstance(reasoning, dict) else None)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -541,6 +573,7 @@ class SessionManager:
                 requested=requested_provider or config_provider, target_model=(model or default_model) or None)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "requested_provider": requested_provider or config_provider or runtime.get("requested_provider"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),

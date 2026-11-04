@@ -8,7 +8,7 @@ class PreparedMutations:
     def __init__(self):
         self.pending = {}
 
-    async def apply(self, client, session_id, operation, payload, *, confirm=None):
+    async def apply(self, client, session_id, operation, payload, *, confirm=None, validate=None):
         """The owner's answer for this prepared mutation (retained across ambiguous replies).
 
         A guarded model target answers ``status: confirmation_required`` and writes nothing.
@@ -22,11 +22,16 @@ class PreparedMutations:
         its target row from that same transcript); returning None means "nothing to do" and is
         answered ``status: nothing``. A derived payload is keyed by operation alone, so a lost-reply
         retry re-presents the original target instead of re-deriving one from an already-rewound
-        transcript. Metadata edits (``rename``) carry no generation fence, as on Ink/Desktop."""
+        transcript. Metadata edits (``rename``) carry no generation fence, as on Ink/Desktop.
+
+        ``validate(snapshot)`` can reject a selection against the exact snapshot whose fences
+        will be retained. Exact retries keep the original tuple and do not revalidate it."""
         key = _key(session_id, operation, payload)
         self.retire(session_id, keep=key)
         if key not in self.pending:
             snapshot = await client.rpc('session.resume', session_id=session_id)
+            if validate is not None:
+                validate(snapshot)
             body = payload(snapshot) if callable(payload) else json.loads(key[2])
             if body is None:
                 return {'status': 'nothing', 'session_id': session_id, 'operation': operation}

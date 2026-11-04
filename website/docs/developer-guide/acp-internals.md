@@ -13,6 +13,8 @@ Key implementation files:
 - `acp_adapter/entry.py`
 - `acp_adapter/server.py`
 - `acp_adapter/session.py`
+- `acp_adapter/model_catalog.py`
+- `acp_adapter/config_options.py`
 - `acp_adapter/events.py`
 - `acp_adapter/permissions.py`
 - `acp_adapter/tools.py`
@@ -193,6 +195,28 @@ Without FIFO queues, completion events would attach to the wrong tool invocation
 ## Approval callback restoration
 
 ACP temporarily installs an approval callback on the terminal tool during prompt execution, then restores the previous callback afterward. This avoids leaving ACP session-specific approval handlers installed globally forever.
+
+## Model metadata and session configuration
+
+`model_catalog.py` retains explicit named-provider model labels, descriptions,
+groups, context lengths, and reasoning levels under `ModelInfo._meta.hermes`.
+Choice IDs continue to use `custom:<provider>:<model>` and go through the existing
+model-selection parser. Native group identifiers are opaque encodings of the
+provider/group pair, so embedded colons cannot merge distinct routes.
+
+`config_options.py` builds the same typed `configOptions` for the in-process and
+gateway-owner adapters. An explicit `reasoning_efforts` list is authoritative;
+`[]` removes the effort control and rejects effort writes. Missing metadata keeps
+the existing legacy ladder. Config-option writes return the complete option set,
+and model/mode/effort changes publish `config_option_update`.
+
+The gateway adapter keeps its existing generation- and revision-fenced
+`session.mutate` controls. A model pick carries any reconciled effort in the same
+mutation. The in-process adapter changes `agent.reasoning_config` under its session
+control guard and persists explicit pins in `model_config.reasoning_config`.
+Restore, fork, and model switches reapply pins only within the selected model's
+declared capability. Neither path rewrites past conversation text for an effort
+change.
 
 ## Current limitations
 

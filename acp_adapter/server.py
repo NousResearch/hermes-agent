@@ -27,6 +27,7 @@ from acp.schema import (
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, detect_provider
 from acp_adapter.commands import SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
+from acp_adapter.config_options import REASONING_CONFIG_ID, config_options, reasoning_choices, reasoning_effort
 from acp_adapter.events import (
     AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
     make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
@@ -35,7 +36,9 @@ from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter import modes as _modes
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager, SessionState, _expand_acp_enabled_toolsets, apply_reasoning_override, session_provider,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
 from agent.interrupt_compat import request_hard_interrupt
@@ -277,8 +280,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         loop.call_soon(asyncio.create_task, make_coro())
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
-        """Edit-approval policy as ACP modes. Zed renders ``config_options`` in the model
-        picker's slot; modes (as Claude/Codex use) coexist with the picker."""
+        """The edit policy is shared by legacy modes and native config options."""
         current = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         if current not in self._MODES:
             current = self._MODE_DEFAULT
@@ -292,11 +294,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
 
+    def _config_options(self, state: SessionState, models: SessionModelState | None) -> list:
+        return config_options(models,
+                              {"reasoning_effort": reasoning_effort(getattr(state.agent, "reasoning_config", None))},
+                              self._session_modes(state).current_mode_id)
+
+    async def _send_config_options(self, state: SessionState) -> list:
+        models = await asyncio.to_thread(self._build_model_state, state)
+        options = self._config_options(state, models)
+        if self._conn:
+            from acp.schema import ConfigOptionUpdate
+            await self._send(state.session_id, ConfigOptionUpdate(
+                session_update="config_option_update", config_options=options),
+                fail_msg="Failed to send ACP config options for session %s")
+        return options
+
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
         """Authenticated providers + models, from the shared Hermes inventory (same substrate
         as ``hermes model``/TUI/dashboard) so the selector isn't just the current curated list."""
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
-        provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
+        provider = session_provider(state) or detect_provider() or "openrouter"
         try:
             picker = build_model_state(model, provider, str(getattr(state.agent, "base_url", "") or ""))
             if picker is not None:
@@ -352,6 +369,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # Assign only after the rebuild succeeded so a failed switch leaves the session on its
         # working model instead of a model/agent mismatch that persists via save_session.
         state.agent, state.model = agent, new_model
+        apply_reasoning_override(state, getattr(state, "reasoning_override", None))
         self.session_manager.save_session(state.session_id)
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
@@ -601,9 +619,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
+        models = self._build_model_state(state)
         return {
-            "models": self._build_model_state(state),
+            "models": models,
             "modes": self._session_modes(state),
+            "config_options": self._config_options(state, models),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
 
@@ -667,10 +687,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return ForkSessionResponse(session_id="")
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
-        self._schedule_available_commands_update(state.session_id)
-        return ForkSessionResponse(
-            session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state)
-        )
+        return ForkSessionResponse(session_id=state.session_id, **await self._session_response_fields(state))
 
     async def list_sessions(
         self, cursor: str | None = None, cwd: str | None = None, **kwargs: Any
@@ -1020,6 +1037,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.warning("Session %s: model switch requested for missing session", session_id)
             return None
+        await self._set_model_option(state, model_id)
+        return SetSessionModelResponse()
+
+    async def _set_model_option(self, state: SessionState, model_id: str) -> list:
+        session_id = state.session_id
         # The picker swaps state.agent wholesale; mid-turn that strands the running agent and
         # makes _finish_turn emit a spurious compression-rotation update. Same exclusion as
         # the /model slash command.
@@ -1033,6 +1055,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             try:
                 _old, requested_provider, resolved_model = await asyncio.to_thread(
                     self._switch_model, state, model_id, keep_endpoint=True)
+                options = await self._send_config_options(state)
             except ModelRejected as exc:
                 # A model no provider can serve is a bad ``modelId`` param (-32602), not an agent
                 # internal error (-32603): the client attributes it to the request, not to Hermes (#72439).
@@ -1050,7 +1073,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         logger.info(
             "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
         )
-        return SetSessionModelResponse()
+        return options
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
@@ -1063,19 +1086,25 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             normalized_mode = self._MODE_DEFAULT
         state.mode = normalized_mode
         self.session_manager.save_session(session_id)
+        await self._send_config_options(state)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Apply native ACP settings and return the complete refreshed option set."""
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
-
-        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+        if config_id == "model":
+            if not isinstance(value, str):
+                raise acp.RequestError.invalid_params({"details": "Model must be a string"})
+            return SetSessionConfigOptionResponse(config_options=await self._set_model_option(state, value))
+        if config_id == REASONING_CONFIG_ID:
+            return SetSessionConfigOptionResponse(config_options=await self._set_reasoning_option(state, value))
+        if config_id == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
         else:
             options = getattr(state, "config_options", None)
@@ -1084,5 +1113,27 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             options[str(config_id)] = value
             state.config_options = options
         self.session_manager.save_session(session_id)
-        logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=await self._send_config_options(state))
+
+    async def _set_reasoning_option(self, state: SessionState, value: str) -> list:
+        from hermes_cli.config import load_config
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+        with state.runtime_lock:
+            if state.is_running or state.command_op:
+                raise acp.RequestError(-32603, "Session busy; change reasoning while the session is idle")
+            state.command_op = True
+        try:
+            models = await asyncio.to_thread(self._build_model_state, state)
+            if value not in reasoning_choices(models):
+                raise acp.RequestError.invalid_params({"details": "Unsupported reasoning effort"})
+            override = None if value == "default" else parse_reasoning_effort(value)
+            if override is None:
+                state.agent.reasoning_config = resolve_reasoning_config(await asyncio.to_thread(load_config), state.model)
+            apply_reasoning_override(state, override)
+            self.session_manager.save_session(state.session_id)
+            return await self._send_config_options(state)
+        finally:
+            with state.runtime_lock:
+                state.command_op = False
+            self._schedule_soon(lambda: self._drain_queued_prompts(state, state.session_id, self._conn))

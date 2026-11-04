@@ -1097,13 +1097,13 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         ``current_mode_update``), so a mode, model, effort or tier change from another surface resends
         the full list. A partial ``session.info`` keeps what it omits."""
         from acp_adapter.gateway_session_meta import current_mode, model_state, session_config_options
-        fields = ("model", "provider", "reasoning_effort", "service_tier")
-        if not any(key in payload for key in (*fields, "edit_approval_policy")):
+        fields = ("model", "provider", "reasoning_effort")
+        if not any(key in payload for key in (*fields, "edit_approval_policy", "service_tier")):
             return
         seen = self._configs.get(sid)
         shown = {**(seen or {}), **{key: payload[key] for key in fields if key in payload},
                  "mode": self._modes.get(sid) or current_mode(payload)}
-        if seen == shown:
+        if seen == shown and "service_tier" not in payload:
             return  # an equal observation must not take over from a build still running for it
         self._configs[sid] = shown
         # Seeded silently like the mode: the attach's reply carries the options.

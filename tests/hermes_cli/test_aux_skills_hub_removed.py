@@ -1,22 +1,17 @@
 """``auxiliary.skills_hub`` is gone: no picker offers it and a leftover block is inert.
 
 Skills Hub search/install never called an LLM, so the slot was a silent no-op (#40703,
-#142403). Every surface that lists built-in aux slots (DEFAULT_CONFIG, the ``hermes model``
-picker, the dashboard REST allowlist, the web and desktop rows) must agree it is not a slot,
-and an existing user config that still carries the block must keep loading.
+#142403). The web and desktop rows are pinned by their own ``auxTaskRows`` tests.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import hermes_yaml as yaml
+import pytest
+from fastapi import HTTPException
 
-REPO = Path(__file__).resolve().parents[2]
-_FRONTEND_ROWS = ("web/src/lib/aux-tasks.ts", "apps/desktop/src/app/settings/aux-task-rows.tsx")
 
-
-def test_no_surface_offers_skills_hub_slot():
+def test_no_backend_surface_offers_skills_hub_slot():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_cli.main_provider_setup import _AUX_TASKS
     from hermes_cli.web_server_config import _AUX_TASK_SLOTS
@@ -24,20 +19,24 @@ def test_no_surface_offers_skills_hub_slot():
     assert "skills_hub" not in DEFAULT_CONFIG["auxiliary"]
     assert "skills_hub" not in {key for key, _name, _desc in _AUX_TASKS}
     assert "skills_hub" not in _AUX_TASK_SLOTS
-    for rel in _FRONTEND_ROWS:
-        assert "skills_hub" not in (REPO / rel).read_text(encoding="utf-8"), rel
 
 
-def test_leftover_skills_hub_block_still_loads(tmp_path, monkeypatch):
+def test_leftover_skills_hub_block_is_kept_but_never_acted_on(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text(yaml.safe_dump(
-        {"auxiliary": {"skills_hub": {"provider": "openrouter", "model": "some/model"}}}))
+    leftover = {"provider": "openrouter", "model": "some/model"}
+    (home / "config.yaml").write_text(yaml.safe_dump({"auxiliary": {"skills_hub": leftover}}))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     from hermes_cli.config import load_config
-    from hermes_cli.web_server_config import _aux_task_slots
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync, _stale_aux_pins
 
     cfg = load_config()
-    assert cfg["auxiliary"]["vision"]["provider"] == "auto"
-    assert "skills_hub" not in _aux_task_slots()
+    assert cfg["auxiliary"]["skills_hub"]["model"] == "some/model"
+    # Switching main away from openrouter must not nudge the user to reset a dead slot.
+    assert _stale_aux_pins(cfg, "anthropic") == []
+    with pytest.raises(HTTPException) as exc:
+        _apply_aux_assignment_sync(cfg, "openrouter", "m", "skills_hub", "", "")
+    assert exc.value.status_code == 400
+    # "All auxiliary tasks" leaves the dead block exactly as the user wrote it.
+    _apply_aux_assignment_sync(cfg, "openrouter", "m", "", "", "")
+    assert cfg["auxiliary"]["skills_hub"] == leftover

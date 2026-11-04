@@ -796,6 +796,17 @@ class GatewayAgentCacheMixin:
             else:
                 # Older agent instance (shouldn't happen in practice) — legacy full-close path.
                 self._cleanup_agent_resources(agent)
+        # fd reclaim (MTK Vikunja card #150): an evicted agent's memory providers each hold
+        # a live SQLite connection (mnemosyne BeamMemory) that previously sat until the
+        # cyclic-garbage collector caught up — release_clients() only tears down LLM clients.
+        # The caller (idle sweep / LRU cap / pressure pass) has already committed the
+        # transcript via commit_memory_session, so the provider's session work is finished;
+        # shutting it down closes its connections now instead of hours later.
+        memory_manager = getattr(agent, "_memory_manager", None)
+        shutdown_all = getattr(memory_manager, "shutdown_all", None)
+        if callable(shutdown_all):
+            with suppress(Exception):
+                shutdown_all()
         # Free conversation history — tens of MB of tool output on heavy 100+-tool-call sessions.
         # release_clients() preserves session tool state for resume, but the message list is rebuilt from
         # persisted session JSON on the next turn, so dropping it here is safe.

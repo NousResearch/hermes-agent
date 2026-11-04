@@ -4756,6 +4756,14 @@ def _housekeeping_memory_trim() -> None:
     trim_memory(reason="messaging gateway housekeeping")
 
 
+def _housekeeping_fd_canary(runner, loop) -> None:
+    """fd budget canary (MTK Vikunja card #150): page the home channels when the gateway's
+    open-descriptor count crosses HERMES_FD_CANARY_THRESHOLD (default 512), long before the
+    4096 soft limit turns every Popen into EMFILE. Rate-limited inside (one page per hour)."""
+    from gateway.fd_canary import housekeeping_tick
+    housekeeping_tick(runner, loop)
+
+
 def _housekeeping_checkpoint_prune() -> None:
     """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
     ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
@@ -4835,6 +4843,7 @@ def _start_gateway_housekeeping(
         (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "fd budget canary", lambda: _housekeeping_fd_canary(runner, loop)),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]

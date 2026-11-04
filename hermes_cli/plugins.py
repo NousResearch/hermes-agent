@@ -716,7 +716,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         if self._wrong_type(provider, _CRP, "context reference provider"):
             return
         try:
-            _register(provider)
+            self._manager._track_context_reference(self.manifest, provider, _register)
         except ValueError as exc:
             logger.warning("Plugin '%s' context reference registration failed: %s", self.manifest.name, exc)
             return

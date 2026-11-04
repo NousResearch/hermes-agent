@@ -3,7 +3,13 @@ import { useLocation } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -22,6 +28,7 @@ import {
 import type { SidebarNavItem } from '../../types'
 
 import { SimplifiedSettingsMenu } from './simplified-settings-menu'
+import { useSimplifiedPluginPages } from './use-simplified-plugin-pages'
 
 export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: SidebarNavItem) => void }) {
   const { t } = useI18n()
@@ -30,6 +37,8 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
   const tab = new URLSearchParams(search).get('tab')
   const focusedSessionIsTile = useStore($focusedSessionIsTile)
   const view = focusedSessionIsTile ? 'chat' : appViewForPath(pathname)
+  const pluginPages = useSimplifiedPluginPages()
+  const pluginPageActive = !focusedSessionIsTile && pluginPages.some(page => page.route === pathname)
 
   const destinations = [
     {
@@ -48,7 +57,7 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
     {
       label: t.sidebar.nav.capabilities,
       icon: 'symbol-misc',
-      active: view === 'capabilities' && Boolean(tab && tab !== 'skills'),
+      active: (view === 'capabilities' && Boolean(tab && tab !== 'skills')) || pluginPageActive,
       items: [
         { label: t.connectorsPage.title, route: `${CAPABILITIES_ROUTE}?tab=connectors`, icon: 'server' },
         { label: t.skills.tabPlugins, route: `${CAPABILITIES_ROUTE}?tab=plugins`, icon: 'plug' },
@@ -98,6 +107,17 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
                   <DropdownMenuItem key={child.route} onSelect={() => open(child.route, child.label, child.icon)}>
                     <Codicon name={child.icon} />
                     {child.label}
+                  </DropdownMenuItem>
+                ))}
+                {pluginPages.length > 0 && <DropdownMenuSeparator />}
+                {pluginPages.map(page => (
+                  <DropdownMenuItem
+                    aria-current={!focusedSessionIsTile && pathname === page.route ? 'page' : undefined}
+                    key={page.id}
+                    onSelect={() => onNavigate(page)}
+                  >
+                    <page.icon />
+                    {page.label}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>

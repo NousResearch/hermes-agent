@@ -11,7 +11,7 @@ import { SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
 import { SIDEBAR_NAV_AREA } from '../../routes'
 
-import { SimplifiedPluginPages } from './simplified-plugin-pages'
+import { SimplifiedGlobalNav } from './simplified-global-nav'
 
 afterEach(() => {
   cleanup()
@@ -19,13 +19,17 @@ afterEach(() => {
   noteActiveTreeGroup(null)
 })
 
-it('shows no Plugins section without contributed pages', () => {
+it('omits the plugin divider when no pages are enabled', () => {
   render(
     <MemoryRouter>
-      <SimplifiedPluginPages onNavigate={vi.fn()} />
+      <RootTooltipProvider>
+        <SimplifiedGlobalNav onNavigate={vi.fn()} />
+      </RootTooltipProvider>
     </MemoryRouter>
   )
-  expect(screen.queryByRole('region', { name: 'Plugins' })).toBeNull()
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Capabilities' }), { key: 'Enter' })
+  expect(screen.getAllByRole('menuitem')).toHaveLength(4)
+  expect(screen.queryByRole('separator')).toBeNull()
 })
 
 it('keeps plugin pages reachable and respects visibility, preferences, and unloading', () => {
@@ -54,14 +58,25 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     render(
       <MemoryRouter initialEntries={['/board']}>
         <RootTooltipProvider>
-          <SimplifiedPluginPages onNavigate={onNavigate} />
+          <SimplifiedGlobalNav onNavigate={onNavigate} />
         </RootTooltipProvider>
       </MemoryRouter>
     )
-    expect(screen.queryByRole('button', { name: 'Advanced page' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Hidden page' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Invalid page' })).toBeNull()
-    const board = screen.getByRole('button', { name: 'Test board' })
+    const capabilities = screen.getByRole('button', { name: 'Capabilities' })
+    expect(capabilities.getAttribute('aria-current')).toBe('page')
+    fireEvent.keyDown(capabilities, { key: 'Enter' })
+    expect(screen.getByRole('separator')).toBeTruthy()
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+      'Connectors',
+      'Plugins',
+      'Tools',
+      'Maintenance',
+      'Test board'
+    ])
+    expect(screen.queryByRole('menuitem', { name: 'Advanced page' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Hidden page' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Invalid page' })).toBeNull()
+    const board = screen.getByRole('menuitem', { name: 'Test board' })
     expect(board.getAttribute('aria-current')).toBe('page')
     act(() => {
       $layoutTree.set(
@@ -77,12 +92,10 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     expect(board.getAttribute('aria-current')).toBe('page')
     fireEvent.click(board)
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/board' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Settings: Test board' }))
-    expect(onNavigate).toHaveBeenLastCalledWith(
-      expect.objectContaining({ route: '/capabilities?tab=plugins&plugin=test-plugin' })
-    )
+    fireEvent.keyDown(capabilities, { key: 'Enter' })
     act(dispose)
-    expect(screen.queryByRole('region', { name: 'Plugins' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Test board' })).toBeNull()
+    expect(screen.queryByRole('separator')).toBeNull()
   } finally {
     cleanup()
     dispose()

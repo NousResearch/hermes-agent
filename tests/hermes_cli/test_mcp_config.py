@@ -791,17 +791,16 @@ class TestMcpLogin:
         _seed_config(tmp_path, {
             "realserver": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
         })
-        token_dir = tmp_path / "mcp-tokens"
-
-        # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
-        # writes a fresh token during the probe. Simulate that: the mocked
-        # probe drops a token file, mirroring a successful authorization.
+        # The real OAuth flow writes a fresh token into its candidate profile.
         seen = {}
 
         def mock_probe(name, cfg, connect_timeout=30):
+            from hermes_constants import get_hermes_home
+
             seen["connect_timeout"] = connect_timeout
-            token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}', encoding="utf-8")
+            candidate_dir = get_hermes_home() / "mcp-tokens"
+            candidate_dir.mkdir(exist_ok=True)
+            (candidate_dir / "realserver.json").write_text('{"access_token": "x", "token_type": "Bearer"}', encoding="utf-8")
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(
@@ -819,8 +818,8 @@ class TestMcpLogin:
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
 
-    def test_login_clears_tokens_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
-        """Re-login wipes the stale grant and client registration but spares ``.meta.json``: when the
+    def test_login_stages_fresh_grant_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
+        """Re-login seeds only ``.meta.json`` into the candidate: when the
         authorization server's metadata document cannot be re-fetched (a WAF-fronted split-host
         server), the cached ``authorization_endpoint`` is what keeps the announced authorize URL off
         the SDK's ``{mcp-origin}/authorize`` guess (#115329)."""
@@ -837,9 +836,13 @@ class TestMcpLogin:
         state_at_probe = {}
 
         def mock_probe(name, cfg, connect_timeout=30):
-            state_at_probe.update({p.name: p.exists() for p in token_dir.glob("tv*")})
-            state_at_probe["meta"] = (token_dir / "tv.meta.json").exists()
-            (token_dir / "tv.json").write_text('{"access_token": "fresh"}', encoding="utf-8")
+            from hermes_constants import get_hermes_home
+
+            candidate_dir = get_hermes_home() / "mcp-tokens"
+            state_at_probe.update({p.name: p.exists() for p in candidate_dir.glob("tv*")})
+            state_at_probe["meta"] = (candidate_dir / "tv.meta.json").exists()
+            assert (token_dir / "tv.json").read_text() == '{"access_token": "stale"}'
+            (candidate_dir / "tv.json").write_text('{"access_token": "fresh", "token_type": "Bearer"}', encoding="utf-8")
             return [("a", "d")]
 
         monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)

@@ -126,6 +126,15 @@ _PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (f"CASE WHEN SUBSTR({_PREVIEW_MERGED_PRIOR
     f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END")
 _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 
+# ``gateway/run_inbound._prepare_inbound_message_text`` prefixes an adapter's ``channel_context``
+# backfill onto the user turn as ``{channel_context}\n\n[New message]\n{text}``. Without this, the
+# preview takes the head of the stored content and every session from a context-bearing adapter
+# previews the context block (e.g. ``[Room id: X]``) instead of what the user typed (#148988).
+# The marker is written in one place, so the read-side fix does not depend on adapter text.
+_NEW_MESSAGE_MARKER = "\n\n[New message]\n"
+_PREVIEW_AFTER_NEW_MESSAGE_SQL = (
+    "REPLACE(REPLACE(" + _sql_after_marker(_NEW_MESSAGE_MARKER) + ", X'0A', ' '), X'0D', ' ')")
+
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
 # A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
 _PREVIEW_ELIGIBLE_SQL = (f"(COALESCE(m.display_kind, '') <> 'hidden'"
@@ -143,6 +152,8 @@ _PREVIEW_RAW_SELECT = (
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW * 2})"
+    f" WHEN INSTR(m.content, {_sql_literal(_NEW_MESSAGE_MARKER)}) > 0"
+    f" THEN SUBSTR({_PREVIEW_AFTER_NEW_MESSAGE_SQL}, 1, {_PREVIEW_HEAD_CHARS})"
     f" ELSE SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_HEAD_CHARS}) END")
 
 

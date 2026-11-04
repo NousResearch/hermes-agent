@@ -3134,11 +3134,11 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; short-content + no-prior-tools guardrails always apply. A response must then
-    contain either a first-person future acknowledgement with an action marker or a narrowly
-    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
-    conversational replies such as "I'll help you brainstorm" from tripping it."""
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
+    requirement; short-content + no-tool-results-this-turn guardrails always apply (this turn only:
+    ``messages`` is the whole session, so a full-history scan disabled the guard once any tool had
+    ever run, #69778). A response then needs a first-person future ack with an action marker or a
+    bounded pronounless action clause with a transition cue, so "I'll help you brainstorm" stays final."""
+    if tool_results_this_turn(messages):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:

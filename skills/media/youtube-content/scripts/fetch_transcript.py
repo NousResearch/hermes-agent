@@ -14,7 +14,7 @@ Output (JSON):
         "timestamped_text": "00:00 first line\n00:05 second line\n..."
     }
 
-Install dependency:  pip install youtube-transcript-api
+Use the isolated helper interpreter prepared by this skill's PM setup recipe.
 """
 
 import argparse
@@ -47,18 +47,30 @@ def format_timestamp(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def fetch_transcript(video_id: str, languages: list = None):
-    """Fetch transcript segments from YouTube."""
+def fetch_transcript(video_id: str, languages: list | None = None):
+    """Fetch transcript segments from YouTube.
+
+    Returns a list of dicts with 'text', 'start', and 'duration' keys.
+    Compatible with youtube-transcript-api v1.x.
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
-        print("Error: youtube-transcript-api not installed. Run: pip install youtube-transcript-api",
+        print("Error: youtube-transcript-api not installed. Use the isolated PM helper environment described in youtube-content/SKILL.md.",
               file=sys.stderr)
         sys.exit(1)
 
+    api = YouTubeTranscriptApi()
     if languages:
-        return YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
-    return YouTubeTranscriptApi.get_transcript(video_id)
+        result = api.fetch(video_id, languages=languages)
+    else:
+        result = api.fetch(video_id)
+
+    # v1.x returns FetchedTranscriptSnippet objects; normalize to dicts
+    return [
+        {"text": seg.text, "start": seg.start, "duration": seg.duration}
+        for seg in result
+    ]
 
 
 def main():
@@ -82,7 +94,7 @@ def main():
         if "disabled" in error_msg.lower():
             print(json.dumps({"error": "Transcripts are disabled for this video."}))
         elif "no transcript" in error_msg.lower():
-            print(json.dumps({"error": f"No transcript found. Try specifying a language with --language."}))
+            print(json.dumps({"error": "No transcript found. Try specifying a language with --language."}))
         else:
             print(json.dumps({"error": error_msg}))
         sys.exit(1)

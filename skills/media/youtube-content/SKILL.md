@@ -1,71 +1,96 @@
 ---
 name: youtube-content
-description: Fetch YouTube video transcripts and transform them into structured content (chapters, summaries, threads, blog posts).
+description: "YouTube transcripts to summaries, threads, blogs."
+version: 1.0.0
+author: Teknium (teknium1), Hermes Agent
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [YouTube, Video, Transcripts, Media]
+    related_skills: []
 ---
 
 # YouTube Content Tool
+
+## When to use
+
+Use when the user shares a YouTube URL or video link, asks to summarize a video, requests a transcript, or wants to extract and reformat content from any YouTube video. Transforms transcripts into structured content (chapters, summaries, threads, blog posts).
 
 Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup
 
+Use `terminal` with the Python from a PM-prepared Hermes source checkout. The
+`youtube` extra declares the helper's dependency; do not install packages into
+Hermes with raw pip or project-discovering `uv run`.
+
+From that checkout, first follow the isolated development-home setup in
+[Package Management](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow),
+then prepare the extra and reactivate before running the helper:
+
 ```bash
-pip install youtube-transcript-api
+source ./activate
+python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
+source ./activate
+python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
 
-## Helper script
+On Windows, use `. .\activate.ps1` instead of `source ./activate`. If the terminal
+runs on a different host or in a sandbox, use an explicitly isolated helper
+environment there, not the agent's production environment. Run every command
+below with the interpreter whose import check succeeded.
 
-This skill includes `fetch_transcript.py` — use it to fetch transcripts quickly:
+## Helper Script
+
+`SKILL_DIR` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
 
 ```bash
 # JSON output with metadata
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+
+# Plain text (good for piping into further processing)
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
 
 # With timestamps
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID" --timestamps
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
 
-# Plain text output (good for piping into further processing)
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID" --text-only
-
-# Specific language with fallback
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID" --language tr,en
-
-# Timestamped plain text
-python3 SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID" --text-only --timestamps
+# Specific language with fallback chain
+python SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
 ```
 
-`SKILL_DIR` is the directory containing this SKILL.md file.
-
-## URL formats supported
-
-The script accepts any of these formats (or a raw 11-character video ID):
-
-- `https://www.youtube.com/watch?v=VIDEO_ID`
-- `https://youtu.be/VIDEO_ID`
-- `https://youtube.com/shorts/VIDEO_ID`
-- `https://youtube.com/embed/VIDEO_ID`
-- `https://youtube.com/live/VIDEO_ID`
-
-## Output formats
+## Output Formats
 
 After fetching the transcript, format it based on what the user asks for:
 
-- **Chapters**: Group by topic shifts, output timestamped chapter list (`00:00 Introduction`, `03:45 Main Topic`, etc.)
+- **Chapters**: Group by topic shifts, output timestamped chapter list
 - **Summary**: Concise 5-10 sentence overview of the entire video
 - **Chapter summaries**: Chapters with a short paragraph summary for each
 - **Thread**: Twitter/X thread format — numbered posts, each under 280 chars
 - **Blog post**: Full article with title, sections, and key takeaways
 - **Quotes**: Notable quotes with timestamps
 
+### Example — Chapters Output
+
+```
+00:00 Introduction — host opens with the problem statement
+03:45 Background — prior work and why existing solutions fall short
+12:20 Core method — walkthrough of the proposed approach
+24:10 Results — benchmark comparisons and key takeaways
+31:55 Q&A — audience questions on scalability and next steps
+```
+
 ## Workflow
 
-1. Fetch the transcript using the helper script
-2. If the transcript is very long (>50K chars), summarize in chunks
-3. Transform into the requested output format using your own reasoning
+1. **Fetch** the transcript using `terminal` and the prepared Python with `--text-only --timestamps`.
+2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
+3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
+4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
+5. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.
 
-## Error handling
+## Error Handling
 
-- **Transcript disabled**: Some videos have transcripts turned off — tell the user
-- **Private/unavailable**: The API will raise an error — relay it clearly
-- **No matching language**: Try without specifying a language to get whatever's available
-- **Dependency missing**: Run `pip install youtube-transcript-api` first
+- **Transcript disabled**: tell the user; suggest they check if subtitles are available on the video page.
+- **Private/unavailable video**: relay the error and ask the user to verify the URL.
+- **No matching language**: retry without `--language` to fetch any available transcript, then note the actual language to the user.
+- **Dependency missing**: repeat PM preparation and reactivation above, then verify the helper uses that Python. Do not repair the selected generation with pip.

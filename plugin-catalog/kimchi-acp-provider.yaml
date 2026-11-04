@@ -1,0 +1,17 @@
+name: kimchi-acp-provider
+repo: https://github.com/getkimchi/kimchi-hermes
+subdir: model-providers/kimchi-acp
+sha: d6ffe62876a44605585eaf5c2e3d5214b9e10cb8
+description: "The Kimchi coding harness (kimchi.dev) as a Hermes model provider over ACP stdio — spawns kimchi --mode acp keeping the harness's permission prompts on (YOLO opt-in via KIMCHI_ACP_ARGS=\"--mode acp --yolo\"), the harness owns its own auth, and completed tool calls surface as inline bullets in the reply. Disclosure — every turn spawns the local Kimchi CLI (`kimchi --mode acp`, overridable with KIMCHI_ACP_COMMAND / KIMCHI_ACP_ARGS) in Hermes's working directory and hands it the conversation. The harness calls kimchi.dev with its own stored login and runs its own shell, file and web tools. Its permission prompts stay on, and Hermes cancels them, so gated tools don't run, unless you opt in with KIMCHI_ACP_ARGS=\"--mode acp --yolo\", which runs them with no approval prompt (not for shared gateway or cron use). To show setup status, it parses ~/.config/kimchi/config.json (or KIMCHI_CONFIG_PATH) only to check that a key is present; the key is never stored or sent by Hermes."
+maintainer: getkimchi
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/getkimchi/kimchi-hermes#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

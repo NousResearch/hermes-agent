@@ -1,17 +1,6 @@
-"""
-Platform adapters for messaging integrations.
+"""Platform adapters for messaging integrations (receive, send, auth, media)."""
 
-Each adapter handles:
-- Receiving messages from a platform
-- Sending messages/responses back
-- Platform-specific authentication
-- Message formatting and media handling
-"""
+from .base import BasePlatformAdapter, SendResult
+from .event import MessageEvent
 
-from .base import BasePlatformAdapter, MessageEvent, SendResult
-
-__all__ = [
-    "BasePlatformAdapter",
-    "MessageEvent",
-    "SendResult",
-]
+__all__ = ["BasePlatformAdapter", "MessageEvent", "SendResult"]

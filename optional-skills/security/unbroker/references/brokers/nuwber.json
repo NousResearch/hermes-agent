@@ -1,0 +1,56 @@
+{
+  "id": "nuwber",
+  "name": "Nuwber",
+  "category": "people_search",
+  "priority": "high",
+  "jurisdictions": [
+    "US"
+  ],
+  "parent": "nuwber",
+  "owns": [],
+  "search": {
+    "method": "url_pattern",
+    "url": "https://nuwber.com/",
+    "fetch": "browser",
+    "match_signal": "result",
+    "antibot": "cloudflare",
+    "by": [
+      "name",
+      "phone",
+      "address"
+    ]
+  },
+  "optout": {
+    "tier": "T2",
+    "method": "web_form",
+    "url": "https://nuwber.com/removal/link",
+    "requires": {
+      "profile_url": true,
+      "email_verification": true,
+      "captcha": false,
+      "gov_id": false,
+      "account": false,
+      "phone_callback": false,
+      "payment": false
+    },
+    "inputs": [
+      "contact_email",
+      "profile_url"
+    ],
+    "notes": "People-search. Opt-out: submit the profile URL + email at /removal/link, confirm via the emailed link. DEFUNCT since 2026-10-26: NXDOMAIN; NS remain parked at Cloudflare with no A record (checked via 1.1.1.1). Excluded from all planning/scanning/re-checks; close any open case as not_found citing this record.",
+    "quirks": [
+      "Opt-out URL is the documented public endpoint; datacenter IPs get 403 (anti-bot), so confirm the live flow via the operator's residential browser before the first submission, then set last_verified.",
+      "Needs the confirmed profile_url (paste the listing URL you recorded).",
+      "Email verification required."
+    ],
+    "est_processing_days": 3,
+    "reappearance_risk": "medium"
+  },
+  "last_verified": "2026-10-26",
+  "source": "curated",
+  "confidence": "documented",
+  "defunct": {
+    "since": "2026-10-26",
+    "evidence": "NXDOMAIN; NS remain parked at Cloudflare with no A record (checked via 1.1.1.1)"
+  }
+}

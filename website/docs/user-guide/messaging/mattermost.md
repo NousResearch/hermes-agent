@@ -100,23 +100,27 @@ For DMs, simply open a direct message with the bot — it will be able to respon
 
 ## Step 4: Find Your Mattermost User ID
 
-Hermes Agent uses your Mattermost User ID to control who can interact with the bot. To find it:
+Hermes Agent uses your Mattermost User ID to control who can interact with the bot. The profile dialog (avatar → Profile) does not show it.
 
-1. Click your **avatar** (top-left corner) → **Profile**.
-2. Your User ID is displayed in the profile dialog — click it to copy.
+Use one of these (see Mattermost's [Identify a user's ID](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings#identify-a-users-id)):
+
+1. **System Console** (system admins): **User Management** → **Users** → open your user. The ID is on the User Configuration page.
+2. **Browser** (any user): while logged in to Mattermost, open `https://your-mattermost-server/api/v4/users/me` in a new tab. The `id` field is your User ID.
+3. **API with the bot token**: look up your username. The `id` field in the response is yours:
+
+   ```bash
+   curl -s -H "Authorization: Bearer YOUR_BOT_TOKEN" \
+     https://your-mattermost-server/api/v4/users/username/YOUR_USERNAME
+   ```
+
+   Don't call `/api/v4/users/me` with the bot token: that returns the **bot's** ID, not yours.
+4. **mmctl** (system admins): `mmctl user list --all` prints one line per user: `<id>: <username> (<email>)`.
 
 Your User ID is a 26-character alphanumeric string like `3uo8dkh1p7g1mfk49ear5fzs5c`.
 
 :::warning
 Your User ID is **not** your username. The username is what appears after `@` (e.g., `@alice`). The User ID is a long alphanumeric identifier that Mattermost uses internally.
 :::
-
-**Alternative**: You can also get your User ID via the API:
-
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://your-mattermost-server/api/v4/users/me | jq .id
-```
 
 :::tip
 To get a **Channel ID**: click the channel name → **View Info**. The Channel ID is shown in the info panel. You'll need this if you want to set a home channel manually.
@@ -225,6 +229,33 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+## Channel allowlist (`allowed_channels`)
+
+Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.
+
+**DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message.
+
+```yaml
+mattermost:
+  allowed_channels:
+    - "abc123def456ghi789jkl012mno"   # #ops
+    - "xyz987uvw654rst321opq098nml"   # #incident-response
+```
+
+Or via env var (comma-separated):
+
+```bash
+MATTERMOST_ALLOWED_CHANNELS="abc123def456ghi789jkl012mno,xyz987uvw654rst321opq098nml"
+```
+
+Behavior:
+
+- Empty / unset → no restriction (fully backward compatible).
+- Non-empty → channel ID must be on the list, or the message is dropped before any other gating (mention requirement, `MATTERMOST_FREE_RESPONSE_CHANNELS`, etc.) runs.
+- Find a channel ID via the Mattermost UI → channel header → "View Info", or read it from the channel URL.
+
+See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
+
 ## Troubleshooting
 
 ### Bot is not responding to messages
@@ -280,6 +311,23 @@ If this returns your bot's user info, the token is valid. If it returns an error
 **Cause**: Your User ID isn't in `MATTERMOST_ALLOWED_USERS`.
 
 **Fix**: Add your User ID to `MATTERMOST_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway. Remember: the User ID is a 26-character alphanumeric string, not your `@username`.
+
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Mattermost channels. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+mattermost:
+  channel_prompts:
+    "channel_id_abc123": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "channel_id_def456": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
 ## Security
 

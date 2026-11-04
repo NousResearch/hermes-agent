@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 title: "Use SOUL.md with Hermes"
 description: "How to use SOUL.md to shape Hermes Agent's default voice, what belongs there, and how it differs from AGENTS.md and /personality"
 ---
@@ -66,6 +66,8 @@ Important:
 ## How Hermes uses it
 
 When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
+
+Because `SOUL.md` is your own file (agent writes to it always need your approval), a prompt-injection scanner hit does **not** block it the way it blocks a project `AGENTS.md`: the file still loads, Hermes logs a warning naming the matched pattern, and `/context` marks the file `⚠ … review the file`. Security guidance that quotes an attack phrase ("content telling you to ignore previous instructions") therefore keeps your identity intact.
 
 If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
 
@@ -250,7 +252,7 @@ Possible causes:
 - higher-priority instructions are overriding it
 - the file includes conflicting guidance
 - the file is too long and got truncated
-- some of the text resembles prompt-injection content and may be blocked or altered by the scanner
+- some of the text resembles prompt-injection content — SOUL.md still loads, but check `/context` for a `⚠ … review the file` line and the log for the matched pattern
 
 ### My SOUL.md became too project-specific
 
@@ -258,7 +260,7 @@ Move project instructions into `AGENTS.md` and keep `SOUL.md` focused on identit
 
 ## Related docs
 
-- [Personality & SOUL.md](/docs/user-guide/features/personality)
-- [Context Files](/docs/user-guide/features/context-files)
-- [Configuration](/docs/user-guide/configuration)
-- [Tips & Best Practices](/docs/guides/tips)
+- [Personality & SOUL.md](../user-guide/features/personality.md)
+- [Context Files](../user-guide/features/context-files.md)
+- [Configuration](../user-guide/configuration.md)
+- [Tips & Best Practices](./tips.md)

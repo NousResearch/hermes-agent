@@ -11,6 +11,7 @@ body:
         **Before submitting**, please:
         - [ ] Search [existing issues](https://github.com/NousResearch/hermes-agent/issues) to avoid duplicates
         - [ ] Update to the latest version (`hermes update`) and confirm the bug still exists
+        - [ ] Run `hermes debug share` and paste the links below (see Debug Report section)
 
   - type: textarea
     id: description
@@ -82,6 +83,25 @@ body:
         - Slack
         - WhatsApp
 
+  - type: textarea
+    id: debug-report
+    attributes:
+      label: Debug Report
+      description: |
+        Run `hermes debug share` from your terminal and paste the links it prints here.
+        This uploads your system info, config, and recent logs to a paste service automatically.
+
+        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
+
+        If the upload fails, run `hermes debug share --local` and paste the output directly.
+      placeholder: |
+        Report   https://paste.rs/abc123
+        agent.log   https://paste.rs/def456
+        gateway.log   https://paste.rs/ghi789
+      render: shell
+    validations:
+      required: true
+
   - type: input
     id: os
     attributes:
@@ -97,8 +117,6 @@ body:
       label: Python Version
       description: Output of `python --version`
       placeholder: "3.11.9"
-    validations:
-      required: true
 
   - type: input
     id: hermes-version
@@ -106,14 +124,14 @@ body:
       label: Hermes Version
       description: Output of `hermes version`
       placeholder: "2.1.0"
-    validations:
-      required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Relevant Logs / Traceback
-      description: Paste any error output, traceback, or log messages. This will be auto-formatted as code.
+      label: Additional Logs / Traceback (optional)
+      description: |
+        The debug report above covers most logs. Use this field for any extra error output, 
+        tracebacks, or screenshots not captured by `hermes debug share`.
       render: shell
 
   - type: textarea

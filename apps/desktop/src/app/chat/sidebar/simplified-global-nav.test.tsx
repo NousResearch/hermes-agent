@@ -1,12 +1,18 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 
 import { SimplifiedGlobalNav } from './simplified-global-nav'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $layoutTree.set(null)
+  noteActiveTreeGroup(null)
+})
 
 function mount(route = '/') {
   const navigate = vi.fn()
@@ -55,4 +61,24 @@ it('keeps existing settings sections reachable from footer submenus', async () =
   fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Appearance' }), { key: 'ArrowRight' })
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Notifications' }))
   expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/settings?tab=notifications' }))
+})
+
+it('follows the focused chat tile instead of the workspace page underneath it', () => {
+  $layoutTree.set(
+    split('row', [
+      group(['workspace'], { id: 'workspace-group' }),
+      group(['session-tile:chat-one'], { id: 'chat-group' })
+    ])
+  )
+  noteActiveTreeGroup('workspace-group')
+  mount('/capabilities?tab=skills')
+  const skills = screen.getByRole('button', { name: 'Skills' })
+  const chats = screen.getByRole('button', { name: 'Chats' })
+  expect(skills.getAttribute('aria-current')).toBe('page')
+  act(() => noteActiveTreeGroup('chat-group'))
+  expect(chats.getAttribute('aria-current')).toBe('page')
+  expect(skills.hasAttribute('aria-current')).toBe(false)
+  act(() => noteActiveTreeGroup('workspace-group'))
+  expect(skills.getAttribute('aria-current')).toBe('page')
+  expect(chats.hasAttribute('aria-current')).toBe(false)
 })

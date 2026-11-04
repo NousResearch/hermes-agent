@@ -8,6 +8,7 @@ import secrets
 import subprocess
 
 from gateway.session_admission import admission_fingerprint
+from gateway.owner_identity import same_owner
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, _secret_digest, _session
 
 # A venv launcher (uv's Windows python.exe, pip's exe shim) sits between the owner's
@@ -80,7 +81,7 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
         admission = _admission(conn, admission_id)
         if admission['status'] != 'started' or admission['owner_epoch'] != authority.epoch:
             raise RuntimeStoreError('producer_not_started')
-        if admission['principal_id'] != principal_id:
+        if not same_owner(admission['principal_id'], principal_id):
             raise RuntimeStoreError('permission_denied')
         owner, generation = admission['target_session_id'], admission['generation']
         if _session(conn, owner)['runtime_generation'] != generation:

@@ -1,3 +1,4 @@
+import { arCronControl } from './ar_cron_control'
 import type { TranslationOverrides } from './define-locale'
 
 export const arCommandCenter = {
@@ -206,6 +207,32 @@ export const arCommandCenter = {
       membersOptional: 'اختياري: فعّل Server Members Intent للسماح للأشخاص حسب اسم المستخدم أو الدور.',
       noServers: 'لم ينضم البوت إلى أي خادم بعد.',
       addToServer: 'إضافة إلى خادم'
+    },
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'لا حاجة لرمز بوت',
+      intro: (platform: string) => `يصل ${platform} إلى هذا الوكيل عبر بوت Hermes المشترك. اربط حسابك في ${platform} ثم راسل البوت للتحدث مع وكيلك.`,
+      link: (platform: string) => `ربط ${platform}`,
+      linkAnother: (platform: string) => `ربط حساب ${platform} آخر`,
+      linkedAccounts: 'الحسابات المرتبطة',
+      unlink: 'إلغاء الربط',
+      unlinkFailed: 'تعذر إلغاء ربط هذا الحساب',
+      stepOpen: (platform: string) => `1. امسح الرمز بهاتفك، أو افتح البوت في ${platform}.`,
+      stepSend: '2. أرسل هذه الرسالة إلى البوت من الحساب الذي تريد ربطه:',
+      open: (platform: string) => `فتح ${platform}`,
+      copy: 'نسخ الرسالة',
+      copied: 'تم النسخ',
+      copyFailed: (command: string) => `تعذر النسخ. اكتب ${command} بدلًا من ذلك.`,
+      waiting: 'بانتظار وصول رسالتك إلى البوت. الرمز يعمل مرة واحدة.',
+      linked: (platform: string) => `تم ربط حساب ${platform}. راسل البوت للتحدث مع وكيلك.`,
+      expired: 'انتهت صلاحية الرمز قبل استخدامه. احصل على رمز جديد وحاول مرة أخرى.',
+      refused: (platform: string) => `رفض ${platform} الربط. احصل على رمز جديد وحاول مرة أخرى.`,
+      qrAlt: (platform: string) => `رمز QR لبوت ${platform} المشترك`,
+      managed: 'تتم إدارته عبر Team Gateway',
+      managedNote: (platform: string) => `يتولى Team Gateway المراسلة في هذا المثيل، لذا يوقف البوابة الاتصال المباشر بـ ${platform} عند كل تشغيل. لتشغيله بجانب المرحّل، اضبط GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true في بيئة البوابة (الاتصال المباشر يمنع المثيل من التقلص إلى الصفر وقد يسلّم الرسائل مرتين).`,
+      managedIntro: 'تُربط حسابات هذا الوكيل من Nous Portal.',
+      openPortal: 'اربط الحسابات في Nous Portal',
+      noNewAccount: (platform: string) => `لم يعد الرمز نشطًا ولم يظهر حساب جديد. إذا لم يكن حسابك في ${platform} مدرجًا، فاحصل على رمز جديد وحاول مرة أخرى.`
     },
     telegramQr: {
       title: 'اختر طريقة ربط بوت Telegram',
@@ -419,10 +446,7 @@ export const arCommandCenter = {
     manageProfiles: 'إدارة الملفات الشخصية',
     fleet: {
       localDevice: 'هذا الجهاز (خلفية محلية — تثبّت Hermes إن كان مفقودًا، وإلا تفتح جلسة جديدة)',
-      switchDeviceTitle: 'التبديل إلى هذا الجهاز؟',
-      switchDeviceDesc: 'يفتح هذا جلسة جديدة على هذا الحاسوب. تبقى المحادثة الحالية على البوابة الأخرى.',
-      switchDeviceConfirm: 'تبديل',
-      installDeviceTitle: 'التبديل إلى هذا الجهاز؟',
+      installDeviceTitle: 'تثبيت Hermes على هذا الجهاز؟',
       installDeviceDesc: 'سيُثبَّت Hermes محليًا ثم تُفتح جلسة جديدة على هذا الحاسوب. لا يبدأ التثبيت قبل التأكيد.',
       installDeviceConfirm: 'تثبيت محليًا',
       connectExistingInstead: 'الاتصال بموجود بدلًا من ذلك'
@@ -532,6 +556,7 @@ export const arCommandCenter = {
     failedRename: 'فشل إعادة التسمية'
   },
   cron: {
+    control: arCronControl,
     close: 'إغلاق',
     search: 'بحث',
     loading: 'جار التحميل...',

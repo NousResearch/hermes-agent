@@ -246,6 +246,33 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
         plugins_transaction.publish_plugin(staged, target, {}, {'active-plugin': {}}, require_consent=True)
 
 
+@pytest.mark.parametrize('yes_deps', [False, True])
+def test_active_replacement_npm_failure_publishes_nothing(tmp_path, monkeypatch, yes_deps):
+    """Replacing an active plugin without --yes-deps ran npm through the consent gate, which only
+    warns on failure, so the replacement was published without its Node deps."""
+    from hermes_cli import plugins_transaction
+    from pm import workspace as ws
+
+    staged, target = tmp_path / 'staged', tmp_path / 'target'
+    for tree in (staged, target):
+        tree.mkdir()
+        (tree / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'active-plugin'}), encoding='utf-8')
+    (staged / 'package.json').write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(ws, 'enabled_plugin_dirs', lambda **kwargs: [target])
+    syncs, npm, prompts = [], [], []
+    monkeypatch.setattr('pm.client.sync_venv', lambda **kwargs: syncs.append(kwargs))
+    monkeypatch.setattr(ws, 'install_node_sidecar', lambda path, **kwargs: npm.append(path) or 'npm ci exited 1')
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'y')
+
+    with pytest.raises(plugins_cmd.PluginOperationError, match='Node dependencies could not be installed'):
+        plugins_transaction.publish_plugin(staged, target, {}, {'active-plugin': {}}, require_consent=True,
+                                           assume_consent=yes_deps, node_deps=True)
+    assert (syncs, npm, len(prompts)) == ([], [staged], 1)
+    assert sorted(p.name for p in target.iterdir()) == ['plugin.yaml']
+
+
 def test_install_parser_offers_yes_deps_exclusive_with_no_deps():
     import argparse
 

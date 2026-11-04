@@ -32,9 +32,9 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
         from pm.workspace import enabled_plugin_dirs
 
         if target.resolve() in enabled_plugin_dirs(installing=target):
-            node_deps = False  # the consent gate below asks the Node question on *staged* itself
+            # A *node_deps* request asks the Node question once, below, where an npm failure blocks.
             consented, reason = plugins_cmd._install_plugin_python_deps(
-                plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
+                plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console(), node=not node_deps)
             if not consented:
                 outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
                            if target.exists() else "Install declined: {}. Nothing was installed.")

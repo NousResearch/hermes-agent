@@ -59,6 +59,7 @@ from hermes_cli.plugins_dispatch import (
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_cli.plugins_profile_ctx import PluginProfileCtxMixin
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginProfileCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -396,17 +397,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         rebuilding the calling session's tools now (``/delegation``); a host remote facade on the owner process."""
         from agent.delegation_backends import DelegationBackends
         return DelegationBackends()
-
-    @property
-    def profile_name(self) -> str:
-        """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),
-        derived from ``HERMES_HOME`` — not ``_cli_ref``, which is None outside the interactive CLI —
-        so gateway and kanban workers get it too."""
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            return get_active_profile_name()
-        except Exception:
-            return "default"
 
     def current_cron_execution(self) -> Any:
         """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""

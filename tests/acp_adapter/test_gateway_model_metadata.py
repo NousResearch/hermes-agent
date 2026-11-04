@@ -1,6 +1,9 @@
 """ACP metadata controls reach the canonical owner's real durable session policy."""
 
+import copy
 import json
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -200,3 +203,48 @@ async def test_lifecycle_reconciliation_preserves_the_owner_guard(owned_editor, 
         await agent.resume_session(cwd=str(home), session_id=ref.session_id, mcp_servers=[])
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     assert policy.reasoning_config == {"enabled": True, "effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_default_retry_preserves_derived_payload_and_fences_after_a_lost_reply(owned_editor, declared_models):
+    from gateway.session_policy import policy_for_source
+
+    agent, authority, ref, _db = owned_editor
+    _home, config, write = declared_models
+    config["agent"]["reasoning_effort"] = "medium"
+    write()
+    await agent.set_config_option("reasoning_effort", ref.session_id, "high")
+    original = agent._gateway.rpc
+    attempts = []
+
+    async def rpc(method, **params):
+        result = await original(method, **params)
+        if method == "session.mutate" and params.get("operation") == "reasoning":
+            attempts.append(copy.deepcopy(params))
+            if len(attempts) == 1:
+                raise GatewayClientError("disconnected")
+        return result
+
+    agent._gateway.rpc = rpc
+    with pytest.raises(GatewayClientError, match="disconnected"):
+        await agent.set_config_option("reasoning_effort", ref.session_id, "default")
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    assert policy.reasoning_config == {"enabled": True, "effort": "low"}
+
+    config["agent"]["reasoning_effort"] = "high"
+    write()
+    reply = await agent.set_config_option("reasoning_effort", ref.session_id, "default")
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    assert attempts[1]["payload"] == {"effort": "low"}
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    assert policy.reasoning_config == {"enabled": True, "effort": "low"}
+    thought = next(option for option in reply.config_options if option.category == "thought_level")
+    assert thought.current_value == "low"
+    assert agent._mutations.pending == {}
+    if root := os.environ.get("HERMES_E2E_ARTIFACTS"):
+        path = Path(root)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "acp-default-retry.json").write_text(json.dumps({
+            "attempts": attempts, "policy": policy.reasoning_config, "current_value": thought.current_value,
+        }, indent=2))

@@ -655,7 +655,11 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             metadata = current_metadata(models)
             if value == "default" and "reasoning_efforts" in metadata:
                 effort = await asyncio.to_thread(self._default_effort, info.get("model", ""), metadata)
-            await self._idle_control(session_id, "reasoning", {"effort": effort},
+            def default_payload(_snapshot):
+                return {"effort": effort}
+            # Retain the default intent even when a profile edit changes its derived value.
+            payload = default_payload if value == "default" else {"effort": effort}
+            await self._idle_control(session_id, "reasoning", payload,
                                      "Reasoning effort", validate=partial(self._validate_reasoning_snapshot, info))
         info = await (await self._client()).rpc("session.info", session_id=session_id)
         models = await asyncio.to_thread(model_state, info)

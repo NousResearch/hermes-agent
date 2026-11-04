@@ -49,6 +49,48 @@ async def test_adapter_requires_exact_bot_identity_not_display_name(adapter):
 
 
 @pytest.mark.asyncio
+async def test_unlabeled_bot_with_client_message_id_still_checked(adapter):
+    adapter._resolve_user_is_bot = AsyncMock(return_value=True)
+    event = {"channel": "C_AUTOMATION", "user": "U_UNTRUSTED", "client_msg_id": "id-1"}
+    assert await adapter._drop_bot_sender(event) is True
+    adapter._resolve_user_is_bot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"ok": True, "user": {}},
+    {"ok": True, "user": {"id": "U_OTHER", "is_bot": False}},
+    {"ok": False, "user": {"id": "U_UNKNOWN", "is_bot": False}}])
+async def test_unknown_sender_identity_does_not_bypass_exact_bot_acl(adapter, payload):
+    adapter._users_info_payload = AsyncMock(return_value=payload)
+    event = {"channel": "C_AUTOMATION", "user": "U_UNKNOWN", "client_msg_id": "id-1"}
+    assert await adapter._drop_bot_sender(event) is True
+    assert ("", "U_UNKNOWN") not in adapter._user_is_bot_cache
+
+
+@pytest.mark.asyncio
+async def test_failed_sender_lookup_fails_closed_without_poisoning_cache(adapter):
+    adapter._users_info_payload = AsyncMock(side_effect=TimeoutError("lookup failed"))
+    event = {"channel": "C_AUTOMATION", "user": "U_UNKNOWN", "client_msg_id": "id-1"}
+    assert await adapter._drop_bot_sender(event) is True
+    assert ("", "U_UNKNOWN") not in adapter._user_is_bot_cache
+
+
+@pytest.mark.asyncio
+async def test_verified_human_not_blocked_by_bot_acl(adapter):
+    adapter._users_info_payload = AsyncMock(return_value={
+        "ok": True, "user": {"id": "U_HUMAN", "is_bot": False}})
+    assert await adapter._drop_bot_sender({"user": "U_HUMAN", "client_msg_id": "id-2"}) is False
+
+
+@pytest.mark.asyncio
+async def test_identityless_bot_is_rejected_by_exact_acl(adapter):
+    event = {"subtype": "bot_message", "channel": "C_AUTOMATION"}
+    assert await adapter._drop_bot_sender(event) is True
+    adapter.config.extra["allowed_bots"] = "*"
+    assert await adapter._drop_bot_sender(event) is False
+
+
+@pytest.mark.asyncio
 async def test_automation_channel_bypasses_mentions_only_after_acl_admission(adapter):
     trusted = {
         "channel": "C_AUTOMATION",
@@ -104,6 +146,8 @@ def test_gateway_uses_the_receiving_profile_bot_acl(monkeypatch):
 
     assert runner._is_user_authorized(admitted) is True
     assert runner._is_user_authorized(denied) is False
+    identityless = secondary.build_source(chat_id="C1", chat_type="group", is_bot=True)
+    assert runner._is_user_authorized(identityless) is False
     denied.role_authorized = True
     monkeypatch.setenv("SLACK_ALLOW_ALL_USERS", "true")
     monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
@@ -130,6 +174,7 @@ async def test_actual_config_admits_looper_and_rejects_spoof_before_prefetch(ada
              "text": "continue", "ts": "101.1"}
     await adapter._handle_slack_message(event)
     assert adapter.handle_message.await_args.args[0].source.user_id == "B24E98Y5A"
+    assert adapter.handle_message.await_args.args[0].source.user_id_alt == "U_PEER"
     assert adapter.handle_message.await_args.args[0].source.is_bot is True
     adapter.handle_message.reset_mock()
     adapter._fetch_thread_context.reset_mock()

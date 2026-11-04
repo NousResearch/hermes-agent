@@ -3332,10 +3332,12 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             payload = await self._users_info_payload(user_id, chat_id, team_id)
             if not payload:
-                self._user_is_bot_cache[cache_key] = False
                 self._user_name_cache[cache_key] = user_id
                 return user_id
-            name, self._user_is_bot_cache[cache_key] = self._parse_users_info(payload, user_id)
+            name, is_bot = self._parse_users_info(payload, user_id)
+            user = payload.get("user", {})
+            if user.get("id") == user_id and isinstance(user.get("is_bot"), bool):
+                self._user_is_bot_cache[cache_key] = is_bot
         except Exception as e:
             logger.debug("[Slack] users.info failed for %s: %s", user_id, e)
             name = user_id
@@ -3410,7 +3412,7 @@ class SlackAdapter(BasePlatformAdapter):
             f"mention of you, even if their name is similar.")
 
     async def _resolve_user_is_bot(
-        self, user_id: str, chat_id: str = "", team_id: str = "") -> bool:
+        self, user_id: str, chat_id: str = "", team_id: str = "", *, strict: bool = False) -> Optional[bool]:
         """Resolve whether a Slack user ID is a bot account, with caching.
         Workspace-scoped like :meth:`_resolve_user_name` — Slack user IDs are team-local, so the
         cache key includes the team."""
@@ -3421,25 +3423,25 @@ class SlackAdapter(BasePlatformAdapter):
         if cache_key in self._user_is_bot_cache:
             return self._user_is_bot_cache[cache_key]
         if not self._app:
-            self._user_is_bot_cache[cache_key] = False
-            return False
+            return None if strict else False
         try:
             payload = await self._users_info_payload(user_id, chat_id, team_id)
-            if not payload:
-                self._user_is_bot_cache[cache_key] = False
-                self._user_name_cache.setdefault(cache_key, user_id)
-                return False
+            if not payload or payload.get("ok") is False or not isinstance(payload.get("user"), dict):
+                return None if strict else False
+            user = payload["user"]
+            if strict and (user.get("id") != user_id or not isinstance(user.get("is_bot"), bool)):
+                return None
             name, is_bot = self._parse_users_info(payload, user_id)
-            self._user_is_bot_cache[cache_key] = is_bot
-            self._trim_oldest_dict_entries(self._user_is_bot_cache, self._USER_NAME_CACHE_MAX)
+            if user.get("id") == user_id and isinstance(user.get("is_bot"), bool):
+                self._user_is_bot_cache[cache_key] = is_bot
+                self._trim_oldest_dict_entries(self._user_is_bot_cache, self._USER_NAME_CACHE_MAX)
             # Populate the name cache from the same users.info response so the
             # later source construction does not need a second API lookup.
             self._user_name_cache[cache_key] = name
             return is_bot
         except Exception as e:
             logger.debug("[Slack] users.info bot check failed for %s: %s", user_id, e)
-            self._user_is_bot_cache[cache_key] = False
-            return False
+            return None if strict else False
 
     async def _users_info_payload(self, user_id: str, chat_id: str, team_id: str) -> dict:
         """``users.info`` payload for ``user_id`` via the channel's (or default) client."""
@@ -4472,13 +4474,18 @@ class SlackAdapter(BasePlatformAdapter):
     async def _drop_bot_sender(self, event: dict) -> bool:
         """allow_bots gate: ``none`` drops all bot posts (default), ``mentions`` those not
         @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
-        without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
+        are probed via users.info, including messages that carry ``client_msg_id``."""
         msg_user = event.get("user", "")
         sender_is_bot = self._event_declares_bot_sender(event)
-        if not sender_is_bot and msg_user and not event.get("client_msg_id"):
+        if not sender_is_bot and msg_user:
+            allowed = self._slack_allowed_bot_identities()
             sender_is_bot = await self._resolve_user_is_bot(
                 msg_user, chat_id=event.get("channel", ""),
-                team_id=str(event.get("team") or event.get("team_id") or ""))
+                team_id=str(event.get("team") or event.get("team_id") or ""),
+                strict=bool(allowed and "*" not in allowed))
+            if sender_is_bot is None:
+                logger.warning("[Slack] Cannot verify sender type; dropping event under exact bot ACL")
+                return True
         if not sender_is_bot:
             return False
         allow_bots = self._slack_allow_bots()
@@ -4486,7 +4493,11 @@ class SlackAdapter(BasePlatformAdapter):
             return True
         if msg_user and msg_user == self._bot_user_id:
             return True
-        if self._slack_bot_identity_candidates(event) and not self._slack_allowed_bot_identity(event):
+        candidates = self._slack_bot_identity_candidates(event)
+        allowed = self._slack_allowed_bot_identities()
+        if not candidates and allowed and "*" not in allowed:
+            return True
+        if candidates and not self._slack_allowed_bot_identity(event):
             return True
         if allow_bots == "mentions":
             # Mentions may live only in Block Kit, not the flat text.
@@ -4634,9 +4645,14 @@ class SlackAdapter(BasePlatformAdapter):
             event, channel_id=channel_id, thread_ts=event.get("thread_ts", ""),
             team_id=outer_team_id, body=payload)
         sender_is_bot = self._event_declares_bot_sender(event)
-        if not sender_is_bot and event.get("user") and not event.get("client_msg_id"):
+        if not sender_is_bot and event.get("user"):
+            allowed = self._slack_allowed_bot_identities()
             sender_is_bot = await self._resolve_user_is_bot(
-                event["user"], chat_id=channel_id, team_id=str(outer_team_id or ""))
+                event["user"], chat_id=channel_id, team_id=str(outer_team_id or ""),
+                strict=bool(allowed and "*" not in allowed))
+            if sender_is_bot is None:
+                logger.warning("[Slack] Cannot verify sender type; dropping event under exact bot ACL")
+                return
         bot_sender_id = (self._slack_allowed_bot_identity(event) or "") if sender_is_bot else ""
         user_id = str(
             bot_sender_id if sender_is_bot else (event.get("user") or assistant_meta.get("user_id", ""))
@@ -4758,6 +4774,9 @@ class SlackAdapter(BasePlatformAdapter):
             chat_name=channel_name,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            # Preserve the transport's user ID separately from the B/A/U identity
+            # selected by the exact bot ACL. Slack stream recipients require a U/W ID.
+            user_id_alt=(str(event.get("user")) if sender_is_bot and event.get("user") else None),
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,

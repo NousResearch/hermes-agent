@@ -3884,13 +3884,25 @@ class GatewayRunner(
             # fallback. See #210.
             team_id = getattr(source, "scope_id", None)
             user_id = getattr(source, "user_id", None)
+            if getattr(source, "is_bot", False):
+                alternate = str(getattr(source, "user_id_alt", None) or "")
+                candidate = alternate or str(user_id or "")
+                # Bot/app IDs are valid ACL principals but not Slack user recipients.
+                # Stamp an explicit empty value when absent so a shared chat cache
+                # cannot substitute a different turn's recipient.
+                user_id = candidate if candidate.startswith(("U", "W")) else ""
             if team_id or user_id:
                 metadata = dict(metadata or {})
                 if team_id:
                     metadata["slack_team_id"] = str(team_id)
                     metadata.setdefault("scope_id", str(team_id))
-                if user_id:
+                if user_id or getattr(source, "is_bot", False):
                     metadata.setdefault("user_id", str(user_id))
+            elif getattr(source, "is_bot", False):
+                metadata = dict(metadata or {})
+                metadata.setdefault("user_id", "")
+            if getattr(source, "is_bot", False) and not user_id:
+                metadata["slack_no_recipient"] = True
         from gateway.session_context import source_route_metadata
         metadata = source_route_metadata(source, metadata)
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's

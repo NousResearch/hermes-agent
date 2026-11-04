@@ -546,9 +546,11 @@ class GatewayAuthorizationMixin:
         if mode not in {"mentions", "all"}:
             return False
         identity = str(source.user_id or "").strip()
-        if not identity:
-            return True  # Historical identity-less Workflow Builder fallback.
         allowed = _coerce_allow_set(extra.get("allowed_bots", _auth_env("SLACK_ALLOWED_BOTS")))
+        if not identity:
+            # Exact ACLs cannot admit an identity-less sender. Preserve the
+            # legacy fallback only without an ACL or with an explicit wildcard.
+            return not allowed or "*" in allowed
         return "*" in allowed or identity in allowed
 
     def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:

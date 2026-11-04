@@ -5,8 +5,16 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { journaledTurnFinished, type OwnerPendingTurns, ownerPendingTurns } from '@/lib/inflight-turn-journal'
+import {
+  type InFlightRecoveryResult,
+  journaledTurnFinished,
+  type OwnerPendingTurns,
+  ownerPendingTurns,
+  runningAdmission
+} from '@/lib/inflight-turn-journal'
 import type { SessionMessage, SessionMessagesResponse, SessionResumeResult } from '@/types/hermes'
+
+import type { ClientSessionState } from '../../../types'
 
 import { reconcileDurableHistory } from './utils'
 
@@ -61,12 +69,12 @@ export async function graftTranscriptPage(
  * missing reply.
  */
 export async function rereadPageAfterResumeBarrier(
-  resumed: Pick<SessionResumeResult, 'info' | 'inflight' | 'messages' | 'queued'> & { running?: boolean },
+  resumed: Pick<SessionResumeResult, 'inflight' | 'messages' | 'pending' | 'queued'> & { running?: boolean },
   early: GraftedTranscriptPage | null,
   storedSessionId: string,
   scope: ProfileScope
 ): Promise<ResumeBarrierReread> {
-  const owner = ownerPendingTurns(resumed.info?.pending_submissions)
+  const owner = ownerPendingTurns(resumed.pending)
   const tail = early?.snapshot.at(-1)
 
   if (!early || !tail || resumed.messages?.length) {
@@ -90,6 +98,40 @@ export async function rereadPageAfterResumeBarrier(
   }
 
   return { page: await graftTranscriptPage(page, early.snapshot, storedSessionId, scope), owner }
+}
+
+/** The session fields a resume takes from its in-flight journal recovery. */
+export function recoveredTurnFields(
+  recovery: InFlightRecoveryResult,
+  running: boolean,
+  resumedTurnStartedAt: null | number
+) {
+  return {
+    // The execution a recovered journal still names, or none: the next stamped frame of a live turn names it.
+    turnAdmissionId: recovery.admissionId ?? null,
+    ...(recovery.applied
+      ? {
+          sawAssistantPayload: true,
+          // Point live deltas at the recovered row when the backend is
+          // still mid-turn; a settled recovery keeps the stream idle.
+          streamId: running ? recovery.streamId : null,
+          turnStartedAt: running ? (recovery.turnStartedAt ?? resumedTurnStartedAt) : null
+        }
+      : { turnStartedAt: running && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null })
+  }
+}
+
+/** The execution a warm activation leaves the session naming. A frame that named one while `session.activate` was
+ *  in flight is newer than its snapshot; otherwise the snapshot's running execution replaces the one this tab last
+ *  streamed, which may have finished before the session moved on elsewhere. */
+export function activatedTurnAdmission(
+  latest: Pick<ClientSessionState, 'turnAdmissionId'>,
+  atActivateStart: Pick<ClientSessionState, 'turnAdmissionId'>,
+  pending: unknown
+): null | string {
+  return latest.turnAdmissionId !== atActivateStart.turnAdmissionId
+    ? (latest.turnAdmissionId ?? null)
+    : runningAdmission(pending)
 }
 
 const durableRowId = ({ id, row_id }: SessionMessage): number | undefined => {

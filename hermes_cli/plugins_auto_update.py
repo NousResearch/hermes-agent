@@ -112,7 +112,8 @@ def _clear_check_marker(home: Path) -> None:
 
 def _apply_one(name: str) -> dict[str, str]:
     """One plan row through the dashboard's non-interactive update. A widened catalog pin or a
-    caution scan is NOT accepted on the user's behalf: the row comes back ``needs_review``."""
+    caution scan of a git update is NOT accepted on the user's behalf: the row comes back
+    ``needs_review`` (a catalog re-pin accepts caution: a reviewer read that pin at admission)."""
     from hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
     try:
         res = dashboard_update_user_plugin(name)
@@ -164,7 +165,7 @@ def summary_lines(outcome: dict[str, Any]) -> list[str]:
     if any(r["status"] == "needs_review" for r in outcome["results"]):
         lines.append("  Review those with `hermes plugins update <name>` in a terminal.")
     if any(r["status"] == "updated" for r in outcome["results"]):
-        lines.append("  Updated plugin code loads in new sessions.")
+        lines.append("  Updated plugins were reloaded: MCP servers and skills are live now, Python tools load in new sessions.")
     return lines
 
 

@@ -1893,7 +1893,8 @@ def _portable_server_names(plugin_dir: Path, key: str) -> set[str]:
 
 def _plugins_update_all(rid, params):
     """Check every installed plugin and update each one ``hermes plugins update`` would move. Nothing is
-    accepted on the user's behalf: a widened catalog pin or a caution scan comes back ``needs_review``."""
+    accepted on the user's behalf: a widened catalog pin or a caution scan of a git update comes back
+    ``needs_review``."""
     _ensure_plugin_activation_listener()
     return _ok(rid, _tools_mod("hermes_cli.plugins_auto_update").update_all_unattended())
 

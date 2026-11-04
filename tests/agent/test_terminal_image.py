@@ -175,3 +175,16 @@ def test_unreadable_image_renders_nothing(tmp_path):
     bogus.write_bytes(b"not a png")
     assert render_inline_image(str(bogus), mode="kitty", max_cols=20, max_rows=8) is None
     assert render_inline_image(_png(tmp_path / "ok.png"), mode="off", max_cols=20, max_rows=8) is None
+
+
+def test_iterm_size_is_the_decoded_byte_count(tmp_path):
+    # xterm.js (VS Code) refuses an OSC 1337 image whose ``size`` is the base64 length.
+    import base64
+    import re
+
+    for transmit in (
+        render_inline_image(_png(tmp_path / "a.png"), mode="iterm", max_cols=20, max_rows=8).transmit,
+        terminal_image.encode_iterm(PIL.open(_png(tmp_path / "b.png")).convert("RGBA")),
+    ):
+        size, payload = re.search(r"size=(\d+);.*:([A-Za-z0-9+/=]+)\x07$", transmit).groups()
+        assert int(size) == len(base64.b64decode(payload))

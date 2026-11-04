@@ -63,4 +63,4 @@ def test_iterm_rows_are_reserved_blank_and_the_image_draws_over_them(photo):
     assert [fragment_list_width(to_formatted_text(ANSI(line))) for line in lines] == [0] * (image.rows - 1) + [2]
     painted = _painted(lines[-1])
     assert f"\x1b7\x1b[{image.rows - 1}A\x1b]1337;File=inline=1;" in painted
-    assert f"width={image.cols};height={image.rows};" in painted and "\x07\x1b8" in painted
+    assert f"width={image.cols};height={image.rows}" in painted and "\x07\x1b8" in painted

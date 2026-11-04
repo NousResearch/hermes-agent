@@ -138,11 +138,18 @@ def encode_kitty_virtual(image, *, image_id: int, cols: int, rows: int) -> str:
     return _kitty_apc(f"a=T,U=1,i={image_id},c={cols},r={rows},f=100,q=2", png_b64(image))
 
 
-def encode_iterm(image) -> str:
-    """iTerm2 inline image (OSC 1337 File) pinned to the image's cell box."""
-    payload = png_b64(image)
-    cols, rows = cell_box(image)
-    return f"\x1b]1337;File=inline=1;size={len(payload)};preserveAspectRatio=1;width={cols};height={rows}:{payload}\x07"
+def encode_iterm(image, *, cols: int | None = None, rows: int | None = None) -> str:
+    """iTerm2 inline image (OSC 1337 File) pinned to a cell box (default: the image's own).
+
+    ``size`` is the decoded byte count; xterm.js (VS Code) drops an image whose ``size`` is the
+    base64 length.
+    """
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    payload = base64.standard_b64encode(buf.getvalue()).decode("ascii")
+    if cols is None or rows is None:
+        cols, rows = cell_box(image)
+    return f"\x1b]1337;File=inline=1;size={buf.tell()};preserveAspectRatio=1;width={cols};height={rows}:{payload}\x07"
 
 
 def encode_sixel(image) -> str:
@@ -333,12 +340,7 @@ def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows:
             return InlineImage(mode=mode, cols=cols, rows=rows, cells=downscale_cells(image, target_cols=cols, rows=rows))
         image.thumbnail((cols * CELL_W * _PIXELS_PER_CELL_PIXEL, rows * CELL_H * _PIXELS_PER_CELL_PIXEL), Image.LANCZOS)
         if mode == "iterm":
-            raw = io.BytesIO()
-            image.save(raw, format="PNG")
-            payload = base64.standard_b64encode(raw.getvalue()).decode("ascii")
-            return InlineImage(mode=mode, cols=cols, rows=rows, transmit=(
-                f"\x1b]1337;File=inline=1;size={raw.tell()};width={cols};height={rows};"
-                f"preserveAspectRatio=1:{payload}\x07"))
+            return InlineImage(mode=mode, cols=cols, rows=rows, transmit=encode_iterm(image, cols=cols, rows=rows))
         image_id = _image_id(source)
         return InlineImage(
             mode=mode, cols=cols, rows=rows, image_id=image_id, color=kitty_color_hex(image_id),

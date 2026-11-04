@@ -47,6 +47,7 @@ import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
+import { createBackgroundSessionWatch } from './backgroundSessionNotices.js'
 import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
@@ -701,12 +702,16 @@ export function useMainApp(gw: GatewayClient) {
   useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
+  const backgroundWatchRef = useRef(createBackgroundSessionWatch())
+
   useEffect(() => {
     if (!ui.sid) {
       patchUiState({ liveSessionCount: 0, sessionTitle: '' })
 
       return
     }
+
+    backgroundWatchRef.current.focus(ui.sid)
 
     // Offline (sid kept across a socket close): each poll would re-dial through
     // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
@@ -756,6 +761,10 @@ export function useMainApp(gw: GatewayClient) {
           if (!stopped && result?.sessions) {
             const liveSessionCount = result.sessions.length
 
+            for (const notice of backgroundWatchRef.current.update(result.sessions, getUiState().sid)) {
+              sys(notice)
+            }
+
             // Surface the current session's (auto-)title for the terminal
             // titlebar. The active_list poll already carries it, so no extra
             // round-trip is needed.
@@ -784,7 +793,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid, ui.gatewayConnected])
+  }, [gw, sys, ui.sid, ui.gatewayConnected])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -1092,6 +1101,7 @@ export function useMainApp(gw: GatewayClient) {
   const onServerRequest = useMemo(
     () =>
       createServerRequestHandler({
+        focusedSessionId: () => getUiState().sid,
         ringPromptBell: () => {
           if (bellOnPrompt && stdout?.isTTY) {
             stdout.write('\x07')

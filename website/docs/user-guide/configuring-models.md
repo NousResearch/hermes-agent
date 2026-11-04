@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes uses two kinds of model slots:
 
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
-- **Auxiliary models** — side-jobs the agent offloads, such as context compression, vision (image analysis), approval scoring, session-title generation, `/review` reviews and voice-chat replies. Each has its own slot and can be overridden independently; the full list is under [Setting auxiliary models](#setting-auxiliary-models).
+- **Auxiliary models** — side-jobs the agent offloads, such as context compression, vision (image analysis), approval scoring, session-title generation, `/review` reviews and voice-chat replies. Each has its own slot and can be overridden independently; the slots the dashboard exposes are listed under [Setting auxiliary models](#setting-auxiliary-models).
 
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](./local-models.md).
 
@@ -111,6 +111,8 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 | **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
 | **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
 
+For the YAML keys behind each slot, and the auxiliary tasks that are config-only, see [Auxiliary Models](./configuration.md#auxiliary-models).
+
 ### Per-task override
 
 Click **Change** on any auxiliary row. Same picker opens, same behavior — pick provider + model, hit Switch. The row updates to show `provider · model` instead of `auto (use main model)`.
@@ -128,7 +130,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to every auxiliary slot at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — assigns this model to every auxiliary slot on the page at once. Useful when you just want every side-job on a cheap flash model.
 - **Individual task options** — Vision, Review, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.

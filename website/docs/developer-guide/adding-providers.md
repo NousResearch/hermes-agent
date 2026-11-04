@@ -261,7 +261,6 @@ Add a cheap / fast default aux model to `_API_KEY_PROVIDER_AUX_MODELS` if this i
 Auxiliary tasks include things like:
 
 - vision summarization
-- web extraction summarization
 - context compression summaries
 - session-search summaries
 - memory flushes

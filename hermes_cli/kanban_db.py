@@ -1343,11 +1343,11 @@ def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -
         return None
 
 
-def _link(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
-    conn.execute(
+def _link(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    return conn.execute(
         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
         (parent_id, child_id),
-    )
+    ).rowcount == 1
 
 
 def _missing_task_ids(conn: sqlite3.Connection, ids: Iterable[str]) -> list[str]:
@@ -1564,9 +1564,8 @@ def link_tasks(
             raise ValueError(f"cannot link {parent_id} -> {child_id}: child is already running")
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
-        _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet terminal, demote child to todo
-        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
+        linked = _link(conn, parent_id, child_id)
+        # Archived counts as terminal, matching _parents_satisfied/recompute_ready.
         if _task_status(conn, parent_id) not in ("done", "archived"):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
@@ -1580,12 +1579,13 @@ def link_tasks(
                     "dependency_wait",
                     {"reason": "parent_not_done", "demoted": True, "parent": parent_id},
                 )
-        _append_event(
-            conn,
-            child_id,
-            "linked",
-            {"parent": parent_id, "child": child_id},
-        )
+        if linked:
+            _append_event(
+                conn,
+                child_id,
+                "linked",
+                {"parent": parent_id, "child": child_id},
+            )
         _inherit_notify_subs(conn, child_id, (parent_id,))
     return gated
 

@@ -254,3 +254,21 @@ def test_mutation_targets_the_clicked_card_when_the_list_shifted_before_submit(h
     # The clicked card is gone now; its id must not fall back to whatever sits at that index.
     result = mutate()
     assert result["ok"] is False and "stale" in result["message"]
+
+
+@pytest.mark.platforms("posix")  # unprivileged symlink creation is POSIX-only
+def test_archive_stays_inside_the_profile_skills_dir(home, tmp_path):
+    """A frontmatter name with path parts, or a skill reached through a symlinked category dir,
+    must not move anything outside ``skills/`` (or out of the link target's tree)."""
+    evil = home / "skills" / "evil"
+    evil.mkdir()
+    (evil / "SKILL.md").write_text("---\nname: ../../escaped\ndescription: x\n---\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    (outside / "victim").mkdir(parents=True)
+    (outside / "victim" / "SKILL.md").write_text("---\nname: victim\ndescription: x\n---\n", encoding="utf-8")
+    (home / "skills" / "linked").symlink_to(outside, target_is_directory=True)
+
+    assert not lm.archive_user_skill("../../escaped")["ok"]
+    assert (evil / "SKILL.md").is_file() and not (home / "escaped").exists()
+    assert not lm.archive_user_skill("victim")["ok"]
+    assert (outside / "victim" / "SKILL.md").is_file()

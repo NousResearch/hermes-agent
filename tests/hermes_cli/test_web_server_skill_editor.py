@@ -169,15 +169,15 @@ class TestSkillUpdate:
 
 
 class TestSkillDelete:
-    """DELETE /api/skills — port of paradigmxyz/centaur#1393."""
+    """DELETE /api/skills archives through the same backend as Desktop's Archive."""
 
-    def test_delete_removes_skill_dir(self, client, isolated_profiles):
-        skill_dir = isolated_profiles["default"] / "skills" / "dashboard-skill"
-        assert skill_dir.exists()
+    def test_delete_archives_skill_dir(self, client, isolated_profiles):
+        home = isolated_profiles["default"]
         resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
-        assert resp.status_code == 200
-        assert resp.json()["success"] is True
-        assert not skill_dir.exists()
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True
+        assert not (home / "skills" / "dashboard-skill").exists()
+        assert (home / "skills" / ".archive" / "dashboard-skill" / "SKILL.md").is_file()
 
     def test_delete_unknown_skill_404(self, client, isolated_profiles):
         resp = client.delete("/api/skills", params={"name": "no-such-skill"})
@@ -189,23 +189,31 @@ class TestSkillDelete:
         resp = client.delete("/api/skills", params={"name": "worker-skill"})
         assert resp.status_code == 404
         assert worker_dir.exists()
-        # ...deleted with it.
+        # ...archived with it.
         resp = client.delete(
             "/api/skills", params={"name": "worker-skill", "profile": "worker_alpha"}
         )
         assert resp.status_code == 200
         assert not worker_dir.exists()
+        assert (isolated_profiles["worker_alpha"] / "skills" / ".archive" / "worker-skill").is_dir()
 
-    def test_delete_pinned_skill_409(self, client, isolated_profiles, monkeypatch):
-        import tools.skill_manager_tool as smt
+    def test_delete_pinned_skill_409(self, client, isolated_profiles):
+        from tools import skill_usage
 
-        monkeypatch.setattr(
-            smt, "_pinned_guard", lambda name: f"Skill '{name}' is pinned and cannot be deleted."
-        )
-        skill_dir = isolated_profiles["default"] / "skills" / "dashboard-skill"
+        skill_usage.set_pinned("dashboard-skill", True)
         resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
         assert resp.status_code == 409
-        assert skill_dir.exists()
+        assert (isolated_profiles["default"] / "skills" / "dashboard-skill").exists()
+
+    def test_api_refuses_bundled_skill_the_ui_hides_delete_for(self, client, isolated_profiles):
+        """The provenance gate is server-side: a direct API call cannot delete a bundled skill."""
+        home = isolated_profiles["default"]
+        _write_skill(home / "skills", "shipped-skill")
+        (home / "skills" / ".bundled_manifest").write_text("shipped-skill:abc123\n", encoding="utf-8")
+        resp = client.delete("/api/skills", params={"name": "shipped-skill"})
+        assert resp.status_code == 409
+        assert "bundled" in resp.json()["detail"]
+        assert (home / "skills" / "shipped-skill" / "SKILL.md").is_file()
 
 
 class TestEditorEndpointsAuth:

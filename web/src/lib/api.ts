@@ -39,6 +39,8 @@ import type {
   ManagedFilesResponse,
   ManagedFileWriteResponse,
 } from "./api-files";
+import type { SkillContent, SkillDeleteResult, SkillInfo, SkillWriteResult } from "./api-skills";
+export type { SkillContent, SkillDeleteResult, SkillInfo, SkillWriteResult } from "./api-skills";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -883,8 +885,9 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, content, profile: profile || undefined }),
     }),
+  /** Archives (restorable via `hermes curator restore`); bundled/hub/external are refused. */
   deleteSkill: (name: string, profile?: string) =>
-    fetchJSON<SkillWriteResult>(
+    fetchJSON<SkillDeleteResult>(
       `/api/skills?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
       { method: "DELETE" },
     ),
@@ -2399,28 +2402,6 @@ export interface CronDeliveryTarget {
   name: string;
   home_target_set: boolean;
   home_env_var: string | null;
-}
-
-export interface SkillInfo {
-  name: string;
-  description: string;
-  category: string;
-  enabled: boolean;
-  /** "hub" | "bundled" | "agent" — agent covers agent-authored + hand-made. */
-  provenance?: string;
-}
-
-export interface SkillContent {
-  name: string;
-  content: string;
-  path: string;
-}
-
-export interface SkillWriteResult {
-  success: boolean;
-  message?: string;
-  path?: string;
-  error?: string;
 }
 
 export interface ToolsetInfo {

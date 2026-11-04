@@ -510,8 +510,8 @@ export const en: Translations = {
     deleteSkill: "Delete skill",
     deleteSkillConfirmTitle: "Delete skill \u201c{name}\u201d?",
     deleteSkillConfirmMessage:
-      "This permanently deletes the skill's folder (SKILL.md plus any scripts and references). Cannot be undone.",
-    skillDeleted: "{name} deleted",
+      "The skill moves to the profile's skills archive and stops loading in new sessions. Restore it with `hermes curator restore {name}`.",
+    skillDeleted: "{name} archived",
   },
 
   config: {

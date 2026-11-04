@@ -485,32 +485,18 @@ async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] 
 
 @router.delete("/api/skills")
 async def delete_skill(name: str, profile: Optional[str] = None):
-    """Delete a skill from the dashboard (port of paradigmxyz/centaur#1393).
+    """Archive a skill from the dashboard Skills page.
 
-    Routes through the same guarded delete path as the agent's
-    ``skill_manage`` tool — pinned-skill guard, org-mirror guard, and the
-    skills-root/symlink defense-in-depth all apply. ``absorbed_into=""``
-    declares an explicit user-directed prune (no consolidation target), so
-    the curator classification pipeline doesn't log a legacy warning.
-    A delete from the authenticated dashboard IS the user acting directly,
-    matching the create/update endpoints above.
+    Same backend as the Desktop Capabilities "Archive" action and ``hermes journey``
+    (``agent.learning_mutations.archive_user_skill``): the skill moves to ``skills/.archive/``
+    (``hermes curator restore <name>`` brings it back). The policy is enforced here, not
+    only by the UI's provenance gate: hub, bundled, protected and external-dir skills
+    and pinned skills are refused, and only the requested profile's skills dir is touched.
     """
-    from tools.skill_manager_tool import _delete_skill
+    from agent.learning_mutations import archive_user_skill
 
-    def _run():
-        with _profile_scope(profile):
-            return _delete_skill(name, absorbed_into="")
-
-    result = await asyncio.to_thread(_run)
-    if not result.get("success"):
-        err = result.get("error", "Failed to delete skill.")
-        err_l = str(err).lower()
-        if "not found" in err_l:
-            status = 404
-        elif "pinned" in err_l:
-            status = 409
-        else:
-            status = 400
-        raise HTTPException(status_code=status, detail=err)
-    _clear_skills_prompt_cache()
-    return result
+    res = await scoped_to_thread(profile, lambda: archive_user_skill(name))
+    if not res.get("ok"):
+        msg = res.get("message") or "Failed to archive skill."
+        raise HTTPException(status_code=404 if "not found" in msg else 409, detail=msg)
+    return res

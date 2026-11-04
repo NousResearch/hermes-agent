@@ -162,10 +162,13 @@ def _skill_detail(node_id: str) -> dict[str, Any]:
 # ── Delete ──────────────────────────────────────────────────────────────────
 
 def delete_node(node_id: str) -> dict[str, Any]:
-    return _dispatch(node_id, _delete_memory, _delete_skill)
+    return _dispatch(node_id, _delete_memory, archive_user_skill)
 
 
-def _delete_skill(name: str) -> dict[str, Any]:
+def archive_user_skill(name: str) -> dict[str, Any]:
+    """User-directed skill delete for every UI (dashboard Skills page, Desktop, ``hermes journey``):
+    archive, never rmtree. ``skill_usage.archive_skill`` refuses hub, bundled, protected and
+    external-dir skills, so the UI's provenance gate is not the only enforcement."""
     from tools import skill_usage
     # Pin must be respected by autonomous maintenance. The curator already skips pinned skills from every
     # auto-transition; the background review fork is the same kind of autonomous, no-user-present actor, so

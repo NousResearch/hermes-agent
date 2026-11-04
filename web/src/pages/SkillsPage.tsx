@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
-import { useNavigate } from "react-router";
 import {
   Package,
   Search,
@@ -44,7 +43,8 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { LoadErrorNotice } from "@/components/LoadErrorNotice";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { useSkillDelete } from "@/components/SkillDeleteDialog";
+import { useLearnSkillForm } from "@/pages/skills-learn-form";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -224,37 +224,11 @@ export default function SkillsPage() {
     setEditorSkill(null);
     setEditorOpen(true);
   }, []);
-  // ── "Learn a skill" panel ──────────────────────────────────────────────
-  // Open-ended: dir + URL + free-text inputs are composed into a single-line
-  // /learn command and handed to the chat. /learn resolves to a normal agent
-  // turn (command.dispatch → send), so the live agent gathers the sources
-  // with its own tools and authors the skill via skill_manage. No backend
-  // distill endpoint — one code path with the CLI/TUI/gateway /learn.
-  const navigate = useNavigate();
-  const [learnOpen, setLearnOpen] = useState(false);
-  const [learnDir, setLearnDir] = useState("");
-  const [learnUrl, setLearnUrl] = useState("");
-  const [learnText, setLearnText] = useState("");
-  const openLearn = useCallback(() => {
-    setLearnDir("");
-    setLearnUrl("");
-    setLearnText("");
-    setLearnOpen(true);
-  }, []);
-  const submitLearn = useCallback(() => {
-    const segs: string[] = [];
-    const dir = learnDir.trim();
-    const url = learnUrl.trim();
-    const text = learnText.trim();
-    if (dir) segs.push(`local source: ${dir}`);
-    if (url) segs.push(`URL: ${url}`);
-    if (text) segs.push(text);
-    // Flatten to a single line — the chat composer submits on the first Enter.
-    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
-    if (!composed) return;
-    setLearnOpen(false);
-    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
-  }, [learnDir, learnUrl, learnText, navigate]);
+  // "Learn a skill" panel: composes a one-line /learn command for the chat.
+  const {
+    learnOpen, setLearnOpen, learnDir, setLearnDir, learnUrl, setLearnUrl, learnText, setLearnText,
+    openLearn, submitLearn,
+  } = useLearnSkillForm();
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);
     setEditorOpen(true);
@@ -272,29 +246,11 @@ export default function SkillsPage() {
     [selectedProfile, showToast],
   );
 
-  /* ---- Skill delete (port of paradigmxyz/centaur#1393) ---- */
-  // Only agent-authored / hand-made skills get the delete affordance;
-  // bundled and hub skills are managed by their manifests (hub uninstall
-  // lives in the Hub tab; bundled skills are re-seeded on update).
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const handleDeleteSkill = useCallback(async () => {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      await api.deleteSkill(deleteTarget, selectedProfile || undefined);
-      setSkills((prev) => prev.filter((s) => s.name !== deleteTarget));
-      showToast(
-        (t.skills.skillDeleted ?? "{name} deleted").replace("{name}", deleteTarget),
-        "success",
-      );
-      setDeleteTarget(null);
-    } catch (e) {
-      showToast(String(e), "error");
-    } finally {
-      setDeleting(false);
-    }
-  }, [deleteTarget, selectedProfile, showToast, t]);
+  const skillDelete = useSkillDelete({
+    profile: selectedProfile,
+    showToast,
+    onDeleted: (name) => setSkills((prev) => prev.filter((s) => s.name !== name)),
+  });
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -543,8 +499,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={() => setDeleteTarget(skill.name)}
-                        deleteLabel={t.skills.deleteSkill ?? "Delete skill"}
+                        onDelete={() => skillDelete.request(skill.name)}
+                        deleteLabel={skillDelete.label}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -619,8 +575,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
-                        onDelete={() => setDeleteTarget(skill.name)}
-                        deleteLabel={t.skills.deleteSkill ?? "Delete skill"}
+                        onDelete={() => skillDelete.request(skill.name)}
+                        deleteLabel={skillDelete.label}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -732,20 +688,7 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
-      <DeleteConfirmDialog
-        open={deleteTarget !== null}
-        loading={deleting}
-        title={(t.skills.deleteSkillConfirmTitle ?? "Delete skill \u201c{name}\u201d?").replace(
-          "{name}",
-          deleteTarget ?? "",
-        )}
-        description={
-          t.skills.deleteSkillConfirmMessage ??
-          "This permanently deletes the skill's folder (SKILL.md plus any scripts and references). Cannot be undone."
-        }
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={handleDeleteSkill}
-      />
+      {skillDelete.dialog}
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -851,9 +794,8 @@ function SkillRow({
       >
         <Pencil />
       </Button>
-      {/* Delete: only user/agent-authored skills (port of centaur#1393).
-          Bundled skills are re-seeded by updates; hub skills uninstall
-          through the Hub tab so the installed-manifest stays consistent. */}
+      {/* Delete (archive): local/agent-authored skills only. The backend refuses
+          bundled, hub and external-dir skills too; hub skills uninstall via the Hub tab. */}
       {skill.provenance === "agent" && onDelete && (
         <Button
           ghost

@@ -30,3 +30,13 @@ def test_variable_price_sentinel_is_unknown_not_negative(monkeypatch):
 def test_mixed_and_zero_rates(monkeypatch, pricing, expected):
     result = _cost(monkeypatch, pricing)
     assert result.amount_usd == expected
+
+
+@pytest.mark.parametrize("pricing", [
+    {"prompt": "0.000001", "completion": "0.000002", "request": "-1"},  # unknown fee, not "no fee"
+    {"prompt": "NaN", "completion": "0.000002"},
+    {"prompt": "0.000001", "completion": "Infinity"},
+])
+def test_sentinel_request_fee_and_non_finite_rates_are_unknown(monkeypatch, pricing):
+    result = _cost(monkeypatch, pricing)
+    assert (result.status, result.amount_usd) == ("unknown", None)

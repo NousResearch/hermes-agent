@@ -21,7 +21,7 @@ import os
 import sys
 from collections.abc import Iterable
 
-from agent.terminal_image import InlineImage, render_inline_image, resolve_inline_mode
+from agent.terminal_image import InlineImage, local_image_path, render_inline_image, resolve_inline_mode
 
 _INDENT = "  "
 _MAX_COLS = 64
@@ -76,7 +76,7 @@ def print_inline_images(cli, paths: Iterable) -> None:
     if mode == "off":
         return
     max_cols = min(_MAX_COLS, _terminal_columns() - len(_INDENT) - 1)
-    for path in paths:
+    for path in filter(None, map(local_image_path, map(str, paths))):  # the same files the TUI draws
         image = render_inline_image(path, mode=mode, max_cols=max_cols, max_rows=_MAX_ROWS)
         # One print per row, like the diff printer: a whole truecolor image in a single write
         # overruns the Windows console write and the tail rows are lost.

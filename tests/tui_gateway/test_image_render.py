@@ -40,6 +40,14 @@ def test_render_kitty_for_a_kitty_terminal(monkeypatch, photo):
     assert result["transmit"].startswith("\x1b_G") and len(result["placeholder"]) == result["rows"]
 
 
+def test_render_draws_every_image_the_cli_draws(monkeypatch, tmp_path):
+    # A .tiff/.ico attachment draws in the classic CLI; the TUI must draw it too.
+    for suffix in (".tiff", ".tif", ".ico"):
+        path = tmp_path / f"scan{suffix}"
+        PIL.new("RGBA", (64, 64), (0, 200, 90, 255)).save(path)
+        assert _render(monkeypatch, {"path": str(path), "cols": 20, "rows": 8})["mode"] == "unicode"
+
+
 def test_render_honours_off_and_refuses_non_images(monkeypatch, photo, tmp_path):
     assert _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8}, inline_images="off") == {"mode": "off"}
     notes = tmp_path / "notes.txt"

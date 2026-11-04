@@ -212,9 +212,10 @@ def encode_unicode(image, *, target_cols: int) -> str:
 
 # ── Inline images ────────────────────────────────────────────────────────────
 
-# Public names accepted by ``display.inline_images``.
-INLINE_IMAGE_MODES = ("auto", "kitty", "iterm", "unicode", "off")
-IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+# Names accepted by ``display.inline_images``.
+_INLINE_IMAGE_MODES = ("auto", "kitty", "iterm", "unicode", "off")
+# The image files Pillow decodes: what the CLI and the TUI both draw (attachments and tool images).
+_RENDERABLE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".ico"})
 
 # Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
 # the 24-bit space the placeholder foreground color can carry, so neither replaces the other.
@@ -243,7 +244,7 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
     if configured is False:
         return "off"
     mode = "auto" if configured in (None, True) else str(configured).strip().lower()
-    mode = mode if mode in INLINE_IMAGE_MODES else "auto"
+    mode = mode if mode in _INLINE_IMAGE_MODES else "auto"
     if mode == "iterm" and not overlays:
         mode = "auto"
     if mode in ("off", "unicode") or not graphics:
@@ -263,7 +264,7 @@ def local_image_path(candidate: Any) -> str | None:
         return None
     path = Path(os.path.expanduser(candidate.strip()))
     try:
-        return str(path) if path.suffix.lower() in IMAGE_EXTENSIONS and path.is_file() else None
+        return str(path) if path.suffix.lower() in _RENDERABLE_EXTENSIONS and path.is_file() else None
     except (OSError, ValueError):
         return None
 

@@ -388,7 +388,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
         resp = await authority_connection.dispatch(req)
         actor = authority_connection.actor
         if (_is_unknown_method(resp) and req_method in server._methods
-                and legacy_fallback_allowed(actor, req_method)):
+                and legacy_fallback_allowed(actor, req_method, req.get("params"))):
             # Session verbs live on the authority; everything else the sidecar still
             # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
             # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a

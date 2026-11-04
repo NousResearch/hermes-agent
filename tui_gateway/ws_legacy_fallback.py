@@ -44,18 +44,29 @@ _SESSION_FALLBACK_ALLOWED = frozenset({
 # (``gateway/session_tui_ops.py``); listing them here keeps the sidecar handler unreachable.
 # ``process.kill`` stays: its handler is already session-scoped.
 _PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})
+# Sidecar verbs that act on one live session. On an authority socket that session is the
+# authority's and never in ``server._sessions``, so the handler answered ``4001 session not found``
+# or (``tools.list`` / ``toolsets.list``) the launch profile's data. Without a ``session_id`` the
+# tools verbs are host-wide and still fall back.
+_SESSION_BOUND = frozenset({
+    "clipboard.paste", "handoff.fail", "handoff.request", "handoff.state", "image.attach",
+    "image.detach", "input.detect_drop", "pdf.attach", "terminal.resize", "tools.configure",
+    "tools.list", "toolsets.list",
+})
 # ``browser.manage`` is NOT here: connect/disconnect run in the requesting profile's scope (the
 # ticket's home, or the session's ``profile_home`` via ``_profile_scoped``) and the live endpoint, the
 # reap and the CDP supervisors are keyed by that profile home (CLI-9, #134889), so a multiplexed
 # owner serves them without reaching another profile's browser.
 
 
-def legacy_fallback_allowed(actor: Any, method: str) -> bool:
+def legacy_fallback_allowed(actor: Any, method: str, params: Any = None) -> bool:
     """True when the connection's grant covers the interactive purpose (the authority's own
     capability map; never a second list that could drift) and *method* is neither a session verb
-    the authority owns nor a process-global sidecar verb."""
+    the authority owns, a sidecar verb aimed at one of its sessions, nor a process-global verb."""
     from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     if method in _PROCESS_GLOBAL:
+        return False
+    if method in _SESSION_BOUND and isinstance(params, dict) and params.get("session_id"):
         return False
     if method.startswith(_SESSION_NAMESPACES) and method not in _SESSION_FALLBACK_ALLOWED:
         return False

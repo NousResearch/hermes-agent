@@ -7647,6 +7647,46 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def deactivate_last_n_active_messages(
+        self, session_id: str, n: int
+    ) -> int:
+        """Soft-delete the *n* most-recent active messages in *session_id*.
+
+        Sets ``active = 0`` on the ``n`` rows with the highest ``id``
+        values that currently have ``active = 1``.  Rows remain on disk
+        for audit purposes — identical behaviour to :meth:`rewind_to_message`.
+
+        Called by :func:`agent.drop_messages.drop_messages` to synchronise
+        the SQLite session store after the in-memory history has been
+        truncated.
+
+        Returns the number of rows actually deactivated (may be < *n* when
+        the session has fewer than *n* active messages).
+        """
+        if n <= 0:
+            return 0
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                SELECT id FROM messages
+                WHERE session_id = ? AND active = 1
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, n),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
+                    ids,
+                )
+            return len(ids)
+
+        return self._execute_write(_do)
+
     def list_recent_user_messages(
         self,
         session_id: str,

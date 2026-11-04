@@ -321,6 +321,11 @@ turned off (`approvals.mode: off` is refused; `manual` asks a person, `smart` ma
 approve on its own). Otherwise `room_link.reason` names the first missing piece.
 Keep its `room_link.catalog`; the home pins it, endpoint included.
 
+When a bot on the member gateway needs command approval, the home gateway now
+exposes its prompt in the group chat and accepts `once` to allow that operation
+or `deny` to refuse it. An outdated prompt cannot approve
+a later operation; it reports that the room approval is no longer pending.
+
 Standalone `hermes serve` answering for its own group chats derives `persistent_process`
 from its lending catalog and skips API-server and endpoint checks for `room_link`;
 clients should not use it as a home for gateway-owned group chats.

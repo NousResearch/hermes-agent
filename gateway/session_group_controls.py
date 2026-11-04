@@ -293,7 +293,12 @@ def _execution_control(service, method, params):
                 or params.get('choice') not in {'once', 'deny'}
                 or not isinstance(params.get('request_id'), str) or not params['request_id']):
             raise RuntimeStoreError('invalid_params')
-        return {'approved': True, 'result': service.approve_room_task(**params)}
+        try:
+            return {'approved': True, 'result': service.approve_room_task(**params)}
+        except RuntimeError as exc:
+            if str(exc) == 'room approval is no longer pending':
+                raise RuntimeStoreError(str(exc)) from exc
+            raise
 
     handlers = {
         'groups.send': send,

@@ -70,6 +70,10 @@ class FakeSession:
         self._empty_content_retries = 3
         self._thinking_prefill_retries = 2
         self._dropped_toolcall_retries = 1
+        # Added by refusal-quarantine integration: these must also be reset.
+        self._content_filter_refusal_count = 2
+        self._refusal_consecutive_count = 2
+        self._refusal_seq = 2
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +196,10 @@ def test_drop_default_removes_from_last_tool_result():
     assert session._empty_content_retries == 0
     assert session._thinking_prefill_retries == 0
     assert session._dropped_toolcall_retries == 0
+    # Quarantine-integration counters also reset
+    assert session._content_filter_refusal_count == 0
+    assert session._refusal_consecutive_count == 0
+    assert session._refusal_seq == 0
 
 
 def test_drop_default_no_orphan_when_another_turn_follows():

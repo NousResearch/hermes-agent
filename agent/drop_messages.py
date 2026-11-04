@@ -44,6 +44,12 @@ _REFUSAL_COUNTER_ATTRS = (
     "_thinking_prefill_retries",
     "_dropped_toolcall_retries",
     "_content_filter_refusal_count",
+    # Added during integration of refusal-quarantine branch: drop-wire set
+    # _content_filter_refusal_count; quarantine also sets _refusal_consecutive_count
+    # and _refusal_seq.  All three must be cleared after a /drop so the
+    # quarantine gate resets correctly.
+    "_refusal_consecutive_count",
+    "_refusal_seq",
 )
 
 

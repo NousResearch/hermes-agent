@@ -3958,3 +3958,14 @@ plan_usage:
   large_notice_limit: "Modelo grande: alcanzaste tu límite {name} ({resets})."
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
+
+agent:
+  fallback:
+    notice: "⚠️ Model fallback: {old_model} via {old_provider} unavailable ({reason}); using {new_model} via {new_provider}."
+    reason:
+      rate_limit: "rate limit"
+      auth: "authentication failed"
+      billing: "billing or quota exhausted"
+      timeout: "request timeout"
+      provider_failure: "provider failure"
+    cooldown_suffix: " Primary retry eligible in ~{seconds} s; recovery is not guaranteed."

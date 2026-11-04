@@ -3958,3 +3958,14 @@ plan_usage:
   large_notice_limit: "Samhail mhór: tá do theorainn {name} bainte amach ({resets})."
   large_notice_limit_stops: "Samhail mhór: tá do theorainn {name} bainte amach ({resets}), mar sin ní rithfidh sí go dtí sin."
   large_notice_percent: "Samhail mhór: úsáideann sí níos mó de d’úsáid plean in aghaidh na teachtaireachta. Teorainn mhíosúil na samhlacha móra: {percent} úsáidte."
+
+agent:
+  fallback:
+    notice: "⚠️ Model fallback: {old_model} via {old_provider} unavailable ({reason}); using {new_model} via {new_provider}."
+    reason:
+      rate_limit: "rate limit"
+      auth: "authentication failed"
+      billing: "billing or quota exhausted"
+      timeout: "request timeout"
+      provider_failure: "provider failure"
+    cooldown_suffix: " Primary retry eligible in ~{seconds} s; recovery is not guaranteed."

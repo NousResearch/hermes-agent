@@ -7,9 +7,16 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from agent.error_classifier import FailoverReason
 from run_agent import AIAgent
+
+
+@pytest.fixture(autouse=True)
+def _pin_english(monkeypatch):
+    """Fallback notices are translated now; these assertions are English."""
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
 
 
 def _make_agent(fallback_model=None):

@@ -31,6 +31,7 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
+from agent.i18n import t
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
 from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor, StreamLifetimeExceeded
@@ -1804,9 +1805,22 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.unknown: "provider failure",
 }
 
+_FALLBACK_REASON_CATALOG_KEYS = {
+    FailoverReason.auth: "auth",
+    FailoverReason.billing: "billing",
+    FailoverReason.rate_limit: "rate_limit",
+    FailoverReason.timeout: "timeout",
+    FailoverReason.unknown: "provider_failure",
+}
+
 
 def _fallback_reason_text(reason: FailoverReason | None) -> str:
     """Return a concise operator-facing explanation for a fallback switch."""
+    if reason is None:
+        return t("agent.fallback.reason.provider_failure")
+    catalog_key = _FALLBACK_REASON_CATALOG_KEYS.get(reason)
+    if catalog_key:
+        return t(f"agent.fallback.reason.{catalog_key}")
     label = _FALLBACK_REASON_LABELS.get(reason)
     return label or str(getattr(reason, "value", None) or reason or "provider failure").replace("_", " ")
 
@@ -2083,12 +2097,17 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-            notice = (
-                f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+            notice = t(
+                "agent.fallback.notice",
+                old_model=old_model,
+                old_provider=old_provider,
+                reason=_fallback_reason_text(reason),
+                new_model=fb_model,
+                new_provider=fb_provider,
+            )
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
-                notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+                notice += t("agent.fallback.cooldown_suffix", seconds=remaining)
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

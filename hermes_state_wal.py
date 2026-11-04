@@ -197,7 +197,7 @@ _cross_vm_existing_wal_warned_lock = threading.Lock()
 # live-downgraded and gets one WARNING with the offline remedy. Generic FUSE stays out because it can be local
 # (ntfs3g, loopback): only the network instance (sshfs) is listed. smb3 is how some kernels report SMB 3 mounts.
 _NETWORK_FS_FSTYPES = frozenset({"nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "sshfs", "fuse.sshfs"})
-_network_fs_cache: Dict[str, bool] = {}
+_network_fs_cache: dict[str, bool] = {}
 _network_fs_cache_lock = threading.Lock()
 _network_fs_warned_paths: set[str] = set()
 _network_fs_warned_lock = threading.Lock()
@@ -213,7 +213,7 @@ def _journal_mode_explicitly_configured() -> bool:
         from hermes_cli.config import read_raw_config_readonly
         from hermes_cli.config_read_errors import FailedConfigRead
         raw = read_raw_config_readonly()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- import/read failure keeps the WAL default (same as resolve_journal_mode)
         return True
     if isinstance(raw, FailedConfigRead):
         return True

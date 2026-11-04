@@ -117,6 +117,14 @@ def message_agent_tool_schema() -> dict:
                             "'Message from …' prefix — it is added automatically."
                         ),
                     },
+                    "constraints": {
+                        "type": "string",
+                        "description": "Limits their answer must respect (scope, length, format).",
+                    },
+                    "expecting": {
+                        "type": "string",
+                        "description": "What you need back from them; shown to them as the reply they owe you.",
+                    },
                     "expects_reply": {
                         "type": "boolean",
                         "description": "false: notify only — no reply comes back and nothing wakes you.",
@@ -229,13 +237,21 @@ class Sender:
         return _err(msg, roster=self.teammates, peers=self.peers)
 
 
+def _envelope(message: Any, constraints: Any, expecting: Any) -> str:
+    """The request as the teammate reads it: the message, then its typed constraints and the reply
+    the sender needs back, each on its own labelled line."""
+    typed = [f"{label}: {str(value).strip()}" for label, value in (("Constraints", constraints),
+                                                                  ("Reply needed", expecting)) if str(value or "").strip()]
+    return "\n\n".join([str(message or "").strip(), *(["\n".join(typed)] if typed else [])])
+
+
 def _wants_reply(value: Any) -> bool:
     """``expects_reply`` as models send it: a bool, or its string spelling."""
     return str(value).strip().lower() not in ("false", "0", "no")
 
 
 def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None,
-                       expects_reply: Any = True, cancel: str = "") -> str:
+                       expects_reply: Any = True, cancel: str = "", constraints: str = "", expecting: str = "") -> str:
     """Deliver ``message`` to ``target``'s Bot Chat (several comma-separated targets fan out),
     or withdraw the caller's own request ``cancel``. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
@@ -267,9 +283,9 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
 
         return cancel_own_delivery(str(cancel).strip(), str(target or ""), sender)
 
-    body = str(message or "").strip()
-    if not body:
+    if not str(message or "").strip():
         return _err("message is required — compose what you want to say to that agent.")
+    body = _envelope(message, constraints, expecting)
     if len(body) > MESSAGE_MAX_CHARS:
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
@@ -621,7 +637,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
     deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
-    missed = 0
+    missed, unreachable = 0, False
     while True:
         record = await_delivery(home, delivery_id, max(0.0, min(_LIVE_WAIT_SECONDS, deadline - time.monotonic())))
         if record is None or record["status"] not in ("queued", "claimed") or time.monotonic() >= deadline:
@@ -631,6 +647,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
         except Exception:
             logger.debug("Could not check live DM owner", exc_info=True)
             held = None
+        unreachable = held is None
         if held:
             missed = 0
             continue
@@ -654,7 +671,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):
         payload["detail"] = "Delivery remains pending or its outcome is unknown. Do not resend; receipt is retained."
-        state = _live_target_state(dm_file)
+        state = _live_target_state(dm_file) or ("unreachable" if unreachable else None)
         if state:
             # A bound that lapses on a teammate parked on its own user is that, never a silent timeout.
             payload["target_state"] = state
@@ -664,7 +681,10 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
         # plaintext) — the live branch returns before _run_delivery's own unlink.
         _unlink_dm_file(_live_intent_file(dm_file))
         _unlink_dm_file(str(dm_file))
-    print(json.dumps(payload))
+    from tools.bot_mode_dm_outcome import outcome_line
+
+    who = f"@{Path(home).name}" if Path(home).parent.name == "profiles" else "Your teammate"
+    print(json.dumps({"outcome": outcome_line(who, payload), **payload}))
     return 0 if status in ("settled", "queued", "claimed") else 1
 
 
@@ -825,6 +845,7 @@ _BLOCKED_DETAIL = {
     "waiting_approval": "is waiting for its user to approve a command in its own Bot Chat",
     "waiting_clarify": "is waiting for its user to answer a question in its own Bot Chat",
     "paused": "is not starting new turns right now (its gateway is restarting or updating)",
+    "working": "is busy with an earlier turn and takes yours after it",
 }
 
 

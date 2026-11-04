@@ -164,7 +164,12 @@ def run_fan_out(spec_path: str) -> int:
     for thread in threads:
         thread.join()
     settled = sum(result.get("status") == "settled" for result in results)
-    print(json.dumps({"replies": results, "settled": settled, "of": len(results)}, ensure_ascii=False))
+    from tools.bot_mode_dm_outcome import combined_summary
+
+    for result in results:
+        result.pop("outcome", None)  # the summary below says it once, by name
+    print(json.dumps({"outcome": combined_summary(results), "replies": results, "settled": settled,
+                      "of": len(results)}, ensure_ascii=False))
     return 0 if settled == len(results) else 1
 
 

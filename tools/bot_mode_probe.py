@@ -314,7 +314,8 @@ def _build_section(home: Path) -> str:
         "with message_agent, and report back naming which agent replied. Message "
         "ONE clearly relevant teammate; don't fan out to several unless the user "
         "explicitly asked (then comma-separate the targets in one call: one combined "
-        "reply wakes you). expects_reply=false sends an FYI that nothing answers.\n"
+        "reply wakes you). expects_reply=false sends an FYI that nothing answers. "
+        "Put limits in constraints and what you need back in expecting.\n"
         f'When YOU receive a "Message from 🤖 <name> (@<handle>):" message, a '
         "teammate agent is talking to you (not the user): address them and return "
         "your concise, substantive reply as this turn's final response. Do not call "

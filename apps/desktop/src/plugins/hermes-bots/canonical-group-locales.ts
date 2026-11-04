@@ -8,7 +8,6 @@ export interface CanonicalGroupMessages {
   turnCancelled: string
   turnDeferred: string
   memberUnavailable: string
-  refreshGroups: string
   openGroup: string
   loadingGroup: string
   loadingGroups: string
@@ -90,7 +89,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'Turn deferred',
     memberUnavailable: 'Member unavailable',
     members: 'Members',
-    refreshGroups: 'Refresh gateway groups',
     openGroup: 'Open Group Chat',
     loadingGroup: 'Loading group…',
     loadingGroups: 'Loading gateway groups…',
@@ -170,7 +168,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'ターンが延期されました',
     memberUnavailable: 'メンバーは利用できません',
     members: 'メンバー',
-    refreshGroups: 'ゲートウェイのグループを更新',
     openGroup: 'グループチャットを開く',
     loadingGroup: 'グループを読み込み中…',
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
@@ -250,7 +247,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: '回合已推迟',
     memberUnavailable: '成员不可用',
     members: '成员',
-    refreshGroups: '刷新网关群组',
     openGroup: '打开群聊',
     loadingGroup: '正在加载群组…',
     loadingGroups: '正在加载网关群组…',
@@ -330,7 +326,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: '回合已延後',
     memberUnavailable: '成員無法使用',
     members: '成員',
-    refreshGroups: '重新整理閘道群組',
     openGroup: '開啟群組聊天',
     loadingGroup: '正在載入群組…',
     loadingGroups: '正在載入閘道群組…',
@@ -410,7 +405,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'أُجّلت الجولة',
     memberUnavailable: 'العضو غير متاح',
     members: 'الأعضاء',
-    refreshGroups: 'تحديث مجموعات البوابة',
     openGroup: 'فتح الدردشة الجماعية',
     loadingGroup: 'جارٍ تحميل المجموعة…',
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
@@ -490,7 +484,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'Ход отложен',
     memberUnavailable: 'Участник недоступен',
     members: 'Участники',
-    refreshGroups: 'Обновить группы шлюза',
     openGroup: 'Открыть групповой чат',
     loadingGroup: 'Загрузка группы…',
     loadingGroups: 'Загрузка групп шлюза…',
@@ -573,7 +566,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'Tour différé',
     memberUnavailable: 'Membre indisponible',
     members: 'Membres',
-    refreshGroups: 'Actualiser les groupes de la passerelle',
     openGroup: 'Ouvrir la discussion de groupe',
     loadingGroup: 'Chargement du groupe…',
     loadingGroups: 'Chargement des groupes de la passerelle…',
@@ -655,7 +647,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'Zug verschoben',
     memberUnavailable: 'Mitglied nicht verfügbar',
     members: 'Mitglieder',
-    refreshGroups: 'Gateway-Gruppen aktualisieren',
     openGroup: 'Gruppenchat öffnen',
     loadingGroup: 'Gruppe wird geladen…',
     loadingGroups: 'Gateway-Gruppen werden geladen…',
@@ -738,7 +729,6 @@ export const CANONICAL_GROUP_LOCALES = {
     turnDeferred: 'Turno aplazado',
     memberUnavailable: 'Miembro no disponible',
     members: 'Miembros',
-    refreshGroups: 'Actualizar grupos de la pasarela',
     openGroup: 'Abrir chat de grupo',
     loadingGroup: 'Cargando grupo…',
     loadingGroups: 'Cargando grupos de la pasarela…',

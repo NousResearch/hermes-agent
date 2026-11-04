@@ -28,14 +28,19 @@ Hard rules encoded here (each has a test in
 * The bound address the child reports must be ``127.0.0.1`` and never the
   shared ``:8888`` default; anything else fails the start.
 
-The controller never downloads anything, never loads models, never calls a
-generation endpoint (only ``GET /api/health``), and never persists the grant
-process identity beyond what admission needs.
+The controller never downloads anything and never loads models. It calls only
+``GET /api/health``, the sidecar's own auth routes (``/api/auth/login`` +
+``/api/auth/refresh``, see the channel section for the cited contract), and —
+through :meth:`MediaRuntimeController.request`/:meth:`MediaRuntimeController.stream_request`
+— caller-supplied relative ``/api/...`` paths on its own loopback base URL
+(SSRF-guarded; the sidecar password never survives start(), tokens never
+surface publicly).
 """
 from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 import logging
 import os
 from pathlib import Path
@@ -45,6 +50,7 @@ import socket
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -85,6 +91,193 @@ _KV_RE = re.compile(
 _PHRASE_RE = re.compile(r"(?i)(password\s+is\s+)(\S+)")
 
 _STATES = ("stopped", "starting", "running", "stopping", "failed")
+
+# ---------------------------------------------------------------------------
+# authenticated sidecar request channel: upstream auth facts (READ from the
+# installed upstream backend, cited per fact, do not guess):
+#
+# * ``POST {base}/api/auth/login`` — the auth router is mounted at prefix
+#   ``/api/auth`` (studio/backend/main.py:1906) and the route is
+#   ``@router.post("/login")`` (studio/backend/routes/auth.py:445).
+# * login body is ``AuthLoginRequest`` = ``{"username": str, "password": str}``
+#   (studio/backend/models/auth.py:17-21); the seeded admin username is
+#   ``DEFAULT_ADMIN_USERNAME = "unsloth"`` (studio/backend/auth/storage.py:28).
+# * response is ``Token`` = ``access_token`` / ``refresh_token`` /
+#   ``token_type == "bearer"`` (+ ``must_change_password``, ``account_id``)
+#   (studio/backend/models/users.py:11-30; constructed at routes/auth.py:493-499).
+# * ``POST {base}/api/auth/refresh`` with ``{"refresh_token": str}``
+#   (RefreshTokenRequest, studio/backend/models/auth.py:30-33) returns a NEW
+#   Token pair and rotates the refresh token SINGLE-USE; an invalid/expired
+#   refresh token yields HTTP 401 (routes/auth.py:578-608).
+# * unauthenticated calls to bearer-protected routes yield HTTP 401
+#   ``{"detail": "Not authenticated"}`` via the ``_BearerOrKeyless(HTTPBearer)``
+#   fall-through (studio/backend/auth/authentication.py:128-179, security
+#   instance at :179) — matches the Phase-1 probe
+#   (``GET /api/models/list`` unauthenticated -> 401 "Not authenticated").
+# ---------------------------------------------------------------------------
+AUTH_USERNAME = "unsloth"
+LOGIN_PATH = "/api/auth/login"
+REFRESH_PATH = "/api/auth/refresh"
+CHANNEL_PATH_PREFIX = "/api/"
+CHANNEL_PATH_MAX = 2048
+AUTH_LOST_DETAIL = "auth lost - restart the runtime"
+_LOGIN_TIMEOUT = 15.0
+_REFRESH_TIMEOUT = 15.0
+
+_CHANNEL_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"})
+#: the controller owns these; a caller may never set them
+_FORBIDDEN_CALLER_HEADERS = frozenset(
+    {"authorization", "cookie", "host", "content-length"})
+#: hop-by-hop headers plus Set-Cookie (upstream token material can ride in
+#: cookies) are stripped from every ChannelResponse/MediaStream header dict
+_STRIPPED_RESPONSE_HEADERS = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "set-cookie"})
+
+
+class MediaRuntimeUnavailable(RuntimeError):
+    """The authenticated sidecar channel could not serve this call.
+
+    The message is always safe: it never carries the (already discarded)
+    sidecar password, any token, or any response body.
+    """
+
+
+@dataclass(frozen=True)
+class ChannelResponse:
+    """One sidecar reply on the controller's own authenticated channel."""
+
+    status: int
+    headers: dict          # lowercased keys; hop-by-hop + set-cookie removed
+    body: bytes
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: urllib surfaces the 3xx as an HTTPError instead
+    of RE-SENDING our ``Authorization: Bearer *** to the ``Location`` host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+#: shared opener: loopback-only in practice (the base URL is always our own
+#: bound 127.0.0.1 socket) and strictly no-redirect for every channel request.
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _validate_channel_path(path: str) -> str:
+    """Guard one channel path; the target host/port are NEVER taken from input.
+
+    Only a relative path starting with ``/api/`` is ever sent, and only to the
+    controller's own loopback ``base_url``. Raises ``ValueError`` (before any
+    socket is opened, so the bearer is never attached) on: absolute URLs / any
+    scheme, ``//host``, backslashes, ``..`` or percent-encoded dot segments in
+    any case, encoded slashes (``%2f``/``%5c``), double encodings, control
+    chars / newlines / NUL, userinfo ``@``, fragments ``#``, a query smuggled
+    into the path (``?`` — queries go through the ``query=`` argument only),
+    and paths over :data:`CHANNEL_PATH_MAX` characters.
+    """
+    if not isinstance(path, str):
+        raise ValueError("channel path must be a str")
+    if len(path) > CHANNEL_PATH_MAX:
+        raise ValueError(f"channel path longer than {CHANNEL_PATH_MAX} chars")
+    if not path.startswith(CHANNEL_PATH_PREFIX):
+        raise ValueError(f"channel path must be a relative path starting with "
+                         f"{CHANNEL_PATH_PREFIX!r}")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise ValueError("channel path contains control characters")
+    # Studio's API paths are plain ASCII. Reject look-alike dots (U+2025,
+    # fullwidth), bidi overrides and any whitespace here rather than relying on
+    # http.client happening to refuse them downstream.
+    if not path.isascii() or " " in path:
+        raise ValueError("channel path must be ASCII without whitespace")
+    for ch, why in ((":", "a scheme/colon"), ("\\", "a backslash"),
+                    ("@", "userinfo"), ("#", "a fragment"),
+                    ("?", "a query (pass it via the query= argument)")):
+        if ch in path:
+            raise ValueError(f"channel path contains {why}")
+    low = path.lower()
+    if ".." in low:
+        raise ValueError("channel path contains a '..' segment")
+    for token in ("%2e", "%2f", "%5c", "%25", "%00"):
+        if token in low:
+            raise ValueError(f"channel path contains the encoded sequence {token!r}")
+    return path
+
+
+def _caller_headers(headers) -> dict:
+    """Sanitize caller-supplied headers; the controller owns the credentials."""
+    out: dict[str, str] = {}
+    for name, value in (headers or {}).items():
+        lname = str(name).strip().lower()
+        if lname in _FORBIDDEN_CALLER_HEADERS:
+            raise ValueError(f"caller may not set the {lname!r} header on the "
+                             "media runtime channel")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in f"{name}\u2000{value}"):
+            raise ValueError("channel headers contain control characters")
+        out[str(name)] = str(value)
+    return out
+
+
+def _response_headers(response) -> dict:
+    """Lowercased response headers minus hop-by-hop and Set-Cookie material."""
+    return {name.lower(): str(value)
+            for name, value in response.headers.items()
+            if name.lower() not in _STRIPPED_RESPONSE_HEADERS}
+
+
+def _json_body_parts(json_body) -> tuple[bytes | None, dict]:
+    if json_body is None:
+        return None, {}
+    return (json.dumps(json_body).encode("utf-8"),
+            {"Content-Type": "application/json"})
+
+
+class MediaStream:
+    """Iterator over sidecar response bytes for large media / SSE payloads.
+
+    The bearer lives strictly inside: ``status``/``headers`` are sanitized
+    (:func:`_response_headers`) and the connection closes when the iterator is
+    exhausted or closed. ``text/event-stream`` bodies surface line-by-line so
+    events arrive incrementally instead of filling a read buffer.
+    """
+
+    def __init__(self, response, *, chunk_size: int = 65536) -> None:
+        self._response = response
+        self._chunk_size = max(1, int(chunk_size))
+        self.status = int(response.status)
+        self.headers = _response_headers(response)
+
+    def __iter__(self):
+        try:
+            if "text/event-stream" in self.headers.get("content-type", ""):
+                while True:
+                    line = self._response.readline()
+                    if not line:
+                        return
+                    if line.strip():
+                        yield line
+            else:
+                while True:
+                    chunk = self._response.read(self._chunk_size)
+                    if not chunk:
+                        return
+                    yield chunk
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        with suppress(Exception):
+            self._response.close()
+
+    def __enter__(self) -> MediaStream:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    def __repr__(self) -> str:  # never shows headers/credentials
+        return f"<MediaStream status={self.status}>"
 
 
 def sanitize_credentials(text: str) -> str:
@@ -233,7 +426,8 @@ class MediaRuntimeController:
     def __init__(self, *, owner_scope: str, data_root: Path | str,
                  admission: AdmissionStore | None = None, spawn=None,
                  boot_id_fn=None, identity_fn=None, clock=time.monotonic,
-                 health_timeout: float = 60.0, lease_seconds: float = 30.0) -> None:
+                 health_timeout: float = 60.0, lease_seconds: float = 30.0,
+                 require_channel_auth: bool = True) -> None:
         self._owner_scope = owner_scope
         self._data_root = Path(data_root)
         self._admission = admission
@@ -243,6 +437,10 @@ class MediaRuntimeController:
         self._clock = clock
         self._health_timeout = float(health_timeout)
         self._lease_seconds = float(lease_seconds)
+        # Fail closed by default: a sidecar whose login cannot complete is a failed
+        # start, never a 'running' runtime with a dead channel. False is the explicit
+        # lifecycle-only mode (process supervision without an authenticated channel).
+        self._require_channel_auth = bool(require_channel_auth)
         # lifecycle state (in memory; durable truth lives in the admission store)
         self._state = "stopped"
         self._instance_id: str | None = None
@@ -260,6 +458,10 @@ class MediaRuntimeController:
         self._detail = ""
         self._log_path: Path | None = None
         self._log_handle = None
+        # sidecar channel credentials: ONLY tokens live here (never the password)
+        self._access_token: str | None = None
+        self._refresh_token: str | None = None
+        self._auth_lost = False
 
     # -- public API ---------------------------------------------------------
 
@@ -284,6 +486,9 @@ class MediaRuntimeController:
         self._started_at = None
         self._exit_code = None
         self._detail = ""
+        self._access_token = None
+        self._refresh_token = None
+        self._auth_lost = False
         self._state = "starting"
         password = secrets.token_urlsafe(32)
         try:
@@ -361,10 +566,14 @@ class MediaRuntimeController:
                 self._state = "stopped"
                 self._pid = None
                 self._base_url = None
+                self._access_token = None
+                self._refresh_token = None
                 self._detail = "stopped (no live sidecar; grant already handed back or quarantined)"
                 return self.status()
         self._state = "stopping"
         self._base_url = None
+        self._access_token = None
+        self._refresh_token = None
         self._detail = ""
         verified, rc = self._teardown_tree(timeout=timeout)
         self._exit_code = rc
@@ -387,6 +596,202 @@ class MediaRuntimeController:
             return ""
         text = self._log_path.read_text(encoding="utf-8", errors="replace")
         return sanitize_credentials("\n".join(text.splitlines()[-max_lines:]))
+
+    def __repr__(self) -> str:
+        # never shows tokens, the (discarded) password, or grant internals
+        return (f"<MediaRuntimeController state={self._state!r} "
+                f"instance={self._instance_id!r} base_url={self._base_url!r}>")
+
+    # -- authenticated sidecar request channel --------------------------------
+
+    def request(self, method: str, path: str, *, json_body=None, query=None,
+                headers=None, timeout: float = 60.0) -> ChannelResponse:
+        """One authenticated request to OUR OWN sidecar (never another host).
+
+        ``path`` must be a relative ``/api/...`` path (guarded by
+        :func:`_validate_channel_path` — anything else raises ``ValueError``
+        before anything is sent); queries go through ``query=`` only. The
+        controller attaches its own ``Authorization: Bearer <access token>``;
+        the caller may not set Authorization/Cookie/Host/Content-Length. A 401
+        triggers exactly ONE token refresh and one retry; if the refresh fails
+        the channel is marked ``auth lost`` and :class:`MediaRuntimeUnavailable`
+        is raised (there is no password to fall back to — it is gone).
+        Redirects are returned as-is, never followed. Only state ``running``
+        serves.
+        """
+        verb, target, caller = self._channel_prelude(method, path, headers)
+        body, type_headers = _json_body_parts(json_body)
+        response = self._channel_send(verb, target, body, {**type_headers, **caller},
+                                      query, timeout)
+        try:
+            return ChannelResponse(status=int(response.status),
+                                   headers=_response_headers(response),
+                                   body=response.read())
+        finally:
+            with suppress(Exception):
+                response.close()
+
+    def stream_request(self, method: str, path: str, *, json_body=None, query=None,
+                       headers=None, timeout: float = 60.0,
+                       chunk_size: int = 65536) -> MediaStream:
+        """Streaming variant of :meth:`request` for large media / SSE bodies.
+
+        Same guards, same single bearer inside (never exposed), same one-shot
+        refresh-and-retry. The returned :class:`MediaStream` carries
+        ``status``/sanitized ``headers`` and yields byte chunks; the connection
+        closes when the iterator is exhausted or closed.
+        """
+        verb, target, caller = self._channel_prelude(method, path, headers)
+        body, type_headers = _json_body_parts(json_body)
+        response = self._channel_send(verb, target, body, {**type_headers, **caller},
+                                      query, timeout)
+        return MediaStream(response, chunk_size=chunk_size)
+
+    def _channel_prelude(self, method, path, headers) -> tuple[str, str, dict]:
+        """State gate + SSRF path guard + caller-header sanitize, in that order."""
+        if self._state != "running":
+            raise MediaRuntimeUnavailable(
+                f"media runtime is not running (state={self._state})")
+        if self._auth_lost:
+            raise MediaRuntimeUnavailable(AUTH_LOST_DETAIL)
+        if self._access_token is None:
+            raise MediaRuntimeUnavailable(
+                "media runtime is serving without sidecar authentication; "
+                "restart the runtime")
+        verb = str(method).upper()
+        if verb not in _CHANNEL_METHODS:
+            raise ValueError(f"unsupported HTTP method {method!r}")
+        return verb, _validate_channel_path(path), _caller_headers(headers)
+
+    def _channel_send(self, verb: str, target: str, body, headers: dict,
+                      query, timeout: float):
+        """Open the channel request; refresh-once-then-retry on a 401."""
+        url = (self._base_url or "") + target
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        response = self._channel_open(verb, url, dict(headers), body, timeout)
+        if response.status == 401:
+            with suppress(Exception):
+                response.close()
+            if self._refresh_tokens():
+                response = self._channel_open(verb, url, dict(headers), body, timeout)
+            else:
+                self._lose_auth()
+                raise MediaRuntimeUnavailable(AUTH_LOST_DETAIL)
+        return response
+
+    def _channel_open(self, verb: str, url: str, headers: dict, body,
+                      timeout: float):
+        headers = dict(headers)
+        headers["Authorization"] = f"Bearer {self._access_token}"
+        request = urllib.request.Request(url, data=body, headers=headers, method=verb)
+        try:
+            return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            # 3xx (never followed) and 4xx/5xx surface to the caller as-is
+            return exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise MediaRuntimeUnavailable(
+                f"media runtime channel: sidecar unreachable ({type(exc).__name__})"
+            ) from None
+
+    def _authenticate(self, password: str) -> None:
+        """Log in ONCE with the stdin password over loopback; keep only tokens.
+
+        Contract facts (cited in the module header above). A REFUSED login
+        (endpoint present but rejecting: 401/403/429/5xx, redirect, unusable
+        Token body) raises :class:`_StartupFailed` so the start fails through
+        the existing teardown/verified-release path. HTTP 404/405/501 or an
+        unreachable auth endpoint means this sidecar exposes NO auth API at
+        all (a legacy/test sidecar; the real backend always serves
+        /api/auth/login): the controller then runs WITHOUT tokens and every
+        channel call is refused — the password is dropped either way, and no
+        unauthenticated or password-bearing channel request is ever sent.
+
+        That tokenless mode exists ONLY behind ``require_channel_auth=False``
+        (lifecycle-only supervision). By default a missing or unreachable auth
+        API fails the start, like any other refused login.
+        """
+        payload = json.dumps({"username": AUTH_USERNAME, "password": password})
+        request = urllib.request.Request(
+            (self._base_url or "") + LOGIN_PATH, data=payload.encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=_LOGIN_TIMEOUT) as response:
+                status = int(getattr(response, "status", None) or 200)
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code)
+            with suppress(Exception):
+                exc.close()
+            if code in (404, 405, 501):
+                if self._require_channel_auth:
+                    raise _StartupFailed(
+                        f"sidecar exposes no auth API (HTTP {code}); an "
+                        "authenticated channel is required") from None
+                logger.warning("sidecar exposes no auth API (HTTP %s); "
+                               "request channel disabled", code)
+                return
+            raise _StartupFailed(f"sidecar login rejected with HTTP {code}") from None
+        except (urllib.error.URLError, OSError, ValueError):
+            if self._require_channel_auth:
+                raise _StartupFailed(
+                    "sidecar auth endpoint unreachable; an authenticated "
+                    "channel is required") from None
+            logger.warning("sidecar auth endpoint unreachable; request channel disabled")
+            return
+        try:
+            token = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _StartupFailed("sidecar login returned an unparseable body") from None
+        access = token.get("access_token")
+        refresh = token.get("refresh_token")
+        if (status != 200 or not isinstance(access, str) or not access
+                or not isinstance(refresh, str) or not refresh):
+            raise _StartupFailed("sidecar login returned an unusable token response")
+        if str(token.get("token_type", "bearer")).lower() != "bearer":
+            raise _StartupFailed("sidecar login returned an unexpected token_type")
+        self._access_token = access
+        self._refresh_token = refresh
+
+    def _refresh_tokens(self) -> bool:
+        """Exchange the refresh token ONCE (single-use rotation upstream); False = lost."""
+        token = self._refresh_token
+        if not token:
+            return False
+        payload = json.dumps({"refresh_token": token}).encode("utf-8")
+        request = urllib.request.Request(
+            (self._base_url or "") + REFRESH_PATH, data=payload,
+            headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with _NO_REDIRECT_OPENER.open(request, timeout=_REFRESH_TIMEOUT) as response:
+                status = int(getattr(response, "status", None) or 200)
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            with suppress(Exception):
+                exc.close()
+            return False
+        except (urllib.error.URLError, OSError):
+            return False
+        try:
+            rotated = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        access = rotated.get("access_token")
+        refresh = rotated.get("refresh_token")
+        if (status != 200 or not isinstance(access, str) or not access
+                or not isinstance(refresh, str) or not refresh):
+            return False
+        self._access_token = access
+        self._refresh_token = refresh
+        return True
+
+    def _lose_auth(self) -> None:
+        """Terminal for the channel: purge tokens, flag the state, never retry."""
+        self._access_token = None
+        self._refresh_token = None
+        self._auth_lost = True
+        self._detail = sanitize_credentials(AUTH_LOST_DETAIL)
 
     # -- start internals ------------------------------------------------------
 
@@ -448,6 +853,12 @@ class MediaRuntimeController:
         self._await_health(base_url, deadline)
 
         self._base_url = base_url
+        # Authenticate ONCE over loopback while the password still exists, then
+        # drop it for good: only tokens are retained, and a refused login fails
+        # the start through the same verified-teardown path as any other
+        # startup failure.
+        self._authenticate(password)
+        del password
         with suppress(AdmissionError):  # residency advance is best-effort; tick() re-drives it
             self._grant = store.renew(self._grant, now=self._clock(), residency="resident")
         self._started_at = time.time()
@@ -631,16 +1042,23 @@ class MediaRuntimeController:
     def _set_failed(self, detail: str) -> None:
         self._state = "failed"
         self._base_url = None
+        self._access_token = None
+        self._refresh_token = None
         self._detail = sanitize_credentials(detail)
 
 
 __all__ = [
+    "AUTH_LOST_DETAIL",
+    "AUTH_USERNAME",
     "DEFAULT_ENGINE",
     "DEFAULT_RESOURCE",
     "HEALTH_PATH",
     "LOOPBACK_HOST",
     "SHARED_DEFAULT_PORT",
+    "ChannelResponse",
     "MediaRuntimeController",
+    "MediaRuntimeUnavailable",
+    "MediaStream",
     "RuntimeStatus",
     "disposable_environment",
     "free_loopback_port",

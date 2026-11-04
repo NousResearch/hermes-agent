@@ -118,7 +118,10 @@ def _write_backend(tmp_path: Path, mode: str) -> tuple[Path, Path]:
 def _controller(tmp_path: Path, store: AdmissionStore, **over):
     kwargs = dict(owner_scope="scope-a", data_root=tmp_path / "runtime",
                   admission=store, boot_id_fn=lambda: _BOOT,
-                  health_timeout=5.0, lease_seconds=30.0)
+                  health_timeout=5.0, lease_seconds=30.0,
+                  # these tests exercise process lifecycle only; the fake backend
+                  # and decoys have no auth API (the channel has its own suite)
+                  require_channel_auth=False)
     kwargs.update(over)
     return mr.MediaRuntimeController(**kwargs)
 

@@ -1336,6 +1336,16 @@ class TestServicePathDirsPmVenv:
         assert str(venv_bin) not in dirs
 
 
+class TestGetPythonPath:
+    def test_packaged_install_uses_hermes_python(self, tmp_path, monkeypatch):
+        python = tmp_path / "python3"
+        python.touch(mode=0o755)
+        monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: None)
+        monkeypatch.setenv("HERMES_PYTHON", str(python))
+
+        assert gateway_cli.get_python_path() == str(python)
+
+
 def _seed_pm_node_facts(hermes_root):
     """Write a pm installed-state file recording node/npm store entries.
 

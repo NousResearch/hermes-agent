@@ -51,6 +51,23 @@ async def recover_failed_settlement(authority, row):
             await asyncio.sleep(1)
 
 
+async def _read_committed_result(authority, admission_id):
+    """Re-read a committed terminal result, retrying transient storage faults.
+
+    ``settle_and_deliver``'s recovery branch re-reads the committed result after a failed
+    settlement. A single ``sqlite3.OperationalError`` on that read (e.g. "database is
+    locked") used to leave ``settled`` as None, so the finally block dropped a committed
+    reply (#148993). Retry the read the way ``recover_failed_settlement`` retries its
+    stamp, so a committed outcome is delivered once the storage fence lets us read it.
+    """
+    from gateway.session_results import admission_result
+    while True:
+        try:
+            return admission_result(authority.db, admission_id)
+        except (OSError, sqlite3.Error):
+            await asyncio.sleep(1)
+
+
 def completion_payload(row, settled, response, captured):
     # ``status`` is the message.complete contract's TurnStatus: the Desktop
     # extends a Stopped bubble to the persisted partial only on 'interrupted'.
@@ -282,21 +299,24 @@ async def settle_and_deliver(authority, live, ref, row, response, outcome):
                     return False
                 # A write can commit before reporting failure. Re-read its exact result,
                 # then publish the terminal outcome rather than inventing uncertainty.
-                from gateway.session_results import admission_result
+                # Re-read the committed result with the same storage-fault retry the recovery
+                # stamp uses (recover_failed_settlement). A single transient locked read must
+                # not drop a committed reply (#148993). The read runs outside event_stream.lock:
+                # _publish_completion's contract says the stream lock never spans storage I/O.
+                captured = await _read_committed_result(authority, admission_id)
+                authority.pending_results.pop(admission_id, None)
+                settled = current
+                if captured is None:
+                    # An operator discarded uncertainty while recovery yielded. There is
+                    # no committed answer to replay; its queued successor may now run.
+                    authority.pending_deliveries.pop(admission_id, None)
+                    waiter = authority.waiters.pop(admission_id, None)
+                    if waiter is not None and not waiter.done():
+                        waiter.set_exception(RuntimeStoreError('unknown_execution'))
+                    discarded = True
+                    return True
+                response = captured['result'].get('final_response') or ''
                 with live.event_stream.lock:
-                    captured = admission_result(authority.db, admission_id)
-                    authority.pending_results.pop(admission_id, None)
-                    settled = current
-                    if captured is None:
-                        # An operator discarded uncertainty while recovery yielded. There is
-                        # no committed answer to replay; its queued successor may now run.
-                        authority.pending_deliveries.pop(admission_id, None)
-                        waiter = authority.waiters.pop(admission_id, None)
-                        if waiter is not None and not waiter.done():
-                            waiter.set_exception(RuntimeStoreError('unknown_execution'))
-                        discarded = True
-                        return True
-                    response = captured['result'].get('final_response') or ''
                     publish_terminal(authority, ref, row, settled, response, captured)
         finally:
             # The stamp names a claimed, unsettled execution. Left in place, idle

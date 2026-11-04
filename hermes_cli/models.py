@@ -64,6 +64,7 @@ from hermes_cli.models_local import (
     _ollama_probe_cache_key,
     _root_for_ollama_native_api,
     fetch_ollama_cloud_models)
+from hermes_cli.models_cache import _read_json_cache, _write_json_cache  # noqa: F401  re-exported
 
 logger = logging.getLogger(__name__)
 
@@ -85,26 +86,6 @@ def _get_json(
             body = gzip.decompress(body)
         return json.loads(body.decode())
 
-
-
-def _read_json_cache(path: Path, *, errors=Exception) -> Optional[dict]:
-    """Load a JSON-object cache file; None when missing, unreadable, or not a dict."""
-    try:
-        with open(path, encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-    except errors:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _write_json_cache(path: Path, data: Any, **dump_kwargs: Any) -> None:
-    """Atomically persist a cache file (creating parents). Raises on failure — callers decide
-    whether a failed cache write is worth logging."""
-    from utils import atomic_json_write
-    from hermes_constants import mkdir_under_hermes_home
-
-    mkdir_under_hermes_home(path.parent)
-    atomic_json_write(path, data, **dump_kwargs)
 
 
 def _merge_unique(primary: list[str], secondary: list[str], key=lambda m: str(m).lower()) -> list[str]:
@@ -795,14 +776,15 @@ def _configured_custom_provider_ids() -> set[str]:
     """Return routable custom-provider IDs configured by the user."""
     ids = {"custom"}
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import is_provider_enabled, load_config
         from hermes_cli.providers import custom_provider_slug
 
         config = load_config()
         providers = config.get("providers", {})
         if isinstance(providers, dict):
             ids.update(custom_provider_slug(str(entry.get("name") or key), str(key))
-                       for key, entry in providers.items() if isinstance(entry, dict))
+                       for key, entry in providers.items()
+                       if isinstance(entry, dict) and is_provider_enabled(entry))
         legacy = config.get("custom_providers", [])
         if isinstance(legacy, list):
             ids.update(
@@ -815,6 +797,10 @@ def _configured_custom_provider_ids() -> set[str]:
 def _provider_has_credentials(pid: str) -> bool:
     try:
         from hermes_cli.auth import get_auth_status, has_usable_secret
+        from hermes_cli.config import is_provider_id_enabled
+
+        if not is_provider_id_enabled(pid):
+            return False
 
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
@@ -828,7 +814,8 @@ def _provider_has_credentials(pid: str) -> bool:
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per enabled listed provider (shared with ``hermes model`` / ``/model``)."""
+    from hermes_cli.config import is_provider_id_enabled
     from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
@@ -839,7 +826,8 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]
+        if is_provider_id_enabled(pid)]
 
 
 def parse_model_input(

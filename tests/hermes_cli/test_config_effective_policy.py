@@ -70,3 +70,53 @@ def test_strict_read_skips_fail_open_managed_snapshot_read(policy_homes, caplog)
     caplog.clear()
     assert load_user_config_effective()["kanban"] == {"dispatch_profiles": ["default"]}
     assert ignoring()  # the ordinary read still fails open, loudly
+
+
+@pytest.mark.parametrize("strict_policy", [False, True])
+def test_worker_snapshot_preserves_policy_read_mode(policy_homes, monkeypatch, strict_policy):
+    from agent import safe_worker_policy
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, managed = policy_homes
+    (home / "config.yaml").write_text("authorization: {grants: [disk]}\n")
+    monkeypatch.setattr(
+        safe_worker_policy, "worker_config_snapshot",
+        lambda: {"authorization": {"grants": ["snapshot"]}},
+    )
+    (managed / "config.yaml").write_text("authorization: null\n")
+    result = load_user_config_effective(strict_policy=strict_policy)
+    assert result["authorization"] == (None if strict_policy else {"grants": ["snapshot"]})
+
+
+@pytest.mark.parametrize("strict_policy", [False, True])
+def test_worker_snapshot_rejects_broken_policy_only_for_strict_reads(
+    policy_homes, monkeypatch, strict_policy
+):
+    from agent import safe_worker_policy
+    from hermes_cli.config_effective import load_user_config_effective
+
+    _, managed = policy_homes
+    monkeypatch.setattr(safe_worker_policy, "worker_config_snapshot", lambda: {"model": "snapshot"})
+    (managed / "config.yaml").write_text("kanban: [unterminated")
+    if strict_policy:
+        with pytest.raises(yaml.YAMLError):
+            load_user_config_effective(strict_policy=True)
+    else:
+        assert load_user_config_effective() == {"model": "snapshot"}
+
+
+def test_strict_read_ignores_managed_file_a_backend_does_not_honor(policy_homes, monkeypatch):
+    """Under a backend that takes policy from elsewhere (remote mode, D18) the managed file is no
+    authority, so even a malformed one neither raises for a strict reader nor overrides the user."""
+    from hermes_cli import config_backend
+    from hermes_cli.config_effective import load_user_config_effective
+
+    class _ManagedFileIgnored(config_backend.FileBackend):
+        def honors_managed_config(self) -> bool:
+            return False
+
+    home, managed = policy_homes
+    (home / "config.yaml").write_text("kanban: {dispatch_profiles: [default]}\n")
+    (managed / "config.yaml").write_text("kanban: [unterminated")
+    monkeypatch.setattr(config_backend, "get_config_backend", lambda: _ManagedFileIgnored())
+    assert load_user_config_effective(fail_closed=True, strict_policy=True)["kanban"] == {"dispatch_profiles": ["default"]}

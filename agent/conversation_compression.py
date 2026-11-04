@@ -2011,7 +2011,11 @@ def _configured_compression_context_length(agent: Any) -> Optional[int]:
 
 def _configured_custom_providers(agent: Any) -> Optional[list]:
     """The provider entries as configured now, for measuring the compression model (a side task reads
-    them from config.yaml); the list captured at agent start when config cannot be read."""
+    them from config.yaml); the list captured at agent start inside a bypass session (its side tasks
+    never read the profile) or when config cannot be read."""
+    from agent.auxiliary_task_config import _SESSION_AUXILIARY
+    if _SESSION_AUXILIARY.get() is not None:
+        return getattr(agent, "_custom_providers", None)
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
         return get_compatible_custom_providers(load_config_readonly())

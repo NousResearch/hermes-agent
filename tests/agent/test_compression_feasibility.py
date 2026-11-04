@@ -372,6 +372,32 @@ def test_the_probe_reads_provider_entries_as_configured_now(monkeypatch, tmp_pat
     assert compressor.threshold_tokens == 80_000
 
 
+def test_a_bypass_session_measures_with_the_entries_from_agent_start(monkeypatch, tmp_path):
+    """Inside a bypass session (its side tasks carry their own saved section) the probe never reads the
+    profile's provider entries; it keeps the list captured at agent start."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression import check_compression_model_feasibility
+    import json
+    home = tmp_path / "home"
+    home.mkdir()
+    entry = {"name": "work-gateway", "base_url": "http://gateway.invalid/v1",
+             "models": {"small": {"context_length": 80_000}}}
+    (home / "config.yaml").write_text(json.dumps({"custom_providers": [entry]}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._custom_providers = [{**entry, "models": {"small": {"context_length": 900_000}}}]  # agent start
+    client = MagicMock(base_url="http://gateway.invalid/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "small")), \
+         session_auxiliary_scope({"compression": {}}):
+        check_compression_model_feasibility(agent)
+    assert compressor.threshold_tokens == 750_000
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 

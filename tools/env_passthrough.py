@@ -7,6 +7,7 @@ forwarded values resolve through the profile's secret scope, not the process env
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable
 from hermes_cli.config import cfg_get, read_raw_config
 
@@ -175,6 +176,66 @@ def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
     additions: dict[str, str] = {}
     for name in get_all_passthrough():
         if name in present or _is_global_env(name):
+            continue
+        value = scope.get(name)
+        if value is not None:
+            additions[name] = value
+    return additions
+
+
+def routed_profile_passthrough_additions(
+    hermes_home: str | os.PathLike, names: Iterable[str]
+) -> dict[str, str]:
+    """Of *names* (just stripped as the launch profile's residue), the ones the ROUTED
+    profile *hermes_home* declares in ``terminal.env_passthrough`` and supplies itself.
+
+    ``strip_launch_profile_env`` drops every name the launch profile's external sources
+    supplied, on the assumption that a caller's bound secret scope puts the target's own
+    values back. Outside the gateway/multiplex path nothing binds that scope — a
+    single-process worker acting for a routed home (desktop backend, ``key_cmd`` helper,
+    a worker spawned with an explicit target home) — so nothing put them back and a
+    declared passthrough name that lived only in the target's vault vanished from the
+    target's terminal children, while the same name reached them under a gateway-served
+    turn. The verification surface then reported a working credential as missing.
+
+    Resolves the target profile alone: hydrate ITS sources, build ITS scope, read ITS
+    ``terminal.env_passthrough`` (the home override is bound for the read so a caller that
+    passed ``target_home`` explicitly without an override still gets the target's list).
+    Never ``os.environ``, never another profile. Only names already removed are candidates,
+    so a child that never had a value does not gain one. A bound scope wins: the
+    multiplex/gateway path already overlays it through :func:`scoped_passthrough_additions`,
+    and an unscoped task under multiplex semantics must stay fail-closed rather than
+    quietly read files.
+    """
+    from agent.secret_scope import (
+        _is_global_env, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
+    if current_secret_scope() is not None or is_multiplex_active():
+        return {}
+    target = str(hermes_home or "")
+    if not target:
+        return {}
+    stripped = set(names)
+    if not stripped:
+        return {}
+    from pathlib import Path
+
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_constants import (
+        get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override)
+
+    token = None
+    if str(get_hermes_home_override() or "") != target:
+        token = set_hermes_home_override(target)
+    try:
+        hydrate_profile_secret_sources(target)
+        scope = build_profile_secret_scope(Path(target))
+        declared = get_all_passthrough()
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+    additions: dict[str, str] = {}
+    for name in declared:
+        if name not in stripped or _is_global_env(name):
             continue
         value = scope.get(name)
         if value is not None:

@@ -135,13 +135,20 @@ _SCOPED_CALLS = (
     ("terminal", "shell.exec", {"command": "echo relayed"}),
     ("terminal", "cli.exec", {"argv": ["config", "set", "terminal.backend", "local"]}),
     ("display", "display.thumbnail", {}), ("display", "display.lease.acquire", {}),
-    ("voice", "voice.record", {}), ("voice", "wake.start", {}))
+    ("voice", "voice.record", {}), ("voice", "wake.start", {}),
+    # Attachments read a path on that machine or write the browser's bytes there; completion lists it.
+    ("files", "file.attach", {"session_id": "s", "data_url": "data:text/plain;base64,aGk=", "name": "a.txt"}),
+    ("files", "image.attach", {"session_id": "s", "path": "/etc/hostname"}),
+    ("files", "image.attach_bytes", {"session_id": "s", "content_base64": "aGk="}),
+    ("files", "pdf.attach", {"session_id": "s", "path": "/etc/hostname"}),
+    ("files", "input.detect_drop", {"session_id": "s", "text": "/etc/hostname"}),
+    ("files", "complete.path", {"word": "/"}))
 
 
-@pytest.mark.parametrize("scopes", [(), ("display",), ("terminal",)])
+@pytest.mark.parametrize("scopes", [(), ("display",), ("terminal",), ("files",)])
 def test_a_relayed_gateway_socket_reaches_scoped_methods_only_with_their_scope(live_gateway, scopes):
-    # The gateway's own socket also runs shell and CLI commands, drives the Bot Screen and records
-    # voice, so a grant without those scopes must not reach them there either.
+    # The gateway's own socket also runs shell and CLI commands, drives the Bot Screen, records
+    # voice and attaches files, so a grant without those scopes must not reach them there either.
     hub, _there, row = _pair_live(live_gateway, scopes=scopes)
     with hub.websocket_connect(_relayed_url(hub, row, "/api/ws", "gateway"), headers=ORIGIN) as ws:
         for rid, (scope, method, params) in enumerate(_SCOPED_CALLS, start=1):
@@ -152,6 +159,9 @@ def test_a_relayed_gateway_socket_reaches_scoped_methods_only_with_their_scope(l
         if "terminal" in scopes:
             ran = _rpc(ws, 91, "shell.exec", {"command": "echo relayed"})
             assert ran.get("result", {}).get("stdout", "").strip() == "relayed", ran
+        if "files" in scopes:
+            listed = _rpc(ws, 92, "complete.path", {"word": "/"})
+            assert "result" in listed and not _refused(listed), listed
 
 
 def test_a_relayed_gateway_socket_without_terminal_access_still_edits_bot_profiles(live_gateway):

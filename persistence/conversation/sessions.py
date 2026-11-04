@@ -582,10 +582,12 @@ class SessionListEntry:
 
 @dataclass(frozen=True, slots=True)
 class SessionListRow:
-    """The picker columns of one row."""
+    """The picker columns of one row. ``source`` is the storage label (a local chat's is ``local``);
+    ``created_source`` is the surface that created it, when the store records one."""
 
     session_id: SessionId
     source: str
+    created_source: Optional[str]
     title: Optional[str]
     started_at: float
     ended_at: Optional[float]

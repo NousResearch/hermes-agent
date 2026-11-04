@@ -19,14 +19,22 @@ from persistence.authority.admissions import QueuedReplacement, steer_replayed
 from persistence.authority.vocabulary import STEERING
 from persistence.core.errors import AuthorityRefusal
 
-# A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
-# native envelopes and automation rows are whole turns: neither verb may drop what they carry.
+# A steer carries plain text and its presentation only. Attachments, finite runs, native envelopes
+# and automation rows are whole turns: neither verb may drop what they carry. ``cli_turn_v1`` is
+# per-turn input the classic CLI sends with prompt.submit; it holds the row a whole turn unless every
+# fact in it is a viewer preference (``clarify_batch``: how that viewer answers a clarify batch) —
+# Desktop sends one with every prompt, and a row carrying only that is still text.
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+_CLI_VIEWER_FACTS = frozenset({'clarify_batch'})
+
+
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
-# cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
-# do not name, so a transfer or replacement would strand them: never offered, refused by name.
+# The gate reads both the storage label and the creation surface: a local chat is rewritten to
+# ``source='local'`` while ``created_source`` records the surface that created it (``desktop`` for a
+# Desktop chat). cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every
+# outcome they do not name, so a transfer or replacement would strand them: never offered, refused by
+# name; their ``created_source`` is ``cron``/``a2a``/``bot_room`` and ``local`` alone is not a surface.
 _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
 
 
@@ -36,16 +44,28 @@ def handlers(connection):
 
 
 def _interactive(authority, session_id):
-    """The session's frozen launch source (a local session's row records it) names a local surface.
-    Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
-    counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
+    """The session's storage label, or the surface that created it, names an interactive local
+    surface. ``source`` is the label a local chat is rewritten to (``local``); ``created_source``
+    records the surface that created it (``desktop`` for a Desktop chat), so either may name one.
+    Callers hold the stream lock: one plain read per session, cached (``get`` drains token deltas
+    first, a write; ``list_row`` is the flush-free picker read). Under WAL it takes the lock-free
+    reader pool, as ``_pending_rows`` does there."""
     sources = authority.launch_sources
     if session_id not in sources:
         found = authority_persistence(authority).sessions.list_row(session_id)
         if found is None:
             return False
-        sources[session_id] = found.source
-    return sources[session_id] in _INTERACTIVE_SOURCES
+        sources[session_id] = next((label for label in (found.source, found.created_source)
+                                    if label in _INTERACTIVE_SOURCES), '')
+    return bool(sources[session_id])
+
+
+def _text_only(payload):
+    """Plain text and its presentation, with no turn input of its own."""
+    if set(payload) - _TEXT_ONLY - {'cli_turn_v1'}:
+        return False
+    cli = payload.get('cli_turn_v1')
+    return cli is None or (isinstance(cli, dict) and not set(cli) - _CLI_VIEWER_FACTS)
 
 
 def queued_controls(authority, row):
@@ -53,7 +73,7 @@ def queued_controls(authority, row):
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    if (row.get('status') != 'queued' or not _text_only(payload) or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []

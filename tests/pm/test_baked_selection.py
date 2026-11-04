@@ -364,3 +364,46 @@ def test_refresh_whose_plugin_discovery_fails_never_keeps_the_previous_generatio
     fact = Facts(runtime_facts_path(root)).get("venv")
     assert "environment" not in fact  # the image environment boots, not the previous generation
     assert fact["extras"] == ["all", "fal", "messaging"]
+
+
+def test_refresh_rebuilds_a_current_selection_its_fallback_unselected(install, monkeypatch):
+    """A plain restart whose plugin check fails boots the image environment; once the check
+    passes again, the user's selection must be rebuilt, not read as current on the image."""
+    import shutil
+
+    import pm.client
+    import pm.workspace
+    from pm.environments import install_state_dir, runtime_facts_path
+    from pm.lock import Facts
+    from pm.package import InstallError
+    from pm.packages import Venv
+    from pm.recovery import refresh_dependencies
+
+    root, store = install
+    broken = [True]
+
+    def members(extras, python=None):
+        if broken[0]:
+            raise InstallError("venv", "plugin 'bad' declares an unsupported manifest_version")
+        return []
+
+    monkeypatch.setattr(pm.workspace, "build_member_dirs", members)
+    monkeypatch.setattr(Venv, "expected_stamp", lambda self, extras, plugin_dirs=None: "stamp:" + ",".join(
+        sorted(extras)) + str(pm.workspace.build_member_dirs(extras) if plugin_dirs is None else plugin_dirs))
+    monkeypatch.setattr(shutil, "disk_usage", _disk(1 << 40))
+    (root / "venv").mkdir()
+    (root / "venv" / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    generation = install_state_dir(root) / "environments" / "otlp" / "venv"
+    generation.mkdir(parents=True)
+    (generation / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    Facts(store / "facts.json").record_state("venv", "stamp:all,fal,messaging[]", ["all", "fal", "messaging"])
+    # Built for this image: only the plugin check fails on this boot.
+    Facts(runtime_facts_path(root)).record_state("venv", "stamp:all,fal,messaging,otlp[]",
+                                                 ["all", "fal", "messaging", "otlp"], environment=generation)
+    rebuilt = []
+    monkeypatch.setattr(pm.client, "sync_venv", lambda *a, **k: rebuilt.append(a))
+
+    assert refresh_dependencies(root) == "fallback"
+    broken[0] = False
+    assert refresh_dependencies(root) == "rebuilt"
+    assert rebuilt

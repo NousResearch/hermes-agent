@@ -48,6 +48,43 @@ def test_in_process_turn_routes_with_the_sessions_own_provider_routing(tmp_path,
     assert caught.value.args[0] == {'only': ['Fresh'], 'sort': 'price'}
 
 
+def test_a_local_turn_reloads_the_profiles_env_file_and_keeps_its_own_turn_budget(tmp_path, monkeypatch):
+    """A local session's turn sees a key rotated in ``.env`` (side tasks read config.yaml, whose ``${VAR}``
+    references expand against the environment), as a messaging turn does; its turn budget stays the
+    session's own, never the profile's ``agent.max_turns``."""
+    import os
+    from gateway import run as gateway_run, session_policy
+    from gateway.config import Platform
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_policy import build_policy
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(json.dumps({'agent': {'max_turns': 90}}))
+    (home / '.env').write_text('SIDE_TASK_ROTATED_KEY=rotated-in-env-file\n')
+    monkeypatch.setattr(gateway_run, '_hermes_home', home)
+    monkeypatch.setenv('SIDE_TASK_ROTATED_KEY', 'value-the-gateway-started-with')
+    policy = build_policy({'cwd': str(tmp_path), **LAUNCH, 'max_turns': 7}, {})
+    monkeypatch.setattr(session_policy, 'policy_for_source', lambda runner, source: policy)
+    runner = SimpleNamespace(
+        _provider_routing={}, _peek_session_state=lambda key: None,
+        session_authority=SimpleNamespace(profile_id=str(home)),
+        _resolve_session_agent_runtime=lambda **kw: ('m', {'provider': 'custom'}),
+        _resolve_turn_agent_config=lambda message, model, runtime: {'model': model, 'runtime': runtime})
+    turn = TurnRunner.__new__(TurnRunner)
+    turn._runner = runner
+    turn._ctx = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL, chat_id='c'), session_key='k',
+                                user_config={}, message='hi', inbound_message_id=None, enabled_toolsets=[])
+    turn._combined_ephemeral_prompt = lambda: None
+    turn._setup_stream_consumer = lambda platform_key: (None, None, None, False)
+
+    def built(route, platform_key, ephemeral, max_iterations, reasoning, pr):
+        raise _Built(max_iterations, os.environ.get('SIDE_TASK_ROTATED_KEY'))
+    turn._resolve_turn_agent = built
+    with pytest.raises(_Built) as caught:
+        turn._run_sync_scoped()
+    assert caught.value.args == (7, 'rotated-in-env-file')
+
+
 def test_each_new_session_reads_its_profiles_prefill_once_and_workers_match(tmp_path, monkeypatch):
     """The prefill path and file contents a session gets are its own profile's when it was created; a
     later edit reaches the next new session and never an existing one (main: one read per CLI

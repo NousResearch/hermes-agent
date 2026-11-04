@@ -546,7 +546,7 @@ This is useful on narrow terminals or when tool arguments contain very long file
 
 ### Inline Images
 
-Images show up right in the transcript: the ones you attach (`/paste`, `/image`, drag-and-drop) under your message, and the local image a tool produced or looked at (`vision_analyze`, a browser screenshot, `read_file` on a PNG) under that tool's line. The same setting drives the [TUI](./tui.md).
+Images show up right in the transcript: the ones you attach (`/paste`, `/image`, drag-and-drop) under your message, and the local image a successful tool call produced or looked at (`vision_analyze`, `image_generate`, a browser or computer-use screenshot) under that tool's line. `read_file` cannot read images, so it shows none. The same setting drives the [TUI](./tui.md).
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -561,6 +561,8 @@ display:
 - **`off`** shows file paths only, as before.
 
 Only local files are drawn; remote image URLs are not fetched. Sixel terminals get half-blocks.
+
+After a terminal resize the CLI redraws its transcript. kitty and half-block images come back in the redraw; iTerm2-protocol images (iTerm2, WezTerm, Konsole) leave blank rows in the redrawn screen and stay visible only in the scrollback above it.
 
 ## Session Management
 

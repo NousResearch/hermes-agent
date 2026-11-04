@@ -69,7 +69,11 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
       (!row.connection_id || row.connection_id === activeScope.connectionId)
 
     return (
-      <div className="group/session relative flex min-w-0 items-center" key={sessionRowKey(row)}>
+      <div
+        className="group/session relative flex min-w-0 items-center"
+        data-session-key={sessionRowKey(row)}
+        key={sessionRowKey(row)}
+      >
         <RowButton
           aria-current={selected ? 'page' : undefined}
           className={cn(

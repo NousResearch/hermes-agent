@@ -59,6 +59,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
   const messagingTotals = useStore($messagingPlatformTotals)
   const [query, setQuery] = useState('')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [revealSession, setRevealSession] = useState<{ key: string } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
 
   const all = useMemo(
@@ -182,6 +183,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             {...shared}
             onResumeSession={(id, row) => {
               if (row) {
+                setRevealSession({ key: sessionRowKey(row) })
                 const owner = row.connection_id || agents.owner
                 setExpanded(current => ({
                   ...current,
@@ -203,6 +205,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
                 <SimplifiedSessionList {...shared} sessions={agentSessions} />
               </div>
             )}
+            revealSession={revealSession}
             searching={Boolean(query.trim())}
           />
         </div>

@@ -29,11 +29,11 @@ afterEach(() => {
 })
 
 it.each([
-  ['Yes, try it', true],
-  ['No, keep current sidebar', false]
+  ['Try the new sidebar', true],
+  ['Keep current sidebar', false]
 ] as const)('remembers %s and does not offer again after remounting', (label, choice) => {
   const view = render(<SimplifiedAgentOffer />)
-  expect(screen.getByRole('dialog', { name: 'Try the new Hermes sidebar?' })).toBeTruthy()
+  expect(screen.getByRole('dialog', { name: 'Try the new sidebar' })).toBeTruthy()
   expect(screen.getByText('Settings → Appearance → Window & layout → Simplified agent mode')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: label }))
   expect($agentSidebarChoice.get()).toBe(choice)

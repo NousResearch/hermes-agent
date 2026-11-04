@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Slegs 'n gemagtigde Matrix-gebruiker kan hierdie kontroles gebruik."
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
   feishu:
+    clarify:
+      title: "Hermes het jou insette nodig"
+      other: "✏️ Ander (tik antwoord)"
+      awaiting_typed: "Wag vir getikte antwoord van {user}…"
+    picker:
+      apply_error: "Fout met toepassing van keuse: {error}"
     approval:
       action_session: "Sessie"
       action_always: "Altyd"

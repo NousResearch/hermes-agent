@@ -1388,6 +1388,12 @@ platform:
       unauthorized: "Ezeket a vezérlőket csak jogosult Matrix-felhasználó használhatja."
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
   feishu:
+    clarify:
+      title: "A Hermes a válaszodra vár"
+      other: "✏️ Egyéb (írd be a választ)"
+      awaiting_typed: "Várakozás {user} beírt válaszára…"
+    picker:
+      apply_error: "Hiba a választás alkalmazásakor: {error}"
     approval:
       action_session: "Munkamenet"
       action_always: "Mindig"

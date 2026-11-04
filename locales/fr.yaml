@@ -1592,6 +1592,12 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    clarify:
+      title: "Hermes a besoin de votre réponse"
+      other: "✏️ Autre (saisir)"
+      awaiting_typed: "En attente de la réponse saisie par {user}…"
+    picker:
+      apply_error: "Erreur lors de l'application de la sélection : {error}"
     approval:
       action_session: "Session"
       action_always: "Toujours"

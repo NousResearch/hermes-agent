@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "권한이 있는 Matrix 사용자만 이 컨트롤을 사용할 수 있어요."
       not_requester: "이 작업을 요청한 사용자만 이 컨트롤을 사용할 수 있어요."
   feishu:
+    clarify:
+      title: "Hermes가 입력을 기다리고 있어요"
+      other: "✏️ 기타 (직접 입력)"
+      awaiting_typed: "{user}의 직접 입력을 기다리고 있어요…"
+    picker:
+      apply_error: "선택 적용 오류: {error}"
     approval:
       action_session: "세션"
       action_always: "항상"

@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Nur ein autorisierter Matrix-Benutzer kann diese Steuerelemente verwenden."
       not_requester: "Nur der Benutzer, der diese Aktion angefordert hat, kann diese Steuerelemente verwenden."
   feishu:
+    clarify:
+      title: "Hermes benötigt Ihre Eingabe"
+      other: "✏️ Eigene Antwort"
+      awaiting_typed: "Warte auf eingegebene Antwort von {user}…"
+    picker:
+      apply_error: "Fehler beim Anwenden der Auswahl: {error}"
     approval:
       action_session: "Sitzung"
       action_always: "Dauerhaft"

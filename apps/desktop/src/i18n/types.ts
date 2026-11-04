@@ -28,7 +28,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
-import type { PluginUpdateTranslations } from './types_plugin_update'
+import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -1903,6 +1903,7 @@ export interface Translations extends NoticeTranslations {
     skillArchivedMessage: string
     tabPlugins: string
     plugins: PluginUpdateTranslations &
+      PluginUpdateAllTranslations &
       PluginPreviewAccessTranslations & {
         agentTitle: string
         agentBlurb: string

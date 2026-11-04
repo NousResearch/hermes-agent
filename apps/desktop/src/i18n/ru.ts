@@ -17,6 +17,7 @@ import { ruNotices } from './ru_notices'
 import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
+import { ruPluginUpdateAll } from './ru_plugin_update_all'
 import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
 import { RU_NOUN, RU_PLURAL } from './ru_plural'
 import { ruPreviewWeb } from './ru_preview_web'
@@ -1423,7 +1424,7 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
-    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
+    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab, ...ruPluginUpdateAll },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',

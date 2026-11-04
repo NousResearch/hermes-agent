@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ seleziona · Invio conferma · Y/N rapido · Esc a
 prompt.rewind.detail: "Inviando la modifica, quel prompt e tutto ciò che segue vengono rimossi da questa sessione."
 prompt.rewind.editHint: "Invio riavvolgi qui e invia · Esc torna all'elenco"
 prompt.rewind.editing: "modifica del prompt {0}"
-prompt.rewind.listHint: "↑/↓ seleziona · Invio modifica · Esc chiudi"
+prompt.rewind.listHint: "↑/↓ seleziona · Invio modifica e reinvia · f dirama da qui · Esc chiudi"
+prompt.rewind.marker: "↺ selezionato nel selettore di riavvolgimento"
+prompt.rewind.preview: "prompt {0}"
 prompt.rewind.title: "↺ riavvolgi — scegli un prompt precedente da modificare e reinviare"
 
 rpc.requestFailed: "richiesta non riuscita"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "l'uscita è disattivata nella chat della 
 slashCmd.core.redraw.done: "interfaccia ridisegnata"
 slashCmd.core.retry.nothing: "niente da riprovare"
 slashCmd.core.rewind.done: "riavvolto al prompt {0} ({1} messaggi rimossi)"
+slashCmd.core.rewind.forked: "diramato da prima del prompt {0} — modifica il prompt e premi Invio per inviarlo"
 slashCmd.core.rewind.nothing: "niente a cui riavvolgere"
 slashCmd.core.rewind.unsupported: "/rewind richiede il gateway condiviso (hermes serve)"
 slashCmd.core.save.failed: "salvataggio non riuscito"

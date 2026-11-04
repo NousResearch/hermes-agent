@@ -934,7 +934,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'rewind to an earlier prompt: pick it, edit it, resend it (also Esc Esc on an empty composer)',
+    help: 'rewind to an earlier prompt: edit and resend it, or fork from it (also Esc Esc on an empty composer)',
     name: 'rewind',
     run: (_arg, ctx) => openRewindPicker(ctx)
   },

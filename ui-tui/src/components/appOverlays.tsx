@@ -147,11 +147,17 @@ export function PromptZone({
       req.onSubmit(target, text)
     }
 
+    const onFork = (target: RewindTarget) => {
+      patchOverlayState({ rewind: null })
+      req.onFork(target)
+    }
+
     return (
       <PromptCell cols={cols} id="rewind">
         <RewindPicker
           cols={cols}
           onClose={() => patchOverlayState({ rewind: null })}
+          onFork={onFork}
           onSubmit={onSubmit}
           req={req}
           t={theme}

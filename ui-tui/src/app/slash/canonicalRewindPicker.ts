@@ -13,17 +13,35 @@ import { captureDestination, type SubmissionDestination } from '../submissionDes
 import { getUiState, patchUiState } from '../uiStore.js'
 
 import { isUserTurn, retryText, rewindBusyText } from './canonicalSessionCommands.js'
-import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
+import { applyBranchResult, mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
 
-/** The earlier prompts a rewind can return to, oldest first. A turn carrying media or annotated parts
- * has no lossless replay (same rule as /retry), so it keeps its number but is not offered. */
-export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'stored_messages'>): RewindTarget[] {
-  return (snapshot.stored_messages ?? snapshot.messages ?? []).filter(isUserTurn).flatMap((row, index) => {
-    const text = retryText(row.content)
+const storedRowId = (row: Record<string, unknown>) =>
+  Number.isSafeInteger(row.row_id) && (row.row_id as number) > 0 && !row.archived ? (row.row_id as number) : undefined
 
-    return text ? [{ rowId: row.row_id as number, text, turn: index + 1 }] : []
-  })
+/** The earlier prompts a rewind can return to, oldest first. A turn carrying media or annotated parts
+ * has no lossless replay (same rule as /retry), so it keeps its number but is not offered.
+ * `throughRowId` is the last stored row before the prompt: a fork branches through it, so the child
+ * holds everything before the prompt (the authority pulls in tool results that answer that row). */
+export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'stored_messages'>): RewindTarget[] {
+  const targets: RewindTarget[] = []
+  let through: number | undefined
+  let turn = 0
+
+  for (const row of snapshot.stored_messages ?? snapshot.messages ?? []) {
+    if (isUserTurn(row)) {
+      turn += 1
+      const text = retryText(row.content)
+
+      if (text) {
+        targets.push({ rowId: row.row_id as number, text, turn, ...(through ? { throughRowId: through } : {}) })
+      }
+    }
+
+    through = storedRowId(row) ?? through
+  }
+
+  return targets
 }
 
 export function openRewindPicker(ctx: SlashRunCtx) {
@@ -57,7 +75,11 @@ export function openRewindPicker(ctx: SlashRunCtx) {
       const destination = captureDestination()
 
       patchOverlayState({
-        rewind: { targets, onSubmit: (target, text) => void rewindAndSend(ctx, sid, target, text, destination) }
+        rewind: {
+          targets,
+          onFork: target => void forkFrom(ctx, sid, target),
+          onSubmit: (target, text) => void rewindAndSend(ctx, sid, target, text, destination)
+        }
       })
     })
     .catch(ctx.guardedErr)
@@ -122,6 +144,48 @@ export async function rewindAndSend(
     keepEdit()
 
     if (!stale()) {
+      ctx.transcript.sys(rewindBusyText(error, 'rewind') ?? `error: ${rpcErrorMessage(error)}`)
+    }
+  }
+}
+
+/** Fork from here: a NEW session holding everything before `target` (the owner's `branch` mutation,
+ * the same one Desktop's message-level branch sends), switched to, with the picked prompt prefilled in
+ * the composer and not sent. The original session is not touched. The first prompt has nothing
+ * before it, so it forks into a plain new session with the prompt prefilled. */
+export async function forkFrom(ctx: SlashRunCtx, sid: string, target: RewindTarget) {
+  const prefill = (session: null | string) => {
+    if (session && getUiState().sid === session) {
+      ctx.composer.setInput(target.text)
+      ctx.transcript.sys(t('slashCmd.core.rewind.forked', String(target.turn)))
+    }
+  }
+
+  try {
+    if (!target.throughRowId) {
+      await ctx.session.newSession()
+
+      return prefill(getUiState().sid)
+    }
+
+    const stale = () => getUiState().sid !== sid
+
+    const mutation = await mutateCanonical(
+      ctx.gateway.gw,
+      sid,
+      'branch',
+      { through_message_id: target.throughRowId },
+      stale
+    )
+
+    if (!mutation?.result || stale()) {
+      return
+    }
+
+    await applyBranchResult(mutation.result, '', ctx)
+    prefill(mutation.result.branched_session_id as string)
+  } catch (error) {
+    if (getUiState().sid === sid) {
       ctx.transcript.sys(rewindBusyText(error, 'rewind') ?? `error: ${rpcErrorMessage(error)}`)
     }
   }

@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ seleccionar · Enter confirmar · Y/N rápido · E
 prompt.rewind.detail: "Al enviar la edición se eliminan ese prompt y todo lo posterior de esta sesión."
 prompt.rewind.editHint: "Enter rebobinar aquí y enviar · Esc volver a la lista"
 prompt.rewind.editing: "editando el prompt {0}"
-prompt.rewind.listHint: "↑/↓ seleccionar · Enter editar · Esc cerrar"
+prompt.rewind.listHint: "↑/↓ seleccionar · Enter editar y reenviar · f bifurcar desde aquí · Esc cerrar"
+prompt.rewind.marker: "↺ seleccionado en el selector de rebobinado"
+prompt.rewind.preview: "prompt {0}"
 prompt.rewind.title: "↺ rebobinar — elige un prompt anterior para editarlo y reenviarlo"
 
 rpc.requestFailed: "la solicitud falló"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "salir está desactivado en el chat del pa
 slashCmd.core.redraw.done: "interfaz redibujada"
 slashCmd.core.retry.nothing: "nada que reintentar"
 slashCmd.core.rewind.done: "rebobinado al prompt {0} ({1} mensajes eliminados)"
+slashCmd.core.rewind.forked: "bifurcado desde antes del prompt {0} — edita el prompt y pulsa Enter para enviarlo"
 slashCmd.core.rewind.nothing: "no hay nada a lo que rebobinar"
 slashCmd.core.rewind.unsupported: "/rewind necesita el gateway compartido (hermes serve)"
 slashCmd.core.save.failed: "no se pudo guardar"

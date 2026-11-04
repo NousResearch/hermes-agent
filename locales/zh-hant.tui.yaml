@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ 選擇 · Enter 確認 · Y/N 快速選擇 · Esc 
 prompt.rewind.detail: "送出修改後，該提示及其之後的所有內容都會從本工作階段中移除。"
 prompt.rewind.editHint: "Enter 回溯到此處並送出 · Esc 返回清單"
 prompt.rewind.editing: "正在編輯提示 {0}"
-prompt.rewind.listHint: "↑/↓ 選擇 · Enter 編輯 · Esc 關閉"
+prompt.rewind.listHint: "↑/↓ 選擇 · Enter 編輯並重新傳送 · f 從這裡分支 · Esc 關閉"
+prompt.rewind.marker: "↺ 已在倒回選擇器中選取"
+prompt.rewind.preview: "提示 {0}"
 prompt.rewind.title: "↺ 回溯 — 選擇一則較早的提示進行編輯並重新送出"
 
 rpc.requestFailed: "請求失敗"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "託管儀表板聊天中已停用離開 �
 slashCmd.core.redraw.done: "介面已重繪"
 slashCmd.core.retry.nothing: "沒有可重試的內容"
 slashCmd.core.rewind.done: "已回溯到提示 {0}（移除了 {1} 則訊息）"
+slashCmd.core.rewind.forked: "已從提示 {0} 之前分支 — 編輯提示後按 Enter 傳送"
 slashCmd.core.rewind.nothing: "沒有可回溯的內容"
 slashCmd.core.rewind.unsupported: "/rewind 需要共用閘道 (hermes serve)"
 slashCmd.core.save.failed: "儲存失敗"

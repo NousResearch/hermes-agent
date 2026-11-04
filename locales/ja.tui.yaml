@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ 選択 · Enter 確定 · Y/N で即決 · Esc キ
 prompt.rewind.detail: "編集を送信すると、そのプロンプトとそれ以降のすべてがこのセッションから削除されます。"
 prompt.rewind.editHint: "Enter ここまで巻き戻して送信 · Esc 一覧に戻る"
 prompt.rewind.editing: "プロンプト {0} を編集中"
-prompt.rewind.listHint: "↑/↓ 選択 · Enter 編集 · Esc 閉じる"
+prompt.rewind.listHint: "↑/↓ 選択 · Enter 編集して再送信 · f ここから分岐 · Esc 閉じる"
+prompt.rewind.marker: "↺ 巻き戻しピッカーで選択中"
+prompt.rewind.preview: "プロンプト {0}"
 prompt.rewind.title: "↺ 巻き戻し — 編集して再送信する以前のプロンプトを選択"
 
 rpc.requestFailed: "リクエストに失敗しました"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "ホスト型ダッシュボードチャ�
 slashCmd.core.redraw.done: "UI を再描画しました"
 slashCmd.core.retry.nothing: "再試行するものがありません"
 slashCmd.core.rewind.done: "プロンプト {0} に巻き戻しました（{1} 件のメッセージを削除）"
+slashCmd.core.rewind.forked: "プロンプト {0} の直前から分岐しました — プロンプトを編集して Enter で送信"
 slashCmd.core.rewind.nothing: "巻き戻せる対象がありません"
 slashCmd.core.rewind.unsupported: "/rewind には共有ゲートウェイ (hermes serve) が必要です"
 slashCmd.core.save.failed: "保存に失敗しました"

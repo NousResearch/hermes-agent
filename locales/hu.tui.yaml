@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ választás · Enter megerősítés · Y/N gyors �
 prompt.rewind.detail: "A módosítás elküldése eltávolítja azt a promptot és minden utána következőt ebből a munkamenetből."
 prompt.rewind.editHint: "Enter visszatekerés ide és küldés · Esc vissza a listához"
 prompt.rewind.editing: "{0}. prompt szerkesztése"
-prompt.rewind.listHint: "↑/↓ választás · Enter szerkesztés · Esc bezárás"
+prompt.rewind.listHint: "↑/↓ választás · Enter szerkesztés és újraküldés · f elágazás innen · Esc bezárás"
+prompt.rewind.marker: "↺ kijelölve a visszatekerés-választóban"
+prompt.rewind.preview: "{0}. prompt"
 prompt.rewind.title: "↺ visszatekerés — válassz egy korábbi promptot szerkesztésre és újraküldésre"
 
 rpc.requestFailed: "a kérés sikertelen"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "a kilépés le van tiltva a hosztolt irá
 slashCmd.core.redraw.done: "felület újrarajzolva"
 slashCmd.core.retry.nothing: "nincs mit újrapróbálni"
 slashCmd.core.rewind.done: "visszatekerve a(z) {0}. promptra ({1} üzenet eltávolítva)"
+slashCmd.core.rewind.forked: "elágaztatva a(z) {0}. prompt elől — szerkeszd a promptot, és Enterrel küldd el"
 slashCmd.core.rewind.nothing: "nincs mire visszatekerni"
 slashCmd.core.rewind.unsupported: "a /rewind a megosztott átjárót igényli (hermes serve)"
 slashCmd.core.save.failed: "a mentés nem sikerült"

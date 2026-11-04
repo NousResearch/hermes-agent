@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ choisir · Entrée confirmer · Y/N raccourci · �
 prompt.rewind.detail: "Envoyer la modification retire ce prompt et tout ce qui suit de cette session."
 prompt.rewind.editHint: "Entrée revenir ici et envoyer · Échap retour à la liste"
 prompt.rewind.editing: "modification du prompt {0}"
-prompt.rewind.listHint: "↑/↓ choisir · Entrée modifier · Échap fermer"
+prompt.rewind.listHint: "↑/↓ choisir · Entrée modifier et renvoyer · f bifurquer d'ici · Échap fermer"
+prompt.rewind.marker: "↺ sélectionné dans le sélecteur de retour"
+prompt.rewind.preview: "prompt {0}"
 prompt.rewind.title: "↺ retour arrière — choisissez un prompt précédent à modifier et renvoyer"
 
 rpc.requestFailed: "échec de la requête"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "quitter est désactivé dans le chat du t
 slashCmd.core.redraw.done: "interface redessinée"
 slashCmd.core.retry.nothing: "rien à réessayer"
 slashCmd.core.rewind.done: "retour au prompt {0} ({1} messages retirés)"
+slashCmd.core.rewind.forked: "bifurqué avant le prompt {0} — modifiez le prompt et appuyez sur Entrée pour l'envoyer"
 slashCmd.core.rewind.nothing: "rien vers quoi revenir"
 slashCmd.core.rewind.unsupported: "/rewind nécessite le gateway partagé (hermes serve)"
 slashCmd.core.save.failed: "échec de l'enregistrement"

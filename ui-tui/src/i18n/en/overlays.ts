@@ -21,7 +21,9 @@ export const overlaysEn = {
       title: '↺ rewind — pick an earlier prompt to edit and resend',
       detail: 'Sending the edit removes that prompt and everything after it from this session.',
       editing: (turn: string) => `editing prompt ${turn}`,
-      listHint: '↑/↓ select · Enter edit · Esc close',
+      preview: (turn: string) => `prompt ${turn}`,
+      marker: '↺ selected in the rewind picker',
+      listHint: '↑/↓ select · Enter edit & resend · f fork from here · Esc close',
       editHint: 'Enter rewind here and send · Esc back to the list'
     },
     clarify: {

@@ -324,12 +324,15 @@ export interface OverlayState {
 export interface RewindTarget {
   rowId: number
   text: string
+  /** The last stored row before this prompt (a fork keeps rows through it); absent for the first prompt. */
+  throughRowId?: number
   turn: number
 }
 
 export interface RewindOverlay {
   /** Oldest first, as stored. */
   targets: RewindTarget[]
+  onFork: (target: RewindTarget) => void
   onSubmit: (target: RewindTarget, text: string) => void
 }
 
@@ -600,7 +603,7 @@ export interface SlashHandlerContext {
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
-    newSession: (msg?: string, title?: string) => void
+    newSession: (msg?: string, title?: string) => Promise<unknown> | void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => Promise<void> | void
     setSessionStartedAt: StateSetter<number>

@@ -1443,6 +1443,13 @@ export interface DesktopConnectionProbeResult {
   providers: DesktopAuthProvider[]
   version: string | null
   error: string | null
+  /**
+   * Machine-readable failure class for `reachable: false`. 'tls' means the
+   * gateway's certificate failed verification (self-signed, expired, untrusted
+   * or hostname mismatch) — the UI shows certificate guidance, never a
+   * suggestion to disable verification. Absent/null for other failures.
+   */
+  errorKind?: 'tls' | null
 }
 
 export interface ExternalOpenFailedPayload {

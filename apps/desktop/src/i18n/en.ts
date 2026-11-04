@@ -1411,6 +1411,8 @@ export const en: Translations = {
       probing: 'Checking how this gateway authenticates…',
       probeError:
         "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
+      probeTlsError:
+        "Hermes can't verify this gateway's certificate. Check the URL, the certificate's validity, and whether this computer trusts its issuer.",
       signedIn: 'Signed in',
       signIn: 'Sign in',
       signOut: 'Sign out',
@@ -3893,6 +3895,8 @@ export const en: Translations = {
     probing: 'Detecting gateway authentication...',
     probeError:
       "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
+    probeTlsError:
+      "Hermes can't verify this gateway's certificate. Check the URL, the certificate's validity, and whether this computer trusts its issuer.",
     probeErrorDetails: 'Details',
     identityProvider: 'your identity provider',
     authTitle: 'Authentication',

@@ -1762,6 +1762,8 @@ export const frOverrides = {
       probing: "Vérification de la méthode d'authentification de ce gateway…",
       probeError:
         "Impossible d'atteindre ce gateway pour le moment. Vérifiez l'URL — la méthode d'authentification apparaîtra une fois qu'il répondra.",
+      probeTlsError:
+        'Hermes ne peut pas vérifier le certificat de cette passerelle. Vérifiez l’URL, la validité du certificat et si cet ordinateur fait confiance à son émetteur.',
       signedIn: 'Connecté',
       signIn: 'Se connecter',
       signOut: 'Se déconnecter',
@@ -4341,6 +4343,8 @@ export const frOverrides = {
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: "Détection de l'authentification du gateway...",
     probeError: "Impossible d'atteindre ce gateway Hermes.",
+    probeTlsError:
+      'Hermes ne peut pas vérifier le certificat de cette passerelle. Vérifiez l’URL, la validité du certificat et si cet ordinateur fait confiance à son émetteur.',
     probeErrorDetails: 'Détails',
     identityProvider: "votre fournisseur d'identité",
     authTitle: 'Authentification',

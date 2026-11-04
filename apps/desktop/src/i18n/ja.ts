@@ -1010,6 +1010,8 @@ export const jaOverrides = {
         'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
       probing: 'このゲートウェイの認証方法を確認中…',
       probeError: 'このゲートウェイにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
+      probeTlsError:
+        'このゲートウェイの証明書を検証できません。URL、証明書の有効期限、このコンピューターが発行元を信頼しているかを確認してください。',
       signedIn: 'サインイン済み',
       signIn: 'サインイン',
       signOut: 'サインアウト',
@@ -2829,6 +2831,8 @@ export const jaOverrides = {
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'ゲートウェイ認証方式を検出中...',
     probeError: 'その Hermes ゲートウェイに到達できませんでした。',
+    probeTlsError:
+      'このゲートウェイの証明書を検証できません。URL、証明書の有効期限、このコンピューターが発行元を信頼しているかを確認してください。',
     identityProvider: 'ID プロバイダー',
     authTitle: '認証',
     authNeedsOauth: provider => `このゲートウェイをテストする前に ${provider} でサインインしてください。`,

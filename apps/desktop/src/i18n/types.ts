@@ -1188,6 +1188,7 @@ export interface Translations extends NoticeTranslations {
       remoteUrlDesc: string
       probing: string
       probeError: string
+      probeTlsError: string
       signedIn: string
       signIn: string
       signOut: string
@@ -3351,6 +3352,7 @@ export interface Translations extends NoticeTranslations {
     remoteUrlPlaceholder: string
     probing: string
     probeError: string
+    probeTlsError: string
     probeErrorDetails: string
     identityProvider: string
     authTitle: string

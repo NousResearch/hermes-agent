@@ -1399,7 +1399,7 @@ const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
 const WINDOW_BUTTON_POSITION = {
-  x: 24,
+  x: 12,
   y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
 }
 
@@ -9542,8 +9542,7 @@ async function reachablePreviewUrl(webContentsId: number, rawUrl: string): Promi
   }
 
   if (!target || target === 'pending') {
-    // No SSH transport behind this renderer's gateway. Another window's
-    // forward must never be reused for this preview.
+    // No SSH transport behind this renderer's gateway. Another window's forward must never be reused for this preview.
     await resetPreviewReach(webContentsId)
 
     return rawUrl
@@ -9772,6 +9771,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
+      devServer: DEV_SERVER,
       signal: lease.signal
     })
   } catch (error: any) {

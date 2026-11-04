@@ -81,7 +81,8 @@ jobs:
     name: macOS install and chat
     needs: validate
     if: inputs.platform == 'darwin'
-    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
+    # Blacksmith has no Intel macOS runners, so the x64 leg stays GitHub-hosted.
+    runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'blacksmith-6vcpu-macos-15' }}
     timeout-minutes: 30
     # Also constrains the recording action's nested cache to read-only.
     cache-mode: read

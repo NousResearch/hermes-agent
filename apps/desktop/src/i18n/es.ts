@@ -2973,6 +2973,32 @@ export const esOverrides = {
       'Vuelve a pulsar Reiniciar; si sigue fallando, abre los registros y envía un diagnóstico.',
     restartAgain: 'Reiniciar de nuevo',
     openLogs: 'Abrir registros',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Sin token de bot',
+      intro: (platform: string) => `${platform} llega a este agente a través del bot compartido de Hermes. Vincula tu cuenta de ${platform} y escribe al bot para hablar con tu agente.`,
+      link: (platform: string) => `Vincular ${platform}`,
+      linkAnother: (platform: string) => `Vincular otra cuenta de ${platform}`,
+      linkedAccounts: 'Cuentas vinculadas',
+      unlink: 'Desvincular',
+      unlinkFailed: 'No se pudo desvincular la cuenta',
+      stepOpen: (platform: string) => `1. Escanea el código con el móvil o abre el bot en ${platform}.`,
+      stepSend: '2. Envía al bot este mensaje desde la cuenta que quieres vincular:',
+      open: (platform: string) => `Abrir ${platform}`,
+      copy: 'Copiar mensaje',
+      copied: 'Copiado',
+      copyFailed: (command: string) => `No se pudo copiar. Escribe ${command}.`,
+      waiting: 'Esperando a que el bot vea tu mensaje. El código sirve una sola vez.',
+      linked: (platform: string) => `Cuenta de ${platform} vinculada. Escribe al bot para hablar con tu agente.`,
+      expired: 'El código caducó antes de usarse. Pide uno nuevo e inténtalo otra vez.',
+      refused: (platform: string) => `${platform} rechazó la vinculación. Pide un código nuevo e inténtalo otra vez.`,
+      qrAlt: (platform: string) => `Código QR del bot compartido de ${platform}`,
+      managed: 'Gestionado por Team Gateway',
+      managedNote: (platform: string) => `Team Gateway gestiona la mensajería en esta instancia, así que el gateway desactiva la conexión directa de ${platform} en cada inicio. Para usarla junto al relay, define GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true en el entorno del gateway (una conexión directa impide que la instancia escale a cero y puede entregar mensajes dos veces).`,
+      managedIntro: 'Las cuentas de este agente se vinculan desde Nous Portal.',
+      openPortal: 'Vincular cuentas en Nous Portal',
+      noNewAccount: (platform: string) => `El código ya no está activo y no apareció ninguna cuenta nueva. Si tu cuenta de ${platform} no aparece, obtén un código nuevo e inténtalo otra vez.`
+    },
     telegramQr: {
       title: 'Elige cómo conectar tu bot de Telegram',
       subtitle:
@@ -4487,7 +4513,9 @@ export const esOverrides = {
       ultra: 'Ultra',
       sendsOnRoute: (level: string) => `envía ${level} en esta ruta`,
       updateFailed: 'No se pudo actualizar la opción del modelo',
-      fastFailed: 'No se pudo actualizar el modo rápido'
+      fastFailed: 'No se pudo actualizar el modo rápido',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'No se pudo actualizar Daybreak'
     },
     gatewayMenu: {
       gateway: 'Gateway',

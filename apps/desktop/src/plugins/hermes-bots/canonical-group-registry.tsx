@@ -123,7 +123,7 @@ function canonicalGroupViews({ connectionId, profile, roomId }: CanonicalGroupBi
   return views
 }
 
-interface ListedRoom { binding: CanonicalGroupBinding; key: string; memberCount: number; name: string }
+interface ListedRoom { binding: CanonicalGroupBinding; key: string; memberCount: number; members: CanonicalRoom['members']; name: string }
 
 /** Disband on the room's own gateway, then retire it everywhere this window shows it.
  *  A refusal rejects before anything is dropped, so the row stays and the confirm shows why. */
@@ -139,6 +139,7 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
   const [rooms, setRooms] = useState<ListedRoom[]>([])
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -156,18 +157,23 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: C
           binding: { ...route, roomId: room.room_id, roomName: room.name },
           key: registerCanonicalGroup(route, room),
           memberCount: room.members?.length ?? 0,
+          members: room.members ?? [],
           name: room.name
         })))
       }
-    })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+    })().catch(e => {
+      // A relaunch restores the Bots pane before its socket opens: that
+      // refusal is not a room-list failure, and the open transition re-lists.
+      if (!cancelled && host.state.gateway.get() === 'open') {setError(e instanceof Error ? e.message : String(e))}
+    })
 
     return () => { cancelled = true }
-  }, [connectionId, profile, refresh, revision])
+  }, [connectionId, gateway, profile, refresh, revision])
 
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <CanonicalGroupRow key={room.key} memberCount={room.memberCount} name={room.name}
+    {rooms.map(room => <CanonicalGroupRow binding={room.binding} key={room.key} memberCount={room.memberCount} members={room.members} name={room.name}
       onDelete={() => disbandListedRoom(room, labels.disbanded(room.name))} onOpen={() => onOpen(room.key, 'key')} />)}
   </div>
 }

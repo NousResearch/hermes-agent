@@ -36,7 +36,11 @@ OUT = ROOT / "website" / "docs" / "developer-guide" / "serve-handler-ledger.json
 DECISION_VALUES = ("authority", "keep-host-wide", "delete", "undecided")
 # Reviewed owner decisions, keyed by row ``handler``: ``(decision, ref)``. A row not listed here
 # keeps its mechanical default.
-DECISIONS: dict[str, tuple[str, str]] = {}
+DECISIONS: dict[str, tuple[str, str]] = {
+    # Creating a profile is host-level work, not session work.
+    "POST /api/profiles": ("keep-host-wide", ""),
+    "profiles.create": ("keep-host-wide", ""),
+}
 _PLUGIN_MODULE_PREFIX = "hermes_dashboard_plugin_"
 
 

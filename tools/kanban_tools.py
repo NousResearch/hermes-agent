@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -20,6 +21,7 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
+    KANBAN_ARCHIVE_SCHEMA,
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
@@ -973,6 +975,83 @@ def _handle_comment(args: dict, **kw) -> str:
         return _ok(task_id=tid, comment_id=cid)
 
 
+# Verbs that turn a mandate body naming a card into an instruction to retire it.
+_ARCHIVE_MANDATE_VERBS = ("archive", "retire", "supersede", "duplicate")
+
+
+def _archive_mandate_covers(body: Optional[str], tid: str) -> bool:
+    """Whether ``body`` authorises archiving ``tid``: the id appears as a whole
+    token AND the mandate says what to do with it.
+
+    A supervisor escalation body satisfies both ("`duplicate_card` on `t_x` …
+    archive the twin"); a body that merely mentions a related card id ("blocked
+    by t_x") does not. Board bodies are authored by the card's creator, not by
+    the worker doing the archiving, so this is the escalation mandate itself.
+    """
+    if not body or not tid:
+        return False
+    if not re.search(rf"(?<![\w-]){re.escape(tid)}(?![\w-])", body):
+        return False
+    low = body.lower()
+    return any(verb in low for verb in _ARCHIVE_MANDATE_VERBS)
+
+
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a card that the caller is sanctioned to retire.
+
+    A dispatched worker cannot reach the CLI (its subprocess environment is
+    fenced as a delegate descendant) and ``kanban_complete`` refuses a foreign
+    task id, so a supervisor escalation whose remedy is "archive the twin" had
+    no executable path and got resolved by summary claim alone. This tool is
+    that path: a worker may archive a foreign card when its OWN card body names
+    it, which is exactly the escalation mandate. Own cards are refused (use
+    complete/block), running cards are refused (archiving them terminates a
+    live worker), and the returned status is read back from the board.
+    """
+    _reject_delegated_child_mutation("kanban_archive")
+    raw = args.get("task_id")
+    _check(raw and str(raw).strip(),
+           "kanban_archive: task_id is required — name the exact card to archive.")
+    tid = str(raw).strip()
+    reason = _redact(_require_text(args, "reason"))
+    own = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    with _board(args.get("board")) as (kb, conn):
+        target = _existing_task(kb, conn, tid)
+        if own and tid == own:
+            raise _Reject(
+                "kanban_archive refuses to archive this worker's own card: "
+                "finish it with kanban_complete, or park it with kanban_block.")
+        if own:
+            mandate = kb.get_task(conn, own)
+            _check(
+                mandate is not None and _archive_mandate_covers(mandate.body, tid),
+                f"kanban_archive refused: this worker owns {own}, whose body does "
+                f"not name {tid} as a card to archive. A worker may archive only "
+                f"a card its own card's mandate names; anything else needs an "
+                f"orchestrator session or the CLI.")
+        if target.status == "archived":
+            return _ok(task_id=tid, status="archived", already_archived=True)
+        _check(
+            target.status != "running" and not target.current_run_id,
+            f"kanban_archive refused: {tid} is running. Archiving it would "
+            f"terminate a live worker; stop it first (kanban_block / reclaim), "
+            f"or let a human archive it from the CLI.")
+        _check(kb.archive_task(conn, tid), f"could not archive {tid} (unknown task)")
+        try:
+            kb.add_comment(conn, tid, author=_persisted_identity(),
+                           body=f"Archived: {reason}")
+        except Exception:
+            # The archive already landed; a failed audit note must not turn a
+            # successful archive into a reported failure.
+            logger.debug("kanban_archive: comment on %s failed", tid, exc_info=True)
+        landed = kb.get_task(conn, tid)
+        landed_status = landed.status if landed else None
+        _check(landed_status == "archived",
+               f"archive of {tid} did not land (status={landed_status})")
+        return _ok(task_id=tid, status=landed_status, reason=reason)
+
+
 def _store_attachment(board, tid, filename, data, content_type) -> str:
     """Store via ``kanban_db.store_attachment_bytes`` (shared size cap, per-task
     dir, metadata row) so agent, dashboard, and CLI surfaces stay in lockstep."""
@@ -1302,6 +1381,7 @@ _TOOLS = (
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),
     ("kanban_comment", KANBAN_COMMENT_SCHEMA, _handle_comment, "💬"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"),
     ("kanban_attach", KANBAN_ATTACH_SCHEMA, _handle_attach, "📎"),
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),

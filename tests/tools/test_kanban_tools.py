@@ -1483,3 +1483,173 @@ class TestDefaultTaskId:
         assert kt._default_task_id("") == worker_env
         assert kt._default_task_id("   ") == worker_env
         assert kt._default_task_id(None) == worker_env
+
+
+# ---------------------------------------------------------------------------
+# kanban_archive — the supervisor's duplicate remedy must be executable
+# ---------------------------------------------------------------------------
+#
+# A dispatched worker cannot reach `hermes kanban archive` (its subprocess env
+# is fenced as a delegate descendant) and kanban_complete refuses a foreign
+# task id. kanban_archive is the sanctioned path: the worker may archive a
+# foreign card only when its OWN card body names that card — the escalation
+# mandate the supervisor wrote. Every assertion below reads board state back.
+
+def _own_body(worker_env, body):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
+        assert kb.edit_task(conn, worker_env, body=body)
+
+
+def _new_task(title="Recover: ship the thing", assignee="nico"):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
+        return kb.create_task(conn, title=title, assignee=assignee)
+
+
+def _status(tid):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
+        return kb.get_task(conn, tid).status
+
+
+def test_archive_lands_on_foreign_twin_named_in_own_mandate(worker_env):
+    """The escalation card archives the twin its body names; status is read back."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+    _own_body(worker_env, (
+        f"**Kanban supervisor escalation** — `duplicate_card` on `{twin}`\n\n"
+        f"evidence: duplicates live card t_orig\n\n"
+        f"1. Pick the survivor, archive the twin, and keep the survivor's workspace."
+    ))
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate of t_orig"}))
+
+    assert out.get("ok") is True, out
+    assert out["status"] == "archived"
+    assert _status(twin) == "archived"
+    with kbc.connect() as conn:
+        assert any("duplicate of t_orig" in c.body for c in kb.list_comments(conn, twin))
+
+
+def test_archive_refuses_foreign_card_its_own_body_does_not_name(worker_env):
+    from tools import kanban_tools as kt
+
+    stranger = _new_task(title="someone else's work", assignee="peer")
+    _own_body(worker_env, "duplicate_card on `t_someoneelse` — archive that twin")
+
+    out = json.loads(kt._handle_archive({"task_id": stranger, "reason": "not mine"}))
+
+    assert out.get("ok") is not True, out
+    assert "does not name" in out["error"]
+    assert _status(stranger) == "ready"
+
+
+def test_archive_refuses_a_body_that_merely_mentions_the_card(worker_env):
+    """Mentioning a card id without an archive directive is not a mandate."""
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+    _own_body(worker_env, f"blocked by {twin}; wait for it to finish")
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "blocked"}))
+
+    assert out.get("ok") is not True, out
+    assert _status(twin) == "ready"
+
+
+def test_archive_refuses_the_workers_own_card(worker_env):
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_archive({"task_id": worker_env, "reason": "cleanup"}))
+
+    assert out.get("ok") is not True, out
+    assert "own card" in out["error"]
+    assert _status(worker_env) == "running"
+
+
+def test_archive_refuses_a_running_target(worker_env):
+    """Archiving a running card would terminate a live worker — never from the tool."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        busy = kb.create_task(conn, title="in flight", assignee="peer")
+        kb.claim_task(conn, busy)
+    _own_body(worker_env, f"archive the twin {busy}")
+
+    out = json.loads(kt._handle_archive({"task_id": busy, "reason": "duplicate"}))
+
+    assert out.get("ok") is not True, out
+    assert "running" in out["error"]
+    assert _status(busy) == "running"
+
+
+def test_archive_refuses_delegate_children(monkeypatch, worker_env):
+    """The delegate_task guard must stay: a child reports, it does not mutate."""
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+    _own_body(worker_env, f"archive the twin {twin}")
+    monkeypatch.setattr(
+        kt, "_delegation_ctx",
+        lambda predicate, default: predicate == "is_delegated_child_process_context",
+    )
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
+
+    assert out.get("ok") is not True, out
+    assert "delegate_task child agents are not Kanban run owners" in out["error"]
+    assert _status(twin) == "ready"
+
+
+def test_archive_lets_an_orchestrator_session_archive_a_non_running_card(monkeypatch, worker_env):
+    """No HERMES_KANBAN_TASK (chat/orchestrator) mirrors the CLI: any idle card."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "superseded"}))
+
+    assert out.get("ok") is True, out
+    assert _status(twin) == "archived"
+
+
+def test_archive_is_idempotent_on_an_already_archived_card(worker_env):
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+    _own_body(worker_env, f"archive the twin {twin}")
+    first = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
+    second = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
+
+    assert first["status"] == "archived"
+    assert second.get("ok") is True and second["already_archived"] is True
+    assert _status(twin) == "archived"
+
+
+def test_archive_is_registered_on_the_worker_visible_tool_surface():
+    from tools.registry import registry
+
+    entry = registry.get_entry("kanban_archive")
+    assert entry is not None
+    assert entry.toolset == "kanban"
+    assert "task_id" in registry.get_schema("kanban_archive")["parameters"]["required"]
+    assert "reason" in registry.get_schema("kanban_archive")["parameters"]["required"]
+
+
+def test_archive_mandate_matches_whole_ids_only():
+    from tools.kanban_tools import _archive_mandate_covers
+
+    assert _archive_mandate_covers("archive the twin t_abcd1234", "t_abcd1234")
+    assert not _archive_mandate_covers("archive the twin t_abcd12345", "t_abcd1234")
+    assert not _archive_mandate_covers("archive the twin t_abcd1234x", "t_abcd1234")
+    assert not _archive_mandate_covers("", "t_abcd1234")

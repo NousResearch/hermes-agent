@@ -85,7 +85,7 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   `log`, `dispatch`, `daemon`, `gc`.
 - **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
   `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
-  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  `kanban_link`, `kanban_archive`; profiles that explicitly enable the `kanban` toolset
   outside a dispatcher-spawned task also get `kanban_list` and
   `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default

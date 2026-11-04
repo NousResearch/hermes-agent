@@ -304,6 +304,32 @@ KANBAN_HEARTBEAT_SCHEMA = _schema(
     [],
 )
 
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive a card (terminal; its workspace is reaped). This is the "
+        "sanctioned way to finish a duplicate resolution: pick the survivor, "
+        "then archive the twin. A dispatcher-spawned worker may archive a "
+        "foreign card only when the worker's own card body names that card "
+        "(the escalation mandate). Never archive your own card — use "
+        "``kanban_complete`` or ``kanban_block``. A running card cannot be "
+        "archived here (that would kill a live worker); stop it first. The "
+        "response carries the status read back from the board, so ``status: "
+        "\"archived\"`` is proof the write landed."
+    ),
+    {
+        "task_id": _prop("string", (
+                "Exact task id to archive. Required — this tool never "
+                "defaults to the caller's own card."
+        )),
+        "reason": _prop("string", (
+                "Why the card is being archived (e.g. 'duplicate of t_abc123'). "
+                "Recorded as a comment on the archived card."
+        )),
+    },
+    ["task_id", "reason"],
+)
+
 KANBAN_COMMENT_SCHEMA = _schema(
     "kanban_comment",
     (

@@ -28,6 +28,25 @@ def test_all_targets_includes_bionic():
     assert ALL_TARGETS.count("linux-arm64-bionic") == 1
 
 
+def test_git_pin_walk_skips_bionic():
+    """Git's gap table predates the bionic arm: without the row, the pin
+    walk reaches Git.fetch_url for linux-arm64-bionic and pins a Windows
+    PortableGit archive for a POSIX target. The gh side of that walk is
+    covered by #129785/#129794 (suffixed-target URL parsing), so this
+    contract only pins git's gap (#124721)."""
+    from pm.registry import get_package
+    from pm.store import ALL_TARGETS
+
+    pkg = get_package("git")
+    assert pkg.missing_reason("linux-arm64-bionic") is not None, (
+        "git must declare a linux-arm64-bionic gap so the pin walk skips it"
+    )
+    # Every non-gap target must still resolve to a real artifact URL.
+    for target in ALL_TARGETS:
+        if pkg.missing_reason(target) is None:
+            assert pkg.fetch_url("2.53.0+3", target).startswith("https://")
+
+
 def _assert_pinned_bionic_row(lock, pkg, url_suffix_re):
     """The bionic rows are DELIBERATE explicit pins: the version axis follows
     main (the desktop artifacts), while the termux/TUR suppliers rotate or

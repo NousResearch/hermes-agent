@@ -364,3 +364,24 @@ def register(ctx):
         manager.unload()
         if isolation == "host":
             manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("cleanup", ['raise SystemExit("cleanup exit")', "import os; os._exit(7)"])
+def test_failed_hosted_load_keeps_its_error_when_cleanup_fails(tmp_path, monkeypatch, cleanup):
+    # Cleanup that raises or kills the host must not replace the register() error that is recorded.
+    body = f'''
+def register(ctx):
+    def cleanup():
+        {cleanup}
+    ctx.on_unload(cleanup)
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body})
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()

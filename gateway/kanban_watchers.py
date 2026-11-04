@@ -11,6 +11,7 @@ behavior-neutral move that lifts ~1,000 LOC out of run.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import sqlite3
@@ -23,6 +24,47 @@ from agent.i18n import t
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+@contextlib.contextmanager
+def _gateway_aux_secret_scope():
+    """Install the gateway's own profile credentials for an in-process aux call.
+
+    The dispatcher's auto-decomposer calls the auxiliary LLM from a watcher
+    thread, outside any per-turn ``_profile_runtime_scope``. When
+    ``gateway.multiplex_profiles`` is on, ``get_secret`` fails closed with no
+    scope installed and ``resolve_anthropic_token`` silently returns ``None``
+    — so every tick logged "no Anthropic credentials found", burned the
+    openrouter/nous fallbacks, and ended in ``UnscopedSecretError`` on
+    ``OPENAI_API_KEY``. Bind the gateway home's ``.env`` (the same profile
+    whose ``auxiliary.*`` config drives the call) for the duration.
+
+    No-op when multiplexing is off, so single-profile gateways are unchanged.
+    """
+    try:
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            is_multiplex_active,
+            reset_secret_scope,
+            set_secret_scope,
+        )
+        from hermes_constants import get_hermes_home
+    except Exception:
+        yield
+        return
+    if not is_multiplex_active():
+        yield
+        return
+    try:
+        token = set_secret_scope(build_profile_secret_scope(Path(get_hermes_home())))
+    except Exception:
+        logger.debug("kanban auto-decompose: secret scope install failed", exc_info=True)
+        yield
+        return
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
 
 
 def _resolve_auto_decompose_settings(
@@ -1301,7 +1343,10 @@ class GatewayKanbanWatchersMixin:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    if _kb.has_spawnable_ready(
+                        conn,
+                        max_in_progress_per_profile=max_in_progress_per_profile,
+                    ):
                         return True
                     if _kb.has_spawnable_review(conn):
                         return True
@@ -1376,9 +1421,10 @@ class GatewayKanbanWatchersMixin:
                             break
                         attempted += 1
                         try:
-                            outcome = _decomp.decompose_task(
-                                tid, author="auto-decomposer",
-                            )
+                            with _gateway_aux_secret_scope():
+                                outcome = _decomp.decompose_task(
+                                    tid, author="auto-decomposer",
+                                )
                         except Exception:
                             logger.exception(
                                 "kanban auto-decompose: decompose_task crashed on %s",

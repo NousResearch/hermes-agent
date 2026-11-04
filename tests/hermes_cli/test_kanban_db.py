@@ -1807,6 +1807,59 @@ def test_has_spawnable_ready_false_on_empty_queue(kanban_home):
         assert kb.has_spawnable_ready(conn) is False
 
 
+def test_has_spawnable_ready_ignores_assignees_at_per_profile_cap(kanban_home, monkeypatch):
+    """A ready task whose assignee is already at
+    ``max_in_progress_per_profile`` is *correctly deferred* by the
+    dispatcher, not stuck — the probe must not count it, otherwise the
+    stuck-warn fires for the whole duration of the running worker."""
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="busy", assignee="kamiyu")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="queued-behind", assignee="kamiyu")
+        # Legacy / no cap: still spawnable-looking.
+        assert kb.has_spawnable_ready(conn) is True
+        # cap=1 and kamiyu already has 1 running → nothing spawnable.
+        assert kb.has_spawnable_ready(conn, max_in_progress_per_profile=1) is False
+        # cap=2 leaves headroom → spawnable again.
+        assert kb.has_spawnable_ready(conn, max_in_progress_per_profile=2) is True
+        # Another profile with capacity makes the queue spawnable even at cap=1.
+        kb.create_task(conn, title="other", assignee="judo")
+        assert kb.has_spawnable_ready(conn, max_in_progress_per_profile=1) is True
+
+
+def test_has_spawnable_ready_cap_still_applies_when_profile_exists_unimportable(
+    kanban_home, monkeypatch
+):
+    """``dispatch_once`` enforces the per-profile cap before it ever consults
+    ``profile_exists``, so the degraded "can't introspect profiles" fallback
+    must honour the cap too — otherwise a partial install re-arms the stuck
+    warn for a queue that is merely capped."""
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_profiles(name, *args, **kwargs):
+        # Only break the probe's ``profile_exists`` import; kanban_db's other
+        # imports from the same module (e.g. normalize_profile_name) stay up.
+        fromlist = args[2] if len(args) > 2 else kwargs.get("fromlist")
+        if name == "hermes_cli.profiles" and fromlist and "profile_exists" in fromlist:
+            raise ImportError("simulated partial install")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_profiles)
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="busy", assignee="kamiyu")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="queued-behind", assignee="kamiyu")
+        # Legacy fallback without a cap: assume spawnable.
+        assert kb.has_spawnable_ready(conn) is True
+        # Capped → not spawnable even though we can't check profiles.
+        assert kb.has_spawnable_ready(conn, max_in_progress_per_profile=1) is False
+        kb.create_task(conn, title="other", assignee="judo")
+        assert kb.has_spawnable_ready(conn, max_in_progress_per_profile=1) is True
+
+
 def test_dispatch_promotes_ready_and_spawns(kanban_home, all_assignees_spawnable):
     spawns = []
 

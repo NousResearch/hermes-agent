@@ -8597,7 +8597,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def has_spawnable_ready(
+    conn: sqlite3.Connection,
+    *,
+    max_in_progress_per_profile: Optional[int] = None,
+) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
@@ -8607,9 +8611,17 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
     that pull tasks via ``claim_task`` directly).
 
-    Falls back to "any ready+assigned" if ``profile_exists`` is not
-    importable (e.g. partial install) — preserves the old behavior so
-    the warning still fires in degraded environments.
+    When ``max_in_progress_per_profile`` is set (#21582), assignees that
+    already have that many ``running`` tasks are excluded too: the
+    dispatcher *correctly* defers their ready work
+    (``skipped_per_profile_capped``), so a queue holding only such tasks
+    is "profile busy", not "stuck". Without this the stuck warning fired
+    every 5 minutes for the whole duration of a long worker run whenever
+    a second task for the same profile was queued behind it.
+
+    Falls back to "any ready+assigned under the cap" if ``profile_exists``
+    is not importable (e.g. partial install) — preserves the old behavior
+    so the warning still fires in degraded environments.
     """
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -8618,13 +8630,36 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     ).fetchall()
     if not rows:
         return False
+    per_profile_running: dict[str, int] = {}
+    if isinstance(max_in_progress_per_profile, int) and max_in_progress_per_profile > 0:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ):
+            per_profile_running[prow["assignee"]] = int(prow["n"])
+    else:
+        max_in_progress_per_profile = None
+
+    def _under_cap(assignee: str) -> bool:
+        return (
+            max_in_progress_per_profile is None
+            or per_profile_running.get(assignee, 0) < max_in_progress_per_profile
+        )
+
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
         # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
+        # The cap still applies: ``dispatch_once`` enforces it before it
+        # ever consults ``profile_exists``, so a capped row is not
+        # spawnable in this degraded path either.
+        return any(_under_cap(row["assignee"]) for row in rows)
     for row in rows:
-        if profile_exists(row["assignee"]):
+        assignee = row["assignee"]
+        if not _under_cap(assignee):
+            continue
+        if profile_exists(assignee):
             return True
     return False
 

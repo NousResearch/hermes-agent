@@ -184,18 +184,26 @@ def _log_signal(signum: int, frame) -> None:
 # with hasattr so ``python -m tui_gateway.entry`` (spawned by
 # ``hermes --tui``) imports cleanly there.  SIGBREAK (Windows' Ctrl+Break)
 # is installed when available as a weaker equivalent of SIGHUP.
-if hasattr(signal, "SIGPIPE"):
-    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
-if hasattr(signal, "SIGTERM"):
-    signal.signal(signal.SIGTERM, _log_signal)
-if hasattr(signal, "SIGHUP"):
-    signal.signal(signal.SIGHUP, _log_signal)
-elif hasattr(signal, "SIGBREAK"):
-    # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
-    # Route it through the same handler so kills are diagnosable.
-    signal.signal(signal.SIGBREAK, _log_signal)
-if hasattr(signal, "SIGINT"):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+#
+# Installed from ``main()`` rather than at import time: ``signal.signal``
+# only works on the main thread, and this module is also imported from
+# worker threads (``tui_gateway.server._build`` pulls in
+# ``ensure_mcp_discovery_started`` when the dashboard hosts the /api/ws
+# gateway in-process).  A module-level install made that import raise
+# ``ValueError: signal only works in main thread`` and skip MCP discovery.
+def _install_signal_handlers() -> None:
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _log_signal)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _log_signal)
+    elif hasattr(signal, "SIGBREAK"):
+        # Windows-only: Ctrl+Break in a console window delivers SIGBREAK.
+        # Route it through the same handler so kills are diagnosable.
+        signal.signal(signal.SIGBREAK, _log_signal)
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def _log_exit(reason: str) -> None:
@@ -396,6 +404,7 @@ def ensure_mcp_discovery_started() -> None:
 
 
 def main():
+    _install_signal_handlers()
     _install_sidecar_publisher()
 
     # MCP tool discovery — backgrounded so a slow or unreachable MCP server

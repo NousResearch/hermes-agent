@@ -357,6 +357,10 @@ instead of silently eating the click. Open-ended clarify questions render as a p
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
+Buttons truncate long option text. To send the full options as a numbered
+list instead, set `platforms.slack.extra.clarify_buttons: false`; reply with
+the number, the option text, or your own answer.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash

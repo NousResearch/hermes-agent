@@ -1818,12 +1818,12 @@ class _CompressionActivityHeartbeat:
 
 def _direct_messages_for_pre_compress_memory(messages: Any) -> list[dict[str, Any]]:
     """Return direct user/assistant evidence safe for memory checkpointing.
-    Summaries, tool rows and system messages are omitted; assistant prose is kept with ``tool_calls``
-    stripped, and pure tool-call wrappers are dropped."""
+    Summaries, tool/system rows and group orchestration are omitted; assistant prose keeps no tool calls."""
     # Deferred import: context_compressor → turn_context → this module would form an import cycle.
     from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+    from agent.memory_inputs import memory_messages
     direct_messages: list[dict[str, Any]] = []
-    for message in messages or []:
+    for message in memory_messages(messages) or []:
         if not isinstance(message, dict):
             continue
         role = message.get("role")

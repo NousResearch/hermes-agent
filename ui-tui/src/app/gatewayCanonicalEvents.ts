@@ -1,3 +1,4 @@
+import { approvalOwnership } from '../canonicalGateway.js'
 import type { AnyGatewayEvent } from '../gatewayTypes.js'
 import type { SessionInfo } from '../types.js'
 
@@ -130,14 +131,15 @@ export function openCanonicalApproval(
   ringPromptBell: () => void
 ): void {
   const shared = ev.payload
+  const owner = shared && approvalOwnership(shared)
 
-  if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
+  if (!shared?.prompt_id || !ev.session_id || !owner) {
     return
   }
 
   const sharedControl = {
     session_id: ev.session_id,
-    execution_generation: shared.execution_generation,
+    ...owner,
     prompt_id: shared.prompt_id
   }
 

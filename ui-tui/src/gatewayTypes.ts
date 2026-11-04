@@ -26,7 +26,9 @@ export interface CanonicalSharedPrompt {
   prompt_id: string
 }
 
-export interface CanonicalApprovalPrompt extends CanonicalSharedPrompt {
+export type CanonicalApprovalPrompt = Omit<CanonicalSharedPrompt, 'execution_generation'> & (
+  { execution_generation: number; dispatch_owner?: never } | { dispatch_owner: string; execution_generation?: never }
+) & {
   allow_permanent?: boolean
   choices?: string[]
   command?: string
@@ -46,7 +48,9 @@ export interface CanonicalClarifyPrompt extends CanonicalSharedPrompt {
  *  declare (it has no server→client prompt frames; controls ride the event stream). */
 export interface CanonicalGatewayEventMap {
   'approval.request': CanonicalApprovalPrompt
-  'approval.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
+  'approval.settled': { prompt_id: string } & (
+    { execution_generation: number; dispatch_owner?: never } | { dispatch_owner: string; execution_generation?: never }
+  )
   'clarify.request': CanonicalClarifyPrompt
   'clarify.settled': Pick<CanonicalSharedPrompt, 'execution_generation' | 'prompt_id'>
 }

@@ -42,8 +42,8 @@ def write_site(fn):
         if frame.f_code.co_name in _WRAPPER_NAMES and frame.f_back is not None:
             frame = frame.f_back
         caller = frame.f_code
-    except Exception:
-        pass
+    except ValueError:  # call stack shallower than expected: the callback alone names the write
+        frame = None
     finally:
         frame = None
     return caller, getattr(fn, "__code__", None)

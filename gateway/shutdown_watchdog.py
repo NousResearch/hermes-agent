@@ -298,8 +298,8 @@ def _format_loop_thread_section(loop_thread_id: int) -> str:
         frame = sys._current_frames().get(loop_thread_id)
         stack = ("".join(traceback.format_stack(frame)) if frame is not None
                  else "(monitored loop thread stack unavailable: thread may have exited)\n")
-    except Exception:
-        stack = "(monitored loop thread stack unavailable: could not format it)\n"
+    except Exception as exc:  # health: allow BLE001 -- a hard-exit diagnostic path must never raise
+        stack = f"(monitored loop thread stack unavailable: {type(exc).__name__})\n"
     return "--- monitored gateway loop thread stack ---\n" + stack
 
 

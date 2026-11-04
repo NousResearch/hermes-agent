@@ -686,4 +686,27 @@ describe('preprocessMarkdown', () => {
     // stays a price opener, an escaped `\\` stays a literal backslash.
     expect(preprocessMarkdown(String.raw`costs \$5 and $a\\$ ok`)).toBe(String.raw`costs \$5 and $a\\$ ok`)
   })
+
+  // #148859: inline code renders verbatim, so an inserted escape shows up in
+  // the code span (and is copied out with it). The currency pass has to skip
+  // code spans while continuing to protect prose prices.
+  it('leaves currency dollars inside inline code spans untouched', () => {
+    const input = "the carrier's `$260.02` invoice is `$185.73` weight charge plus `$74.29` fuel"
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('escapes prose currency while preserving inline-code currency on the same line', () => {
+    expect(preprocessMarkdown('Costs $5 via `$10` flag')).toBe('Costs \\$5 via `$10` flag')
+  })
+
+  it('never escapes a dollar inside inline code when the CJK span opens there', () => {
+    expect(preprocessMarkdown('`$a` 中文 $b')).toContain('`$a`')
+  })
+
+  it('leaves math-like delimiters inside inline code spans untouched', () => {
+    const input = 'Use `\\(x\\)` to open inline math'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
 })

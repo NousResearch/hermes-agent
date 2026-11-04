@@ -43,6 +43,7 @@ _REFUSAL_COUNTER_ATTRS = (
     "_empty_content_retries",
     "_thinking_prefill_retries",
     "_dropped_toolcall_retries",
+    "_content_filter_refusal_count",
 )
 
 

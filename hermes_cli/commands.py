@@ -82,6 +82,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),
     CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
                args_hint="[N]"),
+    CommandDef("drop", "Remove trailing N raw messages from history (default: since last tool result) — poisoning recovery", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",

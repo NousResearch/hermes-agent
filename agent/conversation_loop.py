@@ -2527,16 +2527,41 @@ def run_conversation(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
 
+                    # Track consecutive content-filter refusals so the hint
+                    # text can escalate to suggest /drop after 2+ refusals.
+                    _refusal_count = getattr(
+                        agent, "_content_filter_refusal_count", 0
+                    )
+                    _refusal_count += 1
+                    try:
+                        agent._content_filter_refusal_count = _refusal_count
+                    except Exception:
+                        pass
+
                     _refusal_detail = (
                         f"Model's explanation: {_refusal_text}"
                         if _refusal_text
                         else "The model returned no explanation."
                     )
+                    if _refusal_count >= 2 and not _refusal_text:
+                        # Repeated empty-text refusals strongly suggest the
+                        # history (not the prompt) is the trigger — surface the
+                        # /drop escape hatch explicitly (RCA: docs/rca-
+                        # anthropic-refusal-session-poisoning.md).
+                        _recovery_hint = (
+                            "This session is being refused on its history, not "
+                            "your prompt. Use /drop to remove the last tool "
+                            "result and retry, or start a new session with "
+                            "/new — retrying the same message will be refused "
+                            "again."
+                        )
+                    else:
+                        _recovery_hint = _CONTENT_POLICY_RECOVERY_HINT
                     _refusal_response = (
                         "⚠️  The model declined to respond to this request "
                         "(safety refusal — not a Hermes/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
-                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        f"{_recovery_hint}"
                     )
 
                     agent._cleanup_task_resources(effective_task_id)

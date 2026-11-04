@@ -8241,6 +8241,75 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return "\n".join(t for t in parts if t)
         return ""
 
+    def drop_last(self, n: Optional[int] = None) -> None:
+        """Drop trailing N raw messages from history and state.db.
+
+        Unlike ``undo_last`` which operates at the user-turn level,
+        ``drop_last`` removes exactly N raw messages (or everything from
+        the last tool result to the tail when ``n`` is None).  This is a
+        low-level escape hatch for session-poisoning recovery: use it when
+        a provider refuses all subsequent requests because a prior tool
+        result tripped a classifier.
+
+        Parameters
+        ----------
+        n:
+            Number of raw messages to drop from the tail.  When *None*
+            (default), removes from the last ``role='tool'`` message to the
+            end (the smallest cut that removes the offending tool result).
+        """
+        from agent.drop_messages import drop_messages  # local import — avoid cycle
+
+        agent = self.agent
+        if agent is not None and hasattr(agent, "_session_messages"):
+            result = drop_messages(agent, n)
+        elif self.conversation_history:
+            # Agent not yet started — wrap the CLI-owned list in a proxy.
+            class _Proxy:  # noqa: N801
+                pass
+            proxy = _Proxy()
+            proxy._session_messages = self.conversation_history  # type: ignore[attr-defined]
+            proxy.session_id = self.session_id  # type: ignore[attr-defined]
+            proxy._session_db = self._session_db  # type: ignore[attr-defined]
+            result = drop_messages(proxy, n)
+        else:
+            print("(._.) No messages to drop.")
+            return
+
+        if not result.ok:
+            print(f"(._.) drop: {result.error}")
+            return
+
+        # Agent surgery: invalidate system-prompt cache and reset flush index
+        # so the next turn re-flushes from the pruned head (mirrors undo_last).
+        if agent is not None:
+            if hasattr(agent, "_invalidate_system_prompt"):
+                try:
+                    agent._invalidate_system_prompt()
+                except Exception:
+                    pass
+            if hasattr(agent, "_last_flushed_db_idx"):
+                try:
+                    agent._last_flushed_db_idx = len(self.conversation_history)
+                except Exception:
+                    pass
+
+        # Build a compact role summary (no original content ever printed).
+        role_counts: dict = {}
+        for m in result.messages_info:
+            role_counts[m.role] = role_counts.get(m.role, 0) + 1
+        role_summary = ", ".join(
+            f"{r}×{c}" for r, c in sorted(role_counts.items())
+        )
+        n_desc = str(n) if n is not None else "auto"
+        print(
+            f"(^_^)b Dropped {result.dropped} message(s) [{n_desc}]. "
+            f"Roles: {role_summary or 'none'}. "
+            f"DB rows deactivated: {result.db_deactivated}."
+        )
+        remaining = len(self.conversation_history)
+        print(f"  {remaining} message(s) remaining in history.")
+
     def _prefill_input_buffer(self, text: str) -> None:
         """Place ``text`` in the active prompt_toolkit buffer, editable."""
         app = getattr(self, "_app", None)
@@ -9666,6 +9735,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ) is None:
                 return True  # confirmation cancelled — command handled, keep REPL alive
             self.undo_last(_undo_n)
+        elif canonical == "drop":
+            # Parse optional raw-message count: "/drop" → None (auto), "/drop 3" → 3.
+            _drop_n: Optional[int] = None
+            _drop_parts = cmd_original.split()
+            if len(_drop_parts) > 1:
+                try:
+                    _drop_n = int(_drop_parts[1])
+                except ValueError:
+                    print(
+                        f"(._.) Invalid count {_drop_parts[1]!r} — "
+                        "use /drop or /drop N (number of raw messages)."
+                    )
+                    return
+                if _drop_n < 1:
+                    _drop_n = 1
+            _drop_desc = (
+                "This removes all messages from the last tool result to the end of history."
+                if _drop_n is None
+                else f"This removes the last {_drop_n} raw message(s) from history."
+            )
+            if self._confirm_destructive_slash(
+                "drop",
+                _drop_desc,
+                cmd_original=cmd_original,
+            ) is None:
+                return True  # confirmation cancelled — command handled, keep REPL alive
+            self.drop_last(_drop_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":

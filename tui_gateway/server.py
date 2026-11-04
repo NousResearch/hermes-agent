@@ -15270,6 +15270,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "goal",
         "moa",
         "undo",
+        "drop",
         "learn",
         "init",
         "compress",
@@ -15966,6 +15967,84 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "prefill", "message": target_text, "notice": notice},
         )
+
+    if name == "drop":
+        # /drop [N]: remove trailing N raw messages (default: since last tool
+        # result) from live history and state.db.  Low-level escape hatch for
+        # session-poisoning recovery — see docs/rca-anthropic-refusal-session-
+        # poisoning.md.
+        if not session:
+            return _err(rid, 4001, "no active session to drop")
+        if session.get("running"):
+            return _err(
+                rid, 4009, "session busy — /interrupt the current turn before /drop"
+            )
+        db = _get_db()
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        session_key = session.get("session_key", "")
+        if not session_key:
+            return _err(rid, 4001, "no session key for drop")
+        # Parse optional raw-message count (e.g. "/drop 3" → 3).
+        drop_n = None
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                drop_n = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(
+                    rid, 4004,
+                    f"drop: invalid count {arg_str!r} — use /drop or /drop N"
+                )
+        if drop_n is not None and drop_n < 1:
+            drop_n = 1
+        # Call drop_messages on the live agent (mutates _session_messages in-place
+        # and deactivates the corresponding rows in state.db).
+        agent = session.get("agent")
+        if agent is None or not hasattr(agent, "_session_messages"):
+            return _err(rid, 4001, "no live agent to drop messages from")
+        try:
+            from agent.drop_messages import drop_messages
+            drop_result = drop_messages(agent, drop_n)
+        except Exception as e:
+            return _err(rid, 5008, f"drop: {e}")
+        if not drop_result.ok:
+            return _err(rid, 4018, f"drop: {drop_result.error}")
+        # Reload the active transcript into session["history"] so subsequent
+        # turns see the pruned view (matches the undo pattern).
+        try:
+            active = db.get_messages_as_conversation(session_key, repair_alternation=True)
+        except Exception:
+            active = list(getattr(agent, "_session_messages", []))
+        with session["history_lock"]:
+            session["history"] = list(active)
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        # Agent surgery: invalidate system-prompt cache and reset flush index.
+        if hasattr(agent, "_invalidate_system_prompt"):
+            try:
+                agent._invalidate_system_prompt()
+            except Exception:
+                pass
+        if hasattr(agent, "_last_flushed_db_idx"):
+            try:
+                agent._last_flushed_db_idx = len(active)
+            except Exception:
+                pass
+        # Build role summary (no original content in the response).
+        role_counts: dict = {}
+        for m in drop_result.messages_info:
+            role_counts[m.role] = role_counts.get(m.role, 0) + 1
+        role_summary = ", ".join(
+            f"{r}\u00d7{c}" for r, c in sorted(role_counts.items())
+        )
+        n_desc = str(drop_n) if drop_n is not None else "auto"
+        drop_notice = (
+            f"\u2702 Dropped {drop_result.dropped} message(s) [{n_desc}]. "
+            f"Roles: {role_summary or 'none'}. "
+            f"DB rows deactivated: {drop_result.db_deactivated}. "
+            "History updated."
+        )
+        return _ok(rid, {"type": "exec", "output": drop_notice})
 
     if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""

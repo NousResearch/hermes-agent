@@ -1157,7 +1157,7 @@ class VoiceReceiver:
 
 from plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
-    _resolve_exec_approval_admin_gate)
+    _resolve_exec_approval_admin_gate, _resolve_exec_approval_requester_gate)
 from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
 
 
@@ -5654,7 +5654,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
-        require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+        extra = getattr(self.config, "extra", None)
+        require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(extra)
         choices = set(prompt.choices)
         view = ExecApprovalView(
             session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
@@ -5662,6 +5663,8 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
             allow_session="session" in choices, smart_denied=prompt.smart_denied,
             request_id=prompt.request_id,
+            require_requester=_resolve_exec_approval_requester_gate(extra),
+            requester_user_id=prompt.requester_user_id,
         )
         # Observe BEFORE sending, so a request that settles while the card is in flight still
         # reports its real reason; ``pending_retire`` holds it until the card exists.

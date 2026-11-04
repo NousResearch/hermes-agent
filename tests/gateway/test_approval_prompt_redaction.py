@@ -85,7 +85,7 @@ class TestApprovalCommandWiring:
                         return SimpleNamespace(success=True)
 
                 ctx = SimpleNamespace(_status_adapter=Adapter(), _status_chat_id='fixture',
-                    _status_thread_metadata=None, session_key='redaction-fixture',
+                    _status_thread_metadata=None, session_key='redaction-fixture', source=None,
                     _loop_for_step=asyncio.get_running_loop(), stream_consumer_holder=[None])
                 turn = TurnRunner(SimpleNamespace(), ctx)
                 raw = 'curl -H "Authorization: token ' + _FAKE_GHP + '" https://example.test'

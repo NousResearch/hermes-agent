@@ -73,3 +73,11 @@ def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[boo
     except Exception:
         admin_ids = set()
     return (True, admin_ids)
+
+
+def _resolve_exec_approval_requester_gate(config_extra: Optional[dict]) -> bool:
+    """``require_requester_for_exec_approval`` from ``extra``: True admits only the user whose turn
+    asked to answer an exec-approval card. Default OFF."""
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw_toggle = extra.get("require_requester_for_exec_approval", False)
+    return str(raw_toggle).strip().lower() in {"true", "1", "yes"}

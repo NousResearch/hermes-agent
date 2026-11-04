@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent_init import _parse_compression_config
+from agent.agent_init_compression import _parse_compression_config
 from hermes_cli.config import DEFAULT_CONFIG
 
 

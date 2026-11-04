@@ -127,7 +127,7 @@ def test_flag_off_leaves_compression_inline_and_stateless():
 
 
 def test_config_flag_reaches_the_compressor_through_the_loader(tmp_path, monkeypatch):
-    from agent.agent_init import _parse_compression_config
+    from agent.agent_init_compression import _parse_compression_config
     from hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
 
     agent = SimpleNamespace(model="m", provider="openrouter", api_mode="chat_completions", quiet_mode=True)

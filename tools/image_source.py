@@ -16,10 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Raw-bytes INGEST budget for local/sandbox/data: sources (250 MiB): big enough for full-res
-# camera/scan images, which call sites downscale before the 20MB provider payload cap. HTTP
-# downloads keep their own 50MB stream cap (vision_tools._VISION_MAX_DOWNLOAD_BYTES).
-_MAX_INGEST_BYTES = 250 * 1024 * 1024
+# Raw-bytes INGEST budget for sandbox and data: sources (50 MiB). The sandbox exec-read returns
+# the file as base64 on stdout, so captured text + decoded bytes + copies peak near 4x the file
+# in this process; it stays at the 50MB download cap. HTTP downloads keep their own stream cap
+# (vision_tools._VISION_MAX_DOWNLOAD_BYTES).
+_MAX_INGEST_BYTES = 50 * 1024 * 1024
+# Host-file reads (250 MiB): bounded during the read, big enough for full-res camera/scan
+# images, which call sites downscale before the 20MB provider payload cap.
+_MAX_HOST_READ_BYTES = 250 * 1024 * 1024
 
 
 class ImageResolutionError(Exception):
@@ -88,11 +92,11 @@ def _read_host_bytes_bounded(path: Path, src: str) -> bytes:
     """Read a host file with the ingest cap enforced DURING the read. ``read_bytes()`` buffered the
     whole file before ``_finalize`` checked its size; ``read(cap+1)`` bounds the allocation even when
     ``st_size`` under-reports (procfs-style files), and the honest-size check reads nothing at all."""
-    if path.stat().st_size > _MAX_INGEST_BYTES:
+    if path.stat().st_size > _MAX_HOST_READ_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
     with path.open("rb") as fh:
-        data = fh.read(_MAX_INGEST_BYTES + 1)
-    if len(data) > _MAX_INGEST_BYTES:
+        data = fh.read(_MAX_HOST_READ_BYTES + 1)
+    if len(data) > _MAX_HOST_READ_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
     return data
 
@@ -284,10 +288,11 @@ async def _resolve_container_fallback(
 def _finalize(
     data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
 ) -> ResolvedImage:
-    """Chokepoint: ingest cap + type check. Images by magic bytes; video (opt-in) by
-    extension + mp4 sniff — enough because every downstream consumer re-validates."""
+    """Chokepoint: size ceiling + type check. Images by magic bytes; video (opt-in) by
+    extension + mp4 sniff — enough because every downstream consumer re-validates. Each
+    reader enforces its own tighter cap first; this is the ceiling for all of them."""
     from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
-    if len(data) > _MAX_INGEST_BYTES:
+    if len(data) > _MAX_HOST_READ_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is not None:

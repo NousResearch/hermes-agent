@@ -267,6 +267,8 @@ modal = ["modal==1.6.2"]
 daytona = ["daytona==0.225.0"]
 vercel = ["vercel==0.12.0"]
 google-meet = ["playwright==1.64.0; sys_platform != 'android'", "websockets==15.0.1; sys_platform != 'android'"]
+# Kubernetes session-pod terminal backend; baked into the cluster image.
+kubernetes = ["kubernetes==36.0.3"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",

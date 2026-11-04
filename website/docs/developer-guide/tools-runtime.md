@@ -215,6 +215,7 @@ The terminal system supports multiple backends:
 - modal
 - daytona
 - vercel_sandbox
+- kubernetes
 - plugin backends registered through `ctx.register_terminal_environment_provider` (e.g. `singularity`)
 
 It also supports:

@@ -35,6 +35,7 @@ from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
     cookie_origin_is_allowed, extract_bearer as _extract_bearer, is_safe_next_path,
     scan_session_providers, unreachable_response)
+from hermes_cli.web_server_static_assets import WEBAPP_INSTALL_FILES
 
 _log = logging.getLogger(__name__)
 
@@ -46,10 +47,12 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers", "/api/mcp/oauth/callback/",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
-# Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
-# home-screen icon are ``/apple-touch-icon.png``), so behind the gate they hit the sign-in redirect
-# and log an auto-SSO ``login_start`` with no sign-in behind it.
-_GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
+# Page icons and the Webapp's install manifest with its icons, matched exactly. Browsers fetch
+# them without cookies (the Webapp's page icon and home-screen icon are ``/apple-touch-icon.png``),
+# so behind the gate they hit the sign-in redirect and log an auto-SSO ``login_start`` with no
+# sign-in behind it, and the Webapp is never offered for install.
+_GATE_PUBLIC_ICONS: frozenset[str] = frozenset(
+    {"/apple-touch-icon.png", *(f"/{name}" for name in WEBAPP_INSTALL_FILES)})
 
 
 def _path_is_public(path: str) -> bool:

@@ -184,6 +184,10 @@ def mount_spa(application: FastAPI):
             stale = bundle_stale_reason(web_dist())
             if stale:
                 return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
+            # Installable as an app. The manifest's start_url and scope are relative to it, so
+            # an installed Webapp opens at the proxy prefix it was installed from.
+            html = html.replace("</head>", f'<link rel="manifest" href="{prefix}/manifest.webmanifest" />'
+                                "</head>", 1)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
         # Only a host that records its surface (the gateway's Webapp) names it to the page.

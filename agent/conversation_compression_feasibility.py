@@ -15,10 +15,11 @@ def _probe(agent: Any) -> None:
     check_compression_model_feasibility(agent)
 
 
-def _mark_checked(agent: Any) -> None:
-    """Latch the probe as done for the compression route it just measured."""
+def _mark_checked(agent: Any, route: tuple) -> None:
+    """Latch the probe as done for *route*, the compression route read before the probe ran: an edit that
+    lands during the probe is then a moved route on the next request, not a measured one."""
     agent._compression_feasibility_checked = True
-    agent._compression_feasibility_route = compression_route_identity()
+    agent._compression_feasibility_route = route
 
 
 def compression_route_identity() -> tuple:
@@ -68,12 +69,13 @@ def revalidate_compression_feasibility(agent: Any) -> None:
     agent._compression_feasibility_checked = False
     if not getattr(agent, "context_compressor", None):
         return
+    route = compression_route_identity()
     try:
         _probe(agent)
     except Exception as exc:
         logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc, exc_info=True)
         return
-    _mark_checked(agent)
+    _mark_checked(agent, route)
 
 
 def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) -> None:
@@ -85,9 +87,10 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
     since its last probe (side tasks follow the profile's config.yaml) probes again."""
     if not getattr(agent, "context_compressor", None):
         return
+    route = compression_route_identity()
     if getattr(agent, "_compression_feasibility_checked", False):
         probed = getattr(agent, "_compression_feasibility_route", None)
-        if probed is None or compression_route_identity() == probed:
+        if probed is None or route == probed:
             return
         _drop_stale_ceiling(agent)
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -98,17 +101,18 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
     except Exception as exc:
         logger.debug("Compression feasibility probe deferred to the first compaction: %s", exc, exc_info=True)
         return
-    _mark_checked(agent)
+    _mark_checked(agent, route)
 
 
 def lazy_compression_feasibility_check(agent: Any) -> None:
     """The probe ``compress_context`` runs when nothing probed yet, or the route moved since the probe
     that recorded one; a hard rejection propagates to the caller. A latch with no recorded route (set
     before route tracking, or by a caller marking the agent checked) is trusted as it always was."""
+    route = compression_route_identity()
     if getattr(agent, "_compression_feasibility_checked", False):
         probed = getattr(agent, "_compression_feasibility_route", None)
-        if probed is None or compression_route_identity() == probed:
+        if probed is None or route == probed:
             return
         _drop_stale_ceiling(agent)
     _probe(agent)
-    _mark_checked(agent)
+    _mark_checked(agent, route)

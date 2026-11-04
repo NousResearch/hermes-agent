@@ -709,3 +709,32 @@ def test_a_changed_provider_context_pin_reprobes_a_warm_agent(monkeypatch, tmp_p
         ensure_compression_feasibility_checked(agent, 200_000)
     assert agent.context_compressor.threshold_tokens == 80_000
 
+
+def test_a_route_edited_during_the_probe_is_probed_again(monkeypatch, tmp_path):
+    """The latch records the route the probe measured: an edit that lands while the probe runs is
+    probed on the next request instead of being labelled with the earlier measurement."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
+    import agent.conversation_compression_feasibility as feas
+    agent = _make_agent(main_context=1_000_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    task = {"compression": {"provider": "custom", "model": "small", "base_url": "http://localhost/v1"}}
+    probes = []
+    real_probe = feas._probe
+
+    def probe_then_edit(a):
+        probes.append(task["compression"]["model"])
+        real_probe(a)
+        task["compression"]["model"] = "large"  # the edit lands while the probe runs
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")), \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[80_000, 900_000]), \
+         patch.object(feas, "_probe", side_effect=probe_then_edit), session_auxiliary_scope(task):
+        ensure_compression_feasibility_checked(agent, 200_000)
+        ensure_compression_feasibility_checked(agent, 200_000)
+    assert probes == ["small", "large"]
+

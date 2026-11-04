@@ -37,3 +37,22 @@ def test_gutter_recovery_never_rewrites_a_wrong_or_literal_region(content, old, 
     result, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
     assert count == 0 and err
     assert result == content
+
+
+LONG = ("def compute_total(items, discount_rate):\n"
+        "    subtotal = sum(item.price for item in items)\n"
+        "    return subtotal * (1 - discount_rate)\n")
+LONG_OLD = "".join(f"{n}|{line}\n" for n, line in enumerate(LONG.splitlines(), 41)).rstrip("\n")
+
+
+@pytest.mark.parametrize("content, old, new, expected", [
+    # Long lines: a raw `N|` paste is similar enough for context_aware, which would
+    # write the prefixes into the file unless the gutter is stripped first.
+    (LONG, LONG_OLD, LONG_OLD.replace("1 - discount", "1.0 - discount"),
+     LONG.replace("1 - discount", "1.0 - discount")),
+    # Deleting a line leaves new_string with a single numbered line.
+    (FILE, "1|def foo():\n2|    x = 1", "1|def foo():", "def foo():\n\n    return x\n"),
+])
+def test_gutter_paste_is_stripped_before_similarity_matching(content, old, new, expected):
+    result, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
+    assert (err, count, result) == (None, 1, expected)

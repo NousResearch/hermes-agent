@@ -7,6 +7,7 @@ into a live one (profile distributions) import this rather than duplicating the 
 from typing import Any, Dict
 
 from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
+from cron.jobs_time import normalize_timezone, prune_inherited_knobs
 from cron.quota_hold import clear_state as _clear_quota_hold
 from hermes_time import now as _hermes_now
 
@@ -32,6 +33,11 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
     }
     if isinstance(merged.get("schedule"), str):
         merged["schedule"] = parse_schedule(merged["schedule"])
+    # The zone gate create_job/update_job apply: a typo'd shipped zone would otherwise be stored
+    # and every installer's job would silently fall back to that user's own profile zone.
+    if "timezone" in merged:
+        merged["timezone"] = normalize_timezone(merged["timezone"])
+        prune_inherited_knobs(merged)
 
     # A zone change moves every wall-clock occurrence exactly like an expr change: the instant on
     # file belongs to the old zone and the next scan would re-anchor past it without firing.

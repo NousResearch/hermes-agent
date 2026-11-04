@@ -1,8 +1,65 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { supportsOsc52Clipboard } from '../../utils/env.js'
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { shouldEmitClipboardSequence, shouldUseNativeClipboard, tmuxLoadBuffer } from './osc.js'
+
+vi.mock('../../utils/execFileNoThrow.js', () => ({ execFileNoThrow: vi.fn() }))
+
+const execMock = vi.mocked(execFileNoThrow)
+
+describe('tmuxLoadBuffer — -w propagation for modern iTerm2', () => {
+  const saved = {
+    TMUX: process.env.TMUX,
+    LC_TERMINAL: process.env.LC_TERMINAL,
+    LC_TERMINAL_VERSION: process.env.LC_TERMINAL_VERSION
+  }
+
+  beforeEach(() => {
+    execMock.mockReset().mockResolvedValue({ stdout: '', stderr: '', code: 0 })
+    process.env.TMUX = '/tmp/tmux-1/default,1,0'
+  })
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) {
+        delete process.env[k]
+      } else {
+        process.env[k] = v
+      }
+    }
+  })
+
+  const argsOf = () => execMock.mock.calls[0]?.[1]
+
+  it('keeps -w for modern iTerm2 >= 3.5 (workaround predates the 3.5-line OSC52/tmux improvements)', async () => {
+    process.env.LC_TERMINAL = 'iTerm2'
+    process.env.LC_TERMINAL_VERSION = '3.7.6'
+    expect(await tmuxLoadBuffer('hi')).toBe(true)
+    expect(argsOf()).toEqual(['load-buffer', '-w', '-'])
+  })
+
+  it('drops -w for legacy iTerm2 < 3.5 (the OSC 52 crash over SSH)', async () => {
+    process.env.LC_TERMINAL = 'iTerm2'
+    process.env.LC_TERMINAL_VERSION = '3.4.9'
+    await tmuxLoadBuffer('hi')
+    expect(argsOf()).toEqual(['load-buffer', '-'])
+  })
+
+  it('falls back to no -w for iTerm2 when the version is unknown', async () => {
+    process.env.LC_TERMINAL = 'iTerm2'
+    delete process.env.LC_TERMINAL_VERSION
+    await tmuxLoadBuffer('hi')
+    expect(argsOf()).toEqual(['load-buffer', '-'])
+  })
+
+  it('keeps -w for non-iTerm2 terminals', async () => {
+    process.env.LC_TERMINAL = 'kitty'
+    await tmuxLoadBuffer('hi')
+    expect(argsOf()).toEqual(['load-buffer', '-w', '-'])
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {

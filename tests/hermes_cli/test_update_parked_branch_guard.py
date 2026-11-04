@@ -571,6 +571,32 @@ def test_dirty_maintained_branch_uses_native_merge(repo_pair, monkeypatch):
     assert not _git(repo_pair, "stash", "list").stdout.strip()
 
 
+def test_dirty_maintained_branch_asks_before_early_stash(repo_pair, monkeypatch):
+    from hermes_cli import config
+    monkeypatch.setattr(config, "load_config", lambda: {"updates": {"parked_branch_strategy": "update_in_place"}})
+    (repo_pair / "feature.txt").write_text("committed\n")
+    _git(repo_pair, "add", "feature.txt")
+    _git(repo_pair, "commit", "-qm", "overlay")
+    (repo_pair / "feature.txt").write_text("dirty\n")
+    (repo_pair / "scratch.txt").write_text("untracked\n")
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo_pair)
+    monkeypatch.setattr(update_cmd.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(update_cmd.sys.stdout, "isatty", lambda: True)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda: prompts.append("asked") or "y")
+    plan = update_cmd._prepare_checkout_for_update(
+        GIT, "main", "old-feature", is_fork=False, assume_yes=False, gateway_mode=False,
+        gw_input_fn=None, switch_branch=False, _windows_gateway_resume=None)
+    assert prompts == ["asked"]
+    assert plan.in_place_update and plan.auto_stash_ref
+    assert plan.prompt_for_restore is False
+    update_cmd._pull_updates(GIT, "main", plan.auto_stash_ref, prompt_for_restore=False,
+                            gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+                            in_place_update=True)
+    assert (repo_pair / "feature.txt").read_text() == "dirty\n"
+    assert (repo_pair / "scratch.txt").read_text() == "untracked\n"
+
+
 @pytest.mark.parametrize("state", ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"])
 def test_dirty_maintained_branch_refuses_operation(repo_pair, monkeypatch, state):
     from hermes_cli import config

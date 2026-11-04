@@ -1407,9 +1407,8 @@ def _prepare_checkout_for_update(
     if target_ref is None:
         target_ref = f"origin/{branch}"
     early_stash = None
+    early_ask_first = False
     prompt_for_restore = not assume_yes and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
-    early_ask_first = prompt_for_restore and not gateway_mode and _target_would_move_head(
-        git_cmd, _m().PROJECT_ROOT, target_ref)
     release_tag = target_ref != f"origin/{branch}"
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
@@ -1426,10 +1425,14 @@ def _prepare_checkout_for_update(
                 print(f"✗ Update stopped: unfinished Git operation ({unfinished}).")
                 _record_stop("parked_branch_blocked")
                 sys.exit(1)
+            early_ask_first = prompt_for_restore and not gateway_mode and _target_would_move_head(
+                git_cmd, _m().PROJECT_ROOT, target_ref)
             early_stash = _m()._stash_local_changes_if_needed(
                 git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume),
                 ask_first=early_ask_first,
-                untracked_targets=() if is_fork else (target_ref, f"origin/{branch}", f"refs/heads/{branch}"))
+                # The parked-branch guard requires a fully clean tree, including
+                # non-colliding untracked files. Restore them after assessment.
+                untracked_targets=())
         try:
             parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
                 git_cmd, branch, current_branch, switch_branch=switch_branch,

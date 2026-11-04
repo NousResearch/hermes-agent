@@ -153,7 +153,7 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
         return docker_env.DockerEnvironment(
             image="python:3.12-slim", cwd="/root", timeout=5, task_id="chown-back", persistent_filesystem=True,
             persist_across_processes=scenario.startswith("persist"), run_as_host_user=run_as_host_user,
-            volumes=[f"{nested_ro}:/root/.hermes/skills:ro"],
+            volumes=[f"{nested_ro}:/root/custom-skills:ro"],
             extra_args=["-v", f"{shared}:/workspace/shared", *user_args])
     env = _env()
     if scenario.startswith("reclaim-fails"):
@@ -229,5 +229,5 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
     assert walk[walk.index("/usr/bin/find") + 1:walk.index("-xdev")] == ["-P", "/root", "/workspace"]
     assert " ".join(walk).endswith('( -type f -o -type d -o -type l ) -user 0 -print0'), walk  # no device nodes
     pruned = [walk[i + 1] for i, a in enumerate(walk) if a == "-path"]
-    assert {"/root/.hermes/skills", "/workspace/shared"} <= set(pruned)  # docker_volumes and extra-args binds
+    assert {"/root/custom-skills", "/workspace/shared"} <= set(pruned)  # docker_volumes and extra-args binds
     assert "1000:1000" in chown and stdin == _ROOT_OWNED

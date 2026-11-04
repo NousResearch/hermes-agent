@@ -91,6 +91,24 @@ sandboxes
 where the limit cannot be changed, startup continues without changing the
 limit.
 
+On Linux with glibc, the gateway, `hermes serve` and `hermes dashboard` also cap the number of
+malloc arenas the process may create:
+
+```yaml
+runtime:
+  malloc_arena_max: 4
+```
+
+glibc otherwise hands every new thread its own arena, up to eight per CPU core,
+and keeps each arena's freed pages; a long-running gateway with many short-lived
+worker threads ends up holding hundreds of MB of free-but-unreturned memory.
+The cap is set at startup, before the server starts any thread, and applies
+only to the Hermes server process itself — commands it runs (terminal tools,
+MCP servers, builds) keep glibc's default. An explicit `MALLOC_ARENA_MAX` (or
+`GLIBC_TUNABLES=glibc.malloc.arena_max=…`) takes precedence, whether exported
+before launch or set in the profile's `.env`. Set the value to `0`, `false`, or `null` to keep
+glibc's default. Other platforms ignore it.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database
@@ -216,7 +234,7 @@ updates:
 
 Point-in-time copies of `config.yaml` itself (taken before `hermes setup` rewrites it, before `hermes migrate` edits it, every time the file parses successfully, and when it fails to parse) go to `backups/config/config.yaml.<reason>.<timestamp>`. Identical repeats are skipped and only the newest five per reason are kept, so they never pile up beside `config.yaml`. If `config.yaml` is broken, Hermes serves the newest `good` copy instead of built-in defaults and warns on every start until the YAML is fixed; the broken file is never modified.
 
-For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
+For git installs, Hermes auto-stashes dirty tracked files, plus any untracked file at a path the update adds, before checking out the update branch or pulling. Untracked files the update never writes stay in place. Interactive terminal updates ask whether to keep the changes before stashing anything; answering no deletes them instead of leaving a stash entry behind. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
 
@@ -1931,6 +1949,19 @@ agent:
 ```
 
 Hermes sends it as the top-level Responses `text: {verbosity: ...}` field only on Responses-family routes; it is never sent on `chat_completions`, Anthropic or xAI requests, and an empty or unknown value sends nothing. Structured-output (`text.format`) set through `request_overrides` is passed through unchanged.
+
+### OpenAI Daybreak (`daybreak`)
+
+[Daybreak](https://help.openai.com/en/articles/20001258-openai-daybreak-trusted-access-for-cyber-overview) is OpenAI's Trusted Access for Cyber program: approved accounts get fewer refusals for authorized security work on supported models. On the ChatGPT/Codex subscription (`openai-codex`), Hermes can request it:
+
+```yaml
+agent:
+  daybreak: false   # true = request Daybreak Blue on models your account is approved for
+```
+
+In Desktop, open a model's options in the model menu: the **Daybreak** switch appears next to **Fast**, only on models your signed-in account's Codex catalog lists for Daybreak. Accounts without Daybreak never see it. The switch is profile-wide, like Codex's own toggle, and applies from the next turn.
+
+Every request checks the catalog again, so `access_programs.cyber: daybreak_blue` is sent only when the switch is on **and** that request's account and model are listed. Switching to an unlisted model, rotating to an account without access, or an unreadable catalog sends standard requests. It is not sent on API-key routes or the opt-in `codex_app_server` runtime, and only your own chat turns use it (Desktop, the TUI and the CLI). Messaging-platform chats, hosted rooms, A2A peers, third-party `--source tool` integrations, editor (ACP) clients, cron jobs and subagents use standard safeguards: OpenAI allows Daybreak no third-party or downstream access, and those chats can be other people. The setting grants no access: approval comes from OpenAI.
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`

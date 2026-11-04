@@ -1,24 +1,30 @@
-import { Button, ConfirmDialog, Input } from '@hermes/plugin-sdk'
+import { Button, Codicon, ConfirmDialog, Input, Tip } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
-import { CanonicalGroupRoster, type CanonicalMemberPhase } from './canonical-group-activity'
+import { CanonicalGroupRoster } from './canonical-group-activity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalRoom } from './canonical-groups'
+import type { MemberStatus } from './group-room-status'
+import { RoomHeader } from './group-room-ui'
 
 interface CanonicalGroupHeaderProps {
   busy: boolean
   canStop: boolean
+  detailsOpen: boolean
   onBack?: () => void
+  onDetails: () => void
   onDisband: () => Promise<void>
   onRename: (name: string) => void
   onStop: () => void
-  phases: Map<string, CanonicalMemberPhase>
   room?: CanonicalRoom
+  statuses: Map<string, MemberStatus>
+  working: boolean
 }
 
-export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRename, onStop, phases, room }: CanonicalGroupHeaderProps) {
+/** Title (opens the details panel), each member's live chip, and quiet icon actions. */
+export function CanonicalGroupHeader({ busy, canStop, detailsOpen, onBack, onDetails, onDisband, onRename, onStop, room, statuses, working }: CanonicalGroupHeaderProps) {
   const labels = useCanonicalGroupLabels()
-  const [renaming, setRenaming] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<null | string>(null)
   const [ending, setEnding] = useState(false)
 
   const rename = (name: string) => {
@@ -27,21 +33,26 @@ export function CanonicalGroupHeader({ busy, canStop, onBack, onDisband, onRenam
     if (name) {onRename(name)}
   }
 
+  const action = (label: string, icon: string, onClick: () => void, disabled: boolean) =>
+    <Tip label={label}>
+      <Button aria-label={label} className="text-(--ui-text-tertiary)" disabled={disabled} onClick={onClick} size="icon-sm" variant="ghost">
+        <Codicon name={icon} />
+      </Button>
+    </Tip>
+
   return <>
-    <header className="flex items-center gap-2">
-      {onBack && <Button onClick={onBack}>{labels.back}</Button>}
-      <div className="min-w-0">
-        <h2 className="text-sm font-medium">{room?.name || labels.loadingGroup}</h2>
-        <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} phases={phases} />
-      </div>
-      <Button disabled={busy || !canStop} onClick={onStop}>{labels.stop}</Button>
-      <Button disabled={busy || !room} onClick={() => setRenaming(room?.name ?? '')}>{labels.rename}</Button>
-      <Button disabled={busy || !room} onClick={() => setEnding(true)}>{labels.disband}</Button>
-    </header>
-    {renaming !== null && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
+    <RoomHeader backLabel={labels.back} onBack={onBack} onStop={busy || !canStop ? undefined : onStop} onTitle={onDetails}
+      stopLabel={labels.stopGroup} title={room?.name || labels.loadingGroup} titleExpanded={detailsOpen} titleLabel={labels.groupDetails} trailing={<>
+        {action(labels.rename, 'edit', () => setRenaming(room?.name ?? ''), busy || !room)}
+        {action(labels.disband, 'trash', () => setEnding(true), busy || !room)}
+      </>}
+      working={working}>
+      <CanonicalGroupRoster label={labels.members} labels={labels} members={room?.members} statuses={statuses} />
+    </RoomHeader>
+    {renaming !== null && <form className="flex items-center gap-2 px-3 py-2" onSubmit={event => { event.preventDefault(); rename(renaming.trim()) }}>
       <Input aria-label={labels.renameLabel} autoFocus onChange={event => setRenaming(event.target.value)} value={renaming} />
-      <Button disabled={busy || !renaming.trim()} type="submit">{labels.save}</Button>
-      <Button onClick={() => setRenaming(null)} type="button">{labels.cancel}</Button>
+      <Button disabled={busy || !renaming.trim()} size="sm" type="submit">{labels.save}</Button>
+      <Button onClick={() => setRenaming(null)} size="sm" type="button" variant="text">{labels.cancel}</Button>
     </form>}
     {ending && <ConfirmDialog busyLabel={labels.disbanding} confirmLabel={labels.disband}
       description={<span>{labels.disbandDescPrefix}<span className="font-medium text-foreground">{room?.name}</span>{labels.disbandDescSuffix(room?.members?.length ?? 0)}</span>}

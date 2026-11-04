@@ -1,4 +1,3 @@
-import { mergeUsage } from '@hermes/shared'
 
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
@@ -83,6 +82,7 @@ import {
   transcriptRowIds
 } from './pending-turn-identity'
 import { reconcileOwnerApprovalMode } from './runtime-owner'
+import { publishSessionUsage } from './session-usage'
 
 export {
   chatMessageArraysEquivalent,
@@ -2326,8 +2326,8 @@ export function applyRuntimeInfo(
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      // session.info/resume is an authoritative snapshot: an omitted compression count or plan gauge clears.
-      setCurrentUsage(current => ({ ...mergeUsage(current, info.usage), compressions: info.usage?.compressions }))
+      // session.info/resume is an authoritative snapshot of THIS session: an omitted readout clears.
+      publishSessionUsage(sessionState.usage)
     }
   }
 
@@ -2336,12 +2336,12 @@ export function applyRuntimeInfo(
 
 export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
-  storedSessionId: null | string
+  storedSessionId: null | string,
+  options: { sameSession?: boolean } = {}
 ) {
-  // Compression count is live runtime state, not part of a durable session row.
-  // Drop the previous session's value immediately while the selected runtime
-  // resumes; the authoritative usage snapshot will repopulate it when present.
-  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // Compressions, cache-hit rate, t/s: live runtime state — a switch drops them (#146430), a re-resume keeps them.
+  const staleRates = options.sameSession ? {} : { avg_tps: undefined, cache_hit_pct: undefined }
+  setCurrentUsage(current => ({ ...current, ...staleRates, compressions: undefined }))
   // Transient: this is a PREVIEW painted while `session.resume` is still in
   // flight. If the resume is abandoned (user starts a new chat before it
   // returns, or the row is switched away), nothing repairs the selection

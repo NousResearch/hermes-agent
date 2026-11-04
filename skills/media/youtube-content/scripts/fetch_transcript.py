@@ -56,8 +56,11 @@ def fetch_transcript(video_id: str, languages: list | None = None):
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
-        print("Error: youtube-transcript-api not installed. Use the isolated PM helper environment described in youtube-content/SKILL.md.",
-              file=sys.stderr)
+        print(
+            f"Error: youtube-transcript-api is not installed for {sys.executable}. "
+            "Use the isolated PM helper environment described in youtube-content/SKILL.md.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     api = YouTubeTranscriptApi()

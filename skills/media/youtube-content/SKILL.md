@@ -43,20 +43,20 @@ below with the interpreter whose import check succeeded.
 
 ## Helper Script
 
-`SKILL_DIR` is the directory containing this SKILL.md file. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
+`${HERMES_SKILL_DIR}` is replaced with the directory containing this SKILL.md before the skill reaches the agent. The script accepts any standard YouTube URL format, short links (youtu.be), shorts, embeds, live links, or a raw 11-character video ID.
 
 ```bash
 # JSON output with metadata
-python SKILL_DIR/scripts/fetch_transcript.py "https://youtube.com/watch?v=VIDEO_ID"
+python "${HERMES_SKILL_DIR}/scripts/fetch_transcript.py" "https://youtube.com/watch?v=VIDEO_ID"
 
 # Plain text (good for piping into further processing)
-python SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+python "${HERMES_SKILL_DIR}/scripts/fetch_transcript.py" "URL" --text-only
 
 # With timestamps
-python SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
+python "${HERMES_SKILL_DIR}/scripts/fetch_transcript.py" "URL" --timestamps
 
 # Specific language with fallback chain
-python SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+python "${HERMES_SKILL_DIR}/scripts/fetch_transcript.py" "URL" --language tr,en
 ```
 
 ## Output Formats

@@ -87,11 +87,12 @@ def test_same_fresh_store_off_network_fs_still_gets_wal(tmp_path, monkeypatch):
 
 def test_explicit_wal_config_wins_on_network_fs(tmp_path, monkeypatch, _isolate):
     _configure(_isolate, "wal")
-    _on_network_fs(monkeypatch)
-    mode, on_disk = _open(tmp_path / "state.db")
-    if mode != "wal":
+    _on_network_fs(monkeypatch, False)
+    if _open(tmp_path / "control.db")[0] != "wal":  # gate the skip on the ENVIRONMENT, never on the result
         pytest.skip("environment refuses WAL for unrelated reasons")
-    assert on_disk == "wal"
+    _on_network_fs(monkeypatch)
+    hermes_state_wal._network_fs_cache.clear()
+    assert _open(tmp_path / "state.db") == ("wal", "wal")
 
 
 def test_explicit_delete_config_unchanged_on_network_fs(tmp_path, monkeypatch, _isolate):

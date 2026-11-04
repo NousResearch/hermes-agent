@@ -1,6 +1,6 @@
 name: local-mcp
 repo: https://github.com/colibird-ai/local-mcp-hermes-plugin
-sha: 31e1c1c569bdca3f5829933207923f06c89c144b
+sha: 6d6da7722af2243aa6f92fc363405c629e162cf6
 description: >-
   Mac apps for Hermes through a separately installed LMCP app: Apple Mail,
   Microsoft 365 mail, Calendar, Teams, Slack, OneDrive, Office files, a

@@ -5,7 +5,7 @@ Runs at gateway start + the periodic tick when
 due, writes a plugin-check receipt (pm.receipt, kind 'plugin-check'),
 and logs ONE actionable line when updates exist. Applying updates
 stays explicit — ``plugins.auto_apply: true`` (default false) opts into
-unattended apply for git-row plugins ONLY, scan-gated like cmd_update.
+unattended apply for catalog and tracked git plugins, scan-gated like cmd_update.
 
 Pure, injectable clock/check/update seams for hermetic tests.
 """
@@ -243,16 +243,18 @@ def _run_check_locked(
             names,
         )
 
-    # Opt-in unattended apply: git rows ONLY, scan-gated by the update
-    # path itself. Pinned/manual/drift/pip are never auto-applied
-    # (their update_available is False/None or their class excludes it).
+    # Opt-in unattended apply: the classes `hermes plugins update` can move (catalog re-pins to the
+    # reviewed sha, tracked git pulls), scan-gated by the update path itself, which also refuses a
+    # widened catalog pin or a too-new requires_hermes without a terminal. Pinned/manual/drift/pip
+    # are never auto-applied (their update_available is False/None or their class excludes it).
     if apply_updates_fn and updates and auto_apply_enabled(config_get):
         for r in updates:
-            if getattr(r, "klass", "") == "git":
-                try:
-                    apply_updates_fn(r.name)
-                except (Exception, SystemExit):
-                    log.warning("auto-apply of %s failed", r.name, exc_info=True)
+            if getattr(r, "klass", "") not in ("git", "catalog"):
+                continue
+            try:
+                apply_updates_fn(r.name)
+            except (Exception, SystemExit):
+                log.warning("auto-apply of %s failed", r.name, exc_info=True)
 
     # stamp the marker AFTER a completed run (even a failed one — a
     # failing check retrying every tick would hammer the network)

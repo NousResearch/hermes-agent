@@ -1,7 +1,11 @@
+import { useCallback, useEffect, useRef } from 'react'
+
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionActiveListResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
+
+import { getUiState } from './uiStore.js'
 
 // Sessions this view left running (/new mid-turn, the switcher) keep working out of sight; the
 // 1.5 s live-session poll is what notices their turn ending or a question waiting, and says so in
@@ -104,4 +108,24 @@ export async function backgroundSessionNotices(
   const raw = await gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: focused })
 
   return watch.update(asRpcResult<SessionActiveListResponse>(raw)?.sessions ?? rows, focused)
+}
+
+/** The live-session poll's hook: feed it each poll's rows; it marks the focused session as shown
+ * and writes the notices into the focused transcript. */
+export function useBackgroundSessionNotices(
+  gw: Pick<GatewayClient, 'isCanonical' | 'request'>,
+  sid: null | string,
+  sys: (text: string) => void
+) {
+  const watch = useRef(createBackgroundSessionWatch()).current
+
+  useEffect(() => watch.focus(sid), [sid, watch])
+
+  return useCallback(
+    (rows: LiveRow[]) =>
+      void backgroundSessionNotices(watch, gw, rows, getUiState().sid)
+        .then(notices => notices.forEach(sys))
+        .catch(() => {}),
+    [gw, sys, watch]
+  )
 }

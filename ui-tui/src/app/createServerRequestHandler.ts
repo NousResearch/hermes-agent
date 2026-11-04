@@ -5,9 +5,10 @@ import type { ClarifyQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { rememberServerRequest } from './serverRequestStore.js'
+import { getUiState } from './uiStore.js'
 
 export interface ServerRequestHandlerContext {
-  /** The session this view shows; a live request for another session waits for its activation. */
+  /** The session this view shows (default: the UI store's); a live request for another session waits for its activation. */
   focusedSessionId?: () => null | string
   ringPromptBell: () => void
   setStatus: (status: string) => void
@@ -39,7 +40,7 @@ const strList = (v: unknown): null | string[] =>
  * deadline.
  */
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
-  const { focusedSessionId, ringPromptBell, setStatus } = ctx
+  const { focusedSessionId = () => getUiState().sid, ringPromptBell, setStatus } = ctx
 
   const open = (request: ServerRequest, status: string) => {
     rememberServerRequest(request)
@@ -56,7 +57,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
   // (replayed), which opens it there. The status poll tells the user the session is waiting.
   const belongsElsewhere = (request: ServerRequest) => {
     const owner = request.params.session_id
-    const focused = focusedSessionId?.()
+    const focused = focusedSessionId()
 
     return (
       PROMPT_METHODS.has(request.method) &&

@@ -229,6 +229,12 @@ Every other tool that hands the model an image uses this same decision: browser 
 
 Responses-style backends (for example `openai-codex`) accept only inline JPEG, PNG, GIF and WebP; any other `data:image/*` part makes them reject the **whole** request, and because the part stays in history every later turn fails the same way. Hermes handles this at the send layer: an inline **SVG** is rasterized to PNG when a rasterizer is installed (`cairosvg`, `svglib`+`reportlab`, `rsvg-convert`, or `inkscape` — the same soft dependencies `vision_analyze` uses), so the model still sees the drawing. Without a rasterizer, an SVG — and any other unsupported inline format such as BMP or TIFF — is replaced by a short text placeholder (`[image omitted: image/svg+xml is not a supported image format]`) while the valid images in the same message are still sent.
 
+### Per-request image count limits
+
+Some endpoints cap how many images one request may carry: vLLM's `--limit-mm-per-prompt`, SGLang, DeepInfra (8), Fireworks (60), DashScope (250 data-URIs), and many OpenAI-compatible gateways (often 30). Because the whole conversation is re-sent every turn, a session that crosses that cap would otherwise fail on every later message, even a text-only one.
+
+When a provider rejects a request for carrying too many images, Hermes reads the ceiling from the error (or halves the rejected count when the error names none), drops the **oldest** images from that request, and retries once. The ceiling is remembered for that provider and model for the rest of the session, so later turns are trimmed before sending and never hit the same rejection. Your newest message always keeps its images, the dropped ones are replaced by a short note in the request, and the saved session history keeps every image. If your newest message alone carries more images than the provider accepts, the error is shown at once instead of being retried.
+
 ### Native embeds ride the session: `vision.embed_target_bytes` and `vision.max_calls_per_image`
 
 A native `vision_analyze` result bakes the image into the tool result, and that result is re-sent on every later API call of the session. Two `config.yaml` keys bound the recurring cost:

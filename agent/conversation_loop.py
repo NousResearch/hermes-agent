@@ -2616,28 +2616,13 @@ def run_conversation(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
 
-<<<<<<< HEAD
-                    # Track consecutive content-filter refusals so the hint
-                    # text can escalate to suggest /drop after 2+ refusals.
-                    _refusal_count = getattr(
-                        agent, "_content_filter_refusal_count", 0
-                    )
-                    _refusal_count += 1
-                    try:
-                        agent._content_filter_refusal_count = _refusal_count
-                    except Exception:
-                        pass
-=======
-                    # Track consecutive refusals in this session so we can
-                    # surface a more actionable hint on the second occurrence.
+                    # Track consecutive content-filter refusals — both attributes
+                    # are set so both the /drop gate and the quarantine tests see
+                    # the same counter under their expected attribute names.
                     _refusal_seq = getattr(agent, "_refusal_consecutive_count", 0) + 1
                     agent._refusal_consecutive_count = _refusal_seq
-                    _recovery_hint = (
-                        _CONTENT_POLICY_REPEATED_HINT
-                        if _refusal_seq >= 2
-                        else _CONTENT_POLICY_RECOVERY_HINT
-                    )
->>>>>>> hermes-stab/t_e1778b6d-refusal-quarantine
+                    agent._content_filter_refusal_count = _refusal_seq
+                    _refusal_count = _refusal_seq  # used by hint-selector below
 
                     _refusal_detail = (
                         f"Model's explanation: {_refusal_text}"

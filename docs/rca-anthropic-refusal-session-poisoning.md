@@ -70,3 +70,60 @@ Ordered by value / effort:
 
 - `agent/conversation_loop.py` — `content_filter` branch, `_CONTENT_POLICY_RECOVERY_HINT`.
 - `docs/known-warnings.md` — for warnings that are expected; this one is not.
+
+## Reproduction harness
+
+`scripts/replay_refusal.py` — deterministic replay tool that sends a saved session's
+message history to the Anthropic provider **without** touching the original `state.db`.
+
+### Quick start
+
+```bash
+# Single-shot replay (confirm baseline refuses):
+python scripts/replay_refusal.py \
+  --session-id 20261104_112940_1a4d06 \
+  --model claude-sonnet-4-6
+
+# Stop after the 25th tool result (the suspect one, rank 25):
+python scripts/replay_refusal.py \
+  --session-id 20261104_112940_1a4d06 \
+  --up-to-tool-result 25
+
+# Bisect: try excluding each tool result in turn to find the trigger:
+python scripts/replay_refusal.py \
+  --session-id 20261104_112940_1a4d06 \
+  --bisect
+
+# From a JSON export instead of state.db:
+python scripts/replay_refusal.py --messages-file snapshot.json --bisect
+```
+
+### Output columns (TSV)
+
+| col | meaning |
+|-----|---------|
+| `rank` | 0 = baseline; N = Nth tool result was excluded |
+| `excluded_tool` | tool name + char count + sha256 of content (never raw content) |
+| `stop_reason` | `stop` / `refusal` / `content_filter` / `error` / `http_400` |
+| `latency_ms` | round-trip time (ms) |
+| `refusal_len` | chars in refusal explanation (0 = empty / silent) |
+| `refusal_snippet` | first 120 chars of refusal text (empty if none) |
+
+### Safety guarantees
+
+- The script opens `state.db` **read-only** (`?mode=ro` URI flag).
+- Raw tool result content is **never** logged or printed; only tool name, char count,
+  and sha256 are shown.
+- A fresh temporary model session is used for each call; the original session is
+  never modified.
+- Credentials are read from `~/.claude/.credentials.json` (Claude Code OAuth)
+  or `ANTHROPIC_API_KEY`. No credential values are logged.
+
+### Unit tests
+
+```bash
+# Run the focused test file:
+bash scripts/run_tests.sh tests/scripts/test_replay_refusal.py
+# 23 tests, ~0.3s, no real API calls (provider is fully mocked)
+```
+

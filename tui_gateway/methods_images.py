@@ -96,10 +96,12 @@ def _(rid, params: dict) -> dict:
 @method("image.render")
 def _(rid, params: dict) -> dict:
     """Params: ``path``, ``cols``/``rows`` (cell budget), ``graphics`` (client owns a real
-    terminal). Result: ``{mode, cols, rows, ...}`` — see ``ImageRenderResult``."""
+    terminal), ``terminal`` (the client's own protocol pick). Result: ``{mode, cols, rows, ...}``
+    — see ``ImageRenderResult``."""
     from agent.terminal_image import local_image_path, render_inline_image, resolve_inline_mode
-    mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"),
-                               graphics=is_truthy_value(params.get("graphics", False)))
+    # The client's terminal, never this process's env: one gateway serves many clients.
+    mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"), graphics=params.get("graphics") is True,
+                               detected="kitty" if params.get("terminal") == "kitty" else "unicode")
     path = local_image_path(params.get("path"))
     try:
         cols, rows = int(params.get("cols") or 0), int(params.get("rows") or 0)

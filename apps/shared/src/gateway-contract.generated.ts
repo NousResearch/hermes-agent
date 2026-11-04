@@ -915,7 +915,8 @@ export interface ImageRenderParams {
   path: string
   cols: number
   rows: number
-  graphics?: unknown | null
+  graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
 }
 /** ``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``) as half-blocks. ``off``: inline images are disabled or the file is not a readable image. */
 export interface ImageRenderResult {
@@ -2719,6 +2720,7 @@ export interface PetCellsParams {
   state?: string | null
   cols?: number | null
   graphics?: boolean
+  terminal?: 'kitty' | 'unicode'
 }
 /** Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics`` set): ``frames`` are transmit escapes and ``placeholder`` the text grid. */
 export interface PetCellsResult {

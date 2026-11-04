@@ -239,7 +239,9 @@ _PIXELS_PER_CELL_PIXEL = 2
 _MAX_DECODE_PIXELS = 40_000_000
 
 
-def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: bool = False) -> str:
+def resolve_inline_mode(
+    configured: Any, *, graphics: bool = True, overlays: bool = False, detected: str | None = None
+) -> str:
     """Effective ``kitty``/``iterm``/``unicode``/``off`` for ``display.inline_images``.
 
     ``graphics`` says the painter owns a real terminal it can send escapes to; ``overlays`` that
@@ -249,6 +251,9 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
     (iTerm2, WezTerm, Konsole), else half-blocks. tmux and GNU screen swallow both transmits,
     so ``auto`` stays on half-blocks there. Pinning a protocol opts in: the classic CLI wraps its
     transmits for tmux's ``allow-passthrough on``; the TUI and GNU screen send them unwrapped.
+
+    ``detected`` is a remote painter's own ``auto`` pick (``kitty``/``unicode``), made from its
+    terminal's env: a shared gateway serves many clients, and its own env names none of them.
     """
     if configured is False:
         return "off"
@@ -262,6 +267,8 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
         return "unicode"
     if mode in ("kitty", "iterm"):
         return mode
+    if detected is not None:
+        return "kitty" if detected == "kitty" else "unicode"
     if any(os.environ.get(name) for name in _MULTIPLEXER_ENV):
         return "unicode"
     if supports_kitty_placeholders():

@@ -7,6 +7,7 @@ import { INLINE_IMAGE_MAX_COLS, INLINE_IMAGE_MAX_ROWS } from '../config/limits.j
 import type { ImageRenderResponse } from '../gatewayTypes.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { detectTerminalGraphics } from '../lib/terminalGraphics.js'
 import type { Theme } from '../theme.js'
 import type { Msg } from '../types.js'
 
@@ -15,6 +16,7 @@ import { HalfBlockImage, KittyImage } from './cellImage.js'
 // Only a TUI that owns a real terminal can take the kitty transmit; piped or
 // under the dashboard PTY the gateway answers with half-blocks.
 const IS_TTY = Boolean(process.stdout?.isTTY)
+const TERMINAL = detectTerminalGraphics()
 
 // Renders outlive virtual-scroll remounts. The key carries a revision (the
 // tool call id) so a second picture at an old path is a new request; `off`
@@ -84,7 +86,7 @@ const requestRender = (
 
   const entry: RenderEntry = {
     pending: gw
-      .request('image.render', { cols, graphics: IS_TTY, path, rows: INLINE_IMAGE_MAX_ROWS })
+      .request('image.render', { cols, graphics: IS_TTY, path, rows: INLINE_IMAGE_MAX_ROWS, terminal: TERMINAL })
       .then(res => asRpcResult<ImageRenderResponse>(res))
       .catch(() => null)
       .then(res => {

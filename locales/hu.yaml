@@ -2635,6 +2635,7 @@ cli:
     goal_turns: "⊙ cél {used}/{max}"
     goal: "⊙ cél"
     ctx_pinned: " rögzítve"
+    ctx_fallback: " alapértelmezett"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Félretéve ({count} elem)"

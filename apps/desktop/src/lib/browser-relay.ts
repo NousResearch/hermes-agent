@@ -71,6 +71,8 @@ export interface BrowserRelays {
   socketUrl: (connectionId: string, path: TicketSocketPath, profile?: null | string) => Promise<string>
   connection: (connectionId: string, profile?: null | string) => HermesConnection
   rosterAgents: (connectionId: string) => Promise<DesktopRosterAgent[]>
+  /** Whether *connectionId* serves *profile*, from the set its last roster read reported. */
+  serves: (connectionId: string, profile?: null | string) => boolean
   connections: NonNullable<Window['hermesDesktop']['connections']>
   /** `window.hermesDesktop.gatewayRelay`: pairing and grants, for Settings → Gateways. */
   bridge: NonNullable<Window['hermesDesktop']['gatewayRelay']>
@@ -157,13 +159,51 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     }
   }
 
+  // Each gateway's served profiles, as the serving gateway's own set reads them
+  // (browser-served-profiles.ts): what its multiplexer carries (`/api/status` `gateway_shared_with`)
+  // and the profile it runs as. Null until it reports a set, and then every installed profile counts.
+  const served = new Map<string, null | Set<string>>()
+
+  const readServed = async (connectionId: string, target: BrowserBootstrap) => {
+    try {
+      const [status, active] = await Promise.all([
+        browserApi<{ gateway_shared_with?: null | string[] }>(target, {
+          path: '/api/status',
+          timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
+        }),
+        browserApi<{ current?: string }>(target, { path: '/api/profiles/active', timeoutMs: RELAYED_ROSTER_TIMEOUT_MS })
+      ])
+
+      const shared = status?.gateway_shared_with
+
+      served.set(
+        connectionId,
+        Array.isArray(shared) ? new Set([...shared, active?.current].map(name => String(name || '').trim())) : null
+      )
+    } catch {
+      // A failed read keeps the last answer: a status blip must not change which profiles are reachable.
+    }
+  }
+
+  // A socket that names no profile reaches the one the gateway runs as.
+  const serves = (connectionId: string, profile?: null | string) => {
+    const name = profile?.trim()
+    const set = served.get(connectionId)
+
+    return !name || !set || set.has(name)
+  }
+
   const rosterAgents = async (connectionId: string): Promise<DesktopRosterAgent[]> => {
     const row = gateway(connectionId)
+    const target = bootstrapFor(connectionId)
 
-    const result = await browserApi<{ profiles?: { name?: string }[] }>(bootstrapFor(connectionId), {
-      path: '/api/profiles',
-      timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
-    })
+    const [result] = await Promise.all([
+      browserApi<{ profiles?: { name?: string }[] }>(target, {
+        path: '/api/profiles',
+        timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
+      }),
+      readServed(connectionId, target)
+    ])
 
     const names = [
       ...new Set((result?.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))
@@ -175,7 +215,9 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
       connectionLabel: row?.label ?? connectionId,
       handle: profile,
       profile,
-      targetProfile: profile
+      targetProfile: profile,
+      // Installed there, so listed, but served by another gateway or parked.
+      ...(serves(connectionId, profile) ? {} : { reachable: false as const })
     }))
   }
 
@@ -302,5 +344,5 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     }
   }
 
-  return { bootstrapFor, bridge, connection, connections, gateway, gateways, rosterAgents, socketUrl }
+  return { bootstrapFor, bridge, connection, connections, gateway, gateways, rosterAgents, serves, socketUrl }
 }

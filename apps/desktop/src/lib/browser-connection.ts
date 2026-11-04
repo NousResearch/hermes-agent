@@ -295,6 +295,11 @@ export function createBrowserConnectionBridge({
     getGatewayWsUrl,
     getGatewayWsUrlFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       if (relayed(relays, payload.connectionId)) {
+        // As for this gateway's own: the dial would open, then close without a reason to show.
+        if (!relays!.serves(payload.connectionId!, payload.profile)) {
+          throw new UnservedProfileError((payload.profile ?? '').trim())
+        }
+
         return getRelayedWsUrl(payload.connectionId!, payload.profile)
       }
 

@@ -38,6 +38,7 @@ hermes skills uninstall <skill-name>
 | [**grok**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok.md) | Delegate coding to xAI Grok Build CLI (features, PRs). |
 | [**opencode**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) | Delegate coding to OpenCode CLI (features, PR review). |
 | [**openhands**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md) | Delegate coding to OpenHands CLI (model-agnostic, LiteLLM). |
+| [**proactive-memory**](../user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-proactive-memory.md) | Surface the right memory before a long-horizon action. |
 
 ## blockchain
 

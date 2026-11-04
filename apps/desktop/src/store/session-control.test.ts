@@ -333,6 +333,41 @@ describe('session-control store', () => {
     })
   })
 
+  it.each(['session', 'gateway'])('releases generation bookkeeping on %s clear', scope => {
+    const sessionId = 'released-session'
+    const writes = vi.spyOn(Map.prototype, 'set')
+
+    try {
+      applySessionControlSnapshot(sessionId, FULL_SNAPSHOT)
+      applySessionControlUpdate(sessionId, { ...FULL_SNAPSHOT, revision: 'event' })
+
+      const maps = new Set(
+        writes.mock.calls.flatMap(([key], index) => {
+          const map = writes.mock.contexts[index]
+
+          return key === sessionId && map instanceof Map ? [map] : []
+        })
+      )
+
+      expect(maps.size).toBe(2)
+      expect($sessionControlBySession.get()[sessionId]?.snapshot?.revision).toBe('event')
+
+      if (scope === 'session') {
+        clearSessionControl(sessionId)
+      } else {
+        clearAllSessionControl()
+      }
+
+      for (const map of maps) {
+        expect(map.has(sessionId)).toBe(false)
+      }
+
+      expect($sessionControlBySession.get()[sessionId]).toBeUndefined()
+    } finally {
+      writes.mockRestore()
+    }
+  })
+
   it('does not reuse a read generation when a session id returns after a gateway switch', async () => {
     const staleRead = deferred<unknown>()
     const currentRead = deferred<unknown>()

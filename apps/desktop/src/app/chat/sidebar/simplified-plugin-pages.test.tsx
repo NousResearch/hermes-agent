@@ -107,3 +107,60 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     $interfaceMode.set(previousMode)
   }
 })
+
+it('opens the contributing plugin settings from its page icon without navigating to the page', () => {
+  const dispose = registry.registerMany([
+    { area: SIDEBAR_NAV_AREA, id: 'custom:gantt', source: 'plugin:custom', data: { label: 'Gantt', path: '/gantt' } },
+    {
+      area: 'settings.plugins',
+      id: 'custom:preferences',
+      source: 'plugin:custom',
+      title: 'Preferences',
+      render: () => null
+    }
+  ])
+
+  try {
+    const onNavigate = vi.fn()
+    render(
+      <MemoryRouter>
+        <RootTooltipProvider>
+          <SimplifiedGlobalNav onNavigate={onNavigate} />
+        </RootTooltipProvider>
+      </MemoryRouter>
+    )
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Gantt' }))
+    expect(onNavigate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('menuitem'))
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ route: '/settings?tab=plugins&plugin=custom&profile=default' })
+    )
+  } finally {
+    cleanup()
+    dispose()
+  }
+})
+
+it('does not offer a broken settings shortcut for a plugin without a settings page', () => {
+  const dispose = registry.register({
+    area: SIDEBAR_NAV_AREA,
+    id: 'plain:page',
+    source: 'plugin:plain',
+    data: { label: 'Plain', path: '/plain' }
+  })
+
+  try {
+    render(
+      <MemoryRouter>
+        <RootTooltipProvider>
+          <SimplifiedGlobalNav onNavigate={vi.fn()} />
+        </RootTooltipProvider>
+      </MemoryRouter>
+    )
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Plain' }))
+    expect(screen.queryByRole('menu')).toBeNull()
+  } finally {
+    cleanup()
+    dispose()
+  }
+})

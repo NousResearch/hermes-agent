@@ -30,6 +30,7 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
+import { SimplifiedBotChatRow } from './simplified-bot-chat-row'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
@@ -203,8 +204,9 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             agents={agents}
             expanded={expanded}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
-            renderSessions={agentSessions => (
+            renderSessions={(agentSessions, agent) => (
               <div className="mb-2 ml-8 mt-0.5 border-l border-(--sidebar-edge-border) pl-2">
+                <SimplifiedBotChatRow agent={agent} />
                 <SimplifiedSessionList {...shared} sessions={agentSessions} />
               </div>
             )}

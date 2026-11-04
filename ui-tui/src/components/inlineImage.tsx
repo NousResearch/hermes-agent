@@ -1,10 +1,10 @@
 import { Box, useStdout } from '@hermes/ink'
+import type { ImageRenderResult } from '@hermes/shared/gateway-events'
 import { memo, useEffect, useState } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { INLINE_IMAGE_MAX_COLS, INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
-import type { ImageRenderResponse } from '../gatewayTypes.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { detectTerminalGraphics } from '../lib/terminalGraphics.js'
@@ -26,9 +26,9 @@ const TERMINAL = detectTerminalGraphics()
 const RENDER_CACHE_MAX = 48
 
 interface RenderEntry {
-  pending: Promise<ImageRenderResponse | null>
+  pending: Promise<ImageRenderResult | null>
   /** Set once resolved, so a remount paints on its first frame. */
-  result?: ImageRenderResponse
+  result?: ImageRenderResult
 }
 
 const renders = new Map<string, RenderEntry>()
@@ -38,12 +38,12 @@ const renders = new Map<string, RenderEntry>()
 // size A. The size the terminal holds now, per id.
 const placed = new Map<string, string>()
 
-const sizeOf = (res: ImageRenderResponse) => `${res.cols}x${res.rows}`
+const sizeOf = (res: ImageRenderResult) => `${res.cols}x${res.rows}`
 
 const renderKey = (path: string, revision: string | undefined, cols: number) => `${path}\0${revision ?? ''}\0${cols}`
 
 /** A resolved render that paints correctly right now: for kitty, the terminal must hold its size. */
-const usableRender = (key: string): ImageRenderResponse | null => {
+const usableRender = (key: string): ImageRenderResult | null => {
   const result = renders.get(key)?.result
 
   if (!result || (result.mode === 'kitty' && placed.get(result.color ?? '') !== sizeOf(result))) {
@@ -87,7 +87,7 @@ const requestRender = (
   const entry: RenderEntry = {
     pending: gw
       .request('image.render', { cols, graphics: IS_TTY, path, rows: INLINE_IMAGE_MAX_ROWS, terminal: TERMINAL })
-      .then(res => asRpcResult<ImageRenderResponse>(res))
+      .then(res => asRpcResult<ImageRenderResult>(res))
       .catch(() => null)
       .then(res => {
         if (!res || res.mode === 'off') {
@@ -142,7 +142,7 @@ export const InlineImage = memo(function InlineImage({ cols, path, revision }: I
   const budget = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLS, cols))
   const key = renderKey(path, revision, budget)
   // Seeded from a resolved render so a virtual-scroll remount has its real height on the first frame.
-  const [image, setImage] = useState<ImageRenderResponse | null>(() => usableRender(key))
+  const [image, setImage] = useState<ImageRenderResult | null>(() => usableRender(key))
 
   useEffect(() => {
     let live = true

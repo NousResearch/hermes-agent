@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import type { ImageRenderResult } from '@hermes/shared/gateway-events'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +9,6 @@ import { GatewayProvider } from '../app/gatewayContext.js'
 import type { GatewayServices } from '../app/interfaces.js'
 import { MessageLine } from '../components/messageLine.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ImageRenderResponse } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
 import type { Msg } from '../types.js'
 
@@ -28,11 +28,7 @@ const settle = async () => {
 
 type RenderParams = { cols?: number; path: string }
 
-const mount = (
-  msgs: Msg[],
-  render: ImageRenderResponse | ((params: RenderParams) => ImageRenderResponse),
-  cols = 100
-) => {
+const mount = (msgs: Msg[], render: ImageRenderResult | ((params: RenderParams) => ImageRenderResult), cols = 100) => {
   const request = vi.fn(async (_method: string, params: RenderParams) =>
     typeof render === 'function' ? render(params) : render
   )
@@ -111,7 +107,7 @@ describe('inline transcript images', () => {
     const wide = '\x1b_Ga=T,U=1,i=99,c=3,r=1,f=100,q=2,m=0;WIDE\x1b\\'
     const narrow = '\x1b_Ga=T,U=1,i=99,c=2,r=1,f=100,q=2,m=0;NARROW\x1b\\'
 
-    const sized = ({ cols }: { cols?: number }): ImageRenderResponse => {
+    const sized = ({ cols }: { cols?: number }): ImageRenderResult => {
       const small = (cols ?? 0) < 64
 
       return {
@@ -163,7 +159,7 @@ describe('inline transcript images', () => {
     const shot = '/tmp/reshot.png'
     let width = 1
 
-    const picture = (): ImageRenderResponse => ({
+    const picture = (): ImageRenderResult => ({
       cells: [Array(width).fill(px)],
       cols: width,
       mode: 'unicode',
@@ -209,7 +205,7 @@ describe('inline transcript images', () => {
   it('paints a remount from a resolved render on its first frame, before any request settles', async () => {
     const msg: Msg = { images: ['/tmp/remount.png'], kind: 'image', role: 'system', text: '' }
 
-    const render: ImageRenderResponse = {
+    const render: ImageRenderResult = {
       cells: [[[255, 0, 0, 255, 255, 0, 0, 255]]],
       cols: 1,
       mode: 'unicode',

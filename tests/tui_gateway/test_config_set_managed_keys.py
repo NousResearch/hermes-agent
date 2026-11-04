@@ -3,9 +3,12 @@
 Before, both TUI paths wrote the pinned key and answered success while the managed value kept
 winning on every read. A managed scope that pins something else must not block other keys.
 """
+from types import SimpleNamespace
+
 import pytest
 import hermes_yaml as yaml
 
+from hermes_cli import managed_scope
 from tui_gateway import server
 
 
@@ -44,16 +47,29 @@ def test_tui_config_set_refuses_a_managed_key_and_writes_nothing(homes, key, val
     assert (homes / "config.yaml").read_text() == before
 
 
-def test_tui_persisting_model_pick_mid_turn_is_refused_not_queued(homes):
-    """A running turn queues the pick and acks it; a persisting one must be refused before that."""
-    server._sessions["managed-running"] = session = {"session_key": "managed-running", "agent": None, "running": True}
+@pytest.mark.parametrize("running", [True, False], ids=["deferred", "immediate"])
+@pytest.mark.parametrize(("pick", "pinned"), [
+    ("other/model --global", "model.default"),
+    ("other/model --global --reasoning high", "agent.reasoning_effort"),  # only the effort is pinned
+])
+def test_tui_persisting_model_pick_is_refused_before_anything_changes(homes, monkeypatch, running, pick, pinned):
+    """Refused before the live switch, the model persist or the mid-turn queue, not after a partial success."""
+    if pinned == "agent.reasoning_effort":
+        (homes.parent / "managed" / "config.yaml").write_text("agent:\n  reasoning_effort: low\n")
+        managed_scope.invalidate_managed_cache()
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: pytest.fail("switched before refusal"))
+    agent = SimpleNamespace(model="old/model", provider="nous", reasoning_config=None)
+    server._sessions["managed-pick"] = session = {"session_key": "managed-pick", "agent": agent, "running": running}
+    before = (homes / "config.yaml").read_text()
     try:
-        answer = _set(key="model", value="other/model --global", session_id="managed-running")
+        answer = _set(key="model", value=pick, session_id="managed-pick")
     finally:
-        server._sessions.pop("managed-running", None)
+        server._sessions.pop("managed-pick", None)
     assert answer["error"]["code"] == 4030, answer
-    assert "model.default" in answer["error"]["message"]
-    assert "pending_model_switch" not in session
+    assert pinned in answer["error"]["message"]
+    assert session == {"session_key": "managed-pick", "agent": agent, "running": running}  # nothing queued
+    assert vars(agent) == {"model": "old/model", "provider": "nous", "reasoning_config": None}
+    assert (homes / "config.yaml").read_text() == before
 
 
 def test_tui_config_set_still_writes_a_key_the_scope_does_not_pin(homes):

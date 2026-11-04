@@ -35,6 +35,14 @@ def _refuse_managed_keys(*key_paths: str) -> None:
                 "and cannot be changed. Contact your administrator to modify it.", code="config_key_managed")
 
 
+def _refuse_managed_model_pick(reasoning_effort: str = "") -> None:
+    """A persisting /model pick writes model.default/provider/base_url, plus agent.reasoning_effort when
+    its ``--reasoning`` parses: refused whole before anything is switched, persisted or queued."""
+    from hermes_constants import parse_reasoning_effort
+    effort_key = ("agent.reasoning_effort",) if parse_reasoning_effort(reasoning_effort or None) else ()
+    _refuse_managed_keys("model.default", "model.provider", "model.base_url", *effort_key)
+
+
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
     """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
     Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
@@ -108,7 +116,7 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     # generic error event. resolve_persist_behavior, not --global alone: persist_switch_by_default counts.
     if not getattr(parsed, "is_reset", False) and resolve_persist_behavior(
             parsed.is_global, parsed.is_session, is_once=parsed.is_once, explicit_provider=parsed.explicit_provider):
-        _refuse_managed_keys("model.default", "model.provider", "model.base_url")
+        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""))
     try:
         pending_model = parsed.model_input
     except Exception:

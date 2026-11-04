@@ -322,7 +322,7 @@ def _apply_model_switch(
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
     if persist_global:  # refused before switch_model() touches the live session
-        _refuse_managed_keys("model.default", "model.provider", "model.base_url")
+        _refuse_managed_model_pick(reasoning_effort)
     agent = session.get("agent")
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")

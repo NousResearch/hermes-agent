@@ -1,38 +1,28 @@
 """Bounded lexical query expansion for conversational FTS5 searches.
 
-FTS5 works best with specific keywords, but users often phrase recall
-requests conversationally — "that thing we discussed about the API",
-"what did we decide yesterday about deployment". The default AND
-semantics of multi-word FTS5 queries make such prompts match almost
-nothing: every filler word ("that", "thing", "we") must appear in the
-same message as the meaningful terms.
+Multi-word FTS5 queries AND every word, so a conversational recall prompt
+("what did we decide about the postgres pool") only matches messages that
+also carry its filler words. The store's OR-relaxed retry covers the case
+where the strict query finds NOTHING; this module covers the thin case,
+where one off-topic message happens to contain every word and the real
+session (which lacks "decide" or "we") never surfaces.
 
-This module extracts the meaningful keywords from a conversational
-query so callers can run ONE bounded supplemental OR probe when the
-strict query comes back thin. It never replaces the strict query —
-strict hits always rank first; expansion only supplements recall.
-
-Ported from openclaw/openclaw#121196 ("supplement thin strict recall
-with bounded lexical expansion"), adapted to hermes's single-probe
-BM25 pipeline: instead of N per-term FTS probes merged client-side,
-we emit one `kw1 OR kw2 OR ...` query and let FTS5 rank it.
-
-Design constraints (mirroring the source PR):
-- Expansion is bounded: at most ``MAX_EXPANSION_TERMS`` keywords, so a
-  long prompt cannot fan out into unbounded sqlite work.
-- Queries that already use explicit FTS5 syntax (quoted phrases,
-  OR/NOT operators, prefix wildcards) are the user being precise —
-  never rewritten.
-- When extraction does not actually narrow the query (every token is
-  already a keyword) an OR probe could only dilute the strict AND
-  semantics, so expansion reports "no-op" via ``expansion_is_noop``.
+It extracts the meaningful keywords so the caller can run ONE bounded
+supplemental ``kw1 OR kw2 ...`` probe whose rows rank below every strict
+row. Constraints:
+- At most ``MAX_EXPANSION_TERMS`` keywords: a long prompt cannot fan out
+  into unbounded sqlite work.
+- Explicit FTS5 syntax (quoted phrases, OR/NOT/AND, prefix wildcards) is
+  the caller being precise and is never supplemented.
+- When every token is already a keyword the probe would only dilute the
+  strict AND result, so ``expansion_is_noop`` skips it.
 """
 
 from __future__ import annotations
 
 import re
 
-# Cap on extracted keywords — mirrors the probe bound in the source PR.
+# Cap on extracted keywords (bounds the probe's sqlite work).
 MAX_EXPANSION_TERMS = 6
 
 # Minimum keyword length (codepoints). Single characters are noise for
@@ -132,8 +122,7 @@ def expansion_is_noop(query: str, keywords: list[str]) -> bool:
     If every token of the original query survived extraction, the OR
     probe covers the same terms as the strict AND query — it can only
     weaken relevance, never add meaningful recall beyond what a broader
-    ranking would surface. Mirrors the strict-vs-keyword query equality
-    guard in the source PR.
+    ranking would surface.
     """
     original_tokens = set()
     for match in _TOKEN_RE.finditer(query or ""):

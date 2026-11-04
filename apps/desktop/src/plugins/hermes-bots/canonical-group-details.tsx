@@ -3,7 +3,7 @@ import { type ReactNode, useLayoutEffect, useRef } from 'react'
 
 import { canonicalMemberName } from './canonical-group-activity'
 import { canonicalApprovalPreview } from './canonical-group-approval'
-import { type GroupMethods, offersGroupMethod } from './canonical-group-capabilities'
+import { type GroupMethods, offersGroupMethod, offersGroupSafetyMethod } from './canonical-group-capabilities'
 import type { CanonicalGroupRoute, CanonicalPendingAction, CanonicalRoom } from './canonical-groups'
 import type { MemberStatus } from './group-room-status'
 import { AvatarStack, fill, memberStatusText, type RoomStatusLabels } from './group-room-ui'
@@ -127,9 +127,12 @@ export function CanonicalPendingCard({ action, avatar, busy, labels, methods, na
   const approval = action.kind === 'approval'
   const reviewable = approval && canonicalApprovalPreview(action).reviewable
   const copy = PENDING_COPY[action.kind]
-  const offered = Object.hasOwn(ACTION_METHODS, action.kind) && offersGroupMethod(methods, ACTION_METHODS[action.kind])
+  const method = Object.hasOwn(ACTION_METHODS, action.kind) ? ACTION_METHODS[action.kind] : undefined
+  const offered = !!method && offersGroupMethod(methods, method)
+  // Deny stays offered while the gateway's methods are unknown; Allow waits for them.
+  const denyOffered = approval && !!method && offersGroupSafetyMethod(methods, method)
 
-  const choices = offered && Array.isArray(action.approval?.choices) ? action.approval.choices : []
+  const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
 
   return <div className="mx-3 my-1 flex items-start gap-2.5 rounded-xl bg-(--chrome-action-hover) px-3 py-2" data-member-id={action.member_id} data-pending-action={action.kind} data-task-id={action.task_id}>
     <div className="mt-0.5 shrink-0">{avatar}</div>
@@ -139,8 +142,8 @@ export function CanonicalPendingCard({ action, avatar, busy, labels, methods, na
       <div className="flex flex-wrap gap-1.5">
         {offered && action.kind === 'discard' && <Button disabled={busy} onClick={onDiscard} size="sm" variant="secondary">{labels.discard}</Button>}
         {offered && action.kind === 'retry' && <Button disabled={busy} onClick={() => void onAct({ ...action })} size="sm" variant="secondary">{labels.retry}</Button>}
-        {reviewable && choices.includes('once') && <Button disabled={busy} onClick={() => void onAct({ ...action }, 'once')} size="sm">{labels.allowOnce}</Button>}
-        {approval && choices.includes('deny') && <Button disabled={busy} onClick={() => void onAct({ ...action }, 'deny')} size="sm" variant="secondary">{labels.deny}</Button>}
+        {offered && reviewable && choices.includes('once') && <Button disabled={busy} onClick={() => void onAct({ ...action }, 'once')} size="sm">{labels.allowOnce}</Button>}
+        {denyOffered && choices.includes('deny') && <Button disabled={busy} onClick={() => void onAct({ ...action }, 'deny')} size="sm" variant="secondary">{labels.deny}</Button>}
         {approval && !reviewable && <Button disabled={busy} onClick={onRefresh} size="sm" variant="secondary">{labels.refresh}</Button>}
       </div>
     </div>

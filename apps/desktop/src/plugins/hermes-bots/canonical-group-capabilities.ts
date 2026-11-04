@@ -51,6 +51,12 @@ export function groupAdvertisedMethods(value: unknown): ReadonlySet<string> | nu
 export const offersGroupMethod = (methods: GroupMethods, method: string) =>
   methods === null || Boolean(methods?.has(method))
 
+/** Stop and Deny only end work, and an older gateway answers an unknown method harmlessly, so they
+ *  stay offered while the method list is still unknown (`undefined`); a read that lists methods
+ *  without them still hides them. */
+export const offersGroupSafetyMethod = (methods: GroupMethods, method: string) =>
+  methods === undefined || offersGroupMethod(methods, method)
+
 // `host.state.gateway` is the foreground connection's socket: it says nothing about a room on
 // another connection. A host double without socket state reads as one socket that stays open.
 const onForeground = (connectionId: string) => (host.state?.connectionId?.get() ?? connectionId) === connectionId

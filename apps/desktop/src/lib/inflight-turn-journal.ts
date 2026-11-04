@@ -91,6 +91,9 @@ export interface OwnerPendingTurns {
   submissionIds: ReadonlySet<string>
   /** The owner listed any admission at all. */
   listed: boolean
+  /** The page beside this list could not be read after the owner answered, so it may lack a finished turn's reply:
+   *  that turn's journal folds as settled output instead of being retired. */
+  replyUnread?: boolean
 }
 
 /** The owner's pending list, or undefined when the snapshot carries none (an
@@ -1116,13 +1119,17 @@ export function recoverInFlightTurnJournal(
 
   // The owner's ledger answers directly whether the journaled turn finished,
   // wherever the loaded page ends; the transcript match below can only infer it.
-  if (options.owner && ownerFinishedJournaledTurn(snapshot.messages, options.owner)) {
+  const finished = Boolean(options.owner && ownerFinishedJournaledTurn(snapshot.messages, options.owner))
+
+  if (finished && !options.owner?.replyUnread) {
     clearInFlightTurnJournal(storedSessionId)
 
     return { applied: false, caughtUp: true, messages: baseMessages, streamId: null, turnStartedAt: null }
   }
 
-  const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
+  // A finished turn is never the one running now, so it folds without a stream target or turn clock.
+  const keepPending = Boolean(options.keepPending) && !finished
+  const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, { keepPending })
 
   if (recovered.caughtUp) {
     clearInFlightTurnJournal(storedSessionId)
@@ -1134,8 +1141,8 @@ export function recoverInFlightTurnJournal(
     // keepPending=false the session is not running, so the recovered rows are
     // settled history and the journal must clear on the next state update —
     // otherwise the same stale tail is folded again on every open.
-    streamId: recovered.applied ? (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null)) : null,
-    turnStartedAt: recovered.applied ? snapshot.turnStartedAt : null
+    streamId: recovered.applied ? (recovered.streamId ?? (keepPending ? snapshot.streamId : null)) : null,
+    turnStartedAt: recovered.applied && !finished ? snapshot.turnStartedAt : null
   }
 }
 

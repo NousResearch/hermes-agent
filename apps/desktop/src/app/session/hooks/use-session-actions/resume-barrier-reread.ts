@@ -21,8 +21,8 @@ export interface GraftedTranscriptPage {
 export interface ResumeBarrierReread {
   /** The page read again after the barrier, when one was needed and read. */
   page: GraftedTranscriptPage | null
-  /** The owner's pending list for journal recovery. Withheld when a finished turn's page could not be read again,
-   *  so the journal is folded as before instead of retired beside a page that may lack the reply. */
+  /** The owner's pending list for journal recovery, marked `replyUnread` when a finished turn's page could not be read
+   *  again, so its journal folds as settled output instead of being retired beside a page that may lack the reply. */
   owner: OwnerPendingTurns | undefined
 }
 
@@ -86,7 +86,7 @@ export async function rereadPageAfterResumeBarrier(
   const page = await getLatestSessionMessages(storedSessionId, scope).catch(() => null)
 
   if (!page || (early.page.session_id && page.session_id && page.session_id !== early.page.session_id)) {
-    return { page: null, owner: undefined }
+    return { page: null, owner: owner && { ...owner, replyUnread: true } }
   }
 
   return { page: await graftTranscriptPage(page, early.snapshot, storedSessionId, scope), owner }

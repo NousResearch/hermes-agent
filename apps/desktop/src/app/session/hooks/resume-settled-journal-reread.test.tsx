@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
@@ -94,7 +95,7 @@ function mount(snapshot: SessionResumeResult) {
       routedSessionId: null
     })
 
-    useMessageStream({
+    const stream = useMessageStream({
       ...cache,
       queryClient,
       hydrateFromStoredSession: noop,
@@ -102,7 +103,7 @@ function mount(snapshot: SessionResumeResult) {
       refreshSessions: noop
     })
 
-    return { cache, actions }
+    return { cache, actions, stream }
   })
 }
 
@@ -239,6 +240,51 @@ it('keeps folding the journal when the page that would show the finished reply c
   expect(vi.mocked(getLatestSessionMessages)).toHaveBeenCalledTimes(2)
   expect(replies.map(row => chatMessageText(row).trim())).toEqual(['Reading the issue'])
   expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
+it('leaves the running successor its own stream when the finished turn page cannot be re-read', async () => {
+  await journalDeadTab()
+  vi.mocked(getLatestSessionMessages)
+    .mockResolvedValueOnce({ session_id: storedId, messages: turnSoFar })
+    .mockRejectedValue(new Error('REST unavailable'))
+
+  const { result } = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: settledTurn.length + 1,
+    running: true,
+    turn_started_at: 30,
+    inflight: { user: 'Now group them.', assistant: 'Grouping ', streaming: true },
+    info: {
+      pending_submissions: [
+        { admission_id: 'adm-2', input_id: '0b6f3c1e-5d2a-4e8f-9c7b-1a2b3c4d5e6f', status: 'started' }
+      ]
+    }
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+
+  act(() =>
+    result.current.stream.handleGatewayEvent({
+      session_id: runtimeId,
+      type: 'message.delta',
+      payload: { text: 'them by area' }
+    } as GatewayEvent)
+  )
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(150)
+  })
+
+  const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+  const replies = state.messages.filter(row => row.role === 'assistant' && chatMessageText(row).trim())
+
+  expect(replies.map(row => chatMessageText(row).trim())).toEqual(['Reading the issue', 'Grouping them by area'])
+  expect(replies[0].pending).toBeFalsy()
+  expect(state.turnStartedAt).toBe(30_000)
 })
 
 it('reads the page once when no journaled turn has finished', async () => {

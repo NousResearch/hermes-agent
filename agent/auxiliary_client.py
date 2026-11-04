@@ -8164,7 +8164,11 @@ def extract_content_or_reasoning(response, *, max_reasoning_chars: int | None = 
         return msg.strip()
     raw = _message_field(msg, "content")
     if not isinstance(raw, str):
-        raw = str(raw) if raw else ""
+        # A block list (Anthropic-style content: text/thinking parts) must be flattened to its
+        # visible text, not `str()`-ed: repr'ing it hands the caller a Python literal full of
+        # escaped quotes and thinking tokens, which the main model then has to interpret.
+        from agent.agent_runtime_helpers import _flatten_content_text
+        raw = _flatten_content_text(raw) if raw else ""
     content = raw.strip()
     if content:
         # Same precompiled closed-pair patterns as strip_think_blocks.

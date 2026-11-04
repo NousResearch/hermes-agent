@@ -1,4 +1,4 @@
-"""``gateway.run._probe_audio_duration``: a timed-out ffprobe must not keep running under the gateway."""
+"""``gateway.run_inbound_transcription._probe_audio_duration``: a timed-out ffprobe must not keep running under the gateway."""
 
 import asyncio
 import sys
@@ -8,7 +8,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_timed_out_ffprobe_is_killed(monkeypatch):
-    from gateway.run import _probe_audio_duration
+    from gateway.run_inbound_transcription import _probe_audio_duration
 
     real_exec, real_wait_for = asyncio.create_subprocess_exec, asyncio.wait_for
     spawned = []
@@ -23,7 +23,7 @@ async def test_timed_out_ffprobe_is_killed(monkeypatch):
         if getattr(aw, "__qualname__", "") != "Process.communicate":
             return await real_wait_for(aw, timeout)
         aw.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _hung_ffprobe)
     monkeypatch.setattr(asyncio, "wait_for", _expire)
@@ -32,7 +32,7 @@ async def test_timed_out_ffprobe_is_killed(monkeypatch):
     [proc] = spawned
     try:
         await real_wait_for(proc.wait(), timeout=5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         pytest.fail("timed-out ffprobe was left running")

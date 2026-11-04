@@ -255,6 +255,11 @@ _MEMORY_CEILING_ERROR_CODES = frozenset({
     "prefill_memory_exceeded", "prefill_memory_aborted", "omlx_prefill_memory_exceeded",
 })
 
+# HF Text Generation Inference / TEI overflow wordings. Plural "inputs" dodges every "input token"
+# entry below (opencode#52133, openclaw#158161). TGI's router maps validation errors to HTTP 422
+# (sibling 422 rules are temperature/top_p/stop), so the 422 handler checks these too.
+_TGI_OVERFLOW_PATTERNS = ("`inputs` tokens + `max_new_tokens`", "`inputs` must have less than")
+
 # Bare "max_tokens" is load-bearing: the output-cap-retry path keys off it;
 # empty-response advisories mentioning it are intercepted earlier. Groups:
 # generic; vLLM; Ollama; llama.cpp; Chinese; Z.AI (1210); Bedrock; Together.
@@ -271,7 +276,21 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # DeepInfra: "requested input length 135000 exceeds maximum input length 131072" (opencode#52132).
+    "exceeds maximum input length",
+    *_TGI_OVERFLOW_PATTERNS,
+    # DashScope / Model Studio: "Range of input length should be [1, 129024]" — `max_tokens` range errors
+    # share the "Range of … should be" frame, so the pattern names `input length` (openclaw#171712).
+    "range of input length should be",
+    # SiliconFlow code 20015: "length of prompt_tokens (51353) must be less than max_seq_len (32768)"
+    # (openclaw#181519).
+    "must be less than max_seq_len",
 )
+
+# Invalid-key rejections some providers return as HTTP 400 instead of 401: xAI's generic
+# ``invalid-argument`` ("Incorrect API key provided"), Google's ``INVALID_ARGUMENT`` with
+# ``details[].reason == API_KEY_INVALID`` ("API key not valid") (opencode#52112, #51950).
+_400_AUTH_PATTERNS = ("incorrect api key provided", "api key not valid", "api_key_invalid")
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
 # model_not_found triggers fallback instead of burning retries (#58446).
@@ -1264,6 +1283,11 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_MALFORMED_TOOL_ARGS
     if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
         return _V_ROLE_ALTERNATION
+    # Invalid API key reported as 400 (xAI ``invalid-argument``, Google ``INVALID_ARGUMENT`` +
+    # ``API_KEY_INVALID``): the credential is bad, so rotate/fall back as a 401 would. Must precede
+    # request-validation and the generic format_error tail, which neither rotate the pool nor name the key.
+    if any(p in msg for p in _400_AUTH_PATTERNS):
+        return _V_AUTH_ROTATE
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR
@@ -1297,6 +1321,8 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
     """422: pydantic relays report the same content-field shapes as 400 (#104731, #112473)."""
     if _oversized_message_content_rejection(c.body):
         return _V_IMAGE_TOO_LARGE
+    if any(p in c.msg for p in _TGI_OVERFLOW_PATTERNS):
+        return _V_CONTEXT_OVERFLOW
     return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
 
 

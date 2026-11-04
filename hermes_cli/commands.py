@@ -306,7 +306,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
-               "Tools & Skills", cli_only=True, desktop="terminal"),
+               "Tools & Skills", cli_only=True, desktop="terminal", args_hint="[update|auto-update [on|off]]",
+               subcommands=("update", "auto-update")),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

@@ -77,6 +77,14 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object,
 
 
 def update_one(name: str, target: Path, console, *, interactive: bool = True, force: bool = False) -> bool:
+    """:func:`_update_one_locked` under the plugin's one-updater lock (a terminal update, the gateway's
+    auto-apply and a Desktop click never pull the same plugin at once; the loser changes nothing)."""
+    from hermes_cli.plugins_auto_update import plugin_update_lock
+    with plugin_update_lock(target):
+        return _update_one_locked(name, target, console, interactive=interactive, force=force)
+
+
+def _update_one_locked(name: str, target: Path, console, *, interactive: bool = True, force: bool = False) -> bool:
     """Update one installed plugin, printing progress and consent prompts; True when it moved.
 
     Every update is scanned. A caution verdict on a git update asks ``Update anyway? [y/N]`` when
@@ -315,12 +323,21 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
     (retry with *accept_capabilities*), and a git update the security scan blocks returns
     ``{"ok": False, "scan_blocked": True, "scan_verdict", "scan_findings"}`` (retry a caution verdict
     with *force* after the user saw the findings; a dangerous verdict never updates)."""
-    from hermes_cli import plugins_cmd_catalog as catalog
-    from hermes_cli.plugins_activation import activate_plugin_now
-    from hermes_cli.plugins_cmd_install import scan_blocked_result
+    from hermes_cli.plugins_auto_update import plugin_update_lock
     target = _pc()._user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_pc()._plugins_dir()}."}
+    try:
+        with plugin_update_lock(target):
+            return _dashboard_update_locked(name, target, accept_capabilities=accept_capabilities, force=force)
+    except _pc().PluginOperationError as exc:  # the lock is busy: another updater owns this plugin
+        return {"ok": False, "error": str(exc)}
+
+
+def _dashboard_update_locked(name: str, target: Path, *, accept_capabilities: bool, force: bool) -> dict[str, Any]:
+    from hermes_cli import plugins_cmd_catalog as catalog
+    from hermes_cli.plugins_activation import activate_plugin_now
+    from hermes_cli.plugins_cmd_install import scan_blocked_result
     sidecar = catalog.catalog_install_record(target)
     try:
         if sidecar:

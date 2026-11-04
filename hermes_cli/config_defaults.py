@@ -1705,11 +1705,11 @@ DEFAULT_CONFIG = {
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
-        # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
-        # scan-gated by that same pipeline).
+        # explicit: `hermes plugins update <name>`, or auto_apply below (catalog and tracked git
+        # plugins, scan-gated by that same pipeline).
         "auto_update_check_hours": 24,
-        # Opt-in unattended apply for the cadence check. Git-row plugins ONLY; every apply runs the
-        # same security scan / consent pipeline as the manual update command.
+        # Opt-in unattended apply (`hermes plugins auto-update on`, Desktop's Plugins tab): catalog +
+        # tracked git plugins, same scan/consent pipeline as the manual update (never a widened pin).
         "auto_apply": False,
         # Where third-party Python plugins run. in_process: imported into Hermes (default).
         # host: one plugin-host process per profile runs them and they reach Hermes only through

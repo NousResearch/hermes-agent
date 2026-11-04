@@ -16,6 +16,7 @@ from .registry import canonical_method
 class CanonicalConfigGetResult(ConfigGetResult):
     key: str | None = None
     scope: str | None = None
+    options: list[Literal['normal', 'fast', 'auto', 'cold', 'ultrafast']] | None = None
 
 
 class CanonicalConfigSetParams(ProfileParams):

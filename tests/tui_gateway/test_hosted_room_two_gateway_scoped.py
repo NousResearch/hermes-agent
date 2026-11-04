@@ -38,6 +38,7 @@ def _target_app(adapter):
     )
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
 

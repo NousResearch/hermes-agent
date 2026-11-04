@@ -10,8 +10,6 @@ model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 """
 
 import asyncio
-import importlib.util
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -19,6 +17,7 @@ from typing import Any, Callable, Dict, List, Optional
 import hermes_yaml as yaml
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.plugin_isolation import import_user_code
 from hermes_constants import hermes_home_key
 
 
@@ -52,20 +51,12 @@ def _load_hook_dir(hook_dir: Path) -> Optional[tuple]:
     events = manifest.get("events", [])
     if not events:
         return _skip(hook_name, "no events declared")
-    # Register in sys.modules BEFORE exec_module so Pydantic/dataclass forward references
+    # Registered in sys.modules while the body runs so Pydantic/dataclass forward references
     # (``from __future__ import annotations``) resolve; otherwise a handler declaring a
     # BaseModel fails at first dispatch with "TypeAdapter ... is not fully defined".
-    module_name = f"hermes_hook_{hook_name}"
-    spec = importlib.util.spec_from_file_location(module_name, handler_path)
-    if spec is None or spec.loader is None:
+    module = import_user_code(handler_path, f"hermes_hook_{hook_name}")
+    if module is None:
         return _skip(hook_name, "could not load handler.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        sys.modules.pop(module_name, None)
-        raise
     handle_fn = getattr(module, "handle", None)
     if handle_fn is None:
         return _skip(hook_name, "no 'handle' function found")

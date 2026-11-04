@@ -73,7 +73,7 @@ import {
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
-import { shouldShowIntro } from './intro-visibility'
+import { useShowIntro } from './intro-visibility'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -641,13 +641,12 @@ const ChatViewContent = memo(function ChatViewContent({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state. The Appearance toggle
   // turns it off everywhere else.
-  const showIntro = shouldShowIntro({
+  const showIntro = useShowIntro({
     activeSessionId,
     auxiliaryWindow: isAuxiliaryWindow(),
     enabled: introSplash,
     freshDraftReady,
     messagesEmpty,
-    primary: isPrimary,
     routedSessionView: isRoutedSessionView,
     selectedSessionId
   })

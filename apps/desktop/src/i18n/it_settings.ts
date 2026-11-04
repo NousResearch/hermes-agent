@@ -1296,6 +1296,13 @@ export const itSettings = {
       runningLocal: 'Solo questo computer può aprirlo. Fermalo, poi avvialo di nuovo per aprirlo da altri dispositivi.',
       runningPublic: 'Servito tramite il tuo URL.',
       start: 'Avvia',
+      startElapsed: (time) => `${time} trascorsi`,
+      startStages: {
+        building: 'Compilazione della web app in corso. Può richiedere alcuni minuti.',
+        preparing: 'Preparazione della web app. La compilazione può richiedere alcuni minuti.',
+        registering: 'Configurazione dell’accesso Nous per questo indirizzo.',
+        restarting: 'Riavvio del gateway per servire la web app.'
+      },
       startTimedOut: 'Il gateway non ha servito la web app entro 90 secondi.',
       starting: 'Avvio',
       stop: 'Ferma',

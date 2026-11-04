@@ -961,6 +961,38 @@ export const itApp = {
       'Premi di nuovo Riavvia; se continua a fallire, apri i log e invia una diagnosi.',
     restartAgain: 'Riavvia di nuovo',
     openLogs: 'Apri i log',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Nessun token bot necessario',
+      intro: platform =>
+        `${platform} raggiunge questo agente tramite il bot Hermes condiviso. Collega a esso il tuo account ${platform} e scrivi al bot per parlare con il tuo agente.`,
+      link: platform => `Collega ${platform}`,
+      linkAnother: platform => `Collega un altro account ${platform}`,
+      linkedAccounts: 'Account collegati',
+      unlink: 'Scollega',
+      unlinkFailed: 'Impossibile scollegare quell’account',
+      stepOpen: platform =>
+        `1. Scansiona il codice con il telefono, oppure apri il bot in ${platform}.`,
+      stepSend: '2. Invia al bot questo messaggio dall’account che vuoi collegare:',
+      open: platform => `Apri ${platform}`,
+      copy: 'Copia messaggio',
+      copied: 'Copiato',
+      copyFailed: command => `Copia non riuscita. Digita invece ${command}.`,
+      waiting: 'In attesa che il bot veda il tuo messaggio. Il codice funziona una sola volta.',
+      linked: platform =>
+        `Account ${platform} collegato. Scrivi al bot per parlare con il tuo agente.`,
+      expired: 'Quel codice è scaduto prima di essere usato. Genera un nuovo codice e riprova.',
+      refused: platform =>
+        `${platform} ha rifiutato il collegamento. Genera un nuovo codice e riprova.`,
+      qrAlt: platform => `Codice QR per il bot ${platform} condiviso`,
+      managed: 'Gestito da Team Gateway',
+      managedNote: platform =>
+        `Team Gateway trasporta la messaggistica su questo deployment, quindi il gateway spegne la connessione diretta a ${platform} a ogni avvio. Per usarla insieme al relay, imposta GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true nell’ambiente del gateway (una connessione diretta impedisce all’istanza di scalare a zero e può consegnare i messaggi due volte).`,
+      managedIntro: 'Gli account di questo agente si collegano da Nous Portal.',
+      openPortal: 'Collega gli account in Nous Portal',
+      noNewAccount: platform =>
+        `Il codice non è più attivo e non è comparso nessun nuovo account. Se il tuo account ${platform} non è in elenco, genera un nuovo codice e riprova.`
+    },
     telegramQr: {
       title: 'Scegli come collegare il tuo bot di Telegram',
       subtitle:

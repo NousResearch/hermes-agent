@@ -151,21 +151,29 @@ def _hint_ambiguity(content: str, hint: str, tail: str = "") -> tuple[int, str]:
 def _overlay_key(path: str, file_ops: Any) -> str:
     """One validation-overlay key per backend file, however the patch spells it.
 
-    Lexical only (the parser cannot resolve paths on a remote backend): ``x``, ``./x`` and
-    ``<cwd>/x`` share a key, so a second op on an alias validates against the first op's
-    simulated result instead of the stale on-disk file. Case is folded only for Windows-shaped
-    paths: whether a POSIX backend is case-insensitive is not knowable here, and folding on a
-    case-sensitive one would merge two real files.
+    Lexical only (the parser cannot resolve paths on a remote backend): ``x``, ``./x``,
+    ``a//x`` and ``<cwd>/x`` share a key, so a second op on an alias validates against the
+    first op's simulated result instead of the stale on-disk file. Never merge two real files:
+    on POSIX ``..`` is kept, because the kernel resolves it AFTER following symlinks
+    (``sub/link/../f`` is ``real/f`` when ``link`` points into ``real/``); Windows collapses
+    ``..`` lexically and is case-insensitive, so only a Windows backend gets ntpath folding.
     """
-    raw = path.strip()
-    cwd = getattr(getattr(file_ops, "env", None), "cwd", None) or getattr(file_ops, "cwd", None)
+    env = getattr(file_ops, "env", None)
+    cwd = getattr(env, "cwd", None) or getattr(file_ops, "cwd", None)
     cwd = cwd if isinstance(cwd, str) else ""
-    if re.match(r"^([A-Za-z]:[\\/]|\\\\)", raw) or (
-            re.match(r"^[A-Za-z]:[\\/]", cwd) and not raw.startswith("/")):
-        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, raw)))
-    if cwd.startswith("/"):
-        raw = posixpath.join(cwd, raw)
-    return posixpath.normpath(raw)
+    if _backend_is_windows(env, cwd):
+        return ntpath.normcase(ntpath.normpath(ntpath.join(cwd, path.strip())))
+    raw = posixpath.join(cwd, path.strip()) if cwd.startswith("/") else path.strip()
+    segments = [seg for seg in raw.split("/") if seg not in ("", ".")]
+    return ("/" if raw.startswith("/") else "") + "/".join(segments)
+
+
+def _backend_is_windows(env: Any, cwd: str) -> bool:
+    """A local env on a Windows host, or a backend whose cwd is a drive path. Remote
+    sandboxes (docker, ssh, modal ...) are POSIX shells even when Hermes runs on Windows."""
+    from tools.environments.local import _IS_WINDOWS
+    return bool(_IS_WINDOWS and getattr(env, "is_local", False)) or bool(
+        re.match(r"^[A-Za-z]:[\\/]", cwd))
 
 
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:

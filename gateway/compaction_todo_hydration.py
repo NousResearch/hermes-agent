@@ -1,8 +1,10 @@
 """Structured todo hydration for detached gateway compaction paths."""
 
-from types import SimpleNamespace
+from functools import partial
 from typing import Any
 
+from agent.conversation_compression_todo import compaction_todo_snapshot, fold_todo_snapshot
+from agent.todo_hydration import decode_todo_result, latest_todo_response
 from tools.todo_tool import TODO_INJECTION_HEADER, TodoStore
 
 
@@ -13,52 +15,48 @@ def _row_text(msg: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def hydrate_todos_for_compaction(agent: Any, messages: list) -> Any:
+def _hydrate_compaction_store(store: TodoStore, messages: list, session_db: Any, session_id: str) -> tuple[str | None, bool]:
     """Restore structured state, or carry the latest rendered block without interpreting it.
 
     The durable reader includes paired results summarised out of the visible transcript. Without
     one, only structured results AFTER the newest folded snapshot can supersede that snapshot.
     """
-    if not isinstance(getattr(agent, "_todo_store", None), TodoStore):
-        return agent
     start = next((i + 1 for i in range(len(messages) - 1, -1, -1)
                   if messages[i].get("role") == "user" and TODO_INJECTION_HEADER in _row_text(messages[i])), 0)
-    history = messages[start:]
-    getter = getattr(getattr(agent, "_session_db", None), "get_latest_todo_result", None)
-    content = getter(agent.session_id) if callable(getter) and agent.session_id else None
-    if isinstance(content, str):
-        # The durable reader already verified pairing. Replay through the model's existing parser
-        # and TodoStore validation rather than introducing another result decoder.
-        history = [
-            {"role": "assistant", "tool_calls": [{"id": "compaction-todo", "type": "function",
-             "function": {"name": "todo_list", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "compaction-todo", "content": content},
-        ]
-    found = agent._latest_todo_response(history)
-    agent._compaction_todo_snapshot = None
-    agent._compaction_todo_authoritative = found is not None
+    getter = getattr(session_db, "get_latest_todo_result", None)
+    content = getter(session_id) if callable(getter) and session_id else None
+    # Durable results are already paired; visible history must still verify the assistant call.
+    found = (decode_todo_result(content, session_id=session_id) if isinstance(content, str)
+             else latest_todo_response(messages[start:], session_id=session_id))
+    snapshot = None
     if found is not None:
         todos, revision = found
-        agent._todo_store.restore(todos, revision=revision)
+        store.restore(todos, revision=revision)
     elif start:
         text = _row_text(messages[start - 1])
         from agent.conversation_compression import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
         # The boundary fold appends a fresh skill-reload notice; carrying the old one too would stack them.
         snapshot = text[text.index(TODO_INJECTION_HEADER):]
-        agent._compaction_todo_snapshot = snapshot.split("\n\n" + _PRUNED_SKILL_RELOAD_NOTICE_HEADER, 1)[0]
+        snapshot = snapshot.split("\n\n" + _PRUNED_SKILL_RELOAD_NOTICE_HEADER, 1)[0]
+    return snapshot, found is not None
+
+
+def hydrate_todos_for_compaction(agent: Any, messages: list) -> Any:
+    """Seed an existing detached agent without requiring any of its private decoder methods."""
+    if isinstance(getattr(agent, "_todo_store", None), TodoStore):
+        agent._compaction_todo_snapshot, agent._compaction_todo_authoritative = _hydrate_compaction_store(
+            agent._todo_store, messages, getattr(agent, "_session_db", None), agent.session_id,
+        )
     return agent
 
 
 def fold_todos_for_compaction(messages: list, compressed: list, session_db: Any, session_id: str) -> list:
-    """Use the agent's hydration parser and boundary fold without building a runtime agent."""
-    from run_agent import AIAgent
+    """Hydrate and fold explicit todo state without constructing or impersonating an agent."""
     from agent.agent_runtime_helpers import repair_message_sequence
-    from agent.conversation_compression import _fold_todo_snapshot
 
-    state = SimpleNamespace(_todo_store=TodoStore(), _session_db=session_db, session_id=session_id,
-                            _tool_response_matches_todo_call=AIAgent._tool_response_matches_todo_call)
-    state._latest_todo_response = lambda history: AIAgent._latest_todo_response(state, history)
-    state._repair_message_sequence = lambda rows: repair_message_sequence(state, rows)
-    hydrate_todos_for_compaction(state, messages)
-    _fold_todo_snapshot(state, compressed)
+    store = TodoStore()
+    fallback, authoritative = _hydrate_compaction_store(store, messages, session_db, session_id)
+    snapshot, authoritative = compaction_todo_snapshot(store, fallback=fallback, authoritative=authoritative)
+    fold_todo_snapshot(compressed, snapshot, authoritative=authoritative,
+                       repair_sequence=partial(repair_message_sequence, None))
     return compressed

@@ -1051,53 +1051,18 @@ class AIAgent(
         _set_interrupt(False)
 
     def _latest_todo_response(self, history: list[dict[str, Any]]) -> Optional[tuple]:
-        """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS
-
-        for idx in range(len(history) - 1, -1, -1):
-            msg = history[idx]
-            content = msg.get("content", "")
-            if msg.get("role") != "tool" or not isinstance(content, str) or not self._tool_response_matches_todo_call(history, idx):
-                continue
-            if len(content) > MAX_TODO_RESULT_CHARS:
-                logger.warning("Skipping oversized todo tool response during hydration: "
-                               "session=%s chars=%d", self.session_id or "none", len(content))
-                continue
-            if '"todos"' not in content:  # cheap pre-filter before json.loads
-                continue
-            try:
-                data = json.loads(content)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if "todos" in data and isinstance(data["todos"], list):
-                return data["todos"], data.get("revision", 1)
-        return None
+        from agent.todo_hydration import latest_todo_response
+        return latest_todo_response(history, session_id=self.session_id)
 
     @classmethod
     def _tool_response_matches_todo_call(cls, history: list[dict[str, Any]], tool_index: int) -> bool:
-        """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
-        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
-        missing id means unpaired → must not hydrate."""
-        tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
-        if not tool_call_id:
-            return False
-        for prior in reversed(history[:tool_index]):
-            role = prior.get("role")
-            if role == "assistant":
-                return cls._assistant_has_todo_tool_call(prior, tool_call_id)
-            if role in {"user", "system"}:
-                return False
-        return False
+        from agent.todo_hydration import tool_response_matches_todo_call
+        return tool_response_matches_todo_call(history, tool_index)
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: dict[str, Any], tool_call_id: str) -> bool:
-        """True when the paired call resolves to the registered Todo tool."""
-        from tools.todo_tool import is_todo_tool_call
-
-        tool_calls = assistant_msg.get("tool_calls")
-        return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls
-        )
+        from agent.todo_hydration import assistant_has_todo_tool_call
+        return assistant_has_todo_tool_call(assistant_msg, tool_call_id)
 
     @property
     def is_interrupted(self) -> bool:

@@ -3006,70 +3006,14 @@ def _run_summary_dispatch(
 
 
 def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
-    """Strip stale todo snapshots from ``compressed`` and fold the live one in (in place)."""
-    from agent.conversation_compression_todo import compaction_todo_snapshot
-    todo_snapshot, _todo_store_is_authoritative = compaction_todo_snapshot(agent)
-    if _todo_store_is_authoritative:
-        for _todo_idx in range(len(compressed) - 1, -1, -1):
-            _todo_message = compressed[_todo_idx]
-            if not isinstance(_todo_message, dict) or _todo_message.get("role") != "user":
-                continue
-            _todo_content = _todo_message.get("content")
-            _todo_stripped = _strip_stale_todo_snapshot(_todo_content)
-            if _todo_stripped == _todo_content:
-                continue
-            if _todo_message.get("_todo_snapshot_synthetic") and _todo_snapshot_is_only_content(
-                _todo_content, _todo_stripped
-            ):
-                compressed.pop(_todo_idx)
-                if _todo_idx < len(compressed):
-                    # A standalone snapshot can drift from the tail; deleting it may expose two
-                    # assistant rows, so use the normal replay repair to keep metadata consistent.
-                    agent._repair_message_sequence(compressed)
-            else:
-                _replace_message_content(_todo_message, _todo_stripped)
-                # No longer todo-only scaffolding; other synthetic flags stay authoritative and
-                # _is_real_user_message() recomputes provenance from content + flags.
-                _todo_message.pop("_todo_snapshot_synthetic", None)
-            break
-    if todo_snapshot:
-        # If this boundary pruned skill bodies, the policy behind the todos is gone:
-        # add a reload notice after TODO_INJECTION_HEADER so both strip together.
-        # Retention parity (#84718): the snapshot below re-injects the imperative verbatim. If this same
-        # boundary pruned skill bodies to [SKILL_PRUNED: ...] markers, the policy that governed those tasks
-        # is gone — couple a reload instruction to the snapshot so the imperative never crosses the boundary
-        # alone.
-        _reload_notice = _pruned_skill_reload_notice(compressed)
-        if _reload_notice:
-            todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
-        # Fold the snapshot into a trailing REAL user msg (no synthetic user/user pair);
-        # strip old snapshots first. Scaffolding tails must not absorb it (provenance).
-        # Any snapshot merged at an earlier boundary is stripped first so repeated compactions refresh
-        # rather than accumulate todo state (#26981). Scaffolding tails (continuation marker, summary
-        # handoff, a bare stale snapshot row) must never absorb the snapshot: merging would upgrade them to
-        # "real user" evidence and break zero-user provenance (#69292), so those keep the flagged standalone
-        # append and the real-user preservation pass continues to see todo scaffolding, not human intent.
-        from agent.context_compressor import _append_text_to_content
-        merged = False
-        _tail = compressed[-1] if compressed and isinstance(compressed[-1], dict) else None
-        if _tail is not None and _tail.get("role") == "user":
-            _stripped = _strip_stale_todo_snapshot(_tail.get("content"))
-            _probe = {key: value for key, value in _tail.items() if key != "content"}
-            _probe["content"] = _stripped
-            if _is_real_user_message(_probe):
-                _snapshot_text = f"\n\n{todo_snapshot}" if isinstance(_stripped, str) and _stripped else todo_snapshot
-                _replace_message_content(_tail, _append_text_to_content(_stripped, _snapshot_text))
-                merged = True
-            elif (
-                _stripped != _tail.get("content") and not _message_text({"role": "user", "content": _stripped}).strip()
-            ):
-                # The tail was nothing but an earlier snapshot row —
-                # refresh it in place instead of stacking a duplicate.
-                _replace_message_content(_tail, todo_snapshot)
-                _tail["_todo_snapshot_synthetic"] = True
-                merged = True
-        if not merged:
-            compressed.append({"role": "user", "content": todo_snapshot, "_todo_snapshot_synthetic": True})
+    """Resolve live agent state, then fold it using the shared boundary operation."""
+    from agent.conversation_compression_todo import compaction_todo_snapshot, fold_todo_snapshot
+    snapshot, authoritative = compaction_todo_snapshot(
+        agent._todo_store, fallback=getattr(agent, "_compaction_todo_snapshot", None),
+        authoritative=getattr(agent, "_compaction_todo_authoritative", False) is True,
+    )
+    fold_todo_snapshot(compressed, snapshot, authoritative=authoritative,
+                       repair_sequence=agent._repair_message_sequence)
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

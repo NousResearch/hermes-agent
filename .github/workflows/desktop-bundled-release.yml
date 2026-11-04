@@ -1031,9 +1031,8 @@ jobs:
         # UDP 443 for every process for the rest of the job, so stapler, notarytool and
         # the build's own downloads and uploads all fall back to TCP. The rule loads into
         # a com.apple sub-anchor, which the runner's default ruleset already evaluates,
-        # so that ruleset stays as it is. Apple Silicon only: Intel Macs are unsupported
-        # (the macos-intel lane in scripts/releases/lanes.py).
-        if: matrix.target.label == 'darwin-arm64'
+        # so that ruleset stays as it is. The darwin matrix is Apple Silicon only, so
+        # every leg needs it.
         shell: bash
         run: |
           echo 'block return out quick proto udp to any port 443' | sudo pfctl -a com.apple/hermes-no-quic -f -

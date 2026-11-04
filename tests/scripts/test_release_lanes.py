@@ -36,6 +36,12 @@ def test_options_flatten_repeats_and_commas():
     assert lane_set.parse_list(None) is None
 
 
+def test_every_desktop_target_has_a_build_lane():
+    from scripts.releases.desktop_targets import MANIFEST_TARGETS
+    desktop = {target for target in lane_set.TARGET_LANE if not target.startswith("termux/")}
+    assert desktop == {f"{platform}/{arch}" for platform, arch in MANIFEST_TARGETS}
+
+
 def test_every_job_names_real_lanes():
     for job, needs in lane_set.JOB_LANES.items():
         assert needs <= {*lane_set.NAMES, *lane_set.DERIVED}, job
@@ -105,7 +111,7 @@ def test_a_pre_lanes_claim_reads_only_while_it_left_macos_intel_out():
     """Published pre-lanes claims carry includeMacosIntel:false; no build can honour true any more."""
     legacy = {"skipBundles": False, "skipTests": False}
     assert lane_set.claim_lanes({**legacy, "includeMacosIntel": False}) == lane_set.DEFAULT
-    with pytest.raises(ValueError, match="invalid"):
+    with pytest.raises(ValueError, match="invalid: it opts into macOS Intel.*no longer built"):
         lane_set.claim_lanes({**legacy, "includeMacosIntel": True})
 
 

@@ -294,6 +294,12 @@ def _run_worker_turns(agent, frame, history):
         # submitter and the dead-worker sweep quote WHY instead of a bare exit 1.
         if 'skill not found:' in str(exc):
             last_output = str(exc)
+            # A dead pin that slipped past the create/dispatch/admission gates is
+            # deterministic — every retry dies identically before the model. Book the
+            # EX_CONFIG exit so the FIRST occurrence parks the card instead of
+            # burning the retry ladder on identical deaths.
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            code = KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         raise
     finally:
         _record_worker_result(context, code, last_output)

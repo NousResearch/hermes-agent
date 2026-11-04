@@ -36,6 +36,9 @@ def test_request_body_byte_cap_compresses(message, status, body):
     "Invalid request body: temperature exceeds maximum allowed value",
     "tools[0].description content length exceeds maximum allowed",
     "response body size exceeds the maximum allowed",
+    "request size parameter page_size exceeds the maximum of 100",
+    # Token cap in byte wording (GitHub Models / Azure AI Inference, code tokens_limit_reached).
+    "Request body too large for gpt-4.1 model. Max size: 8000 tokens.",
 ])
 def test_field_or_response_length_errors_are_not_a_body_byte_cap(message):
     result = classify_api_error(_APIError(message, status_code=400))

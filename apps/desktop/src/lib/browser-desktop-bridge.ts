@@ -193,16 +193,22 @@ export function installBrowserDesktopBridge(): boolean {
     terminal: createBrowserTerminal({
       basePath: bootstrap.basePath,
       currentProfile,
-      // The host terminal of the gateway this window is on, relayed when it is not the serving one.
-      websocketUrl: profile => {
-        const connectionId = activeConnectionId()
+      currentConnection: activeConnectionId,
+      // The host terminal of the gateway the terminal started on, relayed when it is not the serving one.
+      websocketUrl: async (profile, connectionId) => {
+        if (!relays || connectionId === LOCAL_CONNECTION_ID) {
+          return ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
+        }
 
-        return relays && connectionId !== LOCAL_CONNECTION_ID
-          ? relays.socketUrl(connectionId, '/api/host-terminal', profile)
-          : ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile)
+        // A tab restored before this page listed its relayed gateways.
+        if (!relays.gateway(connectionId)) {
+          await relays.gateways()
+        }
+
+        return relays.socketUrl(connectionId, '/api/host-terminal', profile)
       },
-      defaultCwd: async profile =>
-        (await activeApi<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
+      defaultCwd: async (profile, connectionId) =>
+        (await activeApi<{ cwd?: string }>({ connectionId, path: '/api/fs/default-cwd', profile })).cwd || '',
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.
       onSignedOut: () => {

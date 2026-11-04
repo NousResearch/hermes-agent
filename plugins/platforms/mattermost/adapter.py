@@ -129,11 +129,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         Mattermost's posted WebSocket event contains only a sender ID, not a bot flag.  Keep the
         classification opt-in: an unknown account stays a human rather than silently changing its
-        authorization or delivery behavior.
+        authorization or delivery behavior. ``bot_users`` in config.yaml is read by the base
+        ``build_source``; ``MATTERMOST_BOT_USERS`` is its env spelling.
         """
-        extra = getattr(self.config, "extra", {}) or {}
-        configured = extra.get("bot_users", _get_scoped_secret("MATTERMOST_BOT_USERS", ""))
-        return str(user_id) in _channel_id_set(configured)
+        return str(user_id) in _channel_id_set(_get_scoped_secret("MATTERMOST_BOT_USERS", ""))
 
     # --- HTTP helpers ---
 
@@ -594,7 +593,10 @@ class MattermostAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id, is_bot=self._is_configured_bot_user(sender_id))
+            thread_id=thread_id, message_id=post_id,
+            # A bot account's post carries props.from_bot (a string "true" on the wire).
+            is_bot=str((post.get("props") or {}).get("from_bot", "")).lower() == "true"
+            or self._is_configured_bot_user(sender_id))
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,

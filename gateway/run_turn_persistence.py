@@ -126,6 +126,9 @@ class GatewayTurnPersistenceMixin:
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
         _silence_source = agent_result.get("queued_terminal_source", source)
+        # A bot peer expects no reply: its message may end the exchange in silence (#137027).
+        if getattr(_silence_source, "is_bot", False) and _silence_reply_expected is None:
+            _silence_reply_expected = False
         if _intentional_silence and not self._silence_allowed_for_source(
             _silence_source, _silence_kind, _silence_reply_expected, agent_result,
         ):
@@ -144,6 +147,10 @@ class GatewayTurnPersistenceMixin:
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
         # reads the same words on every surface.
+        if getattr(source, "is_bot", False) and (response == "(empty)" or agent_result.get("failed")):
+            # A failed or empty turn's text is runtime failure copy, never the model's answer: a bot
+            # peer would take it as a message to answer (#137027).
+            response = ""
         if response == "(empty)" and not _intentional_silence:
             from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
 
@@ -169,7 +176,10 @@ class GatewayTurnPersistenceMixin:
         # Fix for #18765.
         if not _intentional_silence:
             response = strip_trailing_silence_marker(response)
-            response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
+            # A bot peer gets the model's own words only: the runtime's retry hints and "not
+            # processed" lines are new inbound messages for its turn loop (#137027).
+            if not getattr(source, "is_bot", False):
+                response = _normalize_empty_agent_response(agent_result, response, history_len=len(history))
             response = _sanitize_gateway_final_response(source.platform, response)
 
         # The agent thread already updated the contextvar; propagate to SessionEntry + _save() only
@@ -713,6 +723,10 @@ class GatewayTurnPersistenceMixin:
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
         from gateway.session_results import record_unexecuted_failure
+        if getattr(source, "is_bot", False):
+            # The failure is recorded for the operator; the bot peer gets no apology to answer (#137027).
+            record_unexecuted_failure(t("gateway.errors.generic_failed"))
+            return None
         if getattr(e, "reason", None) == "launch_credentials_unavailable":
             # The session's own route key is gone or changed: /retry repeats it, /new is the way out.
             from agent.turn_failure_copy import launch_credentials_copy

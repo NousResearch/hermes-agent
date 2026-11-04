@@ -4723,6 +4723,8 @@ class BasePlatformAdapter(ABC):
         profile is stamped on ``source.profile`` for per-profile HERMES_HOME isolation."""
         def _opt(value) -> Optional[str]:
             return str(value) if value else None
+        from gateway.bot_loop_guard import configured_bot_user
+        is_bot = is_bot or configured_bot_user(getattr(self, "config", None), user_id)
         fields = dict(
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
             user_id=None if user_id is None or user_id == "" else str(user_id),

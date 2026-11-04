@@ -10,13 +10,13 @@ import hmac
 import ipaddress
 import json
 import logging
-import os
 import re
 import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
 from agent.proxy_bypass import is_loopback_host
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,15 @@ logger = logging.getLogger(__name__)
 
 def _startup_env(name: str) -> str:
     """One A2A setting from the active profile's scope, else the env. Inside a secondary
-    profile's scope a miss yields "" and never falls through to the default profile's env."""
+    profile's scope a miss yields "" and never falls through to the default profile's env.
+    Unscoped, the profile's own secret scope is the final rung: a systemd-style launch loads
+    the token into the secret store and scrubs the env var, so ``os.environ`` alone is not
+    authoritative at gateway startup (#148961). A token that exists nowhere still yields ""
+    — localhost-only stays fail-closed."""
     if _profile_scoped():
         from agent.secret_scope import get_secret
         return (get_secret(name) or "").strip()
-    return os.getenv(name, "").strip()
+    return str(_get_scoped_secret(name, "", external_fallback=True) or "").strip()
 
 
 def _parse_peer_tokens(raw: str) -> dict[str, str]:
@@ -71,7 +75,13 @@ class A2ASecurityContext:
     @classmethod
     def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
-        return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
+        raw_peer_tokens = _startup_env("A2A_PEER_TOKENS")
+        peer_tokens = _parse_peer_tokens(raw_peer_tokens)
+        if raw_peer_tokens and not peer_tokens:
+            logger.warning("A2A: A2A_PEER_TOKENS is set but parsed to zero name:token pairs "
+                           "(expected \"name:token,name:token\") — the listener stays localhost-only "
+                           "until the value is fixed.")
+        return cls(bearer_token=bearer_token, peer_tokens=tuple(peer_tokens.items()),
                    trusted_peers=_configured_trusted_peers(),
                    allow_all_users=_startup_env("A2A_ALLOW_ALL_USERS").lower() in {"1", "true", "yes"},
                    requested_host=_unbracket(_startup_env("A2A_HOST")) or "127.0.0.1", push_secret=_startup_env("A2A_PUSH_SECRET") or bearer_token)

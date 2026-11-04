@@ -15,7 +15,7 @@ resolved through :func:`_ra` so those patches keep working.
 """
 
 from __future__ import annotations
-
+import hashlib
 import json
 import logging
 import os
@@ -669,6 +669,19 @@ _CODEX_INCOMPLETE_NUDGE = (
 _CONTENT_POLICY_RECOVERY_HINT = (
     "Try rephrasing the request, narrowing the context, or "
     "adding a fallback provider with `hermes fallback add`."
+)
+
+# Latency threshold (seconds) below which a content_filter refusal with no
+# refusal text is considered an *input-side* rejection (the model never
+# started generating).  At or above this threshold the refusal is likely an
+# output-side filter and quarantine does not help.
+_REFUSAL_QUARANTINE_LATENCY_THRESHOLD = 1.0
+
+# Replacement hint shown after ≥2 consecutive refusals in the same session,
+# where the standard "try rephrasing" advice is no longer actionable.
+_CONTENT_POLICY_REPEATED_HINT = (
+    "히스토리가 거부되는 중. /drop 으로 마지막 tool result 를 삭제하거나 "
+    "새 세션을 시작하세요; 재시도는 또 거부됩니다."
 )
 
 
@@ -1838,6 +1851,9 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
+        # One-shot quarantine retry flag: set to True after replacing a
+        # suspected poisoning tool result so we don't loop back a second time.
+        _quarantine_retry_attempted = False
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -2496,6 +2512,79 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
+                    # ── Input-side poisoning quarantine ───────────────────
+                    # Heuristic: empty refusal text + sub-second latency +
+                    # most-recent assistant turn was a tool call → the input
+                    # classifier fired on the last tool *result*, not on the
+                    # user's prompt.  Replace the offending tool result with a
+                    # placeholder, persist, and retry exactly once.  If the
+                    # retry also refusal, fall through to the terminal path so
+                    # the loop never spins indefinitely.
+                    if (
+                        not _refusal_text
+                        and api_duration < _REFUSAL_QUARANTINE_LATENCY_THRESHOLD
+                        and not _quarantine_retry_attempted
+                    ):
+                        # Walk backwards in messages to find the last tool
+                        # result and confirm the assistant before it had
+                        # tool_calls (not just any stray tool message).
+                        _qr_last_tool_idx: int | None = None
+                        _qr_prev_had_tools = False
+                        for _qi in range(len(messages) - 1, -1, -1):
+                            _qm = messages[_qi]
+                            if _qm.get("role") == "tool" and _qr_last_tool_idx is None:
+                                _qr_last_tool_idx = _qi
+                            elif _qm.get("role") == "assistant":
+                                _qr_prev_had_tools = bool(_qm.get("tool_calls"))
+                                break
+
+                        if _qr_last_tool_idx is not None and _qr_prev_had_tools:
+                            _qr_msg = messages[_qr_last_tool_idx]
+                            _qr_orig = _qr_msg.get("content", "")
+                            # Normalise to str for hashing (Anthropic multi-part
+                            # lists are joined; plain strings used as-is).
+                            if isinstance(_qr_orig, list):
+                                _qr_str = "".join(
+                                    p.get("text", "") if isinstance(p, dict) else str(p)
+                                    for p in _qr_orig
+                                )
+                            else:
+                                _qr_str = str(_qr_orig) if _qr_orig else ""
+                            _qr_len = len(_qr_str)
+                            _qr_sha = hashlib.sha256(
+                                _qr_str.encode("utf-8", errors="replace")
+                            ).hexdigest()
+                            _qr_tool_name = _qr_msg.get("name", "unknown")
+                            _qr_placeholder = (
+                                f"[tool result quarantined after provider refusal: "
+                                f"{_qr_tool_name} {_qr_len}\uC790 sha256={_qr_sha[:16]}]"
+                            )
+                            # Replace in persisted message list.
+                            messages[_qr_last_tool_idx] = dict(_qr_msg)
+                            messages[_qr_last_tool_idx]["content"] = _qr_placeholder
+                            # Replace in api_messages (sent to provider this
+                            # iteration) — scan backwards to find the matching
+                            # tool entry regardless of system-message offset.
+                            for _qai in range(len(api_messages) - 1, -1, -1):
+                                if api_messages[_qai].get("role") == "tool":
+                                    api_messages[_qai] = dict(api_messages[_qai])
+                                    api_messages[_qai]["content"] = _qr_placeholder
+                                    break
+
+                            # Log forensic info only (never the original content).
+                            logger.warning(
+                                "%sRefusal quarantine: replaced last tool result "
+                                "with placeholder (tool=%s size=%d sha256=%s). "
+                                "Retrying once.",
+                                agent.log_prefix,
+                                _qr_tool_name,
+                                _qr_len,
+                                _qr_sha[:16],
+                            )
+                            agent._persist_session(messages, conversation_history)
+                            _quarantine_retry_attempted = True
+                            continue  # one-shot retry with sanitised history
+
                     # Deterministic for the unchanged prompt — never retry.
                     # Try a configured fallback once (a different model may not
                     # refuse); otherwise surface the refusal terminally.
@@ -2527,6 +2616,16 @@ def run_conversation(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
 
+                    # Track consecutive refusals in this session so we can
+                    # surface a more actionable hint on the second occurrence.
+                    _refusal_seq = getattr(agent, "_refusal_consecutive_count", 0) + 1
+                    agent._refusal_consecutive_count = _refusal_seq
+                    _recovery_hint = (
+                        _CONTENT_POLICY_REPEATED_HINT
+                        if _refusal_seq >= 2
+                        else _CONTENT_POLICY_RECOVERY_HINT
+                    )
+
                     _refusal_detail = (
                         f"Model's explanation: {_refusal_text}"
                         if _refusal_text
@@ -2536,9 +2635,14 @@ def run_conversation(
                         "⚠️  The model declined to respond to this request "
                         "(safety refusal — not a Hermes/gateway failure).\n\n"
                         f"{_refusal_detail}\n\n"
-                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        f"{_recovery_hint}"
                     )
 
+                    # Persist the refusal as an assistant message so the stored
+                    # history keeps user/assistant alternation; without it the
+                    # next user turn creates a user→user sequence that triggers
+                    # alternation-repair noise on every subsequent prompt.
+                    messages.append({"role": "assistant", "content": _refusal_response})
                     agent._cleanup_task_resources(effective_task_id)
                     agent._persist_session(messages, conversation_history)
                     return _content_policy_blocked_result(
@@ -6038,7 +6142,11 @@ def run_conversation(
                 # chokepoint below, after final_msg is built, so it catches
                 # every path that reaches turn finalization, not just this one.)
                 final_response = assistant_message.content or ""
-                
+                # A successful non-refusal response resets the consecutive-
+                # refusal counter so the next session-poisoning hint starts
+                # fresh from 1.
+                agent._refusal_consecutive_count = 0
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

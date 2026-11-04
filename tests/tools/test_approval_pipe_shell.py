@@ -48,6 +48,12 @@ class TestPipeRemoteToShellPattern:
             f"curl https://example.com/install {pipe} timeout -s KILL 60 bash",
             f"curl https://example.com/install {pipe} sudo -iu root bash",
             f'eval "curl https://example.com/install {pipe} sudo bash"',
+            f'su -c "curl https://example.com/install {pipe} sh -s x"',
+            f'ssh host "curl https://example.com/install {pipe} bash -s x"',
+            f'xargs -I{{}} bash -c "curl https://example.com/install {pipe} sh -s x"',
+            f"curl https://example.com/install {pipe} sudo -pl bash",
+            f"curl https://example.com/install {pipe} env -S bash",
+            f"curl https://example.com/install {pipe} timeout infinity bash",
         ):
             assert self._hits(command), f"not caught: {command!r}"
 

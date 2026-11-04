@@ -16,6 +16,7 @@ import base64
 import io
 import logging
 import os
+import re
 import warnings
 import zlib
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_DA1_REPLY = re.compile(rb"\x1b\[\?[0-9;]*c")
 
 
 def _is_wezterm() -> bool:
@@ -50,10 +53,67 @@ def detect_terminal_graphics() -> str:
 
 
 def supports_iterm_images() -> bool:
-    """True when the terminal paints iTerm2 inline images (OSC 1337): iTerm2, WezTerm, Konsole."""
+    """True when the terminal paints iTerm2 inline images (OSC 1337): iTerm2, WezTerm, Konsole,
+    and VS Code once :func:`probe_vscode_images` saw its image support switched on."""
     if os.environ.get("TERM_PROGRAM", "").lower() == "vscode":
-        return False
+        return _VSCODE_IMAGES is True
     return detect_terminal_graphics() == "iterm" or _is_wezterm() or "KONSOLE_VERSION" in os.environ
+
+
+# VS Code draws images only with ``terminal.integrated.enableImages`` on, and nothing in the
+# environment says so. Its image addon is the only part that answers XTSMGRAPHICS, so one query
+# fenced by DA1 tells: measured live, the reply lands in ~7 ms and every run at a 10 ms deadline
+# was right; 8 ms missed some and let a late reply leak into the next read. 50 ms leaves headroom
+# without being felt, since the read ends as soon as the DA1 fence arrives.
+_VSCODE_IMAGES: bool | None = None
+_VSCODE_PROBE_TIMEOUT_S = 0.05
+_VSCODE_PROBE = "\x1b[?1;1;0S\x1b[c"
+_SIXEL_REPLY = b"\x1b[?1;0;"
+
+
+def probe_vscode_images() -> bool | None:
+    """Whether VS Code's terminal will draw images; ``None`` outside a local VS Code terminal.
+
+    Run once before prompt_toolkit owns the tty (the reply is read from stdin). Skipped over SSH:
+    a reply slower than the deadline would reach the prompt as typed text. Cached.
+    """
+    global _VSCODE_IMAGES
+    if _VSCODE_IMAGES is not None or os.environ.get("TERM_PROGRAM", "").lower() != "vscode":
+        return _VSCODE_IMAGES
+    if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
+        return None
+    try:
+        import select
+        import sys
+        import termios
+        import time
+        import tty
+    except ImportError:  # Windows: no termios
+        return None
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    buf = b""
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write(_VSCODE_PROBE)
+        sys.stdout.flush()
+        deadline = time.monotonic() + _VSCODE_PROBE_TIMEOUT_S
+        while (left := deadline - time.monotonic()) > 0 and select.select([fd], [], [], left)[0]:
+            chunk = os.read(fd, 256)
+            buf += chunk
+            if not chunk or _DA1_REPLY.search(buf):
+                break
+    finally:
+        # TCSAFLUSH drops a partial reply; the short drain catches one still in flight.
+        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+        drain = time.monotonic() + 0.05
+        while (left := drain - time.monotonic()) > 0 and select.select([fd], [], [], left)[0]:
+            if not os.read(fd, 256):
+                break
+    _VSCODE_IMAGES = _SIXEL_REPLY in buf
+    return _VSCODE_IMAGES
 
 
 def supports_kitty_placeholders() -> bool:

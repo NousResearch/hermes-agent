@@ -2164,6 +2164,7 @@ cli:
     images_attached_other: "📎 {count} beelde aangeheg"
     command_interrupted: "Opdrag onderbreek."
     welcome: "Welkom by Hermes Agent! Tik jou boodskap of /help vir opdragte."
+    vscode_images_hint: "VS Code kan hier beelde in volle resolusie wys: skakel terminal.integrated.enableImages in die instellings aan."
     activated_skills_label: "Geaktiveerde vaardighede:"
     redaction_disabled_title: "⚠  Geheim-redigering is GEDEAKTIVEER"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). API-sleutels en tokens kan woordeliks in kletsuitvoer, sessie-JSON's en loglae verskyn. Stel {setting} in config.yaml om dit weer te aktiveer."

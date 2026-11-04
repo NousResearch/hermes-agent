@@ -18,15 +18,25 @@ of the scrollback.
 from __future__ import annotations
 
 import os
+import random
 import sys
 from collections.abc import Iterable
 
-from agent.terminal_image import InlineImage, half_block, local_image_path, render_inline_image, resolve_inline_mode
+from agent.terminal_image import (
+    InlineImage,
+    half_block,
+    local_image_path,
+    probe_vscode_images,
+    render_inline_image,
+    resolve_inline_mode,
+)
 
 _INDENT = "  "
 # Mirrors ui-tui/src/config/limits.ts INLINE_IMAGE_MAX_COLS/ROWS (the TUI's budget); keep them equal.
 _MAX_COLS = 64
 _MAX_ROWS = 16
+# Odds per launch of the "VS Code can show full images" hint: occasional, never every start.
+_VSCODE_HINT_ODDS = 0.2
 
 
 def _zero_width(seq: str) -> str:
@@ -54,6 +64,17 @@ def image_rows(image: InlineImage) -> list[tuple[str, str]]:
         draw = f"\x1b7{up}\x1b[{len(_INDENT)}C{_passthrough(image.transmit)}\x1b8"
         return [("", "")] * (image.rows - 1) + [("", draw)]
     return [(_INDENT + "".join(half_block(t, b) for t, b in row) + "\x1b[0m", "") for row in image.cells]
+
+
+def vscode_images_hint(configured) -> bool:
+    """Probe VS Code's image support before prompt_toolkit owns the tty; True when the
+    occasional "turn on VS Code images" hint should print this launch.
+
+    Only ``auto`` probes and hints: a pinned mode is the user's own choice.
+    """
+    if str(configured).strip().lower() != "auto" and configured not in (None, True):
+        return False
+    return probe_vscode_images() is False and random.random() < _VSCODE_HINT_ODDS
 
 
 def print_inline_images(cli, paths: Iterable) -> None:

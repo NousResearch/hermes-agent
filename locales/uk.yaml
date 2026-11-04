@@ -2164,6 +2164,7 @@ cli:
     images_attached_other: "📎 Прикріплено зображень: {count}"
     command_interrupted: "Команду перервано."
     welcome: "Вітаємо в Hermes Agent! Введіть повідомлення або /help для списку команд."
+    vscode_images_hint: "VS Code може показувати тут зображення в повній роздільній здатності: увімкніть terminal.integrated.enableImages у налаштуваннях."
     activated_skills_label: "Активовані навички:"
     redaction_disabled_title: "⚠  Приховування секретів ВИМКНЕНО"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Ключі API та токени можуть з'являтися у відкритому вигляді у виводі чату, JSON сеансів і журналах. Задайте {setting} у config.yaml, щоб увімкнути знову."

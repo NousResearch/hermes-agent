@@ -13,6 +13,8 @@ import asyncio
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from tests.gateway.relay.test_relay_live_cards import _connected_adapter
 
@@ -104,3 +106,55 @@ class TestAbandonOnTurnDeath:
         seals = [o for o in t.ops if o["op"] == "draft" and o.get("final")]
         assert seals[-1]["draft_id"] == 999
         assert seals[-1]["content"] == "new turn final"
+
+
+class _EditTransportAdapter(BasePlatformAdapter):
+    """Edit-capable adapter recording what each message finally shows."""
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="t"), Platform.DISCORD)
+        self.screen = {}
+
+    async def connect(self, *, is_reconnect=False):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        mid = f"m{len(self.screen) + 1}"
+        self.screen[mid] = content
+        return SendResult(success=True, message_id=mid)
+
+    async def edit_message(self, chat_id, message_id, content, *, finalize=False):
+        self.screen[message_id] = content
+        return SendResult(success=True, message_id=message_id)
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("shown", "sealed"), [
+    ("partial answer", "partial answer"),
+    ("```py\nx = 1", "```py\nx = 1\n```"),
+])
+async def test_stale_exit_seals_edit_transport_preview(shown, sealed):
+    """/stop or /new mid-stream on the edit transport: the preview keeps what the user
+    already saw, loses its live cursor, and nothing later is delivered or claimed."""
+    alive = [True]
+    adapter = _EditTransportAdapter()
+    sc = GatewayStreamConsumer(
+        adapter, "C1",
+        StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=" ▉"),
+        run_still_current=lambda: alive[0],
+    )
+    task = asyncio.create_task(sc.run())
+    sc.on_delta(shown)
+    await asyncio.sleep(0.1)
+    assert " ▉" in adapter.screen["m1"]
+    alive[0] = False
+    sc.on_delta(" stale tail")
+    await task
+    assert adapter.screen == {"m1": sealed}
+    assert sc.final_response_sent is False

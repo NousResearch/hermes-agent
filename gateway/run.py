@@ -5179,14 +5179,10 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     """Flush stdio, release the PID file + lock, stamp the clean exit, flush opt-in metrics, hard-exit.
     ``os._exit`` (not ``sys.exit``): SystemExit runs ``Py_FinalizeEx``, which joins every non-daemon
     thread — exactly the hang a wedged worker causes. It bypasses ``atexit``, so the metrics flush,
-    PID/lock release and the bounded log drain (file handlers sit behind a ``QueueListener`` thread)
-    are done here explicitly; graceful teardown is already complete by the time this runs. See #53107.
-    The atexit-registered ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never
-    run either. ``_stop_impl`` releases both on the full shutdown, but the EARLY exits — clean-fatal-config
-    (#51228) and startup-aborted-before-running — raise ``SystemExit`` right after ``runner.start()``
-    without ``_stop_impl``, so atexit was all that released them there; this backstop does now (#53107).
-    Both are idempotent (``remove_pid_file`` only unlinks this process's PID file; the lock release no-ops
-    once released): a no-op on the normal shutdown, the actual cleanup on the early exits.
+    PID/lock release, CPU profile and bounded log drain (``QueueListener`` thread) are done here explicitly.
+    The atexit ``remove_pid_file`` / ``release_gateway_runtime_lock`` (``start_gateway``) never run either:
+    ``_stop_impl`` releases both on full shutdown, but the EARLY exits (clean-fatal-config #51228,
+    startup-aborted) raise ``SystemExit`` without it, so this idempotent backstop does (#53107).
     """
     for stream in (sys.stdout, sys.stderr):
         with suppress(Exception):
@@ -5209,13 +5205,17 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
         flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows (bounded)
 
+    def _write_cpu_profile() -> None:  # --cpu-profile's atexit writer never runs past os._exit; no-op when off
+        from hermes_cli.cpu_profile import write_cpu_profile
+        write_cpu_profile()
+
     def _drain_logs() -> None:
         # os._exit bypasses the listener's atexit drain. Bounded, no restart — NOT flush_log_queue():
         # a listener wedged on the rotation lock would re-freeze shutdown in an unbounded stop() join.
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
 
-    for _step in (_release_locks, _mark_exited, _flush_metrics, _drain_logs):
+    for _step in (_release_locks, _mark_exited, _flush_metrics, _write_cpu_profile, _drain_logs):
         _best_effort(_step)
     os._exit(exit_code)
 

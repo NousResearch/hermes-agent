@@ -2350,8 +2350,11 @@ DEFAULT_CONFIG = {
         # (wrong-path wipe) safety net.
         "pre_update_backup": "quick",
         # Full backup zips to retain (older pruned after each success; floored to 1 so the newest is
-        # always kept). The quick snapshot always keeps exactly 1.
+        # always kept). Quick snapshot retention is configured separately below.
         "backup_keep": 5,
+        # Quick snapshots to retain per profile; the initiating profile's value
+        # applies to all profiles in the update. Minimum 1; large values use more disk.
+        "snapshot_keep": 1,
         # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
         # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset

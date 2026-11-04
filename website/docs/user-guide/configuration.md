@@ -226,6 +226,7 @@ an override that permits prompting can still interrupt a background check.
 updates:
   pre_update_backup: quick       # quick (state snapshot, default) | full (snapshot + HERMES_HOME zip) | off
   backup_keep: 5                 # Keep this many full pre-update backup zips
+  snapshot_keep: 1               # Quick snapshots per profile (minimum 1; more uses more disk)
   non_interactive_local_changes: stash  # stash | discard
   auto_switch_parked_branch: true       # auto-switch a clean, fully merged parked branch back to main
 ```

@@ -673,9 +673,10 @@ def _run_quick_snapshots() -> Optional[str]:
     """Quick snapshot of the root home plus every sibling profile; returns the root snapshot id."""
     from hermes_cli.update_cmd import _record_update_step
     from hermes_cli.backup import create_quick_snapshot
-    # Share the explicit recovery-set retention with full pre-update archives.
+    # Quick snapshots can be large; preserve the historical one-snapshot default.
+    # The initiating profile's setting applies to the entire update fleet.
     try:
-        keep = max(1, int(_load_updates_cfg().get("backup_keep", _PRE_UPDATE_SNAPSHOT_KEEP)))
+        keep = max(1, int(_load_updates_cfg().get("snapshot_keep", _PRE_UPDATE_SNAPSHOT_KEEP)))
     except (TypeError, ValueError):
         keep = _PRE_UPDATE_SNAPSHOT_KEEP
     snapshot_id = create_quick_snapshot(

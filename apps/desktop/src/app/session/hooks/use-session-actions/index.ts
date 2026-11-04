@@ -31,7 +31,7 @@ import {
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
-import { ownerPendingTurns, purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
+import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
@@ -2074,8 +2074,8 @@ export function useSessionActions({
 
         const reread = await rereadPageAfterResumeBarrier(resumed, prefetchedPage, storedSessionId, sessionRestScope)
 
-        if (reread) {
-          ;({ page: prefetchedResult, snapshot: localSnapshot, transcript: prefetchedTranscriptMessages } = reread)
+        if (reread.page) {
+          ;({ page: prefetchedResult, snapshot: localSnapshot, transcript: prefetchedTranscriptMessages } = reread.page)
         }
 
         if (!isCurrentResume()) {
@@ -2183,7 +2183,7 @@ export function useSessionActions({
         // snapshot cannot carry, and nothing once the owner's pending list shows the journaled turn finished.
         const inFlightRecovery = recoverInFlightTurnJournal(storedSessionId, preferredWithRuntimeChanges, {
           keepPending: resumedRunning,
-          owner: ownerPendingTurns(resumed.info?.pending_submissions)
+          owner: reread.owner
         })
 
         recoveredInFlightTail = inFlightRecovery.applied

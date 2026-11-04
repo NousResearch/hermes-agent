@@ -213,6 +213,34 @@ it.each([
   }
 )
 
+it('keeps folding the journal when the page that would show the finished reply cannot be re-read', async () => {
+  await journalDeadTab()
+  vi.mocked(getLatestSessionMessages)
+    .mockResolvedValueOnce({ session_id: storedId, messages: turnSoFar })
+    .mockRejectedValue(new Error('REST unavailable'))
+
+  const { result } = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: settledTurn.length,
+    running: false,
+    info: { pending_submissions: [] }
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+
+  const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+  const replies = rows.filter(row => row.role === 'assistant' && chatMessageText(row).trim())
+
+  expect(vi.mocked(getLatestSessionMessages)).toHaveBeenCalledTimes(2)
+  expect(replies.map(row => chatMessageText(row).trim())).toEqual(['Reading the issue'])
+  expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
 it('reads the page once when no journaled turn has finished', async () => {
   vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: settledTurn })
 

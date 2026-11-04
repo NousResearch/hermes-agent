@@ -225,3 +225,22 @@ async def test_the_roster_and_group_seating_read_one_set_of_local_bots(fleet):
     assert set(refused) == {'delta'}
     rows = (await fleet.call(fleet.connect('default', scope='host'), 'profiles.list'))['profiles']
     assert {row['path'] for row in rows} >= {str(bot.home) for bot in bots.values()}
+
+
+@pytest.mark.asyncio
+async def test_every_row_carries_the_avatar_flag_not_just_the_active_bots_own(fleet):
+    """The Desktop decides whether to fetch a row's art from ``has_avatar`` (pullServerAvatars),
+    and answers a row WITHOUT the flag by pushing its face-raster backfill over whatever art the
+    profile actually owns — so a discovered sibling's flag is a read of that profile's assets,
+    never a field only the routed profile's row carries."""
+    for name in ('alpha', 'beta', 'gamma'):
+        assets = fleet.homes[name] / 'assets'
+        assets.mkdir()
+        (assets / 'avatar.png').write_bytes(b'\x89PNG\r\n\x1a\n')
+
+    desktop = fleet.connect('default', scope='host')
+    rows = _rows(await fleet.call(desktop, 'profiles.list'))
+
+    assert rows['default']['has_avatar'] is False
+    for name in ('alpha', 'beta', 'gamma'):
+        assert rows[name]['has_avatar'] is True, rows[name]

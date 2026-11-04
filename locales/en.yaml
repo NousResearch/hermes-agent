@@ -1551,6 +1551,8 @@ platform:
     prompt_other: "✏️ Other (type answer)"
     prompt_expired: "⌛ That prompt is no longer waiting for an answer. Send your reply as a normal message."
 slash:
+  rewind:
+    description: "Rewind to an earlier prompt to edit & resend it, or fork from there (Esc Esc)"
   approve:
     description: "Approve a pending dangerous command"
   bg:
@@ -1778,6 +1780,20 @@ slash:
   quit:
     description: "Exit the CLI (use --delete to also remove session history)"
 cli:
+  backtrack:
+    title: "↺ Rewind — pick an earlier prompt"
+    keys_hint: "↑/↓ choose · Enter edit & resend · f fork from here · Esc close"
+    preview_label: "Prompt {number} of {total}:"
+    more_lines: "… ({count} more lines)"
+    editing_hint: "↺ Editing prompt {number} — Enter rewinds here and sends · Esc Esc cancels"
+    edit_cancelled: "↺ Rewind cancelled; nothing was removed."
+    rewound: "↺ Rewound to prompt {number} ({count} message(s) archived); sending the edit."
+    forked: "⑂ Forked before prompt {number}; the original session {parent} is unchanged. Edit the prompt below and press Enter to send."
+    nothing: "(._.) No earlier prompts to rewind to."
+    target_changed: "(x_x) The session changed since you picked prompt {number}; nothing was removed. Your edit is back in the composer."
+    invalid: "(._.) No prompt {value} — pick 1 to {total}."
+    usage: "Usage: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Rewind failed; history was not changed: {error}"
   modern:
     thought_for: "Thought for {seconds}s"
     thought: "Thought"

@@ -337,10 +337,13 @@ class InlineImage:
     cells: list[list[Cell]] = field(default_factory=list)
 
 
-def _image_id(path: Path) -> int:
-    """Stable per-file kitty image id: re-renders reuse the terminal copy, an edited file gets a new one."""
+def _image_id(path: Path, cols: int, rows: int) -> int:
+    """Stable kitty image id per file revision and cell grid: re-renders reuse the terminal copy, an
+    edited file gets a new one, and two sizes on screen at once each keep their own placement (kitty
+    holds one virtual placement per id)."""
     st = path.stat()
-    return _IMAGE_ID_BASE + zlib.crc32(f"{path.resolve()}:{st.st_mtime_ns}:{st.st_size}".encode()) % _IMAGE_ID_SPAN
+    key = f"{path.resolve()}:{st.st_mtime_ns}:{st.st_size}:{cols}x{rows}"
+    return _IMAGE_ID_BASE + zlib.crc32(key.encode()) % _IMAGE_ID_SPAN
 
 
 def _grid_for(width: int, height: int, *, max_cols: int, max_rows: int) -> tuple[int, int]:
@@ -398,7 +401,7 @@ def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows:
             return InlineImage(mode=mode, cols=cols, rows=rows, cells=downscale_cells(image, target_cols=cols, rows=rows))
         if mode == "iterm":
             return InlineImage(mode=mode, cols=cols, rows=rows, transmit=encode_iterm(image, cols=cols, rows=rows))
-        image_id = _image_id(source)
+        image_id = _image_id(source, cols, rows)
         return InlineImage(
             mode=mode, cols=cols, rows=rows, color=kitty_color_hex(image_id),
             transmit=encode_kitty_virtual(image, image_id=image_id, cols=cols, rows=rows),

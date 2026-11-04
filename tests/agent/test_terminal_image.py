@@ -201,6 +201,17 @@ def test_edited_file_gets_a_new_image_id(tmp_path):
     assert first is not None and second is not None and first.color != second.color
 
 
+def test_two_sizes_of_one_file_get_their_own_image_ids(tmp_path):
+    # kitty keeps one virtual placement per id: a shared id lets the later size repaint the earlier one.
+    path = _png(tmp_path / "a.png", (800, 400))
+    wide = render_inline_image(path, mode="kitty", max_cols=60, max_rows=16)
+    narrow = render_inline_image(path, mode="kitty", max_cols=20, max_rows=16)
+    again = render_inline_image(path, mode="kitty", max_cols=60, max_rows=16)
+    assert wide is not None and narrow is not None and again is not None
+    assert (wide.cols, wide.rows) != (narrow.cols, narrow.rows)
+    assert wide.color != narrow.color and wide.color == again.color
+
+
 def test_unreadable_image_renders_nothing(tmp_path):
     bogus = tmp_path / "bogus.png"
     bogus.write_bytes(b"not a png")

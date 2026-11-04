@@ -35,9 +35,17 @@ That uses your current config, keys, sessions, and skills.
 ## Simplified agent sidebar (opt-in)
 
 After startup, Hermes offers **Simplified agent mode** once. Choose **Yes, try it** for a sidebar
-with New session, pinned chats, and agents with their remaining chats nested underneath. Chat rows show their profile name on the right
-and retain the existing status indicators. Agents are grouped by gateway; clicking
-an agent opens its settings. New session keeps its existing behavior.
+with a global navigation rail beside New session, pinned chats, and chats nested under their agents.
+The rail opens Chats, Agent settings (the existing Profiles view), Skills, Capabilities,
+Library (Artifacts), and Routines (Scheduled jobs). Capabilities includes Connectors, Plugins,
+Tools, and Maintenance. The gear at the bottom opens an index of existing settings and utilities;
+these shortcuts preserve each destination's current profile and gateway scope.
+
+Enabled plugins that contribute pages appear above the session lists. Their rows open the page,
+and their gears open the matching plugin settings. Pinned chats also remain under their agents.
+Pinned rows show the profile name; rows under an agent show age and a pin marker when applicable.
+Agents are grouped by gateway; clicking an agent opens its settings. New session lets you choose
+an agent when there is more than one; Start blank uses the current gateway's default agent.
 
 | Original sidebar | Simplified agent sidebar |
 | --- | --- |

@@ -94,6 +94,7 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
@@ -191,32 +192,34 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
-registry.registerMany([
-  {
-    id: 'sessions',
-    area: 'panes',
-    // String fallback only (menus, drag ghosts); the tab itself renders
-    // `tabTitle` below so the strip follows `display.language` once it loads.
-    title: translateNow('sidebar.sessions'),
-    // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
-    // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
-    // its default-ish spot beside main, not a random same-placement stack.
-    data: {
-      placement: 'left',
-      collapsible: true,
-      dock: { pane: 'workspace', pos: 'left' },
-      revealAliases: ['chat-sidebar'],
-      // Standing chrome: no close gestures at all — the tab is shown/hidden
-      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
-      hideOnly: true,
-      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
-      tabTitleText: () => translateNow('sidebar.sessions'),
-      width: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
-      maxWidth: `${SIDEBAR_MAX_WIDTH}px`
-    },
-    render: () => <WiredPane part="sidebar" />
+const sessionsPane = {
+  id: 'sessions',
+  area: 'panes',
+  // String fallback only (menus, drag ghosts); the tab itself renders
+  // `tabTitle` below so the strip follows `display.language` once it loads.
+  title: translateNow('sidebar.sessions'),
+  // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
+  // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
+  // its default-ish spot beside main, not a random same-placement stack.
+  data: {
+    placement: 'left',
+    collapsible: true,
+    dock: { pane: 'workspace', pos: 'left' },
+    revealAliases: ['chat-sidebar'],
+    // Standing chrome: no close gestures at all — the tab is shown/hidden
+    // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+    hideOnly: true,
+    tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
+    tabTitleText: () => translateNow('sidebar.sessions'),
+    width: `${SIDEBAR_DEFAULT_WIDTH}px`,
+    minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
+    maxWidth: `${SIDEBAR_MAX_WIDTH}px`
   },
+  render: () => <WiredPane part="sidebar" />
+}
+
+registry.registerMany([
+  sessionsPane,
   {
     id: 'workspace',
     area: 'panes',
@@ -291,6 +294,20 @@ registry.registerMany([
     render: () => idle(<ReviewPaneContent />)
   }
 ])
+
+// Reserve the rail's 44px without consuming the chat list's minimum width or writing layout preferences.
+$simplifiedAgentMode.subscribe(enabled => {
+  const rail = enabled ? 44 : 0
+  registry.register({
+    ...sessionsPane,
+    data: {
+      ...sessionsPane.data,
+      width: `${SIDEBAR_DEFAULT_WIDTH + rail}px`,
+      minWidth: `${SIDEBAR_DEFAULT_WIDTH + rail}px`,
+      maxWidth: `${SIDEBAR_MAX_WIDTH + rail}px`
+    }
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Chrome contributions. The title bar and status bar are fixed chrome outside

@@ -10,6 +10,8 @@ export interface SimplifiedAgentsCopy {
   chats: string
   agents: string
   settings: string
+  library: string
+  routines: string
   feedbackTitle: string
   feedbackPlaceholder: string
   feedbackThanks: string
@@ -35,6 +37,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'Chats',
     agents: 'Agents',
     settings: 'Agent settings',
+    library: 'Library',
+    routines: 'Routines',
     feedbackTitle: 'Why switch back? (optional)',
     feedbackPlaceholder: 'Choose a reason',
     feedbackThanks: 'Thanks for the feedback.',
@@ -58,6 +62,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'Discussions',
     agents: 'Agents',
     settings: 'Paramètres de l’agent',
+    library: 'Bibliothèque',
+    routines: 'Routines',
     feedbackTitle: 'Pourquoi revenir en arrière ? (facultatif)',
     feedbackPlaceholder: 'Choisir une raison',
     feedbackThanks: 'Merci pour votre retour.',
@@ -81,6 +87,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'Chats',
     agents: 'Agenten',
     settings: 'Agenteneinstellungen',
+    library: 'Bibliothek',
+    routines: 'Routinen',
     feedbackTitle: 'Warum zurückwechseln? (optional)',
     feedbackPlaceholder: 'Grund auswählen',
     feedbackThanks: 'Danke für dein Feedback.',
@@ -104,6 +112,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'Chats',
     agents: 'Agentes',
     settings: 'Ajustes del agente',
+    library: 'Biblioteca',
+    routines: 'Rutinas',
     feedbackTitle: '¿Por qué volver? (opcional)',
     feedbackPlaceholder: 'Elige un motivo',
     feedbackThanks: 'Gracias por tus comentarios.',
@@ -127,6 +137,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'チャット',
     agents: 'エージェント',
     settings: 'エージェント設定',
+    library: 'ライブラリ',
+    routines: 'ルーチン',
     feedbackTitle: '元に戻した理由は？（任意）',
     feedbackPlaceholder: '理由を選択',
     feedbackThanks: 'ご意見ありがとうございます。',
@@ -149,6 +161,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: '聊天',
     agents: '智能体',
     settings: '智能体设置',
+    library: '资源库',
+    routines: '例行任务',
     feedbackTitle: '为什么切换回来？（可选）',
     feedbackPlaceholder: '选择原因',
     feedbackThanks: '感谢你的反馈。',
@@ -171,6 +185,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: '聊天',
     agents: '代理',
     settings: '代理設定',
+    library: '資料庫',
+    routines: '例行任務',
     feedbackTitle: '為什麼切換回來？（選填）',
     feedbackPlaceholder: '選擇原因',
     feedbackThanks: '感謝你的回饋。',
@@ -194,6 +210,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'Чаты',
     agents: 'Агенты',
     settings: 'Настройки агента',
+    library: 'Библиотека',
+    routines: 'Регулярные задачи',
     feedbackTitle: 'Почему вернулись? (необязательно)',
     feedbackPlaceholder: 'Выберите причину',
     feedbackThanks: 'Спасибо за отзыв.',
@@ -217,6 +235,8 @@ export const simplifiedAgentsCopy: Record<BundledLocale, SimplifiedAgentsCopy> =
     chats: 'المحادثات',
     agents: 'الوكلاء',
     settings: 'إعدادات الوكيل',
+    library: 'المكتبة',
+    routines: 'المهام الدورية',
     feedbackTitle: 'لماذا عدت للوضع السابق؟ (اختياري)',
     feedbackPlaceholder: 'اختر سببًا',
     feedbackThanks: 'شكرًا على ملاحظاتك.',

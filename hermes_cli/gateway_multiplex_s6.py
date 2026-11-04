@@ -11,6 +11,7 @@ the root slot" through :func:`fold_named_slot_intent` so they can never disagree
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -80,13 +81,47 @@ def park_named_slot(profile: str, manager=None) -> None:
     if manager.is_running(slot):
         manager.stop(slot)
         _wait_down(manager.scandir / slot)
-    (manager.scandir / slot / "down").touch()
+    _set_down_marker(manager.scandir / slot, down=True)
+
+
+def _set_down_marker(service_dir: Path, *, down: bool) -> None:
+    """Create or remove a slot's ``down`` file without following symlinks.
+
+    Slots live in the hermes-owned scandir, so a root caller must not ``touch`` through a ``down``
+    (or slot) symlink planted there. The slot is opened O_NOFOLLOW and ``down`` is handled
+    relative to that fd; an existing ``down`` entry is left untouched.
+    """
+    from hermes_cli.service_manager import _root_hermes_account
+
+    slot_fd = os.open(service_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if not down:
+            try:
+                os.unlink("down", dir_fd=slot_fd)  # unlink never follows a symlink
+            except FileNotFoundError:
+                pass
+            return
+        try:
+            fd = os.open("down", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644,
+                         dir_fd=slot_fd)
+        except FileExistsError:
+            return
+        try:
+            account = _root_hermes_account()
+            if account is not None:
+                os.fchown(fd, account.pw_uid, account.pw_gid)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(slot_fd)
 
 
 def _wait_down(service_dir: Path, timeout_ms: int = 15000) -> None:
-    from hermes_cli.service_manager import _s6_run
+    from hermes_cli.service_manager import S6ServiceManager
     try:
-        _s6_run("s6-svwait", "-d", "-t", str(timeout_ms), str(service_dir), timeout=timeout_ms / 1000 + 5)
+        # As root, s6-svwait would create its subscription FIFO through a hermes-owned event/.
+        S6ServiceManager._s6("s6-svwait", "-d", "-t", str(timeout_ms), str(service_dir),
+                             timeout=timeout_ms / 1000 + 5)
     except Exception:
         logger.debug("s6-svwait failed for %s", service_dir, exc_info=True)
 
@@ -95,7 +130,7 @@ def bring_root_slot_up(manager=None) -> str:
     """Start (or restart, so it re-reads its config) the root slot; returns a one-line description."""
     manager = manager or _manager()
     slot = named_slot_name("default")
-    (manager.scandir / slot / "down").unlink(missing_ok=True)
+    _set_down_marker(manager.scandir / slot, down=False)
     if manager.is_running(slot):
         manager.restart(slot)
         return "restarted the root gateway slot (s6)"

@@ -61,6 +61,21 @@ def test_card_names_the_launch_target_and_the_model_result_does_not():
     ("https://user:hunter2pass@mcp.example.com/mcp", None, None, "hunter2pass"),
     ("https://mcp.example.com/v1/tok_ABCdef123456GHIjkl7890/sse", None, None, "ABCdef123456"),
     (None, "node", ["x" * 380, "--api-key=sk-live-abcdef1234567890XYZ"], "abcdef1234567890"),
+    (None, "mysql", ["-u", "root", "-p", "hunter2"], "hunter2"),
+    (None, "mysql", ["-u", "root", "-phunter2xyz"], "hunter2xyz"),
+    (None, "srv", ["-P", "s3cr3tpw"], "s3cr3tpw"),
+    (None, "srv", ["-k", "plainkeyvalue"], "plainkeyvalue"),
+    (None, "srv", ["-t", "opaque-short-tok"], "opaque-short-tok"),
+    (None, "srv", ["-H", "Authorization: Basic dXNlcjpwYXNz"], "dXNlcjpwYXNz"),
+    (None, "srv", ["--header=X-Api-Key: plainvalue1"], "plainvalue1"),
+    (None, "srv", ["AbCdEf1234567890GhIjKl"], "AbCdEf1234"),
+    (None, "srv", ["--config", "eyJhcGlfa2V5IjoiYWJjZGVmZ2hpamtsbW5vcCJ9AifQ=="], "AifQ"),
+    (None, "srv", ["--config", "eyJhcGlfa2V5IjoiYWJjZGVmZ2hpamtsbW5vcCJ9AifQ=="], "eyJhcG"),
+    (None, "srv", ["--seed=0123456789abcdef0123456789abcdef"], "0123456789abcdef"),
+    ("https://mcp.example.com/mcp#opaquefragment", None, None, "opaquefragment"),
+    ("https://mcp.example.com/mcp?k=shortval", None, None, "shortval"),
+    ("https://mcp.example.com/v1/Ab3dEf9hIj12/sse", None, None, "Ab3dEf9hIj12"),
+    ("https://shortuser:pw@mcp.example.com/mcp", None, None, "shortuser"),
 ])
 def test_launch_line_never_carries_a_credential(url, command, args, secret):
     line = launch_target(url, command, args)["target"]
@@ -86,3 +101,17 @@ def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, s
     line = launch_target(None, "node", [arg])["target"]
     assert line == f"node {shown}"
     assert all(unicodedata.category(c) != "Cf" for c in line)
+
+
+@pytest.mark.parametrize("url,command,args,line", [
+    (None, "npx", ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects", "./data"],
+     "npx -y @modelcontextprotocol/server-filesystem /home/me/projects ./data"),
+    (None, "uvx", ["mcp-server-git", "--repository", "/srv/repos/hermes-agent-2024", "-v"],
+     "uvx mcp-server-git --repository /srv/repos/hermes-agent-2024 -v"),
+    (None, "node", ["packages/server2/dist/build/index20240101.js", "--port", "8080"],
+     "node packages/server2/dist/build/index20240101.js --port 8080"),
+    (None, "mysql", ["-p", "--verbose"], "mysql -p --verbose"),
+    ("https://mcp.linear.app/v1/sse", None, None, "https://mcp.linear.app/v1/sse"),
+])
+def test_launch_line_keeps_ordinary_commands_paths_and_urls(url, command, args, line):
+    assert launch_target(url, command, args)["target"] == line

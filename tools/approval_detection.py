@@ -218,7 +218,7 @@ _PIPE_WRAPPERS_RE = (
     + r")\s++)*+"
 )
 _PIPE_SHELL_TOKEN_RE = (
-    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"`\s;&|<>)]|$)"
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
 )
 # Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
 # must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.

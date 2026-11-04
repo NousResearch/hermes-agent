@@ -92,9 +92,18 @@ export const fr: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Fournisseur de mémoire actif",
+    noProvider: "aucun — intégré uniquement",
+    builtinLayer: "Couche intégrée",
+    builtinNote: "MEMORY.md et USER.md sont la mémoire propre de Hermes, indépendante de tout fournisseur externe. Les deux sont chargés dans les sessions par défaut ; les options de configuration (memory.memory_enabled / memory.user_profile_enabled) désactivent chacun. Un fournisseur s'y ajoute ; il ne les remplace jamais.",
+  },
+
   status: {
     actionFailed: "Action échouée",
     actionFinished: "Terminé",
+    actionFinishedOwed: "Mis à jour, mais encore en attente (relancez `hermes update` pour terminer)",
     actions: "Actions",
     agent: "Agent",
     activeSessions: "Sessions actives",
@@ -162,6 +171,7 @@ export const fr: Translations = {
     deleteSelectedConfirmMessage:
       "Cela supprime définitivement {count} sessions sélectionnées et tous leurs messages. Cette action est irréversible.",
     selectedSessionsDeleted: "{count} sessions supprimées",
+    selectedSessionsSkippedActive: "{deleted} supprimées ; {count} conservées car un tour est en cours",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
     newChat: "Nouveau chat",

@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-import plugins.platforms.telegram.adapter as tg_mod  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+import plugins.platforms.telegram.adapter as tg_mod
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter() -> TelegramAdapter:

@@ -226,7 +226,7 @@ class TestCmdGuiOnABundle:
         return SimpleNamespace(**base)
 
     @staticmethod
-    def _run(monkeypatch, repo: Path, args, *, launcher_ok: bool = True):
+    def _run(monkeypatch, repo: Path, args, *, launcher_ok: bool = True, setuid_helper_unusable: bool = False):
         """Run cmd_gui against *repo*, recording builds and launches."""
         builds: list[list[str]] = []
         launches: list[list[str]] = []
@@ -243,12 +243,13 @@ class TestCmdGuiOnABundle:
         import pm
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
         monkeypatch.setattr(source_build, "source_build_env", lambda env, **kwargs: dict(env))
-        monkeypatch.setattr(pm, "ensure", lambda name, *, base_env: SimpleNamespace(env=base_env))
+        monkeypatch.setattr(pm, "ensure", lambda name, *, base_env, **_: SimpleNamespace(env=base_env))
         monkeypatch.setattr(main_desktop, "_desktop_build_needed", lambda *a, **k: True)
         monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_helper_is_regular_file", lambda *a, **k: True)
+        monkeypatch.setattr(main_desktop, "_desktop_linux_needs_disable_setuid_sandbox", lambda *a: setuid_helper_unusable)
         monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
 
         with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \
@@ -269,11 +270,38 @@ class TestCmdGuiOnABundle:
         assert builds == []
         assert launches == [[str(launcher)]]
 
+    def test_a_non_setuid_helper_beside_a_working_userns_sandbox_is_bypassed(self, tmp_path, monkeypatch):
+        """The probe passed with --disable-setuid-sandbox, so the real launch must carry it too."""
+        repo, launcher = _host_bundle(tmp_path)
+        code, _builds, launches = self._run(monkeypatch, repo, self._args(), setuid_helper_unusable=True)
+
+        assert code == 0
+        assert launches == [[str(launcher), "--disable-setuid-sandbox"]]
+
+    def test_explicit_profile_reaches_the_bundled_launcher(self, tmp_path, monkeypatch):
+        """`hermes -p work desktop` on a bundle hands Electron --profile work."""
+        repo, launcher = _host_bundle(tmp_path / "app")
+        # HERMES_HOME outside the platform home is the root itself on every OS.
+        root = tmp_path / "hermes-root"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(sys, "argv", ["hermes", "-p", "work", "desktop"])
+        monkeypatch.setattr(cli_main, "_explicit_cli_profile", None)
+        cli_main._apply_profile_override()
+
+        code, builds, launches = self._run(monkeypatch, repo, self._args())
+
+        assert code == 0
+        assert builds == []
+        assert launches == [[str(launcher), "--profile", "work"]]
+
     def test_a_checkout_still_takes_the_build_ladder(self, tmp_path, monkeypatch):
         checkout = tmp_path / "hermes-agent"
         (checkout / "apps" / "desktop").mkdir(parents=True)
         (checkout / "apps" / "desktop" / "package.json").write_text("{}\n")
-        code, builds, launches = self._run(monkeypatch, checkout, self._args())
+        _code, builds, launches = self._run(monkeypatch, checkout, self._args())
 
         assert launches == []
         assert any("npm" in " ".join(cmd) for cmd in builds), builds

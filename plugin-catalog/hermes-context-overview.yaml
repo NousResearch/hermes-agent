@@ -1,0 +1,24 @@
+name: hermes-context-overview
+version: "1.2.5"
+repo: https://github.com/AsoTora/hermes-context-overview
+sha: 286c9dab17576ea641bc7448dd4835882e34e107
+title: Context Overview
+description: "Context window usage at a glance: a Context button in the status bar shows tokens used vs. budget, percent full, free space and an estimated breakdown by category, plus context-file sources. Works during a running turn. Read-only token/usage monitor, no backend."
+maintainer: AsoTora
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/AsoTora/hermes-context-overview#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/themes-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/screenshots/themes-light.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+image: "https://raw.githubusercontent.com/AsoTora/hermes-context-overview/286c9dab17576ea641bc7448dd4835882e34e107/docs/banner.png"

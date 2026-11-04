@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
+import { Loader } from '@/components/ui/loader'
 import { editLearningNode, getLearningNode, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { Lock } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { notify, notifyError } from '@/store/notifications'
@@ -13,6 +14,7 @@ import type { SkillInfo } from '@/types/hermes'
 
 import { DetailPane, ListStripMenu, type ListStripMenuToggle } from '../../master-detail'
 import { CatalogAlert } from '../catalog/catalog-alert'
+import { CatalogSwitch } from '../catalog/catalog-switch'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
 
@@ -224,9 +226,7 @@ function ScopedSkillsTab({
       {installedError instanceof Error ? installedError.message : null}
     </CatalogAlert>
   ) : installedPending ? (
-    <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
-      {t.skills.loading}
-    </p>
+    <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.skills.loading} type="rose-curve" />
   ) : null
 
   return (
@@ -259,13 +259,26 @@ function ScopedSkillsTab({
         profile={profile}
         query={query}
         renderInstalledAction={skill => (
-          <Switch
-            aria-label={skill.name}
-            checked={skill.enabled}
-            disabled={controlsDisabled}
-            onCheckedChange={enabled => void applyEnabled([skill], enabled)}
-            size="xs"
-          />
+          <span className="inline-flex items-center gap-2">
+            {skill.locked && (
+              <span
+                aria-label={t.skills.locked}
+                className="inline-flex text-(--ui-text-tertiary)"
+                data-slot="skill-locked-indicator"
+                role="img"
+                title={t.skills.lockHint}
+              >
+                <Lock className="size-3.5" />
+              </span>
+            )}
+            <CatalogSwitch
+              aria-label={skill.name}
+              checked={skill.enabled}
+              disabled={controlsDisabled}
+              onCheckedChange={enabled => void applyEnabled([skill], enabled)}
+              size="xs"
+            />
+          </span>
         )}
         renderInstalledDetail={skill => (
           <>

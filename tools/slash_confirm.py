@@ -18,7 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 # session_key -> {"confirm_id", "command", "handler", "created_at"}
-_pending: Dict[str, Dict[str, Any]] = {}
+_pending: dict[str, dict[str, Any]] = {}
 _lock = threading.RLock()
 
 # Older pending confirms are discarded when the session's next message arrives (buttons live
@@ -34,7 +34,7 @@ def register(session_key: str, confirm_id: str, command: str,
                                  "handler": handler, "created_at": time.time()}
 
 
-def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
+def get_pending(session_key: str) -> Optional[dict[str, Any]]:
     """Return a copy of the pending confirm dict for a session, or None."""
     with _lock:
         entry = _pending.get(session_key)
@@ -47,7 +47,7 @@ def clear(session_key: str) -> None:
         _pending.pop(session_key, None)
 
 
-def _is_stale(entry: Dict[str, Any], timeout: float) -> bool:
+def _is_stale(entry: dict[str, Any], timeout: float) -> bool:
     return time.time() - float(entry.get("created_at", 0) or 0) > timeout
 
 
@@ -87,37 +87,3 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"
     return result if isinstance(result, str) else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-
-def resolve_sync_compat(
-    loop: asyncio.AbstractEventLoop,
-    session_key: str,
-    confirm_id: str,
-    choice: str,
-) -> Optional[str]:
-    """Synchronous helper: schedule resolve() on a loop and wait for the result.
-
-    Used by platform callback paths that run on a different thread than the
-    event loop (e.g. Discord's button click handler in some configurations).
-    Prefer the async ``resolve()`` from an async context.
-    """
-    try:
-        from agent.async_utils import safe_schedule_threadsafe
-        fut = safe_schedule_threadsafe(
-            resolve(session_key, confirm_id, choice), loop,
-            logger=logger,
-            log_message="resolve_sync_compat scheduling failed",
-        )
-        if fut is None:
-            return None
-        return fut.result(timeout=30)
-    except Exception as exc:
-        logger.error("resolve_sync_compat failed: %s", exc)
-        return None
-# ---- END PLUGIN-COMPAT ----

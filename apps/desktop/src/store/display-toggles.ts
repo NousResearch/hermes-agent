@@ -25,7 +25,7 @@
 import type { ReadableAtom } from 'nanostores'
 
 import { readKey } from '@/lib/storage'
-import { $gateway, activeGateway } from '@/store/gateway'
+import { $gateway, activeGatewayRoute, requestGatewayForAgent } from '@/store/gateway'
 
 interface Mirror {
   configKey: string
@@ -36,12 +36,23 @@ interface Mirror {
 const mirrors: Mirror[] = []
 
 function push(mirror: Mirror): void {
-  void activeGateway()
-    ?.request('config.set', { key: mirror.configKey, value: mirror.read() ? 'true' : 'false' })
-    .catch(() => {
-      // Not connected, or a gateway too old to know the key. The next toggle
-      // and the next connection both try again.
-    })
+  // Routed by (connection, profile): `config.set` is `@_profile_scoped`, and on
+  // the shared-primary route an unscoped write edits the LAUNCH profile's
+  // config.yaml instead of the viewed one (#125969 class). A bare profile name
+  // would resolve through this machine's pool and miss a remote-only profile.
+  // Read from the registry: on a gateway switch this runs inside the $gateway
+  // notification, before the new route's profile atom is published.
+  // The profile also rides in the params: several profiles share one remote
+  // backend, and an unscoped write there edits its launch profile.
+  const { connectionId, profile } = activeGatewayRoute()
+  void requestGatewayForAgent(connectionId, profile, 'config.set', {
+    key: mirror.configKey,
+    profile,
+    value: mirror.read() ? 'true' : 'false'
+  }).catch(() => {
+    // Not connected, or a gateway too old to know the key. The next toggle
+    // and the next connection both try again.
+  })
 }
 
 /** Keep `display.<configKey>` on the live gateway in step with a renderer atom. */

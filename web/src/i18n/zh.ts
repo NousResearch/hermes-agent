@@ -91,9 +91,18 @@ export const zh: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "当前记忆提供方",
+    noProvider: "无 — 仅内置",
+    builtinLayer: "内置层",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的记忆，独立于任何外部提供方。两者默认都会载入会话；配置开关 (memory.memory_enabled / memory.user_profile_enabled) 可分别关闭。外部提供方是对它们的补充，绝不会取代它们。",
+  },
+
   status: {
     actionFailed: "操作失败",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步骤（重新运行 `hermes update` 以完成）",
     actions: "操作",
     agent: "代理",
     activeSessions: "活跃会话",
@@ -160,6 +169,7 @@ export const zh: Translations = {
     deleteSelectedConfirmMessage:
       "此操作将永久删除所选的 {count} 个会话及其所有消息。无法撤销。",
     selectedSessionsDeleted: "已删除 {count} 个会话",
+    selectedSessionsSkippedActive: "已删除 {deleted} 个；{count} 个因仍有回合运行中而保留",
     failedToDeleteSelected: "删除所选会话失败",
     resumeInChat: "在对话中继续",
     newChat: "新对话",

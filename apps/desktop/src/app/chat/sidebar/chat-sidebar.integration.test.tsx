@@ -8,7 +8,15 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
+import {
+  $pinnedSessionIds,
+  $sidebarMessagingOpenIds,
+  $sidebarProjectFilter,
+  $sidebarShowArchived,
+  $sidebarStatusFilter,
+  setSidebarAgentsGrouped,
+  setSidebarGrouping
+} from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import { $projectTree } from '@/store/projects'
@@ -225,6 +233,61 @@ describe('ChatSidebar cold-start load failure', () => {
   })
 })
 
+// #146510: see SidebarPinnedEmptyState.
+describe('ChatSidebar pinned empty state under filters', () => {
+  beforeEach(() => {
+    $sessions.set(sessionRows)
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sidebarStatusFilter.set([])
+    $sidebarProjectFilter.set([])
+    $sidebarShowArchived.set(false)
+    $pinnedSessionIds.set([])
+    $sessions.set([])
+    $sessionsLoading.set(true)
+  })
+
+  it('names the filter when it hides every pin', () => {
+    $sessions.set([{ ...sessionRows[0], pinned: true }, sessionRows[1]])
+    $pinnedSessionIds.set(['tile-one'])
+    $sidebarStatusFilter.set(['working'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByText('Tile one')).toBeNull()
+    expect(screen.queryByText('Shift-click a chat to pin')).toBeNull()
+    // Pinned and Sessions both report the filter.
+    expect(screen.getAllByText('No sessions match these filters')).toHaveLength(2)
+  })
+
+  it('keeps the pin hint when nothing is pinned and no filter is on', () => {
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Shift-click a chat to pin')).toBeTruthy()
+    expect(screen.queryByText('No sessions match these filters')).toBeNull()
+  })
+
+  it('keeps the pin hint when the only filter is a project id the tree does not resolve', () => {
+    $sidebarProjectFilter.set(['/repos/gone'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Shift-click a chat to pin')).toBeTruthy()
+  })
+
+  it('drops the pin hint in the Archived view when Pinned is empty', () => {
+    $sidebarShowArchived.set(true)
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.queryByText('Shift-click a chat to pin')).toBeNull()
+    expect(screen.getAllByText('No sessions match these filters')).toHaveLength(2)
+  })
+})
+
 // Entering a project is a scope switch: the conversation main is showing keeps
 // its workspace, so Files/Review and the composer's Git context can't drift to
 // the project while the transcript stays on the old chat (#72772).
@@ -342,6 +405,87 @@ describe('ChatSidebar section labels', () => {
 
     expect(screen.getByText('Sessions')).toBeTruthy()
     expect(screen.queryByText('Projects')).toBeNull()
+  })
+})
+
+describe('ChatSidebar empty-profile sections', () => {
+  // A profile with no normal sessions but messaging threads / cron jobs must
+  // still show them: the session area (and the sections inside it) is gated by
+  // showSessionSections, which used to key only on normal-session visibility
+  // and collapsed these profiles to the blank state (#63593).
+  const telegramThread = (id: string, last_active: number) =>
+    makeSessionInfo({ connection_id: 'local', id, last_active, profile: 'default', source: 'telegram', title: id })
+
+  beforeEach(() => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [{ id: 'local', label: 'This computer', kind: 'local', tokenSet: false, tokenPreview: null }]
+    } as NonNullable<typeof $connectionsRegistry.value>)
+    $profiles.set([{ name: 'default', is_default: true }] as typeof $profiles.value)
+    $sessions.set([])
+    $messagingSessions.set([telegramThread('tg-one', 60), telegramThread('tg-two', 30)])
+    $messagingTruncated.set(false)
+    $sidebarMessagingOpenIds.set(['telegram'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $sessions.set([])
+  })
+
+  it('shows the messaging section for a profile with no normal sessions', () => {
+    const { container } = renderSidebar('/', 'chat')
+
+    // The Telegram platform section renders with its threads…
+    expect(screen.getAllByText('Telegram').length).toBeGreaterThan(0)
+    expect(screen.getByText('tg-one')).toBeTruthy()
+    // …and the sidebar did not collapse to the blank state: the search field
+    // only renders inside the session area, so its presence proves the area
+    // (and the messaging sections inside it) rendered.
+    expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+  })
+
+  it('still shows the blank state when a profile has nothing at all', () => {
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+
+    // SidebarBlankState: a centered "No sessions yet" plus a "New project"
+    // button, rendered INSTEAD of the whole session area (search included).
+    const { container } = renderSidebar('/', 'chat')
+
+    expect(container.textContent).toContain('No sessions yet')
+    expect(screen.queryByPlaceholderText('Search sessions…')).toBeNull()
+  })
+
+  it('shows a section per profile when several profiles have no chats anywhere', () => {
+    $messagingSessions.set([])
+    $sidebarMessagingOpenIds.set([])
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    setShowAllProfiles(true)
+    setSidebarGrouping('profile')
+
+    try {
+      const { container } = renderSidebar('/', 'chat')
+
+      const groups = [...container.querySelectorAll<HTMLElement>('[data-gateway-group]')].map(
+        node => node.dataset.gatewayGroup
+      )
+
+      expect(screen.getByPlaceholderText('Search sessions…')).toBeTruthy()
+      expect(groups.some(id => id?.includes('"default"'))).toBe(true)
+      expect(groups.some(id => id?.includes('"work"'))).toBe(true)
+    } finally {
+      setSidebarGrouping('date')
+      setShowAllProfiles(false)
+    }
   })
 })
 

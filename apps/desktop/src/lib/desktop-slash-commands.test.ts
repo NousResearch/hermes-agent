@@ -7,7 +7,9 @@ import {
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   filterDesktopCommandsCatalog,
+  filterDesktopSubcommandCompletions,
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
@@ -89,6 +91,52 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
   })
 
+  it('hands the /skills write-approval subcommands to the backend, keeping the hub mutations off the wire', () => {
+    // #98330: the registry declares `desktop_subcommands` on /skills so the
+    // review slice (pending/approve/reject/diff/approval) is exec-routed
+    // while the CLI-hub mutations (search/install/…) stay refused — an
+    // allowlisted invocation execs, everything else renders the gate message.
+    expect(isDesktopSlashCommand('/skills', 'pending')).toBe(true)
+    expect(isDesktopSlashCommand('/skills', '  approve 9f2c1a ')).toBe(true)
+
+    for (const sub of ['reject 9f2c1a', 'diff 9f2c1a', 'approval on']) {
+      expect(isDesktopSlashCommand('/skills', sub)).toBe(true)
+    }
+
+    // The exec gate is desktopSubcommandUnavailableMessage: the hub mutations
+    // render a refusal message instead of reaching the wire, and a bare
+    // /skills never execs into the interactive hub from the desktop.
+    expect(desktopSubcommandUnavailableMessage('/skills', 'search')).toContain('not available in the desktop app')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'install gif-search')).toContain(
+      'not available in the desktop app'
+    )
+    expect(desktopSubcommandUnavailableMessage('/skills', 'audit')).toContain('not available in the desktop app')
+    expect(desktopSubcommandUnavailableMessage('/skills', '')).toContain('needs a subcommand here')
+    expect(desktopSubcommandUnavailableMessage('/skills', '   ')).toContain('needs a subcommand here')
+    expect(desktopSubcommandUnavailableMessage('/skills', 'pending')).toBeNull()
+
+    // Completion never suggests a subcommand the gate would refuse.
+    const subs = (items: readonly { text?: string }[]) => items.map(item => item.text)
+    expect(
+      subs(
+        filterDesktopSubcommandCompletions('/skills ', [{ text: 'pending review' }, { text: 'install demo' }], {
+          isArgCompletion: true
+        })
+      )
+    ).toEqual(['pending review'])
+    expect(
+      subs(filterDesktopSubcommandCompletions('/skills ap', [{ text: 'approval on' }], { isArgCompletion: true }))
+    ).toEqual(['approval on'])
+    // Value completion for a blocked hub mutation stays empty.
+    expect(
+      filterDesktopSubcommandCompletions('/skills install ', [{ text: 'demo' }], { isArgCompletion: true })
+    ).toEqual([])
+    // Command-token completions pass through untouched.
+    expect(subs(filterDesktopSubcommandCompletions('/sk', [{ text: '/skills' }], { isArgCompletion: false }))).toEqual([
+      '/skills'
+    ])
+  })
+
   it('groups complete.slash rows by backend kind, not the desktop table', () => {
     // A registry command the table has never heard of is still a command.
     expect(slashCompletionGroup('/refine', 'command')).toBe('Commands')
@@ -125,8 +173,8 @@ describe('desktop slash command curation', () => {
   })
 
   it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    // /save is an action now: it renders on the owner (session.export) and writes through Electron (T11).
     const expected = {
-      '/save': 'session.save',
       '/status': 'session.status'
     } as const
 
@@ -150,17 +198,8 @@ describe('desktop slash command curation', () => {
     // prompt.background RPC since #97635 (the slash worker's completion
     // print lands after the capture window closes, so the result never
     // reached the originating conversation).
-    const execNames = [
-      '/debug',
-      '/goal',
-      '/personality',
-      '/queue',
-      '/retry',
-      '/rollback',
-      '/tools',
-      '/undo',
-      '/version'
-    ]
+    // /undo /retry /steer /queue are local actions now: the shared gateway refuses them as exec.
+    const execNames = ['/debug', '/goal', '/personality', '/tools', '/version']
 
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
@@ -180,6 +219,12 @@ describe('desktop slash command curation', () => {
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+    // Help advertises `/clear` as "start a new session". On the TUI that
+    // also clears the terminal screen; on desktop it must take the same
+    // path as `/new` instead of being marked terminal-only (#95779).
+    expect(isDesktopSlashSuggestion('/clear')).toBe(false)
+    expect(isDesktopSlashCommand('/clear')).toBe(true)
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
   })
 
   it('surfaces an alias the user typed exactly, gated on desktop availability (#57641)', () => {
@@ -297,9 +342,10 @@ describe('desktop slash command curation', () => {
   it('resolves commands and aliases to their declared surface', () => {
     expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    expect(desktopSlashUnavailableMessage('/clear')).toBeNull()
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })
@@ -375,6 +421,15 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
       }
 
       expect(isDesktopSlashSuggestion(name)).toBe(false)
+    }
+  })
+
+  it('runs a typed /approve or /deny on the owner like every surface (the approval card stays approval.respond)', () => {
+    for (const name of ['/approve', '/deny']) {
+      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
+      expect(isDesktopSlashCommand(name, 'all')).toBe(true)
+      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
+      expect(desktopSlashUnavailableMessage(name)).toBeNull()
     }
   })
 

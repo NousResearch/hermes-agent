@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { resolveDesktopHermesHome } from './data-paths'
+
 // macOS apps launched from Finder/Dock inherit only /usr/bin:/bin:/usr/sbin:/sbin,
 // which misses Homebrew and user-installed CLI tools (codex, git credential
 // helpers). Hermes' own managed tools need no PATH help — the backend composes
@@ -182,16 +184,51 @@ function profileBackendParentEnv({
 }
 
 /**
+ * PATH with the entries under the PM store (HERMES_RUNTIME_DIR, else
+ * <hermes home>/tools, as pm.environments.store_root resolves it) moved to the
+ * front, every other entry kept in order. Hermes's own children must run the
+ * store's uv/node/npm, but shell-path.ts puts the user's login-shell entries
+ * (nvm, Homebrew, ~/.local/bin) ahead of the inherited PATH, which is where
+ * `hermes desktop` put the store dirs.
+ */
+function storeFirstPath(
+  pathValue: string,
+  { currentEnv = process.env, platform = process.platform, homedir = os.homedir() }: any = {}
+) {
+  const pathModule = pathModuleForPlatform(platform)
+  const delimiter = delimiterForPlatform(platform)
+  const hermesHome = resolveDesktopHermesHome({ home: homedir, env: currentEnv, platform })
+  const roots = [currentEnv?.HERMES_RUNTIME_DIR, pathModule.join(hermesHome, 'tools')].filter(Boolean)
+
+  const owned = (entry: string) =>
+    roots.some(root => {
+      const relative = pathModule.relative(pathModule.resolve(root), pathModule.resolve(entry))
+
+      return !relative.startsWith('..') && !pathModule.isAbsolute(relative)
+    })
+
+  const entries = String(pathValue || '').split(delimiter)
+
+  return appendUniquePathEntries([entries.filter(entry => entry && owned(entry)), entries], { delimiter })
+}
+
+/**
  * The environment for the spawned Python backend. Electron knows ONE thing:
  * where the interpreter is (by convention). Everything else — managed tool
  * PATHs, browser paths, node — is composed in-process by pm when the backend
  * spawns tools. PYTHONPATH/PYTHONHOME are scrubbed so an inherited value
- * can't make the backend import modules from another checkout.
+ * can't make the backend import modules from another checkout. Store dirs
+ * already on the inherited PATH stay first (storeFirstPath).
  */
-function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.platform }: any = {}) {
+function buildDesktopBackendEnv({
+  currentEnv = process.env,
+  platform = process.platform,
+  homedir = os.homedir()
+}: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const key = pathEnvKey(currentEnv, platform)
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
+  const inherited = storeFirstPath(currentEnv?.[key] || '', { currentEnv, platform, homedir })
 
   return {
     PYTHONPATH: '',
@@ -203,7 +240,7 @@ function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.p
     // pre-bootstrap tracebacks) still decodes with the locale default without
     // this. User's explicit setting wins. Re-port of PR #56499 (echoriver89).
     PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
-    [key]: appendUniquePathEntries([currentEnv?.[key] || '', saneEntries], { delimiter })
+    [key]: appendUniquePathEntries([inherited, saneEntries], { delimiter })
   }
 }
 
@@ -214,5 +251,6 @@ export {
   normalizeHermesHomeRoot,
   pathEnvKey,
   POSIX_SANE_PATH_ENTRIES,
-  profileBackendParentEnv
+  profileBackendParentEnv,
+  storeFirstPath
 }

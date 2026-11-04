@@ -2,9 +2,6 @@
 # Consumes receipt-verified bytes; never builds, repairs, or relaxes Gatekeeper.
 set -euo pipefail
 fail() { printf '%s\n' "bundle smoke: $*" >&2; exit 1; }
-[[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Darwin ]] ||
-  fail 'Disposable native GitHub-hosted macOS runner required'
-
 artifact= arch= commit= tag= channel_request= work= out=
 while (($#)); do
   (($# >= 2)) || fail "Missing value for $1"

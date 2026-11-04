@@ -14,7 +14,7 @@ from typing import Any, Dict
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
 # window_id) / targeting (element, coordinate, button, modifiers) / drag / scroll /
 # set_value / type-key-wait / focus_app / delivery ladder / return shape.
-_PROPERTIES: Dict[str, Any] = {
+_PROPERTIES: dict[str, Any] = {
     "action": {
         "type": "string",
         "enum": [
@@ -185,10 +185,10 @@ _PROPERTIES: Dict[str, Any] = {
     },
 }
 
-COMPUTER_USE_SCHEMA: Dict[str, Any] = {
+COMPUTER_USE_SCHEMA: dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver: screenshots, mouse, keyboard, scroll, drag. macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
@@ -203,6 +203,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "parameters": {"type": "object", "properties": _PROPERTIES, "required": ["action"]},
 }
 
-def get_computer_use_schema() -> Dict[str, Any]:
+def get_computer_use_schema() -> dict[str, Any]:
     """Return the generic OpenAI function-calling schema."""
     return COMPUTER_USE_SCHEMA

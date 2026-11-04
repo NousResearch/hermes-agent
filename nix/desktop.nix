@@ -31,15 +31,32 @@
   ...
 }:
 let
-  # Each flag goes on its own continued line, and the leading backslash is
-  # inside the generated string. An empty attribute set then adds no text at
-  # all, and cannot leave a backslash above a blank line. That fault ends the
-  # makeWrapper command early, and the next flag runs as a shell command.
-  extraEnvFlags = lib.concatMapStrings (
-    name: " \\\n      --set ${name} ${lib.escapeShellArg (toString extraEnv.${name})}"
-  ) (lib.attrNames extraEnv);
+  wrapperEnv = {
+    # set HERMES_DESKTOP_HERMES to the absolute path of the nix-built `hermes`
+    # binary so the deployment override selects our fully wrapped hermes install.
+    HERMES_DESKTOP_HERMES = lib.getExe hermesAgent;
+    ELECTRON_IS_DEV = "0";
+  }
+  # extraEnv overrides the defaults
+  // extraEnv;
 
-  extraRunFlags = lib.concatMapStrings (line: " \\\n      --run ${lib.escapeShellArg line}") extraRun;
+  wrapperArgs = [
+    "--add-flags"
+    "--enable-features=WaylandWindowDecorations"
+    "--add-flags"
+    "${placeholder "out"}/share/hermes-desktop"
+  ]
+  ++ lib.concatLists (
+    lib.mapAttrsToList (name: value: [
+      "--set"
+      name
+      (toString value)
+    ]) wrapperEnv
+  )
+  ++ lib.concatMap (line: [
+    "--run"
+    line
+  ]) extraRun;
 
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
@@ -117,7 +134,7 @@ let
 
       pushd apps/desktop
 
-        npm run postbuild
+        node scripts/assert-dist-built.mjs
 
         # validate staged node-pty native binary is present.
         STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
@@ -172,16 +189,9 @@ stdenv.mkDerivation {
     substituteInPlace $out/share/hermes-desktop/dist/electron-main.mjs \
       --replace-fail "process.resourcesPath" "'$out/share/hermes-desktop'"
 
-    # Wrap the nixpkgs electron binary to launch our app.  Set
-    # HERMES_DESKTOP_HERMES to the absolute path of the nix-built `hermes`
-    # binary so the deployment override selects our fully wrapped binary
-    # before any mutable managed install — venv with all deps,
-    # bundled skills/plugins, runtime PATH (ripgrep/git/ffmpeg/etc).
-    # No reimplementation of the agent resolver in the wrapper.
+    # Wrap the nixpkgs electron binary to launch our app.
     makeWrapper ${lib.getExe electron} $out/bin/hermes-desktop \
-      --add-flags "$out/share/hermes-desktop" \
-      --set HERMES_DESKTOP_HERMES "${lib.getExe hermesAgent}" \
-      --set ELECTRON_IS_DEV 0${extraEnvFlags}${extraRunFlags}
+      ${lib.escapeShellArgs wrapperArgs}
 
     # XDG launcher entry
     mkdir -p $out/share/applications $out/share/icons/hicolor/1024x1024/apps
@@ -191,7 +201,8 @@ stdenv.mkDerivation {
     cp ${../hermes_cli/linux_desktop_entry.py} "$PYTHONPATH/linux_desktop_entry.py"
     export DESKTOP_EXEC="$out/bin/hermes-desktop"
     export DESKTOP_ICON="$out/share/icons/hicolor/1024x1024/apps/hermes.png"
-    python3 -c 'import os; from linux_desktop_entry import render_desktop_entry; print(render_desktop_entry(os.environ["DESKTOP_EXEC"], os.environ["DESKTOP_ICON"]))' > $out/share/applications/hermes.desktop
+    entry_name=$(python3 -c 'from linux_desktop_entry import DESKTOP_ENTRY_NAME; print(DESKTOP_ENTRY_NAME)')
+    python3 -c 'import os; from linux_desktop_entry import render_desktop_entry; print(render_desktop_entry(os.environ["DESKTOP_EXEC"], os.environ["DESKTOP_ICON"]))' > "$out/share/applications/$entry_name"
     runHook postInstall
   '';
 

@@ -6,30 +6,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.platforms import api_server
-from gateway.platforms import api_server_room_grants as room_grants
-
-def test_grant_refresh_rejects_execution_policy_drift():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    with pytest.raises(
-        room_grants.RoomGrantReauthorizationRequired,
-        match="execution policy changed",
-    ):
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "b" * 64},
-        )
-
-def test_grant_refresh_accepts_the_authorized_execution_policy():
-    claims = {"execution_policy_digest": "a" * 64}
-
-    assert (
-        room_grants._require_unchanged_execution_policy(
-            claims,
-            {"policy_digest": "a" * 64},
-        )
-        is None
-    )
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch

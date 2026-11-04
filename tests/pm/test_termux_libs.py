@@ -248,7 +248,7 @@ def test_termux_pass_reports_a_dropped_package_as_a_failure(tmp_path, monkeypatc
     termux_libs.save_table({"libs": {"gone": row}}, table_path)
     monkeypatch.setattr(termux_libs, "table_path", lambda: table_path)
     monkeypatch.setattr(cli, "_lockfile", lambda: _lockfile(tmp_path, {}))
-    monkeypatch.setattr(termux_libs, "index", lambda: {})
+    monkeypatch.setattr(termux_libs, "index", dict)
     assert cli._termux_pass(check=False) == 1
     assert "no longer carries it" in capsys.readouterr().out
     assert json.loads(table_path.read_text(encoding="utf-8"))["libs"]["gone"] == row

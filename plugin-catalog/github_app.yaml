@@ -1,0 +1,33 @@
+name: github_app
+repo: https://github.com/himanusia/hermes-github-app-plugin
+sha: 2adfd020f93a5d71a563e94c88738fb8e64335f8
+subdir: github_app
+version: "0.1.0"
+description: >-
+  GitHub and GitHub Enterprise tools with bot-first attribution and approval-gated issue/PR writes.
+  Disclosure — authenticates as a GitHub App from GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID and a
+  private key in GITHUB_APP_PRIVATE_KEY or GITHUB_APP_PRIVATE_KEY_PATH/_FILE (read from the profile
+  env or HERMES_HOME/.env, held in memory only, never written or logged), falling back to
+  GITHUB_TOKEN/GH_TOKEN or `gh auth token` when no App variables are set, and reports which identity
+  acted in every result. Talks only to https://api.github.com or the operator-configured
+  GITHUB_API_URL / settings.api_url (HTTPS, no redirects; no tool argument can change the host).
+  Issue/comment/review/merge writes stay disabled until settings.allow_write_actions is true and each
+  one additionally goes through Hermes's human-approval prompt via its pre_tool_call hook (an 'always'
+  answer does not persist).
+maintainer: himanusia
+tier: community
+category: tools
+readme: true
+capabilities:
+  provides_tools:
+    - github_identity
+    - github_create_issue
+    - github_comment_issue
+    - github_list_issues
+    - github_get_issue
+    - github_review_pr
+    - github_merge_pr
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

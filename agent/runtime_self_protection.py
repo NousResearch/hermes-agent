@@ -151,9 +151,29 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + sep) or b.startswith(a + sep)
 
 
-def is_protected_path(path: str) -> Optional[str]:
-    """Description of the protected runtime path ``path`` touches, else ``None``."""
-    resolved = _normalize_path(path)
+def split_entry(path: str) -> tuple[str, str]:
+    """``os.path.split`` for a directory entry, trailing separators and ``.`` components
+    dropped first: an empty or ``.`` leaf (``dir/link/``, ``dir/link/.``) would make entry
+    checks degenerate to the link's target, while pathlib/rm still act on ``link``.
+    A bare root (``/``, ``C:\\``) is kept as is."""
+    drive, tail = os.path.splitdrive(path)
+    parent, leaf = os.path.split(drive + (tail.rstrip(os.sep + (os.altsep or "")) or tail[:1]))
+    if leaf == "." and parent:
+        return split_entry(parent)
+    return parent, leaf
+
+
+def is_protected_path(path: str, *, follow: bool = True) -> Optional[str]:
+    """Description of the protected runtime path ``path`` touches, else ``None``.
+
+    ``follow=False`` keeps the final component unresolved (the entry itself, for
+    ops that unlink/rename a symlink rather than its target)."""
+    if follow:
+        resolved = _normalize_path(path)
+    else:
+        parent, leaf = split_entry(path)
+        resolved = _normalize_path(parent or ".")
+        resolved = resolved and os.path.normcase(os.path.join(resolved, leaf))
     if not resolved:
         return None
     for protected, description in _protected():

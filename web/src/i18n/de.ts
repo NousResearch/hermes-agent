@@ -92,9 +92,18 @@ export const de: Translations = {
     webUi: "Web UI",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Aktiver Speicheranbieter",
+    noProvider: "keiner — nur integriert",
+    builtinLayer: "Integrierte Ebene",
+    builtinNote: "MEMORY.md und USER.md sind Hermes’ eigener Speicher, unabhängig von externen Anbietern. Beide werden standardmäßig in Sitzungen geladen; die Konfigurationsschalter (memory.memory_enabled / memory.user_profile_enabled) schalten sie einzeln ab. Ein Anbieter ergänzt sie, er ersetzt sie nie.",
+  },
+
   status: {
     actionFailed: "Aktion fehlgeschlagen",
     actionFinished: "Abgeschlossen",
+    actionFinishedOwed: "Aktualisiert, aber noch offen (`hermes update` erneut ausführen, um abzuschließen)",
     actions: "Aktionen",
     agent: "Agent",
     activeSessions: "Aktive Sitzungen",
@@ -162,6 +171,7 @@ export const de: Translations = {
     deleteSelectedConfirmMessage:
       "Dies entfernt {count} ausgewählte Sitzungen und alle zugehörigen Nachrichten dauerhaft. Dies kann nicht rückgängig gemacht werden.",
     selectedSessionsDeleted: "{count} Sitzungen gelöscht",
+    selectedSessionsSkippedActive: "{deleted} gelöscht; {count} behalten, weil noch ein Turn läuft",
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",

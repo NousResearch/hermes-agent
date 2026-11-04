@@ -130,12 +130,29 @@ export interface Translations {
     /** Multi-profile host whose gateway boots standalone on a guard — optional, English fallback. */
     multiplexStandaloneBanner?: string;
     dismiss?: string;
+    /** First-run shared-metrics offer — optional, English fallback. */
+    sharedMetricsTitle?: string;
+    sharedMetricsBody?: string;
+    sharedMetricsReaskBody?: string;
+    sharedMetricsShare?: string;
+    sharedMetricsOff?: string;
+    sharedMetricsDetails?: string;
+    sharedMetricsSaveFailed?: string;
+  };
+
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
   };
 
   // ── Status page ──
   status: {
     actionFailed: string;
     actionFinished: string;
+    actionFinishedOwed: string;
     actions: string;
     agent: string;
     connected: string;
@@ -207,6 +224,7 @@ export interface Translations {
     deleteSelectedConfirmTitle: string;
     deleteSelectedConfirmMessage: string;
     selectedSessionsDeleted: string;
+    selectedSessionsSkippedActive: string;
     failedToDeleteSelected: string;
     resumeInChat: string;
     newChat: string;
@@ -382,6 +400,10 @@ export interface Translations {
     updateGit: string;
     /** Optional: locales without it fall back to the English body at the call site. */
     updateConsentBody?: (name: string, sha: string) => string;
+    /** Optional, English fallback: the scan rated an update caution; confirming retries with force. */
+    updateScanBody?: (name: string, count: number) => string;
+    /** Optional, English fallback: the scan rated an update dangerous; never overridable. */
+    updateScanBlocked?: (name: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;

@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from agent.terminal_image import InlineImage, half_block, local_image_path, render_inline_image, resolve_inline_mode
 
 _INDENT = "  "
+# Mirrors ui-tui/src/config/limits.ts INLINE_IMAGE_MAX_COLS/ROWS (the TUI's budget); keep them equal.
 _MAX_COLS = 64
 _MAX_ROWS = 16
 

@@ -176,10 +176,10 @@ def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, mon
     assert "## Prompt" not in prompt
 
 
-class TestFailedAgentRunsFallThrough:
-    """A failed agent run (## Prompt then ## Error, no ## Response) has no answer to carry."""
+class TestFailedAgentRuns:
+    """A failed agent run (## Prompt then ## Error, no ## Response) carries its error, not its prompt."""
 
-    def test_failed_run_archive_falls_through_to_older_answer(self, cron_env, monkeypatch, cron_owner):
+    def test_failed_run_injects_its_error_without_its_prompt(self, cron_env, monkeypatch, cron_owner):
         import os
         from cron.jobs import create_job, save_job_output, OUTPUT_DIR
         from cron.scheduler_prompt import _inject_context_from
@@ -205,8 +205,9 @@ class TestFailedAgentRunsFallThrough:
 
         prompt, injected = _inject_context_from(job, "Next task")
 
-        assert injected and "OLDER-REAL-ANSWER" in prompt
-        assert "RETIRED-SKILL-RULE" not in prompt and "## Error" not in prompt
+        assert injected and "provider exploded" in prompt
+        assert "RETIRED-SKILL-RULE" not in prompt and "OLDER-REAL-ANSWER" not in prompt
+        assert "## Prompt" not in prompt
 
     def test_failed_script_archive_stays_whole(self, cron_env):
         from cron.jobs import create_job

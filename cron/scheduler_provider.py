@@ -115,6 +115,26 @@ def routed_profile_fire(home=None) -> bool:
     return hermes_home_key(target) != hermes_home_key(get_routing_process_hermes_home())
 
 
+def profile_delivery_adapters(
+    profile_name, *, adapters=None, profile_adapters=None, profile_bot_platforms=None, default_profile=None,
+):
+    """The live adapters a gateway delivers *profile_name*'s cron output through (call inside that
+    profile's scope). Its OWN adapters; NEVER the default profile's (wrong bot). A credentialless
+    satellite may ride the PRIMARY adapter only for targets an exact enabled route maps here; else
+    fail closed (delivery skipped)."""
+    from cron.scheduler_preflight import (
+        SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
+    )
+
+    if profile_name is None or profile_name == default_profile:
+        return adapters
+    tick_adapters = (profile_adapters or {}).get(profile_name) or {}
+    owned = (profile_bot_platforms or {}).get(profile_name)
+    if not has_credential_platform(tick_adapters, owned) and adapters:
+        return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
+    return tick_adapters
+
+
 @contextlib.contextmanager
 def _profile_cron_scope(home):
     """Scope the calling thread to one profile's home + cron store for the block."""
@@ -546,9 +566,6 @@ class InProcessCronScheduler(CronScheduler):
         heartbeated."""
         from cron.scheduler import tick as cron_tick
         from cron.scheduler import CronTickYielded, _is_fd_exhaustion
-        from cron.scheduler_preflight import (
-            SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
-        )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
         from cron.scheduler_ownership import register_ticked_homes
         from cron.dispatch_hold import note_dispatching, note_held_profiles
@@ -563,16 +580,9 @@ class InProcessCronScheduler(CronScheduler):
         )
 
         def tick_adapters_for(profile_name):
-            # Deliver via the profile's OWN adapters; NEVER fall back to the default profile's
-            # (wrong bot). A credentialless satellite may ride the PRIMARY adapter only for targets
-            # an exact enabled route maps here; else fail closed (delivery skipped this tick).
-            if profile_name is None or profile_name == default_profile:
-                return adapters
-            tick_adapters = (profile_adapters or {}).get(profile_name) or {}
-            owned = (profile_bot_platforms or {}).get(profile_name)
-            if not has_credential_platform(tick_adapters, owned) and adapters:
-                return SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
-            return tick_adapters
+            return profile_delivery_adapters(
+                profile_name, adapters=adapters, profile_adapters=profile_adapters,
+                profile_bot_platforms=profile_bot_platforms, default_profile=default_profile)
 
         # Recovery + heartbeat per profile; one broken store must not abort startup for the others.
         # A profile may have been deleted since this snapshot was taken; never recreate a deleted home's

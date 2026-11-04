@@ -683,7 +683,11 @@ def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "resume_job", job_id))
 
 
-def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
+def _trigger_cron_job_sync(
+    job_id: str, profile: Optional[str] = None, *, gateway_runner: Any = None, loop: Any = None,
+):
+    """Run Now. ``gateway_runner`` + ``loop`` (a dashboard the gateway hosts): same claim and
+    answers, but the run delivers through that gateway's live adapters on its event loop."""
     selected = _job_profile(job_id, profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
     # Never expose the job as due before claiming it: the built-in ticker and
@@ -691,7 +695,8 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     # this run even racing across processes. Active jobs keep the legacy call
     # shape; paused jobs need the explicit force flag to resume + claim atomically.
     force = not job.get("enabled", True) or job.get("state") == "paused"
-    ran = _fire_cron_job_for_profile(selected, job["id"], force=force)
+    gateway = {"gateway_runner": gateway_runner, "loop": loop} if gateway_runner is not None else {}
+    ran = _fire_cron_job_for_profile(selected, job["id"], force=force, **gateway)
     refreshed = _call_cron_for_profile(selected, "get_job", job["id"])
     if refreshed and refreshed.get("last_run_at") != job.get("last_run_at"):
         return refreshed
@@ -793,7 +798,11 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(job_id: str, request: Request = None, profile: Optional[str] = None):  # type: ignore[assignment]  # None when awaited in-process
+    runner = getattr(request.app.state, "gateway_runner", None) if request is not None else None
+    if runner is not None:  # this handler runs on the gateway's loop; the run waits off it
+        return await _run_cron_dashboard_io(
+            _trigger_cron_job_sync, job_id, profile, gateway_runner=runner, loop=asyncio.get_running_loop())
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 

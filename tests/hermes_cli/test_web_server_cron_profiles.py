@@ -1561,3 +1561,142 @@ class TestCronRunHistoryFallback:
         assert older["id"] == f"cron_output:{job_id}:2026-09-25_10-00-00"
         assert older["title"].startswith("COMPLETED · successful older run")
         assert older["started_at"] == _at("2026-09-25_10-00-00").timestamp()
+
+
+# --- Run Now on a dashboard the gateway hosts (app.state.gateway_runner set) -------------------
+# Characterization: every answer below is main's, on both mounts. Only who delivers the run changes.
+
+_ALREADY_CLAIMED = "Job is already running or was claimed by another scheduler"
+
+
+class _StubRunner:
+    """The gateway attributes Run Now reads: the launch profile's live adapters plus per-profile maps."""
+
+    def __init__(self):
+        self.adapters = {"telegram": object()}
+        self._profile_adapters = {"worker_alpha": {"discord": object()}}
+        self._profile_bot_platforms = {}
+        self._primary_profile_name = "default"
+
+
+def _post_run_now(job_id: str, *, gateway_runner=None, profile: str = "worker_alpha"):
+    """POST Run Now through the real router, mounted like the gateway's listener (runner set) or standalone."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(_rt_cron.router)
+    app.state.gateway_runner = gateway_runner
+    with TestClient(app) as client:
+        return client.post(f"/api/cron/jobs/{job_id}/trigger", params={"profile": profile})
+
+
+@pytest.fixture()
+def built_in_runs(monkeypatch):
+    """The built-in provider with its real claim; only the agent run is replaced (it records its inputs)."""
+    import asyncio
+
+    from cron import jobs as cron_jobs
+    from cron import scheduler as cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    runs = []
+
+    def fake_run_one_job(job, *, adapters=None, loop=None, **_kwargs):
+        # A delivery scheduled onto ``loop`` completes: the loop is running and not blocked by this run.
+        delivered = loop is not None and asyncio.run_coroutine_threadsafe(asyncio.sleep(0, "ok"), loop).result(5)
+        runs.append({"job_id": job["id"], "adapters": adapters, "delivered_on_loop": delivered == "ok"})
+        cron_jobs.mark_job_run(job["id"], success=True)
+        return True
+
+    monkeypatch.setattr(cron_scheduler, "run_one_job", fake_run_one_job)
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
+    return runs
+
+
+def _new_job(schedule: str = "every 1h", profile: str = "worker_alpha", **updates):
+    job = _web_server_cron._call_cron_for_profile(
+        profile, "create_job", prompt="run now", schedule=schedule, name="run-now")
+    if updates:
+        _web_server_cron._call_cron_for_profile(profile, "update_job", job["id"], updates)
+    return job
+
+
+_MOUNTS = pytest.mark.parametrize("gateway", [False, True], ids=["standalone", "gateway-mounted"])
+
+
+@_MOUNTS
+def test_run_now_success_runs_synchronously(isolated_profiles, built_in_runs, gateway):
+    job = _new_job()
+    resp = _post_run_now(job["id"], gateway_runner=_StubRunner() if gateway else None)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["last_status"] == "ok" and resp.json()["last_run_at"]
+    assert [run["job_id"] for run in built_in_runs] == [job["id"]]
+
+
+@_MOUNTS
+def test_run_now_on_a_job_already_running_answers_409(isolated_profiles, built_in_runs, gateway):
+    from datetime import UTC
+
+    job = _new_job(fire_claim={"at": datetime.now(UTC).isoformat(), "by": "other-host:1:token"})
+    resp = _post_run_now(job["id"], gateway_runner=_StubRunner() if gateway else None)
+    assert (resp.status_code, resp.json()["detail"]) == (409, _ALREADY_CLAIMED)
+    assert built_in_runs == []
+
+
+@_MOUNTS
+def test_run_now_on_a_completed_one_shot_answers_409(isolated_profiles, built_in_runs, gateway):
+    job = _new_job("30m", enabled=False, state="completed")
+    resp = _post_run_now(job["id"], gateway_runner=_StubRunner() if gateway else None)
+    assert (resp.status_code, resp.json()["detail"]) == (409, _ALREADY_CLAIMED)
+    assert built_in_runs == []
+
+
+@_MOUNTS
+def test_run_now_on_a_paused_job_resumes_and_runs_it(isolated_profiles, built_in_runs, gateway):
+    job = _new_job()
+    _web_server_cron._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
+    resp = _post_run_now(job["id"], gateway_runner=_StubRunner() if gateway else None)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["enabled"], body["state"], body["last_status"]) == (True, "scheduled", "ok")
+
+
+@_MOUNTS
+def test_run_now_on_a_paused_job_without_force_fire_answers_409_and_stays_paused(
+        isolated_profiles, monkeypatch, gateway):
+    class LegacyProvider:
+        def fire_due(self, job_id, *, adapters=None, loop=None):
+            raise AssertionError("a provider without force must not be fired for a paused job")
+
+    job = _new_job()
+    _web_server_cron._call_cron_for_profile("worker_alpha", "pause_job", job["id"])
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", LegacyProvider)
+    resp = _post_run_now(job["id"], gateway_runner=_StubRunner() if gateway else None)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, "Cron provider 'custom' does not support atomic forced firing of paused jobs")
+    persisted = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert (persisted["enabled"], persisted["state"]) == (False, "paused")
+
+
+@_MOUNTS
+def test_run_now_on_an_unknown_job_answers_404(isolated_profiles, built_in_runs, gateway):
+    resp = _post_run_now("no-such-job", gateway_runner=_StubRunner() if gateway else None)
+    assert (resp.status_code, resp.json()["detail"]) == (404, "Job not found")
+
+
+@pytest.mark.parametrize("profile", ["default", "worker_alpha"])
+def test_gateway_mounted_run_now_delivers_through_the_gateways_live_adapters(
+        isolated_profiles, built_in_runs, profile):
+    """Refs #145171 (EP-14): a gateway-hosted Run Now ran with ``adapters=None, loop=None``, so its
+    delivery could not use the gateway's live adapters (relay-fronted platforms, E2EE rooms). It now
+    gets the adapters the gateway's cron ticker gives this profile, and the gateway's own loop."""
+    runner = _StubRunner()
+    job = _new_job(profile=profile)
+    resp = _post_run_now(job["id"], gateway_runner=runner, profile=profile)
+
+    assert resp.status_code == 200, resp.text
+    [run] = built_in_runs
+    expected = runner.adapters if profile == "default" else runner._profile_adapters[profile]
+    assert run["adapters"] is expected
+    assert run["delivered_on_loop"]  # the loop that served the request; the run waits off it

@@ -291,17 +291,30 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False) -> bool:
+def _fire_cron_job_for_profile(
+    profile: str, job_id: str, *, force: bool = False, gateway_runner: Any = None, loop: Any = None,
+) -> bool:
     """Run ONE due cron job for ``profile`` via the scheduler provider's ``fire_due``.
 
     DEPRECATED for NAS webhook fires — superseded by :func:`_forward_cron_fire_to_gateway`, since
     fires must run in the GATEWAY process (it owns the live adapters; the standalone path here
     cannot serve relay-fronted platforms or E2EE rooms). Retained for the dashboard trigger path
     and external callers on the web_deps late-binding seam; do not add new uses.
+
+    ``gateway_runner`` + ``loop`` (a dashboard the gateway hosts): the run delivers through that
+    gateway's live adapters for this profile, picked as its cron ticker picks them.
     """
     _profile_name, home = _cron_profile_home(profile)
-    from cron.scheduler_provider import provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler
+    from cron.scheduler_provider import (
+        profile_delivery_adapters, provider_fire_due_accepts, provider_supports_force_fire, resolve_cron_scheduler)
     with _cron_store_scope(home):
+        adapters = None
+        if gateway_runner is not None:
+            adapters = profile_delivery_adapters(
+                _profile_name, adapters=getattr(gateway_runner, "adapters", None),
+                profile_adapters=getattr(gateway_runner, "_profile_adapters", None),
+                profile_bot_platforms=getattr(gateway_runner, "_profile_bot_platforms", None),
+                default_profile=getattr(gateway_runner, "_primary_profile_name", None))
         provider = resolve_cron_scheduler()
         if force:
             if not provider_supports_force_fire(provider):
@@ -310,12 +323,12 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
                     detail=(
                         f"Cron provider '{getattr(provider, 'name', 'custom')}' "
                         "does not support atomic forced firing of paused jobs"))
-            return bool(provider.fire_due(job_id, adapters=None, loop=None, force=True))
+            return bool(provider.fire_due(job_id, adapters=adapters, loop=loop, force=True))
         # Off-tick run-now: never stamp next_run_at as the occurrence (#104790); third-party
         # providers without the kwarg keep the legacy call.
         if provider_fire_due_accepts(provider, "manual"):
-            return bool(provider.fire_due(job_id, adapters=None, loop=None, manual=True))
-        return bool(provider.fire_due(job_id, adapters=None, loop=None))
+            return bool(provider.fire_due(job_id, adapters=adapters, loop=loop, manual=True))
+        return bool(provider.fire_due(job_id, adapters=adapters, loop=loop))
 
 
 def _profile_env_value(home: Path, key: str) -> str:

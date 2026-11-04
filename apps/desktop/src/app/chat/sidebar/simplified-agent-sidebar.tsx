@@ -29,7 +29,6 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
-import { SimplifiedGlobalNav } from './simplified-global-nav'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
@@ -145,11 +144,10 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
 
   return (
     <Sidebar
-      className="relative h-full min-w-0 flex-row overflow-hidden border-r border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) text-foreground"
+      className="relative h-full min-w-0 overflow-hidden border-r border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) text-foreground"
       collapsible="none"
       data-tour="sessions-sidebar"
     >
-      <SimplifiedGlobalNav onNavigate={props.onNavigate} />
       <SidebarContent className="min-w-0 gap-2.5 overflow-y-auto px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
         <SimplifiedNewSession
           onFallback={() => {
@@ -201,7 +199,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
             expanded={expanded}
             onToggle={(id, open) => setExpanded(current => ({ ...current, [id]: !open }))}
             renderSessions={agentSessions => (
-              <div className="mb-2 ml-8 mt-0.5 border-l border-(--ui-stroke-secondary) pl-2">
+              <div className="mb-2 ml-8 mt-0.5 border-l border-(--sidebar-edge-border) pl-2">
                 <SimplifiedSessionList {...shared} sessions={agentSessions} />
               </div>
             )}

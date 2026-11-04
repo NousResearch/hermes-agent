@@ -11,6 +11,7 @@ import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
 import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
@@ -317,4 +318,16 @@ describe('titlebar app-action cluster', () => {
     expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
   })
+})
+
+
+it('keeps settings only in the global rail when simplified mode is enabled', () => {
+  $agentSidebarChoice.set(false)
+  renderControls('/')
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  act(() => $agentSidebarChoice.set(true))
+  expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
+  act(() => $agentSidebarChoice.set(false))
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  cleanup()
 })

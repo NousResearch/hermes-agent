@@ -39,7 +39,9 @@ with a global navigation rail beside New session, pinned chats, and chats nested
 The rail opens Chats, Agent settings (the existing Profiles view), Capabilities,
 Library (Artifacts), and Routines (Scheduled jobs). Capabilities opens the existing page
 for Skills, Connectors, Plugins, and Tools. The gear at the bottom opens an index of existing settings and utilities;
-these shortcuts preserve each destination's current profile and gateway scope.
+these shortcuts preserve each destination's current profile and gateway scope. The global rail
+stays visible when sessions are hidden. Sessions appear only in Chats; other global pages
+use that space, and returning to Chats preserves your sidebar visibility preference.
 
 Enabled plugins that contribute pages appear beneath Routines in the rail.
 Select a page to open it; use the Plugins tab in Capabilities to manage plugin settings. Pinned chats also remain under their agents.

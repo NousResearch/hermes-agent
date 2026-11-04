@@ -94,7 +94,6 @@ import {
 import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
@@ -294,20 +293,6 @@ registry.registerMany([
     render: () => idle(<ReviewPaneContent />)
   }
 ])
-
-// Reserve the rail's 44px without consuming the chat list's minimum width or writing layout preferences.
-$simplifiedAgentMode.subscribe(enabled => {
-  const rail = enabled ? 44 : 0
-  registry.register({
-    ...sessionsPane,
-    data: {
-      ...sessionsPane.data,
-      width: `${SIDEBAR_DEFAULT_WIDTH + rail}px`,
-      minWidth: `${SIDEBAR_DEFAULT_WIDTH + rail}px`,
-      maxWidth: `${SIDEBAR_MAX_WIDTH + rail}px`
-    }
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Chrome contributions. The title bar and status bar are fixed chrome outside
@@ -847,7 +832,10 @@ export function ContribController() {
           data-contrib-shell=""
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
-          <LayoutTreeRoot titlebar />
+          <div className="flex min-h-0 flex-1">
+            <WiredPane part="globalNav" />
+            <LayoutTreeRoot titlebar />
+          </div>
 
           {/* "Close running tab?" — the busy/input-blocked tile close gate. */}
           <SessionTileCloseConfirm />

@@ -223,6 +223,8 @@
   "catalog.category": ["de","es","fr"],
   "catalog.clearFilters": ["de","es","fr"],
   "catalog.commands": ["de","es","fr"],
+  "catalog.contentOriginal": ["ar","de","es","fr","ja","zh","zh-hant"],
+  "catalog.contentTechnicalId": ["ar","de","es","fr","ja","zh","zh-hant"],
   "catalog.destinationChanged": ["de","es","fr"],
   "catalog.developer.docs": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "catalog.developer.heading": ["ar","de","es","fr","ja","ru","zh","zh-hant"],

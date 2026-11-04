@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 import { type CatalogKind, catalogLabel } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
 import type { CatalogFacets } from './catalog-query'
+import { categoryText } from './localize-catalog'
 
 interface CatalogFilterBarProps {
   kind: CatalogKind
@@ -42,7 +43,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const [more, setMore] = useState(false)
 
   const rows = mode === 'categories'
-    ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
+    ? props.categories.map(([value, meta]) => ({ value, label: categoryText(meta.label) }))
     : props.sources.map(value => ({ value, label: tierLabel(value) ?? catalogLabel(value) }))
 
   const selected = props.facets[mode]

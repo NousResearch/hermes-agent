@@ -87,6 +87,7 @@ export function filteredToolsets(
         includesQuery(toolset.name, q) ||
         includesQuery(toolsetDisplayLabel(toolset), q) ||
         includesQuery(toolset.description, q) ||
+        includesQuery((toolset as { search?: string }).search, q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
     })

@@ -45,6 +45,10 @@ export interface CatalogEntry {
   /** 1-based curated hero rank from the catalog feed (`catalog-curation.json`). */
   featured?: number
   search: string
+  /** Original title when `name` shows a translation (catalog-content dictionary). */
+  originalName?: string
+  /** Original description when `description` shows a translation. */
+  originalDescription?: string
 }
 
 // The public domain redirects here without CORS headers on the redirect.

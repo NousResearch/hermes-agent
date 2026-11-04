@@ -8,6 +8,8 @@ const resultWord = (count: number) => {
 }
 
 export const ruCatalog = {
+  contentOriginal: 'Оригинал (английский)',
+  contentTechnicalId: 'Технический идентификатор',
   add: 'Добавить',
   added: 'Добавлено',
   discover: 'Открывайте новое',

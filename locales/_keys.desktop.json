@@ -605,6 +605,8 @@
     "catalog.category",
     "catalog.clearFilters",
     "catalog.commands",
+    "catalog.contentOriginal",
+    "catalog.contentTechnicalId",
     "catalog.destinationChanged",
     "catalog.developer.docs",
     "catalog.developer.heading",

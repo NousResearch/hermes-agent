@@ -27,6 +27,7 @@ import { noteMessageSent } from '@/store/desktop-metrics'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { finishOnboardingAfterRegularSubmit } from '@/store/onboarding-run'
 import { trackPendingSubmission } from '@/store/pending-submissions'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -1314,6 +1315,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           if (!applySubmitReceipt(result, receiptSessionId)) {
             return false
+          }
+
+          if (!isVoiceStoppedReceipt(result)) {
+            finishOnboardingAfterRegularSubmit(requestGateway, receiptSessionId)
           }
 
           acceptedRuntimeSessionId = receiptSessionId

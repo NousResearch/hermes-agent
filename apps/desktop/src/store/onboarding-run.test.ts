@@ -8,6 +8,7 @@ import {
   $onboardingEnded,
   $onboardingSettleFrom,
   decideOnboarding,
+  finishOnboardingAfterRegularSubmit,
   noteOnboardingEnded,
   type OnboardingRequest,
   reconcileOnboarding,
@@ -17,7 +18,7 @@ import {
 import { isOnboardingChat } from './onboarding-session'
 import { $activeGatewayProfile, $freshSessionRequest, $newChatProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
-import { $sessionTiles } from './session-states'
+import { $sessionStates, $sessionTiles } from './session-states'
 
 const ensureProfile = async (): Promise<void> => undefined
 
@@ -28,6 +29,7 @@ const resume = vi.fn(async (storedId: string) => $selectedStoredSessionId.set(st
 function backend(state: { eligible: boolean; run: boolean }, runId: null | string = 'run-1') {
   const calls: string[] = []
   const starts: Parameters<OnboardingRequest>[1][] = []
+  const skips: Parameters<OnboardingRequest>[1][] = []
   const started = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
   const read = { ...state, run_id: runId, session_id: runId && 'st-1' }
 
@@ -36,13 +38,15 @@ function backend(state: { eligible: boolean; run: boolean }, runId: null | strin
 
     if (method === 'onboarding.start') {
       starts.push(params)
+    } else if (method === 'onboarding.skip') {
+      skips.push(params)
     }
 
     // SAFETY: the fake answers onboarding.state and onboarding.start with their contract result shapes.
-    return (method === 'onboarding.state' ? read : started) as T
+    return (method === 'onboarding.state' ? read : method === 'onboarding.skip' ? { skipped: true } : started) as T
   }
 
-  return { calls, request, starts }
+  return { calls, request, skips, starts }
 }
 
 beforeEach(() => {
@@ -53,6 +57,7 @@ beforeEach(() => {
   $onboardingEnded.set(null)
   $onboardingSettleFrom.set(null)
   $selectedStoredSessionId.set(null)
+  $sessionStates.set({})
 })
 
 describe('onboarding run', () => {
@@ -100,17 +105,58 @@ describe('onboarding run', () => {
     expect($onboardingSurfaceClear.get()).toBe(true)
   })
 
-  it('frees the first-run surfaces in another chat mid-run and arms the end-of-onboarding wait', async () => {
-    const { request } = backend({ eligible: true, run: true })
+  it('ends setup after an admitted regular chat message, without replacing that chat', async () => {
+    const { calls, request } = backend({ eligible: true, run: true })
 
     await startOnboarding(request, resume, { ensureProfile })
     expect($onboardingSurfaceClear.get()).toBe(false)
 
     $selectedStoredSessionId.set('another-chat')
 
-    expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingSurfaceClear.get()).toBe(true)
     expect($onboardingSettleFrom.get()).not.toBeNull()
+    expect(calls).not.toContain('onboarding.skip')
+
+    finishOnboardingAfterRegularSubmit(request, 'rt-another-chat')
+    await vi.waitFor(() => expect($onboardingPhase.get()).toBe('skipped'))
+    expect(calls).toContain('onboarding.skip')
+    expect($selectedStoredSessionId.get()).toBe('another-chat')
+  })
+
+  it('does not skip for a message in the setup chat after a runtime reattach', async () => {
+    const { calls, request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    $sessionTiles.set([{ runtimeId: 'rt-reattached', storedSessionId: 'st-1' } as never])
+
+    finishOnboardingAfterRegularSubmit(request, 'rt-reattached')
+
+    expect(calls).not.toContain('onboarding.skip')
+    expect($onboardingPhase.get()).toBe('shown')
+    $sessionTiles.set([])
+  })
+
+  it('uses the reattached primary setup chat runtime when ending setup', async () => {
+    const { request, skips } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    $sessionStates.set({ 'rt-reattached': { storedSessionId: 'st-1' } as never })
+
+    finishOnboardingAfterRegularSubmit(request, 'rt-regular')
+
+    await vi.waitFor(() => expect($onboardingPhase.get()).toBe('skipped'))
+    expect(skips).toEqual([{ session_id: 'rt-reattached' }])
+  })
+
+  it('keeps setup pending when the backend does not confirm a skip', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    const refuse = async <T>(method: string, params?: Parameters<OnboardingRequest>[1]): Promise<T> =>
+      method === 'onboarding.skip' ? ({ skipped: false } as T) : request<T>(method, params)
+
+    finishOnboardingAfterRegularSubmit(refuse, 'rt-regular')
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($onboardingPhase.get()).toBe('shown')
+    expect($onboardingEnded.get()).toBeNull()
   })
 
   it('ignores the end of another run, like the old run a rerun closed', async () => {

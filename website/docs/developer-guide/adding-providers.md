@@ -262,7 +262,6 @@ Auxiliary tasks include things like:
 
 - vision summarization
 - context compression summaries
-- session-search summaries
 - memory flushes
 
 If the provider has no sensible aux default, side tasks may fall back badly or use an expensive main model unexpectedly.

@@ -2591,7 +2591,7 @@ export const en: Translations = {
     openLogs: 'Open logs',
     teamGateway: {
       title: 'Messaging runs through Team Gateway',
-      body: 'This agent reaches chat platforms through Team Gateway\'s shared bots, so it needs no bot tokens of its own. Choose which platforms it uses and who can message it on the agent\'s page in Nous Portal.',
+      body: 'This agent reaches chat platforms through Team Gateway\'s shared bots, so it needs no bot tokens of its own. Choose which platforms it uses and who can message it under Manage Agents in Nous Portal.',
       carried: (platforms: string) => `Available for this agent: ${platforms}`,
       openPortal: 'Manage agents in Nous Portal'
     },

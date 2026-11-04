@@ -1,0 +1,49 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-linear
+description: Safe Linear practice world for issue, project, cycle and team workflows.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - linear
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - list_issues
+    - get_issue
+    - update_issue
+    - list_issue_statuses
+    - list_issue_labels
+    - list_projects
+    - get_project
+    - list_teams
+    - list_users
+    - search_documentation
+
+suggest:
+  keywords:
+    - myworld
+    - linear
+    - issue tracking
+    - practice world
+
+post_install: |
+  myworld-linear runs a local, simulated Linear MCP server over stdio:
+    uvx myworld stdio linear
+
+  No real Linear workspace is changed. Use it to practice issue updates,
+  project state, labels, cycles, teams and cursor pagination safely.
+
+  More Linear-shaped tools can be enabled with:
+    hermes mcp configure myworld-linear
+

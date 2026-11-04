@@ -1,0 +1,50 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-drive
+description: Safe Google Drive, Sheets and Docs practice world for document and spreadsheet agents.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - drive
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_drive_files
+    - get_drive_file_content
+    - list_drive_items
+    - list_spreadsheets
+    - get_spreadsheet_info
+    - read_sheet_values
+    - modify_sheet_values
+    - search_docs
+    - get_doc_content
+    - modify_doc_text
+
+suggest:
+  keywords:
+    - myworld
+    - drive
+    - spreadsheet
+    - docs
+    - practice world
+
+post_install: |
+  myworld-drive runs a local, simulated Drive MCP server over stdio:
+    uvx myworld stdio drive
+
+  No real files are changed. Use it to practice messy spreadsheets, Drive
+  permissions, Docs edits, search lag and existing folder structure safely.
+
+  More Drive-shaped tools can be enabled with:
+    hermes mcp configure myworld-drive
+

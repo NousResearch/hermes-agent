@@ -1948,6 +1948,10 @@ class CLITuiMixin:
             lambda event: toggle_dock(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
+        if self._vim_mode:
+            from hermes_cli.vim_leader import VimLeaderState, bind_vim_leader, cli_leader_actions
+            self._vim_leader_state = bind_vim_leader(
+                kb, cli_leader_actions(self), VimLeaderState(lambda: modal_prompt_active(self)))
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:

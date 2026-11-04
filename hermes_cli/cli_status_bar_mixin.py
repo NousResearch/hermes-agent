@@ -89,6 +89,9 @@ class CLIStatusBarMixin:
             app = getattr(self, "_app", None)
             if app is None:
                 return ""
+            leader = getattr(self, "_vim_leader_state", None)
+            if leader is not None and leader.is_armed(app):
+                return f"{t('cli.status_bar.vim_normal')} [LEADER]"
             mode = app.vi_state.input_mode
             if mode in (InputMode.INSERT, InputMode.INSERT_MULTIPLE):
                 return t("cli.status_bar.vim_insert")

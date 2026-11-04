@@ -279,6 +279,20 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
 
+**Vim mode Space leader.** With `display.vim_mode: true`, pressing `Space` in NORMAL mode arms a leader (the status bar shows `NORMAL [LEADER]`); the next key runs one action. It does not arm with a pending count, an operator, a visual selection, a search, a read-only buffer or an open prompt/picker. `Esc` or any other key cancels without touching the draft; a paste, focus change, mode change or modal prompt also cancels it (the paste still goes through as usual).
+
+| Leader key | Classic CLI | `hermes chat` attached to a gateway |
+|------------|-------------|-------------------------------------|
+| `Space p` | Command palette | Types `/` into an empty draft (no effect on a non-empty draft) |
+| `Space m` | — | Types `/model ` into an empty draft (no effect on a non-empty draft) |
+| `Space e` | Open the draft in `$EDITOR` (same as `Ctrl+G`) | Open the draft in `$EDITOR` |
+| `Space t` | Subagent monitor | — |
+| `Space r` | Toggle the work dock (same as `Ctrl+R`/`F7`) | — |
+| `Space c` | Same as `Ctrl+C` | Clear the draft |
+| `Space Enter` | Send (same as `Enter`) | Send |
+
+The TUI (`hermes --tui`) does not support the Space leader yet (#118517).
+
 **Multiline paste preview.** When you paste a multi-line block, the CLI echoes a compact single-line preview (`[pasted: 47 lines, 1,842 chars — press Enter to send]`) instead of dumping the whole payload into the scrollback. The full content is still what gets sent; this is just display polish.
 
 ### `!` Shell Mode

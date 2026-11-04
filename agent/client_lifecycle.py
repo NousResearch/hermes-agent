@@ -574,14 +574,14 @@ class ClientLifecycleMixin:
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
+        if self.provider == "xai-oauth":
+            from agent.xai_oauth_credentials import refresh_xai_oauth_client_credentials
+            return refresh_xai_oauth_client_credentials(self, force=force)
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
         try:
             from hermes_cli import auth as _auth
-            resolve = (
-                _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
-                else _auth.resolve_xai_oauth_runtime_credentials
-            )
+            resolve = _auth.resolve_codex_runtime_credentials
             singleton_now = resolve(refresh_if_expiring=False)
         except Exception as exc:
             logger.debug("%s singleton read failed: %s", self.provider, exc)

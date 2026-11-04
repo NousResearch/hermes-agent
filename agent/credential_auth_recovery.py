@@ -24,6 +24,52 @@ _ACTIVITY_TOUCH_S = 30.0
 _EPISODE_IDLE_S = 120.0
 
 
+def is_xai_stale_oauth_error(provider: str, status_code: Optional[int], error_context: Any) -> bool:
+    """Recognize xAI's rejected bearer without treating permission/billing 403s as refreshable.
+
+    A Responses SSE error may have no HTTP status; its explicit stale-token marker still
+    identifies the same failure. An actual non-403 status always keeps its own recovery path.
+    The pool and singleton recovery paths share this predicate so a structured error code
+    cannot be treated as an entitlement failure by one and a stale bearer by the other.
+    """
+    if provider != "xai-oauth" or status_code not in (None, 403) or not isinstance(error_context, dict):
+        return False
+    text = " ".join(str(error_context.get(k) or "").lower() for k in ("message", "reason", "code", "error"))
+    if "oauth authentication is currently not allowed for this organization" in text:
+        return False
+    return any(marker in text for marker in (
+        "unauthenticated:bad-credentials",
+        "oauth2 access token could not be validated",
+        "[wke=unauthenticated:",
+    ))
+
+
+def _refresh_codex_credentials_after_auth_error(
+    agent: Any, retry: Any, status_code: Optional[int], error_context: Any, classified_reason: Any,
+) -> bool:
+    """Codex/xAI share one auth retry budget; only xAI's rejected bearer also qualifies on 403/SSE."""
+    from agent.error_classifier import FailoverReason
+
+    if (
+        agent.api_mode != "codex_responses"
+        or agent.provider not in {"openai-codex", "xai-oauth"}
+        or retry.codex_auth_retry_attempted
+    ):
+        return False
+    if status_code != 401 and (
+        classified_reason not in {FailoverReason.auth, FailoverReason.auth_permanent, FailoverReason.unknown}
+        or not is_xai_stale_oauth_error(agent.provider, status_code, error_context)
+    ):
+        return False
+    retry.codex_auth_retry_attempted = True
+    if not agent._try_refresh_codex_client_credentials(force=True):
+        return False
+    label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
+    cause = str(status_code) if status_code is not None else "an OAuth stream error"
+    agent._buffer_vprint(f"🔐 {label} auth refreshed after {cause}. Retrying request...")
+    return True
+
+
 def _ra():
     import run_agent
     return run_agent

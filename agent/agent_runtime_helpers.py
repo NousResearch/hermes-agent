@@ -898,23 +898,17 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     """Entitlement 403s look like auth failures but refresh cannot fix them. Any xai-oauth 403
     is entitlement EXCEPT xAI's stale-token signals (``[WKE=unauthenticated:...]``,
     "could not be validated"), which must stay refreshable."""
+    from agent.credential_auth_recovery import is_xai_stale_oauth_error
+
+    if is_xai_stale_oauth_error(agent.provider, status_code, error_context):
+        return False
     if agent._is_entitlement_failure(error_context, status_code):
         return True
     if status_code != 403:
         return False
     haystack = " ".join(
-        # Subscription/entitlement 403s look like auth failures on the wire but refresh cannot fix them —
-        # the OAuth token is already valid, the account simply lacks the entitlement. Without this guard,
-        # the refresh path keeps minting fresh tokens against the same unsubscribed account and the main
-        # agent loop spins re-issuing the same 403 until the user Ctrl+C's. Defense-in-depth for #26847:
-        # xAI's backend has been seen to 403 standard SuperGrok subscribers with bodies that don't match the
-        # existing entitlement keyword set in ``_is_entitlement_failure``. Any 403 against ``xai-oauth`` is
-        # treated as entitlement here so the refresh loop can't spin in those cases either. Exception
-        # (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and the ``OAuth2 access token could not be
-        # validated`` phrasing are xAI's authoritative "this is a stale token, not entitlement" signal. When
-        # either fires we must NOT apply the catch-all override — refresh is the recoverable path for these
-        # bodies, and blanket-classifying them as entitlement was the bug that left long-running TUI
-        # sessions stuck on stale tokens until the user exited and reopened.
+        # An unrecognized xAI 403 stays entitlement-shaped (#26847); only the shared
+        # stale-token predicate above exempts it from that catch-all (#29344).
         str(error_context.get(k) or "").lower()
         for k in ("message", "reason", "code", "error")
         if isinstance(error_context, dict)
@@ -925,10 +919,7 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     if provider == "anthropic" and getattr(agent, "api_mode", "") == "anthropic_messages":
         return True
     if provider == "xai-oauth":
-        return not (
-            "[wke=unauthenticated:" in haystack
-            or "oauth2 access token could not be validated" in haystack
-        )
+        return True
     return False
 
 

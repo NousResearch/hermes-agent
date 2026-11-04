@@ -1160,3 +1160,109 @@ def test_completion_arms_obligation_with_checkout_sha_when_head_capture_empty(mo
         {"expected_sha": "", "receipt": {"update_id": "u1"}, "windows_resume": None})
 
     assert armed == [checkout]
+
+
+# ── #148719 part 2: enrich the startup banner with stale row PID/profile ──
+#
+# The banner used to repeat "Run `hermes update` or `hermes gateway restart`" forever, even
+# after the operator knew a restart was owed. The enhancement names the stale row(s) — the
+# profile, its PID, and the exact `hermes gateway restart --profile <name>` that clears that
+# one row — while preserving the line log scrapers and part-1 host expectations match on.
+
+def test_startup_warn_names_stale_profile_pid_and_restart_command(monkeypatch, capsys):
+    """When the fleet probe finds a stale row, the banner points at it by profile + PID."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 4242, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert "profile `default`" in err
+    assert "PID 4242" in err
+    assert "hermes gateway restart --profile default" in err
+
+
+def test_startup_warn_falls_back_when_stale_row_probe_fails(monkeypatch, capsys):
+    """A probe failure still prints the banner; the generic fallback line carries it."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("probe down")
+
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", _boom)
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    # No stale row was surfaced, so the generic guidance line still prints.
+    assert "Run `hermes update` or `hermes gateway restart`." in err
+    # And no per-profile line leaked through.
+    assert "--profile" not in err
+
+
+def test_startup_warn_lists_each_stale_profile_in_a_multiprofile_fleet(monkeypatch, capsys):
+    """Two stale profiles -> two per-row lines, each with its own PID and restart command."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[
+            {"kind": "gateway", "profile": p} for p in ("default", "coder")
+        ],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 4242, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+            {"profile": "coder", "pid": 4343, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "unknown"},
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "profile `default`" in err
+    assert "PID 4242" in err
+    assert "hermes gateway restart --profile default" in err
+    assert "profile `coder`" in err
+    assert "PID 4343" in err
+    assert "hermes gateway restart --profile coder" in err
+
+
+def test_startup_warn_does_not_emit_per_profile_line_when_fleet_is_current(monkeypatch, capsys):
+    """No stale rows -> no per-profile line. The banner is silent (no warning at all)."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""

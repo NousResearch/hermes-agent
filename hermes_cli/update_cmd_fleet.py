@@ -493,13 +493,54 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
     return not _live_fleet_covers_receipt(_current_checkout_sha(), receipt, owed)
 
 
-def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
-    """Print the specific interrupted-update fleet-restart warning."""
+def _warn_pending_fleet_restart(*, startup: bool = False, stale_rows: list[dict] | None = None) -> None:
+    """Print the specific interrupted-update fleet-restart warning.
+
+    ``stale_rows`` (when supplied) lists live gateway rows surfaced as ``stale`` /
+    ``unknown`` / ``down`` by ``collect_fleet_versions``. Each row enriches the
+    banner with the profile name + PID + the exact restart command that clears
+    exactly this row — instead of repeating a generic "Run `hermes update`"
+    forever (#148719 part 2: Gateway restart lifecycle).
+    """
     stream = sys.stderr if startup else sys.stdout
     print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
-    if startup:
+    if startup and stale_rows:
+        # Name the stale rows so the operator knows which gateway ``hermes gateway
+        # restart`` actually clears. ``stale`` / ``unknown`` / ``down`` are all the
+        # warning's evidence; the receipt's owed set (when known) further narrows which
+        # rows are actually the update's responsibility, so lead with those.
+        for row in stale_rows:
+            profile = row.get("profile") or "(unknown profile)"
+            pid = row.get("pid")
+            state = row.get("state") or "stale"
+            pid_label = f"PID {pid}" if pid else "no live PID"
+            print(
+                f"  profile `{profile}` — {pid_label} is {state}. "
+                f"Run `hermes gateway restart --profile {profile}` to clear it.",
+                file=stream,
+            )
+        # Keep the tried-and-tested fallback so log scrapers that match on the generic
+        # message (e2e tests, #148719 part-1 host expectation) keep passing.
+        print("  Or run `hermes update` to bring every profile to the pulled code.", file=stream)
+    elif startup:
         print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
+
+
+def _collect_stale_fleet_rows() -> list[dict]:
+    """Live fleet rows still on stale code: ``stale`` / ``unknown`` / ``down`` rows only.
+
+    Bounded by the existing probe: ``_update_owes_fleet_restart`` already ran the same call
+    to decide whether to warn at all, so this only adds a second probe when the warning
+    _is_ firing. Returns ``[]`` on any probe failure so the banner still prints.
+    """
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions() or []
+    except Exception as exc:
+        logger.debug("Pending fleet restart: stale-row probe failed: %s", exc)
+        return []
+    return [row for row in fleet if row.get("state") not in (None, "current")]
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:
@@ -513,7 +554,8 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pending_manual = retain_receipt_manual_serves(receipt)
     with suppress(Exception):
         if _update_owes_fleet_restart(receipt=receipt, pending_manual=pending_manual):
-            _warn_pending_fleet_restart(startup=True)
+            stale_rows = _collect_stale_fleet_rows()
+            _warn_pending_fleet_restart(startup=True, stale_rows=stale_rows)
     with suppress(Exception):
         warn_pending_manual_serves(startup=True, pending_manual=pending_manual)
 

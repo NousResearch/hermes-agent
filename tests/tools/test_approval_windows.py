@@ -135,6 +135,11 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"Stop-Service -fo spooler",
         r"Remove-ItemProperty -fo -Name X",
         r"wmic shadowcopy delete",
+        # The script anchor still holds behind a launcher, a path prefix or an outer separator.
+        r'sudo pwsh -c "gci | ri"',
+        r'cmd /c powershell "gci C:\data | ri -r"',
+        r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "gci | ri"',
+        r'cd C:\x && pwsh -NoProfile "gci | Remove-Item"',
     ])
     def test_destructive_powershell_forms_are_gated(self, cmd):
         assert _is_dangerous(cmd), cmd
@@ -151,6 +156,16 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"Stop-Service -Name spooler",
         r"wmic shadowcopy list brief",
         "cat access.log | grep -i remove-item",
+        # A hyphenated word is not the alias.
+        "echo hi | ri-tool -fo",
+        "cat a.txt | rm-helper -r",
+        r'Write-Host "run gci | ri -r to clean"',
+        # A pwsh/powershell token that is not the program, or whose first argument is not the script.
+        r'pwsh --version && rg "Remove-Item|del" src/',
+        r'cd ~/powershell-scripts && git grep "foo|rd" .',
+        r'pwsh -v; jq ".a | del(.b)" f.json',
+        r'echo powershell "gci | ri"',
+        r'git commit -m "fix: powershell \"gci | ri\" detection"',
     ])
     def test_read_only_and_lookalike_commands_stay_quiet(self, cmd):
         assert not _is_dangerous(cmd), cmd

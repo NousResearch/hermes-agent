@@ -199,11 +199,11 @@ def bind_worker_context(frame):
         env['HERMES_KANBAN_CLAIM_TTL_SECONDS'] = str(max(1, expires - int(claimed[1])))
     _watch_submitter(Path(context['db']), context['run_id'])
     os.environ.update(env)
-    os.chdir(context['workspace'])
-    # A workspace on a stalled network share answers getcwd() with EINTR; lazy imports (rich)
-    # call getcwd() and would kill the turn before its first tool call.
-    from hermes_bootstrap import ensure_readable_cwd
-    ensure_readable_cwd()
+    # Tools find the workspace through the session cwd / TERMINAL_CWD, not the process cwd. A
+    # workspace on a stalled network share answers getcwd() with EINTR at random, and lazy imports
+    # (rich via httpx) call getcwd(): the process itself stays on local disk.
+    from hermes_constants import get_hermes_home
+    os.chdir(get_hermes_home())
 
 
 _TURNS_DONE = threading.Event()

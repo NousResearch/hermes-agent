@@ -2,7 +2,10 @@
 import logging
 
 from agent.draft_acceptance_watch import CUT_AFTER_S, DraftAcceptanceWatch, metrics_url, read_counters
-from tests.agent.test_stream_runaway_repetition import _CYCLE_125650, _run_turn, endpoint
+from tests.agent import test_stream_runaway_repetition as runaway_stream
+from tests.agent.test_stream_runaway_repetition import _CYCLE_125650, _run_turn
+
+endpoint = runaway_stream.endpoint
 
 
 def _metrics(draft, accepted):
@@ -65,7 +68,7 @@ def test_only_local_endpoints_are_watched():
     assert read_counters(_metrics(10, 7)) == (10.0, 7.0)
 
 
-def test_full_acceptance_cuts_the_stream_once(endpoint, monkeypatch, caplog):  # health: allow F811 -- pytest injects the imported endpoint fixture by parameter name
+def test_full_acceptance_cuts_the_stream_once(endpoint, monkeypatch, caplog):
     srv = _Server()
 
     def fake_for_base_url(cls, base_url):

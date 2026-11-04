@@ -100,6 +100,11 @@ class RoomParams(ProfileParams):
 
 class GroupsPreviewParams(RoomParams):
     text: str
+    #: The thread the composer will send into; absent is the new thread a fresh send mints.
+    thread_id: str | None = None
+    #: The room log tail the composer observed; a mismatch is ``stale_preview`` (the log is the fence,
+    #: because room ``revision`` does not move for message or settings events).
+    latest_seq: int
 
 
 class PreviewMember(Result):
@@ -113,7 +118,13 @@ class GroupsPreviewResult(Result):
     authority_gateway_id: str
     authority_epoch: int
     revision: int
+    latest_seq: int
+    #: ``members``: the first round is known. ``lead``: a lead-routing room's unaddressed new thread,
+    #: where the lead's routing turn decides the actual recipients, so ``members`` is empty and
+    #: ``lead`` names who decides. The preview never runs that turn or writes an assignment.
+    mode: Literal["members", "lead"]
     members: list[PreviewMember]
+    lead: PreviewMember | None = None
 
 
 method("groups.preview", params=GroupsPreviewParams, result=GroupsPreviewResult,

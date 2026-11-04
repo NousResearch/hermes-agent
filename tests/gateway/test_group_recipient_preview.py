@@ -39,7 +39,7 @@ def test_owner_gets_real_first_round_selection_without_writes(tmp_path, monkeypa
             before = tuple(conn.iterdump())
         async def call():
             return await alice.dispatch({'id': 1, 'method': 'groups.preview',
-                                         'params': {'room_id': 'room', 'text': text}})
+                                         'params': {'room_id': 'room', 'text': text, 'latest_seq': 0}})
         reply = asyncio.run(call())
         assert 'result' in reply, reply
         assert [m['member_id'] for m in reply['result']['members']] == expected
@@ -78,7 +78,7 @@ def test_secondary_profile_authority_boundaries_are_read_only(tmp_path, monkeypa
             before = tuple(conn.iterdump())
         def call(connection=owner, **params):
             return asyncio.run(connection.dispatch({'id': 1, 'method': 'groups.preview',
-                'params': {'profile': 'helper', 'room_id': 'owned', 'text': '@two', **params}}))
+                'params': {'profile': 'helper', 'room_id': 'owned', 'text': '@two', 'latest_seq': 0, **params}}))
         success = call()
         assert [m['member_id'] for m in success['result']['members']] == ['two']
         assert call(profile='default')['error']['message'] == 'profile_mismatch'
@@ -117,7 +117,7 @@ def test_preview_refuses_foreign_unowned_inactive_and_bad_input(tmp_path, monkey
 
         async def call(connection, **extra):
             return await connection.dispatch({'id': 1, 'method': 'groups.preview',
-                'params': {'room_id': 'room', 'text': '@two', **extra}})
+                'params': {'room_id': 'room', 'text': '@two', 'latest_seq': 0, **extra}})
 
         with db._read_ctx() as conn:
             before = tuple(conn.iterdump())

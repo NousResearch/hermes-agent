@@ -38,16 +38,16 @@ def test_forward_executes_owner_and_denies_untrusted_or_unowned(tmp_path, monkey
             before = tuple(conn.iterdump())
         token = transport.bind_transport(SimpleNamespace(auth_identity=identity))
         try:
-            result = server._methods['groups.preview'](1, {'room_id': 'room', 'text': '@two'})
+            result = server._methods['groups.preview'](1, {'room_id': 'room', 'text': '@two', 'latest_seq': 0})
             assert [m['member_id'] for m in result['result']['members']] == ['two']
             assert calls[0][2] == 'groups.preview'
             monkeypatch.setattr(methods_groups_forward, 'owner_endpoint', lambda home: None)
-            assert server._methods['groups.preview'](2, {'room_id': 'room', 'text': '@two'})['error']
+            assert server._methods['groups.preview'](2, {'room_id': 'room', 'text': '@two', 'latest_seq': 0})['error']
         finally:
             transport.reset_transport(token)
         token = transport.bind_transport(SimpleNamespace(auth_identity=None))
         try:
-            assert server._methods['groups.preview'](3, {'room_id': 'room', 'text': '@two'})['error']
+            assert server._methods['groups.preview'](3, {'room_id': 'room', 'text': '@two', 'latest_seq': 0})['error']
         finally:
             transport.reset_transport(token)
         assert len(calls) == 1
@@ -108,26 +108,26 @@ def test_forward_selected_and_handed_owners_with_refusals(tmp_path, monkeypatch,
         token = transport.bind_transport(SimpleNamespace(auth_identity=identity))
         try:
             text = 'private-sentinel @two'
-            result = server._methods['groups.preview'](1, {'profile': 'helper', 'room_id': 'selected', 'text': text})
+            result = server._methods['groups.preview'](1, {'profile': 'helper', 'room_id': 'selected', 'text': text, 'latest_seq': 0})
             assert [m['member_id'] for m in result['result']['members']] == ['two']
-            assert calls[-1] == (secondary, endpoint, 'groups.preview', {'profile': 'helper', 'room_id': 'selected', 'text': text})
-            refused = server._methods['groups.preview'](2, {'profile': 'helper', 'room_id': 'denied', 'text': text})
+            assert calls[-1] == (secondary, endpoint, 'groups.preview', {'profile': 'helper', 'room_id': 'selected', 'text': text, 'latest_seq': 0})
+            refused = server._methods['groups.preview'](2, {'profile': 'helper', 'room_id': 'denied', 'text': text, 'latest_seq': 0})
             assert 'error' in refused and text not in str(refused)
-            result = server._methods['groups.preview'](3, {'profile': 'helper', 'room_id': 'handed', 'text': text})
+            result = server._methods['groups.preview'](3, {'profile': 'helper', 'room_id': 'handed', 'text': text, 'latest_seq': 0})
             assert [m['member_id'] for m in result['result']['members']] == ['two']
-            assert calls[-1] == (root, endpoint, 'groups.preview', {'room_id': 'handed', 'text': text})
+            assert calls[-1] == (root, endpoint, 'groups.preview', {'room_id': 'handed', 'text': text, 'latest_seq': 0})
             count = len(calls)
-            assert 'error' in server._methods['groups.preview'](4, {'profile': 'helper', 'room_id': 'local', 'text': text})
+            assert 'error' in server._methods['groups.preview'](4, {'profile': 'helper', 'room_id': 'local', 'text': text, 'latest_seq': 0})
             assert len(calls) == count
             monkeypatch.setattr(methods_groups_forward, 'owner_endpoint', lambda home: None)
-            assert 'error' in server._methods['groups.preview'](5, {'profile': 'helper', 'room_id': 'handed', 'text': text})
+            assert 'error' in server._methods['groups.preview'](5, {'profile': 'helper', 'room_id': 'handed', 'text': text, 'latest_seq': 0})
             assert len(calls) == count
         finally:
             transport.reset_transport(token)
         token = transport.bind_transport(SimpleNamespace(auth_identity={'user_id': 'uid:999999', 'provider': 'local'}))
         monkeypatch.setattr(methods_groups_forward, 'owner_endpoint', lambda home: (_ for _ in ()).throw(AssertionError('foreign principal must not discover owner')))
         try:
-            assert 'error' in server._methods['groups.preview'](6, {'profile': 'helper', 'room_id': 'selected', 'text': text})
+            assert 'error' in server._methods['groups.preview'](6, {'profile': 'helper', 'room_id': 'selected', 'text': text, 'latest_seq': 0})
             assert len(calls) == count
         finally:
             transport.reset_transport(token)
@@ -150,7 +150,7 @@ def test_preview_never_initializes_an_unready_standalone_store(tmp_path, monkeyp
     monkeypatch.setattr(methods_groups_forward, 'owner_endpoint', lambda home: (_ for _ in ()).throw(AssertionError('must not forward')))
     token = transport.bind_transport(SimpleNamespace(auth_identity={'user_id': 'owner', 'provider': 'basic'}))
     try:
-        result = server._methods['groups.preview'](1, {'room_id': 'room', 'text': 'draft'})
+        result = server._methods['groups.preview'](1, {'room_id': 'room', 'text': 'draft', 'latest_seq': 0})
         assert result['error']
     finally:
         transport.reset_transport(token)

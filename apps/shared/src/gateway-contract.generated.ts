@@ -1502,13 +1502,18 @@ export interface GroupsPreviewParams {
   profile?: string | null
   room_id: string
   text: string
+  thread_id?: string | null
+  latest_seq: number
 }
 export interface GroupsPreviewResult {
   room_id: string
   authority_gateway_id: string
   authority_epoch: number
   revision: number
+  latest_seq: number
+  mode: 'members' | 'lead'
   members: PreviewMember[]
+  lead?: PreviewMember | null
 }
 export interface PreviewMember {
   member_id: string

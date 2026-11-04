@@ -19969,11 +19969,28 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thread Id"
+          },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
           }
         },
         "required": [
           "room_id",
-          "text"
+          "text",
+          "latest_seq"
         ],
         "title": "GroupsPreviewParams",
         "type": "object"
@@ -19997,12 +20014,35 @@
             "title": "Revision",
             "type": "integer"
           },
+          "latest_seq": {
+            "title": "Latest Seq",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "members",
+              "lead"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "members": {
             "items": {
               "$ref": "#/components/schemas/PreviewMember"
             },
             "title": "Members",
             "type": "array"
+          },
+          "lead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewMember"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -20010,6 +20050,8 @@
           "authority_gateway_id",
           "authority_epoch",
           "revision",
+          "latest_seq",
+          "mode",
           "members"
         ],
         "title": "GroupsPreviewResult",

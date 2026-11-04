@@ -77,6 +77,7 @@ export interface CanonicalGroupMessages {
   assignment: string
   assignmentFallback: string,
   firstRound: string
+  firstRoundLead: string
   firstRoundCaveat: string
 }
 
@@ -159,7 +160,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'Lead',
     assignment: '{lead} gave this to {names}',
     assignmentFallback: '{lead} is taking this',
-    firstRound: 'First-round selected:', firstRoundCaveat: 'Members may pass or wait.'
+    firstRound: 'First-round selected:', firstRoundLead: '{lead} decides the first round.',
+    firstRoundCaveat: 'Members may pass or wait.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -239,7 +241,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'リーダー',
     assignment: '{lead} が {names} に割り当てました',
     assignmentFallback: '{lead} が担当します',
-    firstRound: '最初のラウンドの対象:', firstRoundCaveat: 'メンバーはパスまたは待機する場合があります。'
+    firstRound: '最初のラウンドの対象:', firstRoundLead: '{lead} が最初のラウンドの担当者を決めます。',
+    firstRoundCaveat: 'メンバーはパスまたは待機する場合があります。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -319,7 +322,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: '负责人',
     assignment: '{lead} 把这条交给了 {names}',
     assignmentFallback: '{lead} 亲自处理',
-    firstRound: '首轮选中：', firstRoundCaveat: '成员可能跳过或等待。'
+    firstRound: '首轮选中：', firstRoundLead: '{lead} 决定首轮由谁处理。',
+    firstRoundCaveat: '成员可能跳过或等待。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -399,7 +403,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: '負責人',
     assignment: '{lead} 把這則交給了 {names}',
     assignmentFallback: '{lead} 親自處理',
-    firstRound: '首輪選中：', firstRoundCaveat: '成員可能跳過或等待。'
+    firstRound: '首輪選中：', firstRoundLead: '{lead} 決定首輪由誰處理。',
+    firstRoundCaveat: '成員可能跳過或等待。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -479,7 +484,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'القائد',
     assignment: 'أسند {lead} هذه الرسالة إلى {names}',
     assignmentFallback: 'يتولى {lead} هذه الرسالة',
-    firstRound: 'المختارون للجولة الأولى:', firstRoundCaveat: 'قد يتخطى الأعضاء أو ينتظرون.'
+    firstRound: 'المختارون للجولة الأولى:', firstRoundLead: '{lead} يختار من يتولى الجولة الأولى.',
+    firstRoundCaveat: 'قد يتخطى الأعضاء أو ينتظرون.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -562,7 +568,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'Ведущий',
     assignment: '{lead} передал(а) это: {names}',
     assignmentFallback: '{lead} берёт это на себя',
-    firstRound: 'Выбраны для первого раунда:', firstRoundCaveat: 'Участники могут пропустить ход или ждать.'
+    firstRound: 'Выбраны для первого раунда:', firstRoundLead: '{lead} выбирает участников первого раунда.',
+    firstRoundCaveat: 'Участники могут пропустить ход или ждать.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -644,7 +651,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'Responsable',
     assignment: '{lead} a confié ceci à {names}',
     assignmentFallback: '{lead} s\'en charge',
-    firstRound: 'Sélection au premier tour :', firstRoundCaveat: 'Les membres peuvent passer ou attendre.'
+    firstRound: 'Sélection au premier tour :', firstRoundLead: '{lead} décide qui prend le premier tour.',
+    firstRoundCaveat: 'Les membres peuvent passer ou attendre.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -727,7 +735,8 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'Leitung',
     assignment: '{lead} hat das an {names} gegeben',
     assignmentFallback: '{lead} übernimmt das',
-    firstRound: 'Für die erste Runde ausgewählt:', firstRoundCaveat: 'Mitglieder können passen oder warten.'
+    firstRound: 'Für die erste Runde ausgewählt:', firstRoundLead: '{lead} entscheidet, wer die erste Runde übernimmt.',
+    firstRoundCaveat: 'Mitglieder können passen oder warten.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -809,6 +818,7 @@ export const CANONICAL_GROUP_LOCALES = {
     leadBadge: 'Líder',
     assignment: '{lead} se lo dio a {names}',
     assignmentFallback: '{lead} se encarga',
-    firstRound: 'Seleccionados para la primera ronda:', firstRoundCaveat: 'Los miembros pueden pasar o esperar.'
+    firstRound: 'Seleccionados para la primera ronda:', firstRoundLead: '{lead} decide quién toma la primera ronda.',
+    firstRoundCaveat: 'Los miembros pueden pasar o esperar.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

@@ -33,7 +33,7 @@ _FIELDS = {
     'groups.list': {'limit', 'offset', 'include_disbanded'},
     'groups.state': {'room_id', 'include_disbanded'},
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
-    'groups.preview': {'room_id', 'text'},
+    'groups.preview': {'room_id', 'text', 'thread_id', 'latest_seq'},
     'groups.create': {'room_id', 'name', 'members'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.context': {'room_id', 'event_id', 'purpose', 'notes', 'routing', 'lead_member_id'},

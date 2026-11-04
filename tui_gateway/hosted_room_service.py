@@ -43,11 +43,17 @@ _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stoppi
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
 # Continue and the router answer re-read the log when an event lands between their read and their write.
 _FENCED_APPEND_ATTEMPTS = 3
+_APPROVABLE_STATUSES = ("running", "indeterminate", "deferred")
 logger = logging.getLogger(__name__)
 
 
 def task_member_id(task: Mapping[str, Any]) -> str:
     return str(task["payload"].get("target_member_id") or task["payload"]["target_profile"])
+
+
+def _approvable_attempts(tasks) -> set[tuple[str, str, int]]:
+    return {(task_member_id(task), task["identity"].task_id, task["execution_generation"])
+            for task in tasks if task["status"] in _APPROVABLE_STATUSES}
 
 
 def attempt_action(kind: str, task: Mapping[str, Any]) -> dict[str, Any]:
@@ -754,8 +760,6 @@ class HostedRoomService:
         """Resolve one exact local or peer approval and wake room observation."""
         key = (room_id, member_id)
         route, client = self.peer_routes.get(key), self.peer_clients.get(key)
-        with self._policy_lock:
-            action = self._pending_actions.get(key)
         requested_approval_id = str(request_id or "")
 
         def matches(pending: Mapping[str, Any] | None) -> bool:
@@ -763,8 +767,14 @@ class HostedRoomService:
                 str(pending.get("request_id") or ""), pending.get("task_id"),
                 int(pending.get("execution_generation") or 0),
             ) == (requested_approval_id, task_id, execution_generation)
-        if not requested_approval_id or not matches(action):
-            raise RuntimeError("room approval is no longer pending")
+        live = _approvable_attempts(driver.list_tasks(self.db_path, room_id=room_id))
+        with self._policy_lock:
+            action = self._pending_actions.get(key)
+            if not requested_approval_id or not matches(action):
+                raise RuntimeError("room approval is no longer pending")
+            if (member_id, task_id, execution_generation) not in live:
+                self._pending_actions.pop(key, None)
+                raise RuntimeError("room approval is no longer pending")
         if choice not in {"once", "deny"}:
             raise RuntimeError("room approval choice must be once or deny")
         approve = _hook(client, "approve_receipt")
@@ -798,10 +808,14 @@ class HostedRoomService:
             attempt_action("retry", task) for task in tasks if task["status"] in _RETRYABLE_STATUSES]
         if self._prepare_stalls.stalled(room_id):
             pending_actions.append(prepare_stall.retry_action(room_id, self._room(room_id)))
+        # Stop can end the attempt without another info poll clearing its cached approval.
+        # A late poll from an older generation must not offer that approval on the next attempt.
+        approvable = _approvable_attempts(tasks)
         with self._policy_lock:
             pending_actions.extend(
-                dict(action) for (action_room_id, _member_id), action
-                in self._pending_actions.items() if action_room_id == room_id)
+                dict(action) for (action_room_id, member_id), action in self._pending_actions.items()
+                if action_room_id == room_id
+                and (member_id, action.get("task_id"), action.get("execution_generation")) in approvable)
         # Who is answering right now, since when, and (when this process runs the turn) in which tool.
         member_activity = [
             _member_activity(task) for task in tasks if task["status"] in _LIVE_STATUSES]

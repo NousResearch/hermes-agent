@@ -122,8 +122,8 @@ def _format_trust_gate_arguments(args: dict) -> str:
 
 def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] = None,
                       args: Optional[dict] = None) -> Optional[str]:
-    """Approval gate for write-capable tools on ``trust: untrusted`` servers, plus the declared spend
-    limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
+    """Approval gate for write-capable tools on ``trust: untrusted`` and ``approve_every_call`` servers,
+    plus the declared spend limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
     block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
     caller can refund it when the call never reaches the server."""
     from tools.mcp_tool_scope import _server_key
@@ -131,25 +131,29 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
     key = _server_key(server_name)
     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
-    gated = (trust == _core._TRUST_UNTRUSTED and not _tool_is_read_only(server_name, tool_name)
-             and not _trust_granted(server_name, tool_name))
+    # ``every_call`` honours no remembered grant and no bypass: each write-capable call asks.
+    every_call = trust == _core._TRUST_EVERY_CALL
+    gated = (trust in (_core._TRUST_UNTRUSTED, _core._TRUST_EVERY_CALL)
+             and not _tool_is_read_only(server_name, tool_name)
+             and (every_call or not _trust_granted(server_name, tool_name)))
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
         from tools.approval_context import get_current_session_key
         charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
     if charge is None:
-        return _ask_for_call(server_name, tool_name, None, booked, args=args) if gated else None
+        return _ask_for_call(server_name, tool_name, None, booked, args=args, every_call=every_call) if gated else None
     if not gated and charge.reserve_within_limit()[0]:
         if booked is not None:
             booked.append(charge)
         return None
     with charge.asking():  # re-read under the slot: a call that asked first may have booked meanwhile
-        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args)
+        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated, args=args, every_call=every_call)
 
 
 def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
-                  gated: bool = True, args: Optional[dict] = None) -> Optional[str]:
-    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
+                  gated: bool = True, args: Optional[dict] = None, every_call: bool = False) -> Optional[str]:
+    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes.
+    *every_call*: the server is ``approve_every_call``, so the answer covers this call only."""
     spent, over = 0.0, False
     if charge is not None:
         if gated:
@@ -172,9 +176,11 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
             message += f"\n\nArguments:\n{_format_trust_gate_arguments(args)}"
         # Over the limit the answer covers this call only: a remembered trust grant must not
         # pre-approve the next over-limit call.
-        remember_key = None if over else _trust_approval_key(server_name, tool_name)
-        scope = "once" if over else "once, for this session, or always"
-        description = (f"Server '{server_name}' is configured 'trust: untrusted'. "
+        this_call_only = over or every_call
+        remember_key = None if this_call_only else _trust_approval_key(server_name, tool_name)
+        scope = "once" if this_call_only else "once, for this session, or always"
+        policy = "approve_every_call" if every_call else "trust: untrusted"
+        description = (f"Server '{server_name}' is configured '{policy}'. "
                        f"Approve to run '{tool_name}' {scope}, or deny to block it.")
         title = f"MCP server '{server_name}' is asking"
     else:

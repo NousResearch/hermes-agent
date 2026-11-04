@@ -111,8 +111,9 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     shape as a direct resolution; persistence stays the caller's and is
     idempotent across leader and followers); ``deny`` → denial carrying the
     leader's reason; leader timeout / our own deadline → unresolved. ``once``
-    returns ``None``: single-use consent covers only the leader's execution,
-    so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
+    (or any answer to a prompt that offered only Once) returns ``None``:
+    single-use consent covers only the leader's execution, so the caller must
+    issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
     # The leader's captured timeout (when stamped), so a config edit mid-wait can't end the follower first.
@@ -130,7 +131,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     else:
         choice = leader.result
         resolved = choice is not None
-    if choice == "once":
+    if choice == "once" or (choice in ("session", "always") and leader.data.get("allow_session") is False):
         # The post hook fires for the fresh prompt's own lifecycle, not here.
         return None
     extra = {"cancelled": cancelled} if cancelled else {}

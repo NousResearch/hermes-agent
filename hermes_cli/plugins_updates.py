@@ -17,7 +17,6 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -399,16 +398,22 @@ def default_ls_remote(source: str) -> str:
 
     Uses the same resolved git executable the CLI path resolves. Lazily
     imports plugins_cmd (which lazily imports this module) — no import
-    cycle at module load.
+    cycle at module load. Runs like ``hermes plugins update``'s pulls
+    (``_run_plugin_git``): its own git runs no credential helper, askpass
+    or prompt, and a stored credential is looked up only when the remote
+    refuses anonymous access — the gateway's scheduled check has nobody to
+    answer a helper's window or a prompt.
     """
+    from hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
     from hermes_cli.plugins_cmd import _resolve_git_executable
 
-    proc = subprocess.run(
-        [_resolve_git_executable() or "git", "ls-remote", source, "HEAD"],
+    proc = run_git_with_credential_fallback(
+        [_resolve_git_executable() or "git", "ls-remote", source, "HEAD"], source,
+        env=noninteractive_git_env(),
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
         timeout=30,
-        check=False,
     )
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or "ls-remote failed").strip()[:200])

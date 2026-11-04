@@ -35,12 +35,27 @@ def _refuse_managed_keys(*key_paths: str) -> None:
                 "and cannot be changed. Contact your administrator to modify it.", code="config_key_managed")
 
 
-def _refuse_managed_model_pick(reasoning_effort: str = "") -> None:
-    """A persisting /model pick writes model.default/provider/base_url, plus agent.reasoning_effort when
-    its ``--reasoning`` parses: refused whole before anything is switched, persisted or queued."""
+def _refuse_managed_model_pick(reasoning_effort: str = "", result=None, *, queued: bool = False) -> None:
+    """A persisting /model pick writes persist_model_selection's whole plan (model.default/provider/
+    base_url/api_mode always; context_length and stale credential keys cleared only when the raw block
+    holds them), plus agent.reasoning_effort when ``--reasoning`` parses: refused whole before anything
+    is switched, persisted or queued. With the resolved ``result``: its exact plan. A ``queued`` pick
+    resolves only at turn start, so every clear it may make counts. Neither: the always-written keys."""
+    from hermes_cli import managed_scope
     from hermes_constants import parse_reasoning_effort
+    if not managed_scope.managed_config_keys():
+        return
+    plan = ["default", "provider", "base_url", "api_mode"]
+    if result is not None or queued:
+        from hermes_cli.config import read_user_config_raw
+        held = read_user_config_raw().get("model")
+        if result is not None:
+            from hermes_cli.model_switch import model_selection_config_updates
+            plan = list(model_selection_config_updates(result, held))
+        elif isinstance(held, dict):
+            plan += [k for k in ("context_length", "api_key", "api", "key_env", "api_key_env") if k in held]
     effort_key = ("agent.reasoning_effort",) if parse_reasoning_effort(reasoning_effort or None) else ()
-    _refuse_managed_keys("model.default", "model.provider", "model.base_url", *effort_key)
+    _refuse_managed_keys(*(f"model.{key}" for key in plan), *effort_key)
 
 
 def _write_display_sections(*, sections=None, drop_sections=(), **display_fields) -> None:
@@ -116,7 +131,7 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     # generic error event. resolve_persist_behavior, not --global alone: persist_switch_by_default counts.
     if not getattr(parsed, "is_reset", False) and resolve_persist_behavior(
             parsed.is_global, parsed.is_session, is_once=parsed.is_once, explicit_provider=parsed.explicit_provider):
-        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""))
+        _refuse_managed_model_pick(getattr(parsed, "reasoning_effort", ""), queued=True)
     try:
         pending_model = parsed.model_input
     except Exception:

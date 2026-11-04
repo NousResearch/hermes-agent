@@ -48,17 +48,23 @@ def test_tui_config_set_refuses_a_managed_key_and_writes_nothing(homes, key, val
 
 
 @pytest.mark.parametrize("running", [True, False], ids=["deferred", "immediate"])
-@pytest.mark.parametrize(("pick", "pinned"), [
-    ("other/model --global", "model.default"),
-    ("other/model --global --reasoning high", "agent.reasoning_effort"),  # only the effort is pinned
+@pytest.mark.parametrize(("pick", "pinned", "managed"), [
+    ("other/model --global", "model.default", None),
+    ("other/model --global --reasoning high", "agent.reasoning_effort", "agent:\n  reasoning_effort: low\n"),
+    ("other/model --global", "model.api_mode", "model:\n  api_mode: codex_responses\n"),  # always set or cleared
+    ("other/model --global", "model.context_length", "model:\n  context_length: 8192\n"),  # cleared: route changed
 ])
-def test_tui_persisting_model_pick_is_refused_before_anything_changes(homes, monkeypatch, running, pick, pinned):
+def test_tui_persisting_model_pick_is_refused_before_anything_changes(homes, monkeypatch, running, pick, pinned, managed):
     """Refused before the live switch, the model persist or the mid-turn queue, not after a partial success."""
-    if pinned == "agent.reasoning_effort":
-        (homes.parent / "managed" / "config.yaml").write_text("agent:\n  reasoning_effort: low\n")
+    from hermes_cli.model_switch import ModelSwitchResult
+    if managed:
+        (homes.parent / "managed" / "config.yaml").write_text(managed)
         managed_scope.invalidate_managed_cache()
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: pytest.fail("switched before refusal"))
-    agent = SimpleNamespace(model="old/model", provider="nous", reasoning_config=None)
+    (homes / "config.yaml").write_text("model:\n  default: old/model\n  provider: nous\n  context_length: 4096\n")
+    monkeypatch.setenv("HERMES_HOME", str(homes))
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+        success=True, new_model="other/model", target_provider="openrouter", is_global=True))
+    agent = SimpleNamespace(model="old/model", provider="nous", reasoning_config=None)  # no switch_model: never swapped
     server._sessions["managed-pick"] = session = {"session_key": "managed-pick", "agent": agent, "running": running}
     before = (homes / "config.yaml").read_text()
     try:

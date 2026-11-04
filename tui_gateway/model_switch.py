@@ -343,6 +343,8 @@ def _apply_model_switch(
         custom_providers=custom_provs)
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+    if persist_global:  # the exact plan, incl. conditional clears: still before any confirm or commit
+        _refuse_managed_model_pick(reasoning_effort, result)
     restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)

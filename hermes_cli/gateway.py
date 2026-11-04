@@ -832,12 +832,12 @@ def find_windows_gateway_services(
             import psutil as psutil_module  # type: ignore[no-redef]
         if profile_processes is None:
             profile_processes = find_profile_gateway_processes(strict=True)
-        from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots
+        from hermes_cli.gateway_windows import hermes_owns_windows_service, hermes_service_roots, scm_services
 
         hermes_roots = hermes_service_roots()
         service_names_by_pid: dict[int, set[str]] = {}
         indeterminate_services_by_pid: dict[int, list[tuple[str, object]]] = {}
-        for service in psutil_module.win_service_iter():
+        for service in scm_services(psutil_module):
             try:
                 service_name = str(_scm_service_field(service, "name") or "")
                 if not service_name:

@@ -133,6 +133,18 @@ def _normalize_windows_path(value: str) -> str:
     return value.strip().lstrip('"').replace("\\", "/").rstrip("/").casefold()
 
 
+def scm_services(psutil_module) -> list:
+    """Every SCM service this token may list, or none when the SCM refuses it enumeration. Same reasoning as
+    a service denied at inspection: a token refused OpenSCManager could not ``sc stop`` a Hermes service
+    either, so the gateways it can see are plain processes to it. Materialized here because psutil's iterator
+    is a generator: the refusal arrives on the first step, not on the call."""
+    try:
+        return list(psutil_module.win_service_iter())
+    except (psutil_module.AccessDenied, PermissionError) as exc:
+        logger.warning("Windows SCM denied service enumeration (%s); treating gateways as plain processes", exc)
+        return []
+
+
 def hermes_owns_windows_service(name: str, binpath: str, hermes_roots: tuple[str, ...]) -> bool:
     """Positive ownership of an SCM service: Hermes-named (``hermes*``) or its binary path starts under a
     Hermes root. Pure so it is testable off-Windows. A Scheduled-Task-launched gateway descends from

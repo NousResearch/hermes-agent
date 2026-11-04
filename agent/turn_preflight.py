@@ -82,9 +82,6 @@ def run_preflight_compression(
             max_compression_attempts,
         )
 
-    _compression_cooldown = getattr(
-        compressor, "get_active_compression_failure_cooldown", lambda: None
-    )()
     _eligible = (
         agent.compression_enabled
         and len(v.messages) > 1
@@ -92,7 +89,11 @@ def run_preflight_compression(
     )
     if _eligible:
         # Aux clamp must land before the first compaction fires on the main-window threshold (#114707).
+        # Before the cooldown read: a moved compression route clears the previous summariser's cooldown.
         ensure_compression_feasibility_checked(agent, request_pressure_tokens)
+    _compression_cooldown = getattr(
+        compressor, "get_active_compression_failure_cooldown", lambda: None
+    )()
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)

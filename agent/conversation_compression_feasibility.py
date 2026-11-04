@@ -50,10 +50,14 @@ def _route_identity() -> tuple:
 
 
 def _drop_stale_ceiling(agent: Any) -> None:
-    """A warm agent met a compression route other than the one it probed: the ceiling it installed was
-    the old summariser's window, so the trigger returns to the main window before the new probe."""
+    """A warm agent met a compression route other than the one it probed: the ceiling it installed and
+    any failure cooldown belong to the old summariser, so the trigger returns to the main window and the
+    cooldown is cleared (in memory and in the session row) before the new probe."""
     agent._compression_feasibility_checked = False
     compressor = agent.context_compressor
+    clear_cooldown = getattr(compressor, "_clear_compression_failure_cooldown", None)
+    if callable(clear_cooldown):
+        clear_cooldown()
     if getattr(compressor, "_aux_context_ceiling", None) is not None:
         compressor._aux_context_ceiling = None
         compressor.update_model(compressor.model, compressor.context_length, base_url=compressor.base_url,

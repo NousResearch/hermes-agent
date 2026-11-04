@@ -58,7 +58,7 @@ def test_resolve_titled_session_skips_deliberately_archived_bot_chat(tmp_path):
         assert db.set_session_hidden('local-retired', True)
         db._write_sql(
             'UPDATE sessions SET archived = 1, auto_archived = 0 WHERE id = ?', ('local-retired',))
-        human = Principal('human', 'owned', frozenset({'session:read'}), 'viewer')
+        human = SessionActor('human', 'owned', frozenset({'session:read'}), 'viewer')
         assert resolve_titled_session(authority, human, 'Bot Chat', missing_ok=True) is None
 
 
@@ -69,7 +69,7 @@ def test_resolve_titled_session_finds_recoverable_auto_archived_bot_chat(tmp_pat
         assert db.set_session_hidden('local-reaped', True)
         db.end_session('local-reaped', 'ws_orphan_reap')
         assert db.set_session_archived('local-reaped', True)
-        human = Principal('human', 'owned', frozenset({'session:read'}), 'viewer')
+        human = SessionActor('human', 'owned', frozenset({'session:read'}), 'viewer')
         ref = resolve_titled_session(authority, human, 'Bot Chat', missing_ok=True)
         assert ref is not None
         assert ref.session_id == 'local-reaped'

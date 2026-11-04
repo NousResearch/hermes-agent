@@ -57,6 +57,13 @@ class TestVerdicts:
         assert rc == 0
         assert "allow" in out
 
+    def test_own_pid_kill_verdict_follows_the_backend_like_runtime(self, isolated_approvals):
+        import os
+        command = f"kill {os.getpid()}"
+        assert at.evaluate_command(command, env_type="local")["verdict"] == "ask-approval"
+        # A remote backend runs in another PID namespace; runtime skips the own-PID check there.
+        assert at.evaluate_command(command, env_type="ssh")["verdict"] == "allow"
+
     def test_hardline_command_denies_with_rule_name(self, isolated_approvals, capsys):
         rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
         out = capsys.readouterr().out

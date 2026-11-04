@@ -30,7 +30,7 @@ from tools.approval_context import (
 )
 from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
-    detect_hardline_command,
+    detect_hardline_command, is_pid_bound_key,
 )
 from tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
@@ -415,7 +415,7 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always":
+        if choice == "always" and not is_pid_bound_key(key):
             approve_permanent(key)
             # Pass only this process's grants, taken against the baseline of the same snapshot. A
             # check that syncs a hand removal before the save runs advances the baseline, so a
@@ -587,6 +587,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     pending["description"] = description
     if smart_denied:
         pending.update(smart_denied=True, allow_permanent=False)
+    elif any(is_pid_bound_key(key) for key in pattern_keys or [pattern_key]):
+        pending["allow_permanent"] = False  # the self-kill key names this PID
     submit_pending(session_key, pending)
     if not spec.pending_keys:
         return {
@@ -608,6 +610,8 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
     }
     if smart_denied:
         result.update(smart_denied=True, allow_permanent=False)
+    elif "allow_permanent" in pending:
+        result["allow_permanent"] = False
     return result
 
 
@@ -666,12 +670,20 @@ def _unattended_contexts() -> list[_Unattended]:
     return contexts
 
 
-def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None:
+def _detect_dangerous_command_for_env(command: str, env_type: str) -> tuple:
+    """The current-PID self-kill check only means something where the command shares this
+    process's PID namespace; the local call keeps the plain ``detect_dangerous_command(command)`` contract."""
+    if env_type == "local":
+        return detect_dangerous_command(command)
+    return detect_dangerous_command(command, protect_local_pid=False)
+
+
+def _unapproved_findings(command: str, approved, env_type: str) -> tuple[list[str], str] | None:
     """``(pattern_keys, description)`` still needing consent, or None. The first match plus every
     content-level rule (credential upload, invisible Unicode) each need their own approval, so an
     approved pipe-to-shell cannot wave through the credential upload in the same command; overlapping
     verb rules keep the first key only. ``approved(key)`` is the session or permanent check."""
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    is_dangerous, pattern_key, description = _detect_dangerous_command_for_env(command, env_type)
     if not is_dangerous:
         return None
     findings = [(pattern_key, description)]
@@ -682,7 +694,7 @@ def _unapproved_findings(command: str, approved) -> tuple[list[str], str] | None
     return [key for key, _ in pending], "; ".join(text for _, text in pending)
 
 
-def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
+def _unattended_deny(command: str, ctx: _Unattended, env_type: str) -> dict | None:
     """Deny-mode handling for one unattended context (cron / -q / webhook); None = allow."""
     if ctx.mode() != "deny":
         return None
@@ -692,7 +704,7 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    pending = _unapproved_findings(command, _is_permanently_approved)
+    pending = _unapproved_findings(command, _is_permanently_approved, env_type)
     if pending is not None:
         keys, description = pending
         result = block(f"Command flagged as dangerous ({description})")
@@ -840,7 +852,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    # A PID-bound key (own-process kill) stops matching after a restart: offer once/session only.
+    allow_permanent = not smart_denied and not any(is_pid_bound_key(key) for key in pattern_keys or [pattern_key])
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -889,7 +902,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
+                "allow_permanent": allow_permanent,
                 "allow_session": not smart_denied,
             }
             if smart_denied:
@@ -1138,7 +1151,7 @@ def check_dangerous_command(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return _approved()
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key), env_type)
     if pending is None:
         return _approved()
     keys, description = pending
@@ -1210,13 +1223,13 @@ def check_all_command_guards(command: str, env_type: str,
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:
         for ctx in _unattended_contexts():
-            result = _unattended_deny(command, ctx)
+            result = _unattended_deny(command, ctx, env_type)
             if result is not None:
                 return result
         return _approved()
 
     session_key = get_current_session_key()
-    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key))
+    pending = _unapproved_findings(command, lambda key: is_approved(session_key, key), env_type)
     if pending is None:
         return _approved()
     keys, description = pending

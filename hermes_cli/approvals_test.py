@@ -104,7 +104,8 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
     # 7. Dangerous-pattern detection → would prompt.
-    is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
+    # Same backend-aware check as the runtime: the own-PID kill guard only applies locally.
+    is_dangerous, pattern_key, description = approval._detect_dangerous_command_for_env(command, env_type)
     if is_dangerous:
         return result(
             "ask-approval", rule=description,

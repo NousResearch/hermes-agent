@@ -173,6 +173,27 @@ _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "s
 # `dash -c` through while bash/sh were flagged).
 _SHELL_NAMES = ("bash", "sh", "zsh", "ksh", "dash")
 _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
+# Pipe-to-shell sink: the shell may sit behind launcher words (`sudo -u root -E`, `env -i A=1`,
+# `/usr/bin/env`, `timeout 60`, `busybox`), be path-qualified (/bin/sh, ./zsh,
+# C:\\msys64\\...\\bash.exe), quoted, .exe-suffixed, or followed by a redirect instead of
+# whitespace. The lookahead terminator keeps `shred`, `shellcheck` and `bash-helper` out.
+# fish/csh/tcsh read a script on stdin too, so they count here (they take no part in the -c
+# payload scan). Launcher tokens fall in disjoint classes (a flag that takes a value -- sudo/env
+# `-u USER`, `-g`, `-C` ... -- a bare flag, VAR=value, a duration) inside atomic/possessive
+# groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
+# as the user, not the shell.
+_PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh"))
+_PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
+_PIPE_LAUNCHER_ARG_RE = (
+    r"(?>(?-i:-[ugUCDhpRrtT])\s++[^\s|;&<>]++|-[^\s|;&<>]++|\w++=[^\s|;&<>]*+|\d++(?:\.\d+)?[smhd]?(?=\s))"
+)
+_PIPE_WRAPPERS_RE = (
+    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:sudo|doas|env|exec|command|nohup|nice|time|timeout|stdbuf|busybox)"
+    rf"(?:\s++{_PIPE_LAUNCHER_ARG_RE})*+\s++)*+"
+)
+_PIPE_SHELL_TOKEN_RE = (
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
+)
 
 
 def _contains_shell_carrier(command: str) -> bool:
@@ -327,8 +348,9 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
-    (rf'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)', "pipe remote content to shell"),
-    (rf'\b(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (rf'\b(curl|wget)\b.*(?:\|&?\s*{_PIPE_WRAPPERS_RE}|>\(\s*){_PIPE_SHELL_TOKEN_RE}', "pipe remote content to shell"),
+    (rf'(?<![\w.-])(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (_CMDPOS + r'(?:source|\.)\s+<\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape

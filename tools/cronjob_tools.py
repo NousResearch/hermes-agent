@@ -735,6 +735,8 @@ def _action_create(a: dict[str, Any]) -> str:
             pinned=bool(a["pinned"]),
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             catch_up=a["catch_up"],
+            max_turns=a["max_turns"],
+            max_tokens=a["max_tokens"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -976,6 +978,12 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
             kind = (_pick(updates, job, "schedule") or {}).get("kind")
             if kind != "cron":
                 return "grace_minutes only applies to cron schedules."
+    # '' / null clears the per-job override so the run falls back to global config; a real
+    # value is a positive int, validated by cron/jobs.py at the update chokepoint.
+    if a["max_turns"] is not None:
+        updates["max_turns"] = _normalize_optional_job_value(a["max_turns"]) or None
+    if a["max_tokens"] is not None:
+        updates["max_tokens"] = _normalize_optional_job_value(a["max_tokens"]) or None
     if a["schedule"] is not None:
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
@@ -1079,7 +1087,9 @@ def cronjob(
     pinned: Optional[bool] = None,
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
-    grace_minutes: Optional[int | str] = None) -> str:
+    grace_minutes: Optional[int | str] = None,
+    max_turns: Optional[int | str] = None,
+    max_tokens: Optional[int | str] = None) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1213,6 +1223,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "boolean",
                 "description": "True = the job's delivery is CONTINUABLE — the user can reply and the agent has the brief in context (threads on thread-capable platforms, mirrored into the DM elsewhere). Use for conversational recurring jobs (briefings); leave unset for fire-and-forget alerts. Scope: the job's own conversation only — the origin chat, the home-channel fallback when deliver='origin' captured no origin (script-created jobs), a user-written bare platform target (deliver='slack' — that platform's home channel), or the job's single explicit platform:chat target (this flag is the only way to attach an explicit target). Broadcast targets are never attached; no effect when deliver='local'."
             },
+            "max_turns": {
+                "type": ["integer", "string"],
+                "description": "Optional per-job agent turn limit. Caps how many iterations this job's agent run may take — a polling/monitor job that tends to spiral should set a small value (e.g. 5-10) instead of inheriting the global agent.max_turns. Must be a positive integer; omit to inherit the global limit. On update, '' clears the override."
+            },
+            "max_tokens": {
+                "type": ["integer", "string"],
+                "description": "Optional per-job response-token cap, passed to the run's model request. A low value (e.g. 2000-4000) bounds a single response and limits how much degenerate repetition can be produced. Must be a positive integer; omit for the provider/model default. On update, '' clears the override."
+            },
         },
         "required": ["action"]
     }
@@ -1241,7 +1259,8 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up")
+    "paused_reason", "pinned", "timezone", "grace_minutes", "catch_up",
+    "max_turns", "max_tokens")
 
 
 def _cronjob_handler(args, **kw):

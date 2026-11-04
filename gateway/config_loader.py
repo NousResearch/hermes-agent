@@ -47,6 +47,8 @@ def load_legacy_gateway_json(home: Path) -> Any:
 #   "none":     top-level VALUE is None → nested value.
 #   "dict":     top-level value is not a mapping → nested value; accepted only if a mapping.
 #   "nested":   nested form only (no top-level spelling is bridged).
+#   "section":  the value lives inside a top-level section of config.yaml (e.g. ``cron.max_delivery_chars``);
+#               the section key is the first tuple element and the flat gw_data key is the second.
 
 # True while GATEWAY_ALLOW_ALL_USERS in os.environ is the bridge's own write (from config.yaml), not an
 # operator's env var: only then may a reload overwrite/clear it, and restart env builders drop it so a
@@ -101,6 +103,11 @@ _TOPLEVEL_BRIDGE: tuple = (
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
     *_presence("unauthorized_dm_decline_message"),
+    # ``cron.max_delivery_chars``: read from the top-level ``cron`` section so the gateway honors the
+    # same knob the CLI's DEFAULT_CONFIG documents. The gateway loader builds gw_data FLAT and never
+    # forwards the whole ``cron`` section, so this must be bridged explicitly or the cap silently
+    # falls back to the default on real startup.
+    ("cron.max_delivery_chars", "max_delivery_chars", "section", None, None),
 )
 
 
@@ -115,6 +122,15 @@ def _bridge_lookup(yaml_cfg: dict, gateway_section: Any, gw_data: dict, key: str
         return False, None
     if mode == "nested":
         return (True, gateway_section[key]) if nested and key in gateway_section else (False, None)
+    if mode == "section":
+        # ``key`` is a dotted path into a top-level section of config.yaml (e.g.
+        # ``cron.max_delivery_chars``). Only the top-level spelling exists for these knobs —
+        # there is no ``gateway.<key>`` alias — so the section is the single source.
+        section_name, _, field = key.partition(".")
+        section = yaml_cfg.get(section_name)
+        if not isinstance(section, dict) or field not in section:
+            return False, None
+        return True, section[field]
     value = yaml_cfg.get(key)
     if mode == "none":
         if value is None and nested:

@@ -11,6 +11,12 @@ from typing import Dict, List, Optional, Any
 from hermes_cli.config import get_hermes_home
 
 from .config import Platform, GatewayConfig, PlatformConfig
+from .degenerate_output import (
+    DEFAULT_MAX_DELIVERY_CHARS,
+    collapse_degenerate,
+    is_degenerate,
+    truncate_for_delivery,
+)
 from .session import SessionSource
 from .dead_targets import DeadTargetRegistry, classify_dead_error
 
@@ -232,6 +238,76 @@ class DeliveryRouter:
         """filter silence narration based on gateway config without checking process env"""
         return bool(getattr(self.config, "filter_silence_narration", True))
 
+    def _max_delivery_chars(self) -> int:
+        """Hard cap on the characters of a single outbound delivery (``cron.max_delivery_chars``).
+
+        Configured in ``config.yaml`` as ``cron.max_delivery_chars`` (default 20000). The cap is
+        applied *before* any adapter-specific handling, including adapters that split long messages
+        natively — those previously received the entire payload and fanned a 213 KB degenerate cron
+        response into a chat one message at a time (2026-11-02 incident). A value of 0 (or any
+        non-positive number) disables the cap, matching the "0 = unlimited" convention of the other
+        cron knobs."""
+        raw = getattr(self.config, "max_delivery_chars", None)
+        if raw is None:
+            return DEFAULT_MAX_DELIVERY_CHARS
+        # Only a real integer (or an integer-valued string) is a cap.  A bool, a float with a
+        # fractional part, or any other object is a configuration error: coercing it blindly
+        # would turn a non-numeric value into a tiny cap (int(MagicMock()) is 1) and truncate
+        # every delivery to a handful of characters.
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+            logger.warning("Invalid cron.max_delivery_chars=%r — falling back to %d",
+                           raw, DEFAULT_MAX_DELIVERY_CHARS)
+            return DEFAULT_MAX_DELIVERY_CHARS
+        try:
+            limit = int(raw.strip(), 10) if isinstance(raw, str) else int(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid cron.max_delivery_chars=%r — falling back to %d",
+                           raw, DEFAULT_MAX_DELIVERY_CHARS)
+            return DEFAULT_MAX_DELIVERY_CHARS
+        return max(0, limit)
+
+    def _guard_degenerate_output(self, content: str, job_id: str) -> tuple[str, Optional[Path]]:
+        """Detect a degenerate (runaway-repetition) payload and collapse it before any adapter sees it.
+
+        Runs FIRST, on the ORIGINAL payload, before the size cap or adapter-specific handling, and
+        returns ``(content, saved_path)``. Order matters: the detector must see the full response.
+        The 2026-11-02 incident's 213 KB payload was a readable preamble followed by a
+        ~180 KB looping tail, so truncating first would have sliced the degenerate tail away *before*
+        detection and let a preamble ship with no marker. The detector is statistical (no word
+        blacklist), so ordinary reports — including ones that legitimately repeat a line or two —
+        pass through untouched.
+
+        The full original is audit-saved BEFORE it is shortened so the pointer in the delivered
+        message always resolves to the complete original. A failed save is best-effort: delivery
+        proceeds with the collapsed message and no audit pointer.
+        """
+        if not is_degenerate(content):
+            return content, None
+        original_len = len(content)
+        saved_path: Optional[Path] = None
+        try:
+            saved_path = self._save_full_output(content, job_id)
+        except OSError as exc:
+            logger.warning(
+                "Audit save failed for degenerate cron output (%d chars, job=%s): %s — "
+                "delivery proceeds with a collapsed message and no audit pointer",
+                original_len, job_id, exc)
+        collapsed = collapse_degenerate(content)
+        logger.warning(
+            "Degenerate repetitive output detected before delivery (%d chars, job=%s) — "
+            "collapsing to %d chars before adapter send",
+            original_len, job_id, len(collapsed))
+        if collapsed.strip():
+            if saved_path is not None:
+                collapsed += (f"\n\n[完整原始输出（{original_len} 字符）已保存到 {saved_path}]")
+            return collapsed, saved_path
+        # Nothing outside the degenerate span was salvageable: deliver a short notice instead of an
+        # empty or looping message.
+        notice = f"[输出因模型退化重复已被抑制：本次响应无可读正文。原始长度 {original_len} 字符"
+        if saved_path is not None:
+            notice += f"；完整原始响应已保存到 {saved_path}"
+        return notice + "]", saved_path
+
     def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
         the full output is always written to disk as an audit trail, best-effort — a failed save (full disk,
@@ -276,7 +352,38 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         adapter = transport.adapter
-        content = self._cap_oversized_output(adapter, content, (metadata or {}).get("job_id", "unknown"))
+        job_id = (metadata or {}).get("job_id", "unknown")
+
+        # Step 0 — degenerate-repetition guard. Runs FIRST, on the ORIGINAL payload, before the size
+        # cap and before any adapter-specific handling (including native chunking). The detector must
+        # see the full response: the 2026-11-02 incident's 213 KB payload was a readable preamble
+        # followed by a ~180 KB looping tail, so truncating first would have sliced the degenerate tail
+        # away *before* detection and let a preamble ship with no marker.
+        content, audit_path = self._guard_degenerate_output(content, job_id)
+
+        # Step 1 — universal delivery cap. Independent of adapter chunking behaviour: no adapter may
+        # ever receive an unbounded payload. Runs after the degeneracy guard so a collapsed payload is
+        # capped on its own (post-collapse) size.
+        delivery_limit = self._max_delivery_chars()
+        if delivery_limit and len(content) > delivery_limit:
+            if audit_path is None:
+                # Save the full payload for audit BEFORE it is shortened, so the pointer in the footer
+                # always resolves to the complete original. Best-effort: a failed save never blocks
+                # delivery.
+                try:
+                    audit_path = self._save_full_output(content, job_id)
+                except OSError as exc:
+                    logger.warning("Audit save failed for oversized cron output (%d chars, job=%s): %s — "
+                                   "delivery proceeds without audit copy", len(content), job_id, exc)
+            logger.warning("Cron output exceeded the delivery cap (%d chars > %d, job=%s) — truncating "
+                           "before delivery", len(content), delivery_limit, job_id)
+            content = truncate_for_delivery(
+                content, limit=delivery_limit,
+                saved_path=str(audit_path) if audit_path else None)
+        elif audit_path is None:
+            # Not over the universal cap and not a degenerate collapse: fall through to the historical
+            # MAX_PLATFORM_OUTPUT handling for non-chunking adapters.
+            content = self._cap_oversized_output(adapter, content, job_id)
 
         # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
         # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model

@@ -1721,6 +1721,48 @@ def _normalize_failure_deliver(value: Any) -> Optional[str]:
     return _normalize_job_optional_text(value)
 
 
+def _normalize_positive_int(value: Any, field: str) -> Optional[int]:
+    """Positive-int job knob. None/blank clears the override (falls back to global config);
+    a bool, a non-integral float, a non-numeric string, or ``<= 0`` raises BEFORE anything is
+    stored — a zero/absurd cap would silently make every run fail instead of falling back."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid {field} {value!r}: expected a positive integer.")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text, 10)
+        except ValueError:
+            raise ValueError(
+                f"Invalid {field} {value!r}: expected a positive integer.") from None
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"Invalid {field} {value!r}: expected a positive integer.")
+        parsed = int(value)
+    elif isinstance(value, int):
+        parsed = value
+    else:
+        raise ValueError(f"Invalid {field} {value!r}: expected a positive integer.")
+    if parsed <= 0:
+        raise ValueError(f"Invalid {field} {value!r}: expected a positive integer (> 0).")
+    return parsed
+
+
+def _normalize_max_turns(value: Any) -> Optional[int]:
+    """Per-job agent turn limit override (``max_turns``). None clears it so the run falls back
+    to the global ``agent.max_turns`` / ``max_turns`` config value."""
+    return _normalize_positive_int(value, "max_turns")
+
+
+def _normalize_max_tokens(value: Any) -> Optional[int]:
+    """Per-job response-token cap override (``max_tokens``). None clears it so the run falls back
+    to the provider/model default."""
+    return _normalize_positive_int(value, "max_tokens")
+
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Spelling-only validation via the shared parser (cron knob never stricter/looser than
     config.yaml); model capability is deliberately NOT checked (model unknowable at create time,
@@ -1767,6 +1809,8 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "max_turns": _normalize_max_turns,
+    "max_tokens": _normalize_max_tokens,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1781,6 +1825,8 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "max_turns": _normalize_max_turns,
+    "max_tokens": _normalize_max_tokens,
 }
 
 
@@ -1835,6 +1881,8 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    max_turns: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1847,7 +1895,8 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up)."""
+    (0 = never catch up). max_turns/max_tokens: per-run agent turn limit / response-token cap;
+    both fall back to the global ``agent.max_turns`` / provider default when None."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1939,6 +1988,7 @@ def create_job(
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
         ("catch_up", f["catch_up"]),
+        ("max_turns", f["max_turns"]), ("max_tokens", f["max_tokens"]),
     ):
         if value is not None:
             job[key] = value

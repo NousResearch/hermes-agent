@@ -570,6 +570,28 @@ def _is_cron_silence_response(text: str) -> bool:
 
     return is_autonomous_silence_response(text)
 
+
+def _is_degenerate_model_output(text: str) -> bool:
+    """True when a cron final response is runaway repetition rather than content.
+
+    Late import: ``gateway.degenerate_output`` pulls the tokenizer-free n-gram detector, and the
+    cron scheduler is imported by the CLI on every startup — keeping the import inside the call
+    keeps cron's module graph free of delivery-only machinery.
+    """
+    from gateway.degenerate_output import is_degenerate
+
+    return is_degenerate(text)
+
+
+def _collapse_degenerate_model_output(text: str) -> str:
+    """Keep the reader-recognisable head of a degenerate response; drop the looping tail.
+
+    Late import for the same reason as :func:`_is_degenerate_model_output`.
+    """
+    from gateway.degenerate_output import collapse_degenerate
+
+    return collapse_degenerate(text)
+
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
 # per-profile config key — a single process-global pool is sized by whichever profile ticked first
@@ -2430,6 +2452,7 @@ class _CronAgentSetup:
     runtime: dict = None
     prefill_messages: Any = None
     max_iterations: Any = None
+    max_tokens: Any = None
     reasoning_config: Any = None
     fallback_model: Any = None
     credential_pool: Any = None
@@ -2445,10 +2468,18 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 
     # resolve_turn_limit() honors none/unlimited (sys.maxsize) and explicit 0 / null.
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-    _mt = _cfg.get("agent", {}).get("max_turns")
+    # Per-job override wins over the global config (job["max_turns"], normalized at create/edit
+    # time by cron/jobs.py::_normalize_max_turns to a positive int or cleared to None). Absent →
+    # the job follows the global agent.max_turns / top-level max_turns, preserving old behaviour.
+    _mt = job.get("max_turns")
+    if _mt is None:
+        _mt = _cfg.get("agent", {}).get("max_turns")
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
+    # Per-job response-token cap (job["max_tokens"]); None → provider/model default (AIAgent's
+    # own default). Passed straight through to AIAgent, which sends it on the request.
+    setup.max_tokens = job.get("max_tokens")
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2492,6 +2523,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
         max_iterations=setup.max_iterations,
+        max_tokens=setup.max_tokens,
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,
@@ -3071,6 +3103,25 @@ def _save_compose_deliver(
         output_file = (
             None if self_removal_delivery_allowed(job["id"])
             else save_job_output(job["id"], output))
+
+    # Degenerate-repetition guard, ON THE ORIGINAL payload, BEFORE the size cap below: the
+    # detector must see the whole response (a readable preamble followed by a looping tail is
+    # the 2026-11-02 shape, and slicing the tail off first would let the preamble ship with no
+    # marker). The full original is audit-saved above; only the delivered message collapses.
+    # _summarize_cron_failure_for_delivery's failure copy is exempt — it is our own text, not
+    # model output, and would trip the detector's duplicate-gram feature on a repeated header.
+    if d.success and _is_degenerate_model_output(final_response):
+        _collapsed = _collapse_degenerate_model_output(final_response)
+        logger.warning(
+            "Job '%s': degenerate model output detected (%d chars) — delivering %d chars",
+            job["id"], len(final_response), len(_collapsed))
+        if _collapsed.strip():
+            final_response = _collapsed
+        else:
+            # No readable text outside the degenerate span: deliver nothing and mark the run a
+            # soft failure (the empty-response branch below) rather than reporting `ok`.
+            d.success = False
+            d.error = "degenerate model output with no readable body (runaway repetition)"
     if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 

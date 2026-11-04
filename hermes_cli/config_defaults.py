@@ -1837,19 +1837,19 @@ DEFAULT_CONFIG = {
         # untouched. User-written bare platforms address home conversations, unlike `all`
         # broadcast expansions, which do not gain mirror eligibility.
         "mirror_delivery": False,
-        # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
-        # Env override: HERMES_CRON_MAX_PARALLEL.
+        # Max parallel jobs per tick: None/0 = unbounded (thread count only); 1 = serial. Env: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,
-        # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
-        # (for externally managed cleanup).
+        # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning.
         "output_retention": 50,
-        # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
-        # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
+        # No-agent script timeout (seconds). Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,
-        # Timeout (seconds) for SessionDB() init inside cron jobs: state.db open/migrate has no
-        # timeout of its own against a wedged sqlite3.connect, and an unbounded hang wedges the
-        # job's dispatch guard forever. Env: HERMES_CRON_SESSION_DB_TIMEOUT. 0 = unlimited.
+        # SessionDB init timeout (seconds): state.db open/migrate can hang, wedging the job's dispatch guard.
+        # Env: HERMES_CRON_SESSION_DB_TIMEOUT. 0 = unlimited.
         "session_db_timeout_seconds": 10,
+        # Cron delivery cap in characters, before adapter chunking; 0 disables it.
+        # Audit-save the complete output when possible; truncation includes its path if saved.
+        # Keep in sync with gateway.degenerate_output.DEFAULT_MAX_DELIVERY_CHARS.
+        "max_delivery_chars": 20000,
         # Timeout (seconds) per media attachment send during gateway delivery; large attachments
         # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
         # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.

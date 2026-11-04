@@ -160,6 +160,42 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# Fallback for ``cron.max_delivery_chars`` when unset. Mirrors
+# ``gateway.degenerate_output.DEFAULT_MAX_DELIVERY_CHARS`` — kept as a literal
+# so this module never imports the detector (config must load standalone).
+DEFAULT_MAX_DELIVERY_CHARS = 20_000
+
+
+def normalize_delivery_char_cap(value: Any, key: str = "cron.max_delivery_chars") -> int:
+    """Normalize a configured outbound-delivery character cap.
+
+    ``None``/unset falls back to :data:`DEFAULT_MAX_DELIVERY_CHARS`; ``0`` or a
+    negative value disables the cap (0 = unlimited, matching the other cron
+    knobs); a malformed value is ignored with a warning so a typo can never
+    stop the gateway from starting.
+    """
+    if value is None:
+        return DEFAULT_MAX_DELIVERY_CHARS
+    # Accept only real numeric scalars (or an integer-valued string).  Any other object is a
+    # configuration error: coercing it blindly is unsafe — ``int(<mock>)`` is 1, which would
+    # silently cap every delivery at a single character.
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected an integer; 0 disables the cap)", key, value
+        )
+        return DEFAULT_MAX_DELIVERY_CHARS
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(value)
+        parsed = int(value.strip(), 10) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected an integer; 0 disables the cap)", key, value
+        )
+        return DEFAULT_MAX_DELIVERY_CHARS
+    return max(0, parsed)
+
+
 # "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
 # silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
 UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
@@ -607,6 +643,12 @@ class GatewayConfig:
     filter_silence_narration: bool = True
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
+    # Hard cap, in characters, on a single outbound delivery, applied by the
+    # delivery layer BEFORE any adapter-specific handling (including adapters
+    # that split long messages natively — those previously fanned a 213 KB
+    # degenerate cron response into a chat one message at a time; 2026-11-02).
+    # Read from ``cron.max_delivery_chars``; 0 disables the cap.
+    max_delivery_chars: int = DEFAULT_MAX_DELIVERY_CHARS
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
@@ -653,7 +695,7 @@ class GatewayConfig:
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
-        "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+        "stt_echo_transcripts", "max_delivery_chars", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
@@ -776,6 +818,13 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # ``cron.max_delivery_chars`` lives under the ``cron`` section of the merged config; a bare
+        # top-level key is honored too so `gateway --config` and hand-written layers work.
+        cron_section = _coerce_dict(data.get("cron"))
+        max_delivery_chars = normalize_delivery_char_cap(
+            data.get("max_delivery_chars", cron_section.get("max_delivery_chars"))
+        )
+
         from gateway.profile_routing import parse_profile_routes
 
         return cls(
@@ -799,6 +848,7 @@ class GatewayConfig:
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            max_delivery_chars=max_delivery_chars,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
         )
 

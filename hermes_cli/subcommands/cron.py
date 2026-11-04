@@ -111,6 +111,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "into its prompt, so it can dedupe against what was already "
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
+    cron_create.add_argument("--max-turns", dest="max_turns",
+        help="Per-job agent turn limit (positive integer). Caps how many "
+            "iterations this job's agent run may take. Omit to inherit the "
+            "global agent.max_turns.")
+    cron_create.add_argument("--max-tokens", dest="max_tokens",
+        help="Per-job response-token cap (positive integer), passed to the "
+            "run's model request. Omit for the provider/model default.")
 
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
@@ -182,6 +189,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--grace-minutes", dest="grace_minutes",
         help="Catch-up window override in minutes (0-1440). 0 = never catch up. "
             "Pass empty string to restore the computed window.")
+    cron_edit.add_argument("--max-turns", dest="max_turns",
+        help="Per-job agent turn limit (positive integer). Pass empty string to "
+            "clear the override (back to the global agent.max_turns).")
+    cron_edit.add_argument("--max-tokens", dest="max_tokens",
+        help="Per-job response-token cap (positive integer). Pass empty string "
+            "to clear the override (back to the provider/model default).")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

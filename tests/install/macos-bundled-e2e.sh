@@ -64,6 +64,9 @@ case "$ARCH" in arm64|x64) ;; *) echo "error: --arch must be arm64 or x64" >&2; 
 # and real Squirrel.Mac, so it is meaningful only on a macOS CI runner.
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "error: this driver is CI-only (GITHUB_ACTIONS required)" >&2; exit 1; }
+# The package must be native to this host: an x64 bundle on Apple Silicon
+# would launch under Rosetta and prove nothing about native coverage.
+[ "$(uname -m)" = "${ARCH/x64/x86_64}" ] || { echo "error: --arch $ARCH does not match this $(uname -m) host" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"

@@ -110,7 +110,7 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 | **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
 | **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
 
-For more auxiliary-model options in `config.yaml`, including tasks the dashboard doesn't list, see [Auxiliary Models](./configuration.md#auxiliary-models).
+For more auxiliary-model options in `config.yaml`, including tasks the dashboard doesn't list, see [Auxiliary Models](./configuration.mdx#auxiliary-models).
 
 ### Per-task override
 

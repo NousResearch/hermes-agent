@@ -140,6 +140,9 @@ export interface Msg {
   // Local image paths shown inline under the row: a user turn's attachments,
   // or (kind 'image') the picture a tool call produced or looked at.
   images?: string[]
+  // Tells two pictures at one image path apart (a re-screenshot over the same
+  // file): the tool call id that produced a kind 'image' row.
+  imageRevision?: string
   panelData?: PanelData
   role: Role
   text: string

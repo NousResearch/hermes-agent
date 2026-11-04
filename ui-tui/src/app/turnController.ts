@@ -350,6 +350,7 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
+
     // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
     // and finished tool rows wait for `recordMessageComplete` to archive them.
     if (!opts.keepTurnArchive) {
@@ -627,13 +628,16 @@ class TurnController {
 
   // A tool's image lands right under the trail line of the call that made it,
   // ahead of whatever the agent streams next (same anchoring as diffs).
-  pushImageSegment(path?: null | string) {
+  pushImageSegment(path?: null | string, toolId?: string) {
     if (!path || this.interrupted) {
       return
     }
 
     this.flushStreamingSegment()
-    this.segmentMessages = [...this.segmentMessages, { images: [path], kind: 'image', role: 'system', text: '' }]
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { images: [path], kind: 'image', role: 'system', text: '', ...(toolId && { imageRevision: toolId }) }
+    ]
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 

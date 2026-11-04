@@ -26,8 +26,11 @@ const settle = async () => {
   }
 }
 
-const mount = (msgs: Msg[], render: ImageRenderResponse) => {
-  const request = vi.fn(async () => render)
+const mount = (msgs: Msg[], render: ImageRenderResponse | ((params: { path: string }) => ImageRenderResponse)) => {
+  const request = vi.fn(async (_method: string, params: { path: string }) =>
+    typeof render === 'function' ? render(params) : render
+  )
+
   const gateway = { gw: { request } as unknown as GatewayClient, rpc: vi.fn() } as unknown as GatewayServices
   const stdout = new PassThrough()
   const stdin = new PassThrough()
@@ -113,6 +116,55 @@ describe('inline transcript images', () => {
 
     expect(output()).toContain('what is this?')
     expect(output()).toContain('▀')
+  })
+
+  it('shows a new picture taken over the same path by a later tool call', async () => {
+    // Piped output carries no color, so the two pictures differ in width.
+    const px = [255, 0, 0, 255, 255, 0, 0, 255]
+    const shot = '/tmp/reshot.png'
+    let width = 1
+
+    const picture = (): ImageRenderResponse => ({
+      cells: [Array(width).fill(px)],
+      cols: width,
+      mode: 'unicode',
+      rows: 1
+    })
+
+    const first = mount([{ imageRevision: 'call-1', images: [shot], kind: 'image', role: 'system', text: '' }], picture)
+
+    await settle()
+    expect(first.output()).not.toContain('▀▀▀')
+
+    width = 3
+
+    const second = mount(
+      [{ imageRevision: 'call-2', images: [shot], kind: 'image', role: 'system', text: '' }],
+      picture
+    )
+
+    await settle()
+    expect(second.request).toHaveBeenCalledTimes(1)
+    expect(second.output()).toContain('▀▀▀')
+  })
+
+  it('asks again after an off answer, so a later enable or a file that appears still shows', async () => {
+    const path = '/tmp/later.png'
+    const first = mount([{ images: [path], kind: 'image', role: 'system', text: '' }], { mode: 'off' })
+
+    await settle()
+    expect(first.request).toHaveBeenCalledTimes(1)
+
+    const second = mount([{ images: [path], kind: 'image', role: 'system', text: '' }], {
+      cells: [[[255, 0, 0, 255, 255, 0, 0, 255]]],
+      cols: 1,
+      mode: 'unicode',
+      rows: 1
+    })
+
+    await settle()
+    expect(second.request).toHaveBeenCalledTimes(1)
+    expect(second.output()).toContain('▀')
   })
 
   it('draws nothing when inline images are off', async () => {

@@ -11,7 +11,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 def _pc():
@@ -20,12 +20,38 @@ def _pc():
     return plugins_cmd
 
 
+def _artifact_pinned_remedy(name: str, target: Path) -> Optional[str]:
+    """Refusal text when *target*'s provenance is artifact-pinned (a release
+    archive install: sidecar row + install.json, no ``.git`` by design).
+    The pull/re-clone core would downgrade the install to a git tree —
+    the archive itself is the update vehicle (UPD-5, est-qrazy). Returns
+    None for every other class."""
+    from hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
+
+    try:
+        provenances = plugins_provenance(target.parent)
+    except OSError:
+        return None
+    for prov in provenances:
+        if prov.name == name and prov.klass is ProvenanceClass.ARTIFACT:
+            return (
+                f"Plugin '{name}' is artifact-pinned (installed from a release "
+                "archive; class proven). Update it by installing the updated "
+                f"archive: hermes plugins install {target.name} --force — "
+                "a git pull/clone would downgrade the install."
+            )
+    return None
+
+
 def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False,
                         force: bool = False, scan_decision_cb=None) -> str:
-    """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
-    recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
-    revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
-    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text. Both paths
+    """Shared ``update`` core: refuse pinned checkouts and artifact-pinned
+    trees (the archive is the update vehicle, never a re-clone downgrade),
+    ``git pull`` (or re-install from the recorded source when the tree
+    carries no ``.git`` — subdirectory installs), record the new revision.
+    Returns the pull output; raises :class:`PluginOperationError` on any
+    refusal. *pinned_msg(install_record)* / *not_git_msg()* build the
+    caller-specific error text. Both paths
     scan the candidate tree the same way: *force* or a truthy *scan_decision_cb* accepts a caution
     verdict, nothing accepts a dangerous one."""
     metadata = _pc()._read_install_metadata()
@@ -36,6 +62,9 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
     # re-cloning new code, including subdirectory installs that carry no local .git directory.
     from hermes_cli import plugins_cmd_catalog as catalog
     catalog.refuse_if_installed_removed(target.name, target)
+    artifact = _artifact_pinned_remedy(target.name, target)
+    if artifact is not None:
+        raise _pc().PluginOperationError(artifact)
     if not (target / ".git").exists():
         source = install_record.get("source")
         if not isinstance(source, str) or not source:

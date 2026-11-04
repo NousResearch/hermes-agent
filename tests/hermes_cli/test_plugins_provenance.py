@@ -1,12 +1,14 @@
-"""Tests: plugin provenance reconciliation — the 2x2.
+"""Tests: plugin provenance reconciliation — the 2x2 plus the artifact cell.
 
 Row-presence says "hermes installed this"; `.git`-presence cross-checks
-it. The reconciliation IS the disambiguation (settled 2026-09-03,
-plugin-auto-update plan Task 1):
-  row+git   = git install         (updatable via the recorded source)
-  neither   = manual drop         (not auto-updatable, listed as such)
-  git only  = self-cloned         (adoptable: origin URL ready)
-  row only  = provenance drift    (flagged with a reinstall remedy)
+it; a shipped install.json (the release-archive marker) proves the
+artifact half. The reconciliation IS the disambiguation (settled
+2026-09-03, plugin-auto-update plan; artifact cell: UPD-5, est-qrazy):
+  row+git              = git install         (updatable via the recorded source)
+  neither              = manual drop         (not auto-updatable, listed as such)
+  git only             = self-cloned         (adoptable: origin URL ready)
+  row+install.json     = artifact-pinned     (class proven; catalog is the feed)
+  row only, no marker  = provenance drift    (flagged with a reinstall remedy)
 """
 
 from __future__ import annotations
@@ -28,6 +30,13 @@ def _write_sidecar(home: Path, rows: dict) -> None:
     plugins.mkdir(parents=True, exist_ok=True)
     (plugins / ".install-metadata.json").write_text(
         json.dumps(rows, indent=2), encoding="utf-8"
+    )
+
+
+def _write_install_json(plugin_dir: Path, data) -> None:
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "install.json").write_text(
+        json.dumps(data) if not isinstance(data, str) else data, encoding="utf-8"
     )
 
 
@@ -76,6 +85,88 @@ def test_drift_row_without_git(tmp_path):
     prov = plugins_provenance(tmp_path / "plugins")
     assert prov[0].klass is ProvenanceClass.DRIFT
     assert prov[0].row["source"] == "https://example/g/r"
+
+
+# ── the artifact cell (UPD-5: archive installs are proven, not drift) ──
+
+
+def test_artifact_row_plus_install_json_no_git_is_proven(tmp_path):
+    """Sidecar row + a release-archive marker, no .git by design: the
+    class is artifact-pinned (proven), not drift — and the remedy text
+    for drift ('reinstall from the recorded source' → a git tree) must
+    not fire for this cell."""
+    _write_sidecar(tmp_path, {"packed": {"pinned": False, "revision": "9a6f8ac",
+                                         "source": "https://github.com/o/r"}})
+    _manual_dir(tmp_path / "plugins" / "packed")
+    _write_install_json(
+        tmp_path / "plugins" / "packed",
+        {"version": "1.4.3", "source_commit": "9a6f8ac", "packaged_at": "2026-10-01T00:00:00Z"},
+    )
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.ARTIFACT
+    marker = prov[0].install_json
+    assert marker is not None
+    assert marker["version"] == "1.4.3"
+    assert marker["source_commit"] == "9a6f8ac"
+
+
+def test_artifact_backward_compat_marker_without_source_repo(tmp_path):
+    """Archives packed before the one-schema PR carry no source_repo —
+    the marker's commit alone still proves the class."""
+    _write_sidecar(tmp_path, {"packed": {"revision": "a" * 40, "source": "https://example/o/r"}})
+    _write_install_json(tmp_path / "plugins" / "packed", {"version": "1.0.0", "source_commit": "a" * 40})
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.ARTIFACT
+
+
+def test_artifact_source_repo_must_agree_with_the_row(tmp_path):
+    """A marker naming a different repo than the row paid for is drift,
+    not proof (host/path spelling is normalized — .git/branch suffixes
+    are spelling too)."""
+    _write_sidecar(tmp_path, {"packed": {"revision": "a" * 40, "source": "https://github.com/o/r"}})
+    _write_install_json(
+        tmp_path / "plugins" / "packed",
+        {"version": "1.0.0", "source_commit": "a" * 40, "source_repo": "https://github.com/evil/clone.git"},
+    )
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.DRIFT
+
+
+def test_artifact_source_repo_agreement_is_spelling_normalized(tmp_path):
+    _write_sidecar(tmp_path, {"packed": {"revision": "a" * 40, "source": "https://github.com/o/r#sub/dir"}})
+    _write_install_json(
+        tmp_path / "plugins" / "packed",
+        {"version": "1.0.0", "source_commit": "a" * 40, "source_repo": "git@github.com:O/R.git"},
+    )
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.ARTIFACT
+
+
+def test_unreadable_install_json_is_not_proof(tmp_path):
+    _write_sidecar(tmp_path, {"packed": {"revision": "a" * 40, "source": "https://example/o/r"}})
+    _write_install_json(tmp_path / "plugins" / "packed", "{not json")
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.DRIFT
+
+
+def test_install_json_without_row_is_manual(tmp_path):
+    """The marker proves the archive, only the sidecar row proves
+    hermes installed it — a dropped bundle is still a manual drop."""
+    _write_sidecar(tmp_path, {})
+    _write_install_json(tmp_path / "plugins" / "dropped", {"version": "1.0.0", "source_commit": "d" * 40})
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.MANUAL
+
+
+def test_git_wins_over_the_marker(tmp_path):
+    """row + .git + install.json = a git install (a pulled tree may keep
+    the marker); never reclassified as artifact."""
+    _write_sidecar(tmp_path, {"plug": {"pinned": False, "revision": "a" * 40, "source": "https://example/o/r"}})
+    _fake_git_dir(tmp_path / "plugins" / "plug")
+    _write_install_json(tmp_path / "plugins" / "plug", {"version": "1.0.0", "source_commit": "a" * 40})
+    prov = plugins_provenance(tmp_path / "plugins")
+    assert prov[0].klass is ProvenanceClass.GIT
+    assert prov[0].install_json is None
 
 
 def test_missing_sidecar_is_all_manual_or_selfcloned(tmp_path):

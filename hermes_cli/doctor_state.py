@@ -541,6 +541,14 @@ def _plugin_provenance_rows(plugins_dir) -> list:
             rows.append(("info", f"Plugin '{provenance.name}' installed manually", detail))
         elif provenance.klass is ProvenanceClass.SELF_CLONED:
             rows.append(("info", f"Plugin '{provenance.name}': self-cloned", detail))
+        elif provenance.klass is ProvenanceClass.ARTIFACT:
+            rows.append(
+                (
+                    "ok",
+                    f"Plugin '{provenance.name}': artifact-pinned (class proven)",
+                    detail or (provenance.install_json or {}).get("version") or "",
+                )
+            )
         else:
             rows.append(("ok", f"Plugin '{provenance.name}': provenance in good standing", detail))
     return rows or [("info", "No provenanced plugins found", "")]

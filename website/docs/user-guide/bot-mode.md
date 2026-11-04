@@ -189,6 +189,15 @@ Local messages also reach a Bot Chat that stays open in Desktop or the TUI, and 
 
 - **Staying silent** — a Bot that has nothing to add may end a turn with one of the [intentional silence tokens](./messaging/index.md#intentional-silence-tokens) (`[SILENT]`, `NO_REPLY`, …). The Bot Chat keeps that turn in its transcript but renders nothing, and a teammate that messaged it gets an empty reply instead of the token. Failed turns and prose that merely mentions a token are shown as-is.
 
+- **Exchanges end on their own** — two Bots cannot keep each other busy forever. A message a Bot sends back to the Bot that messaged it is a *reply that needs no answer*: it arrives with no wake-up for the sender, and the Bot that receives it cannot message that sender back in the same turn. The runtime also counts every bot-to-bot exchange since your last message: past `gateway.bot_loop_guard.max_hops` messages (default 4) a further `message_agent` call is refused and nothing is sent, and sending the same message to the same teammate twice in one exchange is refused as a repeat. The count lives in the delivery itself, not in anything the model writes, and your next message starts a fresh exchange. Set `bot_replies_expect_reply: true` to let Bots answer each other's replies (still capped by `max_hops`).
+
+```yaml
+gateway:
+  bot_loop_guard:
+    max_hops: 4                       # bot-to-bot messages per exchange, Bot Mode and messaging platforms
+    bot_replies_expect_reply: false   # true: a bot's reply to a bot may be answered
+```
+
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
 ```yaml

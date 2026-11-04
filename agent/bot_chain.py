@@ -4,8 +4,8 @@ A human message starts a chain. Each ``message_agent`` send inside it is one hop
 in the delivery's author envelope (``hops``), which only the runtime writes, so the model cannot reset
 it. Past ``gateway.bot_loop_guard.max_hops`` (config.yaml, the same cap the messaging gateway applies)
 a send is refused and nothing is delivered. The same message to the same teammate twice in one chain
-is refused as a duplicate. A message to the bot whose message started this turn is a reply: it goes
-notify-only (``expects_reply`` false in the envelope, no wake for its answer), and a turn started by
+is refused as a duplicate. A message to the bot whose message started this turn is a reply: unless
+``gateway.bot_loop_guard.bot_replies_expect_reply`` is true, it goes notify-only (``expects_reply`` false in the envelope, no wake for its answer), and a turn started by
 such a reply cannot message that bot back. Each side also counts the bot turns it runs, so a lane that
 carries no envelope (Desktop relay) is still capped (#137027).
 """
@@ -75,12 +75,13 @@ def admit_send(agent: Any, target: str, body: str) -> tuple[Optional[str], dict]
     """Check one ``message_agent`` send. Returns ``(refusal, envelope)``: a refusal sentence for the
     model (nothing is delivered), else the fields the delivery's author envelope carries."""
     author = getattr(agent, "_turn_author", None) or {}
-    replying = bool(author.get("is_bot")) and _profile_part(author.get("id") or author.get("name") or "") == \
+    settings = _settings()
+    replying = not settings.bot_replies_expect_reply and bool(author.get("is_bot")) and _profile_part(author.get("id") or author.get("name") or "") == \
         _profile_part(target)
     if replying and author.get("expects_reply") is False:
         return (f"@{_profile_part(target)} sent you a reply that needs no answer, so this exchange is over. "
                 "Do not message them again in this turn; tell your user what you learned instead."), {}
-    cap = _settings().max_hops
+    cap = settings.max_hops
     ask = (_profile_part(target), hashlib.sha256(" ".join(str(body).split()).encode()).hexdigest())
     with _LOCK:
         state = _CHAINS.setdefault(_key(agent), _new_state(time.monotonic()))

@@ -1076,7 +1076,9 @@ class SessionAuthority:
     async def _claim_next(self, ref, live):
         # False asks the pump to re-read after a queued head changed during preflight.
         async with live.claim_gate, live.mutation_lock:
-            pending = list_session_admissions(self.db, session_id=ref.session_id)
+            # Read in a worker (once per turn, on every drain): the claim below only takes the head this
+            # read validated (``head=``), so input or a cancel committed meanwhile is re-read, not lost.
+            pending = await asyncio.to_thread(list_session_admissions, self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
@@ -1100,7 +1102,7 @@ class SessionAuthority:
                         await asyncio.to_thread(service.check_admission, ref, first)
                     # Cancellation may advance the FIFO while the source owner is awaited;
                     # the successor must earn its own reauthorization, not inherit this one.
-                    current = get_session_admission(self.db, admission_id=first['admission_id'])
+                    current = await asyncio.to_thread(get_session_admission, self.db, admission_id=first['admission_id'])
                     if current is None or current['status'] != 'queued':
                         return False, first
                 if 'local_automation_v1' in first['payload']:
@@ -1127,7 +1129,7 @@ class SessionAuthority:
                                    self.runner._adapter_for_source(live.source))
                 # Cancellation may advance FIFO while the connector is awaited.
                 # Never let the successor inherit this row's fresh verdict.
-                current = get_session_admission(self.db, admission_id=first['admission_id'])
+                current = await asyncio.to_thread(get_session_admission, self.db, admission_id=first['admission_id'])
                 if current is None or current['status'] != 'queued':
                     return False, first
             if first is not None and live.source.platform == Platform.API_SERVER:

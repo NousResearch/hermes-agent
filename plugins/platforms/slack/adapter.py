@@ -3741,10 +3741,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._evict_oldest_by_ts(
             self._titled_assistant_threads, self._TITLED_ASSISTANT_THREADS_MAX, lambda e: e[2])
 
-    def _seed_dm_session(
+    async def _seed_dm_session(
         self, metadata: dict[str, str], *, thread_ts: Optional[str], fail_log: tuple[Any, ...]
     ) -> None:
-        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop."""
+        """Prime the session store for a DM (optionally thread-scoped); lifecycle only, no agent loop.
+        A new route writes the routing index (state.db + sessions.json): in a worker, off the loop."""
         session_store = getattr(self, "_session_store", None)
         channel_id, user_id = metadata.get("channel_id", ""), metadata.get("user_id", "")
         if not session_store or not channel_id or not user_id:
@@ -3759,7 +3760,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_topic=metadata.get("context_channel_id") or None,
             scope_id=metadata.get("team_id") or None)
         try:
-            session_store.get_or_create_session(source)
+            await asyncio.to_thread(session_store.get_or_create_session, source)
         except Exception:
             logger.debug(*fail_log, exc_info=True)
 
@@ -3770,7 +3771,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         thread_ts = metadata.get("thread_ts", "")
         if thread_ts:  # seed so assistant threads get stable user scoping
-            self._seed_dm_session(
+            await self._seed_dm_session(
                 metadata,
                 thread_ts=thread_ts,
                 fail_log=(
@@ -3810,7 +3811,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_agent_view_context(metadata)
         # ``app_home_opened`` (tab == "messages") replaces ``assistant_thread_started`` in
         # Slack's Agent experience; lifecycle only (no welcome message, no agent loop).
-        self._seed_dm_session(
+        await self._seed_dm_session(
             metadata,
             thread_ts=None,
             fail_log=(
@@ -4358,7 +4359,7 @@ class SlackAdapter(BasePlatformAdapter):
             ) = await self._collect_thread_root_images(
                 channel_id=channel_id, thread_ts=event_thread_ts, team_id=team_id)
         elif is_mentioned:
-            await _fetch(after_ts=self._get_thread_watermark(**watermark_args), force_refresh=True)
+            await _fetch(after_ts=await self._get_thread_watermark(**watermark_args), force_refresh=True)
         else:
             # Restart rehydration (#63530 restart gap / #33215): persistent sessions survive gateway
             # restarts, but thread replies posted while the gateway was down never reached the session. On
@@ -4369,12 +4370,12 @@ class SlackAdapter(BasePlatformAdapter):
             rehydration_key = self._thread_rehydration_key(
                 channel_id, event_thread_ts, user_id, team_id)
             if rehydration_key in self._thread_rehydration_checked:
-                self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+                await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
                 return channel_context, thread_root_media_urls, thread_root_media_types
-            watermark_ts = self._get_thread_watermark(**watermark_args)
+            watermark_ts = await self._get_thread_watermark(**watermark_args)
             if watermark_ts:
                 await _fetch(after_ts=watermark_ts, force_refresh=True)
-        self._set_thread_watermark(watermark_ts=ts, **watermark_args)
+        await self._set_thread_watermark(watermark_ts=ts, **watermark_args)
         self._mark_thread_rehydration_checked(channel_id, event_thread_ts, user_id, team_id)
         return channel_context, thread_root_media_urls, thread_root_media_types
 
@@ -6197,23 +6198,28 @@ class SlackAdapter(BasePlatformAdapter):
         meta_key = f"slack_thread_watermark:{channel_id}:{thread_ts}"
         return getattr(session_store, method)(session_key, meta_key, *args)
 
-    def _get_thread_watermark(
+    async def _get_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "") -> str:
-        """Return the last Slack thread ts this session consumed (persisted)."""
+        """Return the last Slack thread ts this session consumed (persisted). Read in a worker: the
+        store's lock is held across its state.db writes, which must not stall the event loop."""
         try:
-            return str(self._thread_watermark_io(
-                "get_session_metadata", channel_id, thread_ts, user_id, team_id, "") or "")
+            return str(await asyncio.to_thread(
+                self._thread_watermark_io, "get_session_metadata", channel_id, thread_ts, user_id,
+                team_id, "") or "")
         except Exception:
             return ""
 
-    def _set_thread_watermark(
+    async def _set_thread_watermark(
         self, channel_id: str, thread_ts: str, user_id: str, watermark_ts: str, team_id: str = ""
     ) -> None:
-        """Persist the latest thread ts seen (session metadata, survives restarts)."""
+        """Persist the latest thread ts seen (session metadata, survives restarts). A full
+        routing-index save (state.db + the fsynced sessions.json mirror): in a worker, never on
+        the event loop."""
         if not watermark_ts:
             return
         try:
-            self._thread_watermark_io(
+            await asyncio.to_thread(
+                self._thread_watermark_io,
                 "set_session_metadata", channel_id, thread_ts, user_id, team_id, watermark_ts)
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)

@@ -1,11 +1,5 @@
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import {
-  assistantTextPart,
-  type ChatMessage,
-  chatMessageText,
-  textPart,
-  withoutInjectedMemoryContext
-} from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
@@ -14,7 +8,8 @@ import { mergeLiveAssistantRun } from './live-turn-remainder'
 import { appendLiveSessionProjection, reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
-const userText = (text: string) => textWithoutReferenceLines(withoutInjectedMemoryContext(text)).trim()
+const userContent = (row: SessionMessage) => (row.display_content !== undefined ? row.display_content : row.content)
+const userText = (text: unknown) => (typeof text === 'string' ? textWithoutReferenceLines(text).trim() : undefined)
 const hasTools = (row: SessionMessage) => Array.isArray(row.tool_calls) && row.tool_calls.length > 0
 
 const renderedText = (raw: string) => {
@@ -69,7 +64,7 @@ function candidateTurn(
 
   for (const row of rows.slice(start + 1)) {
     if (row.role === 'user') {
-      if (userText(String(row.content ?? '')) !== userText(corrections[intervals.length - 1] ?? '')) {
+      if (userText(userContent(row)) !== userText(corrections[intervals.length - 1] ?? '')) {
         return null
       }
 
@@ -138,7 +133,7 @@ function locateTurn(
     if (
       row.role === 'user' &&
       row.display_kind !== 'steer' &&
-      userText(String(row.content ?? '')) === userText(inflight.user ?? '')
+      userText(userContent(row)) === userText(inflight.user ?? '')
     ) {
       candidate = candidateTurn(rows, messages, index, inflight.corrections ?? []) ?? candidate
     }
@@ -373,19 +368,18 @@ export function reconcilePersistedLiveTurn(
   const queuedMessage = (message: ChatMessage) => message.role === 'user' && queuedIds.has(message.rowId)
   const queuedText = projection.queued?.user
 
-  const represented = Boolean(
-    queuedText && queuedRows.some(row => userText(String(row.content ?? '')) === userText(queuedText))
-  )
+  const represented = Boolean(queuedText && queuedRows.some(row => userContent(row) === queuedText))
 
-  const currentProjection = represented ? { ...projection, queued: undefined } : projection
+  const currentProjection = { ...projection, queued: undefined }
 
   const currentMessages = messages.filter(message => !queuedMessage(message))
 
   const currentPrevious = previous.filter((message, index) => {
     const queueProjection =
-      represented &&
+      queuedText &&
+      message.role === 'user' &&
+      message.rowId === undefined &&
       message.id === `user-queued-${projection.session_id}` &&
-      userText(chatMessageText(message)) === userText(queuedText ?? '') &&
       !previous.slice(index + 1).some(row => row.role === 'assistant' && !row.hidden)
 
     return !queuedMessage(message) && !queueProjection
@@ -397,5 +391,33 @@ export function reconcilePersistedLiveTurn(
     reconcileCurrentPersistedLiveTurn(currentMessages, currentPrevious, currentRows, currentProjection) ??
     reconcileDurableHistory(appendLiveSessionProjection(currentMessages, currentProjection), currentPrevious)
 
-  return [...current, ...messages.filter(queuedMessage)]
+  const restored = [...current, ...messages.filter(queuedMessage)]
+
+  const queued = represented
+    ? []
+    : appendLiveSessionProjection([], { session_id: projection.session_id, queued: projection.queued })
+
+  if (!queued.length) {
+    return restored
+  }
+
+  const ids = new Set([...restored, ...queued].map(message => message.id))
+
+  const accepted = restored.map((message, index) => {
+    if (message.id !== queued[0].id) {
+      return message
+    }
+
+    let id = `${message.id}-accepted-${message.rowId ?? index}`
+
+    while (ids.has(id)) {
+      id += '-accepted'
+    }
+
+    ids.add(id)
+
+    return { ...message, id }
+  })
+
+  return [...accepted, ...queued]
 }

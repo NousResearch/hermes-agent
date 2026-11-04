@@ -1,11 +1,9 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { chatMessageText, withoutInjectedMemoryContext } from '@/lib/chat-messages/parts'
+import { chatMessageText, normalizeWs } from '@/lib/chat-messages/parts'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 
 export function normalizedMessageText(message: ChatMessage): string {
-  const text = chatMessageText(message)
-
-  return (message.role === 'user' ? withoutInjectedMemoryContext(text) : text).replace(/\s+/g, ' ').trim()
+  return normalizeWs(chatMessageText(message))
 }
 
 export function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {

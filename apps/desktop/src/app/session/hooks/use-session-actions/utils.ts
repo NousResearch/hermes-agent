@@ -6,10 +6,12 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  normalizeWs,
   preserveLocalAssistantErrors,
+  sameUserContent,
+  sameUserText,
   textPart,
-  toChatMessages,
-  withoutInjectedMemoryContext
+  toChatMessages
 } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -125,22 +127,24 @@ function isLiveTailRow(message: ChatMessage): boolean {
 }
 
 /**
- * Carry the durable row id and reactions from a same-turn `previous` row onto
+ * Carry durable message identity and reactions from a same-turn `previous` row onto
  * `next` when it lacks them — reactions are keyed by row id, so they travel
  * together. Returns `next` itself when there is nothing to carry, else a NEW
  * object (the runtime repository caches normalized messages by identity).
  */
 function carryRowIdentity(next: ChatMessage, previous: ChatMessage): ChatMessage {
   const rowId = next.rowId === undefined ? previous.rowId : undefined
+  const messageUid = next.messageUid === undefined ? previous.messageUid : undefined
   const reactions = next.reactions === undefined && previous.reactions?.length ? previous.reactions : undefined
 
-  if (rowId === undefined && !reactions) {
+  if (rowId === undefined && messageUid === undefined && !reactions) {
     return next
   }
 
   return {
     ...next,
     ...(rowId !== undefined ? { rowId } : {}),
+    ...(messageUid !== undefined ? { messageUid } : {}),
     ...(reactions ? { reactions: [...reactions] } : {})
   }
 }
@@ -1038,12 +1042,16 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     break
   }
 
-  const persistedInLatestRun = (text: string): boolean =>
-    latestUserRun.some(
-      message =>
-        textWithoutReferenceLines(withoutInjectedMemoryContext(chatMessageText(message))) ===
-        textWithoutReferenceLines(withoutInjectedMemoryContext(text))
+  const persistedInLatestRun = (text: string): boolean => {
+    const [prompt] = toChatMessages([{ role: 'user', content: text }])
+
+    return Boolean(
+      prompt &&
+      latestUserRun.some(message =>
+        prompt.attachmentRefs?.length ? sameUserContent(message, prompt) : sameUserText(message, prompt)
+      )
     )
+  }
 
   const inflightUserAlreadyPersisted =
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
@@ -1278,9 +1286,7 @@ export function dedupeInflightUserAgainstTranscript(
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult
 ): ReconciledSessionResumeResult {
-  const inflightUser = withoutInjectedMemoryContext(projection.inflight?.user ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const inflightUser = normalizeWs(projection.inflight?.user ?? '')
 
   if (!inflightUser) {
     return projection
@@ -1329,9 +1335,7 @@ export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
   projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
 ): ChatMessage[] {
-  const inflightUser = withoutInjectedMemoryContext(projection.inflight?.user ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const inflightUser = normalizeWs(projection.inflight?.user ?? '')
 
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
   const queuedUser = projection.queued?.user?.replace(/\s+/g, ' ').trim() ?? ''

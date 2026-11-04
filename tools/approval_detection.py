@@ -182,18 +182,70 @@ _SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 # `-u USER`, `-g`, `-C` ... -- a bare flag, VAR=value, a duration) inside atomic/possessive
 # groups, so each token has one parse and the scan stays linear; `sudo -u bash cat` reads `bash`
 # as the user, not the shell.
-_PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh"))
+_PIPE_SHELL_NAMES_RE = "|".join((*_SHELL_NAMES, "fish", "csh", "tcsh", "ash"))
 _PIPE_PATH_PREFIX_RE = r"(?>(?:[a-zA-Z]:)?(?:[.\w~-]*+[/\\])*+)"
-_PIPE_LAUNCHER_ARG_RE = (
-    r"(?>(?-i:-[ugUCDhpRrtT])\s++[^\s|;&<>]++|-[^\s|;&<>]++|\w++=[^\s|;&<>]*+|\d++(?:\.\d+)?[smhd]?(?=\s))"
-)
+# Launchers that run their trailing words as a command, with the short/long options that take a
+# SEPARATE value word. One shared table made a bare flag (`time -p`, `exec -a x`) swallow the shell
+# name as its value; per-launcher rows let `-p` be bare for time/command and valued for sudo.
+_PIPE_LAUNCHER_VALUE_FLAGS = {
+    "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
+                             "role", "type", "command-timeout", "chroot")),
+    "doas": ("uC", ()),
+    "env": ("uCS", ("unset", "chdir", "split-string")),
+    "exec": ("a", ()),
+    "command": ("", ()),
+    "nohup": ("", ()),
+    "nice": ("n", ("adjustment",)),
+    "time": ("fo", ("format", "output")),
+    "timeout": ("sk", ("signal", "kill-after")),
+    "stdbuf": ("ioe", ("input", "output", "error")),
+    "busybox": ("", ()),
+}
+
+
+def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
+    valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
+    valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
+    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", r"\d++(?:\.\d+)?[smhd]?(?=\s)"])
+    return rf"{name}(?:\s++(?>{args}))*+"
+
+
 _PIPE_WRAPPERS_RE = (
-    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:sudo|doas|env|exec|command|nohup|nice|time|timeout|stdbuf|busybox)"
-    rf"(?:\s++{_PIPE_LAUNCHER_ARG_RE})*+\s++)*+"
+    rf"(?>{_PIPE_PATH_PREFIX_RE}(?:"
+    + "|".join(_pipe_launcher_re(n, *f) for n, f in _PIPE_LAUNCHER_VALUE_FLAGS.items())
+    + r")\s++)*+"
 )
 _PIPE_SHELL_TOKEN_RE = (
     rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
 )
+# Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`).
+_PIPE_LOOKUP_ONLY_RE = re.compile(
+    rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-[a-zA-Z]*l|--list))\b", re.IGNORECASE
+)
+_PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
+_PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
+_PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
+
+
+class _PipeRemoteToShellMatcher:
+    """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try the sink only
+    at each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
+    Quoted prose is masked like the other prose-sensitive rules, except under a shell carrier
+    (`bash -c "..."`, `eval "..."`) whose quoted argument is code."""
+
+    def search(self, text: str):
+        fetch = _PIPE_FETCH_RE.search(text)
+        if fetch is None:
+            return None
+        if not _contains_shell_carrier(text):
+            text = _mask_quoted_prose(text)
+        pos = fetch.end()
+        while (i := _PIPE_OPERATOR_RE.search(text, pos)) is not None:
+            match = _PIPE_SINK_RE.match(text, i.start())
+            if match and not _PIPE_LOOKUP_ONLY_RE.match(text, i.end()):
+                return match
+            pos = i.end()
+        return None
 
 
 def _contains_shell_carrier(command: str) -> bool:
@@ -522,7 +574,11 @@ DANGEROUS_PATTERNS = [
 ]
 
 
-DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+_PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
+DANGEROUS_PATTERNS_COMPILED = [
+    (_PipeRemoteToShellMatcher() if d == _PIPE_REMOTE_TO_SHELL_DESCRIPTION else re.compile(p, _RE_FLAGS), d)
+    for p, d in DANGEROUS_PATTERNS
+]
 # Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
 # (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({

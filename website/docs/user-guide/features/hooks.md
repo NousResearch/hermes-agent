@@ -457,6 +457,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
+| `pre_turn_end` | Directive/control | Once per turn when the agent is about to deliver a final text answer (no tool calls), regardless of whether files were edited. Same directive shape as `pre_verify`. Use for policy checks that apply to every turn (e.g. detecting responses that promise execution but emit no tool call). Bounded by `agent.max_turn_end_nudges` (default 2). Opt-in: only fires when at least one callback is registered. | `session_id`, `platform`, `model`, `attempt`, `final_response` | Draft final response text. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
 | `api_request_error` | Observer | On each failed provider attempt; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error text may contain provider/user data; `request` is intended to be sanitized. |
@@ -884,6 +885,73 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `pre_turn_end`
+
+Fires **once per turn when the agent is about to deliver a final text answer** (no tool calls), regardless of whether files were edited. This is the general-purpose continuation gate — complementary to `pre_verify` (which only fires after code edits) — for policy checks that apply to every text-only stop.
+
+The canonical use case is detecting the **mode error**: an agent writes a response that promises imminent execution ('I will run X', 'ejecuto Y', a trailing ````bash` block) but emits no tool call. Without this hook, the turn ends silently and the user waits for output that never arrives. With it, a plugin can force one more iteration so the agent either emits the promised tool call or reformulates in the past tense.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, platform: str, model: str,
+                attempt: int, final_response: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `platform` | `str` | Where the session is running (`"cli"`, `"telegram"`, …) |
+| `model` | `str` | The model identifier |
+| `attempt` | `int` | How many times this turn has already been nudged by `pre_turn_end` (0 on the first) — self-throttle on this |
+| `final_response` | `str` | The answer the agent is about to deliver |
+
+**Fires:** In `agent/turn_stop_gates.py`, inside `apply_stop_gates()`, after `pre_verify` and before the kanban terminal-tool guard — but only when at least one `pre_turn_end` hook is registered and `agent.pre_turn_end_hook` is not `false`. Zero cost when no callback is registered.
+
+**Return value — keep the agent going:**
+
+```python
+return {"action": "continue", "message": "Your response promises execution but emits no tool call. Either emit the tool call now or reformulate in the past tense."}
+```
+
+The `message` is appended as a synthetic user turn and the loop runs again. The Claude-Code Stop shape (`{"decision": "block", "reason": "..."}`, where blocking the stop means *keep going*) is accepted too. A directive with no message — or any other return — lets the turn finish.
+
+**Bounded:** consecutive continue directives in one turn are capped by `agent.max_turn_end_nudges` (default 2 — more conservative than `pre_verify`'s 3, because mode-error-style checks are typically binary). Opt out entirely with `agent.pre_turn_end_hook: false` in `config.yaml`.
+
+**Make it idempotent:** the hook re-fires after each nudge, so gate on `attempt` (`if attempt: return None`) — otherwise it just nudges until the bound is hit.
+
+**Example — detect promises without tool calls (real incident):**
+
+```python
+import re
+
+PROMISE_RE = re.compile(
+    r"\b(?:[Vv]oy a|[Aa]hora|[Ee]jecuto|[Ll]anzo|I will|let me)\s+"
+    r"(?:ejecutar|lanzar|comprobar|verificar|run|check|verify)\b"
+)
+
+def detect_mode_error(final_response, attempt, **kwargs):
+    if attempt:
+        return None  # one-shot
+    if not final_response:
+        return None
+    if PROMISE_RE.search(final_response):
+        return {
+            "action": "continue",
+            "message": "Your response promises execution but no tool call was "
+                       "emitted this turn. Either emit the tool call now, or "
+                       "reformulate in the past tense describing what you did.",
+        }
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_turn_end", detect_mode_error)
+```
+
+**Why not reuse `pre_verify`?** `pre_verify` deliberately gates on `changed_paths` (files edited this turn) because its contract is *post-edit verification*. The mode error is orthogonal — it fires precisely when nothing was edited. Extending `pre_verify` to fire on empty edit sets would silently change its semantics for every existing user. A separate hook keeps both contracts clean.
 
 ---
 

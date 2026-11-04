@@ -115,7 +115,14 @@ VALID_HOOKS: set[str] = {
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
-    "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    "pre_verify",
+    # pre_turn_end: once per turn when the agent is about to deliver a final text answer (no tool
+    # calls), regardless of whether files were edited. Same directive shape as pre_verify. Use
+    # for policy checks that apply to every turn (e.g. detecting responses that promise execution
+    # but emit no tool call). Bounded by agent.max_turn_end_nudges (default 2). Opt-in: only fires
+    # when at least one callback is registered.
+    "pre_turn_end",
+    "pre_api_request", "post_api_request", "api_request_error",
     # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
     # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
     # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
@@ -2071,6 +2078,29 @@ def get_pre_verify_continue_message(
     hook_results = invoke_hook(
         "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+    )
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        message = result.get("message") or result.get("reason")
+        if action in ("continue", "block") and isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
+def get_pre_turn_end_continue_message(
+    *, session_id: str = "", platform: str = "", model: str = "",
+    attempt: int = 0, final_response: str = "",
+) -> Optional[str]:
+    """Check ``pre_turn_end`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
+    ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
+    other return lets the turn finish. Fires regardless of whether files were edited this turn —
+    use for policy checks that apply to every text-only stop (e.g. detecting responses that
+    promise execution but emit no tool call). ``attempt`` lets hooks self-throttle."""
+    hook_results = invoke_hook(
+        "pre_turn_end", session_id=session_id, platform=platform, model=model,
+        attempt=attempt, final_response=final_response,
     )
     for result in hook_results:
         if not isinstance(result, dict):

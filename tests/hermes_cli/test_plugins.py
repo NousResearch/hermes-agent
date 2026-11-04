@@ -2000,6 +2000,98 @@ class TestGetPreVerifyContinueMessage:
         assert seen["changed_paths"] == ["a.py"]
 
 
+class TestGetPreTurnEndContinueMessage:
+    """`pre_turn_end` directive aggregation — general-purpose continuation gate
+    that fires on every text-only stop (no `changed_paths` gating).
+
+    Real-incident fixture: an agent wrote 'Ejecuto C en secuencia' as final
+    text and ended the turn without any tool_call. A `pre_turn_end` callback
+    can force one more iteration to correct it.
+    """
+
+    def test_none_when_no_hooks(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        assert get_pre_turn_end_continue_message() is None
+
+    def test_forwards_scope_signals_to_hooks(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        seen = {}
+
+        def capture(hook_name, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", capture)
+        get_pre_turn_end_continue_message(
+            session_id="sess_x", platform="cli", model="qwen-3.8", attempt=1,
+            final_response="Ejecuto C en secuencia.",
+        )
+        assert seen["session_id"] == "sess_x"
+        assert seen["platform"] == "cli"
+        assert seen["model"] == "qwen-3.8"
+        assert seen["attempt"] == 1
+        assert seen["final_response"] == "Ejecuto C en secuencia."
+
+    def test_hermes_canonical_directive_wins(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "continue", "message": "Emit the tool call or rephrase."},
+            ],
+        )
+        assert (
+            get_pre_turn_end_continue_message(final_response="Voy a ejecutar X")
+            == "Emit the tool call or rephrase."
+        )
+
+    def test_claude_code_stop_shape_also_continues(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"decision": "block", "reason": "Missing tool_call after promise."},
+            ],
+        )
+        assert (
+            get_pre_turn_end_continue_message(final_response="I will run the tests")
+            == "Missing tool_call after promise."
+        )
+
+    def test_other_returns_ignored(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "observe"},          # unknown action
+                None,                            # no-op callback
+                "string-not-allowed",            # wrong type
+                {},                              # empty
+            ],
+        )
+        assert get_pre_turn_end_continue_message() is None
+
+    def test_first_nonempty_wins(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                None,
+                {},
+                {"action": "continue", "message": "winner"},
+                {"action": "continue", "message": "ignored"},
+            ],
+        )
+        assert get_pre_turn_end_continue_message(final_response="Ahora ejecuto") == "winner"
+
+
 class TestThreadToolWhitelist:
     """Tests for the thread-local tool whitelist used by background review forks."""
 

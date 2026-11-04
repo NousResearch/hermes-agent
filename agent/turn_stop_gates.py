@@ -77,6 +77,34 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     return None
 
 
+def _pre_turn_end_nudge(agent, final_response, attempt: int) -> Optional[str]:
+    """A registered ``pre_turn_end`` hook may keep the agent going one more turn
+    regardless of whether files were edited — general-purpose continuation gate
+    for policy checks that apply to every text-only stop (e.g. detecting
+    responses that promise execution but emit no tool call). Opt-in: only fires
+    when at least one ``pre_turn_end`` callback is registered."""
+    try:
+        from agent.turn_end_hooks import max_turn_end_nudges, turn_end_hook_enabled
+        from hermes_cli.lifecycle import has_hook
+        from hermes_cli.plugins import get_pre_turn_end_continue_message
+
+        if (
+            turn_end_hook_enabled()
+            and has_hook("pre_turn_end")
+            and attempt < max_turn_end_nudges()
+        ):
+            return get_pre_turn_end_continue_message(
+                session_id=getattr(agent, "session_id", None) or "",
+                platform=getattr(agent, "platform", "") or "",
+                model=getattr(agent, "model", "") or "",
+                attempt=attempt,
+                final_response=final_response,
+            )
+    except Exception:
+        logger.debug("pre_turn_end hook check failed", exc_info=True)
+    return None
+
+
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
     """Workers must end with a terminal board tool (kanban_complete / kanban_block /
     kanban_request_review / kanban_request_changes); a narrated stop is recorded
@@ -194,6 +222,18 @@ def apply_stop_gates(
         )
         verdict = _continue(_verify_nudge2, "_pre_verify_synthetic")
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
+        return verdict
+
+    _tte_attempt = getattr(agent, "_pre_turn_end_nudges", 0)
+    _tte_nudge = _pre_turn_end_nudge(agent, final_response, _tte_attempt)
+    if _tte_nudge:
+        agent._pre_turn_end_nudges = _tte_attempt + 1
+        final_msg["finish_reason"] = "turn_end_hook_continue"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "pre_turn_end interim flush failed"
+        )
+        verdict = _continue(_tte_nudge, "_pre_turn_end_synthetic")
+        logger.debug("pre_turn_end nudge issued (attempt %d)", agent._pre_turn_end_nudges)
         return verdict
 
     _kanban_nudge = _kanban_stop_nudge(agent, messages)

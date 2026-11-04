@@ -242,7 +242,9 @@ class PluginHost:
         try:
             result = channel.call("load", params)
         except BaseException:
-            self._contexts.pop(plugin_key, None)
+            # register() may have queued host-side on_unload callbacks before raising: run them, as
+            # the in-process failure path does, so the failed load leaves nothing behind in the host.
+            self._unload(plugin_key)
             raise
         finally:
             self._loading = None

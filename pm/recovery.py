@@ -214,6 +214,8 @@ def refresh_dependencies(project_root: Path) -> str:
         # Keep the restored extras recorded too: a lazy install before the next boot
         # unions onto this selection and must not publish a generation without them.
         recorded = list(fact.get("extras") or [])
-        facts.record_state("venv", fact.get("stamp") or "stale",
-                           recorded + [extra for extra in missing if extra not in recorded])
+        # Never the recorded stamp: nothing built for this selection is selected any more, and a
+        # stamp that still matches would read the image environment as current for good once
+        # the cause clears (a plain restart whose plugin check raised).
+        facts.record_state("venv", "stale", recorded + [extra for extra in missing if extra not in recorded])
     return "fallback"

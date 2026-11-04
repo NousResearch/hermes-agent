@@ -19,6 +19,7 @@ import pytest
 
 from hermes_state import SessionDB, classify_persistence_error
 from hermes_state_errors import is_sqlite_lock_error
+from tests.waiting import wait_until
 
 
 @pytest.fixture()
@@ -98,14 +99,17 @@ def test_holder_record_is_cleared_after_release(db):
     assert getattr(db, "_writer_owner", None) is None
 
 
-def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch):
+def test_queued_token_delta_survives_a_mutex_refusal(db, monkeypatch, caplog):
     """The token writer applies queued deltas with routine patience; a refusal must requeue, not drop."""
+    caplog.set_level(logging.DEBUG, logger="hermes_state")
     for name in ("_WRITE_PATIENCE_S", "_TRANSCRIPT_WRITE_PATIENCE_S"):
         monkeypatch.setattr(SessionDB, name, 0.05)
     holder, release = _hold_writer_mutex(db, hold_s=5)
     try:
         db.queue_token_counts("owned", input_tokens=7, output_tokens=3, model="m")
-        time.sleep(0.5)  # several 0.05 s attempts are refused while the mutex is held
+        # Several 0.05 s attempts are refused while the mutex is held: wait for the first refusal to land.
+        wait_until(lambda: any("requeued" in r.getMessage() for r in caplog.records), timeout=5.0,
+                   what="a token-writer requeue")
         assert db._token_queue or db._token_writer_busy, "the refused delta left the queue"
     finally:
         release.set()

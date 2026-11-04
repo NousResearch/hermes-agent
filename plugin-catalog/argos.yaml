@@ -1,0 +1,40 @@
+name: argos
+title: ARGOS (Godot editor)
+repo: https://github.com/Tormen28/argos
+sha: e87a02a6c66a2fedff162b6071d60c0ed7f52833
+version: "1.1.0"
+description: >-
+  Lets Hermes agents drive a live Godot 4 editor through a local MCP server
+  (27 tools): read the scene tree, create / move / delete nodes, set properties
+  with the editor's real undo/redo, open / save / create scenes, play and stop
+  the game, validate GDScript with --check-only, and capture PNG screenshots of
+  scenes and the running game. Editing tools auto-open the scene you pass or the
+  project's main scene, or return a clear no_scene error. Agent Plugins v1
+  package (plugin.json + mcp.json + skills/). Disclosure - the Godot addon opens
+  a WebSocket on 127.0.0.1 only (ports 9080-9090) guarded by a random token
+  rotated each editor start and stored in <project>/.argos/; writes state,
+  history and screenshots under <project>/.argos/ and to requested PNG paths;
+  runs shell commands (launches the Godot editor, godot --check-only, plays
+  scenes, which executes the target project's own GDScript - use on trusted
+  projects); argos_raw forwards any ARGOS action; needs a Python with websockets;
+  no third-party network calls, no credentials, no telemetry, no self-update.
+  Complements godot-studio (headless check/export) by covering live editor edits.
+maintainer: Tormen28
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/Tormen28/argos#readme
+image: https://raw.githubusercontent.com/Tormen28/argos/e87a02a6c66a2fedff162b6071d60c0ed7f52833/docs/screenshots/argos-scene-capture.png
+screenshots:
+  - https://raw.githubusercontent.com/Tormen28/argos/e87a02a6c66a2fedff162b6071d60c0ed7f52833/docs/screenshots/argos-scene-capture.png
+  - https://raw.githubusercontent.com/Tormen28/argos/e87a02a6c66a2fedff162b6071d60c0ed7f52833/docs/screenshots/argos-godot-editor.png
+readme: true
+platforms: []
+known_issues:
+  - "Needs a Python on PATH with the websockets package (pip install websockets)."
+  - "Editing tools need the Godot editor open with the ARGOS addon enabled (python tools/argos_install.py --project <project>)."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

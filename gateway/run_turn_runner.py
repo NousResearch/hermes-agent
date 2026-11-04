@@ -1274,8 +1274,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if policy:
             # Rotated .env keys reach this turn's config reads (side tasks read config.yaml), as on the
             # messaging path, where _current_max_iterations() does the same reload; the turn budget
-            # stays the session's own.
-            _reload_runtime_env_preserving_config_authority()
+            # stays the session's own. A bypass session never reads the profile.
+            if not policy.ignore_user_config:
+                _reload_runtime_env_preserving_config_authority()
             max_iterations = policy.max_turns
         else:
             max_iterations = _current_max_iterations()

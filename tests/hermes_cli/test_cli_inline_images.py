@@ -98,3 +98,11 @@ def test_cropped_kitty_row_keeps_its_exact_id_color(photo):
     [kept] = _output_tail_fitting([row], 1, 20)
     r, g, b = bytes.fromhex(image.color[1:])
     assert f"\x1b[38;2;{r};{g};{b}m" in _painted(kept)
+
+
+def test_pinned_kitty_in_tmux_wraps_the_transmit_for_passthrough(scrollback, photo, monkeypatch):
+    # tmux forwards an APC to the outer kitty only inside its DCS passthrough wrapper.
+    monkeypatch.setenv("TMUX", "tmux-socket,1,0")
+    print_inline_images(type("Cli", (), {"_inline_images_mode": "kitty"})(), [photo])
+    painted = scrollback.getvalue()
+    assert painted.count("\x1bPtmux;\x1b\x1b_G") == 1 and "\x1b_G" not in painted.replace("\x1b\x1b_G", "")

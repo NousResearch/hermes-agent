@@ -17,6 +17,7 @@ of the scrollback.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterable
 
@@ -42,6 +43,11 @@ def _half_block(top, bottom) -> str:
     return f"\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
 
 
+def _passthrough(seq: str) -> str:
+    from hermes_cli.cli_terminal_mixin import _tmux_passthrough
+    return _tmux_passthrough(seq) if os.environ.get("TMUX") else seq
+
+
 def image_rows(image: InlineImage) -> list[tuple[str, str]]:
     """*image* as ``(row, raw)`` pairs: ``row`` is history-safe scrollback text, ``raw`` the
     escape written verbatim right after it (the transmit: first kitty row, last iTerm2 row)."""
@@ -49,13 +55,13 @@ def image_rows(image: InlineImage) -> list[tuple[str, str]]:
         r, g, b = bytes.fromhex(image.color[1:])
         color, reset = _zero_width(f"\x1b[38;2;{r};{g};{b}m"), _zero_width("\x1b[39m")
         rows = [(_INDENT + color + row + reset, "") for row in image.placeholder]
-        rows[0] = (rows[0][0], image.transmit)
+        rows[0] = (rows[0][0], _passthrough(image.transmit))
         return rows
     if image.mode == "iterm":
         # Reserve the rows as empty lines (text written over an image cell erases it), then from
         # the start of the last one jump to the first, past the indent, draw, and restore.
         up = f"\x1b[{image.rows - 1}A" if image.rows > 1 else ""
-        draw = f"\x1b7{up}\x1b[{len(_INDENT)}C{image.transmit}\x1b8"
+        draw = f"\x1b7{up}\x1b[{len(_INDENT)}C{_passthrough(image.transmit)}\x1b8"
         return [("", "")] * (image.rows - 1) + [("", draw)]
     return [(_INDENT + "".join(_half_block(t, b) for t, b in row) + "\x1b[0m", "") for row in image.cells]
 

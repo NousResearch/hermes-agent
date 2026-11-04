@@ -554,8 +554,8 @@ display:
   inline_images: auto   # auto | kitty | iterm | unicode | off
 ```
 
-- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). Everything else, including tmux, VS Code and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
-- **`kitty`** forces the kitty protocol, for example inside a tmux with `set -g allow-passthrough on`.
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). Everything else, including tmux, GNU screen, VS Code and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
+- **`kitty`** forces the kitty protocol, for example in the classic CLI inside a tmux with `set -g allow-passthrough on`.
 - **`iterm`** forces the iTerm2 protocol in the classic CLI (the TUI falls back to `auto` here).
 - **`unicode`** always uses half-blocks.
 - **`off`** shows file paths only, as before.

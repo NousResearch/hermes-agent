@@ -55,6 +55,19 @@ def test_kitty_placeholders_on_kitty_and_ghostty(monkeypatch):
     assert terminal_image.supports_kitty_placeholders() is True
 
 
+@pytest.mark.parametrize("multiplexer", ["TMUX", "STY"])
+def test_auto_stays_on_half_blocks_inside_a_multiplexer(monkeypatch, multiplexer):
+    # tmux and GNU screen inherit KITTY_WINDOW_ID from the outer kitty yet swallow the transmit.
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("STY", raising=False)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    monkeypatch.setenv(multiplexer, "1")
+    assert resolve_inline_mode("auto") == "unicode"
+    assert resolve_inline_mode("kitty") == "kitty"
+
+
 def test_wezterm_is_not_placeholder_capable(monkeypatch):
     # WezTerm speaks kitty APC but not U+10EEEE. Placeholders would tofu.
     _clear_graphics_env(monkeypatch)

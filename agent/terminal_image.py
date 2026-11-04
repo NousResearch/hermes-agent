@@ -219,6 +219,8 @@ IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 # Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
 # the 24-bit space the placeholder foreground color can carry, so neither replaces the other.
 _IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
+# Multiplexers that swallow image transmits (and inherit the outer terminal's KITTY_WINDOW_ID).
+_MULTIPLEXER_ENV = ("TMUX", "STY")
 # Transmit at up to 2 px per nominal cell pixel: sharp on HiDPI cells without shipping
 # a full-resolution photo through the tty.
 _PIXELS_PER_CELL_PIXEL = 2
@@ -234,8 +236,9 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
     it can reserve blank rows and paint a cell-pinned image over them (the classic CLI's
     scrollback can, Ink's re-laid-out frame can't). ``auto`` picks kitty placeholders where they
     paint (kitty, Ghostty), then iTerm2 images over reserved rows where the painter allows it
-    (iTerm2, WezTerm, Konsole), else half-blocks. tmux swallows both transmits without
-    ``allow-passthrough``, so ``auto`` stays on half-blocks there; pinning a protocol opts in.
+    (iTerm2, WezTerm, Konsole), else half-blocks. tmux and GNU screen swallow both transmits,
+    so ``auto`` stays on half-blocks there. Pinning a protocol opts in: the classic CLI wraps its
+    transmits for tmux's ``allow-passthrough on``; the TUI and GNU screen send them unwrapped.
     """
     if configured is False:
         return "off"
@@ -247,7 +250,7 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
         return "unicode" if mode != "off" else "off"
     if mode in ("kitty", "iterm"):
         return mode
-    if os.environ.get("TMUX"):
+    if any(os.environ.get(name) for name in _MULTIPLEXER_ENV):
         return "unicode"
     if supports_kitty_placeholders():
         return "kitty"

@@ -10,6 +10,7 @@ text is scrubbed before it leaves the process: the value of a secret-named flag 
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Any, Optional
 
 from agent.redact import redact_for_egress, redact_sensitive_text
@@ -68,7 +69,9 @@ def launch_target(url: Any, command: Any, args: Any) -> Optional[dict[str, str]]
         return {"kind": "remote", "target": scrub(url.strip())}
     if not (isinstance(command, str) and command.strip()):
         return None
-    words = [command.strip(), *_mask_flag_values([str(a) for a in (args or []) if a is not None])]
+    # An argument with whitespace is quoted, so `node "my file.js"` does not read as two arguments.
+    words = [command.strip(), *(shlex.quote(a) if any(c.isspace() for c in a) else a
+                                for a in _mask_flag_values([str(a) for a in (args or []) if a is not None]))]
     return {"kind": "stdio", "target": scrub(" ".join(words))}
 
 

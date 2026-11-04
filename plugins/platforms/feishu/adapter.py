@@ -1655,53 +1655,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Feishu message."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-
-        formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        # Decide markdown-vs-text once for the whole message: a chunk of a long
-        # markdown reply may be plain prose that fails the per-chunk regex and would
-        # otherwise render as literal ``**bold`` / fences while other chunks render.
-        # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
-        # See #26841.
-        prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
-        last_response = None
-
-        async def _send_plain(chunk: str) -> Any:
-            return await self._feishu_send_with_retry(
-                chat_id=chat_id,
-                msg_type="text",
-                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                reply_to=reply_to,
-                metadata=metadata,
-            )
-
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await _send_plain(chunk)
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await _send_plain(chunk)
-                last_response = response
-
-            return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+        from .send_text import send_text_direct
+        return await send_text_direct(self, chat_id, content, reply_to=reply_to, metadata=metadata)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
@@ -4347,13 +4302,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
         return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
+    from .send_text import send_text_direct
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
         metadata = {"thread_id": thread_id} if thread_id else None
         last_result = None
         if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            last_result = await send_text_direct(adapter, chat_id, message, metadata=metadata)
             if not last_result.success:
                 return send_error(f"Feishu send failed: {last_result.error}")
         for media_path, _is_voice in media_files or []:

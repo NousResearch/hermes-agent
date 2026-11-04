@@ -197,8 +197,12 @@ export async function uploadComposerAttachment(
 
       const attachedPath = result.path || path
 
+      // `result.mime` is the canonical staging reply's only trace of the image: that RPC writes
+      // the file and queues nothing, so the mime must ride into submit's `attachments`. A legacy
+      // attach reply carries none (it queued the image in the session itself) and its
+      // prompt.submit refuses the key, so the absence keeps `attachments` off the wire (#148682).
       return {
-        ...attachment,
+        ...(result.mime ? { ...attachment, mime: result.mime } : attachment),
         attachedSessionId: liveSessionId,
         label: attachedPath ? pathLabel(attachedPath) : attachment.label,
         path: attachedPath,

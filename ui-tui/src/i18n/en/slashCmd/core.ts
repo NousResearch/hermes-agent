@@ -109,6 +109,9 @@ export const slashCmdCoreEn = {
       noConversation: 'no conversation yet',
       noActiveSession: 'no active session — nothing to save',
       saved: (file: string) => `conversation saved to: ${file}`,
+      savedOnHost: (file: string) => `conversation saved as raw JSON on the gateway host: ${file}`,
+      legacyRefused:
+        'not saved: this gateway predates /save export, so it cannot write a redacted, named or md/html copy. Update the gateway, or run plain /save to write raw JSON on the gateway host.',
       failed: 'failed to save'
     },
     focus: {

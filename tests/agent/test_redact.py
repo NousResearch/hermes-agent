@@ -1731,17 +1731,20 @@ class TestFlagAndKeyShapedCredentials:
         assert self.SECRET not in out
         assert '"region": "eu-west-1"' in out
 
-    @pytest.mark.parametrize("command", [
-        "mysql -h db --password=S3cretPassw0rd!x",
-        "vault login --token=S3cretPassw0rd!x",
-        "deploy --api-key S3cretPassw0rd!x",
-        "docker login -p S3cretPassw0rd!x -u bob",
-        "kinit --password 'S3cretPassw0rd!x' bob",
-        "tool --password correcthorsebatteryS3cretPassw0rd!x",
+    @pytest.mark.parametrize("command,secret", [
+        ("mysql -h db --password=S3cretPassw0rd!x", "S3cretPassw0rd!x"),
+        ("vault login --token=S3cretPassw0rd!x", "S3cretPassw0rd!x"),
+        ("deploy --api-key S3cretPassw0rd!x", "S3cretPassw0rd!x"),
+        ("docker login -p S3cretPassw0rd!x -u bob", "S3cretPassw0rd!x"),
+        ("kinit --password 'S3cretPassw0rd!x' bob", "S3cretPassw0rd!x"),
+        ("tool --password correcthorsebatteryS3cretPassw0rd!x", "S3cretPassw0rd!x"),
+        ("tool --password correct_horse_battery_staple", "correct_horse_battery_staple"),
+        ("tool --password my_bank_password", "my_bank_password"),
+        ("tool --token correctHorseBatteryStaple", "correctHorseBatteryStaple"),
     ])
-    def test_a_secret_passed_as_a_flag_is_masked(self, command):
+    def test_a_secret_passed_as_a_flag_is_masked(self, command, secret):
         out = redact_sensitive_text(command, force=True)
-        assert "S3cretPassw0rd!x" not in out
+        assert secret not in out
         assert "--" in out or " -p " in out  # the flag itself survives, so the command reads
 
     def test_a_flag_reference_or_a_number_is_not_a_credential(self):
@@ -1779,6 +1782,10 @@ class TestFlagAndKeyShapedCredentials:
         "amqps://bob:Zq8xR2vT9pL4mN7k@mq.cloudamqp.com/vhost",
         "signing:\n  signing_key: Zq8xR2vT9pL4mN7k\n  privateKey: Zq8xR2vT9pL4mN7k\n",
         "AccountKey = Zq8xR2vT9pL4mN7k",
+        "conn=AccountName=a,AccountKey=Zq8xR2vT9pL4mN7k==",
+        "https://acct.blob.core.windows.net/?AccountKey=Zq8xR2vT9pL4mN7k==",
+        "redis://:$Zq8xR2vT9pL4mN7k@cache:6379",
+        "redis://:<Zq8xR2vT9pL4mN7k>@cache:6379",
     ])
     def test_crlf_ppk_tls_urls_and_yaml_key_names_are_masked(self, text):
         from agent.redact import redact_for_egress

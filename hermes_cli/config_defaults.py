@@ -1355,13 +1355,9 @@ DEFAULT_CONFIG = {
         "child_timeout_seconds": 0,
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none" (empty = inherit)
         "reasoning_effort": "",
-        # Max parallel children per batch AND max concurrent background delegation units; async
-        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        # Max parallel children per batch AND concurrent background units (async beyond it runs sync). Floor 1.
         "max_concurrent_children": 10,
-        # Prompt-cache warm-up for batches: siblings on the first child's route wait until its first response
-        # starts streaming (its request has written the shared prefix to the provider cache), at most this many
-        # seconds. 0 = off (all children start together). Skipped on routes without prompt caching.
-        "prefix_stagger_seconds": 0,
+        "prefix_stagger_seconds": 0,  # batch prompt-cache warm-up cap (s), 0 = off; see delegate_tool_prefix_gate
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,

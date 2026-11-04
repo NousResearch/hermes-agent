@@ -10,6 +10,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { CommandPalette } from './commandPalette.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { ConnectorsOverlay } from './connectorsOverlay.js'
 import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
@@ -233,6 +234,7 @@ export function FloatingOverlays({
   nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
+  onCommandPaletteSelect = () => {},
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -245,6 +247,7 @@ export function FloatingOverlays({
   | 'completions'
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
+  | 'onCommandPaletteSelect'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -312,6 +315,25 @@ export function FloatingOverlays({
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
+            t={theme}
+          />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.commandPalette) {
+    widgets.push({
+      id: 'command-palette',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <CommandPalette
+            maxWidth={width}
+            onCancel={() => patchOverlayState({ commandPalette: false })}
+            onSelect={command => {
+              patchOverlayState({ commandPalette: false })
+              onCommandPaletteSelect(command)
+            }}
             t={theme}
           />
         </FloatBox>

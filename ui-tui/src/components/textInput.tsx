@@ -1912,6 +1912,7 @@ export const shouldPassThroughToGlobalHandler = (
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||
+  (key.ctrl && input === 'p') ||
   (key.ctrl && (input === 'r' || input === 't')) ||
   key.tab ||
   (key.shift && key.tab) ||

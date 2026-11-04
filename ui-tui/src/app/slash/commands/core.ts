@@ -139,6 +139,15 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'open the searchable command palette',
+    name: 'palette',
+    run: (_arg, ctx) => {
+      patchOverlayState({ commandPalette: true })
+      ctx.ran?.()
+    }
+  },
+
+  {
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',

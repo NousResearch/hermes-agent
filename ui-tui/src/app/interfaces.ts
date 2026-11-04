@@ -299,6 +299,7 @@ export interface OverlayState {
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
   connection: ConnectionOverlayState | null
+  commandPalette?: boolean
   connectors: boolean
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
@@ -614,6 +615,7 @@ export interface AppLayoutActions {
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
+  onCommandSelect: (command: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -675,6 +677,7 @@ export interface AppOverlaysProps {
   onApprovalChoice: (choice: string) => void
   onClarifyCancel: () => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
+  onCommandPaletteSelect?: (command: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void

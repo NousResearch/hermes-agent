@@ -146,6 +146,7 @@ describeHost('parseVoiceRecordKey (#18994)', () => {
     expect(parseVoiceRecordKey('ctrl+c')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+d')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+l')).toEqual(DEFAULT_VOICE_RECORD_KEY)
+    expect(parseVoiceRecordKey('ctrl+p')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     expect(parseVoiceRecordKey('ctrl+r')).toEqual(DEFAULT_VOICE_RECORD_KEY)
     // Alt-modifier versions of those letters are NOT intercepted, so
     // they remain usable.

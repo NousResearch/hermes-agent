@@ -37,6 +37,11 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
+export const isCommandPaletteShortcut = (
+  key: { ctrl: boolean; meta: boolean; shift: boolean; super?: boolean },
+  ch: string
+) => key.ctrl && !key.meta && !key.shift && !key.super && ch.toLowerCase() === 'p'
+
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 /** Text or attachments in the composer: Ctrl+D must not exit over an unsent draft (#116443). */
@@ -306,6 +311,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.modelPicker) {
       return patchOverlayState({ modelPicker: false })
+    }
+
+    if (overlay.commandPalette) {
+      return patchOverlayState({ commandPalette: false })
     }
 
     if (overlay.petPicker) {
@@ -737,6 +746,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'x')) {
       return patchOverlayState({ sessions: true })
+    }
+
+    // Open the searchable command catalog without disturbing the current
+    // draft. The palette owns navigation until it dispatches or closes.
+    if (isCommandPaletteShortcut(key, ch)) {
+      return patchOverlayState({ commandPalette: true })
     }
 
     // Ctrl+R / F7 toggle only changes the live-work dock preview; it does not

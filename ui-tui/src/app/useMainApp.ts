@@ -1407,6 +1407,11 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/model ${value}`, undefined, false) // the typed /model that opened the picker already counted
   }, [])
 
+  const onCommandSelect = useCallback((command: string) => {
+    patchOverlayState({ commandPalette: false })
+    slashRef.current(command)
+  }, [])
+
   const closeLiveSession = useCallback(
     async (id: string) => {
       patchUiState({ status: t('session.status.closingSession') })
@@ -1518,6 +1523,7 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
+      onCommandSelect,
       onModelSelect,
       // Resuming a cold session from the overlay CLOSES the current one, so it
       // must respect the busy guard just like the `/resume` slash path.
@@ -1544,6 +1550,7 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       closeLiveSession,
       newPromptSession,
+      onCommandSelect,
       onModelSelect,
       session
     ]

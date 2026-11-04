@@ -153,7 +153,7 @@ const _NAMED_KEY_ALIASES: Record<string, VoiceRecordKeyNamed> = {
  * queue-edit (``queueEditIdx !== null``), so the voice binding works
  * for most of the session and matches CLI parity for ``ctrl+<letter>``
  * bindings (Copilot round-8 review on #19835). */
-const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 'r'])
+const _RESERVED_CTRL_CHARS = new Set(['c', 'd', 'l', 'p', 'r'])
 
 /** On macOS the action-modifier intercepts these editor chords via
  * ``isCopyShortcut`` / ``isAction`` in ``useInputHandlers()``:

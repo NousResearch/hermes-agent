@@ -170,8 +170,9 @@ connections do in the native app. The browser talks only to the gateway serving 
 gateway relays each request and socket to the other gateway and signs it with its own key.
 Any gateway can relay. Set it up on both machines and you can start from either one. A relay
 never reaches past the gateway it was paired with. A Webapp tab and the windows it opens run on the
-gateway serving the page, so **Open in new window**, **Set as default** and chat pop-outs are offered
-for that gateway's own profiles and chats. Open another gateway's from the switcher.
+gateway serving the page, so **Open in new window** and **Set as default** are offered for that
+gateway's own profiles. Open another gateway's from the switcher. A chat on another gateway stays in
+the tab: popping it out says so instead of opening a window.
 
 Turn it on for each gateway that should take part, behind sign-in:
 

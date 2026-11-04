@@ -39,9 +39,13 @@ def _route_identity() -> tuple:
     provider = route[0].strip()
     if not provider or provider in ("auto", "main", "custom") or route[2]:
         return route
+    from hermes_cli.config import get_custom_provider_context_length
     from hermes_cli.runtime_provider_custom import _get_named_custom_provider
     entry = _get_named_custom_provider(provider, resolve_credentials=False) or {}
-    return route + (str(entry.get("base_url") or ""), str(entry.get("model") or ""))
+    url, model = str(entry.get("base_url") or ""), route[1] or str(entry.get("model") or "")
+    # The context pin the probe will read for this model at this URL (per-model, else entry-level).
+    pin = get_custom_provider_context_length(model=model, base_url=url) if url and model else None
+    return route + (url, str(entry.get("model") or ""), str(pin or ""))
 
 
 def _drop_stale_ceiling(agent: Any) -> None:

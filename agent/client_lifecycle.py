@@ -336,7 +336,10 @@ class ClientLifecycleMixin:
 
         def _contains_image(value: Any) -> bool:
             if isinstance(value, dict):
-                return value.get("type") in {"image_url", "input_image"} or any(
+                # Tuple, not a set: a structured tool result may carry a JSON Schema union as its
+                # ``type`` (``{"type": ["string", "null"]}``), and set membership would raise on the
+                # unhashable value before the provider request opens (#148586).
+                return value.get("type") in ("image_url", "input_image") or any(
                     _contains_image(v) for v in value.values()
                 )
             return isinstance(value, list) and any(_contains_image(v) for v in value)

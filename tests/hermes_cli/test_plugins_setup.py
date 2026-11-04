@@ -6,6 +6,10 @@ import pytest
 
 from hermes_cli import plugins_cmd as cmd
 
+# Plugin setup runs in the PM-provisioned interpreter, which downloads the pinned
+# toolchain on a cold cache; open the conftest network fence for it.
+pytestmark = pytest.mark.allow_network
+
 
 def _seed_plugin_sets(enabled, disabled):
     """Write the allow/deny lists directly: fixture state, not an admitted selection."""

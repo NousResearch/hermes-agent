@@ -2456,6 +2456,7 @@ export const jaOverrides = {
     queueSteerRefusedBody: '現在のターンはこの修正を受け付けられませんでした。メッセージはキューに残り、先頭に移動しました。',
     steerQueuedTitle: '次のターンにキューしました',
     steerQueuedBody: '現在のターンがこのメッセージを受け取れなかったため、次に実行されるようキューに入れました。',
+    steerQueuedCompressionBody: 'コンテキストを圧縮中のため、このメッセージは次に実行されるようキューに入れました。',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',

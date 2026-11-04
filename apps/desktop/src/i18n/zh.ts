@@ -3382,6 +3382,7 @@ export const zhOverrides = {
     queueSteerRefusedBody: '当前回合无法接受这次修正。你的消息仍在队列中，并已移到最前面。',
     steerQueuedTitle: '已排入下一回合',
     steerQueuedBody: '当前回合无法接收这条消息，已将其排入队列，下一回合运行。',
+    steerQueuedCompressionBody: '正在压缩上下文，这条消息已排入队列，下一回合运行。',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     queueDroppedTitle: '已丢弃排队内容',

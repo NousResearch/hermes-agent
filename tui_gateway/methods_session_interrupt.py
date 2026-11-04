@@ -137,8 +137,9 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     result = {"status": accepted_status if accepted else "rejected", "text": text}
-    if verb == "steer" and accepted:
-        # Accepted by the steer entry, not proof the model has consumed the text.
+    if accepted and accepted_status == "queued":
+        # Accepted by the steer entry (a redirect between model requests too), not proof the model
+        # has consumed the text.
         result["disposition"] = "steer"
     return _ok(rid, result)
 

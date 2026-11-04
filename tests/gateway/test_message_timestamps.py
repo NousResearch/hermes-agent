@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, tzinfo, UTC
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
@@ -10,11 +10,33 @@ from gateway.message_timestamps import (
     coerce_message_timestamp,
     format_message_timestamp,
     render_user_content_with_timestamp,
+    strip_leading_message_timestamps,
 )
 from hermes_time import safe_strftime
 
 
 BERLIN = ZoneInfo("Europe/Berlin")
+
+
+class _WindowsStyleTZ(tzinfo):
+    """A tzinfo whose name contains spaces, mirroring how Windows reports the
+    local zone through ``datetime.strftime('%Z')`` (e.g. ``Pacific Daylight
+    Time``).  POSIX systems return short abbreviations like ``PDT``, but Windows
+    returns the full descriptive name, which is what the gateway emits when no
+    IANA timezone is configured (``tz`` is ``None`` and the code falls back to
+    ``astimezone()``)."""
+
+    def utcoffset(self, dt):
+        return timedelta(hours=-7)
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return "Pacific Daylight Time"
+
+
+_WINDOWS_TZ = _WindowsStyleTZ()
 
 
 def _epoch(year, month, day, hour, minute, second):
@@ -175,6 +197,45 @@ def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embed
 
     assert rendered == stored_content
     assert rendered.count("2026-04-27") == 1
+
+
+def test_strip_removes_multiword_timezone_prefix():
+    # Windows ``strftime('%Z')`` yields multi-word zone names. The strip pass
+    # (which runs on every inbound gateway message to keep storage clean) must
+    # still recognise such a prefix, otherwise contaminated rows are persisted
+    # and never cleaned.
+    content = (
+        "[Tue 2026-04-28 13:40:53 Pacific Daylight Time] "
+        "[Example User] hello"
+    )
+
+    stripped, _embedded = strip_leading_message_timestamps(content)
+
+    assert stripped == "[Example User] hello"
+
+
+def test_render_is_idempotent_with_multiword_timezone():
+    # Re-rendering a row that already carries a multi-word-timezone prefix must
+    # not stack a second prefix. On affected systems this is the
+    # "[timestamp] [timestamp] ..." accumulation the module exists to prevent.
+    ts = datetime(2026, 4, 28, 13, 40, 53, tzinfo=_WINDOWS_TZ).timestamp()
+
+    once = render_user_content_with_timestamp(
+        "[Example User] hi", ts, tz=_WINDOWS_TZ
+    )
+    twice = render_user_content_with_timestamp(once, ts, tz=_WINDOWS_TZ)
+
+    assert once == twice
+    assert once.count("2026-04-28") == 1
+
+
+def test_strip_still_handles_abbreviation_timezones():
+    # Guard against over-widening: short abbreviations and numeric offsets must
+    # keep stripping exactly as before the multi-word fix.
+    for tz_token in ("PDT", "CEST", "UTC", "GMT+5", "+05:30"):
+        content = f"[Tue 2026-04-28 13:40:53 {tz_token}] body"
+        stripped, _embedded = strip_leading_message_timestamps(content)
+        assert stripped == "body", tz_token
 
 
 # ---------------------------------------------------------------------------

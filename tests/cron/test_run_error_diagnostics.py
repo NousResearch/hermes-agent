@@ -1,5 +1,8 @@
 """Failure detail belongs in the local audit, not the delivery summary."""
+from types import SimpleNamespace
+
 from cron import jobs, scheduler
+from gateway import session_cron
 
 
 def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeypatch):
@@ -12,7 +15,12 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
     monkeypatch.setattr(scheduler, "_resolve_cron_agent_setup", fail_setup)
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job(prompt="Check status", schedule="every 1h", model="local-probe", deliver="local")
-        success, output, response, error = scheduler.run_job(job)
+        owner = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"))
+        token = session_cron._execution.set((owner, "diagnostic-session", job["id"], "diagnostic-fire"))
+        try:
+            success, output, response, error = scheduler.run_job(job, execution_id="diagnostic-fire")
+        finally:
+            session_cron._execution.reset(token)
         saved = jobs.save_job_output(job["id"], output).read_text(encoding="utf-8")
         assert not success and response == "" and error == "RuntimeError: Connection error."
         assert "Traceback (most recent call last)" in saved and "fail_setup" in saved
@@ -21,7 +29,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
 
 
 def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_cli.cli_cron_lines import cron_list_lines
     from tools.cronjob_job_args import _format_job
 
     with jobs.use_cron_store(tmp_path):
@@ -32,7 +40,7 @@ def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
         assert displayed["last_error"].startswith("RuntimeError:") and "localhost" in displayed["last_error"]
         assert "password" not in displayed["last_error"] and "secret-token" not in displayed["last_error"]
         assert displayed["last_delivery_error"] is None and displayed["last_fire_error"] is None
-        CLICommandsMixin._cron_list(object(), "list", {"all": False})
+        print(*cron_list_lines(), sep="\n")
         console = capsys.readouterr().out
         assert f"error: {displayed['last_error']}" in console
         assert "password" not in console and "secret-token" not in console

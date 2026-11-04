@@ -20,8 +20,8 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
+from agent import skill_commands
+from tools import skills_tool
 from hermes_state import SessionDB
 
 SKILL_BODY = (

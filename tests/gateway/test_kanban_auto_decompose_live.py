@@ -16,7 +16,7 @@ from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
 
 
 def test_disabled_when_flag_false():
-    enabled, per_tick = _resolve_auto_decompose_settings(
+    enabled, _per_tick = _resolve_auto_decompose_settings(
         lambda: {"kanban": {"auto_decompose": False}}
     )
     assert enabled is False

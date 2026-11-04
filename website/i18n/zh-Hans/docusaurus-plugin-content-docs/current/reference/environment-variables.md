@@ -22,13 +22,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `AI_GATEWAY_BASE_URL` | 覆盖 AI Gateway base URL（默认：`https://ai-gateway.vercel.sh/v1`） |
 | `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用）。设置 `OPENAI_BASE_URL` 后，它只会发送到该 URL 完全相同的源（scheme、主机和端口），绝不会发送到同一主机的其他端口或 `http://` |
 | `OPENAI_BASE_URL` | 自定义端点的 base URL（VLLM、SGLang 等） |
-| `COPILOT_GITHUB_TOKEN` | 用于 Copilot API 的 GitHub token——最高优先级（OAuth `gho_*` 或细粒度 PAT `github_pat_*`；经典 PAT `ghp_*` **不支持**） |
-| `GH_TOKEN` | GitHub token——Copilot 第二优先级（也供 `gh` CLI 使用） |
-| `GITHUB_TOKEN` | GitHub token——Copilot 第三优先级 |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot ACP CLI 二进制路径（默认：`copilot`） |
-| `COPILOT_CLI_PATH` | `HERMES_COPILOT_ACP_COMMAND` 的别名 |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 Copilot ACP 参数（默认：`--acp --stdio`） |
-| `COPILOT_ACP_BASE_URL` | 覆盖 Copilot ACP base URL |
+| `GH_TOKEN` | GitHub token（也供 `gh` CLI 使用）；凡 Hermes 读取 `GITHUB_TOKEN` 之处均可作为其替代 |
+| `GITHUB_TOKEN` | 用于访问 GitHub API 的 GitHub token（Skills Hub、git 凭据、更新检查；另见下方 Skills Hub 一行） |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API 密钥（[z.ai](https://z.ai)） |
 | `ZAI_API_KEY` | `GLM_API_KEY` 的别名 |
 | `Z_AI_API_KEY` | `GLM_API_KEY` 的别名 |
@@ -132,13 +127,10 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `BROWSERBASE_PROJECT_ID` | Browserbase 项目 ID |
 | `BROWSER_USE_API_KEY` | Browser Use 云浏览器 API 密钥（[browser-use.com](https://browser-use.com/)） |
 | `FIRECRAWL_BROWSER_TTL` | Firecrawl 浏览器会话 TTL（秒，默认：300） |
-| `BROWSER_CDP_URL` | 本地浏览器的 Chrome DevTools Protocol（CDP）URL（通过 `/browser connect` 设置，例如 `ws://localhost:9222`） |
-| `CAMOFOX_URL` | Camofox 本地反检测浏览器服务器地址（默认：`http://localhost:9377`）。仅为地址——不会选择后端；请在 `hermes tools` 中选择 Camofox（`browser.cloud_provider: camofox`） |
-| `CAMOFOX_USER_ID` | 可选的外部管理 Camofox 用户 ID，用于共享可见会话 |
-| `CAMOFOX_SESSION_KEY` | 为 `CAMOFOX_USER_ID` 创建标签页时使用的可选 Camofox 会话密钥 |
-| `CAMOFOX_ADOPT_EXISTING_TAB` | 设为 `true` 可在创建新标签页前复用现有 Camofox 标签页 |
+| `BROWSER_CDP_URL` | 浏览器工具附加的 Chrome DevTools Protocol（CDP）端点，设置后不再自行启动 Chromium（通过 `/browser connect` 设置，例如 `ws://localhost:9222`；等同于 `browser.cdp_url`） |
+| `CAMOFOX_*` | 仅由 Camofox 插件（`hermes plugins install camofox`）读取；核心 Hermes 忽略它们。 |
 | `BROWSER_INACTIVITY_TIMEOUT` | 浏览器会话不活动超时（秒） |
-| `AGENT_BROWSER_ARGS` | 额外的 Chromium 启动标志（逗号或换行分隔）。以 root 身份运行或在 AppArmor 限制的非特权用户命名空间（Ubuntu 23.10+、DGX Spark、许多容器镜像）中运行时，Hermes 自动注入 `--no-sandbox,--disable-dev-shm-usage`；仅在需要覆盖或添加其他标志时手动设置。 |
+| `AGENT_BROWSER_*` | 不再读取。更新时，若对应键未设置，profile 的 `.env` 中的值会被复制到配置中：`AGENT_BROWSER_EXECUTABLE_PATH` → `browser.executable_path`、`AGENT_BROWSER_PROFILE` → `browser.user_data_dir`、`AGENT_BROWSER_ARGS` → `browser.chromium_args`、`AGENT_BROWSER_HEADED` → `browser.headed`、`AGENT_BROWSER_ENGINE` → `browser.engine`。 |
 | `FAL_KEY` | 图像生成（[fal.ai](https://fal.ai/)） |
 | `GROQ_API_KEY` | Groq Whisper STT API 密钥（[groq.com](https://groq.com/)） |
 | `ELEVENLABS_API_KEY` | ElevenLabs 高级 TTS 语音（[elevenlabs.io](https://elevenlabs.io/)） |
@@ -159,7 +151,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Langfuse 可观测性
 
-内置 [`observability/langfuse`](../user-guide/features/built-in-plugins.md#observabilitylangfuse) 插件的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，还必须启用该插件（`hermes plugins enable observability/langfuse`，或在 `hermes plugins` 中勾选）。
+官方目录插件 [`langfuse`](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse)（原内置的 `observability/langfuse`）的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，必须先安装该插件（`hermes plugins install langfuse`）。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -170,6 +162,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `HERMES_LANGFUSE_RELEASE` | trace 上的发布/版本标签 |
 | `HERMES_LANGFUSE_SAMPLE_RATE` | SDK 采样率 0.0–1.0（默认：`1.0`） |
 | `HERMES_LANGFUSE_MAX_CHARS` | 序列化载荷的每字段截断长度（默认：`12000`） |
+| `HERMES_LANGFUSE_MAX_DEPTH` | 捕获的工具输入/输出保留的嵌套深度，超出部分变为 `<max-depth>`（默认：`4`；无效值会告警并使用默认值） |
+| `HERMES_LANGFUSE_CAPTURE` | 内容捕获模式：`metadata`（不含内容）、`sanitized`（默认：密钥脱敏 + 截断）或 `full`（仅截断） |
 | `HERMES_LANGFUSE_DEBUG` | `true` 可将详细插件日志输出到 `agent.log` |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 标准 Langfuse SDK 变量名。当对应的 `HERMES_LANGFUSE_*` 未设置时作为回退。 |
 
@@ -642,7 +636,7 @@ compression:
 | `AUXILIARY_VISION_API_KEY` | 与 `AUXILIARY_VISION_BASE_URL` 配对的 API 密钥 |
 
 :::note
-`AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 和浏览器快照不再使用辅助 LLM。长页面和快照会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
+`AUXILIARY_WEB_EXTRACT_*` 变量已废弃：`web_extract` 不再使用辅助 LLM。长页面会确定性截断，完整文本存储在磁盘上，可通过 `read_file` 分页读取。
 :::
 
 对于特定任务的直接端点，Hermes 使用该任务配置的 API 密钥或 `OPENAI_API_KEY`。不会为这些自定义端点复用 `OPENROUTER_API_KEY`。

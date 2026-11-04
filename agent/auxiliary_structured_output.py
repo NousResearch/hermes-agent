@@ -45,7 +45,7 @@ def _route_key(provider: Optional[str], base_url: Optional[str]) -> str:
     return (urlparse(base_url or "").netloc or "").lower() or str(provider or "").strip().lower()
 
 
-def _response_format_type(request_kwargs: Dict[str, Any]) -> Optional[str]:
+def _response_format_type(request_kwargs: dict[str, Any]) -> Optional[str]:
     extra_body = request_kwargs.get("extra_body")
     response_format = (extra_body or {}).get("response_format") if isinstance(extra_body, dict) else None
     if response_format is None:
@@ -78,7 +78,7 @@ def is_capability_rejection(error: Optional[BaseException]) -> bool:
 
 
 def remember_structured_output_rejection(
-    provider: Optional[str], base_url: Optional[str], rejected_kwargs: Dict[str, Any], error: BaseException,
+    provider: Optional[str], base_url: Optional[str], rejected_kwargs: dict[str, Any], error: BaseException,
 ) -> None:
     """Record that this route's ``rejected_kwargs["model"]`` rejected the ``response_format`` type carried
     by *rejected_kwargs* — only when *error* names the capability, never for a schema-validation 400."""
@@ -88,9 +88,9 @@ def remember_structured_output_rejection(
 
 
 def without_unsupported_response_format(
-    extra_body: Dict[str, Any], provider: Optional[str], base_url: Optional[str], model: Optional[str],
+    extra_body: dict[str, Any], provider: Optional[str], base_url: Optional[str], model: Optional[str],
     task: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """*extra_body* minus a ``response_format`` whose type this route+model is known to reject; unchanged
     otherwise."""
     response_format = extra_body.get("response_format")
@@ -109,3 +109,19 @@ def without_unsupported_response_format(
         task or "call", _route_key(provider, base_url) or "provider", model or "model", format_type,
     )
     return {k: v for k, v in extra_body.items() if k != "response_format"}
+
+
+def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without ``response_format`` (top-level and ``extra_body``); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("response_format", None) is not None
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and "response_format" in extra_body:
+        remaining = {k: v for k, v in extra_body.items() if k != "response_format"}
+        if remaining:
+            retry_kwargs["extra_body"] = remaining
+        else:
+            retry_kwargs.pop("extra_body", None)
+        changed = True
+    return retry_kwargs if changed else None

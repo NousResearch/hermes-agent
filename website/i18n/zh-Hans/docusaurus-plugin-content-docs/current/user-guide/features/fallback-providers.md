@@ -11,7 +11,7 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 
 1. **[凭据池](./credential-pools.md)** — 在*同一*提供商的多个 API 密钥之间轮换（优先尝试）
 2. **主模型备用** — 当主模型失败时，自动切换到*不同*的提供商:模型
-3. **辅助任务备用** — 针对视觉、压缩、网页提取等附属任务的独立提供商解析
+3. **辅助任务备用** — 针对视觉、压缩等附属任务的独立提供商解析
 
 凭据池处理同一提供商内的轮换（例如多个 OpenRouter 密钥）。本页介绍跨提供商的备用机制。两者均为可选，且相互独立。
 
@@ -51,8 +51,6 @@ fallback_model:
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | 外部进程（编辑器集成） |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |

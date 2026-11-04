@@ -36,8 +36,8 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.compression_marker import elide  # noqa: E402
-from tasks import SYSTEM, TASKS  # noqa: E402
+from agent.compression_marker import elide
+from tasks import SYSTEM, TASKS
 
 ALLOWED_KEYS = {
     "query", "role_filter", "limit", "session_id", "around_message_id",
@@ -62,6 +62,7 @@ def extract_arm(ref: str, workdir: Path, name: str) -> Path:
     out = subprocess.run(
         ["git", "show", f"{ref}:tools/session_search_tool.py"],
         cwd=REPO_ROOT, capture_output=True, text=True,
+        check=False,
     )
     if out.returncode != 0:
         raise SystemExit(f"git show {ref}: {out.stderr.strip()}")
@@ -119,7 +120,7 @@ def exec_tool(arm_mod, args, main_db_path: Path):
                 "error": f"unexpected parameter(s): {', '.join(bad)}",
             }), True
         return arm_mod.session_search(db=db, **kwargs), False
-    except Exception as e:  # noqa: BLE001 — tool errors go back to the model
+    except Exception as e:
         return json.dumps({
             "success": False, "error": f"{type(e).__name__}: {e}",
         }), True
@@ -261,7 +262,7 @@ def main():
                                       f"bad={r['bad_calls']} "
                                       f"ptok={r['first_prompt_tokens']}")
                                 break
-                            except Exception as e:  # noqa: BLE001
+                            except Exception as e:
                                 print(f"RETRY {task_id} {arm_name} rep{rep}: {e}")
                                 traceback.print_exc()
                                 time.sleep(5 * (attempt + 1))

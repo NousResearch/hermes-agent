@@ -67,8 +67,6 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
 | Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
-| GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
-| GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | z.ai / GLM | `zai` | `GLM_API_KEY` |
 | Kimi / Moonshot | `kimi-coding` | `KIMI_API_KEY` |
@@ -241,7 +239,7 @@ A billing or quota failure quarantines only the failed custom endpoint for the a
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
-**Built-in text discovery chain (compression, web extract, title generation, etc.):**
+**Built-in text discovery chain (compression, title generation, etc.):**
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →

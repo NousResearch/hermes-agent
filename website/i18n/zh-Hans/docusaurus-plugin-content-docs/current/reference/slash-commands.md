@@ -45,7 +45,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/title` | 为当前会话设置标题（用法：/title My Session Name） |
 | `/compress [focus topic]` | 手动压缩对话上下文（刷新记忆 + 摘要）。可选的焦点主题可缩小摘要保留的范围。 |
 | `/rollback` | 列出或恢复文件系统检查点（用法：/rollback [number]） |
-| `/snapshot [create\|restore <id>\|prune]`（别名：`/snap`） | 创建或恢复 Hermes 配置/状态的快照。`create [label]` 保存快照，`restore <id>` 回滚到该快照，`prune [N]` 删除旧快照，不带参数则列出所有快照。 |
+| `/snapshot [create\|restore <id>\|prune]`（别名：`/snap`） | 创建或恢复 Hermes 配置/状态的快照。`create [label]` 保存快照，`restore <id>` 回滚到该快照，`prune [N]` 删除旧快照，不带参数则列出所有快照。在经典 `hermes chat` 中，恢复会先关闭本地读取句柄、排空本地 Gateway，再离线恢复并重新连接：快照中仍有当前会话时载入恢复后的历史，否则创建新会话。多路复用中的非启动 profile 仅暂停并重新挂载自身，不重启其他 profile；恢复启动 profile 则会排空整个 Gateway。底层恢复仍保留独占维护门禁和 SQLite 安全检查，无法释放的占用仍会阻止恢复。 |
 | `/stop` | 终止所有正在运行的后台进程 |
 | `/queue <prompt>`（别名：`/q`） | 将 prompt（提示词）加入队列等待下一轮处理（不会中断当前 agent 响应）。 |
 | `/steer <prompt>` | 在**下一次工具调用之后**向 agent 注入一条中途说明——不中断、不产生新的用户轮次。当前工具完成后，该文本会追加到最后一条工具结果的内容中，在不打断当前工具调用循环的情况下为 agent 提供新上下文。可用于在任务进行中调整方向（例如在 agent 运行测试时说"专注于 auth 模块"）。 |
@@ -78,6 +78,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/yolo` | 切换 YOLO 模式——跳过所有危险命令审批提示。 |
 | `/footer [on\|off\|status]` | 切换最终回复中的 gateway 运行时元数据页脚（显示模型、工具调用次数、耗时）。 |
 | `/busy [queue\|steer\|interrupt\|status]` | 控制 Hermes 工作时发送消息的行为——将新消息加入队列、中途引导，或立即中断。支持 CLI 和消息 gateway。 |
+| `/autoprune [on\|off\|later\|status]` | 决定是否自动清理旧的已结束 session（默认关闭）。当 `state.db` 所在磁盘空间不足时 Hermes 会询问一次；`on`/`off` 保存 `sessions.auto_prune` 并不再询问，`later` 一周后再提醒。支持 CLI、TUI、Desktop 和消息 gateway（Slack 上用 `/hermes autoprune`）。 |
 | `/indicator [kaomoji\|emoji\|unicode\|ascii]` | 仅限 CLI：选择 TUI 忙碌指示器样式。 |
 
 ### 工具与 Skill

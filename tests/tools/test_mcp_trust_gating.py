@@ -106,6 +106,42 @@ class TestTrustGateAtCallTime:
         assert json.loads(raw) == {"result": "ok"}
         fake_session.call_tool.assert_awaited_once()
 
+    def test_approval_card_shows_redacted_bounded_arguments(self, fake_session, monkeypatch):
+        """The approver sees the call's arguments, never its secrets (even with redaction turned off
+        for logs), and the card stays inside the smallest messaging cap."""
+        import agent.redact
+        monkeypatch.setattr(agent.redact, "_REDACT_ENABLED", False)
+        _set_trust("srv", "untrusted")
+        handler = _mcp_handlers._make_tool_handler("srv", "trigger_build", 30.0)
+        args = {
+            "job": "release",
+            "api_key": "sk-supersecretcredential123456",
+            "db_password": "hunter2-correct-horse-battery",
+            "headers": {"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl",
+                        "x-api-key": "opaqueheadervalue77"},
+            "password": 987654321,
+            "credentials": ["opaque-credential-value"],
+            "target": "prod\u202e",
+            "notes": "x" * 5_000,
+        }
+
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            return_value="decline",
+        ) as consent:
+            handler(args)
+
+        message = consent.call_args.args[0]
+        assert '"job": "release"' in message
+        for secret in ("sk-supersecretcredential123456", "hunter2-correct-horse-battery",
+                       "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl", "opaqueheadervalue77", "987654321",
+                       "opaque-credential-value", "\u202e"):
+            assert secret not in message
+        assert "truncated" in message
+        assert len(message) < 2_000
+        fake_session.call_tool.assert_not_awaited()
+
+
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")
@@ -228,6 +264,7 @@ class TestTrustGateApprovalRouting:
         ("webhook", "", False),
         ("telegram", "1", False),
         ("api_server", "", True),
+        ("local", "", True),  # a `chat -q` turn admitted to the gateway: finite, nobody answers
     ])
     def test_unattended_cron_and_single_query_contexts_do_not_use_callback(
         self, monkeypatch, platform, cron, single_query
@@ -358,3 +395,23 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_sdk2_snake_case_annotations_supported(self):
+        """mcp 2.x models expose ``read_only_hint``; camelCase is only a serialization alias."""
+        from mcp.types import ToolAnnotations
+        sdk2 = ToolAnnotations.model_validate({"readOnlyHint": True, "destructiveHint": False})
+        assert _mcp_registration._annotation_read_only_hint(SimpleNamespace(annotations=sdk2)) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        # 1.x-shaped object (camelCase attribute) still works.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(readOnlyHint=True))
+        ) is True
+        # Cache dict written by an older client in snake_case is honoured too.
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True

@@ -2,8 +2,9 @@
 // Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { retryHeld } from '../../../scripts/build/frontend-common.mjs'
 import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
@@ -38,9 +39,12 @@ export function buildHudModifierMonitor({
   }
   if (!['darwin', 'linux', 'win32'].includes(platform)) return null
   const output = resolve(distDir, hudModifierBinaryRelativePath(platform, arch))
-  const staging = `${output}.${process.pid}.tmp${platform === 'win32' ? '.exe' : ''}`
+  // The macOS linker signs ad hoc with the output file name as identifier: stage under the final
+  // name in a private directory so rebuilding the same source yields the same bytes.
+  const stagingDir = `${output}.${process.pid}.tmp`
+  const staging = join(stagingDir, basename(output))
   const nativeSource = name => resolve(source, 'apps/desktop/electron/native', name)
-  mkdirSync(dirname(output), { recursive: true })
+  mkdirSync(stagingDir, { recursive: true })
   try {
     if (platform === 'darwin') {
       execFileSync(
@@ -90,11 +94,13 @@ export function buildHudModifierMonitor({
       )
     }
     chmodSync(staging, 0o755)
-    renameSync(staging, output)
+    // A scanner opens the exe the compiler just wrote; wait it out like publication does.
+    retryHeld(() => renameSync(staging, output))
     console.log(`built ${output}`)
     return output
   } catch (error) {
     rmSync(output, { force: true }) // Never keep a stale helper after a failed rebuild.
+    rmSync(stagingDir, { recursive: true, force: true }) // before the empty-ancestor sweep below
     // Packaged ASAR output omits empty directories. Leaving native/linux-* behind
     // makes the packaged renderer differ from its compiler receipt, so source
     // installs report a healthy desktop bundle as stale when X11 headers are
@@ -111,7 +117,7 @@ export function buildHudModifierMonitor({
     console.warn(String(error.stderr || error.message))
     return null
   } finally {
-    rmSync(staging, { force: true })
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 }
 

@@ -90,12 +90,13 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
   `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
   `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
-  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  round-trip): formatting survives, and the fail-closed unreadable-file guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
   writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
+- **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
+  In daemon, RPC and tick code catch `ConfigBackendUnavailable` explicitly: it is a `SystemExit`, so `except Exception` won't stop it.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
@@ -136,8 +137,8 @@ The stage-by-stage contract: `website/docs/developer-guide/cli-internals.md` § 
   `_ZIP_PRESERVED_NESTED` build outputs into the swap.
 - Restarts are fleet-wide and drain-first, bounded by the home each unit runs on
   (`update_fleet_scope.py`); another install's runtime is never restarted.
-- A provably-stale gateway fails the update (exit 1); every run writes a receipt under
-  `logs/update_receipts/`.
+- Post-commit failures are owed follow-ups, exit 0 (stash left 1, Ctrl-C 130);
+  receipts in ROOT `logs/update_receipts/`.
 - Nothing runs pulled code in the pre-pull interpreter. `update_handoff.py` and
   `update_serve_obligations.py` are a FROZEN compat surface (`tests/compat/old_updater_surface.json`):
   removing a name bricks releases mid-update.
@@ -184,7 +185,7 @@ target; table-driven `_PREFLIGHT_CHECKS`; manifest `<default>/gateway_migration.
 a re-run resumes from it; a named profile's `gateway install|start|run` refuse without `--force` via
 `gateway.py::_named_profile_refused_under_multiplexer`, dashboard twin
 `web_server_gateway.py::multiplexed_profile_refusal`);
-`update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
+`update_cmd_fleet_verify._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
 path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
 other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,
 blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;

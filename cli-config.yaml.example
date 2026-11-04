@@ -1761,7 +1761,7 @@ stt:
   # prompt: "Hermes, Teknium, Nous Research, kanban"
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
-    # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+    # language: ""             # blank = inherit stt.language; set "en", "es", "fr", etc. to force
     # initial_prompt: ""       # Optional faster-whisper prompt, e.g. bias Chinese output to simplified Chinese
     # --- Anti-hallucination hardening (whisper decodes junk from silence without these) ---
     # vad: true                # Silero VAD filter (default on) — silence never reaches whisper.
@@ -1776,7 +1776,7 @@ stt:
   #   language: ""             # blank = stt.language > HERMES_LOCAL_STT_LANGUAGE > auto-detect
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
-    language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+    language: ""               # blank = inherit stt.language; set "en", "es", "fr", etc. to force
     timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
     max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:

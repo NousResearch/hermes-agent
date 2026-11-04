@@ -192,8 +192,11 @@ def run_scheduled_check(
 
 def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callable[[str], None], log) -> None:
     """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
-    where the user put it."""
+    where the user put it. A widened catalog pin is a pending review, not a failure: one line naming
+    the command that walks it, no traceback every tick; other refusals are one line too."""
     from hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
 
     for r in updates:
         if getattr(r, "klass", "") not in ("git", "catalog"):
@@ -203,6 +206,11 @@ def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callabl
             continue
         try:
             apply_updates_fn(r.name)
+        except RepinConsentRequired:
+            log.info("plugin %s has an update that needs your review: run `hermes plugins update %s`",
+                     r.name, r.name)
+        except PluginOperationError as exc:
+            log.warning("auto-apply of %s not applied: %s", r.name, exc)
         except (Exception, SystemExit):
             log.warning("auto-apply of %s failed", r.name, exc_info=True)
 
@@ -315,10 +323,10 @@ def maybe_run_gateway_check(
 
         run_checks_fn = run_checks
     if apply_updates_fn is None:
-        from hermes_cli import plugins_cmd
+        # update_one with no terminal, refusals raised (cmd_update would turn them into an exit)
+        from hermes_cli import plugins_auto_update
 
-        from functools import partial
-        apply_updates_fn = partial(plugins_cmd.cmd_update, interactive=False)
+        apply_updates_fn = plugins_auto_update.apply_unattended
     return run_scheduled_check(
         run_checks_fn=run_checks_fn,
         plugins_dir=plugins_dir,

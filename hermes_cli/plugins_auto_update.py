@@ -66,6 +66,18 @@ def held_with_ref(record: Any) -> bool:
     return isinstance(block, dict) and record.get("pinned") is True and not block.get("pin")
 
 
+def apply_unattended(name: str) -> None:
+    """The gateway auto-apply tick's update of one plugin: ``update_one`` with no terminal. Refusals
+    raise (``RepinConsentRequired`` for a widened pin, ``PluginOperationError``) so the tick can tell
+    a pending review from a failure; ``cmd_update`` would turn both into an exit."""
+    from hermes_cli.plugins_cmd_update import update_one
+    pc = _pc()
+    target = pc._user_installed_plugin_dir(name)
+    if target is None:
+        raise pc.PluginOperationError(f"Plugin '{name}' is no longer installed.")
+    update_one(name, target, pc._console(), interactive=False)
+
+
 # ── the auto-update switch ────────────────────────────────────────────────────────────────────
 
 def auto_update_state() -> dict[str, Any]:

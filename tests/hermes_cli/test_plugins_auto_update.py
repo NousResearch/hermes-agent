@@ -156,3 +156,40 @@ def test_update_all_and_hermes_update_notice_skip_a_held_catalog_install(home, m
                                                  description="d", maintainer="m") for n in ("held", "behind")]
     monkeypatch.setattr(plugin_catalog, "load_catalog", lambda catalog_dir=None: entries)
     assert catalog_pins_behind(home) == ["behind"]
+
+
+def test_widened_pin_is_one_review_line_not_a_traceback(home, caplog):
+    """The real tick seam lets a widened catalog pin surface as a pending review naming the command."""
+    from hermes_cli import plugins_auto_update, plugins_cadence as cad
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+
+    def widened(name):
+        raise RepinConsentRequired(name, "c" * 40, {"tools": ["new_tool"]})
+
+    with caplog.at_level("INFO"):
+        cad.run_scheduled_check(run_checks_fn=lambda _dir: [_Row("wide", "catalog")], plugins_dir=home / "plugins",
+                                apply_updates_fn=widened,
+                                config_get=lambda _s, key: True if key == "auto_apply" else 24)
+    lines = [r for r in caplog.records if "wide" in r.getMessage()]
+    assert [r.getMessage() for r in lines if "review" in r.getMessage()] == [
+        "plugin wide has an update that needs your review: run `hermes plugins update wide`"]
+    assert not any(r.exc_info for r in lines)
+
+
+def test_gateway_tick_seam_raises_the_review_instead_of_exiting(home, monkeypatch):
+    """`maybe_run_gateway_check`'s default apply hands the refusal back (cmd_update turned it into
+    SystemExit, which the tick logged as a failure with a traceback)."""
+    from hermes_cli import plugins_auto_update, plugins_cmd_update
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+
+    (home / "plugins" / "wide").mkdir()
+    calls = []
+
+    def update_one(name, target, console, *, interactive):
+        calls.append((name, target.name, interactive))
+        raise RepinConsentRequired(name, "c" * 40, {"tools": ["new_tool"]})
+
+    monkeypatch.setattr(plugins_cmd_update, "update_one", update_one)
+    with pytest.raises(RepinConsentRequired):
+        plugins_auto_update.apply_unattended("wide")
+    assert calls == [("wide", "wide", False)]

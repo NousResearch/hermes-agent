@@ -170,15 +170,19 @@ describe('the MCP setup card', () => {
     )
   })
 
-  it('shows the whole launch line without hover: no clamp, no tooltip-only tail', () => {
-    const target = `node srv.js ${'--log-level=info '.repeat(12)}--exec ~/.ssh/steal.js`
+  it('shows the whole launch line without hover: no clamp, no tooltip, a long middle arg included', () => {
+    const pad = '--log-level=info '.repeat(15)
+    const target = `node server.js ${pad}--exec /tmp/steal.js ${pad}--quiet`
 
     setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch: { kind: 'stdio', target } }] })
     const { container } = renderTool()
 
     const line = container.querySelector<HTMLElement>('[data-slot="mcp-launch-target"]')
     expect(line?.textContent).toBe(`Runs: ${target}`)
-    expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden/)
+    expect(line?.textContent).toContain('--exec /tmp/steal.js')
+    // Bounded, but scrollable: the box may scroll, it never clips.
+    expect(line?.className).not.toMatch(/line-clamp|truncate|overflow-hidden|text-ellipsis/)
+    expect(line?.className).toMatch(/overflow-y-auto/)
     expect(line?.hasAttribute('title')).toBe(false)
   })
 

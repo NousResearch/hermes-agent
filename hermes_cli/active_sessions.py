@@ -801,6 +801,22 @@ def active_session_registry_snapshot(
     return entries
 
 
+def read_live_session_leases(registry_home: str | Path | None = None) -> list[dict[str, Any]]:
+    """Live leases for a read-only observer (``hermes status --json``, the session lists).
+
+    Unlike ``active_session_registry_snapshot`` this never writes the prune back, so a
+    reader cannot contend with claimants for the write lock, and an owner whose liveness
+    is unknowable counts as live (an observer must not report a session dead that may
+    still have a writer). Raises ``ActiveSessionRegistryError`` when the file is unreadable.
+    """
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    if not state_path.exists():
+        return []
+    with _FileLock(lock_path):
+        raw_entries = _read_entries(state_path, strict=True)
+    return [e for e in raw_entries if _pid_liveness(e.get("pid"), e.get("process_start_time")) is not False]
+
+
 @contextmanager
 def active_session_liveness_guard(
     session_id: str, *, registry_home: str | Path | None = None,

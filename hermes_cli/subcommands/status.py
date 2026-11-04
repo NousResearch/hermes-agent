@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_cli.subcommands._shared import add_json_flag
+
 
 def build_status_parser(subparsers, *, cmd_status: Callable) -> None:
     """Attach the ``status`` subcommand to ``subparsers``."""
@@ -15,4 +17,5 @@ def build_status_parser(subparsers, *, cmd_status: Callable) -> None:
         help="Show every section (keys redacted) instead of the one-screen summary")
     status_parser.add_argument(
         "--deep", action="store_true", help="Run deep checks (implies --full; may take longer)")
+    add_json_flag(status_parser, "Output status as JSON")
     status_parser.set_defaults(func=cmd_status)

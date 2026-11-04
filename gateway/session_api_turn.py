@@ -47,7 +47,13 @@ def api_settings(authority, ref):
 
 def check_api_turn(authority, ref, payload):
     live = authority.sessions[ref.session_id]
-    if live.source.platform == Platform.API_SERVER:
+    # The marker, not the platform alone: a mounted cold Desktop row is rebuilt as an
+    # API-family source (gateway/session_desktop_recovery), so its FIFO head is a plain viewer
+    # text admission with no ``api_turn_v1`` — re-running ``restore_api_session`` on it would
+    # refuse bare ``not_found`` (no binding receipt) and pause the FIFO forever. Every real API
+    # admission carries the marker (built unconditionally in ``admit_api_steps``), and so does
+    # every other caller here, so real API rows still restore exactly as before.
+    if live.source.platform == Platform.API_SERVER and 'api_turn_v1' in payload:
         restore_api_session(authority, ref.session_id)
     adapter = authority.runner._adapter_for_source(live.source)
     if adapter is None or getattr(adapter, 'gateway_runner', None) is not authority.runner:

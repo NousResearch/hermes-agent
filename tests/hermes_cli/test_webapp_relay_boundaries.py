@@ -126,6 +126,35 @@ def test_a_grant_without_files_or_terminal_reaches_no_route_that_gives_them(rela
     assert (kept / "notes.txt").exists() and spawned == []
 
 
+def test_a_grant_without_files_reaches_no_git_review_or_image_upload(relay_app, tmp_path):
+    # Git review reads and discards a repository's changes, and an image upload writes the image to
+    # that machine's disk: the file panels' operations, which the files scope opens.
+    import subprocess
+
+    browser = relay_app.browser()
+    _sign_in(browser)
+    base = f"/api/relay/{_pair(browser, scopes=())['id']}"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (repo / "notes.txt").write_text("committed\n", encoding="utf-8")
+    subprocess.run([*git, "add", "notes.txt"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    (repo / "notes.txt").write_text("unsaved work\n", encoding="utf-8")
+    png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+    for method, path, kwargs in (
+            ("GET", "/api/git/status", {"params": {"path": str(repo)}}),
+            ("GET", "/api/git/review/diff", {"params": {"path": str(repo), "file": "notes.txt"}}),
+            ("POST", "/api/git/review/revert", {"json": {"path": str(repo), "file": "notes.txt"}}),
+            ("POST", "/api/chat/image-upload", {"json": {"data_url": png, "filename": "paste.png"}})):
+        refused = browser.request(method, f"{base}{path}", headers=ORIGIN, **kwargs)
+        assert refused.status_code == 403 and refused.json()["error"] == "relay_forbidden", (method, path, refused.text)
+    assert (repo / "notes.txt").read_text(encoding="utf-8") == "unsaved work\n"
+    images = relay_app.home / "images"
+    assert not images.exists() or not any(images.iterdir())
+
+
 def test_a_socket_ticket_request_names_one_socket(relay_app):
     browser = relay_app.browser()
     _sign_in(browser)

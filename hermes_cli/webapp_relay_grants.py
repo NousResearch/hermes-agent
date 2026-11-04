@@ -54,10 +54,10 @@ SCOPES: dict[str, str] = {
 _REFUSED_PREFIXES = ("/api/relay/", "/api/webapp/relay/", "/webapp/", "/auth/", "/login",
                      "/api/auth/", "/api/webapp-access", "/api/webapp/window-ticket")
 #: Routes each optional scope opens, matched against the whole path: the Webapp's own surfaces for
-#: host files (browsing, transfers, backup archives), terminals (in the page or a desktop window),
-#: bot screens and voice.
+#: host files (browsing, transfers and attachments, Git review, backup archives), terminals (in the
+#: page or a desktop window), bot screens and voice.
 _SCOPED_ROUTES: tuple[tuple[re.Pattern[str], str], ...] = tuple((re.compile(pattern), scope) for pattern, scope in (
-    (r"/api/(fs|files)(/.*)?", "files"), (r"/api/chat/file-upload", "files"),
+    (r"/api/(fs|files|git)(/.*)?", "files"), (r"/api/chat/(file|image)-upload", "files"),
     (r"/api/ops/(backup/download|import-upload)", "files"),
     (r"/api/(host-terminal|pty|console)(/.*)?", "terminal"), (r"/api/profiles/[^/]+/open-terminal", "terminal"),
     (r"/api/display(/.*)?", "display"), (r"/api/audio(/.*)?", "voice")))
@@ -71,6 +71,10 @@ _SOCKET_PATH_SCOPES = {"/api/pty": "terminal", "/api/console": "terminal", "/api
 #: also runs shell and CLI commands, drives the bot screens and records voice (the recorder and the
 #: wake word), none of it in a chat turn.
 _RPC_SCOPES = {"shell": "terminal", "cli": "terminal", "display": "display", "voice": "voice", "wake": "voice"}
+#: Methods on that socket a scope opens outside those namespaces: the composer's attachments, which
+#: read a path on this machine or write the browser's bytes here, and file-path completion.
+_RPC_METHOD_SCOPES = {"file.attach": "files", "image.attach": "files", "image.attach_bytes": "files",
+                      "pdf.attach": "files", "input.detect_drop": "files", "complete.path": "files"}
 _SELF_REVOKE = re.compile(r"^/api/webapp/relay/grants/([A-Za-z0-9_-]{1,64})$")
 
 
@@ -370,10 +374,11 @@ def _profile_edit(argv) -> bool:
 
 def relay_rpc_refusal(ws, method, params=None) -> Optional[str]:
     """Why JSON-RPC *method* with *params* may not run on *ws*, a socket another gateway relays here, or
-    None (also for a socket nobody relays): its namespace needs a scope the grant lacks, unless it is
-    one of Bot Mode's profile edits."""
+    None (also for a socket nobody relays): it needs a scope the grant lacks, unless it is one of Bot
+    Mode's profile edits."""
     grant_id = relay_grant_of(ws)
-    needed = _RPC_SCOPES.get(str(method or "").split(".", 1)[0]) if grant_id is not None else None
+    name = str(method or "")
+    needed = (_RPC_METHOD_SCOPES.get(name) or _RPC_SCOPES.get(name.split(".", 1)[0])) if grant_id is not None else None
     if needed is None or (method == "cli.exec" and isinstance(params, dict) and _profile_edit(params.get("argv"))):
         return None
     home = getattr(getattr(getattr(ws, "app", None), "state", None), "webapp_home", None)

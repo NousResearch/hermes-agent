@@ -13,9 +13,7 @@
  * the other Webapp journeys; needs `npm run build:webapp` and a Chromium Playwright can launch.
  */
 
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import { createServer } from 'node:net'
 import * as path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -24,17 +22,17 @@ import { type Browser, type BrowserContext, chromium, expect, type Page, test } 
 import {
   backendProcesses,
   composer,
-  coreAppEnv,
   type CoreSandbox,
   createCoreSandbox,
   currentSessionId,
   DESKTOP_ROOT,
+  freePort,
   recordWebSockets,
   renderedTranscript,
-  REPO_ROOT,
   sandboxProcesses,
   send,
   storedSessionForMarker,
+  webappLaunchLink,
   writeProviderHome
 } from './harness'
 import { gate, type Gate, type ScriptedProvider, startScriptedProvider } from './provider'
@@ -47,39 +45,6 @@ const nonce = Math.random()
 
 const U = (n: number) => `U${n}-journal${nonce}`
 const A = (n: number) => `A${n}-journal${nonce}`
-
-const PYTHON = process.env.HERMES_E2E_PYTHON || 'python3'
-const JOURNAL_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
-/** The newest-page size the renderer hydrates a chat with (`LATEST_SESSION_MESSAGES_LIMIT`). */
-const NEWEST_PAGE = 120
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      server.close(() => resolve(typeof address === 'object' && address ? address.port : 0))
-    })
-  })
-}
-
-/** Starts the gateway if needed and returns a one-use launch link for its Webapp. */
-function launchLink(sandbox: CoreSandbox): string {
-  const result = spawnSync(PYTHON, ['-m', 'hermes_cli.main', 'webapp', '--no-open', '--skip-build'], {
-    cwd: REPO_ROOT,
-    env: coreAppEnv(sandbox),
-    encoding: 'utf8',
-    timeout: 180_000
-  })
-
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-  const link = /^\s+(http:\/\/127\.0\.0\.1:\d+\/webapp\/launch#\S+)$/m.exec(output)?.[1]
-  expect(result.status, `hermes webapp --no-open\n${output.replace(/ticket=\S+/g, 'ticket=<redacted>')}`).toBe(0)
-  expect(link, 'hermes webapp printed a one-use launch link').toBeTruthy()
-
-  return link!
-}
 
 function readState<T>(sandbox: CoreSandbox, read: (db: DatabaseSync) => T, fallback: T): T {
   const db = new DatabaseSync(path.join(sandbox.hermesHome, 'state.db'), { readOnly: true })
@@ -121,15 +86,35 @@ interface JournalEntry {
   messages: { role: string; parts: { type: string; text?: string }[] }[]
 }
 
-function readJournal(page: Page, sessionId: string): Promise<JournalEntry | null> {
-  return page.evaluate(
-    ([key]) => {
-      const raw = localStorage.getItem(key)
+/** A stored value that is a live journal entry (a retired one is removed or tombstoned). */
+function parseJournalEntry(raw: null | string | undefined): JournalEntry | null {
+  try {
+    const entry = raw ? JSON.parse(raw) : null
 
-      return raw && raw !== '0' ? JSON.parse(raw) : null
-    },
-    [`${JOURNAL_PREFIX}${encodeURIComponent(sessionId)}`]
-  )
+    return Array.isArray(entry?.messages) ? entry : null
+  } catch {
+    return null
+  }
+}
+
+/** The session's journal key: found by what the tab stored, not spelled out, so a journal version bump cannot
+ *  leave the retirement checks below reading a key nothing writes. */
+const journalKeyFor = (sessionId: string) => (key: string) =>
+  key.includes('inflightTurnJournal') && key.endsWith(`:${encodeURIComponent(sessionId)}`)
+
+async function readJournal(page: Page, sessionId: string): Promise<{ key: string; entry: JournalEntry } | null> {
+  const stored = await page.evaluate(() => Object.entries(localStorage))
+  const isKey = journalKeyFor(sessionId)
+
+  for (const [key, raw] of stored) {
+    const entry = isKey(key) ? parseJournalEntry(raw) : null
+
+    if (entry) {
+      return { key, entry }
+    }
+  }
+
+  return null
 }
 
 const journalText = (entry: JournalEntry | null, role: string) =>
@@ -169,7 +154,7 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } })
   const tab = await context.newPage()
   const ws = recordWebSockets(tab)
-  await tab.goto(launchLink(sandbox))
+  await tab.goto(webappLaunchLink(sandbox))
   await expect(composer(tab)).toBeVisible({ timeout: 180_000 })
 
   provider.script(U(1), [{ text: [`${A(1)} `, 'the ', 'old ', 'turn'], holdAfterFirstChunk: hold }])
@@ -184,7 +169,7 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
   await expect
     .poll(
       async () => {
-        const entry = await readJournal(tab, sessionId)
+        const entry = (await readJournal(tab, sessionId))?.entry ?? null
 
         return {
           prompt: journalText(entry, 'user').includes(U(1)),
@@ -195,12 +180,12 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
     )
     .toEqual({ prompt: true, reply: true })
 
+  const { key } = (await readJournal(tab, sessionId))!
   await tab.close()
-  const key = `${JOURNAL_PREFIX}${encodeURIComponent(sessionId)}`
 
   const journalStored = async () =>
     ((await context.storageState()).origins.find(entry => entry.origin === origin)?.localStorage ?? []).some(
-      item => item.name === key && item.value !== '0'
+      item => item.name === key && parseJournalEntry(item.value) !== null
     )
 
   expect(await journalStored(), 'the dead tab left its journal behind').toBe(true)
@@ -209,17 +194,29 @@ async function phoneDiesMidTurn(browser: Browser, sandbox: CoreSandbox, provider
 }
 
 /** A new tab on the phone opens the chat: its sign-in grant lives in the tab's own
- *  sessionStorage, so it signs in with a launch link first. */
-async function phoneReopens(phone: Phone, sandbox: CoreSandbox): Promise<Page> {
+ *  sessionStorage, so it signs in with a launch link first. `newestPage` is the body of the
+ *  first newest-page transcript read the reopened renderer makes for the chat. */
+async function phoneReopens(phone: Phone, sandbox: CoreSandbox): Promise<{ tab: Page; newestPage: Promise<string> }> {
   const tab = await phone.context.newPage()
-  await tab.goto(launchLink(sandbox))
+  await tab.goto(webappLaunchLink(sandbox))
   await expect(composer(tab)).toBeVisible({ timeout: 180_000 })
+
+  const newestPage = tab
+    .waitForResponse(
+      response =>
+        response.url().includes(`/sessions/${encodeURIComponent(phone.sessionId)}/messages?`) &&
+        response.url().includes('order=latest'),
+      { timeout: 60_000 }
+    )
+    .then(response => response.text())
+    .catch(() => '')
+
   await tab.evaluate(id => {
     window.location.hash = `#/${encodeURIComponent(id)}`
   }, phone.sessionId)
   await expect.poll(() => currentSessionId(tab)).toBe(phone.sessionId)
 
-  return tab
+  return { tab, newestPage }
 }
 
 async function withWebapp(
@@ -235,9 +232,10 @@ async function withWebapp(
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox(label)
   writeProviderHome(sandbox.hermesHome, provider.url)
+  // todo_list is deferred behind tool_search by default; the scripted model calls it directly.
   fs.appendFileSync(
     path.join(sandbox.hermesHome, 'config.yaml'),
-    `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\n`
+    `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\ntools:\n  tool_search:\n    defer: []\n`
   )
   let browser: Browser | null = null
 
@@ -276,7 +274,7 @@ test('a Webapp tab that died mid-turn does not replay that turn after the newest
       // page, then a newer turn completes.
       const other = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
       const otherWs = recordWebSockets(other)
-      await other.goto(launchLink(sandbox))
+      await other.goto(webappLaunchLink(sandbox))
       await expect(composer(other)).toBeVisible({ timeout: 180_000 })
       await other.evaluate(id => {
         window.location.hash = `#/${encodeURIComponent(id)}`
@@ -284,9 +282,13 @@ test('a Webapp tab that died mid-turn does not replay that turn after the newest
       await expect.poll(() => currentSessionId(other)).toBe(phone.sessionId)
       await expect(viewport(other)).toContainText(`${A(1)} the old turn`, { timeout: 60_000 })
 
-      // Distinct commands, so no repeated-call guard collapses them; 4 × (1 + 32) rows outnumber a page.
+      // Distinct calls, so no repeated-call guard collapses them; 4 × (1 + 32) rows outnumber the newest page.
+      // todo_list runs in-process, so the rounds cost no shell spawns.
       const tools = (step: number) =>
-        Array.from({ length: 32 }, (_, i) => ({ name: 'terminal', args: { command: `echo step${step}-call${i}` } }))
+        Array.from({ length: 32 }, (_, i) => ({
+          name: 'todo_list',
+          args: { todos: [{ id: `${step}-${i}`, content: `step ${step} item ${i}`, status: 'pending' }] }
+        }))
 
       provider.script(U(2), [
         { toolCalls: tools(0) },
@@ -303,21 +305,13 @@ test('a Webapp tab that died mid-turn does not replay that turn after the newest
       await expect.poll(() => assistantPersisted(sandbox, `${A(3)} the newest reply`), { timeout: 120_000 }).toBe(true)
       await expect(viewport(other)).toContainText(`${A(3)} the newest reply`, { timeout: 60_000 })
 
-      // The newest page the renderer hydrates with no longer reaches the old prompt.
-      const newestPage = await other.evaluate(
-        ([id, limit]) =>
-          (window as any).hermesDesktop.api({
-            path: `/api/sessions/${encodeURIComponent(id)}/messages?order=latest&limit=${limit}&include_compacted=true`
-          }),
-        [phone.sessionId, NEWEST_PAGE] as const
-      )
+      const { tab, newestPage } = await phoneReopens(phone, sandbox)
+      await expect(viewport(tab)).toContainText(`${A(3)} the newest reply`, { timeout: 60_000 })
 
-      const pageText = JSON.stringify(newestPage.messages ?? [])
+      // The newest page the reopened renderer hydrated with no longer reaches the old prompt.
+      const pageText = await newestPage
       expect(pageText, 'the newest page holds the newest turn').toContain(U(3))
       expect(pageText, 'the old prompt is older than the newest page').not.toContain(U(1))
-
-      const tab = await phoneReopens(phone, sandbox)
-      await expect(viewport(tab)).toContainText(`${A(3)} the newest reply`, { timeout: 60_000 })
 
       // Resume folds the journal: either it retires it, or it replays the old turn at the end.
       await expect
@@ -358,7 +352,7 @@ test('a Webapp tab whose gateway died mid-turn still shows the streamed reply af
       expect(assistantPersisted(sandbox, A(1)), 'the streamed reply exists only in the journal').toBe(false)
 
       // The restarted owner fences the turn it lost as `unknown` and keeps listing it.
-      const tab = await phoneReopens(phone, sandbox)
+      const { tab } = await phoneReopens(phone, sandbox)
       await expect.poll(() => admissionStatuses(sandbox, phone.sessionId), { timeout: 60_000 }).toEqual(['unknown'])
 
       await expect(viewport(tab)).toContainText(`${U(1)} start the old turn`, { timeout: 60_000 })

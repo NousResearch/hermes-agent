@@ -168,9 +168,11 @@ import {
 } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
+  activatedTurnAdmission,
   type GraftedTranscriptPage,
   graftTranscriptPage,
   prefetchServesResume,
+  recoveredTurnFields,
   rereadPageAfterResumeBarrier
 } from './resume-barrier-reread'
 import { clearResumeLatches, clearResumeToasts, notifyResumeFailed, type ResumeAttemptOptions } from './resume-latches'
@@ -1636,6 +1638,7 @@ export function useSessionActions({
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
                   adoptedRunningTurn: state.adoptedRunningTurn || running,
+                  turnAdmissionId: activatedTurnAdmission(state, activateBaselineState, activated.pending),
                   turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null,
                   ...(earlyClarifyProjection
                     ? {
@@ -2318,15 +2321,7 @@ export function useSessionActions({
               Boolean(pendingConnection) ||
               (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
-            ...(inFlightRecovery.applied
-              ? {
-                  sawAssistantPayload: true,
-                  // Point live deltas at the recovered row when the backend is
-                  // still mid-turn; a settled recovery keeps the stream idle.
-                  streamId: resumedRunning ? inFlightRecovery.streamId : null,
-                  turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
-                }
-              : { turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null }),
+            ...recoveredTurnFields(inFlightRecovery, resumedRunning, resumedTurnStartedAt),
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {

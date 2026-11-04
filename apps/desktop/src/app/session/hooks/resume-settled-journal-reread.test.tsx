@@ -5,7 +5,7 @@ import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { getLatestSessionMessages } from '@/hermes'
-import { chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   persistInFlightTurnState,
   readInFlightTurnJournal,
@@ -199,7 +199,7 @@ it.each([
       messages_omitted: true,
       message_count: settledPage.length,
       running,
-      info: { pending_submissions: [...pending] }
+      pending: [...pending]
     } as SessionResumeResult)
 
     await act(async () => {
@@ -227,7 +227,7 @@ it('keeps folding the journal when the page that would show the finished reply c
     messages_omitted: true,
     message_count: settledTurn.length,
     running: false,
-    info: { pending_submissions: [] }
+    pending: []
   } as SessionResumeResult)
 
   await act(async () => {
@@ -257,11 +257,7 @@ it('leaves the running successor its own stream when the finished turn page cann
     running: true,
     turn_started_at: 30,
     inflight: { user: 'Now group them.', assistant: 'Grouping ', streaming: true },
-    info: {
-      pending_submissions: [
-        { admission_id: 'adm-2', input_id: '0b6f3c1e-5d2a-4e8f-9c7b-1a2b3c4d5e6f', status: 'started' }
-      ]
-    }
+    pending: [{ admission_id: 'adm-2', input_id: '0b6f3c1e-5d2a-4e8f-9c7b-1a2b3c4d5e6f', status: 'started' }]
   } as SessionResumeResult)
 
   await act(async () => {
@@ -287,15 +283,49 @@ it('leaves the running successor its own stream when the finished turn page cann
   expect(state.turnStartedAt).toBe(30_000)
 })
 
-it('reads the page once when no journaled turn has finished', async () => {
-  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: settledTurn })
+/** The newest page after the session moved on from another device; the journaled prompt is older. */
+const newerTurns: SessionMessage[] = [
+  { id: 30, role: 'user', content: 'Draft a note for the team.', timestamp: 30 },
+  { id: 31, role: 'assistant', content: 'Here is the note for the team.', timestamp: 31 }
+]
+
+it('retires a finished turn by the owner list alone when its prompt is off the loaded page', async () => {
+  await journalDeadTab()
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: newerTurns })
 
   const { result } = mount({
     session_id: runtimeId,
     resumed: storedId,
     messages: [],
     messages_omitted: true,
-    message_count: 4,
+    message_count: 40,
+    running: false,
+    pending: []
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+
+  const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+
+  expect(rows.map(row => chatMessageText(row).trim())).toEqual([
+    'Draft a note for the team.',
+    'Here is the note for the team.'
+  ])
+  expect(readInFlightTurnJournal(storedId)).toBeNull()
+})
+
+it('does not retire a journal by a pending list the snapshot did not carry itself', async () => {
+  await journalDeadTab()
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: newerTurns })
+
+  const { result } = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: 40,
     running: false,
     info: { pending_submissions: [] }
   } as SessionResumeResult)
@@ -304,5 +334,258 @@ it('reads the page once when no journaled turn has finished', async () => {
     await result.current.actions.resumeSession(storedId, true)
   })
 
+  expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
+it('reads the page once when the owner still lists the journaled turn', async () => {
+  await journalDeadTab()
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: turnSoFar })
+
+  const { result } = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: turnSoFar.length,
+    running: true,
+    pending: [{ admission_id: 'adm-1', input_id: submissionId, status: 'started' }]
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+
   expect(vi.mocked(getLatestSessionMessages)).toHaveBeenCalledTimes(1)
+  expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
+// The journal names the execution that streamed it (every owner frame carries the claim's `admission_id`), not
+// the prompt bubble before it: a regenerate keeps the first send's bubble, and a queue drain adds no bubble, so
+// the nearest prompt names an admission the owner settled long ago.
+const firstSend: ChatMessage = {
+  id: `user-${submissionId}`,
+  role: 'user',
+  parts: [textPart('Summarize the open issues.')],
+  rowId: 1
+}
+
+const firstReply: ChatMessage = {
+  id: 'reply-1',
+  role: 'assistant',
+  parts: [textPart('There are four open issues.')],
+  rowId: 4
+}
+
+const execution = (admission: string) => ({ admission_id: admission, authority_epoch: 7, execution_generation: 2 })
+
+/** A live tab streams `text` from the owner's execution of `admission`, then dies; its journal stays behind. */
+async function streamThenDie(transcript: ChatMessage[], admission: string, text: string) {
+  const live = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    message_count: 0
+  } as SessionResumeResult)
+
+  act(() => {
+    live.result.current.cache.updateSessionState(runtimeId, state => ({ ...state, messages: transcript }), storedId)
+  })
+
+  for (const event of [
+    { type: 'message.start', payload: {} },
+    { type: 'message.delta', payload: { text } }
+  ]) {
+    act(() =>
+      live.result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        ...execution(admission),
+        ...event
+      } as GatewayEvent)
+    )
+  }
+
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+  live.unmount()
+  clearAllSessionStates()
+  expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+}
+
+async function reopen(snapshot: Partial<SessionResumeResult>, page: SessionMessage[]) {
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: page })
+
+  const { result } = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: page.length,
+    running: false,
+    ...snapshot
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await result.current.actions.resumeSession(storedId, true)
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+
+  return result.current.cache.sessionStateByRuntimeIdRef.current
+    .get(runtimeId)!
+    .messages.filter(row => row.role === 'assistant' && chatMessageText(row).trim())
+    .map(row => chatMessageText(row).trim())
+}
+
+const resentId = '0b6f3c1e-5d2a-4e8f-9c7b-1a2b3c4d5e6f'
+
+const earlierExchange: SessionMessage[] = [
+  { id: 1, role: 'user', content: 'List the repositories.', timestamp: 5 },
+  { id: 2, role: 'assistant', content: 'There are two repositories.', timestamp: 6 }
+]
+
+it('keeps the progress of a regenerate the owner lost in a crash, on every reopen', async () => {
+  // The first send's bubble stays and the re-send runs as a new admission. The rewind cut the old turn's rows and
+  // the restarted owner stored nothing of the re-sent one, so the journal alone holds the prompt and its progress.
+  await streamThenDie(
+    [
+      { id: 'row-1', role: 'user', parts: [textPart('List the repositories.')], rowId: 1 },
+      { id: 'row-2', role: 'assistant', parts: [textPart('There are two repositories.')], rowId: 2 },
+      { ...firstSend, rowId: undefined }
+    ],
+    'adm-2',
+    'Reading the issue '
+  )
+
+  const lost = { pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 2 }] }
+
+  expect(await reopen(lost, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
+
+  cleanup()
+  clearAllSessionStates()
+
+  expect(await reopen(lost, earlierExchange)).toEqual(['There are two repositories.', 'Reading the issue'])
+  expect(readInFlightTurnJournal(storedId)).not.toBeNull()
+})
+
+it('retires a finished queue drain while its successor waits instead of replaying it', async () => {
+  // The drained prompt has no bubble, so the journal opens at the previous turn's stored prompt, which names no
+  // admission. By reopen the drain has finished and that prompt is off the newest page.
+  await streamThenDie(
+    [
+      { id: 'row-1', role: 'user', parts: [textPart('Summarize the open issues.')], rowId: 1 },
+      { ...firstReply, id: 'row-4' }
+    ],
+    'adm-2',
+    'Grouping '
+  )
+
+  const replies = await reopen({ pending: [{ admission_id: 'adm-3', input_id: resentId, status: 'queued' }] }, [
+    nextPrompt,
+    { id: 6, role: 'assistant', content: 'Grouped by area.', timestamp: 15 }
+  ])
+
+  expect(replies).toEqual(['Grouped by area.'])
+  expect(readInFlightTurnJournal(storedId)).toBeNull()
+})
+
+it("keeps a finished turn's admission off the successor running beside it", async () => {
+  // The dead tab's journal names its execution; the successor's own frames have not arrived when the journal is
+  // rewritten, and then the gateway dies with the successor.
+  persistInFlightTurnState({
+    awaitingResponse: false,
+    busy: true,
+    messages: [
+      { ...firstSend, rowId: undefined },
+      { id: 'assistant-stream-1', role: 'assistant', parts: [textPart('Reading the issue ')], pending: true }
+    ],
+    storedSessionId: storedId,
+    streamId: 'assistant-stream-1',
+    turnAdmissionId: 'adm-1',
+    turnStartedAt: 10_000
+  })
+  await vi.advanceTimersByTimeAsync(500)
+  vi.mocked(getLatestSessionMessages)
+    .mockResolvedValueOnce({ session_id: storedId, messages: turnSoFar })
+    .mockRejectedValueOnce(new Error('REST unavailable'))
+
+  const live = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: settledTurn.length + 1,
+    running: true,
+    turn_started_at: 30,
+    inflight: { user: 'Now group them.', assistant: 'Grouping ', streaming: true },
+    pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'started' }]
+  } as SessionResumeResult)
+
+  await act(async () => {
+    await live.result.current.actions.resumeSession(storedId, true)
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+  cleanup()
+  clearAllSessionStates()
+
+  const lost = { pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 3 }] }
+
+  expect(await reopen(lost, settledTurn)).toContain('Grouping')
+})
+
+it('names the turn a warm activation adopts, not the one this tab last streamed', async () => {
+  // This tab streamed and finished adm-1; another device then started adm-2. Switching back warm-activates the
+  // session, and adm-2's progress so far arrives only in the activation snapshot. Then the gateway dies with adm-2.
+  const anotherPrompt: SessionMessage = { id: 5, role: 'user', content: 'Draft the release notes.', timestamp: 30 }
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({
+    session_id: storedId,
+    messages: [...settledTurn, anotherPrompt]
+  })
+
+  const live = mount({
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: settledTurn.length + 1,
+    running: true,
+    turn_started_at: 30,
+    inflight: { user: 'Draft the release notes.', assistant: 'Only in the snapshot ', streaming: true },
+    pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'started' }]
+  } as SessionResumeResult)
+
+  act(() => {
+    live.result.current.cache.updateSessionState(runtimeId, state => ({ ...state, messages: [firstSend] }), storedId)
+  })
+
+  for (const event of [
+    { type: 'message.start', payload: {} },
+    { type: 'message.delta', payload: { text: 'There are four open issues.' } },
+    { type: 'message.complete', payload: { text: 'There are four open issues.' } }
+  ]) {
+    act(() =>
+      live.result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        ...execution('adm-1'),
+        ...event
+      } as GatewayEvent)
+    )
+  }
+
+  await act(async () => {
+    await live.result.current.actions.resumeSession(storedId, true)
+  })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600)
+  })
+  cleanup()
+  clearAllSessionStates()
+
+  const lost = { pending: [{ admission_id: 'adm-2', input_id: resentId, status: 'unknown', execution_generation: 3 }] }
+
+  expect(await reopen(lost, [...settledTurn, anotherPrompt])).toContain('Only in the snapshot')
 })

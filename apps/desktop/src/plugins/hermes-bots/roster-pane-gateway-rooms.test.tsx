@@ -2,7 +2,7 @@
  * The Bots pane with only its gateway transport mocked. The bot list
  * (`profiles.list` / `host.agents`) failing must not hide gateway Group Chats
  * that `groups.list` returned: rooms are part of the list, so the pane shows
- * them instead of the bot-list error.
+ * them instead of the bot-list error, with no Refresh button.
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
@@ -56,4 +56,5 @@ it('shows gateway Group Chats when the bot list fails', async () => {
 
   expect(await screen.findByRole('button', { name: 'Launch crew' })).toBeTruthy()
   expect(screen.queryByText(/exploded/)).toBeNull()
+  expect(screen.queryByRole('button', { name: /refresh/i })).toBeNull()
 })

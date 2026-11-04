@@ -15,6 +15,10 @@ import {
   removePendingInput,
   savePendingInput
 } from '../lib/pendingInputs.js'
+import { actionShortcutLabel } from '../lib/platform.js'
+
+// Retry hint for a failed row: the key `isAction(key, ch, 'k')` accepts here (#148766).
+const RETRY_KEY = actionShortcutLabel('k')
 
 export interface QueueItem {
   display: string
@@ -213,7 +217,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
 
   const queuedDisplay = [
-    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
+    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix', RETRY_KEY) : ''}${item.display}`),
     // A queued row reads as main's plain queue line; only an unknown execution keeps its status tag.
     ...serverRows.map(row =>
       row.status === 'queued'

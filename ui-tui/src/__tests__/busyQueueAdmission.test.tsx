@@ -16,6 +16,10 @@ import { useSubmission } from '../app/useSubmission.js'
 import { canonicalEvent, canonicalResult } from '../canonicalGateway.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
+import { isMac } from '../lib/platform.js'
+
+// A failed row names the platform retry shortcut (Cmd+K on macOS, Ctrl+K elsewhere).
+const RETRY_PREFIX = `[unconfirmed · ${isMac ? 'Cmd+K' : 'Ctrl+K'} retry] `
 
 // Canonical authority rows: `pending` carries the server-issued admission_id,
 // the client's input_id and the public text under `ref` destination fields.
@@ -264,7 +268,7 @@ it('keeps the edited text as an unconfirmed durable draft when the store refuses
     await expect.poll(() => $uiState.get().status).toContain('discard failed')
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
-    expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', 'ORIGINAL_EFFECT'])
+    expect(h.queue.queuedDisplay).toEqual([`${RETRY_PREFIX}EDITED_EFFECT`, 'ORIGINAL_EFFECT'])
     expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([['EDITED_EFFECT', true]])
   } finally { h.cleanup() }
 })

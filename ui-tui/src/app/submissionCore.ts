@@ -6,6 +6,7 @@ import type { QueueItem } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 import { stageImagePath } from '../lib/imageAttachments.js'
 import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
+import { actionShortcutLabel } from '../lib/platform.js'
 import type { Msg } from '../types.js'
 
 import { markBubbleShown } from './pendingBubbles.js'
@@ -15,6 +16,9 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
+
+// Retry hint for a retained submission: the key `isAction(key, ch, 'k')` accepts here.
+const RETRY_KEY = actionShortcutLabel('k')
 
 export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
@@ -223,7 +227,7 @@ function settleAdmissionReply(item: QueueItem, r: PromptSubmitResponse, ctx: Adm
   }
 
   if (!accepted && focused()) {
-    deps.sys(t('canonical.submit.admissionNotConfirmed'))
+    deps.sys(t('canonical.submit.admissionNotConfirmed', RETRY_KEY))
     patchUiState({ status: t('canonical.submit.statusAdmissionUnconfirmed') })
   }
 }
@@ -468,7 +472,7 @@ export function submitPrompt(
           item.settle?.(false)
 
           if (focused()) {
-            deps.sys(t('canonical.submit.inputRetained', e.message))
+            deps.sys(t('canonical.submit.inputRetained', e.message, RETRY_KEY))
             patchUiState({ status: t('canonical.submit.statusAdmissionUnconfirmed') })
           }
 

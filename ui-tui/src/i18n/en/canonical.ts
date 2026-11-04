@@ -20,7 +20,8 @@ export const canonicalEn = {
     submit: {
       correction: (status: string) => `correction ${status}`,
       correctionRejected: 'correction rejected — input retained',
-      admissionNotConfirmed: 'admission not confirmed — input retained; use Alt+K to retry with the same identity',
+      admissionNotConfirmed: (retryKey: string) =>
+        `admission not confirmed — input retained; use ${retryKey} to retry with the same identity`,
       statusAdmissionUnconfirmed: 'admission unconfirmed',
       executionUnconfirmed: (message: string) => `execution status unconfirmed: ${message}`,
       legacyDelivery: 'durable admission unavailable for this session — using legacy delivery',
@@ -30,7 +31,8 @@ export const canonicalEn = {
       statusDeliveryUnconfirmed: 'delivery unconfirmed',
       deliveryNotResent: 'delivery unconfirmed — check the session before sending a new input; retained input was not resent',
       busyTextOnly: 'busy corrections accept text only — image input retained; submit it with /queue',
-      inputRetained: (message: string) => `input retained: ${message} — Alt+K retries the same submission`,
+      inputRetained: (message: string, retryKey: string) =>
+        `input retained: ${message} — ${retryKey} retries the same submission`,
       imageNotSubmitted: (message: string) => `image not submitted: ${message} — input retained`,
       statusImageNotSubmitted: 'image not submitted',
       interruptFailed: (message: string) => `interrupt failed: ${message}`,
@@ -38,7 +40,7 @@ export const canonicalEn = {
     },
     // hooks/useQueue.ts, app/useSubmission.ts, app/useComposerState.ts — the local input journal.
     queue: {
-      unconfirmedPrefix: '[unconfirmed · Alt+K retry] ',
+      unconfirmedPrefix: (retryKey: string) => `[unconfirmed · ${retryKey} retry] `,
       // {0}=admission status identifier (unknown; queued rows render plain), {1}=input text
       serverRow: (status: string, text: string) => `[${status}] ${text}`,
       // {0}=input text of a turn lost when the gateway restarted (status unknown): it pauses the queue

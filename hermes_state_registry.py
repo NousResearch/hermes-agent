@@ -37,6 +37,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
+from hermes_state_common import path_is_under as _path_is_under
 from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typed only
@@ -309,17 +310,6 @@ def release(db: SessionDB) -> bool:
     return True
 
 
-def _path_is_under(path: Path, root: Path) -> bool:
-    """True when *path* is *root* or a file inside it (normcase, resolved)."""
-    try:
-        path_key = os.path.normcase(str(path.resolve()))
-        root_key = os.path.normcase(str(root.resolve()))
-    except OSError:
-        path_key = os.path.normcase(str(path))
-        root_key = os.path.normcase(str(root))
-    return path_key == root_key or path_key.startswith(root_key + os.sep)
-
-
 def _teardown_swept_generations(
     generations: list[_Generation],
     teardown_barriers: dict[Path, _TeardownBarrier],
@@ -360,7 +350,8 @@ def close_all() -> int:
 
 
 def close_all_under(directory: str | Path) -> int:
-    """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
+    """Force-close every shared SessionDB under *directory* and release its cached header-probe
+    fds; returns the SessionDB close count.
 
     Profile delete rmtree (and a same-name recreate) fails while this process still holds
     ``state.db``. Same contract as ``MemoryStore.release_all_under``: a live holder is
@@ -395,7 +386,48 @@ def close_all_under(directory: str | Path) -> int:
             if _generations.get(generation.path) is generation:
                 _generations.pop(generation.path, None)
             _retired.pop(id(generation.db), None)
-    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    closed = _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    _release_header_probes_under(root)
+    return closed
+
+
+def _release_header_probes_under(root: Path) -> None:
+    """Without this, a probe fd stays open until exit: one per profile a multiplexed gateway ever
+    served. Invariant: a probe is never closed while another descriptor in this process holds its
+    inode, because closing any descriptor cancels every POSIX lock the process holds on the file.
+    The paths' lifecycle locks, held from the scan to the close, make a registry open in flight
+    finish before the scan and keep a new one from starting. ``offline_file_access`` does the same
+    for tracked connections opened outside the registry. An untracked ``sqlite3.connect`` that
+    opens between the scan and the close is not covered."""
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from hermes_state_dbfile import (
+        close_header_probe_if_unchanged, header_probes_under, inodes_with_other_descriptors,
+    )
+
+    candidates: dict[str, tuple[Path, tuple[int, int, int]]] = {}
+    for key, entry in header_probes_under(root).items():
+        try:
+            candidates[key] = (Path(key).resolve(), entry)
+        except OSError:
+            candidates[key] = (Path(key), entry)
+    if not candidates:
+        return
+    with _lock:
+        locks = {path: _path_lifecycle_lock_locked(path) for path, _entry in candidates.values()}
+    with contextlib.ExitStack() as stack:
+        for path in sorted(locks, key=str):  # one fixed order: two sweeps never deadlock
+            stack.enter_context(locks[path])
+        held_elsewhere = inodes_with_other_descriptors({entry[1:] for _path, entry in candidates.values()})
+        if held_elsewhere is None:
+            return  # descriptor table unreadable: unknown is unsafe
+        for key, (path, entry) in candidates.items():
+            if entry[1:] in held_elsewhere:
+                continue
+            try:
+                with offline_file_access(path, what="close the header probe of"):
+                    close_header_probe_if_unchanged(key, entry)
+            except LiveConnectionError:
+                continue  # a tracked connection opened after the scan
 
 
 def other_generations_for_path(

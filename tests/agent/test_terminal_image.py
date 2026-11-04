@@ -229,6 +229,19 @@ def test_preview_past_the_decode_cap_is_refused_before_decoding(tmp_path, monkey
     assert render_inline_image(_png(tmp_path / "small.png", (300, 300)), mode="unicode", max_cols=20, max_rows=8)
 
 
+def test_oversized_png_is_refused_without_entering_load(tmp_path, monkeypatch):
+    # A PNG's EXIF lookup decodes the whole file, so the cap must come first.
+    from PIL import ImageFile
+
+    big = _png(tmp_path / "big.png", (400, 300))
+    monkeypatch.setattr(terminal_image, "_MAX_DECODE_PIXELS", 100_000, raising=False)
+    loads = []
+    real_load = ImageFile.ImageFile.load
+    monkeypatch.setattr(ImageFile.ImageFile, "load", lambda self: loads.append(self.size) or real_load(self))
+    assert render_inline_image(big, mode="unicode", max_cols=20, max_rows=8) is None
+    assert loads == []
+
+
 def test_decompression_bomb_warning_is_a_refusal(tmp_path, monkeypatch):
     # Between MAX_IMAGE_PIXELS and twice that Pillow only warns; a preview treats it as a bomb.
     path = _png(tmp_path / "bomb.png", (400, 400))

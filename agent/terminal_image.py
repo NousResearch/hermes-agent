@@ -366,6 +366,9 @@ def _decode_preview(source: Path, *, max_cols: int, max_rows: int):
         warnings.simplefilter("error", Image.DecompressionBombWarning)
         with Image.open(source) as opened:
             width, height = opened.size
+            # Only ``draft`` (JPEG) can shrink the decode, and EXIF on a PNG is read by decoding it.
+            if width * height > _MAX_DECODE_PIXELS and type(opened).draft is Image.Image.draft:
+                raise ValueError(f"{width}x{height} is past the preview decode cap")
             swapped = opened.getexif().get(0x0112) in (5, 6, 7, 8)  # EXIF orientations that turn 90°
             if swapped:
                 width, height = height, width

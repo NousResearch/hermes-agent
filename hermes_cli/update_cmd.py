@@ -1386,6 +1386,27 @@ def _apply_parked_branch_guard(
     return False, True, switch_block_reason
 
 
+def _warn_release_leaves_carried_commits(git_cmd, cwd, current_branch: str, target_ref: str) -> None:
+    """A release lands detached at the release commit and never merges a branch (#148947), so
+    ``updates.parked_branch_strategy`` cannot apply on this channel. A parked branch — or a
+    detached HEAD — carrying commits the release does not contain would lose them from the
+    working tree with no word; say so loudly instead. Nothing is destroyed: the commits stay
+    on the branch (or the detached-HEAD rescue ref ``_park_detached_head`` wrote above)."""
+    behind = _git_run(git_cmd, ["rev-list", "--count", f"{target_ref}..HEAD"], cwd)
+    if behind.returncode != 0:
+        return  # unresolvable count (shallow/corrupt) — fail open to the release landing
+    carried = (behind.stdout or "").strip()
+    if not carried or carried == "0":
+        return
+    where = ("the detached HEAD" if current_branch in ("", "HEAD")
+             else f"branch '{current_branch}'")
+    print(f"  ⚠ {where} carries {carried} commit(s) not in this release — a release lands "
+          f"detached at the release commit, so those commits will NOT be in the working tree "
+          f"after the update.")
+    print(f"    They stay on {where} (updates.parked_branch_strategy applies to branch updates, "
+          f"not releases). Cherry-pick or merge them back if you still need them.")
+
+
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
     switch_branch, target_ref=None, _windows_gateway_resume):
@@ -1399,6 +1420,12 @@ def _prepare_checkout_for_update(
         # A release lands detached at its exact commit, never merges into or
         # rewrites the user's branch. Branch-policy machinery is main-only.
         parked_branch_switched, in_place_update, switch_block_reason = False, True, None
+        # Branch policy is main-only, so this channel must not move the working tree past a
+        # parked checkout's carried commits without a word (#148947): park commits a detached
+        # HEAD would orphan (the main channel's rescue), then name what the landing leaves
+        # behind. Nothing is destroyed — the commits stay on their branch / rescue ref.
+        _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
+        _warn_release_leaves_carried_commits(git_cmd, _m().PROJECT_ROOT, current_branch, target_ref)
     else:
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,

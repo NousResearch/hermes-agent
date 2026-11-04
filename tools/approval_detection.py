@@ -191,7 +191,8 @@ _PIPE_LAUNCHER_VALUE_FLAGS = {
     "sudo": ("ugUCDhpRrtT", ("user", "group", "other-user", "close-from", "chdir", "host", "prompt",
                              "role", "type", "command-timeout", "chroot")),
     "doas": ("uC", ()),
-    "env": ("uCS", ("unset", "chdir", "split-string")),
+    # `-S STRING` is the command itself (split into words), never a swallowed value.
+    "env": ("uCa", ("unset", "chdir", "argv0")),
     "exec": ("a", ()),
     "command": ("", ()),
     "nohup": ("", ()),
@@ -206,7 +207,8 @@ _PIPE_LAUNCHER_VALUE_FLAGS = {
 def _pipe_launcher_re(name: str, short: str, long_opts: tuple) -> str:
     valued = [rf"(?-i:-[^\W{short}\d-]*+[{short}])\s++[^\s|;&<>]++"] if short else []
     valued += [rf"--(?:{'|'.join(long_opts)})\s++[^\s|;&<>]++"] if long_opts else []
-    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", r"\d++(?:\.\d+)?[smhd]?(?=\s)"])
+    duration = r"(?:infinity|\d++(?:\.\d++)?(?:e\d++)?|\.\d++)[smhd]?(?=\s)"
+    args = "|".join([*valued, r"-[^\s|;&<>]++", r"\w++=[^\s|;&<>]*+", duration])
     return rf"{name}(?:\s++(?>{args}))*+"
 
 
@@ -216,35 +218,47 @@ _PIPE_WRAPPERS_RE = (
     + r")\s++)*+"
 )
 _PIPE_SHELL_TOKEN_RE = (
-    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"\s;&|<>)]|$)"
+    rf"['\"]?{_PIPE_PATH_PREFIX_RE}(?:{_PIPE_SHELL_NAMES_RE})(?:\.exe)?(?=['\"`\s;&|<>)]|$)"
 )
-# Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`).
+# Lookup/list modes name a shell without running it (`command -v bash`, `sudo -l bash`). The `l`
+# must be a bare flag: in `sudo -pl bash` / `-ul` it is the VALUE of -p / -u and bash runs.
 _PIPE_LOOKUP_ONLY_RE = re.compile(
-    rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-[a-zA-Z]*l|--list))\b", re.IGNORECASE
+    rf"{_PIPE_PATH_PREFIX_RE}(?:command\s+-[a-zA-Z]*[vV]|sudo\s+(?:-(?-i:[^\W\dugUCDhpRrtT])*l|--list))\b",
+    re.IGNORECASE,
 )
 _PIPE_SINK_RE = re.compile(rf"(?:\|&?\s*|>\(\s*){_PIPE_WRAPPERS_RE}{_PIPE_SHELL_TOKEN_RE}", re.IGNORECASE)
 _PIPE_FETCH_RE = re.compile(r"\b(?:curl|wget)\b", re.IGNORECASE)
 _PIPE_OPERATOR_RE = re.compile(r"\|&?\s*|>\(\s*")
 
 
+# main's original sink (bare or slash-prefixed shell), scanned on the RAW text: a quoted payload handed
+# to any carrier (su -c, ssh, xargs, docker exec ...) stays flagged exactly as before.
+_PIPE_BARE_SINK_RE = re.compile(rf"\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)", re.IGNORECASE)
+
+
 class _PipeRemoteToShellMatcher:
-    """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try the sink only
-    at each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
-    Quoted prose is masked like the other prose-sensitive rules, except under a shell carrier
-    (`bash -c "..."`, `eval "..."`) whose quoted argument is code."""
+    """Linear stand-in for the pipe-to-shell regex: find the first curl/wget, then try a sink only at
+    each later `|` / `>(` (a leading `.*` rescanned the tail from every fetch word: quadratic).
+    Two sinks: main's bare-shell sink on the raw text, so no case main caught is lost; and the widened
+    launcher/path/quoted sink on quote-masked text, so prose that merely mentions a wrapped pipe stays
+    quiet (raw again under an eval / sh -c carrier, whose quoted argument is code)."""
 
     def search(self, text: str):
         fetch = _PIPE_FETCH_RE.search(text)
         if fetch is None:
             return None
-        if not _contains_shell_carrier(text):
-            text = _mask_quoted_prose(text)
-        pos = fetch.end()
-        while (i := _PIPE_OPERATOR_RE.search(text, pos)) is not None:
-            match = _PIPE_SINK_RE.match(text, i.start())
-            if match and not _PIPE_LOOKUP_ONLY_RE.match(text, i.end()):
+        if match := self._scan(text, fetch.end(), _PIPE_BARE_SINK_RE, lookup_guard=False):
+            return match
+        widened = text if _contains_shell_carrier(text) else _mask_quoted_prose(text)
+        return self._scan(widened, fetch.end(), _PIPE_SINK_RE, lookup_guard=True)
+
+    @staticmethod
+    def _scan(text: str, pos: int, sink: re.Pattern, lookup_guard: bool):
+        while (op := _PIPE_OPERATOR_RE.search(text, pos)) is not None:
+            match = sink.match(text, op.start())
+            if match and not (lookup_guard and _PIPE_LOOKUP_ONLY_RE.match(text, op.end())):
                 return match
-            pos = i.end()
+            pos = op.end()
         return None
 
 

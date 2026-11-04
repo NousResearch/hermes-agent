@@ -27,8 +27,20 @@ const json = (body: unknown, status = 200) =>
  * The serving gateway at /hermes, relaying to Mini; answers by path and records every request. A
  * stalled Mini takes the request and never answers it. `miniServes` is the served set Mini reports
  * (its multiplexer's `gateway_shared_with`); left out, Mini reports none, as an older one does.
+ * `miniProfiles` is what Mini has installed. A test changes either array to change Mini, and
+ * changes `mini` to pair a different gateway as Mini (`row`) or have it run as another profile.
  */
-function servingGateway({ miniStalled = false, miniServes }: { miniServes?: string[]; miniStalled?: boolean } = {}) {
+function servingGateway({
+  mini = { own: 'default', row: MINI },
+  miniProfiles = ['default', 'research'],
+  miniServes,
+  miniStalled = false
+}: {
+  mini?: { own: string; row: typeof MINI }
+  miniProfiles?: string[]
+  miniServes?: string[]
+  miniStalled?: boolean
+} = {}) {
   const requests: { method: string; path: string; search: string }[] = []
 
   const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
@@ -36,7 +48,7 @@ function servingGateway({ miniStalled = false, miniServes }: { miniServes?: stri
     requests.push({ method: init?.method || 'GET', path, search: url.search })
 
     if (path === '/hermes/api/webapp/relay/gateways') {
-      return json({ gateways: [MINI] })
+      return json({ gateways: [mini.row] })
     }
 
     // Mini is down: it cannot confirm it revoked the grant, so only forgetting it here removes it.
@@ -55,7 +67,7 @@ function servingGateway({ miniStalled = false, miniServes }: { miniServes?: stri
         )
       }
 
-      return json({ profiles: [{ name: 'default' }, { name: 'research' }] })
+      return json({ profiles: miniProfiles.map(name => ({ name })) })
     }
 
     if (path === '/hermes/api/relay/mini/api/profiles/sessions') {
@@ -67,7 +79,7 @@ function servingGateway({ miniStalled = false, miniServes }: { miniServes?: stri
     }
 
     if (path === '/hermes/api/relay/mini/api/profiles/active') {
-      return json({ active: 'default', current: 'default' })
+      return json({ active: mini.own, current: mini.own })
     }
 
     if (path === '/hermes/api/profiles') {
@@ -387,6 +399,50 @@ describe('a Webapp whose gateway relays to others', () => {
       UnservedProfileError
     )
     await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'default' })).resolves.toMatchObject({
+      ok: true
+    })
+  })
+
+  it('opens a profile created on a relayed gateway since the last roster read', async () => {
+    // Mini serves its `default`; `fresh` is created there, and served, after the roster was read.
+    const miniProfiles = ['default', 'research']
+    const miniServes = ['default']
+    servingGateway({ miniProfiles, miniServes })
+    const desktop = install()
+    await desktop.getAgentRoster!()
+
+    miniProfiles.push('fresh')
+    miniServes.push('fresh')
+
+    await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'fresh' })).resolves.toMatchObject({
+      ok: true
+    })
+    await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'research' })).rejects.toBeInstanceOf(
+      UnservedProfileError
+    )
+  })
+
+  it("reads a re-paired gateway's served profiles afresh though it reuses the removed one's id", async () => {
+    // Another tab removes Mini and pairs a different gateway labelled Mini, which gets the id `mini`
+    // back. The new one has the same profiles installed but runs as, and serves, `research` only.
+    const mini = { own: 'default', row: MINI }
+    const miniServes = ['default']
+    servingGateway({ mini, miniServes })
+    const desktop = install()
+    await desktop.getAgentRoster!()
+
+    mini.own = 'research'
+    mini.row = { ...MINI, added_at: 2, url: 'https://mini-2.example.ts.net' }
+    miniServes.splice(0, miniServes.length)
+    const roster = await desktop.getAgentRoster!()
+
+    expect(
+      roster.agents.filter(agent => agent.connectionId === 'mini').map(agent => [agent.profile, agent.reachable])
+    ).toEqual([
+      ['default', false],
+      ['research', undefined]
+    ])
+    await expect(desktop.getGatewayWsUrlFor!({ connectionId: 'mini', profile: 'research' })).resolves.toMatchObject({
       ok: true
     })
   })

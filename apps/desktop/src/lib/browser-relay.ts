@@ -11,6 +11,7 @@ import type {
   HermesApiRequest,
   HermesConnection
 } from '@/global'
+import { createServedProfiles, SERVED_SET_READ_TIMEOUT_MS, type ServedProfiles } from '@/lib/browser-served-profiles'
 import {
   browserApi,
   type BrowserBootstrap,
@@ -18,6 +19,7 @@ import {
   ticketedWebsocketUrl,
   type TicketSocketPath
 } from '@/lib/browser-transport'
+import { withTimeout } from '@/lib/with-timeout'
 
 /**
  * The gateway relay, browser side: other gateways the serving one was paired with
@@ -71,8 +73,10 @@ export interface BrowserRelays {
   socketUrl: (connectionId: string, path: TicketSocketPath, profile?: null | string) => Promise<string>
   connection: (connectionId: string, profile?: null | string) => HermesConnection
   rosterAgents: (connectionId: string) => Promise<DesktopRosterAgent[]>
-  /** Whether *connectionId* serves *profile*, from the set its last roster read reported. */
+  /** Whether *connectionId* serves *profile*, from the set its last inventory read reported. */
   serves: (connectionId: string, profile?: null | string) => boolean
+  /** Re-read *connectionId*'s inventory and, if it changed or went stale, its served set. Never throws. */
+  refreshServed: (connectionId: string) => Promise<void>
   connections: NonNullable<Window['hermesDesktop']['connections']>
   /** `window.hermesDesktop.gatewayRelay`: pairing and grants, for Settings → Gateways. */
   bridge: NonNullable<Window['hermesDesktop']['gatewayRelay']>
@@ -159,55 +163,73 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     }
   }
 
-  // Each gateway's served profiles, as the serving gateway's own set reads them
-  // (browser-served-profiles.ts): what its multiplexer carries (`/api/status` `gateway_shared_with`)
-  // and the profile it runs as. Null until it reports a set, and then every installed profile counts.
-  const served = new Map<string, null | Set<string>>()
+  // Each gateway's served profiles, kept by the serving gateway's own rules
+  // (browser-served-profiles.ts): read with an inventory read, re-read when the installed list
+  // changes or the answer is 30 s old. The profile a relayed gateway runs as is the one it reports
+  // active. Kept per pairing, not per id: a gateway paired in place of a removed one with the same
+  // label gets that id back, and must not inherit the removed one's answer or a read still in flight.
+  const served = new Map<string, ServedProfiles>()
+  const pairingKey = (row: RelayGateway) => [row.id, row.url, row.added_at].join('\n')
 
-  const readServed = async (connectionId: string, target: BrowserBootstrap) => {
-    try {
-      const [status, active] = await Promise.all([
-        browserApi<{ gateway_shared_with?: null | string[] }>(target, {
-          path: '/api/status',
-          timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
-        }),
-        browserApi<{ current?: string }>(target, { path: '/api/profiles/active', timeoutMs: RELAYED_ROSTER_TIMEOUT_MS })
-      ])
+  const servedKey = (connectionId: string) => {
+    const row = gateway(connectionId)
 
-      const shared = status?.gateway_shared_with
+    return row ? pairingKey(row) : connectionId
+  }
 
-      served.set(
-        connectionId,
-        Array.isArray(shared) ? new Set([...shared, active?.current].map(name => String(name || '').trim())) : null
+  const servedFor = (connectionId: string) => {
+    const key = servedKey(connectionId)
+    let set = served.get(key)
+
+    if (!set) {
+      const relayed: Api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrapFor(connectionId), request)
+
+      set = createServedProfiles(
+        relayed,
+        async () =>
+          (await relayed<{ current?: string }>({ path: '/api/profiles/active', timeoutMs: SERVED_SET_READ_TIMEOUT_MS }))
+            ?.current
       )
-    } catch {
-      // A failed read keeps the last answer: a status blip must not change which profiles are reachable.
+      served.set(key, set)
     }
+
+    return set
   }
 
   // A socket that names no profile reaches the one the gateway runs as.
-  const serves = (connectionId: string, profile?: null | string) => {
-    const name = profile?.trim()
-    const set = served.get(connectionId)
+  const serves = (connectionId: string, profile?: null | string) =>
+    !profile?.trim() || (served.get(servedKey(connectionId))?.serves(profile) ?? true)
 
-    return !name || !set || set.has(name)
-  }
-
-  const rosterAgents = async (connectionId: string): Promise<DesktopRosterAgent[]> => {
-    const row = gateway(connectionId)
-    const target = bootstrapFor(connectionId)
-
-    const [result] = await Promise.all([
-      browserApi<{ profiles?: { name?: string }[] }>(target, {
-        path: '/api/profiles',
-        timeoutMs: RELAYED_ROSTER_TIMEOUT_MS
-      }),
-      readServed(connectionId, target)
-    ])
+  const installedProfiles = async (connectionId: string, timeoutMs: number) => {
+    const result = await browserApi<{ profiles?: { name?: string }[] }>(bootstrapFor(connectionId), {
+      path: '/api/profiles',
+      timeoutMs
+    })
 
     const names = [
       ...new Set((result?.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))
     ]
+
+    await servedFor(connectionId).refresh(names)
+
+    return names
+  }
+
+  // A profile created there since the last roster read is missing from the set. Bounded like the
+  // serving gateway's own refresh on a pick, so a profile that stays unserved is still refused.
+  const refreshServed = (connectionId: string) =>
+    withTimeout(
+      installedProfiles(connectionId, SERVED_SET_READ_TIMEOUT_MS),
+      SERVED_SET_READ_TIMEOUT_MS,
+      'served profile refresh timed out'
+    ).then(
+      () => undefined,
+      () => undefined
+    )
+
+  const rosterAgents = async (connectionId: string): Promise<DesktopRosterAgent[]> => {
+    const row = gateway(connectionId)
+    const names = await installedProfiles(connectionId, RELAYED_ROSTER_TIMEOUT_MS)
 
     return names.map(profile => ({
       connectionId,
@@ -344,5 +366,16 @@ export function createBrowserRelays({ api, bootstrap }: { api: Api; bootstrap: B
     }
   }
 
-  return { bootstrapFor, bridge, connection, connections, gateway, gateways, rosterAgents, serves, socketUrl }
+  return {
+    bootstrapFor,
+    bridge,
+    connection,
+    connections,
+    gateway,
+    gateways,
+    refreshServed,
+    rosterAgents,
+    serves,
+    socketUrl
+  }
 }

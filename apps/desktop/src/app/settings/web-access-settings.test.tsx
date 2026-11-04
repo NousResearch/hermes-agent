@@ -165,7 +165,12 @@ describe('WebAccessSettings', () => {
   })
 
   // `hermes config set webapp.*` (or another window) changes the status while the pane is open.
-  const EDITED_ELSEWHERE: WebAccessStatus = { ...OFF, enabled: true, mode: 'public', public_url: 'https://hermes.example.org' }
+  const EDITED_ELSEWHERE: WebAccessStatus = {
+    ...OFF,
+    enabled: true,
+    mode: 'public',
+    public_url: 'https://hermes.example.org'
+  }
 
   it('picks up a web access change saved elsewhere when the window regains focus', async () => {
     renderPane(OFF)
@@ -314,7 +319,10 @@ describe('WebAccessSettings', () => {
   it('names the cause when a Stop restart fails while the gateway could not serve the web app', async () => {
     // Saved `enabled: false` reads as applied at once (the gateway serves nothing), but the restart
     // the user asked for exited.
-    const unavailable: WebAccessStatus = { ...OFF, gateway: { reason: 'port 9120 is in use', state: 'unavailable', url: null } }
+    const unavailable: WebAccessStatus = {
+      ...OFF,
+      gateway: { reason: 'port 9120 is in use', state: 'unavailable', url: null }
+    }
     mocked.stopWebAccess.mockResolvedValue({ ...unavailable, restart_pid: 7, restart_started: true })
     renderPane({ ...unavailable, enabled: true, mode: 'lan' })
     const stop = await screen.findByRole('button', { name: 'Stop' })

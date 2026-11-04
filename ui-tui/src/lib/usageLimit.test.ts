@@ -98,7 +98,7 @@ describe('blockingGauge / planBlocks (the one rule, agent/plan_limits.py twin)',
     expect(usageTag(dayFull, 'a/low')).toBeNull()
   })
 
-  it("subscription-billed rows: never dimmed, no Free tag", () => {
+  it('subscription-billed rows: never dimmed, no Free tag', () => {
     const subscribed: Provider = {
       ...dayFull,
       plan_usage: { ...dayFull.plan_usage!, subscription_model_ids: ['a/zero'] }

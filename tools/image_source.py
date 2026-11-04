@@ -59,7 +59,8 @@ async def resolve_image_source(
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s, permitted)
     if s.startswith(("http://", "https://")):
-        reason = _http_block_reason(s)
+        # The safety preflight resolves DNS; keep it off the caller's event loop.
+        reason = await asyncio.to_thread(_http_block_reason, s)
         if reason:
             raise SourceUnsafe(reason, src=s)
         return _finalize(await _download_to_bytes(s), "", "http", s, permitted)

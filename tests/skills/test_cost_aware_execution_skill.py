@@ -1,5 +1,4 @@
 import os
-import pytest
 
 def get_skill_path():
     """Locate the cost-aware-execution skill file directory."""

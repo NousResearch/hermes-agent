@@ -1,7 +1,7 @@
 name: zaprite
 title: Zaprite
 repo: https://github.com/welliv/zaprite-plugin
-sha: f8c50e931080992b4ffa9d5a90746b5b3517b673
+sha: 3f0361b04e3a7bab3eede1a68d6413744b97b3a7
 version: "1.0.0"
 description: "Take payments through Zaprite: create orders and payable checkout links, fetch them by id or your own external id, list and filter, and reconcile what actually landed (settled vs outstanding per currency, with stale-pending and paid-without-timestamp anomalies). Ships a demo backend so the whole create → pay → reconcile loop runs with no account and no money, then one setting points it at a live organization. Built to be slow where it matters: a pre_tool_call gate holds any order at or above a configurable amount for a human yes, every call is written to a durable audit trail, and order creation is idempotent on external_id so a retry cannot double-invoice. A read-only Zaprite key is enough for status, get, list and reconcile."
 maintainer: Welliv

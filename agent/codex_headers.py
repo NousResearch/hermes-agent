@@ -90,6 +90,9 @@ def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) 
     """
     if not is_official_codex_base_url(base_url):
         return None
+    from hermes_cli.config import cfg_get, load_config_readonly
+    if cfg_get(load_config_readonly(), "agent", "codex_request_compression", default=True) is False:
+        return None
     try:
         from compression import zstd
         import httpx

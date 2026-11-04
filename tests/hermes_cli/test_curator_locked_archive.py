@@ -128,6 +128,24 @@ def test_prune_skips_locked_skills_and_still_archives_unlocked_ones(lock_env):
     assert not (env["skills"] / ".archive" / "frozen-helper").exists()
 
 
+def test_journey_delete_refuses_a_locked_skill(lock_env):
+    """``hermes journey delete`` (the Desktop/TUI overlay) funnels through ``delete_node`` →
+    ``archive_skill``, so it is the third route the lock now freezes. Nothing else pins it."""
+    env = lock_env
+    skill_dir = _make_skill(env["skills"], "coding-standards")
+    env["usage"].record_created("coding-standards", agent_created=True)
+    assert env["usage"].set_locked("coding-standards", True)
+
+    from agent import learning_mutations
+
+    result = learning_mutations.delete_node("coding-standards")
+
+    assert result["ok"] is False, result
+    assert "hermes curator unlock coding-standards" in result["message"]
+    assert skill_dir.is_dir()
+    assert not (env["skills"] / ".archive" / "coding-standards").exists()
+
+
 def test_prune_reports_nothing_to_prune_when_every_candidate_is_locked(lock_env):
     env = lock_env
     usage = env["usage"]

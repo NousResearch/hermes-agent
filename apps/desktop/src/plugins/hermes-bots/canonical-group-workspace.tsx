@@ -388,9 +388,14 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     setError('')
 
     try {
+      // A retried Stop replays its lost id, which covers only work up to that first fence.
+      const replay = stopIntent.current !== null
       const first = requestStop()
       first.catch(() => undefined)
-      const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
+      let cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
+
+      // The replay stopped nothing while the room still works: that work came after its fence.
+      if (replay && !cancelled && state?.driver_status?.working) {cancelled = await requestStop(true)}
 
       if (alive.current) {
         setNotice(cancelled ? labels.stopped : labels.nothingRunning)

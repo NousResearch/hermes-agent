@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ الهدف {used}/{max}"
     goal: "⊙ الهدف"
     ctx_pinned: " مثبّت"
+    ctx_fallback: " احتياطي"
     ctx_unknown: "السياق --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 المخبأ ({count} عنصر)"

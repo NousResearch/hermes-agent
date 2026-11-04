@@ -218,9 +218,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
         from agent.context_breakdown import context_display_source
+        from agent.context_pin import agent_context_suffix
         mark = "~" if context_display_source(ctx) != "provider_usage" else ""
         lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
+                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}") + agent_context_suffix(agent))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
     return lines

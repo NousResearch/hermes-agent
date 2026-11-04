@@ -2618,6 +2618,7 @@ cli:
     goal_turns: "⊙ hedef {used}/{max}"
     goal: "⊙ hedef"
     ctx_pinned: " sabit"
+    ctx_fallback: " varsayılan"
     ctx_unknown: "bağlam --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Zula ({count} öğe)"

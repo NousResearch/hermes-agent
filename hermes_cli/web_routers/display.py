@@ -118,6 +118,23 @@ async def _open_rfb(profile_home: Path):
     from tools.bot_desktop import runtime as _bd_runtime
     token = set_hermes_home_override(profile_home)
     try:
+        # A sandbox that keeps its files on a filesystem this process can see (apptainer, a shared
+        # mount over ssh, a plugin backend) publishes the screen's RFB socket inside the directory
+        # its start marker names, so dial it directly. The exec relay below needs this process to
+        # own the sandbox's terminal environment, which the pane's process usually does not, and
+        # the gateway-hosted path does not exist for such a backend at all.
+        import json as _json
+        _marker = profile_home / "bot-desktop" / "sandbox.json"
+        _sandbox_sock = None
+        try:
+            _rec = _json.loads(_marker.read_text(encoding="utf-8-sig"))
+            if _rec.get("dir"):
+                _sandbox_sock = Path(_rec["dir"]) / "rfb.sock"
+        except (OSError, ValueError):
+            _sandbox_sock = None
+        if _sandbox_sock is not None and _sandbox_sock.exists():
+            reader, writer = await asyncio.open_unix_connection(str(_sandbox_sock))
+            return reader, writer, None
         if _bd_runtime.sandbox_screen_running():
             relay = _bd_runtime.open_rfb_stream()
         else:

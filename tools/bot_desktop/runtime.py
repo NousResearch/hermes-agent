@@ -654,6 +654,43 @@ def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
     that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
     from tools.bot_desktop import sandbox_host
+    # A sandbox that publishes the screen's RFB socket on a filesystem this process can see gives a
+    # direct answer: the marker plus a live socket is the whole truth about "is this screen up",
+    # independent of whether this process owns the sandbox's terminal environment. Without it, a
+    # pane request (which runs in a process that owns nothing) reports every such screen as stopped.
+    _rec = sandbox_host._read_marker()
+    _dir = _rec.get("dir")
+    if _dir:
+        import socket as _socket
+        _sock = os.path.join(_dir, "rfb.sock")
+        _live = False
+        try:
+            _probe = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            _probe.settimeout(0.5)
+            _probe.connect(_sock)
+            _probe.close()
+            _live = True
+        except OSError:
+            _live = False
+        if _live:
+            return DesktopStatus(
+                profile=profile or _profile_name(),
+                supported=True,
+                installed=True,
+                missing=[],
+                running=True,
+                pid=None,
+                display=_rec.get("display"),
+                socket=_sock,
+                geometry=geometry(),
+                install_command=None,
+                browser=None,
+                blocker=None,
+                memory_available_mb=None,
+                memory_limit_mb=None,
+                placement=f"{placement.TERMINAL}:{where.backend}",
+                image_switch=None,
+            )
     env = _owned_sandbox_env() or _sandbox_env(create=False)
     missing = sandbox_host.missing_binaries(env) if env is not None else []
     published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}

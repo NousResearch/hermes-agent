@@ -15,7 +15,8 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
-import { CanonicalGroupList } from './canonical-group-registry'
+import { useGatewayGroupRooms } from './canonical-group-registry'
+import { CanonicalGroupRow } from './canonical-group-row'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -42,7 +43,7 @@ import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
 import { renderRosterContent } from './roster-pane-content'
-import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
+import { deriveRosterPresentation, deriveRosterRows, type RosterGroupRow, sortRosterBots } from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
 import { RosterGroupRowView } from './roster-pane-groups'
 import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
@@ -271,6 +272,7 @@ export function BotsPane() {
   const groupNeedsYou = useValue($groupNeedsYou)
   const groupClarify = useValue($groupClarify)
   const groupRooms = useValue($groupChats)
+  const gatewayRooms = useGatewayGroupRooms()
   const rememberedSources = useValue($lastSources)
   const rosterHydrated = useValue($rosterHydrated)
   const selectionHydrated = useValue($selectedRosterHydrated)
@@ -348,6 +350,7 @@ export function BotsPane() {
     activityFilter,
     rowKindFilter,
     groupRooms,
+    gatewayRooms,
     activeRosterKeys,
     gatewayOptions,
     activityOf,
@@ -436,7 +439,14 @@ export function BotsPane() {
     />
   )
 
-  const renderGroupRow = (row: { members: GroupMember[]; name: string }) => (
+  const renderGroupRow = ({ gateway, ...row }: RosterGroupRow) => gateway ? (
+    <CanonicalGroupRow
+      active={groupChatName === gateway.key}
+      key={gateway.key}
+      onOpen={() => openGroupChat(gateway.key, 'key')}
+      room={gateway}
+    />
+  ) : (
     <RosterGroupRowView
       active={groupChatName === row.name}
       b={b}
@@ -471,7 +481,6 @@ export function BotsPane() {
 
   return (
     <div className="flex h-full flex-col">
-      <CanonicalGroupList onOpen={openGroupChat} />
       {renderRosterToolbar({
         b,
         activityToasts,

@@ -8,7 +8,7 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -25,13 +25,14 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       ...sdk.host,
       notify,
       requestProfile,
-      state: { ...sdk.host.state, connectionId: atom<null | string>('local'), profile: atom('default') }
+      state: { ...sdk.host.state, connectionId: atom<null | string>('local'), gateway: atom('open'), profile: atom('default') }
     },
     usePluginI18n: () => translateBotsIn('en')
   }
 })
 
-import { $canonicalGroupBindings, CanonicalGroupList, publishCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, publishCanonicalGroup } from './canonical-group-registry'
+import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
 import { $groupChatWorkspace } from './group-chat'
 import { dropGroupMainTab, recordGroupMainTab } from './group-panes'
 
@@ -43,10 +44,6 @@ beforeEach(() => {
   rooms = [room]
   refuse = ''
   requestProfile.mockImplementation(async (_route: unknown, method: string, params: { room_id?: string }) => {
-    if (method === 'groups.capabilities') {
-      return { driver: true }
-    }
-
     if (method === 'groups.list') {
       return { rooms, next_offset: null }
     }
@@ -83,7 +80,7 @@ async function openDeleteConfirm() {
 
 it('deletes a gateway group from its row menu: confirm, disband on its gateway, gone from the list', async () => {
   const onOpen = vi.fn()
-  render(<CanonicalGroupList onOpen={onOpen} />)
+  renderGatewayRooms(onOpen)
   const dialog = await openDeleteConfirm()
   const key = Object.keys($canonicalGroupBindings.get()).find(k => k.startsWith('canonical:'))!
   $groupChatWorkspace.set(key)
@@ -104,7 +101,7 @@ it('deletes a gateway group from its row menu: confirm, disband on its gateway, 
 
 it('keeps the row and shows the gateway refusal when the disband fails', async () => {
   refuse = 'room is busy'
-  render(<CanonicalGroupList onOpen={vi.fn()} />)
+  renderGatewayRooms()
   const dialog = await openDeleteConfirm()
   fireEvent.click(dialog.getByRole('button', { name: 'Disband' }))
 
@@ -125,7 +122,7 @@ it('closes the tab and selection opened under the room name, and leaves another 
   recordGroupMainTab(other.name, closeOther)
   $groupChatWorkspace.set(room.name)
 
-  render(<CanonicalGroupList onOpen={vi.fn()} />)
+  renderGatewayRooms()
   fireEvent.click((await openDeleteConfirm()).getByRole('button', { name: 'Disband' }))
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Launch crew' })).toBeNull())

@@ -421,6 +421,35 @@ def test_enable_of_a_recalled_plugin_installed_with_allow_removed_still_works(wo
     assert "killed" in pc._get_enabled_set()
 
 
+@pytest.mark.parametrize("exempt", [True, False])
+def test_update_of_a_recalled_subdir_install_honours_its_allow_removed_exemption(world, tmp_path, monkeypatch,
+                                                                                 exempt):
+    """A subdirectory install (no .git) updates by re-cloning through the install core: the record's
+    --allow-removed exemption must reach that re-clone, and a non-exempt recalled install stays refused."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "killed"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: killed\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    _commit(mono, "v1")
+    target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/killed", force=False, allow_removed=exempt)[0]
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="killed", reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    (src / "plugin.yaml").write_text("name: killed\nversion: 2.0.0\ndescription: d\n")
+    _commit(mono, "v2")
+
+    result = pc.dashboard_update_user_plugin("killed")
+
+    if exempt:
+        assert result["ok"] is True, result
+        assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+        assert pc._read_install_metadata()["killed"]["allow_removed"] is True
+    else:
+        assert result["ok"] is False and "backdoor" in result["error"]
+        assert "version: 1.0.0" in (target / "plugin.yaml").read_text()
+
+
 _HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
 
 

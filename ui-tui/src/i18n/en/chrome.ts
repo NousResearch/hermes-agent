@@ -20,6 +20,8 @@ export const chromeEn = {
   },
   composer: {
     interruptHint: 'Ctrl+C to interrupt…',
+    pasteExpandHint: 'Ctrl+P expand paste to read / edit',
+    pasteCollapseHint: 'editing pasted text · Ctrl+P collapse',
     placeholders: {
       ask: 'Ask me anything…',
       explain: 'Try "explain this codebase"',
@@ -44,6 +46,7 @@ export const chromeEn = {
     arrows: 'completions / queue edit / history',
     sessionSwitcher: 'open live session switcher (deletes queued message while editing)',
     expandAgents: 'expand live agents (keeps your draft)',
+    pasteExpand: 'expand / collapse a pasted-text chip (sent pastes when the composer has none)',
     collapseAgents: 'collapse / restore live agent preview',
     modelPicker: 'open model picker (keeps your draft; applies to next turn mid-stream)',
     homeEnd: 'home / end of line',

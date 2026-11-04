@@ -422,6 +422,10 @@ export interface ComposerActions {
   takeQueue: (index: number, editedDisplay?: string) => QueueItem | Promise<QueueItem | undefined> | undefined
   /** Reconcile attached payloads against tokens still present in the text. */
   syncTokens: (value: string) => void
+  /** Fold an expanded paste back into its chip; returns the composer text after the fold. */
+  collapsePaste: (value?: string) => string
+  /** Ctrl+P: expand the paste chip at `cursor` / collapse the expanded one. False = nothing to toggle. */
+  togglePaste: (cursor: number) => boolean
 }
 
 export interface ComposerRefs {
@@ -440,6 +444,8 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
+  /** A collapsed paste is expanded inline for editing (Ctrl+P folds it back). */
+  pasteExpanded: boolean
   queueEditIdx: null | number
   queuedDisplay: string[]
   tokens: ComposerToken[]
@@ -630,6 +636,8 @@ export interface AppLayoutComposerProps {
   input: string
   inputBuf: string[]
   pagerPageSize: number
+  /** null = no paste chip in the composer; else whether one is expanded for editing. */
+  pasteHint: null | 'collapse' | 'expand'
   queueEditIdx: null | number
   queuedDisplay: string[]
   submit: (value: string) => void

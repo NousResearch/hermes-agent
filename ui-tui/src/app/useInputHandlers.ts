@@ -30,6 +30,7 @@ import {
   patchOverlayState,
   SENSITIVE_PROMPTS
 } from './overlayStore.js'
+import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -760,6 +761,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // turn keeps streaming.
     if (isCtrl(key, ch, 't')) {
       return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+
+    // Ctrl+P: expand the paste chip at the cursor into editable text, or fold
+    // it back. With no chip in the composer it opens/closes the paste sections
+    // of messages already sent.
+    if (isCtrl(key, ch, 'p') && !key.meta && !key.shift) {
+      const sel = getInputSelection()
+
+      return void (cActions.togglePaste(sel?.start ?? cState.input.length) || togglePasteSections())
     }
 
     if (isCtrl(key, ch, 'o')) {

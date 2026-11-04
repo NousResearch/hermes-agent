@@ -9,6 +9,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
+import { collapsePasteSpan, expandPasteChip, type PasteSpan, shiftSpan } from '../domain/pasteExpand.js'
 import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
@@ -135,11 +136,27 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const inputRef = useRef('')
   const tokensRef = useRef<ComposerToken[]>([])
 
+  // The one collapsed paste the user expanded back into the text (Ctrl+P), so
+  // the next Ctrl+P or the submit can fold the edited text back into a chip.
+  const pasteSpanRef = useRef<null | PasteSpan>(null)
+  const [pasteExpanded, setPasteExpanded] = useState(false)
+
+  const setPasteSpan = useCallback((span: null | PasteSpan) => {
+    pasteSpanRef.current = span
+    setPasteExpanded(Boolean(span))
+  }, [])
+
   const setInput = useCallback<StateSetter<string>>(next => {
     composerRevision.current++
-    inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
+    const prev = inputRef.current
+    inputRef.current = typeof next === 'function' ? next(prev) : next
+
+    if (pasteSpanRef.current) {
+      setPasteSpan(shiftSpan(prev, inputRef.current, pasteSpanRef.current))
+    }
+
     setInputState(inputRef.current)
-  }, [])
+  }, [setPasteSpan])
 
   const setComposerTokens = useCallback<StateSetter<ComposerToken[]>>(next => {
     tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next
@@ -168,13 +185,61 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
 
   const clearIn = useCallback(() => {
+    setPasteSpan(null)
     setInput('')
     setInputBuf([])
     setComposerTokens([])
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
-  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setQueueEdit])
+  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setPasteSpan, setQueueEdit])
+
+  /** Fold the expanded paste back into a chip; its payload is the text as edited. */
+  const collapsePaste = useCallback(
+    (value = inputRef.current) => {
+      // The submitted value can run a keystroke ahead of the parent's copy.
+      const span = pasteSpanRef.current && shiftSpan(inputRef.current, value, pasteSpanRef.current)
+      setPasteSpan(null)
+
+      if (!span) {
+        return value
+      }
+
+      const collapsed = collapsePasteSpan(value, span)
+      setComposerTokens(prev => [...prev, collapsed.token])
+      setInput(collapsed.value)
+
+      return collapsed.value
+    },
+    [setComposerTokens, setInput, setPasteSpan]
+  )
+
+  /**
+   * Ctrl+P in the composer: collapse the expanded paste, else expand the chip
+   * under the cursor (or the last one). False when there was nothing to do.
+   */
+  const togglePaste = useCallback(
+    (cursor: number) => {
+      if (pasteSpanRef.current) {
+        collapsePaste()
+
+        return true
+      }
+
+      const expanded = expandPasteChip(inputRef.current, cursor, tokensRef.current)
+
+      if (!expanded) {
+        return false
+      }
+
+      setComposerTokens(expanded.tokens)
+      setInput(expanded.value)
+      setPasteSpan(expanded.span)
+
+      return true
+    },
+    [collapsePaste, setComposerTokens, setInput, setPasteSpan]
+  )
 
   /**
    * Deleting an `[[ Image N ]]` token IS how you unattach the image — there is
@@ -559,6 +624,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       attachClipboardImage,
       attachImagePath,
       clearIn,
+      collapsePaste,
       stage,
       dequeue,
       enqueue,
@@ -575,7 +641,8 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInputBuf,
       setQueueEdit,
       takeQueue: takeQ,
-      syncTokens
+      syncTokens,
+      togglePaste
     }),
     [
       attachClipboardImage,
@@ -597,7 +664,9 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setQueueEdit,
       takeQ,
       setInputBuf,
-      syncTokens
+      syncTokens,
+      collapsePaste,
+      togglePaste
     ]
   )
 
@@ -621,11 +690,12 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       historyIdx,
       input,
       inputBuf,
+      pasteExpanded,
       queueEditIdx,
       queuedDisplay,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteExpanded, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

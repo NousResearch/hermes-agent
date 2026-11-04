@@ -6,6 +6,7 @@ import { useStore } from '@nanostores/react'
 import { Fragment, memo, type MutableRefObject, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
+import { $inputSelection } from '../app/inputSelectionStore.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
@@ -19,6 +20,7 @@ import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
+  cursorLayout,
   inputVisualHeight,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
@@ -330,6 +332,17 @@ const ComposerPane = memo(function ComposerPane({
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  // A paste expanded for editing can be taller than the screen: show a window
+  // of rows that follows the cursor instead of pushing it off the bottom.
+  const inputSel = useStore($inputSelection)
+
+  const inputRows =
+    composer.pasteHint === 'collapse'
+      ? Math.min(inputHeight, Math.max(3, Math.floor(composer.pagerPageSize / 2)))
+      : inputHeight
+
+  const cursorLine = inputSel ? cursorLayout(composer.input, inputSel.start, inputColumns).line : inputHeight - 1
+  const inputScroll = Math.max(0, Math.min(inputHeight - inputRows, cursorLine - inputRows + 1))
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -462,7 +475,8 @@ const ComposerPane = memo(function ComposerPane({
                 )}
               </Box>
 
-              <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
+              <Box flexGrow={0} flexShrink={0} height={inputRows} overflow="hidden" width={inputColumns}>
+                <Box flexShrink={0} height={inputHeight} marginTop={-inputScroll} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   accentColor={ui.theme.color.accent}
@@ -483,12 +497,21 @@ const ComposerPane = memo(function ComposerPane({
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
+                </Box>
               </Box>
 
               <Box position="absolute" right={0}>
                 <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
               </Box>
             </Box>
+
+            {composer.pasteHint && (
+              <Box marginLeft={promptWidth}>
+                <Text color={ui.theme.color.muted}>
+                  {composer.pasteHint === 'collapse' ? T.composer.pasteCollapseHint : T.composer.pasteExpandHint}
+                </Text>
+              </Box>
+            )}
           </>
         )}
       </Box>

@@ -51,6 +51,7 @@ _PLATFORM_ALIASES = {
     "macos": ("darwin", "macos"),
     "windows": ("win32", "windows"),
     "posix": ("linux", "darwin"),
+    "openbsd": ("openbsd",),
     "any": (),
 }
 
@@ -85,7 +86,11 @@ def _host_matches_platforms(conditions, arch=None, arch_negate=False):
         negate = spec.startswith("not ")
         leaf = spec[4:].strip() if negate else spec
         wanted = _PLATFORM_ALIASES[leaf]
-        matched = (not wanted) or host in wanted
+        # openbsd8 (and other versioned sys.platform values) must match the alias.
+        if leaf == "openbsd":
+            matched = host.startswith("openbsd")
+        else:
+            matched = (not wanted) or host in wanted
         if negate:
             matched = not matched
         if matched:

@@ -25,7 +25,7 @@ _terminal_scope_var: ContextVar = ContextVar("hermes_terminal_scope", default=No
 # Keys whose default lives in terminal_tool.py, not DEFAULT_CONFIG (which wins on overlap);
 # without them the projection is not total.
 _TOOL_LEVEL_DEFAULTS: dict[str, Any] = {
-    "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "",
+    "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "", "ssh_sync_files": True,
     "docker_orphan_reaper": True, "docker_persist_across_processes": True,
     "sandbox_dir": "", "lifetime_seconds": 300, "docker_shared_container_key": "",
     "home_mode": "auto",

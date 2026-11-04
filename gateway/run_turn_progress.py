@@ -869,7 +869,7 @@ class GatewayTurnProgressMixin:
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
         if local_viewer_turn(self):
             from gateway import local_viewer_events
-            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result))
+            payload.update(local_viewer_events.complete_fields(self, call_id, tool_name, args, result, is_error=is_error))
         self._publish_execution("tool.complete", payload)
         if local_viewer_turn(self) and isinstance(payload.get("todos"), list):
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.

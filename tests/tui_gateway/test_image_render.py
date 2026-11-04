@@ -58,10 +58,13 @@ def test_tool_complete_names_the_image_the_tool_looked_at(monkeypatch, photo):
 
     server._on_tool_complete("img-sid", "t1", "vision_analyze", {"image_url": photo}, json.dumps({"analysis": "a cat"}))
     server._on_tool_complete("img-sid", "t2", "search_files", {"pattern": "*.png"}, json.dumps({"matches": [photo]}))
+    server._on_tool_complete("img-sid", "t3", "read_file", {"path": photo},
+                             json.dumps({"error": f"Cannot read binary file '{photo}' (.png)."}))
 
     completes = {payload["tool_id"]: payload for event, payload in events if event == "tool.complete"}
     assert completes["t1"]["image_path"] == photo
     assert "image_path" not in completes["t2"]
+    assert "image_path" not in completes["t3"]  # a failed read never draws the file it refused
 
 
 def test_canonical_local_viewer_frames_carry_the_image(photo):
@@ -71,3 +74,5 @@ def test_canonical_local_viewer_frames_carry_the_image(photo):
     turn = SimpleNamespace()
     assert complete_fields(turn, "c1", "vision_analyze", {"image_url": photo}, '{"analysis": "a cat"}')["image_path"] == photo
     assert complete_fields(turn, "c2", "terminal", {"command": "ls"}, '{"output": "' + photo.replace("\\", "/") + '"}')["image_path"] is None
+    assert complete_fields(turn, "c3", "vision_analyze", {"image_url": photo}, '{"success": false, "error": "x"}',
+                           is_error=True)["image_path"] is None

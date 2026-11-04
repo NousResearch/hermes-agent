@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { capabilityScoped, hermesApi } from '@/api/client'
 import type { SessionInfo, SessionSearchResponse } from '@/hermes'
+import { CANONICAL_CHAT_TITLE } from '@/plugins/hermes-bots/canonical-chat'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { $profiles } from '@/store/profile'
 
@@ -47,11 +48,14 @@ export function useSimplifiedSessionSearch(query: string) {
             path: `/api/sessions/search?q=${encodeURIComponent(query)}&profile=${encodeURIComponent(scope.profile)}`
           })
 
-          return response.results.map(hit => ({
-            ...searchResultToSession(hit),
-            profile: scope.profile,
-            connection_id: scope.connectionId
-          }))
+          // Canonical chats have their own row and opening flow; never expose ordinary session actions.
+          return response.results
+            .filter(hit => hit.title !== CANONICAL_CHAT_TITLE)
+            .map(hit => ({
+              ...searchResultToSession(hit),
+              profile: scope.profile,
+              connection_id: scope.connectionId
+            }))
         })
       )
 

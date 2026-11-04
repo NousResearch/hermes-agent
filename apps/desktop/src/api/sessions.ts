@@ -423,8 +423,8 @@ export function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', pay
   return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
 }
 
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, sessionWriteProfile(profile))
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return mutateSessionHttp(id, 'PATCH', { archived, ...(archived ? { pinned: false } : {}) }, profile && typeof profile === 'object' ? profile : sessionWriteProfile(profile))
 }
 
 export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: string | null): Promise<{ ok: boolean }> {

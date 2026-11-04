@@ -3,7 +3,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
+import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
 import { $selectedStoredSessionId } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import { SimplifiedBotChatRow } from './simplified-bot-chat-row'
 
@@ -22,6 +24,7 @@ const agent = {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  $sessionTiles.set([])
   $openBotChat.set(null)
   $pendingBotOpen.set(null)
   $selectedStoredSessionId.set(null)
@@ -66,4 +69,22 @@ it('shows progress and selection only on the matching owner and focused canonica
   expect(other.hasAttribute('aria-current')).toBe(false)
   act(() => $selectedStoredSessionId.set('side-chat'))
   expect(row.hasAttribute('aria-current')).toBe(false)
+})
+
+it('highlights a canonical tab after its temporary open claim is released', () => {
+  $sessionTiles.set([
+    {
+      storedSessionId: 'canonical-tip',
+      workspaceMode: 'bots',
+      workspaceOwnerKey: botWorkspaceOwnerKey({ name: 'alpha', connectionId: 'remote', sourceScoped: true }),
+      workspaceTabTitle: 'Bot Chat'
+    }
+  ])
+  render(<SimplifiedBotChatRow agent={agent} />)
+  act(() => $selectedStoredSessionId.set('canonical-tip'))
+  expect(screen.getByRole('button', { name: 'Bot Chat' }).getAttribute('aria-current')).toBe('page')
+  act(() => $selectedStoredSessionId.set('other'))
+  expect(screen.getByRole('button', { name: 'Bot Chat' }).hasAttribute('aria-current')).toBe(false)
+  act(() => $selectedStoredSessionId.set('canonical-tip'))
+  expect(screen.getByRole('button', { name: 'Bot Chat' }).getAttribute('aria-current')).toBe('page')
 })

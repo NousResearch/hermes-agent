@@ -68,9 +68,15 @@ class FalImageGenProvider(StaticImageGenProvider):
     ) -> dict[str, Any]:
         """Forward to ``image_generate_tool`` and reshape its JSON-string response into the ABC dict."""
         import tools.image_generation_tool as _it
+        from tools.image_generation_catalog import FAL_MODELS
 
         aspect = resolve_aspect_ratio(aspect_ratio)
         passthrough = {key: kwargs[key] for key in _PASSTHROUGH_KWARGS if kwargs.get(key) is not None}
+        # A caller-selected model rides ``fal_model``; ids outside the catalog fall through to the
+        # configured model, which is exactly how ``image_generate_tool`` resolves them.
+        requested_model = kwargs.get("model")
+        if isinstance(requested_model, str) and requested_model.strip() in FAL_MODELS:
+            passthrough["fal_model"] = requested_model.strip()
         # Only forward image-to-image inputs when supplied (no noisy None kwargs).
         if image_url is not None:
             passthrough["image_url"] = image_url
@@ -102,7 +108,7 @@ class FalImageGenProvider(StaticImageGenProvider):
         response.setdefault("aspect_ratio", aspect)
         if "model" not in response:
             try:
-                response["model"] = _it._resolve_fal_model()[0]
+                response["model"] = passthrough.get("fal_model") or _it._resolve_fal_model()[0]
             except Exception:
                 pass
         return response

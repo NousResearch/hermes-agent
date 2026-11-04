@@ -516,3 +516,33 @@ class TestFocusRegainRedraw:
         bare_cli._invalidate(min_interval=0.25)
 
         app.invalidate.assert_called_once()
+
+    @pytest.mark.parametrize(("term_program", "repaints"), [("WarpTerminal", 1), ("iTerm.app", 2)])
+    def test_warp_slows_the_agent_turn_repaint_cadence(
+        self, bare_cli, monkeypatch, term_program, repaints
+    ):
+        """#51039: the agent-turn loop asks for a repaint every 0.15 s; Warp flickers at that rate."""
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._last_invalidate = None
+        monkeypatch.setenv("TERM_PROGRAM", term_program)
+        now = [100.0]
+        monkeypatch.setattr(cli_mod.time, "monotonic", lambda: now[0])
+
+        bare_cli._invalidate(min_interval=0.15)
+        now[0] += 0.2
+        bare_cli._invalidate(min_interval=0.15)
+
+        assert app.invalidate.call_count == repaints
+
+    def test_explicit_repaint_is_not_slowed_under_warp(self, bare_cli, monkeypatch):
+        app = MagicMock()
+        bare_cli._app = app
+        bare_cli._last_invalidate = None
+        monkeypatch.setenv("TERM_PROGRAM", "WarpTerminal")
+        monkeypatch.setattr(cli_mod.time, "monotonic", lambda: 100.0)
+
+        bare_cli._invalidate(min_interval=0.0)
+        bare_cli._invalidate(min_interval=0.0)
+
+        assert app.invalidate.call_count == 2

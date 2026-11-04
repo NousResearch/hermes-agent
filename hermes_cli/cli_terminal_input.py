@@ -348,6 +348,12 @@ _EXTENDED_ENTER_KEYS_SEQ = _KITTY_KEYBOARD_PUSH_SEQ + _MODIFY_OTHER_KEYS_SEQ
 _BACKSLASH_LINE_CONTINUATION_RE = re.compile(r"\\[ \t]*$")
 
 
+def _is_warp_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether the terminal is Warp, whose block renderer redraws the whole active block on every repaint."""
+    env = os.environ if env is None else env
+    return (env.get("TERM_PROGRAM") or "").strip() == "WarpTerminal"
+
+
 def _is_ghostty_terminal(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether the terminal is Ghostty.
 

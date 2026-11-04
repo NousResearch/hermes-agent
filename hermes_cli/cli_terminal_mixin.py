@@ -21,9 +21,13 @@ from hermes_cli.cli_render import (
     _set_paint_gate,
     _take_suspect_rows,
 )
+from hermes_cli.cli_terminal_input import _is_warp_terminal
 from hermes_constants import get_hermes_home
 
 
+# Warp redraws the whole active block per repaint, so the agent-turn and spinner cadences (0.1-0.25 s)
+# show up as whole-screen flicker there (#51039).
+_WARP_MIN_REPAINT_INTERVAL = 0.5
 # A replay ``fit`` with no room: nothing is replayed.
 _NO_REPLAY = (0, 0, False, None)
 # How long a resize drag holds output before its next width change runs a recovery anyway,
@@ -112,6 +116,8 @@ class CLITerminalMixin:
         """
         if getattr(self, "_terminal_io_broken", False) or getattr(self, "_resize_recovery_pending", False):
             return
+        if min_interval > 0 and _is_warp_terminal():  # 0 is an explicit repaint, not a cadence
+            min_interval = max(min_interval, _WARP_MIN_REPAINT_INTERVAL)
         now = time.monotonic()
         # None sentinel, not 0.0 — monotonic's epoch is arbitrary (boot on Linux), so on
         # a fresh VM ``now`` can be < min_interval and a 0.0 sentinel would swallow the

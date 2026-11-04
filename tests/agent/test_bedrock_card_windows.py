@@ -121,3 +121,58 @@ class TestThirdPartyCardRows:
             if hit and hosted > hit[1]:
                 above.append((key, hosted, hit))
         assert not above, above
+
+
+class TestCatalogFamilyFallThrough:
+    """A Bedrock model the table has not caught up with takes the model_metadata family window, but only
+    for issuers whose Bedrock windows never exceed that catalog on the current AWS cards."""
+
+    @pytest.mark.parametrize("model_id, catalog_key, window", [
+        # A next tier the direct-API catalog lists before the Bedrock table catches up (Terra was this case).
+        ("openai.gpt-6.2-terra", "gpt-6.2-terra", 1_050_000),
+        ("us.openai.gpt-6.2-terra", "gpt-6.2-terra", 1_050_000),
+        ("global.anthropic.claude-sonnet-6", "claude-sonnet-6", 1_000_000),
+        ("arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.xai.grok-5", "grok-5", 2_000_000),
+    ])
+    def test_known_family_resolves_from_the_catalog_before_the_default(self, model_id, catalog_key, window,
+                                                                       monkeypatch, caplog):
+        from agent import model_metadata
+        from agent.bedrock_adapter import get_bedrock_context_length
+        monkeypatch.setitem(model_metadata.DEFAULT_CONTEXT_LENGTHS, catalog_key, window)
+        with caplog.at_level(logging.WARNING, logger="agent.bedrock_adapter"):
+            assert get_bedrock_context_length(model_id, probe=False) == window
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_family_catch_all_answers_an_unlisted_claude(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # No catalog row of its own: the "claude" family entry (200K, the smallest current Claude card).
+        assert get_bedrock_context_length("us.anthropic.claude-sonnet-9-9", probe=False) == 200_000
+
+    def test_the_bedrock_table_still_wins_over_the_catalog(self):
+        """GPT-6.1 Sol: card 1M, direct-API catalog 1,050,000. The hosted (smaller) value stays."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length("us.openai.gpt-6.1-sol", probe=False) == 1_000_000
+
+    @pytest.mark.parametrize("model_id", [
+        "meta.llama3-8b-instruct-v1:0",  # card 8K; the "llama" family entry would claim 131,072
+        "qwen.qwen3-32b-v1:0",  # card 32K; "qwen" claims 131,072
+        "mistral.mistral-7b-instruct-v0:2",  # card 32K
+        "zai.glm-9",  # unknown GLM: the "glm" catch-all must not answer for Bedrock
+        "acme.unknown-model-v1",
+    ])
+    def test_other_issuers_never_borrow_a_larger_vendor_window(self, model_id, caplog):
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH, get_bedrock_context_length
+        with caplog.at_level(logging.WARNING, logger="agent.bedrock_adapter"):
+            assert get_bedrock_context_length(model_id, probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
+        assert any("fallback" in r.getMessage() for r in caplog.records)
+
+    def test_application_profile_fallback_warning_says_fallback_and_names_both_overrides(self, caplog):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        arn = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/opaque01"
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                caplog.at_level(logging.WARNING, logger="agent.bedrock_adapter"):
+            get_bedrock_context_length(arn, probe=False)
+        message = " ".join(r.getMessage() for r in caplog.records)
+        assert "fallback" in message and "model.context_length" in message and "model_overrides" in message

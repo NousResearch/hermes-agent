@@ -368,8 +368,9 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 # A plugin asset URL is "versioned" when changing the file also changes the URL: a non-empty
 # ``?v=`` query, or a content hash in the filename (``index.3f2a9c1b.js``). Only those are cached
 # as immutable; every other asset is revalidated (ETag -> 304) so an updated plugin is picked up
-# on the next load without re-downloading unchanged files.
-_PLUGIN_ASSET_HASHED_NAME = re.compile(r"\.[0-9a-f]{8,}\.[A-Za-z0-9]+$")
+# on the next load without re-downloading unchanged files. The hash needs a hex letter, so a date
+# stamp (``changelog.20260927.json``) is not taken for one; an all-digit hash just revalidates.
+_PLUGIN_ASSET_HASHED_NAME = re.compile(r"\.(?=[0-9]*[a-f])[0-9a-f]{8,}\.[A-Za-z0-9]+$")
 # Text assets worth compressing. Above the cap a file is sent as-is (and never memoised); with
 # 64 memoised entries of at most 2 MiB before compression, the memo stays small (text gzips ~4x).
 _PLUGIN_ASSET_GZIP_TYPES = frozenset(

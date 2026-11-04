@@ -5034,6 +5034,10 @@ class TestDashboardPluginStaticAssetAllowlist:
             assert resp.status_code == 200
             assert "immutable" in resp.headers["cache-control"]
 
+        # A date stamp is not a content hash: the file can change under the same name.
+        self._write_asset("index.20260927.js", "one")
+        assert self.client.get("/dashboard-plugins/example/index.20260927.js").headers["cache-control"] == "no-cache"
+
         url = "/dashboard-plugins/example/index.js"
         resp = self.client.get(url)
         assert resp.status_code == 200

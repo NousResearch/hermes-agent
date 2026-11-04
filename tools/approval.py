@@ -178,6 +178,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
     return len(targets)
 
 
+def resolve_gateway_approval_card(session_key: str, choice: str, request_id: Optional[str]) -> int:
+    """Resolve the approval a native button card was rendered for.
+
+    With the card's request id only that request can resolve: a card whose request already
+    settled (timed out, answered by ``/approve``) resolves nothing instead of the next queued
+    approval in the same session. A card sent without an id keeps the FIFO behaviour."""
+    if request_id:
+        return resolve_gateway_approval(session_key, choice, request_id=request_id)
+    return resolve_gateway_approval(session_key, choice)
+
+
 def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
     """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
     The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of

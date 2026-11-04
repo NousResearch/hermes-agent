@@ -21,7 +21,7 @@ const IS_TTY = Boolean(process.stdout?.isTTY)
 const TERMINAL = detectTerminalGraphics()
 
 // Renders outlive virtual-scroll remounts. The key carries a revision (the
-// tool call id) so a second picture at an old path is a new request; `off`
+// tool call id, or the user turn) so a second picture at an old path is a new request; `off`
 // is never kept, so a file that appears later or a config change still shows.
 // A small LRU: kitty entries drop their transmit once written, but half-block
 // grids stay resident.
@@ -127,7 +127,7 @@ const requestRender = (
 interface InlineImageProps {
   cols: number
   path: string
-  /** Tells two pictures at one path apart (the tool call id); see `Msg.imageRevision`. */
+  /** Tells two pictures at one path apart (tool call id or user turn); see `Msg.imageRevision`. */
   revision?: string
 }
 

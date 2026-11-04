@@ -21,8 +21,12 @@ logger = logging.getLogger(__name__)
 
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
+# Where profile-distribution installs stage and set aside a dir they swap in (same parent, so the
+# rename stays atomic); a backup a lock keeps there must never be discovered as a second copy.
+DIST_SWAP_DIR = ".hermes-dist"
+
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", DIST_SWAP_DIR,
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -208,10 +212,10 @@ def _raw_config_cache_clear() -> None:
         _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[tuple[str, int, int, int, int]]:
-    """``(path, *backend version)`` identity of config.yaml, or None when unreadable/absent."""
-    from hermes_cli.config_backend import config_version_or_none
-    version = config_version_or_none(config_path)
+def _config_cache_key(config_path: Path) -> Optional[tuple[Any, ...]]:
+    """``(path, *backend cache version)`` identity of config.yaml, or None when unreadable/absent."""
+    from hermes_cli.config_backend import config_cache_version_or_none
+    version = config_cache_version_or_none(config_path)
     return None if version is None else (str(config_path), *version)
 
 

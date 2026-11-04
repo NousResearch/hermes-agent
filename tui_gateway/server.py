@@ -1964,6 +1964,10 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
 
+# Window-level events a plugin may raise through the `desktop.emit` RPC: the
+# preview pane's own navigation, and nothing else.
+_PLUGIN_DESKTOP_EVENTS: frozenset[str] = frozenset({"preview.open", "preview.close"})
+
 # argv shapes that must not run headless in the gateway process → user hint.
 _CLI_EXEC_BLOCKED = {
     ("setup",): "`hermes setup` needs a full terminal — run it outside the TUI",

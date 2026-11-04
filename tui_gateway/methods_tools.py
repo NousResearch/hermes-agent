@@ -462,6 +462,35 @@ def _(rid, params: dict) -> dict:
         env=_compat.restore_ambient_pythonpath(hermes_subprocess_env(inherit_credentials=True)))
 
 
+@method("desktop.emit")
+def _(rid, params: dict) -> dict:
+    """Emit one window-level desktop event on behalf of a plugin.
+
+    The preview pane is navigated by ``preview.open`` / ``preview.close``, and
+    ``tools.desktop_ui`` can only raise them from THIS process — the one holding
+    the renderer emitter. A plugin's CLI subprocess has no emitter, so a desktop
+    plugin has no other door to the pane it is told to open. Allowlisted to the
+    window-level preview events: nothing that answers an approval, mutates a
+    session, or reaches the OS."""
+    event = str(params.get("event") or "").strip()
+    if event not in _PLUGIN_DESKTOP_EVENTS:
+        return _err(rid, 4001, f"event must be one of: {', '.join(sorted(_PLUGIN_DESKTOP_EVENTS))}")
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+    sid = str(params.get("session_id") or "")
+    session = _sessions.get(sid) or {}
+    from tools import desktop_ui
+    tokens = _set_session_context(str(session.get("session_key") or ""), ui_session_id=sid)
+    try:
+        emitted = desktop_ui.emit(event, payload)
+    except Exception as exc:
+        return _err(rid, 4019, f"desktop emit failed: {exc}")
+    finally:
+        _clear_session_context(tokens)
+    if not emitted:
+        return _err(rid, 4019, "no window is listening for desktop events")
+    return _ok(rid, {"emitted": event, "url": str(payload.get("url") or "")})
+
+
 @_rpc("command.resolve", 5012)
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))

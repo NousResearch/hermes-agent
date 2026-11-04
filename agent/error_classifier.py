@@ -197,17 +197,23 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # complaints ("tools[0].description content length exceeds maximum allowed") stay out; a
 # response-scoped subject never matches, because shrinking the request cannot fix a large response.
 _BYTE_SIZE_SUBJECT = re.compile(
-    r"(?<!response )\b(?:request ?size|(?:request )?(?:body|payload) size|request body(?: is)? too large"
-    r"|(?:request )?payload(?: is)? too large)"
+    # The overflow verb must follow "... size" directly, so a parameter named there ("request size
+    # parameter page_size exceeds the maximum of 100") is not the body.
+    r"(?<!response )\b(?:(?:request ?size|(?:request )?(?:body|payload) size)(?: is)? (?:exceed|too large|too big)"
+    r"|request body(?: is)? too large|(?:request )?payload(?: is)? too large)"
 )
 _BYTE_SIZE_OVERFLOW = re.compile(r"exceed|too large|too big")
+# A size subject that counts tokens is a token cap ("Request body too large for gpt-4.1 model. Max size:
+# 8000 tokens." from GitHub Models / Azure AI Inference), so it keeps the token rules; only the
+# context-overflow path adopts a quoted limit, and the byte path would compress against the old window.
+_TOKEN_COUNT = re.compile(r"\btokens?\b")
 _REQUEST_WORDS = {"request", "requestsize", "byte", "bytes"}
 
 
 def _is_byte_size_limit_message(error_msg: str) -> bool:
     """True when ``error_msg`` reports the request body over a byte-size cap (see above)."""
     msg = (error_msg or "").lower()
-    if not _BYTE_SIZE_OVERFLOW.search(msg):
+    if not _BYTE_SIZE_OVERFLOW.search(msg) or _TOKEN_COUNT.search(msg):
         return False
     if _BYTE_SIZE_SUBJECT.search(msg):
         return True

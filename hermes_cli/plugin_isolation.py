@@ -33,6 +33,8 @@ _ISOLATION_MODES = frozenset({ISOLATION_IN_PROCESS, ISOLATION_HOST})
 # raw platform SDK clients, argparse parsers, adapter classes bound to the gateway's event loop, the
 # launch-scope dashboard auth registry. A plugin calling one of these runs only in-process.
 HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
+    "register_login_backend": "browser-vault fills hold a server-local context manager",
+    "register_browser_page_backend": "browser-vault fill scripts carry credentials that stay in the Hermes process",
     "register_platform": "platform adapters run on the gateway's event loop with native SDK clients",
     "register_platform_handler": "the handler factory receives the platform's native SDK client",
     "register_telegram_handler": "the handler factory receives the native Telegram Application",
@@ -50,7 +52,9 @@ HOST_SKIPPED_CTX_METHODS: dict[str, str] = {
 }
 
 # Live ctx facades the host reaches by method call; each call returns plain data.
-HOST_REMOTE_FACADES: frozenset[str] = frozenset({"state", "llm", "platform_actions", "subagent_lifecycle"})
+HOST_REMOTE_FACADES: frozenset[str] = frozenset({
+    "state", "llm", "platform_actions", "subagent_lifecycle", "delegation_backends",
+})
 
 # Object-taking ctx methods and the ABC the parent checks. The host sends the object's method table
 # and the parent builds a subclass of that ABC whose methods run in the host.
@@ -63,6 +67,7 @@ HOST_OBJECT_BASES: dict[str, str] = {
     "register_secret_source": "agent.secret_sources.base:SecretSource",
     "register_tts_provider": "agent.tts_provider:TTSProvider",
     "register_transcription_provider": "agent.transcription_provider:TranscriptionProvider",
+    "register_delegation_provider": "agent.delegation_provider:DelegationProvider",
     "register_context_engine": "agent.context_engine:ContextEngine",
     "register_context_reference": "agent.context_references:ContextReferenceProvider",
     "register_memory_provider": "agent.memory_provider:MemoryProvider",

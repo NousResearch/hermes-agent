@@ -267,7 +267,7 @@ async def test_local_producer_admissions_are_automation(tmp_path, monkeypatch):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_automation import admit_route_wake
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local import create_local_session
     from hermes_state import SessionDB
     from tests.waiting import async_wait_until
@@ -279,7 +279,7 @@ async def test_local_producer_admissions_are_automation(tmp_path, monkeypatch):
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner', db=db)
     seen = _admission_origins(monkeypatch, runner)
     try:
-        viewer = Principal('test-owner', 'default', frozenset({'session:create', 'session:submit'}), 'viewer')
+        viewer = SessionActor('test-owner', 'default', frozenset({'session:create', 'session:submit'}), 'viewer')
         ref = create_local_session(authority, viewer, dict(request_id='cli', source='cli', model='fixture', toolsets=[]))
         live = authority.sessions[ref.session_id]
         entry = runner.session_store.lookup_by_session_key(live.route)

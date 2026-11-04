@@ -55,12 +55,15 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
-      # Full npm ci (not --ignore-scripts): electron's postinstall
-      # downloads the binary we launch, and node-pty's native build is
-      # needed for the terminal pane.
+      # Full npm ci (not --ignore-scripts): native addons need lifecycle scripts;
+      # Electron's binary is prepared explicitly below.
+      # node-pty's native build is needed for the terminal pane.
       - uses: ./.github/actions/retry
         with:
           command: npm ci
+
+      - name: Prepare locked Electron runtime
+        run: node scripts/build/electron-runtime.mjs --source .
 
       # ── Build desktop app ─────────────────────────────────────────────
       # The Playwright step below runs `npm run build` before testing so

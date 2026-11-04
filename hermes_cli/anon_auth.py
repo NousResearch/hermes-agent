@@ -512,7 +512,7 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], 
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)
     _save_auth_store(auth_store)
-    _write_shared_nous_state(state)
+    _write_shared_nous_state(state, renewal=False)
     logger.info("Nous free tier ready (identity minted)")
     return state
 
@@ -629,7 +629,8 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
         _store_provider_state, _resolve_verify)
     from hermes_cli.auth_nous import (
-        _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state, _write_shared_nous_state)
+        _SHARED_RENEWAL_KEY, _nous_http_client, _nous_shared_store_lock, _read_shared_nous_state,
+        _write_shared_nous_state)
     portal = _portal_base_url()
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -637,14 +638,14 @@ def _reconcile_and_provision(*, timeout_seconds: float, force: bool = False,
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
-                state = dict(shared)
+                state = {k: v for k, v in shared.items() if k != _SHARED_RENEWAL_KEY}  # another account's tokens
                 _store_provider_state(auth_store, "nous", state, set_active=not is_guest_state(state))
                 _save_auth_store(auth_store)
                 logger.debug("Nous identity adopted from the shared store")
                 return state
             if profile_state:
                 if not shared:
-                    _write_shared_nous_state(profile_state)
+                    _write_shared_nous_state(profile_state, renewal=False)
                 return profile_state
             # A caller queued on these locks behind a mint that just failed waits out its cooldown.
             failure = _mint_failure_for_profile()
@@ -708,6 +709,9 @@ def ensure_portal_identity(
         raise err from exc
     if state is not None:
         _clear_mint_failure()
+        # Adopting a sibling profile's sign-in replaced this profile's guest under the locks above.
+        from hermes_cli.guest_handoff import drain
+        drain()
     return state
 
 
@@ -1010,101 +1014,13 @@ def _save_guest_state(auth_store: dict[str, Any], state: dict[str, Any], source_
         _save_auth_store(source_store, target_path=source_path)
 
 
-# --- ``hermes auth upgrade``: sign the guest into a real Nous account, keeping its connectors ---------
+# --- Sign-in completion: the account state from a token grant, and the config settle -------------
 #
-# Wire: the normal device-code flow, with a promotion intent registered on NAS BETWEEN the code
-# request and the token poll (``POST /api/anonymous/promotion-intent {token, user_code, device_code}``).
-# NAS then transfers the guest's connectors into whichever account approves that device code. We
-# watch ``POST /api/anonymous/promotion-status {claim_code}`` until it leaves ``pending``; only a
-# ``completed`` promotion is followed by the token grant, which ``persist_nous_credentials`` writes
-# over the guest singleton and the shared store. The server never reports expiry: our own
-# ``expires_in`` clock ends the wait. User-facing copy never says guest / anonymous / claim.
+# Every Nous sign-in is the plain device-code login (``anon_sign_in.run_sign_in``). The free tier it
+# replaces hands its apps over in ``guest_handoff`` after the save. User-facing copy never says
+# guest / anonymous / claim.
 
 UPGRADED_AUTH_METHOD = "oauth_device_code"
-
-
-def register_promotion_intent(
-    client: httpx.Client, portal_base_url: str, anon_token: str, *, user_code: str, device_code: str,
-) -> dict[str, Any]:
-    """``POST /api/anonymous/promotion-intent`` -> ``{claim_code, claim_url, expires_in, interval}``."""
-    response = client.post(
-        f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-intent", headers=_anon_headers(),
-        json={"token": anon_token, "user_code": user_code, "device_code": device_code})
-    payload = _raise_for_anon_status(response, action="sign-in")
-    if not isinstance(payload.get("claim_code"), str) or not payload["claim_code"]:
-        logger.info("Nous free tier sign-in returned no transfer code")
-        raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR)
-    return payload
-
-
-def _retry_after_seconds(response: httpx.Response, default: float) -> float:
-    seconds = parse_retry_after_seconds(response.headers)
-    return default if seconds is None else seconds
-
-
-def _sleep_until(wake: float, cancelled: Optional[Callable[[], bool]]) -> bool:
-    """Sleep until the monotonic time *wake*. Returns True when *cancelled* fired first.
-
-    Without a hook this is one plain :func:`time.sleep`. With one the sleep is cut into <= 1 s
-    ticks so an attempt stopped from outside ends in about a second instead of blocking to the
-    sign-in code's own expiry.
-    """
-    if cancelled is None:
-        remaining = wake - time.monotonic()
-        if remaining > 0:
-            time.sleep(remaining)
-        return False
-    while True:
-        if cancelled():
-            return True
-        remaining = wake - time.monotonic()
-        if remaining <= 0:
-            return False
-        time.sleep(min(1.0, remaining))
-
-
-def wait_for_promotion(
-    client: httpx.Client, portal_base_url: str, claim_code: str, *, expires_in: int, interval: int,
-    cancelled: Optional[Callable[[], bool]] = None,
-) -> dict[str, Any]:
-    """Poll ``POST /api/anonymous/promotion-status`` until it leaves ``pending`` or our clock runs out.
-
-    Returns the final status payload; ``{"status": "timeout"}`` when ``expires_in`` elapsed. 429 honours
-    ``Retry-After``; other non-2xx statuses raise through :func:`_raise_for_anon_status`.
-
-    *cancelled* is an optional hook a surface passes to stop an attempt it no longer wants (a newer
-    sign-in replaced it, the user cancelled, the process is shutting down). It is polled at the top
-    of every iteration and on a <= 1 s tick while sleeping; once it has fired this call returns
-    ``{"status": "cancelled"}`` for every outcome except a ``completed`` transfer already in hand,
-    which is reported so the caller's ``cancel_wins_after_promotion`` ruling can decide it.
-    Passing nothing is today's behaviour.
-    """
-    deadline = time.monotonic() + max(1, int(expires_in))
-    wait = max(0, int(interval))
-    while time.monotonic() < deadline:
-        if cancelled is not None and cancelled():
-            return {"status": "cancelled"}
-        response = client.post(
-            f"{portal_base_url.rstrip('/')}/api/anonymous/promotion-status", headers=_anon_headers(),
-            json={"claim_code": claim_code})
-        if response.status_code == 429:
-            retry = min(_retry_after_seconds(response, default=max(1, wait)),
-                        max(0.0, deadline - time.monotonic()))
-            if _sleep_until(time.monotonic() + retry, cancelled):
-                return {"status": "cancelled"}
-            continue
-        payload = _raise_for_anon_status(response, action="sign-in")
-        status = str(payload.get("status") or "unknown")
-        if status != "pending":
-            # A completed transfer is already committed on the account service; report it even when
-            # the hook fired during this request. run_sign_in's cancel_wins_after_promotion
-            # rules what each surface does with it. Every other terminal outcome loses to a cancel.
-            if status != "completed" and cancelled is not None and cancelled():
-                return {"status": "cancelled"}
-            return payload
-        if _sleep_until(time.monotonic() + wait, cancelled):
-            return {"status": "cancelled"}
-    return {"status": "timeout"}
 
 
 def _account_state_from_token(
@@ -1200,9 +1116,9 @@ def persist_nous_credentials(*args, **kwargs):
 # The flow imports this module only inside calls, so either module can be imported first.
 from hermes_cli.anon_sign_in import (
     AlreadySignedIn,
+    Cancelled,
     Code,
     Completed,
-    Declined,
     FREE_TIER_RATE_LIMIT_CARD,
     FREE_TIER_RATE_LIMIT_CHAT,
     Failed,
@@ -1211,9 +1127,7 @@ from hermes_cli.anon_sign_in import (
     LOGIN_DM_ONLY,
     LOGIN_NOT_ALLOWED,
     LOGIN_STARTING,
-    Retired,
     SignInState,
-    Superseded,
     TimedOut,
     UPGRADE_ALREADY_SIGNED_IN,
     UPGRADE_CANCELLED,
@@ -1221,18 +1135,12 @@ from hermes_cli.anon_sign_in import (
     UPGRADE_NOT_COMPLETED,
     UPGRADE_NO_DEFAULT_CHAT,
     UPGRADE_NO_DEFAULT_TERMINAL,
-    UPGRADE_REASON_COPY,
     UPGRADE_START,
     UPGRADE_TIMED_OUT,
-    UPGRADE_UNAVAILABLE,
-    UPGRADE_UNAVAILABLE_CHAT,
     UPGRADE_WAITING,
     UPGRADE_WAITING_UP_TO,
-    Unavailable,
     Waiting,
-    _RETIRED_REASONS,
     _default_persist_guard,
-    _outcome_state,
     format_wait_line,
     run_sign_in,
 )

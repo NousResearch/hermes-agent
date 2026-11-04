@@ -11,7 +11,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
     <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
 
-  return { MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
+  return { ...await (await import('./group-test-utils')).pluginSdkMock({}), MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

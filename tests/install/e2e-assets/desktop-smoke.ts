@@ -12,7 +12,7 @@ import { z } from 'zod'
 import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-paths.mjs'
 import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
 import { type ChatIdentity, readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
-import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit, reusedDesktopBuildCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
@@ -353,7 +353,8 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     if (provenanceCommit !== options['expect-commit']) { throw new Error('Installed commit differs from --expect-commit') }
     // Trace only chat actions. Connection probes can return credential-bearing logs.
     await app.context().tracing.start({ screenshots: true, snapshots: false, sources: false })
-    const chat = await runDesktopChatSmoke(page, { mockUrl, phase: options.phase, outDir: out, expectCommit: options['expect-commit'], provenanceCommit })
+    const reusedBuildCommit = reusedDesktopBuildCommit(options.root, options.origin, provenanceCommit)
+    const chat = await runDesktopChatSmoke(page, { mockUrl, phase: options.phase, outDir: out, expectCommit: options['expect-commit'], provenanceCommit, reusedBuildCommit })
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...chat, status: 'closing' }, null, 2)}\n`)
     const result = { ...chat, origin: options.origin, root: options.root, executable: options.exe, running, predictedHome,
       localModeConfigured: true, backend: { ...backend, command: redact(backend.command) }, launchKind: options.phase === 'new' ? 'post-update-launch' : 'installed-launch' }
@@ -384,6 +385,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     'user-data': { type: 'string' }, out: { type: 'string' }, phase: { type: 'string' },
     'expect-commit': { type: 'string' }, 'launch-spec': { type: 'string' }, 'mock-url': { type: 'string' },
   } })
+
+  // When the app exits before printing its debugger line, Playwright's Electron.launch rejects
+  // the awaited watcher and leaves its sibling stderr watchers' rejections unhandled. Without a
+  // listener Node dies on those first, so the catch below never writes the failed receipt or the
+  // launch call log (the app's exit code and stderr). Still fail the run.
+  process.on('unhandledRejection', (reason: unknown): void => {
+    console.error(`unhandled rejection: ${redact(String(reason))}`)
+    process.exitCode = 1
+  })
+
   try {
     await runInstalledDesktopSmoke(optionsSchema.parse(values))
   } catch (error) {

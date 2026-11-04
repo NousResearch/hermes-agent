@@ -171,7 +171,7 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
 
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import build_kanban_policy
 
     profile = tmp_path / "profiles" / "elias"
@@ -189,7 +189,7 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
                                  workspace_kind="dir", workspace_path=str(workspace))
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
-    actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
+    actor = SessionActor("owner", str(profile), frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(profile)), actor=actor, native_owner=True)
     params = dict(board="owned", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
 

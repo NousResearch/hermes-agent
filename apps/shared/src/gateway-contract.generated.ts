@@ -1107,6 +1107,7 @@ export interface ConnectionOperationTarget {
   alias?: string | null
   attempt?: string | null
   required_env?: ConnectionTargetEnvField[] | null
+  launch?: ConnectionTargetLaunch | null
   tools?: string[] | null
   hint?: string | null
   display?: string | null
@@ -1141,6 +1142,12 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
+/** What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed display text, never the env map or headers. */
+export interface ConnectionTargetLaunch {
+  kind: ConnectionTargetLaunchKind
+  target: string
+}
+export type ConnectionTargetLaunchKind = 'remote' | 'stdio'
 export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {

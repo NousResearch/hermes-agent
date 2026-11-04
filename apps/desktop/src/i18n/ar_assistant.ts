@@ -3,6 +3,10 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arAssistant = {
   assistant: {
+    mcpSetup: {
+      launchCommand: target => `يشغّل: ${target}`,
+      launchRemote: target => `يتصل بـ: ${target}`
+    },
     catalogInstall: {
       preparing: 'جارٍ تجهيز التثبيت…',
       install: 'تثبيت',

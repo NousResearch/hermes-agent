@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -137,6 +137,21 @@ describe('the MCP setup card', () => {
       owner: { session_id: SESSION_ID, type: 'session' },
       result: { targets: [{ env: { LINEAR_TEAM: 'workspace' }, name: 'linear', status: 'approved' }] }
     })
+  })
+
+  it('names what approving runs as plain text, and drops the line once the row resolves', () => {
+    const markup = 'npx <img src=x onerror=alert(1)> **bold** --api-key=***'
+    const pending = { ...LINEAR, launch: { kind: 'stdio' as const, target: markup } }
+
+    setConnectionRequest({ ...REQUEST, targets: [pending] })
+    const { container } = renderTool()
+
+    const line = container.querySelector('[data-slot="mcp-launch-target"]')
+    expect(line?.textContent).toBe(`Runs: ${markup}`)
+    expect(line?.querySelector('img, strong')).toBeNull()
+
+    act(() => setConnectionRequest({ ...REQUEST, seq: 1, targets: [{ ...pending, state: 'skipped' }] }))
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')).toBeNull()
   })
 
   it('lists every target once settled, in the same three words as the connector card', () => {

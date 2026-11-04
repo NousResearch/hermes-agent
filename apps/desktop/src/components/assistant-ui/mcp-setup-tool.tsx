@@ -1,6 +1,7 @@
 'use client'
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
+import type { ConnectionTargetLaunchKind } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -60,6 +61,11 @@ const DONE = {
   enable: (copy: SetupCopy, server: string) => copy.enabled(server),
   install: (copy: SetupCopy, server: string) => copy.installed(server)
 } satisfies Record<SetupAction, (copy: SetupCopy, server: string) => string>
+
+const LAUNCH_LINE = {
+  remote: (copy: SetupCopy, target: string) => copy.launchRemote(target),
+  stdio: (copy: SetupCopy, target: string) => copy.launchCommand(target)
+} satisfies Record<ConnectionTargetLaunchKind, (copy: SetupCopy, target: string) => string>
 
 /** The row's one verb. `approve` is the user's consent, `working` is the backend acting on it, `open`
  *  is a sign-in link the backend already minted, `reissue` asks for a fresh attempt. */
@@ -392,6 +398,10 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
       ? t.connectors.waiting
       : undefined
 
+  // What approving runs or contacts, shown until the row resolves. Plain text from the backend's
+  // scrubbed line: React escapes it, and the clamp keeps a long command from pushing the verb away.
+  const launch = target.launch && !phase.resolved ? target.launch : null
+
   return (
     <>
       <ConnectorRow
@@ -401,6 +411,15 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
         mark={phase.mark}
         markLabel={MARK_LABEL[phase.mark](t.connectors)}
       />
+      {launch ? (
+        <p
+          className="-mt-1 line-clamp-2 break-all pl-[3.375rem] font-mono text-[0.6875rem] leading-4 text-(--ui-text-tertiary)"
+          data-slot="mcp-launch-target"
+          title={launch.target}
+        >
+          {LAUNCH_LINE[launch.kind](copy, launch.target)}
+        </p>
+      ) : null}
       <SetupFormDialog
         copy={{
           cancel: t.connectors.setupCancel,

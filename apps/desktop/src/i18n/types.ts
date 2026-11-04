@@ -4067,6 +4067,8 @@ export interface Translations extends NoticeTranslations {
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
+      launchCommand: (target: string) => string
+      launchRemote: (target: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string

@@ -292,6 +292,14 @@ async def relay_ws(ws: WebSocket, gateway_id: str, path: str) -> None:
     await ws.accept(subprotocol=upstream.subprotocol)
     with _live_lock:
         _live[id(ws)] = (weakref.ref(ws), asyncio.get_running_loop(), gateway_id)
+    # Remove forgets the row, then closes the gateway's live sockets; one during the dial missed this socket.
+    if (_gateway(ws.app.state, admitted[0], gateway_id) or {}).get("grant_id") != row["grant_id"]:
+        with _live_lock:
+            _live.pop(id(ws), None)
+        with contextlib.suppress(OSError):
+            await upstream.close()
+        await _close(ws, 4404, "Gateway removed")
+        return
     try:
         await _pump(ws, upstream)
     finally:

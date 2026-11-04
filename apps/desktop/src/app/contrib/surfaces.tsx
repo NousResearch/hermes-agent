@@ -22,7 +22,6 @@ import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
-import { SimplifiedAgentOffer } from '../chat/sidebar/simplified-agent-offer'
 import { SimplifiedAgentSidebar } from '../chat/sidebar/simplified-agent-sidebar'
 import { TerminalPaneChrome } from '../right-sidebar/terminal/chrome'
 import { contributedRoutes, NEW_CHAT_ROUTE, ROUTES_AREA, sessionRoute } from '../routes'
@@ -114,12 +113,7 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   })
 
   // The demo layout (first-run intro) has no status bar.
-  return demoLayout ? null : (
-    <>
-      <SimplifiedAgentOffer />
-      <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
-    </>
-  )
+  return demoLayout ? null : <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
 })
 
 /** The workspace pane: the real route table (chat + full-page views + plugin

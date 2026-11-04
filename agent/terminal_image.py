@@ -61,7 +61,7 @@ def supports_kitty_placeholders() -> bool:
     return detect_terminal_graphics() == "kitty" and not _is_wezterm()
 
 
-def png_b64(image) -> str:
+def _png_b64(image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return base64.standard_b64encode(buf.getvalue()).decode("ascii")
@@ -91,7 +91,7 @@ def _kitty_apc(ctrl: str, data: str) -> str:
 def encode_kitty(image) -> str:
     """kitty transmit+display at the cursor; ``c``/``r`` pin the cell box so frames overwrite each other."""
     cols, rows = cell_box(image)
-    return _kitty_apc(f"f=100,a=T,q=2,c={cols},r={rows}", png_b64(image))
+    return _kitty_apc(f"f=100,a=T,q=2,c={cols},r={rows}", _png_b64(image))
 
 
 # kitty Unicode placeholders: Ink owns the screen and measures every cell, so it
@@ -99,7 +99,7 @@ def encode_kitty(image) -> str:
 # then print ordinary-width placeholder cells (U+10EEEE + row diacritic) whose
 # foreground color encodes the image id; the terminal paints the image underneath.
 #   https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders
-KITTY_PLACEHOLDER = "\U0010eeee"
+_KITTY_PLACEHOLDER = "\U0010eeee"
 # Row diacritics by index, verbatim from kitty's gen/rowcolumn-diacritics.txt.
 _ROWCOL_DIACRITICS: tuple[int, ...] = (
     0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F, 0x0346, 0x034A, 0x034B, 0x034C, 0x0350, 0x0351, 0x0352, 0x0357, 0x035B, 0x0363, 0x0364, 0x0365,
@@ -129,14 +129,14 @@ def kitty_placeholder_rows(cols: int, rows: int) -> list[str]:
     """Placeholder text grid: first cell carries the row diacritic, the rest auto-increment the column (fg color applied by the painter)."""
     cols = max(1, cols)
     return [
-        KITTY_PLACEHOLDER + chr(_ROWCOL_DIACRITICS[min(r, len(_ROWCOL_DIACRITICS) - 1)]) + KITTY_PLACEHOLDER * (cols - 1)
+        _KITTY_PLACEHOLDER + chr(_ROWCOL_DIACRITICS[min(r, len(_ROWCOL_DIACRITICS) - 1)]) + _KITTY_PLACEHOLDER * (cols - 1)
         for r in range(max(1, rows))
     ]
 
 
 def encode_kitty_virtual(image, *, image_id: int, cols: int, rows: int) -> str:
     """kitty virtual placement (``U=1``; ``q=2`` mutes replies that would corrupt the screen). Re-sending the same ``i`` replaces the image in place."""
-    return _kitty_apc(f"a=T,U=1,i={image_id},c={cols},r={rows},f=100,q=2", png_b64(image))
+    return _kitty_apc(f"a=T,U=1,i={image_id},c={cols},r={rows},f=100,q=2", _png_b64(image))
 
 
 def encode_iterm(image, *, cols: int | None = None, rows: int | None = None) -> str:
@@ -201,13 +201,22 @@ def downscale_cells(image, *, target_cols: int, rows: int | None = None) -> list
     ]
 
 
+def half_block(top, bottom) -> str:
+    """One truecolor ANSI half-block cell; a transparent half shows the terminal background."""
+    (tr, tg, tb, ta), (br, bg, bb, ba) = top, bottom
+    if ta < 32 and ba < 32:
+        return "\x1b[0m "
+    if ba < 32:
+        return f"\x1b[0m\x1b[38;2;{tr};{tg};{tb}m▀"
+    if ta < 32:
+        return f"\x1b[0m\x1b[38;2;{br};{bg};{bb}m▄"
+    return f"\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
+
+
 def encode_unicode(image, *, target_cols: int) -> str:
     """Truecolor ANSI half-blocks (one char = 2 vertical pixels)."""
-    def cell(top, bottom) -> str:
-        (tr, tg, tb, ta), (br, bg, bb, ba) = top, bottom
-        return "\x1b[0m " if ta < 32 and ba < 32 else f"\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
-
-    return "\n".join("".join(cell(t, b) for t, b in row) + "\x1b[0m" for row in downscale_cells(image, target_cols=target_cols))
+    return "\n".join("".join(half_block(t, b) for t, b in row) + "\x1b[0m"
+                     for row in downscale_cells(image, target_cols=target_cols))
 
 
 # ── Inline images ────────────────────────────────────────────────────────────
@@ -247,8 +256,10 @@ def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: boo
     mode = mode if mode in _INLINE_IMAGE_MODES else "auto"
     if mode == "iterm" and not overlays:
         mode = "auto"
-    if mode in ("off", "unicode") or not graphics:
-        return "unicode" if mode != "off" else "off"
+    if mode == "off":
+        return "off"
+    if mode == "unicode" or not graphics:
+        return "unicode"
     if mode in ("kitty", "iterm"):
         return mode
     if any(os.environ.get(name) for name in _MULTIPLEXER_ENV):
@@ -313,7 +324,6 @@ class InlineImage:
     mode: str
     cols: int
     rows: int
-    image_id: int = 0
     color: str = ""
     transmit: str = ""
     placeholder: list[str] = field(default_factory=list)
@@ -380,7 +390,7 @@ def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows:
             return InlineImage(mode=mode, cols=cols, rows=rows, transmit=encode_iterm(image, cols=cols, rows=rows))
         image_id = _image_id(source)
         return InlineImage(
-            mode=mode, cols=cols, rows=rows, image_id=image_id, color=kitty_color_hex(image_id),
+            mode=mode, cols=cols, rows=rows, color=kitty_color_hex(image_id),
             transmit=encode_kitty_virtual(image, image_id=image_id, cols=cols, rows=rows),
             placeholder=kitty_placeholder_rows(cols, rows))
     except Exception as exc:  # health: allow BLE001 -- PIL raises arbitrary types decoding an untrusted file; display-only

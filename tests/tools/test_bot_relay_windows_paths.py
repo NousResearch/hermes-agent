@@ -83,38 +83,3 @@ def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_relay, "__file__", str(empty / "bot_relay.py"))
 
     assert bot_relay._hermes_cli() == "hermes"
-
-
-def test_delivery_lock_recognizes_resolved_cli_paths(tmp_path, monkeypatch):
-    """The #93091 per-profile turn lock must keep matching delivery argvs
-    now that argv[0] may be a resolved absolute path (or hermes.exe)."""
-    acquired = []
-
-    class _Ctx:
-        def __enter__(self):
-            acquired.append("locked")
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(bot_relay, "acquire_turn_lock", lambda root, profile: _Ctx())
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    with bot_mode_dm._delivery_lock(
-        [str(tmp_path / "venv" / "bin" / "hermes"), "-p", "ops", "chat"],
-        stdin_file=False,
-    ):
-        pass
-    with bot_mode_dm._delivery_lock(["hermes", "-p", "ops", "chat"], stdin_file=False):
-        pass
-    with bot_mode_dm._delivery_lock(
-        ["C:\\venv\\Scripts\\hermes.exe", "-p", "ops", "chat"], stdin_file=False
-    ):
-        pass
-    assert acquired == ["locked", "locked", "locked"]
-
-    # Unrelated argvs still bypass the lock entirely.
-    with bot_mode_dm._delivery_lock(["python", "-m", "whatever"], stdin_file=False):
-        pass
-    assert acquired == ["locked", "locked", "locked"]

@@ -319,7 +319,7 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # The delivery runs in a background service context whose PATH lacks the gateway's
         # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
         # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside
-        # this interpreter; _delivery_lock/_local_delivery_home match argv[0] by basename,
+        # this interpreter; _local_delivery_home matches argv[0] by basename,
         # so the absolute path stays compatible.
         return _start_delivery([_hermes_cli(), "-p", _self_profile_name(root), "peer", "dm", dm_target], content,
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
@@ -470,26 +470,6 @@ def _write_dm_file(content: str) -> str:
         _unlink_dm_file(path)
         raise
     return path
-
-
-def _delivery_lock(argv: list[str], *, stdin_file: bool):
-    """Per-profile turn lock for a LOCAL teammate delivery: local and relay deliveries
-    into one profile both run a Bot Chat turn here, so the turn window is serialized on
-    ``tools.bot_relay``'s cross-process lock. Peer transports (stdin mode) are locked
-    on the remote gateway by its own deliver path.
-
-    See #93091.
-    """
-    # Match the CLI element by basename: argv[0] may be an absolute venv path
-    # (service contexts lack PATH) and carries .exe on Windows; split on both separators.
-    # Split on both separators so the shape matches regardless of which platform built the argv. See #93590.
-    cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
-        return contextlib.nullcontext()
-    from tools.bot_mode_probe import _hermes_root
-    from tools.bot_relay import acquire_turn_lock
-
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
 def _live_intent_file(dm_file: str | os.PathLike) -> str:
@@ -748,12 +728,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         from tools.bot_relay import delivery_env
 
         env = delivery_env(author, profile_home if not stdin_file else None)
-        with _delivery_lock(argv, stdin_file=stdin_file):
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8-sig") as stream:
-                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+        # Keep the file open until the transport exits; cleanup occurs
+        # after subprocess.run returns, not merely after stdin reaches EOF.
+        with open(dm_file, "r", encoding="utf-8-sig") as stream:
+            # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+            return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
     finally:
         _unlink_dm_file(dm_file)
 

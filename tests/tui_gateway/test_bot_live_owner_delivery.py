@@ -49,13 +49,11 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,
     })
-    def terminal(outcome):
-        mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],
-                                  error=outcome.get("error", ""))
-    assert submit(None, "live", session, "refused input", terminal_callback=terminal)
+    outcomes = []
+    assert submit(None, "live", session, "refused input", terminal_callback=outcomes.append)
     session["_run_thread"].join(timeout=5)
     assert not session["_run_thread"].is_alive()
-    assert mailbox.read_delivery_result(tmp_path, queued["id"])["status"] == "failed"
+    assert [outcome["status"] for outcome in outcomes] == ["failed"]
     assert retired and session["running"] is False
 
 

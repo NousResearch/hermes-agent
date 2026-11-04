@@ -3934,6 +3934,7 @@ export const deOverrides = {
     queueSteerRefusedBody: 'Der laufende Turn konnte die Umleitung nicht übernehmen. Ihre Nachricht bleibt in der Warteschlange und steht jetzt an erster Stelle.',
     steerQueuedTitle: 'Für den nächsten Turn eingereiht',
     steerQueuedBody: 'Der laufende Turn konnte diese Nachricht nicht aufnehmen, daher wurde sie als Nächstes eingereiht.',
+    steerQueuedCompressionBody: 'Der Kontext wird gerade komprimiert, daher wurde diese Nachricht als Nächstes eingereiht.',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',

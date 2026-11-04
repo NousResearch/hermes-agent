@@ -46,6 +46,8 @@ def test_redirect_between_requests_of_a_running_turn_is_steered_into_it():
     resp, agent = _redirect(running=True)
 
     assert resp["result"]["status"] == "queued"
+    # Named like an accepted session.steer, so the client seals it into the live turn.
+    assert resp["result"]["disposition"] == "steer"
     assert agent._drain_pending_steer() == "use Postgres"
     assert agent._pending_redirect is None
 

@@ -10,6 +10,7 @@ import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { isSlashCommandText, pathLabel } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { notifyCorrectionQueued, queuedCorrectionJoinsLiveTurn } from '@/lib/correction-receipt'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -936,13 +937,15 @@ export function usePromptActions({
           }
 
           if (result?.status === 'queued') {
-            // A redirect queued in the build window is the next turn; an
-            // accepted steer joins this one after its running tool.
-            if (mode === 'steer') {
+            // An accepted steer joins this turn after its running tool; a
+            // correction queued for the next turn (build window, compaction)
+            // keeps the live stream running and says where it went.
+            if (queuedCorrectionJoinsLiveTurn(result, mode)) {
               flushStreamDeltas(id)
               updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
             } else {
               moveOptimisticMessageToEnd()
+              notifyCorrectionQueued(result)
             }
 
             triggerHaptic('submit')

@@ -1,0 +1,22 @@
+name: guardrails
+repo: https://github.com/eddiemessiah/hermes-guardrails
+sha: d9183978004cfb89f1d71153e6a929f51a5f3bea
+description: "Hard spend limits enforced in code before any payment tool runs: per-payment, daily and per-payee caps, Hermes approval for large or first-time payees (scoped to one payment), idempotency keys so retries never double-charge, a kill switch only a human can lift, and a SHA-256 hash-chained audit log. Can also guard other plugins' spending tools. Ships a zero-key mock backend and an optional Stripe test-mode backend. Disclosure — a pre_tool_call hook sees every tool call but acts only on guardrails_pay and tools listed in guarded_tools; a post_tool_call hook settles those tools' reservations; writes payments and audit entries to plugin-data/guardrails/guardrails.db; no network with the default mock backend; with backend stripe_test, payment requests go to api.stripe.com using GUARDRAILS_STRIPE_TEST_KEY (test keys only, live keys refused); no shell commands, background processes, telemetry or Python dependencies."
+maintainer: eddiemessiah
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/eddiemessiah/hermes-guardrails#readme
+version: "0.1.0"
+title: Guardrails
+screenshots:
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/d9183978004cfb89f1d71153e6a929f51a5f3bea/docs/02-approval-pause.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/d9183978004cfb89f1d71153e6a929f51a5f3bea/docs/03-run-complete.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/d9183978004cfb89f1d71153e6a929f51a5f3bea/docs/04-audit-log.png
+  - https://raw.githubusercontent.com/eddiemessiah/hermes-guardrails/d9183978004cfb89f1d71153e6a929f51a5f3bea/docs/05-tamper-detected.png
+platforms: []
+capabilities:
+  provides_tools: [guardrails_pay, guardrails_status, guardrails_audit]
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

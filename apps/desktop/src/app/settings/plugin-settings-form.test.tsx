@@ -65,6 +65,15 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('gives an unset secret a placeholder, so the empty field stays visible in the dark theme', () => {
+    const unset = FIELDS.filter(field => field.type === 'secret').map(field => ({ ...field, has_value: false }))
+    render(
+      <PluginSettingsForm disabled={false} fields={unset} idPrefix="p" onSave={vi.fn(async () => true)} title="Demo" />
+    )
+
+    expect((screen.getByLabelText(/^API key/) as HTMLInputElement).placeholder).toBe('Not set. Paste here')
+  })
+
   it('submits only what changed, coerced to wire types, secrets routed by env name; clears secrets after save', async () => {
     const onSave = vi.fn(async () => true)
     render(<PluginSettingsForm disabled={false} fields={FIELDS} idPrefix="p" onSave={onSave} title="Demo" />)

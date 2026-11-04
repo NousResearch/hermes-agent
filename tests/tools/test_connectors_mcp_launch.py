@@ -67,7 +67,7 @@ def test_launch_line_never_carries_a_credential(url, command, args, secret):
     assert len(line) <= MAX_TARGET_CHARS
 
 
-def test_launch_line_keeps_markup_as_text_and_flattens_controls():
-    line = launch_target(None, "bash\x1b]0;pwned\x07", ["<img src=x onerror=alert(1)>", "a\nb"])["target"]
-    assert line == "bash ]0;pwned <img src=x onerror=alert(1)> a b"
+def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_flattens_controls():
+    line = launch_target(None, "bash\x1b]0;pwned\x07", ["<img src=x onerror=alert(1)>", "my file.js"])["target"]
+    assert line == "bash ]0;pwned '<img src=x onerror=alert(1)>' 'my file.js'"
     assert launch_target("https://mcp.linear.app/sse", "node", [])["kind"] == "remote"

@@ -265,28 +265,36 @@ def local_image_path(candidate: Any) -> str | None:
         return None
 
 
-_RESULT_IMAGE_KEYS = ("image_url", "url", "path", "image_path", "screenshot_path")
-_ARG_IMAGE_KEYS = ("image_url", "url", "path")
+# Result fields that name an image the call produced (browser_exec, computer_use), read from the
+# result or from a multimodal envelope's ``meta``.
+_RESULT_IMAGE_KEYS = ("image_path", "screenshot_path")
+# Tools whose image is what the call showed or made: (``args``/``result``, key). Nothing else's
+# args count: a ``path`` is just as often a write, a refused patch or a read that can't show it.
+_TOOL_IMAGE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
+    "vision_analyze": (("args", "image_url"),),
+    "image_generate": (("result", "image"),),
+}
 
 
-def tool_image_path(args: Any, result: Any) -> str | None:
-    """The local image a tool call produced or looked at, else ``None``.
+def tool_image_path(tool_name: str, args: Any, result: Any, *, is_error: bool) -> str | None:
+    """The local image a successful tool call produced or looked at, else ``None``.
 
-    Reads named fields only (result first, then args), like the desktop's tool image preview,
-    so a tool that merely lists image paths in free text never floods the transcript.
+    Named fields only, so a tool that lists image paths in free text never floods the transcript,
+    and nothing for a failed call: a refused write or an unreadable file must not look like success.
     """
+    if is_error:
+        return None
     if isinstance(result, str):
-        try:
-            import json
+        from utils import safe_json_loads
 
-            result = json.loads(result)
-        except ValueError:
-            result = None
-    for source, keys in ((result, _RESULT_IMAGE_KEYS), (args, _ARG_IMAGE_KEYS)):
-        if isinstance(source, dict):
-            for key in keys:
-                if path := local_image_path(source.get(key)):
-                    return path
+        result = safe_json_loads(result)
+    result = result if isinstance(result, dict) else {}
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    sources = {"args": args if isinstance(args, dict) else {}, "result": result}
+    for source, key in (*_TOOL_IMAGE_FIELDS.get(tool_name, ()), *(("result", key) for key in _RESULT_IMAGE_KEYS)):
+        for candidate in (sources[source].get(key), meta.get(key) if source == "result" else None):
+            if path := local_image_path(candidate):
+                return path
     return None
 
 

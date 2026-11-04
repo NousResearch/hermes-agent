@@ -112,20 +112,38 @@ def test_inline_mode_off_and_no_terminal(monkeypatch):
 
 def test_tool_image_path_reads_named_fields(tmp_path):
     shot = _png(tmp_path / "shot.png")
-    assert tool_image_path({}, json.dumps({"screenshot_path": shot})) == shot
-    assert tool_image_path({"path": shot}, json.dumps({"content": "binary"})) == shot
-    assert tool_image_path({"image_url": shot}, "analysis text, not JSON") == shot
+    assert tool_image_path("browser_exec", {}, json.dumps({"screenshot_path": shot}), is_error=False) == shot
+    assert tool_image_path("vision_analyze", {"image_url": shot}, "analysis text, not JSON", is_error=False) == shot
+    assert tool_image_path("image_generate", {"prompt": "x"}, json.dumps({"success": True, "image": shot}),
+                           is_error=False) == shot
+    envelope = {"_multimodal": True, "content": [], "meta": {"screenshot_path": shot}}
+    assert tool_image_path("browser_exec", {}, envelope, is_error=False) == shot
 
 
 def test_tool_image_path_ignores_listings_urls_and_missing_files(tmp_path):
     shot = _png(tmp_path / "shot.png")
     # A file listing names images in free text and nested lists: never a preview.
-    assert tool_image_path({"pattern": "*.png"}, json.dumps({"matches": [shot], "output": shot})) is None
-    assert tool_image_path({"image_url": "https://example.com/a.png"}, "{}") is None
-    assert tool_image_path({"path": str(tmp_path / "gone.png")}, "{}") is None
-    assert tool_image_path({"path": str(tmp_path)}, "{}") is None
+    assert tool_image_path("search_files", {"pattern": "*.png"}, json.dumps({"matches": [shot], "output": shot}),
+                           is_error=False) is None
+    for url in ("https://example.com/a.png", str(tmp_path / "gone.png"), str(tmp_path)):
+        assert tool_image_path("vision_analyze", {"image_url": url}, "{}", is_error=False) is None
     (tmp_path / "notes.txt").write_text("x")
-    assert tool_image_path({"path": str(tmp_path / "notes.txt")}, "{}") is None
+    assert tool_image_path("vision_analyze", {"image_url": str(tmp_path / "notes.txt")}, "{}", is_error=False) is None
+
+
+def test_failed_or_writing_calls_never_show_the_image_they_name(tmp_path):
+    # A refused read, a write/patch to an image path and a failed vision call all name a real
+    # image; drawing it would read as success.
+    shot = _png(tmp_path / "shot.png")
+    refused = json.dumps({"error": f"Cannot read binary file '{shot}' (.png)."})
+    assert tool_image_path("read_file", {"path": shot}, refused, is_error=True) is None
+    assert tool_image_path("read_file", {"path": shot}, json.dumps({"content": "", "is_image": True}),
+                           is_error=False) is None
+    assert tool_image_path("write_file", {"path": shot, "content": "x"}, json.dumps({"bytes_written": 1}),
+                           is_error=False) is None
+    assert tool_image_path("patch", {"path": shot}, json.dumps({"error": "Refusing to overwrite"}), is_error=True) is None
+    assert tool_image_path("vision_analyze", {"image_url": shot}, json.dumps({"success": False, "error": "x"}),
+                           is_error=True) is None
 
 
 # ---------------------------------------------------------------------------

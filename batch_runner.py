@@ -41,6 +41,7 @@ from toolset_distributions import (
 
 logger = logging.getLogger(__name__)
 
+
 def _current_possible_tools() -> set[str]:
     """Return every tool name valid for trajectories at merge time.
 

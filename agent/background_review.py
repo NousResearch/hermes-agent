@@ -294,7 +294,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
 def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
     """The configured review route could not be resolved, so the fork runs on the main model. That
     was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
-    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
+    User-visible notice once per agent; log every time."""
     error_line = str(error).splitlines()[0] if str(error) else ""
     logger.warning(
         "auxiliary.background_review.provider=%r (model %r) could not be resolved: %s — background reviews "
@@ -849,25 +849,6 @@ def _same_model_parity_kwargs(agent: Any) -> dict[str, Any]:
     return kwargs
 
 
-def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> None:
-    """One-shot user-visible notice: ``auxiliary.background_review.reasoning_effort`` is IGNORED on
-    the same-model path (#104116). The fork inherits the parent's ``reasoning_config`` verbatim so
-    its request bytes keep the parent's prompt-cache prefix (#30532: a diverged ``thinking`` field
-    on the fork-birth request re-created a large share of the cache); the no-op used to be silent,
-    so a user who set the key saw no feedback at all. Gated on the parent so a nudge-per-turn
-    session warns once, not per fork."""
-    effort = str(_background_review_task_config(task_cfg).get("reasoning_effort") or "").strip()
-    if not effort or getattr(agent, "_warned_bg_review_reasoning_effort", False):
-        return
-    agent._warned_bg_review_reasoning_effort = True
-    message = t("display.review.reasoning_effort_warning", effort=effort)
-    emit = getattr(agent, "_emit_warning", None)
-    if callable(emit):
-        with suppress(Exception):
-            emit(message)
-    logger.warning("%s", message)
-
-
 def _detach_fork_compression(review_agent: Any) -> None:
     """Detached in-memory compaction for a fork sharing the parent's session_id. Disabling
     compression (the old guard against compacting the parent's live session) removed the only
@@ -899,12 +880,9 @@ def _detach_fork_compression(review_agent: Any) -> None:
         review_agent._review_defer_compaction_before_first_response = True
 
 
-def _routed_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """``reasoning_config`` for a ROUTED fork from ``auxiliary.background_review.reasoning_effort``
-    (#94825). The routed branch never inherits the parent's effort (its vocabulary may be invalid for
-    the routed provider), but an explicit per-task pin is the user's choice for THAT model and must
-    win over provider defaults, as every other aux task already does via ``_get_task_extra_body``.
-    None = unset (provider default); an unknown level warns and falls through to the default."""
+def _review_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Explicit review reasoning pin. Unset inherits a same-model parent, while a
+    different-model review keeps its provider default. Invalid values warn and stay unset."""
     effort = _background_review_task_config(task_cfg).get("reasoning_effort")
     if effort is None or effort == "":
         return None
@@ -913,7 +891,7 @@ def _routed_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dic
     if parsed is None:
         logger.warning(
             "auxiliary.background_review.reasoning_effort %r is not a valid level (none, %s) — using "
-            "the routed provider's default", effort, ", ".join(VALID_REASONING_EFFORTS),
+            "the inherited/provider default", effort, ", ".join(VALID_REASONING_EFFORTS),
         )
     return parsed
 
@@ -940,7 +918,7 @@ def _fork_init_kwargs(agent: Any, rt: dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
-    elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
+    elif (routed_cfg := _review_reasoning_config(task_cfg)) is not None:
         kwargs["reasoning_config"] = routed_cfg
     return kwargs
 
@@ -966,24 +944,26 @@ def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review",
 ) -> tuple[Any, dict[str, Any], bool]:
-    """Construct a detached AIAgent fork with warm prompt-cache parity (shared with ``/btw``): same
-    runtime/credentials as the parent, byte-identical system prompt / tools[] / reasoning config on
-    the same-model path, shared session_id for prefix warmth, full persistence detachment (no
-    state.db writes, rotation, or external memory providers; in-place-only compaction). Returns
-    ``(fork_agent, runtime_dict, routed)``; ``routed`` means a different model (cache cold —
-    replay a digest). The caller owns registration, whitelisting, running, usage attribution and
-    teardown."""
+    """Construct a detached review or ``/btw`` fork. Matching model/settings retain the parent's
+    byte-identical prompt, tools and cache scope; explicitly different review reasoning gets its
+    own bounded context without mutating the parent. Persistence stays detached (no state.db
+    writes, rotation, or external memory providers; in-place-only compaction). Returns
+    ``(fork_agent, runtime_dict, cold_context)``; a different model OR explicitly different
+    review reasoning uses a cold context and replays a digest. The caller owns registration,
+    whitelisting, running, usage attribution and teardown."""
     from run_agent import AIAgent  # local: avoids a circular import at load
     # Inherit the parent's live runtime: AIAgent.__init__'s env auto-resolution fails for
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
-    _routed = bool(_rt.get("routed"))
-    # A configured effort is dropped on the same-model path (cache parity) — say so once, visible,
-    # instead of leaving the set-but-ignored key invisible (#104116). Routed forks honor it
-    # (_routed_reasoning_config).
-    if not _routed and write_origin == "background_review":
-        _warn_ignored_reasoning_effort(agent, task_cfg)
-    review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
+    model_routed = bool(_rt.get("routed"))
+    kwargs = _fork_init_kwargs(agent, _rt, model_routed, max_iterations, task_cfg)
+    if not model_routed and write_origin == "background_review":
+        if (configured := _review_reasoning_config(task_cfg)) is not None:
+            kwargs["reasoning_config"] = configured
+    # Preserve the live parent's prefix/cache scope only when the request settings match.
+    # An explicit review effort wins; a digest keeps its cold request bounded and isolated.
+    cold_context = model_routed or kwargs.get("reasoning_config") != getattr(agent, "reasoning_config", None)
+    review_agent = AIAgent(**kwargs)
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
     # Fork-turn log tag: the fork shares the parent's session_id (and model on the
     # same-model path), so its turn-start/turn-exit log lines are otherwise
@@ -1003,7 +983,12 @@ def build_cache_parity_fork(
     review_agent._end_session_on_close = False
     review_agent._session_db = None
     review_agent.session_id = agent.session_id
-    # Same model only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
+    if cold_context and not model_routed:
+        # Usage still belongs to the parent, but a different reasoning prefix needs its own
+        # cache namespace even for a CLI parent whose scope is its physical session_id.
+        parent_scope = resolve_prompt_cache_scope_safe(agent) or agent.session_id
+        review_agent._inherited_cache_scope = f"{parent_scope}::review"
+    # Matching model/settings only: share the warm cached system prompt (~26% cost cut; a rebuilt prompt misses
     # the byte-exact prefix key) and pin session_start so any re-render (compression, plugin
     # hooks) stays byte-identical.
     # Inherit the parent's cached system prompt verbatim so the review fork's outbound HTTP request hits the
@@ -1013,7 +998,7 @@ def build_cache_parity_fork(
     # analysis + measured impact (~26% end-to-end cost reduction on Sonnet 4.5). When routed to a different
     # model the parent's cached prompt is for the wrong model/cache key and would miss anyway, so let the
     # routed fork build its own.
-    if not _routed:
+    if not cold_context:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
         # Cache-scope parity (#109964): the fork shares the parent's physical session_id and
@@ -1042,7 +1027,7 @@ def build_cache_parity_fork(
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
     review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, review_agent)
-    return review_agent, _rt, _routed
+    return review_agent, _rt, cold_context
 
 
 # Install a non-interactive approval callback on this worker thread so any dangerous-command guard the
@@ -1154,7 +1139,7 @@ def _run_review_fork(
     so the caller's error path still sees usage and the fork to clean up. ``explicit`` (/refine)
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
-    st.review_agent, _rt, _routed = build_cache_parity_fork(
+    st.review_agent, _rt, _cold_context = build_cache_parity_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
@@ -1182,14 +1167,14 @@ def _run_review_fork(
         _reset_background_review_read_marks()
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
-            # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
+            # Different model/effort -> digest; matching settings -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                conversation_history=_digest_history(messages_snapshot) if _cold_context else messages_snapshot,
             )
     finally:
         clear_thread_tool_whitelist()

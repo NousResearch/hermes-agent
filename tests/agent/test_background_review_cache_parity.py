@@ -13,6 +13,8 @@ Sonnet 4.5 per the contributor's measurement).
 
 from unittest.mock import patch
 
+import pytest
+
 
 def _make_agent_stub(agent_cls):
     """Create a minimal AIAgent-like object with just enough state for _spawn_background_review."""
@@ -426,59 +428,53 @@ def test_unrouted_review_fork_inherits_empty_tool_surface():
         assert fork.valid_tool_names == set()
 
 
-def test_same_model_review_surfaces_ignored_reasoning_effort_once():
-    """#104116: ``auxiliary.background_review.reasoning_effort`` is dropped on the same-model path
-    (cache parity, #30532) — that no-op must be visible instead of silent, and must not fire per
-    fork (a nudge-per-turn session would spam)."""
+@pytest.mark.parametrize("effort", [None, "", "medium"])
+def test_same_model_matching_review_effort_keeps_cache_without_warning(effort):
     import run_agent
     from agent.background_review import build_cache_parity_fork
 
     agent = _make_agent_stub(run_agent.AIAgent)
-    warnings = []
+    warnings, captured = [], {}
     agent._emit_warning = warnings.append
-    captured = {}
-    _Recorder = _make_recorder_class(captured)
-
-    with patch.object(run_agent, "AIAgent", _Recorder):
-        _fork, _rt, routed = build_cache_parity_fork(
-            agent, {"reasoning_effort": "low"}, max_iterations=5)
-        assert not routed
-        assert len(warnings) == 1, f"expected exactly one notice, got {warnings!r}"
-        assert "reasoning_effort" in warnings[0], warnings[0]
-        # Cache-parity behaviour itself is unchanged: the fork still inherits the parent verbatim.
-        assert captured["init_kwargs"]["reasoning_config"] == agent.reasoning_config
-        # Second fork on the same parent: no repeat.
-        build_cache_parity_fork(agent, {"reasoning_effort": "low"}, max_iterations=5)
-        assert len(warnings) == 1, f"notice repeated per fork: {warnings!r}"
+    with patch.object(run_agent, "AIAgent", _make_recorder_class(captured)):
+        fork, _rt, cold = build_cache_parity_fork(
+            agent, {"reasoning_effort": effort}, max_iterations=5)
+    assert not cold
+    assert captured["init_kwargs"]["reasoning_config"] == agent.reasoning_config
+    assert fork._cached_system_prompt == agent._cached_system_prompt
+    assert warnings == []
 
 
-def test_review_effort_notice_only_for_same_model_review_forks():
-    """No notice when the key is unset, when the fork is routed (#94825 owns that path), or for the
-    /btw ``side_question`` fork sharing ``build_cache_parity_fork``."""
+@pytest.mark.parametrize("parent_effort,review_effort", [
+    ("medium", "low"), ("high", "medium"), ("medium", "none"),
+])
+def test_same_model_different_review_effort_is_independent_and_parent_unchanged(parent_effort, review_effort):
     import run_agent
-    import agent.background_review as bg_review
+    from hermes_constants import parse_reasoning_effort
     from agent.background_review import build_cache_parity_fork
 
-    _Recorder = _make_recorder_class()
-    routed_runtime = {
-        "provider": "openrouter", "model": "aux-cheap-model", "api_key": "test-key",
-        "base_url": None, "api_mode": None, "credential_pool": None, "request_overrides": {},
-        "max_tokens": None, "command": None, "args": [], "routed": True,
-    }
-
-    def _warns(task_cfg, **kwargs):
-        agent = _make_agent_stub(run_agent.AIAgent)
-        warnings = []
-        agent._emit_warning = warnings.append
-        with patch.object(run_agent, "AIAgent", _Recorder):
-            build_cache_parity_fork(agent, task_cfg, max_iterations=5, **kwargs)
-        return warnings
-
-    assert _warns({"reasoning_effort": ""}) == []
-    assert _warns({}) == []
-    assert _warns({"reasoning_effort": "low"}, write_origin="side_question") == []
-    with patch.object(bg_review, "_resolve_review_runtime", return_value=routed_runtime):
-        assert _warns({"reasoning_effort": "low"}) == []
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent.reasoning_config = parse_reasoning_effort(parent_effort)
+    parent_cfg, parent_prompt = dict(agent.reasoning_config), agent._cached_system_prompt
+    warnings, captured = [], {}
+    agent._emit_warning = warnings.append
+    with patch.object(run_agent, "AIAgent", _make_recorder_class(captured)):
+        fork, _rt, cold = build_cache_parity_fork(
+            agent, {"reasoning_effort": review_effort}, max_iterations=5)
+        assert cold
+        assert captured["init_kwargs"]["reasoning_config"] == parse_reasoning_effort(review_effort)
+        assert captured["init_kwargs"]["providers_allowed"] == agent.providers_allowed
+        assert fork._cached_system_prompt is None
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope
+        assert resolve_prompt_cache_scope(fork) != resolve_prompt_cache_scope(agent)
+        assert warnings == []
+        # /btw is not a background review and still follows its parent.
+        _side, _rt, side_cold = build_cache_parity_fork(
+            agent, {"reasoning_effort": review_effort}, max_iterations=5, write_origin="side_question")
+        assert not side_cold
+        assert captured["init_kwargs"]["reasoning_config"] == parent_cfg
+    assert agent.reasoning_config == parent_cfg
+    assert agent._cached_system_prompt == parent_prompt
 
 
 def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):

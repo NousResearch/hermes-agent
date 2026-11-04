@@ -367,8 +367,8 @@ class TestPersistedMergeWitness:
         assert db._conn.execute(
             "SELECT tool_call_uid FROM messages WHERE content = 'stray'").fetchone()[0] is None
 
-    @pytest.mark.parametrize("slots", [["1" * 32, None], [None, "1" * 32]], ids=["mapped-then-legacy",
-                                                                                 "legacy-then-mapped"])
+    @pytest.mark.parametrize("slots", [["1" * 32, None], [None, "1" * 32], [None, None]],
+                             ids=["mapped-then-legacy", "legacy-then-mapped", "all-legacy"])
     def test_a_mixed_era_folds_unmapped_slot_survives_insert_rewrite_and_export_import(self, db, tmp_path, slots):
         """A fold of a mapped turn with an older build's unmapped one keeps ``None`` for the unmapped
         occurrence. Every write path keeps that slot (dropping the list would lose the mapped occurrence's
@@ -402,11 +402,13 @@ class TestPersistedMergeWitness:
         finally:
             other.close()
 
-    def test_an_all_unmapped_occurrence_list_is_no_map(self, db):
+    def test_an_all_unmapped_occurrence_list_preserves_explicit_ownership(self, db):
         db.create_session("s", "cli")
-        db.append_messages_batch("s", [{"role": "assistant", "content": "a", "tool_calls": [_call("c1")],
-                                        "_tool_call_uids": {"c1": "1" * 32, "call_x": [None, None]}}])
-        assert json.loads(db._conn.execute("SELECT tool_call_uids FROM messages").fetchone()[0]) == {"c1": "1" * 32}
+        uids = {"c1": "1" * 32, "call_x": [None, None]}
+        db.append_messages_batch("s", [{"role": "assistant", "content": "a",
+                                        "tool_calls": [_call("c1"), _call("call_x"), _call("call_x")],
+                                        "_tool_call_uids": uids}])
+        assert json.loads(db._conn.execute("SELECT tool_call_uids FROM messages").fetchone()[0]) == uids
 
     def test_a_composite_rewind_reports_the_replacement_rows_uid(self, db):
         from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER

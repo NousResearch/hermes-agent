@@ -36,14 +36,14 @@ afterEach(() => {
 })
 
 function openPicker() {
-  fireEvent.keyDown(screen.getByRole('button', { name: 'New session' }), { key: 'Enter' })
+  fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
 }
 
 it('starts directly with the sole agent, without a picker', () => {
   profile.$profiles.set([{ name: 'research', is_default: false }] as typeof profile.$profiles.value)
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   fireEvent.click(screen.getByRole('button', { name: 'New session' }))
-  expect(screen.queryByRole('menu')).toBeNull()
+  expect(screen.queryByRole('listbox')).toBeNull()
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
 })
 
@@ -63,18 +63,23 @@ it('cancels without creating anything and keeps identically named agents on diff
   } as NonNullable<typeof $fleetRoster.value>)
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
-  expect(screen.getAllByRole('menuitem')[0].textContent).toContain('research')
-  fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+  expect(screen.getAllByRole('option')[0].textContent).toContain('research')
+  fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
   expect(profile.newSessionInAgent).not.toHaveBeenCalled()
   openPicker()
-  fireEvent.click(screen.getByRole('menuitem', { name: /research · Beta/ }))
+  fireEvent.click(screen.getByRole('option', { name: /research · Beta/ }))
+  expect(profile.newSessionInAgent).not.toHaveBeenCalled()
+  expect(screen.getByRole('combobox').getAttribute('aria-label')).toContain('research · Beta')
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'beta', profile: 'research' })
 })
 
 it('starts blank with this gateway’s default agent and makes no automatic routing promise', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   openPicker()
-  fireEvent.click(screen.getByRole('menuitem', { name: /Start blank session/ }))
+  fireEvent.click(screen.getByRole('option', { name: /Start blank session/ }))
+  expect(profile.newSessionInAgent).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'default' })
 })
 
@@ -84,7 +89,8 @@ it('claims the shortcut only while the toggle is on and the picker is mounted', 
   act(() => {
     expect(requestSimplifiedNewSession()).toBe(true)
   })
-  expect(screen.getByRole('menu')).toBeTruthy()
+  expect(screen.queryByRole('listbox')).toBeNull()
+  expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
   act(() => $agentSidebarChoice.set(false))
   expect(requestSimplifiedNewSession()).toBe(false)
   view.unmount()
@@ -137,5 +143,34 @@ it('supports older gateways without a registry connection identity', () => {
   fireEvent.click(screen.getByRole('button', { name: 'New session' }))
   expect(profile.newSessionInProfile).toHaveBeenCalledWith('research')
   expect(profile.newSessionInAgent).not.toHaveBeenCalled()
-  expect(screen.queryByRole('menu')).toBeNull()
+  expect(screen.queryByRole('listbox')).toBeNull()
+})
+
+it('starts in the current agent with multiple agents without opening the picker', () => {
+  render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+  expect(screen.queryByRole('listbox')).toBeNull()
+  expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'research' })
+})
+
+it('uses the selected agent for the shortcut and forgets that choice after changing gateway', () => {
+  render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
+  openPicker()
+  fireEvent.click(screen.getByRole('option', { name: /^default ·/ }))
+  act(() => {
+    requestSimplifiedNewSession()
+  })
+  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'default' })
+  act(() => $apiRequestScope.set({ connectionId: 'beta', profile: 'research' }))
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'beta', profile: 'research' })
+})
+
+it('falls back to the current agent if the selected agent disappears', () => {
+  render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
+  openPicker()
+  fireEvent.click(screen.getByRole('option', { name: /^default ·/ }))
+  act(() => profile.$profiles.set([{ name: 'research', is_default: false }] as typeof profile.$profiles.value))
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+  expect(profile.newSessionInAgent).toHaveBeenLastCalledWith({ connectionId: 'alpha', profile: 'research' })
 })

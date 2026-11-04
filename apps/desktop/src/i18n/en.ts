@@ -4590,6 +4590,8 @@ export const en: Translations = {
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
       launchCommand: target => `Runs: ${target}`,
       launchRemote: target => `Connects to: ${target}`,
+      launchEnv: keys => `Env: ${keys}`,
+      launchCwd: dir => `Working dir: ${dir}`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',

@@ -33,7 +33,7 @@ class _Backend:
 
 def test_card_names_the_launch_target_and_the_model_result_does_not():
     entry = SimpleNamespace(post_install="", transport=SimpleNamespace(
-        url=None, command="npx", args=["-y", "@acme/mcp", "--api-key=sk-live-abcdef1234567890XYZ"]))
+        url=None, command="npx", args=["-y", "@acme/mcp", "--api-key=sk-live-abcdef1234567890XYZ"], env={}))
     seen = []
 
     def callback(payload):
@@ -115,3 +115,28 @@ def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, s
 ])
 def test_launch_line_keeps_ordinary_commands_paths_and_urls(url, command, args, line):
     assert launch_target(url, command, args)["target"] == line
+
+
+def test_launch_line_names_env_keys_and_cwd_but_never_env_values():
+    out = launch_target(None, "npx", ["-y", "@acme/mcp"],
+                        env={"NODE_OPTIONS": "--require /x.js", "ACME_TOKEN": "sk-live-abcdef1234567890XYZ"},
+                        cwd="/srv/acme")
+    assert out == {"kind": "stdio", "target": "npx -y @acme/mcp", "env": ["ACME_TOKEN", "NODE_OPTIONS"],
+                   "cwd": "/srv/acme"}
+    assert "require" not in json.dumps(out) and "sk-live" not in json.dumps(out)
+    assert set(launch_target(None, "npx", [], env={}, cwd="  ")) == {"kind", "target"}
+
+
+def test_a_string_args_value_is_one_argument_and_still_masked():
+    assert launch_target(None, "node", "--api-key=sk-live-abcdef1234567890XYZ")["target"] == "node --api-key=***"
+    assert launch_target(None, "node", "server.js")["target"] == "node server.js"
+
+
+def test_enable_reads_env_and_cwd_from_the_configured_entry():
+    from tools.connectors.mcp_launch import launch_for
+
+    cfg = {"acme": {"command": "node", "args": ["srv.js"], "env": {"NODE_OPTIONS": "--require /x.js"}, "cwd": "/w"}}
+    with patch("hermes_cli.mcp_catalog.installed_servers", return_value=cfg):
+        assert launch_for("enable", "acme") == {"kind": "stdio", "target": "node srv.js", "env": ["NODE_OPTIONS"],
+                                                "cwd": "/w"}
+

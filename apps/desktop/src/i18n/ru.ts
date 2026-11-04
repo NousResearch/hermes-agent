@@ -3649,6 +3649,8 @@ export const ruOverrides = {
       toolCount: count => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
       launchCommand: target => `Запускает: ${target}`,
       launchRemote: target => `Подключается к: ${target}`,
+      launchEnv: keys => `Окружение: ${keys}`,
+      launchCwd: dir => `Рабочая папка: ${dir}`,
       envRequired: 'Сначала заполните обязательные учётные данные',
       sendFailed: 'Не удалось отправить ответ на настройку MCP',
       reloadFailed: 'Сервер сохранён, но перезагрузка MCP-инструментов не удалась — они загрузятся в следующем сеансе',

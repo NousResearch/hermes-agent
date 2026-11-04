@@ -149,19 +149,34 @@ def scrub(text: str) -> str:
     return text if len(text) <= MAX_TARGET_CHARS else text[: MAX_TARGET_CHARS - 1] + "…"
 
 
-def launch_target(url: Any, command: Any, args: Any) -> Optional[dict[str, str]]:
-    """``{"kind": "remote"|"stdio", "target": text}``; the URL wins, as the transport choice does."""
+def _env_keys(env: Any) -> list[str]:
+    """The child's extra env names, never their values: the runtime merges them into the spawn."""
+    if not isinstance(env, dict):
+        return []
+    return [scrub(str(k)) for k in sorted(env, key=str) if str(k).strip()]
+
+
+def launch_target(url: Any, command: Any, args: Any, env: Any = None, cwd: Any = None) -> Optional[dict[str, Any]]:
+    """``{"kind": "remote"|"stdio", "target": text}``, plus ``env`` (names only) and ``cwd`` when a stdio
+    entry sets them; the URL wins, as the transport choice does."""
     if isinstance(url, str) and url.strip():
         return {"kind": "remote", "target": scrub(url.strip())}
     if not (isinstance(command, str) and command.strip()):
         return None
+    # A bare string ``args`` is one argument, not a sequence of characters.
+    argv = [args] if isinstance(args, str) else list(args or []) if isinstance(args, (list, tuple)) else []
     # An argument with whitespace is quoted, so `node "my file.js"` does not read as two arguments.
     words = [command.strip(), *(shlex.quote(a) if any(c.isspace() for c in a) else a
-                                for a in _mask_flag_values([str(a) for a in (args or []) if a is not None]))]
-    return {"kind": "stdio", "target": scrub(" ".join(words))}
+                                for a in _mask_flag_values([str(a) for a in argv if a is not None]))]
+    out: dict[str, Any] = {"kind": "stdio", "target": scrub(" ".join(words))}
+    if keys := _env_keys(env):
+        out["env"] = keys
+    if isinstance(cwd, str) and cwd.strip():
+        out["cwd"] = scrub(cwd.strip())
+    return out
 
 
-def launch_for(action: str, name: str) -> Optional[dict[str, str]]:
+def launch_for(action: str, name: str) -> Optional[dict[str, Any]]:
     """The line for one MCP row; None when the name resolves to nothing readable."""
     if action == "install":
         from hermes_cli.mcp_catalog import get_entry
@@ -170,10 +185,10 @@ def launch_for(action: str, name: str) -> Optional[dict[str, str]]:
         if entry is None:
             return None
         transport = entry.transport
-        return launch_target(transport.url, transport.command, transport.args)
+        return launch_target(transport.url, transport.command, transport.args, transport.env)
     from hermes_cli.mcp_catalog import installed_servers
 
     cfg = installed_servers().get(name)
     if not isinstance(cfg, dict):
         return None
-    return launch_target(cfg.get("url"), cfg.get("command"), cfg.get("args"))
+    return launch_target(cfg.get("url"), cfg.get("command"), cfg.get("args"), cfg.get("env"), cfg.get("cwd"))

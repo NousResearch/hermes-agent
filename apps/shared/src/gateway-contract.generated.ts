@@ -1142,10 +1142,12 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
-/** What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed display text, never the env map or headers. */
+/** What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed display text, never env values or headers. */
 export interface ConnectionTargetLaunch {
   kind: ConnectionTargetLaunchKind
   target: string
+  env?: string[] | null
+  cwd?: string | null
 }
 export type ConnectionTargetLaunchKind = 'remote' | 'stdio'
 export type CatalogTier = 'official' | 'verified' | 'community'

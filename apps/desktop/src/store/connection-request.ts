@@ -362,7 +362,10 @@ function mergeLiveTarget(target: ConnectionTarget, live: ConnectionOperationTarg
 }
 
 const sameLaunch = (a: ConnectionTargetLaunch | null | undefined, b: ConnectionTargetLaunch | null | undefined) =>
-  a?.kind === b?.kind && a?.target === b?.target
+  a?.kind === b?.kind &&
+  a?.target === b?.target &&
+  a?.cwd === b?.cwd &&
+  (a?.env ?? []).join('\n') === (b?.env ?? []).join('\n')
 
 const sameTarget = (next: ConnectionTarget, target: ConnectionTarget): boolean =>
   next.catalog === target.catalog &&

@@ -5198,6 +5198,8 @@ export const frOverrides = {
       toolCount: count => (count === 1 ? '1 outil' : `${count} outils`),
       launchCommand: target => `Exécute : ${target}`,
       launchRemote: target => `Se connecte à : ${target}`,
+      launchEnv: keys => `Environnement : ${keys}`,
+      launchCwd: dir => `Dossier de travail : ${dir}`,
       envRequired: "Renseignez d'abord les identifiants requis",
       sendFailed: "Impossible d'envoyer la réponse de configuration MCP",
       reloadFailed:

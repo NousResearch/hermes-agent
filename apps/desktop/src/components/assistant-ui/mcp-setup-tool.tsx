@@ -418,6 +418,8 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
           title={launch.target}
         >
           {LAUNCH_LINE[launch.kind](copy, launch.target)}
+          {launch.cwd ? <span className="block">{copy.launchCwd(launch.cwd)}</span> : null}
+          {launch.env?.length ? <span className="block">{copy.launchEnv(launch.env.join(', '))}</span> : null}
         </p>
       ) : null}
       <SetupFormDialog

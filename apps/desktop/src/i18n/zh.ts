@@ -4480,6 +4480,8 @@ export const zhOverrides = {
       toolCount: count => `${count} 个工具`,
       launchCommand: target => `将运行：${target}`,
       launchRemote: target => `将连接：${target}`,
+      launchEnv: keys => `环境变量：${keys}`,
+      launchCwd: dir => `工作目录：${dir}`,
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',

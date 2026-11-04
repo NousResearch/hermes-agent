@@ -182,6 +182,8 @@
     "assistant.mcpSetup.installTitle",
     "assistant.mcpSetup.installed",
     "assistant.mcpSetup.launchCommand",
+    "assistant.mcpSetup.launchCwd",
+    "assistant.mcpSetup.launchEnv",
     "assistant.mcpSetup.launchRemote",
     "assistant.mcpSetup.reloadFailed",
     "assistant.mcpSetup.sendFailed",

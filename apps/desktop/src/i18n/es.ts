@@ -5174,6 +5174,8 @@ export const esOverrides = {
       toolCount: count => (count === 1 ? '1 herramienta' : `${count} herramientas`),
       launchCommand: target => `Ejecuta: ${target}`,
       launchRemote: target => `Se conecta a: ${target}`,
+      launchEnv: keys => `Entorno: ${keys}`,
+      launchCwd: dir => `Directorio de trabajo: ${dir}`,
       envRequired: 'Rellena primero las credenciales obligatorias',
       sendFailed: 'No se pudo enviar la respuesta de configuración MCP',
       reloadFailed: 'Servidor guardado, pero falló la recarga de herramientas MCP — se cargarán en la próxima sesión',

@@ -1766,6 +1766,7 @@ class TestFlagAndKeyShapedCredentials:
         "For auth use `redis://:<password>@host:6379` or `redis://:${REDIS_PASSWORD}@host`.",
         "this.primaryKey = model.idField;\ndt.PrimaryKey = new DataColumn[] { dt.Columns[0] };",
         "var creds = new Creds { AccountKey = settings.StorageAccountKey };",
+        '{"encryptKey": "true", "private_key": "<your key>"}\nmaster_key: default\nMASTER_KEY=default',
     ])
     def test_help_text_prose_and_paths_after_a_flag_stay_readable(self, text):
         from agent.redact import redact_for_egress, redact_terminal_output
@@ -1793,6 +1794,13 @@ class TestFlagAndKeyShapedCredentials:
         "log: BlobEndpoint=https://a.blob.core.windows.net/;SharedAccessSignature=sv=2025-01-01&sig=Zq8xR2vT9pL4mN7k",
         "     3|Private-Lines: 1\n     4|AAAAIZq8xR2vT9pL4mN7kAAAA\n     5|Private-MAC: x",
         "3|Private-Lines: 1\r\n4|AAAAIZq8xR2vT9pL4mN7kAAAA\r\n5|Private-MAC: x\r\n",
+        'tool --password "a\\"b Zq8xR2vT9pL4mN7k"',
+        "tool --password 'Abc'\\''def Zq8xR2vT9pL4mN7k'",
+        'docker login -u me -p "a\\"b Zq8xR2vT9pL4mN7k" ghcr.io',
+        'tool --password "Abc\nZq8xR2vT9pL4mN7k"',
+        "tool --password ***Zq8xR2vT9pL4mN7k",
+        "AccountKey=***Zq8xR2vT9pL4mN7k==;x=1",
+        'tool --password "«redacted:ghp_…» Zq8xR2vT9pL4mN7k"',
     ])
     def test_crlf_ppk_tls_urls_and_yaml_key_names_are_masked(self, text):
         from agent.redact import redact_for_egress
@@ -1800,9 +1808,32 @@ class TestFlagAndKeyShapedCredentials:
         assert "Zq8xR2vT9pL4mN7k" not in redact_sensitive_text(text, force=True)
         assert "Zq8xR2vT9pL4mN7k" not in redact_for_egress(text)
 
+    @pytest.mark.parametrize(("text", "kept"), [
+        ("[x](https://a/c?SharedAccessSignature=sv=2020&sig=Zq8xR2vT9pL4mN7k) and", ") and"),
+        ("a,SharedAccessSignature=sv=2020&sig=Zq8xR2vT9pL4mN7k,col2", ",col2"),
+        ("https://a/c?SharedAccessSignature=sv=2020&sig=Zq8xR2vT9pL4mN7k&foo=bar", "&foo=bar"),
+        ("tool --token [REDACTED PRIVATE KEY]", "[REDACTED PRIVATE KEY]"),
+    ])
+    def test_a_sas_stops_after_its_signature_and_a_marker_is_kept(self, text, kept):
+        for out in (redact_sensitive_text(text, force=True), redact_sensitive_text(text, force=True, file_read=True)):
+            assert "Zq8xR2vT9pL4mN7k" not in out and kept in out
+
+    def test_unterminated_quotes_scan_in_linear_time(self):
+        import time
+
+        text = ('--password "' + "a" * 600 + "\n") * 160 + "--password '" * 8000
+        start = time.perf_counter()
+        redact_sensitive_text(text, force=True)
+        assert time.perf_counter() - start < 2.0
+
     @pytest.mark.parametrize("text", [
         "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=Zq8xR2vT9pL4mN7kQwErTyUi0==;EndpointSuffix=x",
         "mysql --password=Zq8xR2vT9pL4mN7kQwE -h db",
+        'tool --password "a\\"b Zq8xR2vT9pL4mN7k"',
+        "docker login -p 'Abc'\\''def Zq8xR2vT9pL4mN7k' ghcr.io",
+        'tool --password "Abc\nZq8xR2vT9pL4mN7k"',
+        'tool --password "«redacted:ghp_…» Zq8xR2vT9pL4mN7k"',
+        "AccountKey=***Zq8xR2vT9pL4mN7k==;x=1",
     ])
     def test_file_reads_get_the_non_reusable_marker_for_flag_values(self, text):
         out = redact_sensitive_text(text, force=True, file_read=True)

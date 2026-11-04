@@ -56,8 +56,9 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",),
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+# Policy hooks: timeout / still-running must fail closed (block the tool). command_guard gates
+# every terminal command (tools/approval.py): a hung guard denies instead of wedging the session.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call", "command_guard"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -84,6 +85,13 @@ def held_stream_transforms() -> tuple[Callable, ...]:
     from hermes_cli.plugins import _delivery_manager
 
     return _delivery_manager().held_transforms()
+
+
+def _policy_timeout_block_directive(hook_name: str) -> dict[str, str]:
+    """Block directive for a fail-closed hook whose callback timed out, naming the hook."""
+    if hook_name == "pre_tool_call":
+        return {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+    return {"action": "block", "message": f"{hook_name} plugin callback timed out or is still running"}
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> dict[str, str]:
@@ -309,7 +317,7 @@ class PluginDispatchMixin:
                         if failed is not None:
                             failed.append(cb)
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            results.append(_policy_timeout_block_directive(hook_name))
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -639,7 +647,7 @@ class PluginDispatchMixin:
             except TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                    results.append(_policy_timeout_block_directive(hook_name))
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).

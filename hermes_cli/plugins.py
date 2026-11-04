@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- registering the command_guard policy hook needs its entry and contract comment in VALID_HOOKS, the one hook registry; no code grows here
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -145,6 +146,12 @@ VALID_HOOKS: set[str] = {
     # pattern_keys, session_key, surface ("cli"|"gateway"|"smart"|"mcp-elicitation/<server>"|"mcp-trust/<server>"|
     # "vault-payment"); post_approval_response adds choice/decided_by. on_human_input_*: tools/human_input_hooks.py.
     "pre_approval_request", "post_approval_response", "on_human_input_request", "on_human_input_resolved",
+    # command_guard: consulted by tools/approval.py::check_all_command_guards for EVERY terminal command
+    # (model tool calls and direct terminal_tool() callers alike), with the floors — before yolo,
+    # approvals.mode=off, the allowlist and the container fast path. Kwargs: command, env_type,
+    # session_key. Return None / {"action": "allow"} to pass, {"action": "block", "message": reason} to
+    # refuse (first valid block wins; the terminal result carries status "blocked").
+    "command_guard",
     # on_room_member_activity: a hosted Group Chat member's live runtime events (tool.started/completed,
     # request.opened, message.delta, reasoning.delta, turn.error, ...) stamped with room_id, thread_id,
     # member_id, turn_id, task_id, execution_generation. Observer, queued per consumer off the token
@@ -205,7 +212,7 @@ VALID_HOOKS: set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: set[str] = {"transform_api_error_classification", "command_guard"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

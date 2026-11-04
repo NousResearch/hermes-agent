@@ -61,6 +61,8 @@ export interface TeamGatewayInfo {
   portal_url: string;
   /** Platforms the shared Team Gateway bots carry for this agent. */
   platforms: string[];
+  /** Non-messaging surfaces Team Gateway leaves running (API server, webhooks): set up here. */
+  direct_platforms?: string[];
 }
 
 export interface RelayLinkedAccount {

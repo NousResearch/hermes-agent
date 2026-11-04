@@ -1,25 +1,22 @@
 import { ExternalLink, Network } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import type { TeamGatewayInfo } from "@/lib/api";
-
-const PLATFORM_NAMES: Record<string, string> = {
-  discord: "Discord",
-  slack: "Slack",
-  telegram: "Telegram",
-  whatsapp: "WhatsApp",
-};
-
-function platformList(ids: string[]): string {
-  return ids.map((id) => PLATFORM_NAMES[id] ?? id).join(", ");
-}
+import type { MessagingPlatform, TeamGatewayInfo } from "@/lib/api";
 
 /**
- * The whole Channels page when Team Gateway owns this agent's messaging. The gateway switches
- * every direct bot off at each start there, so per-platform setup here would only lead nowhere:
- * channels are configured on the agent's page in Nous Portal.
+ * Shown in place of the messaging platforms when Team Gateway owns this agent's messaging. The
+ * gateway switches every direct messaging bot off at each start there, so their setup here would
+ * configure nothing: the agent's channels are configured in Nous Portal.
  */
-export function TeamGatewayChannels({ teamGateway }: { teamGateway: TeamGatewayInfo }) {
+export function TeamGatewayChannels({
+  platforms,
+  teamGateway,
+}: {
+  platforms: MessagingPlatform[];
+  teamGateway: TeamGatewayInfo;
+}) {
+  const names = new Map(platforms.map((p) => [p.id, p.name]));
+  const carried = teamGateway.platforms.map((id) => names.get(id) ?? id).join(", ");
   return (
     <Card className="border-border">
       <CardContent className="flex flex-col gap-4 p-6">
@@ -31,12 +28,12 @@ export function TeamGatewayChannels({ teamGateway }: { teamGateway: TeamGatewayI
             </span>
             <span className="text-sm text-muted-foreground">
               This agent reaches chat platforms through Team Gateway's shared bots, so it needs no
-              bot tokens of its own. Choose which platforms it uses and who can message it on the
-              agent's page in Nous Portal.
+              bot tokens of its own. Choose which platforms it uses and who can message it under
+              Manage Agents in Nous Portal.
             </span>
-            {teamGateway.platforms.length > 0 && (
+            {carried && (
               <span className="text-xs text-muted-foreground">
-                Carried for this agent: {platformList(teamGateway.platforms)}
+                Available for this agent: {carried}
               </span>
             )}
           </div>

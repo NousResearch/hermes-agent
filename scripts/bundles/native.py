@@ -67,6 +67,12 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
     source — so they stay out. Built wheel ZIPs (including the copies uv keeps
     beside sdist metadata.msgpack shards) ship: without them an offline
     rebuild falls back to wanting the sdist download and fails closed.
+
+    On macOS and Linux, uv's wheel entries (``wheels-v*/pypi/<name>/<version>``,
+    a hash directory deeper for URL, git and named-index sources) are relative
+    symlinks into ``archive-v0/``, and they ship as links. Following them
+    stored every unpacked wheel a second time and gave the seeded machine
+    cache directories where uv renames its own links (#141891).
     """
     def ignore(directory: str, names: list[str]) -> set[str]:
         path = Path(directory)
@@ -80,7 +86,7 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
             return {"src"}
         return set()
 
-    shutil.copytree(source, destination, ignore=ignore)
+    shutil.copytree(source, destination, ignore=ignore, symlinks=True)
 
 
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
@@ -257,8 +263,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     facts.record_state("venv", Venv(repo_dir).expected_stamp(features, plugin_dirs=[]), features)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
-    # Ship the full uv cache (build-only sdist sources and wheel ZIPs are
-    # already excluded by stage_uv_cache). Any per-install venv rebuild —
+    # Ship the full uv cache (build-only sdist sources are already excluded by
+    # stage_uv_cache). Any per-install venv rebuild —
     # plugin extras, feature changes — resolves entirely from the shipped
     # wheels with zero network access, on every profile of this install.
     payload_cache = out / "uv-cache"

@@ -1,15 +1,15 @@
 name: veyrul-media
 repo: https://github.com/the-media-vampire/veyrul-integrations
-sha: 9c6526334919c682af8936d9059d90a1b951f11c
+sha: a4807b681049d0aabe96cc5a966b4be2fae4a0a1
 subdir: hermes-plugin
-version: "1.0.0"
+version: "1.0.1"
 title: Veyrul Media Knowledge
 description: "Saved media workflows, code and references for captions, editing, audio and production troubleshooting. One portable skill and five remote read tools. Disclosure: enabling the anonymous HTTPS MCP connection sends chosen queries or record IDs and request metadata to veyrul.com; keep private briefs and assets out of queries. No account, API key, executable, dependency installer, background worker, file upload, self-updater or separate analytics sender. Existing agent-provider usage and public-service rate limits apply."
 maintainer: the-media-vampire
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/the-media-vampire/veyrul-integrations/tree/9c6526334919c682af8936d9059d90a1b951f11c/hermes-plugin
+docs_url: https://github.com/the-media-vampire/veyrul-integrations/tree/a4807b681049d0aabe96cc5a966b4be2fae4a0a1/hermes-plugin
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

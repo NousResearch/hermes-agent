@@ -1465,6 +1465,35 @@ def _strip_media_tag_directives(text: str) -> str:
     return _delete_spans(cleaned, _deliverable_tag_spans(cleaned))
 
 
+#: Filesystems cap a single path component at 255 bytes. Inbound media names arrive
+#: percent-encoded (wecom: one CJK char == 9 bytes), so a long Chinese filename blew the
+#: cache write up with ``[Errno 63] File name too long`` and the whole message was dropped.
+#: Decode first, then clip to a byte budget (extension preserved).
+_CACHE_NAME_MAX_BYTES = 120
+
+
+def _clip_cache_filename(name: str, max_bytes: int = _CACHE_NAME_MAX_BYTES) -> str:
+    """Percent-decode ``name``, neutralise path separators, and clip it to ``max_bytes``."""
+    from urllib.parse import unquote
+
+    decoded = unquote(name).replace("\x00", "")
+    decoded = decoded.replace("/", "_").replace("\\", "_").strip()
+    stem, dot, ext = decoded.rpartition(".")
+    if not dot:
+        stem, ext = decoded, ""
+    # A pathologically long "extension" is still an oversized component — drop it and
+    # truncate the whole name instead (a short stem + 300-byte suffix must not survive).
+    if len(ext.encode("utf-8", "ignore")) + 1 >= max_bytes:
+        stem, ext = decoded, ""
+    budget = max_bytes - len(ext.encode("utf-8", "ignore")) - (1 if ext else 0)
+    stem_bytes = stem.encode("utf-8", "ignore")
+    if len(stem_bytes) > budget:
+        stem = stem_bytes[: max(budget, 0)].decode("utf-8", "ignore")  # never split a char
+    if not stem:
+        return f"document.{ext}" if ext else "document"
+    return f"{stem}.{ext}" if ext else stem
+
+
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
     """Save raw document bytes to the cache as ``doc_{uuid12}_{original_name}`` and return
     the absolute path; raises ValueError if the sanitized path escapes the cache directory."""
@@ -1473,6 +1502,7 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = (Path(filename).name if filename else "document").replace("\x00", "").strip()
     if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
+    safe_name = _clip_cache_filename(safe_name)
     filepath = cache_dir / f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):

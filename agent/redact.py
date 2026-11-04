@@ -266,14 +266,14 @@ _CLI_LOGIN_P_RE = re.compile(
 )
 # Azure connection-string keys. They are ``Name=value`` inside a quoted string, so
 # every ENV pass declines them: the name is mixed case and carries no underscore boundary.
-# The key must open a connection-string segment (start, ``;``, a quote or whitespace before
+# The key must open a connection-string segment (start, ``;``, ``,``, a URL ``?``/``&``, a quote or whitespace before
 # it, no space around ``=``): ``this.accountKey = x`` / ``dt.PrimaryKey = new …`` in source
 # read through read_file or a terminal stays byte-identical, or the agent cannot patch it.
 # A spaced ``AccountKey = …`` (ini files, PowerShell) only counts when the value is a
 # 16+ char base64 run carrying a digit, which an identifier like ``config.Key`` or
 # ``StorageAccountKeyFromVault`` is not.
 _CONNSTR_SECRET_KEY_RE = re.compile(
-    r"(?P<flag>(?<![^;'\"\s])(?:AccountKey|SharedAccessKey|SharedAccessSignature)"
+    r"(?P<flag>(?<![^;,?&'\"\s])(?:AccountKey|SharedAccessKey|SharedAccessSignature)"
     r"(?:=|[ \t]*+=[ \t]*+(?=[A-Za-z+/]*[0-9])(?=[A-Za-z0-9+/]{16,}={0,2}(?![\w.(]))))"
     r"(?P<value>[^;\s'\"&]+)",
     re.IGNORECASE,
@@ -859,12 +859,13 @@ def _mask_flag_value(match: "re.Match[str]") -> str:
 # prose is a placeholder or a word (``--token TOKEN``, ``[--password PASSWORD]``, ``use
 # --token to pass…``), the next flag (``psql --password -h db``) or a sub-option spec
 # (``docker build --secret id=npmrc``). None of those is the credential.
-# A metavar is upper case (``TOKEN``, ``DB_PASSWORD``), snake case (``db_name``) or a
-# camelCase type name (cobra's ``stringArray``); a prose word is short and lower case.
-# A long single lower-case word (``correcthorsebatterystaple``) or anything carrying a
-# digit or symbol is still masked.
+# A metavar is upper case (``TOKEN``, ``DB_PASSWORD``), two short snake-case words
+# (``db_name``) or a one-hump camelCase type name (cobra's ``stringArray``); a prose word
+# is short and lower case. A passphrase is longer than that: a long lower-case word
+# (``correcthorsebatterystaple``), three or more words (``correct_horse_battery_staple``,
+# ``correctHorseBatteryStaple``) or anything carrying a digit or symbol is still masked.
 _FLAG_PLACEHOLDER_RE = re.compile(
-    r"(?:[A-Z][A-Z_]*|[a-z]{1,8}|[a-z]+(?:_[a-z]+)+|[a-z]+(?:[A-Z][a-z]+)+)[\]).,:;]*"
+    r"(?:[A-Z][A-Z_]*|[a-z]{1,8}|[a-z]{1,8}_[a-z]{1,8}|[a-z]{1,8}[A-Z][a-z]{1,8})[\]).,:;]*"
     r"|[-\[(<].*|[a-z][\w-]*=.*"
     r"|\S*(?:xxx|XXX|\.\.\.)"  # a docs sample: ``--api-key sk-or-v1-xxx``
 )
@@ -1137,7 +1138,10 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
-_DSN_PW_PLACEHOLDER_RE = re.compile(r"<[^<>]*>|\$\{?\w+\}?")
+# A docs placeholder is a lower-case or ALL-CAPS name in angle brackets (``<password>``) or an
+# upper-case env var reference (``${REDIS_PASSWORD}``); ``$ecretPassw0rd`` or ``<Zq8x…>`` is
+# a real password that happens to start with the same character.
+_DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?")
 
 
 def _redact_url_credentials(text: str, code_file: bool) -> str:

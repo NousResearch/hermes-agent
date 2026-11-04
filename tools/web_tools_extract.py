@@ -15,7 +15,11 @@ from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import (
+    _rate_limited_extract_indices,
+    _rescue_eligible,
+    _rescue_extract,
+)
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -187,6 +191,22 @@ async def _fetch_with_rescue(provider, fetch_urls: list[str], format: Optional[s
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed), True
     if _backend_failed_whole_batch(results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results), True
+    # A batch the backend partly served is not a batch-wide outage, so the whole-batch branch above
+    # never fires and each throttled URL is simply lost. Rescue just those entries, matched back by
+    # URL: providers omit failed URLs or return successes out of request order, so a position is not
+    # a URL. Genuine page errors (404/410/...) and policy refusals stay untouched.
+    if _rescue_eligible(provider):
+        indices = _rate_limited_extract_indices(results, fetch_urls)
+        if indices:
+            subset = [fetch_urls[index] for index in indices]
+            rescued = await asyncio.to_thread(
+                _rescue_extract, provider.name, subset, [results[index] for index in indices]
+            )
+            if len(rescued) == len(indices):
+                for index, entry in zip(indices, rescued):
+                    if not entry.get("error"):
+                        results[index] = entry
+                return results, True
     return results, False
 
 

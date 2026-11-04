@@ -51,3 +51,16 @@ def test_image_rows_measure_as_their_cell_width(photo, mode):
     image = render_inline_image(photo, mode=mode, max_cols=40, max_rows=10)
     widths = {fragment_list_width(to_formatted_text(ANSI(line))) for line in image_lines(image)}
     assert widths == {image.cols + 2}
+
+
+def test_iterm_rows_are_reserved_blank_and_the_image_draws_over_them(photo):
+    # Konsole/iTerm2/WezTerm: the image owns no text cells, so the scrollback reserves exactly
+    # ``rows`` blank lines and the last one jumps back up, draws, and restores the cursor.
+    image = render_inline_image(photo, mode="iterm", max_cols=40, max_rows=10)
+    assert image is not None
+    lines = image_lines(image)
+    assert len(lines) == image.rows > 1
+    assert [fragment_list_width(to_formatted_text(ANSI(line))) for line in lines] == [0] * (image.rows - 1) + [2]
+    painted = _painted(lines[-1])
+    assert f"\x1b7\x1b[{image.rows - 1}A\x1b]1337;File=inline=1;" in painted
+    assert f"width={image.cols};height={image.rows};" in painted and "\x07\x1b8" in painted

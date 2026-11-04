@@ -551,15 +551,16 @@ Images show up right in the transcript: the ones you attach (`/paste`, `/image`,
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  inline_images: auto   # auto | kitty | unicode | off
+  inline_images: auto   # auto | kitty | iterm | unicode | off
 ```
 
-- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and truecolor half-blocks everywhere else, including inside tmux and VS Code.
+- **`auto`** draws full-resolution images in kitty and Ghostty (kitty graphics protocol, Unicode placeholders) and, in the classic CLI, in iTerm2, WezTerm and Konsole (iTerm2 inline-image protocol drawn over reserved rows). Everything else, including tmux, VS Code and the TUI outside kitty/Ghostty, gets truecolor half-blocks.
 - **`kitty`** forces the kitty protocol, for example inside a tmux with `set -g allow-passthrough on`.
+- **`iterm`** forces the iTerm2 protocol in the classic CLI (the TUI falls back to `auto` here).
 - **`unicode`** always uses half-blocks.
 - **`off`** shows file paths only, as before.
 
-Only local files are drawn; remote image URLs are not fetched. iTerm2, WezTerm and sixel terminals get half-blocks, because their image protocols paint over rows the transcript can't measure.
+Only local files are drawn; remote image URLs are not fetched. Sixel terminals get half-blocks.
 
 ## Session Management
 

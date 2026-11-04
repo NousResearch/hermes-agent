@@ -4,10 +4,10 @@ One home for the escape-level work so the pet mascot and inline images share it.
 in fidelity order: ``kitty`` (kitty, Ghostty, WezTerm), ``iterm`` (iTerm2, WezTerm),
 ``sixel`` (xterm -ti vt340, foot, mlterm, …), ``unicode`` (24-bit half-blocks).
 
-Inline images (:func:`render_inline_image`) only use the two forms whose cells a line-based
-renderer can measure: kitty Unicode placeholders and half-blocks. iTerm2 and sixel paint
-over rows the CLI's scrollback replay and Ink's layout never counted, so those terminals get
-half-blocks. PIL is imported lazily; a missing Pillow or an unreadable file yields ``None``.
+Inline images (:func:`render_inline_image`) use kitty Unicode placeholders and half-blocks, whose
+cells a line-based renderer can measure, plus iTerm2 images for a painter that reserves blank rows
+and draws over them (the classic CLI; Ink can't). Sixel terminals get half-blocks. PIL is
+imported lazily; a missing Pillow or an unreadable file yields ``None``.
 """
 
 from __future__ import annotations
@@ -46,6 +46,13 @@ def detect_terminal_graphics() -> str:
     if term_program == "mintty" or "foot" in term or "mlterm" in term or "sixel" in term:
         return "sixel"
     return "unicode"
+
+
+def supports_iterm_images() -> bool:
+    """True when the terminal paints iTerm2 inline images (OSC 1337): iTerm2, WezTerm, Konsole."""
+    if os.environ.get("TERM_PROGRAM", "").lower() == "vscode":
+        return False
+    return detect_terminal_graphics() == "iterm" or _is_wezterm() or "KONSOLE_VERSION" in os.environ
 
 
 def supports_kitty_placeholders() -> bool:
@@ -198,7 +205,7 @@ def encode_unicode(image, *, target_cols: int) -> str:
 # ── Inline images ────────────────────────────────────────────────────────────
 
 # Public names accepted by ``display.inline_images``.
-INLINE_IMAGE_MODES = ("auto", "kitty", "unicode", "off")
+INLINE_IMAGE_MODES = ("auto", "kitty", "iterm", "unicode", "off")
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 # Pet ids live in [1, 0x7FFF] (``agent.pet.render.kitty_image_id``); images take the rest of
@@ -209,23 +216,31 @@ _IMAGE_ID_BASE, _IMAGE_ID_SPAN = 0x8000, 0xFFFFFF - 0x8000
 _PIXELS_PER_CELL_PIXEL = 2
 
 
-def resolve_inline_mode(configured: Any, *, graphics: bool = True) -> str:
-    """Effective ``kitty``/``unicode``/``off`` for ``display.inline_images``.
+def resolve_inline_mode(configured: Any, *, graphics: bool = True, overlays: bool = False) -> str:
+    """Effective ``kitty``/``iterm``/``unicode``/``off`` for ``display.inline_images``.
 
-    ``graphics`` says the painter owns a real terminal it can send escapes to. ``auto`` picks
-    kitty placeholders where they paint (kitty, Ghostty) and half-blocks elsewhere. tmux swallows
-    the kitty transmit without ``allow-passthrough``, so ``auto`` stays on half-blocks there;
-    pinning ``kitty`` is the opt-in for a passthrough-enabled tmux.
+    ``graphics`` says the painter owns a real terminal it can send escapes to; ``overlays`` that
+    it can reserve blank rows and paint a cell-pinned image over them (the classic CLI's
+    scrollback can, Ink's re-laid-out frame can't). ``auto`` picks kitty placeholders where they
+    paint (kitty, Ghostty), then iTerm2 images over reserved rows where the painter allows it
+    (iTerm2, WezTerm, Konsole), else half-blocks. tmux swallows both transmits without
+    ``allow-passthrough``, so ``auto`` stays on half-blocks there; pinning a protocol opts in.
     """
     if configured is False:
         return "off"
     mode = "auto" if configured in (None, True) else str(configured).strip().lower()
     mode = mode if mode in INLINE_IMAGE_MODES else "auto"
+    if mode == "iterm" and not overlays:
+        mode = "auto"
     if mode in ("off", "unicode") or not graphics:
         return "unicode" if mode != "off" else "off"
-    if mode == "kitty":
+    if mode in ("kitty", "iterm"):
         return mode
-    return "kitty" if supports_kitty_placeholders() and not os.environ.get("TMUX") else "unicode"
+    if os.environ.get("TMUX"):
+        return "unicode"
+    if supports_kitty_placeholders():
+        return "kitty"
+    return "iterm" if overlays and supports_iterm_images() else "unicode"
 
 
 def local_image_path(candidate: Any) -> str | None:
@@ -299,8 +314,12 @@ def _grid_for(width: int, height: int, *, max_cols: int, max_rows: int) -> tuple
 
 
 def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows: int) -> InlineImage | None:
-    """Lay out the image at *path* for *mode* (``kitty``/``unicode``); ``None`` when it can't be shown."""
-    if mode not in ("kitty", "unicode") or max_cols < 1 or max_rows < 1:
+    """Lay out the image at *path* for *mode* (``kitty``/``iterm``/``unicode``); ``None`` when it can't be shown.
+
+    ``iterm`` returns a ``transmit`` pinned to exactly ``cols``×``rows`` cells for a painter that
+    reserved those rows; it draws at the cursor and owns no text cells.
+    """
+    if mode not in ("kitty", "iterm", "unicode") or max_cols < 1 or max_rows < 1:
         return None
     try:
         from PIL import Image, ImageOps
@@ -313,6 +332,13 @@ def render_inline_image(path: str | Path, *, mode: str, max_cols: int, max_rows:
         if mode == "unicode":
             return InlineImage(mode=mode, cols=cols, rows=rows, cells=downscale_cells(image, target_cols=cols, rows=rows))
         image.thumbnail((cols * CELL_W * _PIXELS_PER_CELL_PIXEL, rows * CELL_H * _PIXELS_PER_CELL_PIXEL), Image.LANCZOS)
+        if mode == "iterm":
+            raw = io.BytesIO()
+            image.save(raw, format="PNG")
+            payload = base64.standard_b64encode(raw.getvalue()).decode("ascii")
+            return InlineImage(mode=mode, cols=cols, rows=rows, transmit=(
+                f"\x1b]1337;File=inline=1;size={raw.tell()};width={cols};height={rows};"
+                f"preserveAspectRatio=1:{payload}\x07"))
         image_id = _image_id(source)
         return InlineImage(
             mode=mode, cols=cols, rows=rows, image_id=image_id, color=kitty_color_hex(image_id),

@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { SETTINGS_ROUTE } from '@/app/routes'
@@ -30,9 +30,11 @@ export function SimplifiedAgentList({
   expanded,
   onToggle,
   renderSessions,
+  revealSession,
   searching = false
 }: {
   searching?: boolean
+  revealSession?: { key: string } | null
   agents: ReturnType<typeof useSimplifiedAgents>
   expanded: Record<string, boolean>
   onToggle: (id: string, open: boolean) => void
@@ -74,6 +76,40 @@ export function SimplifiedAgentList({
     }
   }
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+
+    if (!revealSession || !scroller) {
+      return
+    }
+
+    const row = [...scroller.querySelectorAll<HTMLElement>('[data-session-key]')].find(
+      element => element.dataset.sessionKey === revealSession.key
+    )
+
+    if (!row) {
+      return
+    }
+
+    const viewport = scroller.getBoundingClientRect()
+    const bounds = row.getBoundingClientRect()
+
+    // Leave the revealed row clear of this list's min(2.5rem, 25%) edge fades.
+    const inset = Math.min(
+      parseFloat(getComputedStyle(document.documentElement).fontSize) * 2.5 || 40,
+      scroller.clientHeight / 4
+    )
+
+    const top = viewport.top + inset
+    const bottom = viewport.top + scroller.clientHeight - inset
+    const delta = bounds.top < top ? bounds.top - top : bounds.bottom > bottom ? bounds.bottom - bottom : 0
+
+    if (delta) {
+      scroller.scrollTop += delta
+    }
+  }, [revealSession])
+
   const gateways = [...new Set(sorted.map(agent => agent.connectionId))]
   const isOpen = (id: string) => searching || (expanded[id] ?? true)
 
@@ -82,7 +118,7 @@ export function SimplifiedAgentList({
       <SidebarPanelLabel className="shrink-0 px-2 py-2 [&>span:first-child]:mx-1">
         {t.simplifiedAgents.agents}
       </SidebarPanelLabel>
-      <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none">
+      <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none" ref={scrollRef}>
         {gateways.map(connectionId => {
           const group = sorted.filter(agent => agent.connectionId === connectionId)
           const gatewayId = JSON.stringify(['gateway', connectionId])

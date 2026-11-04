@@ -417,7 +417,9 @@ it('shows loading rather than no matches while a search is pending', () => {
 it('withholds bare-ID actions for search-only owner collisions and restores them when search clears', async () => {
   vi.spyOn(apiClient, 'hermesApi')
     .mockResolvedValueOnce({ results: [] })
-    .mockResolvedValue({ results: [{ session_id: 'regular', title: 'Other owner chat', snippet: 'other', session_started: 1 }] })
+    .mockResolvedValue({
+      results: [{ session_id: 'regular', title: 'Other owner chat', snippet: 'other', session_started: 1 }]
+    })
   mount()
   fireEvent.change(screen.getByRole('textbox', { name: 'Search sessions' }), { target: { value: 'other' } })
   await screen.findByText('Other owner chat')
@@ -529,3 +531,53 @@ it('marks pinned agent chats and sorts them first, restoring recency when unpinn
   expect(agent.getAllByRole('img', { name: 'Pinned' })).toHaveLength(1)
   expect(pins.queryByText('Pinned older')).toBeNull()
 })
+
+it.each([
+  ['below', 350, 324],
+  ['above', 20, 80],
+  ['visible', 180, 200]
+])(
+  'reveals a pinned chat %s the Agents viewport without moving other scroll regions',
+  (_position, rowTop, expected) => {
+    mount()
+    const agents = screen.getByRole('region', { name: 'Agents' })
+    const pins = screen.getByRole('region', { name: 'Pinned' })
+    const scroller = agents.querySelector<HTMLElement>('.scroll-fade-y')!
+    const pinScroller = pins.querySelector<HTMLElement>('.scroll-fade-y')!
+    const pin = within(pins).getByText('Pinned plan').closest('button')!
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 200 })
+    scroller.scrollTop = 200
+    pinScroller.scrollTop = 33
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this === scroller) {
+        return { top: 100, bottom: 300 } as DOMRect
+      }
+
+      if (agents.contains(this) && this.dataset.sessionKey && this.textContent?.includes('Pinned plan')) {
+        return { top: rowTop, bottom: rowTop + 34 } as DOMRect
+      }
+
+      return nativeRect.call(this)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse: Research' }))
+    pin.focus()
+    fireEvent.click(pin)
+    expect(screen.getByRole('button', { name: 'Collapse: Research' })).toBeTruthy()
+    expect(scroller.scrollTop).toBe(expected)
+    expect(pinScroller.scrollTop).toBe(33)
+    expect(window.document.activeElement).toBe(pin)
+
+    // Background list refreshes must not repeat a completed reveal.
+    scroller.scrollTop = 200
+    act(() => $sessions.set([...$sessions.get()]))
+    expect(scroller.scrollTop).toBe(200)
+    fireEvent.click(within(agents).getByText('Regular chat'))
+    expect(scroller.scrollTop).toBe(200)
+
+    // Explicitly clicking the same pin again is a new reveal request.
+    fireEvent.click(pin)
+    expect(scroller.scrollTop).toBe(expected)
+  }
+)

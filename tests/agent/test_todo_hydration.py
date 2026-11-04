@@ -92,3 +92,18 @@ def test_gateway_decodes_verified_result_without_agent_methods(monkeypatch):
     detached = SimpleNamespace(_todo_store=TodoStore(), _session_db=db, session_id="session")
     assert hydrate_todos_for_compaction(detached, []) is detached
     assert detached._todo_store.snapshot()["revision"] == 8
+
+
+def test_agent_fold_does_not_resolve_repair_until_a_seam_is_exposed():
+    from agent.conversation_compression import _fold_todo_snapshot
+
+    class State:
+        _todo_store = TodoStore()
+
+        @property
+        def _repair_message_sequence(self):
+            raise AssertionError("repair is unnecessary when no synthetic seam is removed")
+
+    rows = [{"role": "user", "content": "human request"}]
+    _fold_todo_snapshot(State(), rows)
+    assert rows == [{"role": "user", "content": "human request"}]

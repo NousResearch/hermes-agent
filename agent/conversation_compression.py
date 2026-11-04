@@ -3013,7 +3013,7 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
         authoritative=getattr(agent, "_compaction_todo_authoritative", False) is True,
     )
     fold_todo_snapshot(compressed, snapshot, authoritative=authoritative,
-                       repair_sequence=agent._repair_message_sequence)
+                       repair_sequence=lambda rows: agent._repair_message_sequence(rows))
 
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:

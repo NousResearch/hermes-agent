@@ -779,9 +779,32 @@ export interface SessionReadOwnerRoute {
 export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
 
 let _sessionOwnerResolver: SessionOwnerResolver | null = null
+let _sessionStoredIdResolver: ((sessionId: string) => string | null) | null = null
+let _sessionFileOwnerResolver: ((id: string, storedId: string) => ReturnType<SessionOwnerResolver>) | null = null
 
-export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): void {
+export function setSessionOwnerResolver(
+  resolver: SessionOwnerResolver | null,
+  storedIdResolver: ((sessionId: string) => string | null) | null = null,
+  fileOwnerResolver: ((id: string, storedId: string) => ReturnType<SessionOwnerResolver>) | null = null
+): void {
   _sessionOwnerResolver = resolver
+  _sessionStoredIdResolver = storedIdResolver
+  _sessionFileOwnerResolver = fileOwnerResolver
+}
+
+/** Download admission needs the persisted identity AND the full owner route.
+ * Unlike the playback helper below, never elide a same-ambient connection pin. */
+export function sessionFileDownloadOrigin(id: string) {
+  const sessionId = _sessionStoredIdResolver ? _sessionStoredIdResolver(id) : id
+
+  if (!sessionId) {
+    throw new Error('The persisted session for this file could not be resolved; reopen the chat and retry')
+  }
+
+  return {
+    sessionId,
+    owner: _sessionFileOwnerResolver ? _sessionFileOwnerResolver(id, sessionId) : _sessionOwnerResolver?.(id)
+  }
 }
 
 /** The connection pin a session-scoped READ must carry for `id`, or {} when

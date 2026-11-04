@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes 使用两类模型槽位：
 
 - **主模型** — agent 的思考核心。每条用户消息、每个工具调用循环、每次流式响应都经由该模型处理。
-- **辅助模型** — agent 卸载给较小模型的边缘任务。例如上下文压缩、视觉（图像分析）、审批评分、会话标题生成、`/review` 审查和语音对话回复。每项任务有独立槽位，可单独覆盖。
+- **辅助模型** — agent 卸载出去的边缘任务，例如上下文压缩、视觉（图像分析）、审批评分、会话标题生成、`/review` 审查和语音对话回复。每项任务有独立槽位，可单独覆盖；仪表板提供的槽位见[设置辅助模型](#setting-auxiliary-models)。
 
 本页介绍如何通过仪表板配置上述两类模型。如需使用配置文件或 CLI，请跳至底部的[其他方法](#alternative-methods)。
 
@@ -41,7 +41,7 @@ Hermes 使用两类模型槽位：
 
 选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
 
-## 设置辅助模型
+## 设置辅助模型 {#setting-auxiliary-models}
 
 点击 **Show auxiliary** 展开辅助任务列表，每项任务一行（插件可注册更多任务）：
 
@@ -62,6 +62,8 @@ Hermes 使用两类模型槽位：
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |
 | **Voice Chat（语音对话）** | 语音对话回复。通常选用比主模型更快的模型；语音轮次默认关闭推理，GPT-Live 语音对话不使用此槽位。参见[语音模式](./features/voice-mode.md)。 |
 
+各槽位对应的 YAML 键，以及只能在配置文件中设置的辅助任务，见[辅助模型](./configuration.md#auxiliary-models)。
+
 ### 单任务覆盖
 
 点击任意辅助行上的 **Change**，打开相同的选择器，操作方式相同 — 选择提供商和模型，点击 Switch。该行将从 `auto (use main model)` 更新为 `provider · model`。
@@ -79,7 +81,7 @@ Hermes 使用两类模型槽位：
 下拉菜单包含：
 
 - **Main model** — 与点击主行上的 Change 效果相同。
-- **All auxiliary tasks** — 将此模型一次性分配给所有辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
+- **All auxiliary tasks** — 将此模型一次性分配给页面上的所有辅助槽位。适合将所有边缘任务统一切换到廉价 flash 模型的场景。
 - **单项任务选项** — Vision、Review、Compression 等。每项任务当前分配的模型标记为 `current`。
 
 当模型卡片当前已分配到某个槽位时，会显示 `main` 或 `aux · <task>` 标签，方便一眼看出历史模型的使用情况。

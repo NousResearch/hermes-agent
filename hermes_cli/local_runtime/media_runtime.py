@@ -851,9 +851,11 @@ class MediaRuntimeController:
         self._log_path = logs / f"sidecar-{self._instance_id}.log"
         self._log_handle = open(self._log_path, "a", encoding="utf-8", errors="replace")
         # list-args, never a shell; the password is '-' (stdin), so the command
-        # line itself is safe to record for forensics.
-        cmd = [str(python), str(run_py), "--api-only", "-H", LOOPBACK_HOST,
-               "-p", str(port), "--password", "-"]
+        # line itself is safe to record for forensics. These are run.py's own flags (the short -H/-p
+        # belong to the `unsloth studio` CLI and make run.py exit 2); --no-cloudflare forces a public
+        # tunnel off even if a stored "start remote access automatically" setting asks for one.
+        cmd = [str(python), str(run_py), "--api-only", "--host", LOOPBACK_HOST,
+               "--port", str(port), "--no-cloudflare", "--password", "-"]
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         proc, job = self._spawn(cmd, owned=True, stdin=subprocess.PIPE,

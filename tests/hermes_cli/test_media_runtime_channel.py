@@ -67,9 +67,19 @@ def _flag(name):
     return args[args.index(name) + 1]
 
 
+# Mirror the REAL studio/backend/run.py argparse contract (it has no -H/-p; exits 2 on unknown flags).
+_ACCEPTED = {"--api-only": 0, "--host": 1, "--port": 1, "--password": 1, "--no-cloudflare": 0}
+_i = 0
+while _i < len(args):
+    if args[_i] not in _ACCEPTED:
+        sys.stderr.write("run.py: error: unrecognized arguments: " + " ".join(args[_i:]) + "\\n")
+        sys.exit(2)
+    _i += 1 + _ACCEPTED[args[_i]]
+
 assert "--api-only" in args, "api-only flag required"
-HOST = _flag("-H")
-PORT = int(_flag("-p"))
+assert "--no-cloudflare" in args, "a public tunnel must be explicitly off"
+HOST = _flag("--host")
+PORT = int(_flag("--port"))
 assert _flag("--password") == "-", "password must be '-' (stdin)"
 PASSWORD = sys.stdin.readline().strip()
 

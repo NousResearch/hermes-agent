@@ -2,7 +2,7 @@
 
 Every behavior the controller promises gets a real test, and the heavy ones run
 against REAL processes: the fake backend below honors the proven Studio launch
-contract (``--api-only -H 127.0.0.1 -p <port> --password -``, password on stdin
+contract (``--api-only --host 127.0.0.1 --port <port> --no-cloudflare --password -``, password on stdin
 only, ``/api/health`` 200, ``Unsloth Studio running on http://127.0.0.1:<port>``
 on stdout) and even reports its own argv/environ over ``/_debug/argv_env`` so
 leak tests check what the CHILD actually received. Nothing here touches the
@@ -57,9 +57,20 @@ def _flag(name):
     return args[args.index(name) + 1]
 
 
+# Mirror the REAL studio/backend/run.py argparse contract: it accepts ONLY these flags (the short
+# -H/-p belong to the `unsloth studio` typer CLI, not to run.py) and exits 2 on anything else.
+_ACCEPTED = {"--api-only": 0, "--host": 1, "--port": 1, "--password": 1, "--no-cloudflare": 0}
+_i = 0
+while _i < len(args):
+    if args[_i] not in _ACCEPTED:
+        sys.stderr.write("run.py: error: unrecognized arguments: " + " ".join(args[_i:]) + "\\n")
+        sys.exit(2)
+    _i += 1 + _ACCEPTED[args[_i]]
+
 assert "--api-only" in args, "api-only flag required"
-HOST = _flag("-H")
-PORT = int(_flag("-p"))
+assert "--no-cloudflare" in args, "a public tunnel must be explicitly off"
+HOST = _flag("--host")
+PORT = int(_flag("--port"))
 assert _flag("--password") == "-", "password must be '-' (stdin)"
 PASSWORD = sys.stdin.readline().strip()
 del PASSWORD  # received over stdin; never echoed anywhere
@@ -312,7 +323,7 @@ def test_spawn_goes_through_owned_true(tmp_path, monkeypatch, live):
     def spy_spawn(cmd, *, owned, **kwargs):
         seen["owned"] = owned
         seen["cmd"] = cmd
-        port = cmd[cmd.index("-p") + 1]
+        port = cmd[cmd.index("--port") + 1]
         kwargs["stdout"].write(f"Unsloth Studio running on http://127.0.0.1:{port}\n")
         kwargs["stdout"].flush()
         stub, _inner = _decoy_proc(live)
@@ -323,9 +334,9 @@ def test_spawn_goes_through_owned_true(tmp_path, monkeypatch, live):
     assert status.state == "running", status.detail
     assert seen["owned"] is True, "sidecar must spawn owned=True"
     cmd = seen["cmd"]
-    assert cmd[2:] == ["--api-only", "-H", "127.0.0.1", "-p", cmd[cmd.index("-p") + 1],
-                       "--password", "-"]
-    assert int(cmd[cmd.index("-p") + 1]) != 8888
+    assert cmd[2:] == ["--api-only", "--host", "127.0.0.1", "--port", cmd[cmd.index("--port") + 1],
+                       "--no-cloudflare", "--password", "-"]
+    assert int(cmd[cmd.index("--port") + 1]) != 8888
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +439,7 @@ class _StubbornSpawn:
         self.live = live
 
     def __call__(self, cmd, *, owned, **kwargs):
-        port = cmd[cmd.index("-p") + 1]
+        port = cmd[cmd.index("--port") + 1]
         kwargs["stdout"].write(f"TAURI_PORT={port}\n")
         kwargs["stdout"].flush()
         stub, _inner = _decoy_proc(self.live)

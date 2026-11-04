@@ -3,6 +3,7 @@ import { useLocation } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -84,8 +85,8 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
       className="mt-(--titlebar-height) flex min-h-0 w-11 shrink-0 flex-col items-center gap-1 border-r border-(--sidebar-edge-border) pb-2 pt-2"
     >
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-        {items.map(item => (
-          <Tip key={item.id} label={item.label}>
+        {items.map(item => {
+          const button = (
             <Button
               aria-current={item.active ? 'page' : undefined}
               aria-label={item.label}
@@ -99,8 +100,32 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
             >
               <item.icon />
             </Button>
-          </Tip>
-        ))}
+          )
+
+          if (!('settingsRoute' in item) || !item.settingsRoute) {
+            return (
+              <Tip key={item.id} label={item.label}>
+                {button}
+              </Tip>
+            )
+          }
+
+          const route = item.settingsRoute
+
+          return (
+            <ContextMenu key={item.id}>
+              <Tip label={item.label}>
+                <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+              </Tip>
+              <ContextMenuContent aria-label={item.label}>
+                <ContextMenuItem onSelect={() => onNavigate({ ...item, route })}>
+                  <Codicon name="settings-gear" />
+                  {t.skills.plugins.settingsToggle(item.label)}
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          )
+        })}
       </div>
       <SimplifiedSettingsMenu onNavigate={onNavigate} />
     </nav>

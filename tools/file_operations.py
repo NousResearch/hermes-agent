@@ -621,10 +621,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             'cat > "$tmp"; '
             # new file: umask-default perms instead of mktemp's 0600 (#70856). Runs AFTER cat so a
             # write-masking umask can't EACCES the stream; quoted "=rw" so zsh doesn't =word-expand it.
-            'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
+            'if [ ! -e "$t" ]; then '
+            'case "$(basename "$t")" in '
+            '.env*|*.key|*token*) chmod 600 "$tmp" 2>/dev/null || true ;; '
+            '*) chmod 664 "$tmp" 2>/dev/null || chmod "=rw" "$tmp" 2>/dev/null || true ;; '
+            'esac; fi; '
             'mv -f "$tmp" "$t"; '
             "trap - EXIT")
-        return self._exec(script, stdin_data=content, timeout=30)
+        return self._exec(script, stdin_data=content)
 
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
         """Whether the on-disk file starts with a UTF-8 BOM. ALWAYS probes disk:
@@ -1566,6 +1570,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
 
+        # Ensure 0o664 permissions on newly created files when possible (with secrets exemption)
+        if not pre_content:
+            try:
+                abs_p = os.path.abspath(path)
+                base = os.path.basename(abs_p)
+                if not (base.startswith(".env") or base.endswith(".key") or "token" in base or "/.git/" in abs_p):
+                    os.chmod(abs_p, 0o664)
+                else:
+                    os.chmod(abs_p, 0o600)
+            except Exception:
+                pass
+
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
         # LSP diagnostics are a separate channel, fired only when the syntax tier is
         # clean (no point asking an LSP about a file that won't parse).
@@ -1716,3 +1732,5 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "folder directly when access is intentional.")
             result.warning = f"{result.warning} {protected}" if result.warning else protected
         return result
+
+

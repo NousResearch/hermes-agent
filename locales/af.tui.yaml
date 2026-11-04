@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ kies · Enter bevestig · Y/N vinnig · Esc kansel
 prompt.rewind.detail: "Om die wysiging te stuur verwyder daardie prompt en alles daarna uit hierdie sessie."
 prompt.rewind.editHint: "Enter spoel hierheen terug en stuur · Esc terug na die lys"
 prompt.rewind.editing: "wysig prompt {0}"
-prompt.rewind.listHint: "↑/↓ kies · Enter wysig · Esc sluit"
+prompt.rewind.listHint: "↑/↓ kies · Enter wysig en stuur weer · f vurk van hier · Esc sluit"
+prompt.rewind.marker: "↺ gekies in die terugspoel-kieser"
+prompt.rewind.preview: "prompt {0}"
 prompt.rewind.title: "↺ terugspoel — kies 'n vroeëre prompt om te wysig en weer te stuur"
 
 rpc.requestFailed: "versoek het misluk"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "verlaat is gedeaktiveer in gehuisde dashb
 slashCmd.core.redraw.done: "ui herteken"
 slashCmd.core.retry.nothing: "niks om te herprobeer nie"
 slashCmd.core.rewind.done: "teruggespoel na prompt {0} ({1} boodskappe verwyder)"
+slashCmd.core.rewind.forked: "gevurk van voor prompt {0} — wysig die prompt en druk Enter om te stuur"
 slashCmd.core.rewind.nothing: "niks om na terug te spoel nie"
 slashCmd.core.rewind.unsupported: "/rewind benodig die gedeelde gateway (hermes serve)"
 slashCmd.core.save.failed: "stoor het misluk"

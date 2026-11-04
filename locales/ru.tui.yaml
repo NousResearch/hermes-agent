@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ выбор · Enter подтвердить · Y/N 
 prompt.rewind.detail: "Отправка правки удалит этот запрос и всё, что после него, из этого сеанса."
 prompt.rewind.editHint: "Enter — откатиться сюда и отправить · Esc — назад к списку"
 prompt.rewind.editing: "правка запроса {0}"
-prompt.rewind.listHint: "↑/↓ выбор · Enter правка · Esc закрыть"
+prompt.rewind.listHint: "↑/↓ выбор · Enter правка и повторная отправка · f ответвить отсюда · Esc закрыть"
+prompt.rewind.marker: "↺ выбрано в окне отката"
+prompt.rewind.preview: "промпт {0}"
 prompt.rewind.title: "↺ откат — выберите прежний запрос, чтобы изменить и отправить заново"
 
 rpc.requestFailed: "запрос не удался"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "выход отключён в чате �
 slashCmd.core.redraw.done: "интерфейс перерисован"
 slashCmd.core.retry.nothing: "нечего повторять"
 slashCmd.core.rewind.done: "откат к запросу {0} (удалено сообщений: {1})"
+slashCmd.core.rewind.forked: "ответвлено перед промптом {0} — отредактируйте промпт и нажмите Enter, чтобы отправить"
 slashCmd.core.rewind.nothing: "откатываться некуда"
 slashCmd.core.rewind.unsupported: "для /rewind нужен общий шлюз (hermes serve)"
 slashCmd.core.save.failed: "не удалось сохранить"

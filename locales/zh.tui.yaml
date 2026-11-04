@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ 选择 · Enter 确认 · Y/N 快捷 · Esc 取消
 prompt.rewind.detail: "发送修改后，该提示及其之后的所有内容都会从本会话中移除。"
 prompt.rewind.editHint: "Enter 回退到此处并发送 · Esc 返回列表"
 prompt.rewind.editing: "正在编辑提示 {0}"
-prompt.rewind.listHint: "↑/↓ 选择 · Enter 编辑 · Esc 关闭"
+prompt.rewind.listHint: "↑/↓ 选择 · Enter 编辑并重新发送 · f 从这里分支 · Esc 关闭"
+prompt.rewind.marker: "↺ 已在回退选择器中选中"
+prompt.rewind.preview: "提示 {0}"
 prompt.rewind.title: "↺ 回退 — 选择一条更早的提示进行编辑并重新发送"
 
 rpc.requestFailed: "请求失败"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "托管仪表盘聊天中已禁用退出 �
 slashCmd.core.redraw.done: "界面已重绘"
 slashCmd.core.retry.nothing: "没有可重试的内容"
 slashCmd.core.rewind.done: "已回退到提示 {0}（移除了 {1} 条消息）"
+slashCmd.core.rewind.forked: "已从提示 {0} 之前分支 — 编辑提示后按 Enter 发送"
 slashCmd.core.rewind.nothing: "没有可回退的内容"
 slashCmd.core.rewind.unsupported: "/rewind 需要共享网关 (hermes serve)"
 slashCmd.core.save.failed: "保存失败"

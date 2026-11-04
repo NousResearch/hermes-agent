@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ вибрати · Enter підтвердити · 
 prompt.rewind.detail: "Надсилання правки видалить цей запит і все, що після нього, з цього сеансу."
 prompt.rewind.editHint: "Enter повернутися сюди й надіслати · Esc назад до списку"
 prompt.rewind.editing: "редагування запиту {0}"
-prompt.rewind.listHint: "↑/↓ вибір · Enter редагувати · Esc закрити"
+prompt.rewind.listHint: "↑/↓ вибір · Enter редагувати й надіслати знову · f відгалузити звідси · Esc закрити"
+prompt.rewind.marker: "↺ вибрано у вікні відмотування"
+prompt.rewind.preview: "промпт {0}"
 prompt.rewind.title: "↺ повернення — виберіть попередній запит, щоб змінити й надіслати знову"
 
 rpc.requestFailed: "запит не вдався"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "вихід недоступний у ча
 slashCmd.core.redraw.done: "UI перемальовано"
 slashCmd.core.retry.nothing: "нема що повторювати"
 slashCmd.core.rewind.done: "повернуто до запиту {0} (видалено повідомлень: {1})"
+slashCmd.core.rewind.forked: "відгалужено перед промптом {0} — відредагуйте промпт і натисніть Enter, щоб надіслати"
 slashCmd.core.rewind.nothing: "немає до чого повертатися"
 slashCmd.core.rewind.unsupported: "для /rewind потрібен спільний шлюз (hermes serve)"
 slashCmd.core.save.failed: "не вдалося зберегти"

@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ 선택 · Enter 확인 · Y/N 바로 선택 · Esc
 prompt.rewind.detail: "수정 내용을 보내면 그 프롬프트와 이후의 모든 내용이 이 세션에서 제거돼요."
 prompt.rewind.editHint: "Enter 여기로 되감고 보내기 · Esc 목록으로 돌아가기"
 prompt.rewind.editing: "프롬프트 {0} 편집 중"
-prompt.rewind.listHint: "↑/↓ 선택 · Enter 편집 · Esc 닫기"
+prompt.rewind.listHint: "↑/↓ 선택 · Enter 편집 후 다시 보내기 · f 여기서 분기 · Esc 닫기"
+prompt.rewind.marker: "↺ 되감기 선택기에서 선택됨"
+prompt.rewind.preview: "프롬프트 {0}"
 prompt.rewind.title: "↺ 되감기 — 편집해서 다시 보낼 이전 프롬프트를 고르세요"
 
 rpc.requestFailed: "요청 실패"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "호스팅 대시보드 채팅에서는 �
 slashCmd.core.redraw.done: "UI를 다시 그렸어요"
 slashCmd.core.retry.nothing: "다시 시도할 내용이 없어요"
 slashCmd.core.rewind.done: "프롬프트 {0}(으)로 되감았어요 (메시지 {1}개 제거됨)"
+slashCmd.core.rewind.forked: "프롬프트 {0} 직전에서 분기했습니다 — 프롬프트를 편집하고 Enter로 보내세요"
 slashCmd.core.rewind.nothing: "되감을 내용이 없어요"
 slashCmd.core.rewind.unsupported: "/rewind에는 공유 게이트웨이(hermes serve)가 필요해요"
 slashCmd.core.save.failed: "저장에 실패했어요"

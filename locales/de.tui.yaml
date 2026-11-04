@@ -789,7 +789,9 @@ prompt.confirm.hint: "↑/↓ auswählen · Enter bestätigen · Y/N direkt · E
 prompt.rewind.detail: "Das Senden der Änderung entfernt diesen Prompt und alles danach aus dieser Sitzung."
 prompt.rewind.editHint: "Enter hierher zurückspulen und senden · Esc zurück zur Liste"
 prompt.rewind.editing: "Prompt {0} wird bearbeitet"
-prompt.rewind.listHint: "↑/↓ auswählen · Enter bearbeiten · Esc schließen"
+prompt.rewind.listHint: "↑/↓ auswählen · Enter bearbeiten & erneut senden · f von hier abzweigen · Esc schließen"
+prompt.rewind.marker: "↺ im Zurückspul-Auswähler gewählt"
+prompt.rewind.preview: "Prompt {0}"
 prompt.rewind.title: "↺ zurückspulen — einen früheren Prompt zum Bearbeiten und erneuten Senden wählen"
 
 rpc.requestFailed: "Anfrage fehlgeschlagen"
@@ -935,6 +937,7 @@ slashCmd.core.quit.dashboardDisabled: "Beenden ist im gehosteten Dashboard-Chat 
 slashCmd.core.redraw.done: "UI neu gezeichnet"
 slashCmd.core.retry.nothing: "nichts zu wiederholen"
 slashCmd.core.rewind.done: "zu Prompt {0} zurückgespult ({1} Nachrichten entfernt)"
+slashCmd.core.rewind.forked: "von vor Prompt {0} abgezweigt — Prompt bearbeiten und mit Enter senden"
 slashCmd.core.rewind.nothing: "nichts zum Zurückspulen"
 slashCmd.core.rewind.unsupported: "/rewind benötigt das geteilte Gateway (hermes serve)"
 slashCmd.core.save.failed: "Speichern fehlgeschlagen"

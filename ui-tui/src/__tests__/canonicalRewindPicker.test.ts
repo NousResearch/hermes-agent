@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { $overlayState, resetOverlayState } from '../app/overlayStore.js'
+import { rewindFocusIndex } from '../app/rewindFocusStore.js'
 import { rewindTargets } from '../app/slash/canonicalRewindPicker.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { shouldOpenRewindOnDoubleEsc } from '../app/useInputHandlers.js'
@@ -30,6 +31,20 @@ function harness(rewindRefusal?: Error, repaintFailure?: Error) {
       return { session_id: 'owner', revision: 7, execution_generation: 3, messages, info: { model: 'm' } }
     }
 
+    if (method === 'session.mutate' && params.operation === 'branch') {
+      return {
+        session_id: 'owner',
+        operation: 'branch',
+        revision: 8,
+        execution_generation: 3,
+        branched_session_id: 'child'
+      }
+    }
+
+    if (method === 'session.info') {
+      return { title: 'Fork' }
+    }
+
     if (method === 'session.mutate' && params.operation === 'rewind') {
       if (rewindRefusal) {
         throw rewindRefusal
@@ -51,14 +66,24 @@ function harness(rewindRefusal?: Error, repaintFailure?: Error) {
   const ctx = {
     slashFlightRef: { current: 0 },
     gateway: { gw: { isCanonical: true, request }, rpc: request },
-    transcript: { page: vi.fn(), panel: vi.fn(), send, sys, setHistoryItems, trimLastExchange: (items: unknown[]) => items },
+    transcript: {
+      page: vi.fn(),
+      panel: vi.fn(),
+      send,
+      sys,
+      setHistoryItems,
+      trimLastExchange: (items: unknown[]) => items
+    },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
-    session: { resumeById: vi.fn() },
+    session: {
+      newSession: vi.fn(async () => patchUiState({ sid: 'fresh' })),
+      resumeById: vi.fn(async (id: string) => patchUiState({ sid: id }))
+    },
     composer,
     voice: {}
   }
 
-  return { composer, request, send, setHistoryItems, slash: createSlashHandler(ctx as any), sys }
+  return { composer, ctx, request, send, setHistoryItems, slash: createSlashHandler(ctx as any), sys }
 }
 
 const mutations = (request: ReturnType<typeof harness>['request']) =>
@@ -67,14 +92,17 @@ const mutations = (request: ReturnType<typeof harness>['request']) =>
 beforeEach(() => {
   resetUiState()
   resetOverlayState()
-  patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any })
+  patchUiState({
+    sid: 'owner',
+    info: { model: 'm', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 3 } as any
+  })
 })
 
 describe('/rewind picker (#21910)', () => {
   it('offers every earlier text prompt, numbered by turn; a media turn keeps its number but is not offered', () => {
     expect(rewindTargets({ messages })).toEqual([
       { rowId: 11, text: 'first', turn: 1 },
-      { rowId: 15, text: 'third question', turn: 3 }
+      { rowId: 15, text: 'third question', throughRowId: 14, turn: 3 }
     ])
   })
 
@@ -120,7 +148,7 @@ describe('/rewind picker (#21910)', () => {
     expect(composer.setInput).toHaveBeenCalledWith('again')
   })
 
-  it('a cut that commits but cannot repaint keeps the edit as that session\'s next prompt', async () => {
+  it("a cut that commits but cannot repaint keeps the edit as that session's next prompt", async () => {
     const { composer, send, slash } = harness(undefined, new Error('transport closed'))
 
     slash('/rewind')
@@ -131,7 +159,11 @@ describe('/rewind picker (#21910)', () => {
     await flush()
 
     expect(send).not.toHaveBeenCalled()
-    expect(composer.enqueue).toHaveBeenCalledWith('first, edited', 'first, edited', expect.objectContaining({ sid: 'owner' }))
+    expect(composer.enqueue).toHaveBeenCalledWith(
+      'first, edited',
+      'first, edited',
+      expect.objectContaining({ sid: 'owner' })
+    )
   })
 
   it('does not open while a turn runs', async () => {
@@ -142,7 +174,67 @@ describe('/rewind picker (#21910)', () => {
     await flush()
 
     expect($overlayState.get().rewind).toBeNull()
-    expect(request.mock.calls.some(([method]) => method === 'session.resume' || method === 'session.mutate')).toBe(false)
+    expect(request.mock.calls.some(([method]) => method === 'session.resume' || method === 'session.mutate')).toBe(
+      false
+    )
+  })
+})
+
+describe('/rewind fork from here', () => {
+  it('branches through the row before the picked prompt, switches to the child and prefills the prompt unsent', async () => {
+    const { composer, ctx, request, send, slash } = harness()
+
+    slash('/rewind')
+    await flush()
+    const picker = $overlayState.get().rewind!
+
+    picker.onFork(picker.targets[1]!)
+    await flush()
+    await flush()
+    await flush()
+
+    expect(mutations(request)).toHaveLength(1)
+    expect(mutations(request)[0]![1]).toMatchObject({
+      session_id: 'owner',
+      operation: 'branch',
+      payload: { through_message_id: 14 }
+    })
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('child')
+    expect(composer.setInput).toHaveBeenCalledWith('third question')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('forking the first prompt opens a plain new session with it prefilled and mutates nothing', async () => {
+    const { composer, ctx, request, slash } = harness()
+
+    slash('/rewind')
+    await flush()
+    const picker = $overlayState.get().rewind!
+
+    picker.onFork(picker.targets[0]!)
+    await flush()
+    await flush()
+
+    expect(mutations(request)).toHaveLength(0)
+    expect(ctx.session.newSession).toHaveBeenCalled()
+    expect(composer.setInput).toHaveBeenCalledWith('first')
+  })
+})
+
+describe('rewind focus in the transcript', () => {
+  const rows = [
+    { role: 'system', text: 'intro' },
+    { role: 'user', text: 'alpha' },
+    { role: 'assistant', text: 'a' },
+    { role: 'user', text: 'beta' },
+    { role: 'assistant', text: 'b' }
+  ]
+
+  it('finds the picked prompt by its turn, falls back to its text, and is -1 when closed', () => {
+    expect(rewindFocusIndex(rows, { text: 'beta', turn: 2 })).toBe(3)
+    expect(rewindFocusIndex(rows, { text: 'beta', turn: 5 })).toBe(3)
+    expect(rewindFocusIndex(rows, { text: 'gone', turn: 1 })).toBe(-1)
+    expect(rewindFocusIndex(rows, null)).toBe(-1)
   })
 })
 

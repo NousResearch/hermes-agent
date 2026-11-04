@@ -82,7 +82,8 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
     if not getattr(agent, "context_compressor", None):
         return
     if getattr(agent, "_compression_feasibility_checked", False):
-        if compression_route_identity() == getattr(agent, "_compression_feasibility_route", None):
+        probed = getattr(agent, "_compression_feasibility_route", None)
+        if probed is None or compression_route_identity() == probed:
             return
         _drop_stale_ceiling(agent)
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -97,10 +98,12 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
 
 
 def lazy_compression_feasibility_check(agent: Any) -> None:
-    """The probe ``compress_context`` runs when nothing probed yet, or the route moved since; a hard
-    rejection propagates to the caller."""
+    """The probe ``compress_context`` runs when nothing probed yet, or the route moved since the probe
+    that recorded one; a hard rejection propagates to the caller. A latch with no recorded route (set
+    before route tracking, or by a caller marking the agent checked) is trusted as it always was."""
     if getattr(agent, "_compression_feasibility_checked", False):
-        if compression_route_identity() == getattr(agent, "_compression_feasibility_route", None):
+        probed = getattr(agent, "_compression_feasibility_route", None)
+        if probed is None or compression_route_identity() == probed:
             return
         _drop_stale_ceiling(agent)
     _probe(agent)

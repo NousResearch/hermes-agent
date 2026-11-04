@@ -257,6 +257,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     } else {setSendHint(labels.sendMaybe)}
   }
 
+  // Without the gateway's proof the request may have posted: Retry resends this exact intent,
+  // which the gateway recognizes, so it is never posted twice. A proven refusal is fully explained
+  // by the hint beside the restored draft; its raw reason code (`invalid_params`) is not shown.
+  const settleFailedSend = async (exact: PreparedCanonicalGroupSend, words: Words, run: SendRun, error: unknown) => {
+    run.posted = !admittedNothing(error)
+    const left = run.posted ? undefined : await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id).catch(() => undefined)
+
+    if (alive.current) {settleUnsent(exact, words, left, labels.sendRefused)}
+
+    if (run.posted) {throw error}
+  }
+
   const sendIntent = async (run: SendRun) => {
     if (!pending && delivered.current) {
       await retireCanonicalGroupSend(binding, delivered.current)
@@ -307,14 +319,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     try {
       confirmSend(await canonicalGroupRequest(exact.binding, 'groups.send', exact.params), exact.params.event_id, labels.unconfirmedSend)
     } catch (error) {
-      // Without the gateway's proof the request may have posted: Retry resends this exact intent,
-      // which the gateway recognizes, so it is never posted twice.
-      run.posted = !admittedNothing(error)
-      const left = run.posted ? undefined : await withdrawCanonicalGroupSend(exact.binding, exact.params.event_id).catch(() => undefined)
-
-      if (alive.current) {settleUnsent(exact, words, left, labels.sendRefused)}
-
-      throw error
+      return settleFailedSend(exact, words, run, error)
     }
 
     // A valid receipt is authoritative: a failed cleanup only defers it to this window's next Send.

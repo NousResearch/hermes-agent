@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from pathlib import Path
 import time
 from collections import Counter
 from typing import Any, Dict, Optional
@@ -24,6 +25,48 @@ from gateway.session_stall import (
 logger = logging.getLogger("gateway.run")
 
 _SESSION_STORE_PRUNE_INTERVAL = 3600.0  # once per hour
+
+
+def _probe_profile_refresh_intervals(homes: list[str]) -> dict[str, int]:
+    """Helper run in a worker thread to resolve configured intervals without async I/O."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.provider_model_refresh import background_refresh_interval
+    intervals = {}
+    for home in homes:
+        try:
+            with _profile_runtime_scope(Path(home)):
+                intervals[home] = background_refresh_interval(load_config())
+        except Exception:
+            logger.debug("Failed reading refresh interval for %s", home, exc_info=True)
+            intervals[home] = 0
+    return intervals
+
+
+def _refresh_profile_provider_models(home: str) -> tuple[int, int, int]:
+    """Helper run in a worker thread so file and network I/O do not block the event loop."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.provider_model_refresh import (
+        background_refresh_interval, refresh_configured_provider_models,
+    )
+    with _profile_runtime_scope(Path(home)):
+        config = load_config()
+        interval = background_refresh_interval(config)
+        if not interval:
+            return 0, 0, 0
+        summary = refresh_configured_provider_models(config)
+        if summary.diffs:
+            for diff in summary.diffs:
+                if diff.has_changes:
+                    added_desc = f"+{len(diff.added)} added ({', '.join(diff.added)})" if diff.added else ""
+                    removed_desc = f"-{len(diff.removed)} removed ({', '.join(diff.removed)})" if diff.removed else ""
+                    parts = [p for p in (added_desc, removed_desc) if p]
+                    logger.info(
+                        "Provider %s catalog changed for profile %s: %s",
+                        diff.slug, home, "; ".join(parts),
+                    )
+        return interval, summary.attempted, summary.failed
 
 
 async def _interruptible_sleep(runner, seconds: int) -> None:
@@ -228,6 +271,39 @@ class GatewaySessionWatchersMixin:
             deadline = time.monotonic() + interval
             while self._running and time.monotonic() < deadline:
                 await asyncio.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
+
+    async def _provider_models_refresh_watcher(self) -> None:
+        """Periodic background refresh for configured provider model catalogs."""
+        from gateway.run import _cron_tick_profile_homes
+
+        last_run: dict[str, float] = {}
+        await asyncio.sleep(5)
+        while getattr(self, "_running", False):
+            now = time.monotonic()
+            try:
+                homes = [str(home) for _name, home in _cron_tick_profile_homes(getattr(self, "config", None))]
+            except Exception:
+                logger.debug("Failed resolving profile homes for provider refresh", exc_info=True)
+                homes = []
+            intervals = await asyncio.to_thread(_probe_profile_refresh_intervals, homes) if homes else {}
+            configured = [sec for sec in intervals.values() if sec > 0]
+            for home, interval in intervals.items():
+                if not getattr(self, "_running", False):
+                    break
+                if not interval or now - last_run.get(home, 0.0) < interval:
+                    continue
+                try:
+                    _, attempted, failed = await asyncio.to_thread(_refresh_profile_provider_models, home)
+                    last_run[home] = time.monotonic()
+                    if attempted:
+                        logger.info(
+                            "Refreshed provider models for profile %s: %d probed, %d failed",
+                            home, attempted, failed,
+                        )
+                except Exception:
+                    logger.debug("Provider model refresh failed for profile %s", home, exc_info=True)
+            sleep_for = min(configured) if configured else 300
+            await _interruptible_sleep(self, max(5, int(sleep_for)))
 
     async def _session_stall_watcher(self, interval: float = 30.0):
         """Pending-inbound + stale-activity stall watchdog. Progress comes only from

@@ -1,0 +1,26 @@
+name: handydandy
+title: HandyDandy
+repo: https://github.com/percyhendrux123-prog/hermes-handydandy
+sha: cb5bab50e0709a7149d288b5cd6fc3f580c7e70a
+description: Session-size notices, structured handoffs, and opt-in automatic gateway carryover.
+maintainer: Deploy Axiom
+tier: community
+category: automation
+requires_hermes: ">=0.22.2"
+version: "0.4.0"
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - Carryover requires in-process plugins; live gateway/store objects are placeholders under host isolation.
+  - Carryover uses disclosed private gateway reset, authorization and route-key helpers until a public reset API is available.
+  - Handoff writing uses a normal agent turn and tool approvals; no reset occurs until a bounded structured file is ready.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - transform_llm_output
+    - pre_llm_call
+    - pre_gateway_dispatch
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

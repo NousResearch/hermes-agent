@@ -58,6 +58,11 @@ _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+# Databases (path + inode) whose schema this process already reconciled: replaying the idempotent SCHEMA_SQL
+# once per file is enough. Per connection it ran ~30 PRAGMA table_info plus the DDL on every ledger call,
+# twice per 30 s orphan sweep (salvaged from #135351).
+_SCHEMA_READY: set[tuple[str, int, int]] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
 
 # ── Orphaned-completion sweep ────────────────────────────────────────────────
 # Startup replay runs once per process, so a completion whose owner died while THIS process was
@@ -132,19 +137,41 @@ def _connect() -> sqlite3.Connection:
     # A late replay or writer must not resurrect a removed named profile (#123265).
     mkdir_under_hermes_home(path.parent)
     _secure_state_db_files(path, create_main=True)
+    identity = _db_identity(path)
+    with _SCHEMA_READY_LOCK:
+        reconciled = identity is not None and identity in _SCHEMA_READY
     # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
     conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
-                   wal=False, row_factory=None, initialize=_initialize_schema)
+                   wal=False, row_factory=None,
+                   initialize=_apply_barriers_only if reconciled else _initialize_schema)
     _secure_state_db_files(path)
+    if not reconciled and identity is not None:
+        with _SCHEMA_READY_LOCK:
+            _SCHEMA_READY.add(identity)
     return conn
 
 
-def _initialize_schema(conn: sqlite3.Connection) -> None:
+def _db_identity(path) -> Optional[tuple[str, int, int]]:
+    """``(path, st_dev, st_ino)`` of the database file, else None. The inode makes a state.db deleted or
+    replaced at the same path reconcile again. Taken BEFORE the open (the file exists by then:
+    ``_secure_state_db_files(create_main=True)``), so a file swapped in between is reconciled next time."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return os.path.normcase(os.path.abspath(path)), st.st_dev, st.st_ino
+
+
+def _apply_barriers_only(conn: sqlite3.Connection) -> None:
     from hermes_state_repair import apply_durability_barriers
+    apply_durability_barriers(conn)
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
-    apply_durability_barriers(conn)
+    _apply_barriers_only(conn)
     # Single durable-shape authority: the canonical SCHEMA_SQL drives both
     # table creation and column backfill (reconcile_state_schema replays the
     # canonical DDL and reuses SessionDB's declarative reconciliation). This
@@ -1447,3 +1474,5 @@ def _reset_for_tests() -> None:
         _reoffered_at.clear()
     with _held_lock:
         _held_copies.clear()
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY.clear()

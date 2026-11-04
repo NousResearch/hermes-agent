@@ -20,8 +20,7 @@ import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
-  cursorLayout,
-  inputVisualHeight,
+  composerViewport,
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -41,6 +40,7 @@ import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
 import { LoopBar } from './loopBar.js'
 import { MessageLine } from './messageLine.js'
+import { PasteHint } from './pasteSections.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
@@ -331,18 +331,16 @@ const ComposerPane = memo(function ComposerPane({
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
-  const inputHeight = inputVisualHeight(composer.input, inputColumns)
   // A paste expanded for editing can be taller than the screen: show a window
   // of rows that follows the cursor instead of pushing it off the bottom.
   const inputSel = useStore($inputSelection)
 
-  const inputRows =
-    composer.pasteHint === 'collapse'
-      ? Math.min(inputHeight, Math.max(3, Math.floor(composer.pagerPageSize / 2)))
-      : inputHeight
+  const {
+    height: inputHeight,
+    rows: inputRows,
+    scroll: inputScroll
+  } = composerViewport(composer.input, inputSel, inputColumns, composer.pasteHint === 'collapse', composer.pagerPageSize)
 
-  const cursorLine = inputSel ? cursorLayout(composer.input, inputSel.start, inputColumns).line : inputHeight - 1
-  const inputScroll = Math.max(0, Math.min(inputHeight - inputRows, cursorLine - inputRows + 1))
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -505,13 +503,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             </Box>
 
-            {composer.pasteHint && (
-              <Box marginLeft={promptWidth}>
-                <Text color={ui.theme.color.muted}>
-                  {composer.pasteHint === 'collapse' ? T.composer.pasteCollapseHint : T.composer.pasteExpandHint}
-                </Text>
-              </Box>
-            )}
+            <PasteHint hint={composer.pasteHint} indent={promptWidth} t={ui.theme} />
           </>
         )}
       </Box>

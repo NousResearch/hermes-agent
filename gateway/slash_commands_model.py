@@ -305,7 +305,8 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length_async
+        from hermes_cli.model_switch import (
+            effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
         lines = [
             t("gateway.model.switched", model=format_model_for_display(result.new_model)),
@@ -321,20 +322,20 @@ class GatewayModelCommandsMixin:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        base_url = result.base_url or ctx.current_base_url or ""
+        # The pin applies only while the route matches the config; the number and its label use the same answer.
+        config_ctx = effective_context_pin(
+            config_ctx, result.new_model, result.target_provider, base_url,
+            model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider"), model_cfg.get("base_url"))
         ctx_len = await resolve_display_context_length_async(
-            result.new_model, result.target_provider,
-            base_url=result.base_url or ctx.current_base_url or "",
+            result.new_model, result.target_provider, base_url=base_url,
             api_key=result.api_key or ctx.current_api_key or "", model_info=mi,
             custom_providers=ctx.custom_provs, config_context_length=config_ctx,
-            configured_model=model_cfg.get("default") or model_cfg.get("model"),
-            configured_provider=model_cfg.get("provider"),
-            configured_base_url=model_cfg.get("base_url"),
         )
         if ctx_len:
             from agent.context_pin import context_window_suffix
             lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
-                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider,
-                base_url=result.base_url or ctx.current_base_url or ""))
+                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider, base_url=base_url))
         if mi and mi.max_output:
             lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
         if mi:

@@ -1616,6 +1616,8 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
             "Bedrock model %s has no known context window; using the static %s-token fallback "
             "(not a detected limit). %s", model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}", override,
         )
+    from agent.context_default_record import mark_context_defaulted
+    mark_context_defaulted()
     return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 

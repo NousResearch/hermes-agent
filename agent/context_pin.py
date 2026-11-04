@@ -8,16 +8,11 @@ window the resolver only defaulted to (``fallback``), so it is not read as a det
 from __future__ import annotations
 
 import logging
-import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _warned_pins: set = set()
-# (window, model, provider, base_url) -> (monotonic ts, is_fallback). Status-bar repaints read the marker, and the
-# check reads local caches; a short TTL lets a later probe or provider-confirmed write clear the label.
-_FALLBACK_MEMO: dict[tuple, tuple[float, bool]] = {}
-_FALLBACK_MEMO_TTL_SECONDS = 60.0
 _MARKER_SUFFIX = {"pinned": " (pinned)", "fallback": " (fallback)"}
 
 
@@ -36,50 +31,19 @@ def context_pin_suffix(context_length, config_context_length) -> str:
     return " (pinned)" if is_context_pinned(context_length, config_context_length) else ""
 
 
-def _resolved_by_fallback(context_length: int, model: str, provider: str, base_url: str) -> bool:
-    """True when no source knows ``model``'s window and ``context_length`` is the resolver's default. Local
-    reads only (config overrides, static tables, persistent cache, models.dev/OpenRouter disk caches)."""
-    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, _is_bedrock_context, get_cached_context_length
-    bedrock = _is_bedrock_context(base_url, provider)
-    try:
-        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH, bedrock_static_context_length
-    except ImportError:  # no boto3: the resolver skipped the Bedrock step and fell through to the generic default
-        bedrock, BEDROCK_DEFAULT_CONTEXT_LENGTH, bedrock_static_context_length = False, 0, None
-    if context_length != (BEDROCK_DEFAULT_CONTEXT_LENGTH if bedrock else DEFAULT_FALLBACK_CONTEXT):
-        return False  # every other value came from a source; the reads below run only for the default
-    from agent.models_dev import _override_context_window, lookup_models_dev_context
-    from hermes_cli.config import get_custom_provider_context_length
-    if provider and _override_context_window(provider, model):
-        return False  # model_overrides.<provider>.<model>.context_window: the operator's own number
-    if base_url and get_custom_provider_context_length(model=model, base_url=base_url):
-        return False
-    if bedrock and bedrock_static_context_length is not None:
-        confirmed = get_cached_context_length(model, base_url or "bedrock://", bedrock_confirmed=True)
-        return confirmed != context_length and not bedrock_static_context_length(model)
-    if advertised_context_length(model, base_url):
-        return False
-    return not (provider and lookup_models_dev_context(provider, model))
-
-
 def is_fallback_context_length(context_length, *, model: str, provider: str = "", base_url: str = "") -> bool:
     """True when ``context_length`` is a default the resolver fell back to for ``model`` on this route (Bedrock's
-    static 128K, or the generic 256K), not a known or detected limit. Fail-open: False on any error."""
+    static 128K, or the generic 256K), not a known or detected limit. The resolver records that itself
+    (agent.context_default_record), so this agrees with every source it consults; ``provider`` is accepted for
+    call-site symmetry. Fail-open: False on any error."""
     if type(context_length) is not int or context_length <= 0 or not isinstance(model, str) or not model:
         return False
-    key = (context_length, model, str(provider or ""), str(base_url or ""))
-    now = time.monotonic()
-    hit = _FALLBACK_MEMO.get(key)
-    if hit is not None and now - hit[0] < _FALLBACK_MEMO_TTL_SECONDS:
-        return hit[1]
     try:
-        verdict = _resolved_by_fallback(*key)
+        from agent.context_default_record import was_context_defaulted
+        return was_context_defaulted(context_length, model, base_url)
     except Exception:
         logger.debug("context fallback check failed for %s", model, exc_info=True)
-        verdict = False
-    if len(_FALLBACK_MEMO) > 256:
-        _FALLBACK_MEMO.clear()
-    _FALLBACK_MEMO[key] = (now, verdict)
-    return verdict
+        return False
 
 
 def context_window_marker(context_length, config_context_length, *, model: str, provider: str = "",
@@ -100,9 +64,9 @@ def agent_context_marker(agent) -> str:
     """:func:`context_window_marker` for an agent's live compressor window."""
     compressor = getattr(agent, "context_compressor", None)
     pin = getattr(compressor, "_config_context_length", getattr(agent, "_config_context_length", None))
-    return context_window_marker(
-        getattr(compressor, "context_length", None), pin, model=getattr(agent, "model", ""),
-        provider=getattr(agent, "provider", "") or "", base_url=getattr(agent, "base_url", "") or "")
+    # The compressor's route is what resolved the window; the agent's is the fallback for doubles without one.
+    route = {name: getattr(compressor, name, None) or getattr(agent, name, "") or "" for name in ("model", "provider", "base_url")}
+    return context_window_marker(getattr(compressor, "context_length", None), pin, **route)
 
 
 def agent_context_suffix(agent) -> str:

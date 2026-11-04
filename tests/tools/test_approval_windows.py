@@ -109,33 +109,48 @@ class TestWindowsPathVariant:
     def test_benign_paths_and_posix_escapes_unaffected(self, cmd):
         assert not _is_dangerous(cmd), f"should NOT be flagged: {cmd}"
 
+
 class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
-    r"""Windows PowerShell runs a positional argument as a command, and accepts any unambiguous
-    parameter prefix, so `powershell -NoProfile "gci C:\data | ri -r -fo"` deleted a tree with no
-    approval prompt while the spelled-out form (`... | Remove-Item -Recurse -Force`) was gated
-    (#144024). The prefixed rule anchors the verb to command position, which a pipeline defeats;
-    `ri`/`del` aliases and `-r`/`-fo` prefixes were also unmatched.
+    r"""Windows PowerShell runs a positional argument as the command, and PowerShell binds any
+    unambiguous parameter prefix, so `powershell -NoProfile "gci C:\data | ri -r -fo"` deleted a
+    tree with no approval prompt while the spelled-out form was gated (#144024). Prefix sets were
+    checked against pwsh 7.4 `Get-Command` metadata: on Remove-Item `-f` is ambiguous with -Filter
+    and refuses to bind, on Stop-Process/Stop-Service it is -Force.
     """
 
     @pytest.mark.parametrize("cmd", [
         r'powershell -NoProfile "gci C:\data | ri -r -fo"',
-        r'powershell -NoProfile "Get-ChildItem C:\data | ri -r"',
+        r'powershell.exe -NoP "Get-ChildItem C:\data | Remove-Item -r -fo"',
         r'pwsh -NoProfile "gci C:\data | ri -fo"',
-        r'powershell -NoProfile "Remove-Item C:\data -r -fo"',
-        r'powershell -NoProfile "Remove-Item C:\data -Recurse"',
-        r'powershell -NoProfile "Stop-Process -Fo -Name explorer"',
-        r'powershell -NoProfile "Stop-Process -Force -Name explorer"',
+        # A delete later in the script needs no switch, like one at command position.
+        r'powershell -NoProfile "gci C:\data -File -Recurse | Remove-Item"',
+        r'powershell -NoProfile "cd C:\x; rd build -r"',
+        r'powershell -NoProfile "gci C:\data | % { ri $_.FullName -r -fo }"',
+        # Bare cmdlets (pwsh-default SSH hosts, ACP clients) with abbreviated switches.
+        r"Remove-Item C:\data -r -fo",
+        r"Remove-Item C:\data -recurs",
+        r"gci C:\data | ri -r",
+        r"Stop-Process -f -Name explorer",
+        r'powershell -NoProfile "Get-Process explorer | Stop-Process -Fo"',
+        r"Stop-Service -fo spooler",
+        r"Remove-ItemProperty -fo -Name X",
+        r"wmic shadowcopy delete",
     ])
     def test_destructive_powershell_forms_are_gated(self, cmd):
         assert _is_dangerous(cmd), cmd
 
     @pytest.mark.parametrize("cmd", [
-        # Reading a directory is not destruction, piped or not.
-        r'powershell -NoProfile "gci C:\data"',
         r'powershell -NoProfile "gci C:\data | measure"',
-        r'powershell -NoProfile "Get-Content C:\x | Select-String -Pattern foo"',
-        # -f alone is ambiguous with -Filter, so it must not count as -Force.
-        r'powershell -NoProfile "Get-ChildItem C:\data | ri -f"',
+        r'powershell -NoProfile "gci C:\data -r | measure"',
+        r'powershell -NoProfile "Get-ChildItem | Where-Object { $_.Length -gt 1 } | Select-Object Name"',
+        r'powershell -NoProfile "Get-Help Remove-Item -Full"',
+        r"Get-Help Remove-Item",
+        r"Remove-Item C:\tmp\file.txt",
+        r"Remove-Item C:\data -Filter *.log",
+        r"Stop-Process -Name idleproc",
+        r"Stop-Service -Name spooler",
+        r"wmic shadowcopy list brief",
+        "cat access.log | grep -i remove-item",
     ])
-    def test_read_only_powershell_pipelines_stay_quiet(self, cmd):
+    def test_read_only_and_lookalike_commands_stay_quiet(self, cmd):
         assert not _is_dangerous(cmd), cmd

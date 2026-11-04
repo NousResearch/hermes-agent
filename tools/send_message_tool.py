@@ -641,7 +641,7 @@ def _standalone_send_policy(platform_name):
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document, mentions=None):
+                                  max_len, force_document, mentions=None, send_metadata=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
@@ -651,6 +651,8 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
     if err:
         return err
     extra = {"force_document": force_document} if policy.forward_force_document else {}
+    if policy.forward_metadata and send_metadata is not None:
+        extra["metadata"] = send_metadata
     first_only = {"mentions": mentions} if mentions else {}
     empty_media = [] if policy.empty_list_between_chunks else None
     if policy.captionable:
@@ -687,7 +689,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, *, send_metadata=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -706,10 +708,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     policy = _standalone_send_policy(platform_name)
+    if policy is not None and policy.forward_metadata and send_metadata is None:
+        from gateway.channel_directory import lookup_channel_metadata
+        target_id = f"{chat_id}:{thread_id}" if thread_id else str(chat_id)
+        send_metadata = lookup_channel_metadata(platform_name, target_id) or None
     if policy is not None and (policy.all_sends or (policy.mentions and mentions) or (media_files and policy.media)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
-                                             mentions=mentions)
+                                             mentions=mentions, send_metadata=send_metadata)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -726,7 +732,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     if policy is not None and policy.text_direct:
         # Text-only straight to the plugin's standalone sender (media dropped with the warning above).
-        send_one = lambda chunk, is_last: _registry_standalone_send(platform_name, pconfig, chat_id, chunk, thread_id)
+        send_one = lambda chunk, is_last: _registry_standalone_send(
+            platform_name, pconfig, chat_id, chunk, thread_id,
+            metadata=send_metadata if policy.forward_metadata else None)
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)

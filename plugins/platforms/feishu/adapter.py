@@ -4343,14 +4343,14 @@ _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 
 
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, metadata=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
         return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
-        metadata = {"thread_id": thread_id} if thread_id else None
+        metadata = {**({"thread_id": thread_id} if thread_id else {}), **(metadata or {})} or None
         last_result = None
         if message.strip():
             last_result = await adapter.send(chat_id, message, metadata=metadata)

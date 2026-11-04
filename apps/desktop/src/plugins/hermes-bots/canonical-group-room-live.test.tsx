@@ -56,7 +56,7 @@ it('starts a new thread after a refused reply is cancelled', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Reply to Ops' }))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '@ops ship it' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await screen.findByText('not admitted')
+  await screen.findByText('The gateway refused this message. Edit it and send again.')
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.click(screen.getByRole('button', { name: 'Cancel reply' }))
   expect(screen.queryByText('Replying to Ops')).toBeNull()
@@ -136,7 +136,7 @@ it('keeps a refused other-window reply in its thread, then hands this window its
   await prepareCanonicalGroupSend(binding, { text: 'other reply', attachments: [], thread_id: 'other-thread' })
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '@ops ship it' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await screen.findByText('not admitted')
+  await screen.findByText('The gateway refused this message. Edit it and send again.')
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   expect(screen.queryByText('Replying to Ops')).toBeNull()
   refuse = false

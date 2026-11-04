@@ -856,8 +856,8 @@ it('keeps the identity while another window\'s request of the intent may have po
   const retry = await within(c).findByRole('button', { name: 'Retry' }) as HTMLButtonElement
   await waitFor(() => expect(retry.disabled).toBe(false))
   fireEvent.click(retry)
-  await within(c).findByText('invalid_params')
-  expect(within(c).getByText(MAYBE)).toBeTruthy()
+  await waitFor(() => expect(sentIds()).toHaveLength(3))
+  await within(c).findByText(MAYBE)
   expect(editor(c).disabled).toBe(true)
   expect(new Set(sentIds()).size).toBe(1)
   expect((await readCanonicalGroupSend(binding))?.params.event_id).toBe(sentIds()[0])
@@ -928,6 +928,8 @@ it.each([
   await within(scope).findByText(REFUSED)
   await waitFor(() => expect(editor(scope).disabled).toBe(false))
   expect(editor(scope).value).toBe('Ended elsewhere')
+  // The hint explains the refusal; the raw reason never shows as a second, unexplained error.
+  expect(within(scope).queryByText(refused.message)).toBeNull()
   expect(within(scope).getByRole('button', { name: 'Send' })).toBeTruthy()
   // The words stay journaled until a new Send replaces them.
   expect(await readCanonicalGroupSend(binding)).toMatchObject({ attempts: 0, params: { payload: { text: 'Ended elsewhere' } } })

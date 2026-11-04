@@ -48,7 +48,9 @@ def validate(report: dict[str, Any]) -> None:
     _required(github, "ref", "github")
     _require_true(github, "pushed", "github")
 
-    untracked = _required(github, "untracked_files", "github")
+    if "untracked_files" not in github:
+        raise ProvenanceError("missing github.untracked_files")
+    untracked = github["untracked_files"]
     if not isinstance(untracked, list):
         raise ProvenanceError("github.untracked_files must be a list")
     for item in untracked:

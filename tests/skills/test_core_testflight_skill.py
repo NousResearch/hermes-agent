@@ -65,6 +65,12 @@ def test_accepts_matching_current_release_provenance() -> None:
     _MODULE.validate(_report())
 
 
+def test_accepts_clean_checkout_with_no_untracked_files() -> None:
+    report = _report()
+    report["github"]["untracked_files"] = []
+    _MODULE.validate(report)
+
+
 def test_rejects_historical_or_wrong_installed_build() -> None:
     report = _report()
     report["installation"]["bundle_version"] = "84"

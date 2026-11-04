@@ -7,6 +7,9 @@ rebound onto server.py's globals (method_ctx.bind_module) and reference them bar
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+# Mirrors ui-tui/src/config/limits.ts INLINE_IMAGE_MAX_COLS/ROWS: no client gets a bigger preview.
+_MAX_PREVIEW_COLS = 64
+_MAX_PREVIEW_ROWS = 16
 method = _registry.method
 
 
@@ -107,6 +110,8 @@ def _(rid, params: dict) -> dict:
         cols, rows = int(params.get("cols") or 0), int(params.get("rows") or 0)
     except (TypeError, ValueError):
         return _err(rid, 4072, "cols and rows must be integers")
+    # A preview, whoever asks: past the TUI's own budget the reply grows by the cell (8 ints each).
+    cols, rows = min(cols, _MAX_PREVIEW_COLS), min(rows, _MAX_PREVIEW_ROWS)
     image = render_inline_image(path, mode=mode, max_cols=cols, max_rows=rows) if path else None
     if image is None:
         return _ok(rid, {"mode": "off"})

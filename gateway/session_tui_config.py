@@ -134,6 +134,28 @@ def _set_focus(display, raw):
     return {'value': 'on' if target else 'off', 'tool_progress': effective}
 
 
+_UNSET = object()
+
+
+def _leaf(cfg, dotted):
+    for part in dotted.split('.'):
+        cfg = cfg.get(part, _UNSET) if isinstance(cfg, dict) else _UNSET
+    return cfg
+
+
+def _managed_refusal(key):
+    """A leaf the administrator's managed scope pins: refused, never written (``hermes config set``
+    refuses it too, and the next load would reinstate the managed value anyway)."""
+    return RuntimeStoreError('permission_denied', field=key, detail='managed by your administrator')
+
+
+def _refuse_managed_change(before, after):
+    from hermes_cli.managed_scope import managed_config_keys
+    for key in sorted(managed_config_keys()):
+        if _leaf(before, key) != _leaf(after, key):
+            raise _managed_refusal(key)
+
+
 def _write_profile_config(connection, edit):
     """``edit(raw_cfg)`` on the owning profile's config.yaml EXACTLY as written (no defaults or
     overlay persisted); saved only when it changed. Runs off the loop."""
@@ -148,6 +170,7 @@ def _write_profile_config(connection, edit):
         before = copy.deepcopy(cfg)
         result = edit(cfg)
         if cfg != before:
+            _refuse_managed_change(before, cfg)
             try:
                 atomic_config_replace(path, cfg)
             except Exception as exc:
@@ -290,8 +313,11 @@ def _set_personality(connection, value):
     resolves its ephemeral prompt from that config, and the changed prompt rebuilds the cached agent."""
     from gateway.run import _profile_runtime_scope
     from hermes_cli.config import load_config
+    from hermes_cli.managed_scope import is_key_managed
     from hermes_cli.personality import persist_personality, resolve_personality
     with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
+        if is_key_managed('display.personality'):  # persist_personality writes it without this check
+            raise _managed_refusal('display.personality')
         try:
             name, _prompt = resolve_personality(str(value or ''), load_config())
         except ValueError as exc:

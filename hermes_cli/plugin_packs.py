@@ -236,6 +236,7 @@ class ResolvedPackPlugin:
     identifier: Optional[str]        # None when index resolution failed
     index_capabilities: list[str] = field(default_factory=list)
     resolve_error: Optional[str] = None
+    catalog_sha: Optional[str] = None   # the curated catalog's reviewed pin, for a bare-name entry
 
 
 def resolve_pack_plugins(pack: PluginPack) -> list[ResolvedPackPlugin]:
@@ -262,7 +263,7 @@ def resolve_pack_plugins(pack: PluginPack) -> list[ResolvedPackPlugin]:
             continue
         caps = match.capabilities
         resolved.append(ResolvedPackPlugin(
-            entry=entry, identifier=match.install_identifier,
+            entry=entry, identifier=match.install_identifier, catalog_sha=match.sha,
             index_capabilities=[*caps.provides_tools, *caps.provides_hooks, *caps.provides_middleware]))
     return resolved
 
@@ -348,8 +349,10 @@ def install_pack_plugins(
     """Fan a pack out to N ordinary pinned installs; never raises per-plugin.
 
     Each plugin goes through the exact-ref install path, then the SAME per-plugin capability
-    consent flow as a single install (a pack never bulk-grants). Successful installs are enabled
-    (the user consented via the review screen) and their config seed applied.
+    consent flow as a single install (a pack never bulk-grants). The security scan gets the same
+    treatment: the interactive caution question and the catalog's reviewed pin are handed to the
+    core, so a plugin that a single install admits is not refused here (#148858). Successful
+    installs are enabled (the user consented via the review screen) and their config seed applied.
     """
     from hermes_cli.plugins_cmd import (
         PluginOperationError,
@@ -360,8 +363,10 @@ def install_pack_plugins(
         _set_plugin_enabled,
     )
     from hermes_cli.plugins_admission import AdmissionRefused
-    from hermes_cli.plugins_cmd_install import recorded_install
+    from hermes_cli.plugins_cmd_install import interactive_scan_decision, recorded_install
     results: list[PackInstallResult] = []
+    # Built once: a caution verdict prints the findings and asks, exactly as `plugins install` does.
+    scan_decision_cb = interactive_scan_decision(console, "Install")
 
     def _fail(display: str, error: str) -> None:
         results.append(PackInstallResult(display=display, ok=False, error=error))
@@ -372,12 +377,15 @@ def install_pack_plugins(
         if rp.identifier is None:
             _fail(display, rp.resolve_error)
             continue
+        identifier = rp.identifier
         console.print(f"[dim]Installing {display} @ {rp.entry.ref[:12]}...[/dim]")
         try:
             # A bare pack name resolved through the plugin catalog; repo entries are custom sources.
             _target, manifest, installed_name = recorded_install(
-                lambda: _install_plugin_core(rp.identifier, force=force, ref=rp.entry.ref),
-                catalog_name=None if rp.entry.repo else rp.entry.name, identifier=rp.identifier)
+                lambda: _install_plugin_core(
+                    identifier, force=force, ref=rp.entry.ref, scan_decision_cb=scan_decision_cb,
+                    reviewed_pin=rp.catalog_sha),
+                catalog_name=None if rp.entry.repo else rp.entry.name, identifier=identifier)
         except PluginOperationError as exc:
             _fail(display, str(exc))
             continue

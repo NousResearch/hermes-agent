@@ -204,7 +204,7 @@ it.each(['send', 'stop', 'once', 'deny', 'restored'])('preserves %s behavior aft
   let rejectPreview!: (reason: Error) => void
   let sendAck!: (value: unknown) => void
   request.mockImplementation((_route, method) => {
-    if (method === 'groups.state') {return Promise.resolve({ room, driver_status: { pending_actions: [action] } })}
+    if (method === 'groups.state') {return Promise.resolve({ room, driver_status: { pending_actions: [action], ...(scenario === 'stop' ? { working: true } : {}) } })}
 
     if (method === 'groups.log') {return Promise.resolve({ events: [] })}
 
@@ -253,7 +253,7 @@ it.each(['send', 'stop', 'once', 'deny', 'restored'])('preserves %s behavior aft
     await act(async () => sendAck({}))
     await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
   } else if (scenario === 'stop') {
-    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stop the group' }))
     await waitFor(() => expect(request.mock.calls.find(call => call[1] === 'groups.stop')?.[2]).toEqual({ room_id: 'room', profile: 'default', cancel_id: expect.any(String) }))
   } else {
     fireEvent.click(screen.getByRole('button', { name: scenario === 'once' ? 'Allow once' : 'Deny' }))

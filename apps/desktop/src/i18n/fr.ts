@@ -5196,6 +5196,8 @@ export const frOverrides = {
       authorized: server => `${server} autorisé`,
       failed: server => `Échec de la configuration de ${server}`,
       toolCount: count => (count === 1 ? '1 outil' : `${count} outils`),
+      launchCommand: target => `Exécute : ${target}`,
+      launchRemote: target => `Se connecte à : ${target}`,
       envRequired: "Renseignez d'abord les identifiants requis",
       sendFailed: "Impossible d'envoyer la réponse de configuration MCP",
       reloadFailed:

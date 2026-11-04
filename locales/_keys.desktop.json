@@ -181,6 +181,8 @@
     "assistant.mcpSetup.installAction",
     "assistant.mcpSetup.installTitle",
     "assistant.mcpSetup.installed",
+    "assistant.mcpSetup.launchCommand",
+    "assistant.mcpSetup.launchRemote",
     "assistant.mcpSetup.reloadFailed",
     "assistant.mcpSetup.sendFailed",
     "assistant.mcpSetup.toolCount",

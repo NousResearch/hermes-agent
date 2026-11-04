@@ -13568,6 +13568,17 @@
             "default": null,
             "title": "Required Env"
           },
+          "launch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionTargetLaunch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "tools": {
             "anyOf": [
               {
@@ -14039,6 +14050,33 @@
           "skill"
         ],
         "title": "ConnectionTargetKind",
+        "type": "string"
+      },
+      "ConnectionTargetLaunch": {
+        "additionalProperties": false,
+        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never the env map or headers.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ConnectionTargetLaunchKind"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "title": "ConnectionTargetLaunch",
+        "type": "object"
+      },
+      "ConnectionTargetLaunchKind": {
+        "enum": [
+          "remote",
+          "stdio"
+        ],
+        "title": "ConnectionTargetLaunchKind",
         "type": "string"
       },
       "ConnectionTargetState": {

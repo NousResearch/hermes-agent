@@ -3677,10 +3677,7 @@ export interface Translations extends NoticeTranslations {
           action: string
           busyHint: string
           confirm: string
-          failed: string
           hint: string
-          pending: string
-          progress: string
           question: string
           working: string
         }

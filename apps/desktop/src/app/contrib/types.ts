@@ -4,7 +4,6 @@ import type { ChatView } from '../chat'
 import type { ChatSidebar } from '../chat/sidebar'
 import type { CommandCenterSection } from '../command-center'
 import type { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
-import type { CompressSessionOutcome } from '../session/compress-session'
 import type { ModelMenuPanel } from '../shell/model-menu-panel'
 
 export type GatewayRequester = ReturnType<typeof useGatewayRequest>['requestGateway']
@@ -64,9 +63,6 @@ export type ChatActions = Pick<
 export interface WiringActions extends SidebarActions, ChatActions {
   /** Re-home a chat's workspace: the primary's, or `sessionId` (a focused tile's runtime id). */
   changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
-  /** Compress one conversation through the gateway that OWNS it, so a click in
-   *  the context popover keeps targeting the chat it was opened on. */
-  compressConversation: (sessionId: string) => Promise<CompressSessionOutcome>
   followDefaultModel: () => void
   /** Imperative access to the live gateway for controller-owned callbacks.
    *  Rendered surfaces subscribe to the active `$gateway` atom directly. */

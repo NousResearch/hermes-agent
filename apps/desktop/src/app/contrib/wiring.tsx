@@ -129,7 +129,6 @@ import { SessionImportView } from '../session-import'
 import { SessionPickerOverlay } from '../session-picker-overlay'
 import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
-import { useCompressConversationAction } from '../session/hooks/use-compress-conversation-action'
 import { useContextSuggestions } from '../session/hooks/use-context-suggestions'
 import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
@@ -318,25 +317,6 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
         }
       : {})
   } as CSSProperties
-}
-
-// Pin/unpin the selected session (statusbar keybind + chat header) — pinned
-// on the durable lineage-root id so it survives auto-compression.
-function toggleSelectedPin() {
-  const sessionId = $selectedStoredSessionId.get()
-
-  if (!sessionId) {
-    return
-  }
-
-  const session = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
-  const pinId = session ? sessionPinId(session) : sessionId
-
-  if ($pinnedSessionIds.get().includes(pinId)) {
-    unpinSession(pinId)
-  } else {
-    pinSession(pinId)
-  }
 }
 
 export function ContribWiring({ children }: { children: ReactNode }) {
@@ -998,6 +978,25 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     sessions
   })
 
+  // Pin/unpin the selected session (statusbar keybind + chat header) — pinned
+  // on the durable lineage-root id so it survives auto-compression.
+  const toggleSelectedPin = useCallback(() => {
+    const sessionId = $selectedStoredSessionId.get()
+
+    if (!sessionId) {
+      return
+    }
+
+    const session = $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))
+    const pinId = session ? sessionPinId(session) : sessionId
+
+    if ($pinnedSessionIds.get().includes(pinId)) {
+      unpinSession(pinId)
+    } else {
+      pinSession(pinId)
+    }
+  }, [])
+
   // The tab-strip "+" and ⌘T share one action (see `openNewSessionTab`).
   const openNewSessionTab = useCallback(() => openNewSessionTabAction(openNewSessionTile), [openNewSessionTile])
 
@@ -1145,7 +1144,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         .catch(() => undefined),
     followDefaultModel,
     changeSessionCwd,
-    compressConversation: useCompressConversationAction({ activeSessionIdRef, requestGateway, updateSessionState }),
     getGateway: () => gatewayRef.current,
     openAgents,
     openCommandCenterSection,

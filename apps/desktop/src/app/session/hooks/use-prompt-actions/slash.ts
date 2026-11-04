@@ -1,12 +1,14 @@
 import { skillInvocationText } from '@hermes/shared'
-import { parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
+import { mergeUsage, parseCommandDispatch, parseSlashCommand, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
+import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { translateNow } from '@/i18n/runtime'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -43,8 +45,10 @@ import {
   applySessionTitle,
   resolveComposerSessionKey,
   setActiveSessionId,
+  setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
+  setSessions,
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -58,8 +62,13 @@ import {
   type WakeStopResponse
 } from '@/store/wake-word'
 
-import type { BrowserManageResponse, ClientSessionState, SessionTitleResponse, SlashExecResponse } from '../../../types'
-import { compressSession } from '../../compress-session'
+import type {
+  BrowserManageResponse,
+  ClientSessionState,
+  SessionCompressResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../../types'
 
 import { remoteBrowserManageRefusal } from './browser-manage-refusal'
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
@@ -78,6 +87,14 @@ import {
   withSessionNotFoundResume
 } from './utils'
 
+// Manual compression is LLM-bound and routinely outlives the desktop's 30s
+// default WS request timeout on large sessions. The gateway blocks its own
+// compute-host wait for up to compression.context_total_ceiling_seconds + 30s
+// (capped at 630s, tui_gateway/server.py _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS)
+// and then answers `status: 'pending'` rather than an error, so this budget
+// must sit above that cap or the desktop reports a false timeout while the
+// host is still compressing (#97948).
+export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
@@ -825,9 +842,25 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           try {
-            const outcome = await compressSession(
+            // Same stale-runtime recovery as prompt.submit: after sleep/wake a
+            // dead id 404s session.compress while plain chat still works, so
+            // /compress reported "session not found" on a healthy session.
+            // NOT alsoTimeout — compress is legitimately LLM-slow and a
+            // timeout here must not be retried as a dead session.
+            const { result, sessionId: liveSessionId } = await withSessionNotFoundResume(
+              sessionId,
+              storedSessionId,
+              liveId =>
+                requestGateway<SessionCompressResponse>(
+                  'session.compress',
+                  {
+                    session_id: liveId,
+                    ...(focusTopic ? { focus_topic: focusTopic } : {})
+                  },
+                  SESSION_COMPRESS_TIMEOUT_MS
+                ),
               {
-                isActive: id => activeSessionIdRef.current === id,
+                requestGateway,
                 onRecovered: recoveredId => {
                   // Move the in-flight claim onto the live id so the coalesce
                   // guard releases the right key in `finally`.
@@ -838,53 +871,112 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                     activeSessionIdRef.current = recoveredId
                     setActiveSessionId(recoveredId)
                   }
-                },
-                request: requestGateway,
-                updateSessionState
-              },
-              { focusTopic, sessionId, storedSessionId }
+                }
+              }
             )
 
-            sessionId = outcome.sessionId
+            sessionId = liveSessionId
 
             // The gateway's compute-host wait expired but compression is still
             // running there; it pushes session.info + a `compacted` status edge
             // when the host finishes. Not an error (#97948).
-            if (outcome.kind === 'deferred') {
+            if (result?.status === 'pending') {
               // Hand the completion off to the status edge: this reply carries
-              // no summary and the host is still working, so nothing else runs
-              // for a deferred compress.
+              // no summary and the host is still working, so nothing below
+              // runs for a deferred compress.
               markCompressDeferred(sessionId)
 
-              const pendingMessage = outcome.message || 'compression still running in the background'
+              const pendingMessage = result.message || 'compression still running in the background'
               notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
 
               return
             }
 
-            // compressSession already replaced the transcript with the
-            // authoritative backend history. Keep a durable record of a
-            // successful manual compression in the chat; errors remain
-            // transient, because appending an error as a system message would
-            // look like a successful state change.
-            // A skipped reply compressed nothing (lock held elsewhere, no-op,
-            // read-only preview): print the backend's reason, claim no success.
-            if (outcome.kind === 'skipped') {
-              renderSlashOutput(outcome.message)
-              notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: outcome.message })
+            // Replace the transcript with the post-compress history so the
+            // summarized bubbles actually disappear. `messages` is the same
+            // shape session.resume returns (_history_to_messages), so
+            // toChatMessages handles it directly. updateSessionState only
+            // publishes for the active runtime, guarding against a late result
+            // clobbering the foreground after a session switch.
+            // The pre-compression segment stays reachable in the active
+            // session (#105256): the rewrite shares no anchor with the live
+            // transcript, so grafting would drop everything before the
+            // summary. Prepend it instead (deduped by row/message id), keeping
+            // the post-compress history authoritative for overlapping rows.
+            if (Array.isArray(result?.messages)) {
+              updateSessionState(
+                sessionId,
+                state => ({
+                  ...state,
+                  messages: mergeOlderTranscriptPage(toChatMessages(result.messages!), state.messages)
+                }),
+                storedSessionId
+              )
+            }
+
+            // The transcript just shrank by 5-10x outside any turn (busy never
+            // flipped), so the keyed context breakdown — if already fetched —
+            // is now wrong by that factor. Bump the invalidation generation:
+            // the statusbar gauge refetches immediately instead of serving the
+            // pre-compression figure until the session is switched (#94001).
+            invalidateContextBreakdown(sessionId)
+
+            const usage = { ...result?.usage, ...result?.info?.usage }
+
+            if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
+              setCurrentUsage(current => mergeUsage(current, usage))
+            }
+
+            if (result?.info?.title !== undefined) {
+              setSessions(prev =>
+                prev.map(session =>
+                  session.id === sessionId ? { ...session, title: result.info!.title || null } : session
+                )
+              )
+            }
+
+            if (result?.summary?.headline) {
+              const lines = [result.summary.headline, result.summary.token_line, result.summary.note].filter(
+                (line): line is string => Boolean(line)
+              )
+
+              const aborted = result.status === 'aborted' || result.summary.aborted === true
+
+              if (!aborted) {
+                // Keep a durable record of a successful manual compression in
+                // the chat after replacing it with the authoritative backend
+                // transcript. Errors remain transient: appending an error as a
+                // system message would look like a successful state change.
+                renderSlashOutput(lines.join('\n'))
+              }
+
+              notify({
+                durationMs: 5_000,
+                id: noticeId,
+                kind: aborted ? 'error' : 'success',
+                message: lines.join('\n')
+              })
 
               return
             }
 
-            if (!outcome.aborted) {
-              renderSlashOutput(outcome.message)
+            const hostOutput = result?.host_ack?.output?.trim()
+
+            if (hostOutput) {
+              renderSlashOutput(hostOutput)
+              notify({ durationMs: 5_000, id: noticeId, kind: 'success', message: hostOutput })
+
+              return
             }
 
+            const removed = result?.removed ?? 0
+            const message = removed > 0 ? `compressed ${removed} messages` : 'nothing to compress'
+            renderSlashOutput(message)
             notify({
               durationMs: 5_000,
               id: noticeId,
-              kind: outcome.aborted ? 'error' : 'success',
-              message: outcome.message
+              kind: 'success',
+              message
             })
           } catch (err) {
             dismissNotification(noticeId)
@@ -937,7 +1029,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             applyReasoningSlashResult(result.value)
             // Typed while a reply streams: the owner applies the level from the next turn.
             renderSlashOutput(
-              result.status === 'deferred' ? translateNow('shell.modelMenu.pickDeferred', value) : `reasoning: ${value}`
+              result.status === 'deferred'
+                ? translateNow('shell.modelMenu.pickDeferred', value)
+                : `reasoning: ${value}`
             )
           } catch (err) {
             if (isMissingRpcMethod(err)) {

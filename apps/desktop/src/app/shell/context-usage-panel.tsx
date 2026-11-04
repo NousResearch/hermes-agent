@@ -3,7 +3,6 @@ import { useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -13,8 +12,7 @@ import type { CompactConversationAction } from './hooks/use-compact-conversation
 
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
-  /** The popover's compact action. Omitted by surfaces that cannot act on the
-   *  session (no controller, no runtime id) — the panel then shows numbers only. */
+  /** Omitted by surfaces that cannot act on the session: numbers only. */
   compact?: CompactConversationAction
   loading: boolean
   usage: UsageStats
@@ -89,28 +87,22 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
         ))}
       </ul>
 
-      {compact && <CompactConversationRow compact={compact} />}
-
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+
+      {compact && <CompactConversationRow compact={compact} />}
     </div>
   )
 }
 
-/** The popover's one verb: the numbers are read-only, compaction changes them.
- *  Two steps (ask, then run) because the RPC rewrites the transcript and can
- *  take minutes, and the running state outlives this popover — see
- *  `useCompactConversation`. Every branch is a real state, never a guess: the
- *  button says why it cannot run, the pending label outlives the dropdown, and
- *  a failure is printed where the user opened the action. */
 function CompactConversationRow({ compact }: { compact: CompactConversationAction }) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel.compact
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-(--ui-stroke-tertiary) pt-2" data-slot="context-compact">
-      <p className="text-[0.6875rem] text-muted-foreground">{copy.hint}</p>
+      <p className="text-[0.6875rem] text-muted-foreground">{compact.busy ? copy.busyHint : copy.hint}</p>
 
       {compact.pending ? (
         <p
@@ -121,36 +113,17 @@ function CompactConversationRow({ compact }: { compact: CompactConversationActio
           {copy.working}
         </p>
       ) : (
-        <>
-          <Button
-            className="w-full justify-start"
-            disabled={compact.busy || compact.unavailable}
-            onClick={compact.onRequest}
-            size="xs"
-            type="button"
-            variant="ghost"
-          >
-            <Codicon name="archive" size="0.75rem" />
-            {copy.action}
-          </Button>
-        </>
-      )}
-
-      <ConfirmDialog
-        confirmLabel={copy.confirm}
-        dismissOnConfirm
-        onClose={compact.onCancel}
-        onConfirm={compact.onConfirm}
-        open={compact.confirming && !compact.busy && !compact.unavailable}
-        title={copy.question}
-      />
-
-      {compact.busy && <p className="text-[0.6875rem] text-muted-foreground">{copy.busyHint}</p>}
-
-      {compact.error && (
-        <p className="whitespace-pre-line text-[0.6875rem] text-destructive" data-testid="context-compact-error">
-          {compact.error}
-        </p>
+        <Button
+          className="w-full justify-start"
+          disabled={compact.busy || compact.unavailable}
+          onClick={compact.onRequest}
+          size="xs"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="archive" size="0.75rem" />
+          {copy.action}
+        </Button>
       )}
     </div>
   )

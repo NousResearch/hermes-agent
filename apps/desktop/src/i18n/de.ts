@@ -4646,10 +4646,7 @@ export const deOverrides = {
           action: 'Unterhaltung verdichten',
           busyHint: 'Beende oder stoppe zuerst die laufende Antwort',
           confirm: 'Verdichten',
-          failed: 'Verdichten fehlgeschlagen',
           hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
-          pending: 'Verdichtung läuft noch im Hintergrund',
-          progress: 'Kontext wird verdichtet …',
           question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
           working: 'Verdichte …'
         },

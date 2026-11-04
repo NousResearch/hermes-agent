@@ -682,6 +682,37 @@ it('keeps one cancellation intent until Stop is confirmed, and fences again behi
   expect(new Set(cancelIds.slice(1)).size).toBe(3)
 })
 
+it('follows a retried Stop that replayed its lost fence with a fresh one when the room still works', async () => {
+  let stops = 0
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: { working: true } }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    if (method === 'groups.stop') {
+      stops += 1
+
+      // The first Stop committed but its reply was lost; work sent afterward is past its fence.
+      if (stops === 1) {throw new Error('request timed out: groups.stop')}
+
+      return { cancelled: stops === 2 ? 0 : 1 }
+    }
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stop-replay-late-work' }} />)
+  const stop = await screen.findByRole('button', { name: 'Stop the group' }) as HTMLButtonElement
+  fireEvent.click(stop)
+  await screen.findByText('request timed out: groups.stop')
+  await waitFor(() => expect(stop.disabled).toBe(false))
+  fireEvent.click(stop)
+  await screen.findByText('Stop requested')
+  const ids = request.mock.calls.filter(call => call[1] === 'groups.stop').map(call => call[2].cancel_id)
+  expect(ids).toHaveLength(3)
+  expect(ids[1]).toBe(ids[0])
+  expect(ids[2]).not.toBe(ids[0])
+})
+
 it('holds the next Send until a Stop still fencing behind the last one has finished', async () => {
   let deliver!: (value: unknown) => void
   let releaseFirstStop!: () => void

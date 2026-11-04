@@ -4648,6 +4648,7 @@ export const deOverrides = {
           confirm: 'Verdichten',
           hint: 'Älteren Kontext zusammenfassen, um Platz zu schaffen. Dieses Gespräch wird fortgesetzt.',
           question: 'Diese Unterhaltung zu einer Zusammenfassung verdichten?',
+          questionNamed: title => `„${title}“ zu einer Zusammenfassung verdichten?`,
           working: 'Verdichte …'
         },
         empty: 'Noch keine Kontext-Daten',

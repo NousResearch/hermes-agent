@@ -4632,6 +4632,7 @@ export const esOverrides = {
           confirm: 'Compactar',
           hint: 'Resume el contexto anterior para hacer espacio. Continúa en esta misma conversación.',
           question: '¿Compactar esta conversación en un resumen?',
+          questionNamed: title => `¿Compactar «${title}» en un resumen?`,
           working: 'Compactando…'
         },
         empty: 'Aún no hay datos de contexto',

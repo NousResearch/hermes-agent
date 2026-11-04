@@ -4593,6 +4593,7 @@
     "shell.statusbar.contextUsagePanel.compact.confirm",
     "shell.statusbar.contextUsagePanel.compact.hint",
     "shell.statusbar.contextUsagePanel.compact.question",
+    "shell.statusbar.contextUsagePanel.compact.questionNamed",
     "shell.statusbar.contextUsagePanel.compact.working",
     "shell.statusbar.contextUsagePanel.empty",
     "shell.statusbar.contextUsagePanel.loading",

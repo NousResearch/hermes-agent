@@ -15,8 +15,8 @@ not a claim of machine-checked formal verification.
 - `P` — persisted policy trace metadata.
 
 The guard is an integrity boundary. It does not hide `U` from the main model;
-Hermes still needs retrieved data to answer the user. It prevents instructions
-inside `U` from becoming authority for `E`.
+Hermes still needs retrieved data to answer the user. It restricts authority for mapped effects to capability categories derived from
+`T`. It does not bind authority to specific effect arguments.
 
 ## Invariants
 
@@ -99,7 +99,8 @@ including the native `make_tool_result_message()` contract.
 
 - This is not a proof of the main model's natural-language noninterference.
 - It does not prevent the main model from repeating attacker text in an answer.
-- It does not automatically classify future tool names whose effects are not
-  represented in the policy map; mapping coverage must evolve with Hermes.
+- Unknown tool names require `external_system`; this conservative category is
+  not a semantic analysis of arbitrary future tools. Operator read-only
+  exceptions must be audited, and authorized capability arguments remain broad.
 - `monitor` is deliberately non-enforcing.
 - Operator-authorized dangerous effects remain possible by design.

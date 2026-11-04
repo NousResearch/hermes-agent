@@ -30,3 +30,11 @@ config_schema:
     type: float
     default: 12.0
     description: "Trusted-intent classifier timeout, clamped to 2-120 seconds"
+  read_only_tools:
+    type: list
+    default: []
+    description: "Operator-audited exact tool names exempt from effect gating; output stays untrusted"
+  tool_capabilities:
+    type: dict
+    default: {}
+    description: "Exact custom tool name to existing capability id; invalid entries are ignored"

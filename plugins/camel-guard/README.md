@@ -1,74 +1,114 @@
-# CaMeL Guard for current Hermes
+# CaMeL Guard
 
-This is the current-Hermes port of the CaMeL-style runtime guard from
-NousResearch/hermes-agent PR #3987. It is now a plugin-only integration: it
-does not patch `run_agent.py`, `agent/conversation_loop.py`,
-`agent/tool_executor.py`, the CLI, configuration defaults, or Hermes's tool
-message construction.
+A CaMeL-style capability guard for Hermes Agent. After reading untrusted tool
+output, Hermes must obtain authority from the current user's request before a
+sensitive tool can run. The classifier sees the current request only. Retrieved
+pages, file contents and prior assistant text cannot grant capabilities.
 
-The plugin uses the generic lifecycle contract already present in Hermes:
+## Install and activate
 
-- `pre_llm_call` captures only the current trusted user message.
-- `post_tool_call` records that tool output entered the turn as untrusted data.
-- `pre_tool_call` classifies trusted intent only when a later side effect needs
-  authorization.
-- Hermes still routes sequential and concurrent execution through its native
-  executor and builds tool results with `make_tool_result_message()`.
+Requires Hermes **0.22.7 or newer**. No additional Python dependencies.
 
-## Enable it explicitly
+```sh
+# After catalog admission:
+hermes plugins install camel-guard
+hermes plugins enable camel-guard
+```
 
-The plugin and its traces are both off unless the operator opts in:
+Before catalog admission, install the reviewed repository at its full commit
+SHA with `hermes plugins install https://github.com/nativ3ai/hermes-camel-guard --ref <SHA> --subdir plugin`.
+The mode starts **off**, and traces start **off**. Add this to the active
+profile's `config.yaml`:
 
 ```yaml
 plugins:
-  enabled:
-    - camel-guard
+  enabled: [camel-guard]
   entries:
     camel-guard:
       settings:
-        mode: monitor       # off | monitor | enforce
+        mode: "monitor"   # "off", "monitor", "enforce"
         trace_enabled: false
 ```
 
-`monitor` records what would be blocked but lets execution continue.
-`enforce` returns a native `pre_tool_call` block directive. Invalid or missing
-mode values resolve to `off`.
+Reload plugins or restart Hermes, then run `/camel status`. `/camel monitor`,
+`/camel enforce` and `/camel off` save a mode for the next reload; they do not
+change policy halfway through an active turn. Start in monitor, exercise your
+usual workflows, then select enforce and reload. The host's configured model
+must support structured responses for authorized utility to work. A classifier
+failure blocks sensitive tools in enforce; monitor continues execution.
 
-## Security behavior
+## What it protects
 
-The auxiliary classifier receives one JSON field: `trusted_user_message`. It
-never receives tool output, conversation retrieval, memory, file contents, or
-the untrusted source payload. If classification fails, the derived plan is
-read-only: monitor reports the decision and enforce blocks the side effect.
+Five public hooks mediate the native direct, sequential and concurrent tool
+paths. Hermes keeps its tool-result wrappers, approvals and prompt caching.
+There are no patches to core methods, extra model tools or background processes.
 
-The capability table covers current native mutation surfaces, including file
-and command execution, background-process control, browser/computer use,
-desktop UI controls, project and kanban state, messaging connectors, scheduled
-jobs, delegation, skills, memory, and conservative unknown MCP operations.
-Known read-only variants such as process polling, computer capture, kanban
-listing, and connector reads remain ungated.
+- Commands, file changes, memory, skills, jobs, messaging, delegation, browser
+  interactions, desktop projects and task mutation have separate capabilities.
+- Unknown tools, including MCP tools, conservatively require `external_system`.
+- Known read-only actions remain available. Their results still count as
+  untrusted input for later effects.
+- A classifier timeout, malformed response or provider failure yields a read-only
+  plan. Denial takes precedence over allowance. Parallel decisions classify once.
 
-Trace persistence is separately opt-in and is ignored while mode is `off`.
-Trace events are bounded and omit user text, tool arguments, and tool results;
-they contain only the tool/capability decision, source tool names, and
-classifier status.
+Operators integrating custom tools can use exact, audited names:
 
-## Maintainer-review mapping
+```yaml
+# Under plugins.entries.camel-guard.settings:
+read_only_tools: [mcp_docs_read]
+tool_capabilities:
+  workspace_save: file_mutation
+```
 
-This port addresses Teknium's July 12, 2026 review on PR #3987:
+Wildcards and invalid capabilities are ignored. A read-only exception exempts
+only the effect gate: its output still cannot grant authority. Do not mark an
+effect-capable tool read-only.
 
-1. Trace persistence defaults off and cannot run with the guard off.
-2. No custom tool-result path exists. Current executor hooks run before native
-   dispatch, and Hermes retains its current untrusted-data wrapper and
-   `name`/`tool_name` message contract.
-3. The focused tests use real plugin discovery under a temporary
-   `HERMES_HOME`, exercise direct plus sequential/concurrent dispatch, parse a
-   structured host-LLM response, and cover classifier failure.
+## Data and network disclosure
 
-The executable information-flow invariants and their explicit non-claims are
-documented in `docs/camel-guard-information-flow.md`.
+The plugin calls **the model configured in Hermes**, through `ctx.llm`, only
+when a sensitive decision follows untrusted content. That sends the current
+user request to the configured provider and consumes model quota. The plugin
+never reads `.env`, OAuth stores, browser profiles or another tool's login.
+Hermes owns authentication and any normal token refresh. The runtime executes
+no shell commands and makes no independent network requests. It reads its own
+operator settings through Hermes.
 
-The reproducible Codex-subscription benchmark is
-`scripts/camel_guard_live_benchmark.py`; its current generated report is
-`docs/camel-guard-live-benchmark.md` with machine-readable results under
-`benchmarks/camel_guard/results/`.
+Optional bounded traces use Hermes's profile-scoped plugin state. They contain
+time, scope identifiers, tool names, capability and decision metadata; no user
+text, tool arguments, tool results or classifier rationale. Off mode does not
+create a trace. There is no telemetry, self-updater or credential storage.
+
+## Boundaries
+
+This is a **coarse capability guard**, not the full CaMeL interpreter and not a
+sandbox. Authorization applies to an effect category, not an exact command,
+file path, recipient or argument. It does not prevent answer contamination or
+exfiltration through an already-authorized capability. It trusts the host to
+provide the actual current user request separately from imported content.
+Untrusted attachments concatenated into that trusted field are outside this
+boundary. Monitor is observational. Host/plugin failures and hooks unavailable
+on older Hermes versions remain host concerns; the compatibility floor is
+intentional.
+
+## Reproduce
+
+The repository root contains `scripts/` and `tests/`. Generated results are
+ignored and are published as CI artifacts, never as source evidence.
+
+```sh
+python scripts/check_camel_guard.py --hermes-root /path/to/hermes-agent
+python scripts/camel_guard_offline_benchmark.py --hermes-root /path/to/hermes-agent
+# Explicit opt-in to live calls using Hermes-managed authentication:
+python scripts/camel_guard_live_benchmark.py --hermes-root /path/to/hermes-agent \
+  --live --provider openai-codex --model YOUR_MODEL --phase all \
+  --auth-home /path/to/your/hermes-profile
+```
+
+Offline controls use a deterministic classifier fixture and real scratch-file
+dispatch. Live controls report model refusals separately from guard blocks and
+include authorized-utility controls. See the repository's `docs/BENCHMARKS.md`
+and `docs/INFORMATION_FLOW.md` for methodology and explicit non-claims.
+
+MIT. Original implementation and review history:
+[NousResearch/hermes-agent#3987](https://github.com/NousResearch/hermes-agent/pull/3987).

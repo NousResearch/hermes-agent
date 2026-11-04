@@ -23,18 +23,20 @@ def _write_plugin_config(*, mode: str, trace_enabled: bool = False) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     config_path = home / "config.yaml"
     config_path.write_text(
-        "\n".join([
-            "plugins:",
-            "  enabled:",
-            "    - camel-guard",
-            "  entries:",
-            "    camel-guard:",
-            "      settings:",
-            f'        mode: "{mode}"',
-            f"        trace_enabled: {'true' if trace_enabled else 'false'}",
-            "        classifier_timeout_seconds: 2.0",
-            "",
-        ]),
+        "\n".join(
+            [
+                "plugins:",
+                "  enabled:",
+                "    - camel-guard",
+                "  entries:",
+                "    camel-guard:",
+                "      settings:",
+                f'        mode: "{mode}"',
+                f"        trace_enabled: {'true' if trace_enabled else 'false'}",
+                "        classifier_timeout_seconds: 2.0",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     return home
@@ -88,11 +90,13 @@ def _host_response(
     allowed: list[str] | None = None,
     denied: list[str] | None = None,
 ) -> SimpleNamespace:
-    content = json.dumps({
-        "allowed_capabilities": allowed or [],
-        "denied_capabilities": denied or [],
-        "rationale": "bounded test policy",
-    })
+    content = json.dumps(
+        {
+            "allowed_capabilities": allowed or [],
+            "denied_capabilities": denied or [],
+            "rationale": "bounded test policy",
+        }
+    )
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
         model="test-policy-model",
@@ -112,10 +116,12 @@ def _classifier_response(
             captured.append(kwargs)
         route_info = kwargs.get("route_info")
         if isinstance(route_info, dict):
-            route_info.update({
-                "provider": "test-provider",
-                "model": "test-policy-model",
-            })
+            route_info.update(
+                {
+                    "provider": "test-provider",
+                    "model": "test-policy-model",
+                }
+            )
         return _host_response(allowed=allowed, denied=denied)
 
     with patch("agent.auxiliary_client.call_llm", side_effect=call_llm):
@@ -163,7 +169,7 @@ def test_off_mode_is_a_true_noop_even_if_trace_was_requested():
     assert module._runtime._turns == {}
     # The durable state facade is lazy.  A true off path never allocates it,
     # which proves no trace file can be created by ordinary Hermes sessions.
-    assert module._runtime._ctx.state.get("decision_events", default=[]) == []
+    assert not module._runtime._ctx.state.path.exists()
 
 
 def test_current_hermes_mutation_surface_has_explicit_policy():
@@ -232,7 +238,7 @@ def test_direct_dispatch_blocks_after_untrusted_data_and_classifier_sees_only_tr
     assert trusted_request in classifier_wire
     assert poisoned_text not in classifier_wire
     assert str(source) not in classifier_wire
-    assert module._runtime._ctx.state.get("decision_events", default=[]) == []
+    assert not module._runtime._ctx.state.path.exists()
 
 
 def test_monitor_mode_observes_but_does_not_block_real_dispatch(tmp_path):
@@ -295,9 +301,9 @@ def _make_agent_for_executor_path():
         }
     ]
     with (
-        patch("run_agent.get_tool_definitions", return_value=tool_defs),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -308,7 +314,7 @@ def _make_agent_for_executor_path():
         )
     agent.client = MagicMock()
     agent.session_id = "session-executor"
-    setattr(agent, "_current_turn_id", "turn-executor")
+    agent._current_turn_id = "turn-executor"
     return agent
 
 
@@ -340,7 +346,7 @@ def test_native_executor_paths_preserve_tool_message_contract(concurrent):
     with (
         _classifier_response(),
         patch(
-            "run_agent.handle_function_call",
+            "model_tools.handle_function_call",
             side_effect=AssertionError("blocked tool must not dispatch"),
         ),
     ):
@@ -397,23 +403,70 @@ def test_trace_is_explicit_bounded_and_metadata_only(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ('tool_name', 'args', 'capability'),
+    ("tool_name", "args", "capability"),
     [
-        ('process_manage', {'action': 'kill'}, 'command_execution'),
-        ('cronjob_manage', {'action': 'create'}, 'scheduled_action'),
-        ('desktop_project', {'action': 'create'}, 'workspace_mutation'),
-        ('desktop_preview', {'action': 'open'}, 'browser_interaction'),
-        ('todo_list', {'action': 'write'}, 'task_state_mutation'),
-        ('new_plugin_send', {}, 'external_system'),
+        ("process_manage", {"action": "kill"}, "command_execution"),
+        ("cronjob_manage", {"action": "create"}, "scheduled_action"),
+        ("desktop_project", {"action": "create"}, "workspace_mutation"),
+        ("desktop_preview", {"action": "open"}, "browser_interaction"),
+        ("todo_list", {"action": "write"}, "task_state_mutation"),
+        ("new_plugin_send", {}, "external_system"),
     ],
 )
-def test_current_aliases_and_unknown_tools_require_authority(tool_name, args, capability):
-    module = _discover_guard(mode='enforce')
-    _invoke_turn(user_message='Summarize only; do not perform side effects.')
-    _mark_untrusted_result(tool_name='read_file')
+def test_current_aliases_and_unknown_tools_require_authority(
+    tool_name, args, capability
+):
+    module = _discover_guard(mode="enforce")
+    _invoke_turn(user_message="Summarize only; do not perform side effects.")
+    _mark_untrusted_result(tool_name="read_file")
     with _classifier_response():
         result = module._runtime.on_pre_tool_call(
-            tool_name=tool_name, args=args, session_id='session-camel', turn_id='turn-camel',
+            tool_name=tool_name,
+            args=args,
+            session_id="session-camel",
+            turn_id="turn-camel",
         )
     assert module.capability_for(tool_name, args) == capability
-    assert result is not None and result['action'] == 'block'
+    assert result is not None and result["action"] == "block"
+
+
+def test_operator_read_only_exception_keeps_output_untrusted_and_custom_mapping():
+    module = _discover_guard(mode="enforce")
+    ctx = module._runtime._ctx
+    ctx.set_config("read_only_tools", ["mcp_docs_read", "mcp_*"])
+    ctx.set_config(
+        "tool_capabilities", {"workspace_save": "file_mutation", "bad": "nonsense"}
+    )
+    runtime = module.CamelGuardRuntime(ctx, module._load_settings(ctx))
+    runtime.on_pre_llm_call(
+        user_message="Read only", session_id="custom", turn_id="turn"
+    )
+    runtime.on_post_tool_call(
+        tool_name="mcp_docs_read", session_id="custom", turn_id="turn"
+    )
+    state = runtime._state_for(session_id="custom", turn_id="turn")
+    assert state is not None and state.untrusted_sources == {"mcp_docs_read"}
+    assert (
+        runtime.on_pre_tool_call(
+            tool_name="mcp_docs_read", session_id="custom", turn_id="turn"
+        )
+        is None
+    )
+    with _classifier_response():
+        blocked = runtime.on_pre_tool_call(
+            tool_name="workspace_save", session_id="custom", turn_id="turn"
+        )
+    assert blocked is not None and blocked["action"] == "block"
+    assert "file mutation" in blocked["message"]
+    assert "mcp_*" not in runtime.settings.read_only_tools
+    assert "bad" not in runtime.settings.tool_capabilities
+
+
+def test_operator_command_persists_mode_without_mutating_active_turn():
+    module = _discover_guard(mode="monitor")
+    runtime = module._runtime
+    assert "running=monitor" in runtime.command("status")
+    assert "configured=enforce" in runtime.command("enforce")
+    assert runtime.settings.mode == "monitor"
+    assert runtime._ctx.get_config("mode") == "enforce"
+    assert "Usage:" in runtime.command("arbitrary instructions")

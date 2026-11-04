@@ -77,18 +77,20 @@ def _write_config(*, mode: str, trace_enabled: bool = False) -> None:
     home = Path(os.environ["HERMES_HOME"])
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
-        "\n".join([
-            "plugins:",
-            "  enabled:",
-            "    - camel-guard",
-            "  entries:",
-            "    camel-guard:",
-            "      settings:",
-            f'        mode: "{mode}"',
-            f"        trace_enabled: {'true' if trace_enabled else 'false'}",
-            "        classifier_timeout_seconds: 2.0",
-            "",
-        ]),
+        "\n".join(
+            [
+                "plugins:",
+                "  enabled:",
+                "    - camel-guard",
+                "  entries:",
+                "    camel-guard:",
+                "      settings:",
+                f'        mode: "{mode}"',
+                f"        trace_enabled: {'true' if trace_enabled else 'false'}",
+                "        classifier_timeout_seconds: 2.0",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -109,11 +111,13 @@ def _load_guard(*, mode: str = "enforce", trace_enabled: bool = False):
 def _host_response(*, allowed: list[str] | None = None, raw: str | None = None):
     content = raw
     if content is None:
-        content = json.dumps({
-            "allowed_capabilities": allowed or [],
-            "denied_capabilities": [],
-            "rationale": "information-flow property oracle",
-        })
+        content = json.dumps(
+            {
+                "allowed_capabilities": allowed or [],
+                "denied_capabilities": [],
+                "rationale": "information-flow property oracle",
+            }
+        )
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
         model="ifc-oracle",
@@ -122,14 +126,10 @@ def _host_response(*, allowed: list[str] | None = None, raw: str | None = None):
 
 
 @contextmanager
-def _classifier(
-    *, allowed: list[str] | None = None, captured=None, raw=None, delay=0.0
-):
+def _classifier(*, allowed: list[str] | None = None, captured=None, raw=None):
     def call_llm(**kwargs):
         if captured is not None:
             captured.append(deepcopy(kwargs))
-        if delay:
-            threading.Event().wait(delay)
         route_info = kwargs.get("route_info")
         if isinstance(route_info, dict):
             route_info.update({"provider": "ifc", "model": "ifc-oracle"})
@@ -395,12 +395,14 @@ def test_ifc_i7_concurrent_decisions_are_single_classification_and_deterministic
     _begin_turn(session_id="concurrent", turn_id="turn")
     call_count = 0
     count_lock = threading.Lock()
+    entered, release = threading.Event(), threading.Event()
 
     def call_llm(**kwargs):
         nonlocal call_count
         with count_lock:
             call_count += 1
-        threading.Event().wait(0.03)
+        entered.set()
+        assert release.wait(timeout=5)
         route_info = kwargs.get("route_info")
         if isinstance(route_info, dict):
             route_info.update({"provider": "ifc", "model": "ifc-oracle"})
@@ -417,7 +419,10 @@ def test_ifc_i7_concurrent_decisions_are_single_classification_and_deterministic
 
     with patch("agent.auxiliary_client.call_llm", side_effect=call_llm):
         with ThreadPoolExecutor(max_workers=16) as pool:
-            results = list(pool.map(decide, range(64)))
+            futures = [pool.submit(decide, i) for i in range(64)]
+            assert entered.wait(timeout=5)
+            release.set()
+            results = [future.result(timeout=5) for future in futures]
 
     assert call_count == 1
     assert all(

@@ -9,9 +9,10 @@ construct every tool result through ``make_tool_result_message()``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, UTC
 import json
+import re
 import threading
 from typing import Any, Mapping, Sequence
 
@@ -36,6 +37,8 @@ class GuardSettings:
     trace_enabled: bool = False
     trace_max_events: int = 200
     classifier_timeout_seconds: float = 12.0
+    read_only_tools: frozenset[str] = frozenset()
+    tool_capabilities: Mapping[str, str] = field(default_factory=dict)
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -61,7 +64,23 @@ def _bounded_float(
 
 
 def _load_settings(ctx: Any) -> GuardSettings:
+    read_only = ctx.get_config("read_only_tools", [])
+    overrides = ctx.get_config("tool_capabilities", {})
+    valid_name = re.compile(r"[A-Za-z0-9_-]{1,160}").fullmatch
+    read_only = read_only if isinstance(read_only, list) else []
+    overrides = overrides if isinstance(overrides, Mapping) else {}
     return GuardSettings(
+        read_only_tools=frozenset(
+            name for name in read_only if isinstance(name, str) and valid_name(name)
+        ),
+        tool_capabilities={
+            name: capability
+            for name, capability in overrides.items()
+            if isinstance(name, str)
+            and valid_name(name)
+            and isinstance(capability, str)
+            and capability in CAPABILITY_LABELS
+        },
         mode=normalize_mode(ctx.get_config("mode", "off")),
         trace_enabled=ctx.get_config("trace_enabled", False) is True,
         trace_max_events=_bounded_int(
@@ -177,7 +196,7 @@ class CamelGuardRuntime:
         scope_id = self._scope_id(session_id, task_id)
         if self.settings.mode == "off":
             self._purge_scope(scope_id)
-            return None
+            return
 
         resolved_turn = str(turn_id or "turn-unknown")
         state = TurnState(
@@ -194,7 +213,7 @@ class CamelGuardRuntime:
             self._current_turn_by_scope[scope_id] = resolved_turn
         # Returning context would mutate the user-message wire payload.  The
         # guard is an execution policy, so it returns nothing here.
-        return None
+        return
 
     def on_post_tool_call(
         self,
@@ -207,9 +226,9 @@ class CamelGuardRuntime:
         **_: Any,
     ) -> None:
         if self.settings.mode == "off":
-            return None
+            return
         if status in {"blocked", "cancelled"} or not is_untrusted_output(tool_name):
-            return None
+            return
         state = self._state_for(
             session_id=session_id,
             task_id=task_id,
@@ -218,7 +237,7 @@ class CamelGuardRuntime:
         if state is not None:
             with self._lock:
                 state.untrusted_sources.add(str(tool_name))
-        return None
+        return
 
     def _classify(self, state: TurnState) -> CapabilityPlan:
         with state.classification_lock:
@@ -270,7 +289,7 @@ class CamelGuardRuntime:
                     status="ok",
                     rationale=str(payload.get("rationale") or "")[:240],
                 )
-            except Exception as exc:
+            except Exception as exc:  # health: allow BLE001 -- provider boundary fails closed without logging trusted text or credential-bearing errors
                 # The classifier is part of the security boundary.  Failure is
                 # a read-only plan; monitor observes it, enforce blocks it.
                 state.plan = CapabilityPlan(
@@ -296,7 +315,7 @@ class CamelGuardRuntime:
         ):
             return
         event = {
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": datetime.now(UTC).isoformat(),
             "session_id": state.scope_id,
             "turn_id": state.turn_id,
             "mode": self.settings.mode,
@@ -329,7 +348,10 @@ class CamelGuardRuntime:
     ) -> dict[str, str] | None:
         if self.settings.mode == "off":
             return None
-        capability = capability_for(
+        # These exact-name exceptions come from operator config, never tool output.
+        if tool_name in self.settings.read_only_tools:
+            return None
+        capability = self.settings.tool_capabilities.get(tool_name) or capability_for(
             tool_name,
             args if isinstance(args, Mapping) else {},
         )
@@ -398,6 +420,20 @@ class CamelGuardRuntime:
             ),
         }
 
+    def command(self, raw_args: str = "") -> str:
+        action = raw_args.strip().lower() or "status"
+        if action == "status":
+            configured = normalize_mode(self._ctx.get_config("mode", "off"))
+            return (
+                f"CaMeL Guard: running={self.settings.mode}; configured={configured}; "
+                f"traces={'on' if self.settings.trace_enabled else 'off'}. "
+                "Mode changes apply after plugin reload or a Hermes restart."
+            )
+        if action in {"off", "monitor", "enforce"}:
+            self._ctx.set_config("mode", action)
+            return f"CaMeL Guard configured={action}. Reload plugins or restart Hermes to apply."
+        return "Usage: /camel [status|off|monitor|enforce]"
+
     def on_session_end(
         self,
         *,
@@ -419,3 +455,9 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", _runtime.on_post_tool_call)
     ctx.register_hook("on_session_end", _runtime.on_session_end)
     ctx.register_hook("on_session_reset", _runtime.on_session_end)
+    ctx.register_command(
+        name="camel",
+        handler=_runtime.command,
+        description="Inspect or configure CaMeL Guard for the next plugin load.",
+        args_hint="[status|off|monitor|enforce]",
+    )

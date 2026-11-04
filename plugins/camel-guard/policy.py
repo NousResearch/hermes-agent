@@ -63,14 +63,6 @@ Capabilities:
 )
 
 
-_CONTROL_OUTPUT_TOOLS = {
-    "clarify",
-    "skill_view",
-    "skills_list",
-    "todo",
-    "todo_list",
-}
-
 _READ_ONLY_BROWSER_TOOLS = {
     "browser_console",
     "browser_get_images",
@@ -151,18 +143,19 @@ _EXTERNAL_SYSTEM_TOOLS = {
 }
 
 _READ_ONLY_TOOLS = {
-    "clarify", "read_file", "search_files", "web_search", "web_extract",
-    "vision_analyze", "video_analyze", "session_search", "skills_list",
-    "skill_view", "read_terminal", "read_window_below",
+    "clarify",
+    "read_file",
+    "search_files",
+    "web_search",
+    "web_extract",
+    "vision_analyze",
+    "video_analyze",
+    "session_search",
+    "skills_list",
+    "skill_view",
+    "read_terminal",
+    "read_window_below",
 }
-
-
-_EXTERNAL_PREFIXES = (
-    "discord_",
-    "feishu_",
-    "mcp_",
-    "yuanbao_",
-)
 
 
 def normalize_mode(value: Any) -> str:
@@ -175,62 +168,57 @@ def normalize_mode(value: Any) -> str:
     return normalized
 
 
-def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str:
-    """Map a current Hermes tool call to its side-effect capability.
+_FIXED_CAPABILITIES = {
+    **dict.fromkeys({"terminal", "execute_code"}, "command_execution"),
+    **dict.fromkeys({"write_file", "patch"}, "file_mutation"),
+    **dict.fromkeys({"delegate_task", "mixture_of_agents"}, "delegation"),
+    **dict.fromkeys(_EXTERNAL_MESSAGING_TOOLS, "external_messaging"),
+    **dict.fromkeys(_EXTERNAL_SYSTEM_TOOLS, "external_system"),
+    **dict.fromkeys(_DESKTOP_INTERACTION_TOOLS, "browser_interaction"),
+    "memory": "persistent_memory",
+    "skill_manage": "skill_mutation",
+}
+_ACTION_CAPABILITIES = {
+    "process": ("command_execution", _READ_ONLY_PROCESS_ACTIONS),
+    "process_manage": ("command_execution", _READ_ONLY_PROCESS_ACTIONS),
+    "cronjob": ("scheduled_action", {"list"}),
+    "cronjob_manage": ("scheduled_action", {"list"}),
+    "send_message": ("external_messaging", {"list"}),
+    "computer_use": ("browser_interaction", _READ_ONLY_COMPUTER_ACTIONS),
+    "desktop_project": ("workspace_mutation", {"list"}),
+    "project_create": ("workspace_mutation", set()),
+    "project_switch": ("workspace_mutation", set()),
+    "discord": ("external_system", _READ_ONLY_DISCORD_ACTIONS),
+    "discord_admin": ("external_system", _READ_ONLY_DISCORD_ACTIONS),
+}
+_READ_ONLY_TOOLS |= (
+    _READ_ONLY_BROWSER_TOOLS
+    | _READ_ONLY_FEISHU_TOOLS
+    | {
+        "yb_query_group_info",
+        "yb_query_member_info",
+    }
+)
 
-    An empty string means the call is not policy-gated.  This is intentionally
-    about effects, not output trust: read-only tools may still produce
-    untrusted data and are tracked separately by :func:`is_untrusted_output`.
-    """
+
+def capability_for(tool_name: str, args: Mapping[str, Any] | None = None) -> str:
+    """Classify effects; unknown names conservatively require external authority."""
     name = str(tool_name or "").strip()
     payload = args if isinstance(args, Mapping) else {}
     action = str(payload.get("action") or "").strip().lower()
-
-    if name in {"terminal", "execute_code"}:
-        return "command_execution"
-    if name in {"process", "process_manage"}:
-        return "" if action in _READ_ONLY_PROCESS_ACTIONS else "command_execution"
-    if name in {"write_file", "patch"}:
-        return "file_mutation"
-    if name == "memory":
-        return "persistent_memory"
-    if name == "skill_manage":
-        return "skill_mutation"
-    if name in {"cronjob", "cronjob_manage"}:
-        return "" if action == "list" else "scheduled_action"
-    if name == "send_message":
-        return "" if action == "list" else "external_messaging"
-    if name in _EXTERNAL_MESSAGING_TOOLS:
-        return "external_messaging"
-    if name in {"delegate_task", "mixture_of_agents"}:
-        return "delegation"
-    if name in _EXTERNAL_SYSTEM_TOOLS:
-        return "external_system"
-    if name == "computer_use":
-        return "" if action in _READ_ONLY_COMPUTER_ACTIONS else "browser_interaction"
-    if name in _DESKTOP_INTERACTION_TOOLS:
-        return "browser_interaction"
-    if name in {"project_create", "project_switch", "desktop_project"}:
-        return "" if action in {"list", "show"} else "workspace_mutation"
+    if name in _FIXED_CAPABILITIES:
+        return _FIXED_CAPABILITIES[name]
+    if name in _ACTION_CAPABILITIES:
+        capability, read_actions = _ACTION_CAPABILITIES[name]
+        return "" if action in read_actions else capability
     if name in {"todo", "todo_list"}:
-        return "" if action == "read" else "task_state_mutation"
+        return "" if not payload or action == "read" else "task_state_mutation"
     if name.startswith("kanban_"):
         return "" if name in _READ_ONLY_KANBAN_TOOLS else "task_state_mutation"
-    if name in {"discord", "discord_admin"}:
-        return "" if action in _READ_ONLY_DISCORD_ACTIONS else "external_system"
-    if name in _READ_ONLY_FEISHU_TOOLS:
+    if name in _READ_ONLY_TOOLS:
         return ""
-    if name.startswith("feishu_"):
-        return "external_system"
-    if name in {"yb_query_group_info", "yb_query_member_info"}:
-        return ""
-    if name.startswith("browser_") and name not in _READ_ONLY_BROWSER_TOOLS:
+    if name.startswith("browser_"):
         return "browser_interaction"
-    if name.startswith(_EXTERNAL_PREFIXES):
-        return "external_system"
-    if name in _READ_ONLY_TOOLS or name in _READ_ONLY_BROWSER_TOOLS:
-        return ""
-    # A new plugin or native name must not silently escape the effect policy.
     return "external_system"
 
 

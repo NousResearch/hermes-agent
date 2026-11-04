@@ -41,7 +41,7 @@ async def test_real_claim_plugin_consume_is_silent_or_replied(rows, reply):
 @pytest.mark.parametrize("delivered", [False, True], ids=["empty", "streamed-media"])
 async def test_authority_waiter_adopts_executed_claim_before_adapter_finish(rows, tmp_path, monkeypatch, delivered):
     from gateway.platforms import base
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_ingress import admit_message
     from tests.gateway.test_prompt_attachments import _authority
 
@@ -62,7 +62,7 @@ async def test_authority_waiter_adopts_executed_claim_before_adapter_finish(rows
     runner._handle_message_with_agent = AsyncMock(side_effect=answer)
     runner._should_send_voice_reply = lambda *_a, **_k: False
     authority = await _authority(tmp_path, monkeypatch, runner._handle_message)
-    actor = Principal("human", "p", frozenset({"session:submit"}), "t")
+    actor = SessionActor("human", "p", frozenset({"session:submit"}), "t")
 
     async def admit_native(ev):
         return await authority.submit(actor, Submission("m1", SessionRef("p", "s"), {"text": ev.text}, "queue"))

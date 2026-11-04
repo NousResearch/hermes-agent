@@ -47,7 +47,7 @@ import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
-import { useBackgroundSessionNotices } from './backgroundSessionNotices.js'
+import { noteLiveSessions } from './backgroundSessionNotices.js'
 import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
@@ -702,8 +702,6 @@ export function useMainApp(gw: GatewayClient) {
   useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
 
-  const noteLiveSessions = useBackgroundSessionNotices(gw, ui.sid, sys)
-
   useEffect(() => {
     if (!ui.sid) {
       patchUiState({ liveSessionCount: 0, sessionTitle: '' })
@@ -757,7 +755,7 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            noteLiveSessions(result.sessions)
+            noteLiveSessions(gw, result.sessions, sys)
             applyLiveSessionRoster(result.sessions)
           }
         })
@@ -771,7 +769,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, noteLiveSessions, ui.sid, ui.gatewayConnected])
+  }, [gw, sys, ui.sid, ui.gatewayConnected])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.

@@ -1001,11 +1001,6 @@ def _claimer_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
-def _host_prefix() -> str:
-    """``"<host>:"`` prefix shared by every claim lock issued from this host."""
-    return f"{_claimer_id().split(':', 1)[0]}:"
-
-
 def _host_key(host: str) -> str:
     """Case- and punctuation-insensitive machine name (``TheMateMachine`` == ``the-mate-machine``)."""
     return re.sub(r"[^a-z0-9]", "", (host or "").lower())

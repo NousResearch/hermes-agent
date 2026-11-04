@@ -55,7 +55,7 @@ def _respelled_host() -> str:
     # Vacuity guard: the test only means something while the OLD raw-prefix gate would have skipped
     # the claim. On a host whose name survives the respelling unchanged, fail loudly instead of
     # passing for the wrong reason.
-    assert not f"{variant}:1".startswith(kb._host_prefix()), (
+    assert not f"{variant}:1".startswith(f"{HOST}:"), (
         f"host {HOST!r} does not change under respelling; the test cannot exercise the gate")
     return variant
 

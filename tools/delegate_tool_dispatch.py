@@ -11,6 +11,7 @@ import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
@@ -119,6 +120,12 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
     if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
         record_unit_child(batch.unit_id, entry)
 
+def _run_gated(batch: _Batch, gate: Any, i: int, task: dict[str, Any], child: Any) -> dict[str, Any]:
+    """``batch.run_child`` behind the prompt-cache warm-up gate; a child stopped while it waited never starts."""
+    entry = gate.run(child, lambda: batch.run_child(i, task, child), parent=batch.parent_agent)
+    return entry if entry is not None else _fabricated_entry(
+        i, "interrupted", "Stopped while waiting for the batch's shared prompt cache", child)
+
 def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
@@ -152,7 +159,11 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # waiting on the interrupt path instead (same shape as moa_loop).
     interrupted = False
     try:
-        futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
+        from tools.delegate_tool_config import _get_prefix_stagger_seconds
+        from tools.delegate_tool_prefix_gate import PrefixCacheGate
+        gate = PrefixCacheGate.for_children(batch.children, _get_prefix_stagger_seconds())
+        run = batch.run_child if gate is None else partial(_run_gated, batch, gate)
+        futures = {executor.submit(contextvars.copy_context().run, run, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:

@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { group, split } from '@/components/pane-shell/tree/model'
+import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
 import { $interfaceMode } from '@/store/interface-mode'
@@ -11,7 +13,11 @@ import { SIDEBAR_NAV_AREA } from '../../routes'
 
 import { SimplifiedPluginPages } from './simplified-plugin-pages'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $layoutTree.set(null)
+  noteActiveTreeGroup(null)
+})
 
 it('shows no Plugins section without contributed pages', () => {
   render(
@@ -46,7 +52,7 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
   try {
     const onNavigate = vi.fn()
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/board']}>
         <RootTooltipProvider>
           <SimplifiedPluginPages onNavigate={onNavigate} />
         </RootTooltipProvider>
@@ -55,7 +61,21 @@ it('keeps plugin pages reachable and respects visibility, preferences, and unloa
     expect(screen.queryByRole('button', { name: 'Advanced page' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Hidden page' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Invalid page' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Test board' }))
+    const board = screen.getByRole('button', { name: 'Test board' })
+    expect(board.getAttribute('aria-current')).toBe('page')
+    act(() => {
+      $layoutTree.set(
+        split('row', [
+          group(['workspace'], { id: 'workspace-group' }),
+          group(['session-tile:chat-one'], { id: 'chat-group' })
+        ])
+      )
+      noteActiveTreeGroup('chat-group')
+    })
+    expect(board.hasAttribute('aria-current')).toBe(false)
+    act(() => noteActiveTreeGroup('workspace-group'))
+    expect(board.getAttribute('aria-current')).toBe('page')
+    fireEvent.click(board)
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ route: '/board' }))
     fireEvent.click(screen.getByRole('button', { name: 'Settings: Test board' }))
     expect(onNavigate).toHaveBeenLastCalledWith(

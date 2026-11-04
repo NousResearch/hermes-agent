@@ -11,6 +11,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
+import { $focusedSessionIsTile } from '@/store/session-focus'
 import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 
 import { CAPABILITIES_ROUTE, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '../../routes'
@@ -22,6 +23,7 @@ export function SimplifiedPluginPages({ onNavigate }: { onNavigate: (item: Sideb
   const contributions = useContributions(SIDEBAR_NAV_AREA)
   const preferences = useContributions(SIDEBAR_NAV_PREFS_AREA)
   const mode = useStore($interfaceMode)
+  const focusedSessionIsTile = useStore($focusedSessionIsTile)
 
   const pages = applySidebarNavPrefs(
     contributions.flatMap(contribution => {
@@ -55,15 +57,16 @@ export function SimplifiedPluginPages({ onNavigate }: { onNavigate: (item: Sideb
       </SidebarPanelLabel>
       <FadeScroll className="min-h-0" fade="min(2.5rem, 25%)" maxHeight="none">
         {pages.map(item => {
+          const active = !focusedSessionIsTile && pathname === item.route
           const settingsLabel = `${t.commandCenter.settings}: ${item.label}`
 
           return (
             <div className="flex items-center gap-1" key={item.id}>
               <RowButton
-                aria-current={pathname === item.route ? 'page' : undefined}
+                aria-current={active ? 'page' : undefined}
                 className={cn(
                   'flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-2 text-left text-xs hover:bg-(--chrome-action-hover) focus-visible:outline-2 focus-visible:outline-ring',
-                  pathname === item.route && 'bg-(--chrome-action-hover)'
+                  active && 'bg-(--chrome-action-hover)'
                 )}
                 onClick={() => onNavigate(item)}
               >

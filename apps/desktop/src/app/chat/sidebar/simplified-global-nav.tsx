@@ -7,7 +7,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 
 import {
   appViewForPath,
@@ -28,7 +28,8 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
   const { pathname, search } = useLocation()
   const sessionId = useStore($focusedStoredSessionId)
   const tab = new URLSearchParams(search).get('tab')
-  const view = appViewForPath(pathname)
+  const focusedSessionIsTile = useStore($focusedSessionIsTile)
+  const view = focusedSessionIsTile ? 'chat' : appViewForPath(pathname)
 
   const destinations = [
     {

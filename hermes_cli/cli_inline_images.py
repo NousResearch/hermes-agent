@@ -36,13 +36,18 @@ def _half_block(top, bottom) -> str:
 
 
 def image_lines(image: InlineImage) -> list[str]:
-    """*image* as scrollback lines; the first one carries the kitty transmit."""
+    """*image* as scrollback lines; the first one (kitty) or the last one (iTerm2) carries the transmit."""
     if image.mode == "kitty":
         r, g, b = bytes.fromhex(image.color[1:])
         color, reset = _zero_width(f"\x1b[38;2;{r};{g};{b}m"), _zero_width("\x1b[39m")
         lines = [_INDENT + color + row + reset for row in image.placeholder]
         lines[0] = _zero_width(image.transmit) + lines[0]
         return lines
+    if image.mode == "iterm":
+        # Reserve the rows as empty lines (text written over an image cell erases it), then from
+        # the last one jump back to the first, draw, and restore the cursor where it was.
+        up = f"\x1b[{image.rows - 1}A" if image.rows > 1 else ""
+        return [""] * (image.rows - 1) + [_INDENT + _zero_width(f"\x1b7{up}{image.transmit}\x1b8")]
     return [_INDENT + "".join(_half_block(t, b) for t, b in row) + "\x1b[0m" for row in image.cells]
 
 
@@ -52,7 +57,7 @@ def print_inline_images(cli, paths: Iterable) -> None:
     stdout = sys.__stdout__
     if stdout is None or not stdout.isatty():
         return
-    mode = resolve_inline_mode(getattr(cli, "_inline_images_mode", "auto"))
+    mode = resolve_inline_mode(getattr(cli, "_inline_images_mode", "auto"), overlays=True)
     if mode == "off":
         return
     max_cols = min(_MAX_COLS, shutil.get_terminal_size().columns - len(_INDENT) - 1)

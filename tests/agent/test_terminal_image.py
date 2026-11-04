@@ -23,7 +23,7 @@ def _png(path, size=(400, 200), color=(200, 30, 60, 255)):
 
 
 def _clear_graphics_env(monkeypatch):
-    for key in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_SESSION_ID", "WEZTERM_PANE", "TERM"):
+    for key in ("KITTY_WINDOW_ID", "TERM_PROGRAM", "ITERM_SESSION_ID", "WEZTERM_PANE", "TERM", "KONSOLE_VERSION"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -84,6 +84,15 @@ def test_auto_mode_uses_kitty_placeholders_only_where_they_paint(monkeypatch):
     assert resolve_inline_mode("auto") == "unicode"
     monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
     assert resolve_inline_mode("auto") == "unicode"
+    # The classic CLI can reserve rows for a cell-pinned image: iTerm2/WezTerm/Konsole get pixels
+    # there, while Ink (no overlays) keeps half-blocks even when ``iterm`` is pinned.
+    assert resolve_inline_mode("auto", overlays=True) == "iterm"
+    assert resolve_inline_mode("iterm") == "unicode"
+    _clear_graphics_env(monkeypatch)
+    monkeypatch.setenv("KONSOLE_VERSION", "251203")
+    assert resolve_inline_mode("auto", overlays=True) == "iterm"
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    assert resolve_inline_mode("auto", overlays=True) == "unicode"
 
 
 def test_inline_mode_off_and_no_terminal(monkeypatch):

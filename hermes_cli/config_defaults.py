@@ -1476,6 +1476,12 @@ DEFAULT_CONFIG = {
         # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
         # the ledger append-only forever, the previous behaviour).
         "ledger_max_bytes": 5 * 1024 * 1024,
+        # Reuse window for the catalog's freshness check, in seconds. 0 (default) = exact: every
+        # slash-completion RPC re-walks the skills tree (~20 ms on a 930-skill install), so a skill
+        # written by another process shows up on the next palette open. > 0 reuses one walk inside
+        # the window (palette open ~24 ms -> ~4 ms), and an out-of-process edit can take up to that
+        # long to appear. Skills written by this process always invalidate immediately.
+        "signature_ttl_s": 0.0,
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

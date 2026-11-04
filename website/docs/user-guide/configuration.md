@@ -881,6 +881,17 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
+### Slash-palette freshness vs speed
+
+Every slash-completion request proves the skill catalog is still current by walking the skills tree and stamping each `SKILL.md`. On a large library that walk is the dominant cost (~20 ms of a ~24 ms palette open). By default it runs on **every** request, so a skill installed by another process appears immediately:
+
+```yaml
+skills:
+  signature_ttl_s: 0.0   # default: exact freshness, one walk per request
+```
+
+Set it above zero to reuse a recent walk for that many seconds — `2` turns a ~24 ms palette open into ~4 ms on a 900-skill library. Only out-of-process writes can be delayed, by at most the window; skills created or edited through Hermes (or by the agent) invalidate the memo immediately either way.
+
 ## Memory Configuration
 
 ```yaml

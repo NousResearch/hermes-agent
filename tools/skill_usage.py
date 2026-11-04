@@ -496,6 +496,29 @@ def _bump(rec: dict[str, Any], count_key: str, ts_key: str) -> None:
     rec[ts_key] = _now_iso()
 
 
+def _catalog_location(skill_name: str) -> Optional[str]:
+    """``'external'`` / ``'local'`` from the scanned catalog, or None when it cannot say.
+
+    A label only: unlike ``_find_skill_dir`` this never decides whether a skill exists, so a
+    slightly stale row cannot resurrect a deleted skill for a caller that acts on the answer.
+    """
+    rows = _catalog_skill_dirs()
+    if rows is None:
+        return None
+    from agent.skill_utils import get_all_skills_dirs
+    external = {str(b) for b in get_all_skills_dirs()[1:]}
+    local_root = str(_skills_dir())
+    local_hit = None
+    for name, _directory, root in rows:
+        if name != skill_name:
+            continue
+        if root in external:
+            return "external"
+        if root == local_root:
+            local_hit = "local"
+    return local_hit
+
+
 def telemetry_provenance(skill_name: str, record: Optional[dict[str, Any]] = None) -> str:
     """Bounded provenance label for shared skill metrics."""
     if is_hub_installed(skill_name) or is_bundled(skill_name):
@@ -508,6 +531,9 @@ def telemetry_provenance(skill_name: str, record: Optional[dict[str, Any]] = Non
     if label := {"installed": "installed", "agent": "agent_created"}.get(
             record.get("created_by") if isinstance(record, dict) else None):
         return label
+    catalog = _catalog_location(skill_name)
+    if catalog is not None:
+        return catalog
     if _find_external_skill_dir(skill_name) is not None:
         return "external"
     return "local" if _find_skill_dir(skill_name) is not None or isinstance(record, dict) else "unknown"
@@ -744,6 +770,46 @@ def restore_skill(skill_name: str) -> tuple[bool, str]:
 
 def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Path]:
     return next((p.parent for p in skill_mds if read_skill_name(p, fallback=p.parent.name) == skill_name), None)
+
+
+_catalog_dirs_cache: Optional[tuple[object, list[tuple[str, Path, str]]]] = None
+
+
+def _catalog_skill_dirs() -> Optional[list[tuple[str, Path, str]]]:
+    """``(name, dir, root)`` for every skill the catalog last scanned, or None before any scan.
+
+    One scan already parsed every SKILL.md; re-reading the library here made a skill invocation pay
+    the whole catalog a second time (measured: ~2,675 file reads, ~50 ms per load).
+    """
+    try:
+        from tools.skills_tool import cached_skill_rows
+        rows = cached_skill_rows()
+    except Exception:
+        return None
+    if not rows:
+        # Nothing scanned in this process yet (a plugin registration clears the catalog). Fill it
+        # once through the shared scan instead of paying a private walk on every skill load.
+        with suppress(Exception):
+            from tools.skills_tool import find_all_skills
+            find_all_skills()
+        try:
+            rows = cached_skill_rows()
+        except Exception:
+            return None
+    if not rows:
+        return None
+    global _catalog_dirs_cache
+    if _catalog_dirs_cache is not None and _catalog_dirs_cache[0] is rows:
+        return _catalog_dirs_cache[1]  # same scan: one index for the whole burst
+    out: list[tuple[str, Path, str]] = []
+    for row in rows:
+        path = row.get("path")
+        if not path:
+            continue
+        md = Path(str(path))
+        out.append((str(row.get("name") or md.parent.name), md.parent, str(row.get("root") or "")))
+    _catalog_dirs_cache = (rows, out)
+    return out
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:

@@ -1091,6 +1091,12 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
     try:
+        # A skill write must not leave the catalog's change signature warm, whatever its TTL.
+        from tools.skills_tool import _clear_signature_memo
+        _clear_signature_memo()
+    except Exception:
+        pass
+    try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
     except OSError as e:

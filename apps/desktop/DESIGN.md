@@ -319,6 +319,11 @@ Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.
 
+On macOS, native traffic lights use a 12-point left inset in every titled window.
+Keep the renderer's startup fallback insets aligned with that position so the
+adjacent toolbar and panel reservations do not jump when native state arrives.
+Windows/Linux retain their previous toolbar startup fallback until native state arrives.
+
 The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
 and the right-sidebar toggle sit on the right; haptics remain in settings.
 In Simple interface mode only sidebar, settings and the layout editor render,

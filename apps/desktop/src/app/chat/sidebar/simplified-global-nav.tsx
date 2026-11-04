@@ -81,7 +81,7 @@ export function SimplifiedGlobalNav({ onNavigate }: { onNavigate: (item: Sidebar
   return (
     <nav
       aria-label={t.updates.appName}
-      className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-(--sidebar-edge-border) pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]"
+      className="mt-(--titlebar-height) flex min-h-0 w-11 shrink-0 flex-col items-center gap-1 border-r border-(--sidebar-edge-border) pb-2 pt-2"
     >
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
         {items.map(item => (

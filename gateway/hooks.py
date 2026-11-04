@@ -74,12 +74,8 @@ class HookRegistry:
     def loaded_hooks(self) -> list[dict]:
         return list(self._loaded_hooks)
 
-    def _register_builtin_hooks(self) -> None:
-        """Extension point for always-on built-in hooks; currently none shipped."""
-
     def discover_and_load(self) -> None:
-        """Register built-in hooks, then load every valid hook dir under the active profile's ``hooks/``."""
-        self._register_builtin_hooks()
+        """Load every valid hook dir under the active profile's ``hooks/``."""
         hooks_dir = _resolve_hooks_dir()
         if not hooks_dir.exists():
             return

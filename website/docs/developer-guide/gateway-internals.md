@@ -334,7 +334,6 @@ including top-level one-shot launches. It does not become a process-wide option.
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
-| `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
 | `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
 | `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
@@ -640,7 +639,7 @@ Gateway hooks are Python modules that respond to lifecycle events:
 | `agent:end` | Agent finishes and returns response |
 | `command:*` | Any slash command is executed |
 
-Hooks are discovered from `gateway/builtin_hooks/` (an extension point — currently empty in the shipped distribution; `_register_builtin_hooks()` is a no-op stub) and `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
+Hooks are discovered from `<profile home>/hooks/` (user-installed; `~/.hermes/hooks/` for the default profile, one directory per served profile under multiplexing — paths resolve at call time, never at import). Each hook is a directory with a `HOOK.yaml` manifest and `handler.py`.
 
 ## Memory Provider Integration
 

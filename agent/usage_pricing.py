@@ -525,6 +525,7 @@ def _pricing_entry_from_metadata(
     if model_id not in metadata:
         return None
     pricing = metadata[model_id].get("pricing") or {}
+    rejected: set[str] = set()
 
     def rate(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
@@ -533,8 +534,10 @@ def _pricing_entry_from_metadata(
         value = _to_decimal(raw)
         # A negative rate is a "pricing varies" sentinel (OpenRouter publishes "-1" for
         # openrouter/auto), not a price: priced through, it books huge negative session costs.
-        if value is not None and value < 0:
-            logger.debug("Ignoring negative %s rate %s for %s (variable-pricing sentinel)", key, raw, model_id)
+        # NaN raises in the cost sum and Infinity books an infinite cost, so neither is a price.
+        if value is not None and (not value.is_finite() or value < 0):
+            logger.debug("Ignoring unusable %s rate %s for %s (variable-pricing sentinel)", key, raw, model_id)
+            rejected.add(key)
             return None
         return None if value is None else value.copy_abs()  # copy_abs folds "-0" to 0
 
@@ -545,7 +548,9 @@ def _pricing_entry_from_metadata(
     prompt = per_million("prompt")
     completion = per_million("completion")
     request = rate("request")
-    if prompt is None and completion is None and request is None:
+    # A missing request rate means "no per-request fee"; a sentinel one means the fee is unknown,
+    # and dropping it would under-count, so the whole entry is unknown.
+    if "request" in rejected or (prompt is None and completion is None and request is None):
         return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,

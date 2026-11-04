@@ -67,11 +67,15 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Still refuses to touch a dirty tree.")
     update_parser.add_argument(
         "--force", action="store_true", default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings. Does NOT bypass the venv-process guard (see --force-venv).",
+        help="Accepted for Windows compatibility; currently a no-op. Updates no longer refuse on concurrent "
+            "Hermes processes: PM prepares dependency generations separately instead of replacing files under "
+            "running processes. Use 'hermes update --list-venv-holders' to inspect what still runs from the venv.",
     )
     update_parser.add_argument(
         "--force-venv", action="store_true", default=False,
-        help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+        help="Accepted for Windows compatibility; currently a no-op. The venv-holder refusal is retired — PM "
+            "never mutates a running venv's files (dependency generations are prepared separately), so there "
+            "is no guard left to bypass. 'hermes update --list-venv-holders' still reports venv holders read-only.",
     )
     update_parser.add_argument(
         "--set-channel",

@@ -909,9 +909,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                         if kind in {"heartbeat", "waiting", "long_running", "status"}
                         else t("gateway.progress.status_fallback_short"))
 
-        # Webhooks can't edit messages, so tool progress / log mode are off there. A bot peer gets the
-        # final reply only: every progress line, interim message or thinking bubble is one more inbound
-        # message for its turn loop (#137027).
+        # Webhooks can't edit messages; a bot peer gets the final reply only (#137027): no progress lanes.
         is_webhook = source.platform == Platform.WEBHOOK
         bot_peer = bool(getattr(source, "is_bot", False))
         tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook and not bot_peer
@@ -944,8 +942,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if (
             source.platform == Platform.SLACK
             and hasattr(adapter, "native_task_cards_enabled")
-            and not (_tool_progress_explicit and progress_mode == "off")
-            and not bot_peer
+            and not (_tool_progress_explicit and progress_mode == "off") and not bot_peer
         ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
@@ -2209,10 +2206,8 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         interrupt_monitor = spawn(self._run_agent_monitor_for_interrupt(turn_ctx, _interrupt_detected))
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
-        _notify_task = (
-            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply or getattr(source, "is_bot", False))
+        _notify_task = None if (scheduled_heartbeat or turn_ctx.mute_notification_reply or getattr(source, "is_bot", False)) \
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
-        )
 
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).

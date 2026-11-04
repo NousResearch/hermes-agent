@@ -1909,6 +1909,15 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     if profile is None:
         return None
     try:
+        if getattr(profile, "auth_type", "") == "external_process":
+            from hermes_cli.auth import resolve_external_process_provider_credentials
+
+            credentials = resolve_external_process_provider_credentials(profile.name)
+            client_kwargs = {
+                **client_kwargs,
+                "command": credentials.get("command"),
+                "args": list(credentials.get("args") or []),
+            }
         return profile.create_client(**client_kwargs)
     except Exception:
         _ra().logger.warning(

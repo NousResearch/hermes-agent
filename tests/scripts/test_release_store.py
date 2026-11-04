@@ -228,6 +228,21 @@ def test_release_commits_this_releases_draft_so_it_goes_live_once_certified():
     assert put["method"] == "PUT" and commit["url"].endswith("/commit")
 
 
+def test_hold_commits_the_draft_manual_and_says_publish_now(capsys):
+    from scripts.releases.store import release_from_env
+
+    api = _Api("PendingCommit")
+    env = {"MS_STORE_PRODUCT_ID": "9NTEST", "MS_STORE_TENANT_ID": "T", "MS_STORE_CLIENT_ID": "C",
+           "MS_STORE_CLIENT_SECRET": "S", "MS_STORE_HOLD": "true"}
+    manifest = {"files": [{"path": STORE_FILE}]}
+    assert release_from_env(env, manifest, run=api) == "held"
+    assert api.mode == "Manual" and api.commits == 1
+    assert "Publish now" in capsys.readouterr().out
+    # A rerun neither commits again nor flips the held build to Immediate.
+    assert release_from_env(env, manifest, run=api) == "held"
+    assert api.mode == "Manual" and api.commits == 1
+
+
 @pytest.mark.parametrize("refusal", ["update", "commit"])
 def test_a_refused_switch_leaves_it_held_and_says_publish_now(capsys, refusal):
     api = _Api(refuse_committed=refusal == "update", commit_status=409 if refusal == "commit" else 200)

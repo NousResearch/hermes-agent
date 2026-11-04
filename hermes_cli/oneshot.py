@@ -12,6 +12,9 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+# Kept importable from this module: external callers patch ``hermes_cli.oneshot.get_fallback_chain``.
+from hermes_cli.fallback_config import get_fallback_chain
+
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
 # batch pipelines can verify the tier they pay for went out on the wire. ``partial`` /

@@ -177,6 +177,10 @@ The cont-init reconciler runs as hermes (`s6-setuidgid hermes` in `02-reconcile-
 
 `docker exec` defaults to root. Either pass `--user hermes` or rely on the stage2 chown sweep next reboot. Don't write files under `$HERMES_HOME/profiles/<name>/` as root manually — the next reconcile pass will sweep them but in-flight operations may hit perm errors.
 
+### Root code must not work inside `/run/hermes-service`
+
+The gateway scandir is hermes-owned, so hermes can rename anything in it and leave a symlink behind. Root writes, chmods and chowns there follow that symlink. Root registration therefore builds each slot in `/run/.hermes-service.staging` (root, 0700, same tmpfs) and publishes it with one `rename`; `S6ServiceManager` runs `s6-svc`, `s6-svwait` and `s6-svscanctl` through `s6-setuidgid hermes` when called as root. Keep new root-side code on those paths.
+
 ### Service slot exists but s6-svstat says "s6-supervise not running"
 
 The service directory is on tmpfs and was wiped on container restart. Either the cont-init reconciler hasn't run yet (give it a moment after `docker restart`) or it failed. Check `docker logs <c> | grep '02-reconcile'`.

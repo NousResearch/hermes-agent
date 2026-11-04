@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import type { SpeechStreamSession } from '@/lib/voice-playback'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies, $bargeInEnabled } from '@/store/voice-prefs'
 
@@ -31,7 +32,7 @@ const stopVoicePlayback = vi.fn()
 const takeVoicePlaybackInterrupted = vi.fn(() => true)
 
 const playSpeechTextMock = vi.fn(async () => true)
-const startSpeechStreamMock = vi.fn(async () => null)
+const startSpeechStreamMock = vi.fn<() => Promise<SpeechStreamSession | null>>(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
@@ -159,6 +160,24 @@ describe('useVoiceConversation full-duplex barge-in', () => {
   })
 
   afterEach(cleanup)
+
+  it('feeds the saved reply tail when its streaming message id changes', async () => {
+    $autoSpeakReplies.set(true)
+    let response: { id: string; pending: boolean; text: string } | null = null
+    const append = vi.fn()
+    const finish = vi.fn()
+    startSpeechStreamMock.mockResolvedValueOnce({ append, finish, done: new Promise(() => {}) })
+    const { hook, onBusyChange } = renderConversation({ pendingResponse: () => response })
+    await enterThinking(hook)
+    response = { id: 'stream-1', pending: true, text: 'Yes, I am here. What' }
+    await act(async () => onBusyChange.current(true))
+    await waitFor(() => expect(append).toHaveBeenCalledWith('Yes, I am here. What'))
+    response = { id: 'saved-1', pending: false, text: 'Yes, I am here. What would you like to work on?' }
+    await act(async () => onBusyChange.current(false))
+    await waitFor(() => expect(finish).toHaveBeenCalled())
+    expect(append.mock.calls.map(call => call[0]).join('')).toBe(response.text)
+    $autoSpeakReplies.set(false)
+  })
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()

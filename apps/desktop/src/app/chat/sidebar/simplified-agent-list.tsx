@@ -184,7 +184,7 @@ export function SimplifiedAgentList({
                             size="icon-xs"
                             variant="ghost"
                           >
-                            <Codicon name="add" size={14} />
+                            <Codicon name="edit" size={14} />
                           </Button>
                         </Tip>
                       </div>

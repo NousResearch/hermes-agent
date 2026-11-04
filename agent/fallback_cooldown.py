@@ -127,3 +127,28 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+def fallback_consent_blocks(agent) -> bool:
+    """Opt-in ``fallback.confirm`` (default off): before leaving the primary for a paid fallback, ask via
+    the clarify callback (use fallback / stop). True = do NOT switch. No callback (cron/headless) keeps the
+    automatic behaviour. The answer holds until the next turn (``restore_primary_runtime`` clears it)."""
+    cb = getattr(agent, "clarify_callback", None)
+    if cb is None or agent._fallback_activated or agent._fallback_index >= len(agent._fallback_chain):
+        return False
+    if getattr(agent, "_fallback_consent", None) is not None:
+        return agent._fallback_consent != "go"
+    try:
+        from hermes_cli.config import load_config
+        if not (load_config() or {}).get("fallback", {}).get("confirm"):
+            return False
+    except Exception:
+        return False
+    fb = agent._fallback_chain[agent._fallback_index]
+    go = f"Use fallback {fb.get('model', '?')} ({fb.get('provider', '?')}); may cost extra"
+    try:
+        ans = str(cb(f"{agent.model} failed. Switch to the fallback?", [go, "Stop here"]) or "")
+    except Exception:
+        ans = ""
+    agent._fallback_consent = "go" if ans == go else "stop"
+    return agent._fallback_consent != "go"

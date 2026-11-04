@@ -229,9 +229,9 @@ print(json.dumps({'cgroup':cg,'memory':(p/'memory.max').read_text().strip(), 'sw
     data = json.loads(output.strip())
     assert ("hermes-terminal-" in data["cgroup"]) is scoped
     if scoped:
-        assert int(data["memory"]) == min(
-            int(limit) * 1024 * 1024, process_registry._worker_memory_max_bytes()
-        )
+        expected = min(int(limit) * 1024 * 1024, process_registry._worker_memory_max_bytes())
+        # cgroup v2 rounds memory.max down to a whole memory page.
+        assert 0 <= expected - int(data["memory"]) < os.sysconf("SC_PAGE_SIZE")
         assert data["swap"] == "0"
         unit = data["cgroup"].rsplit("/", 1)[-1]
         result = subprocess.run(

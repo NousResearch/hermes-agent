@@ -152,6 +152,59 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
+def configured_model_metadata() -> dict[str, dict]:
+    """Explicit named-provider model metadata, keyed by the unchanged ACP choice ID."""
+    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.providers import custom_provider_slug
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    metadata = {}
+    valid_efforts = {"none", *VALID_REASONING_EFFORTS}
+    for entry in get_compatible_custom_providers(load_config()):
+        provider = custom_provider_slug(entry["name"], entry.get("provider_key", ""))
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        for model, raw in models.items():
+            details = {"provider": provider, "provider_name": entry["name"]}
+            if isinstance(raw, dict):
+                for key in ("name", "group", "description"):
+                    value = raw.get(key)
+                    if isinstance(value, str) and value.strip():
+                        details[key] = value.strip()
+                if "reasoning_efforts" in raw:
+                    values = raw["reasoning_efforts"]
+                    details["reasoning_efforts"] = list(dict.fromkeys(
+                        value.strip().lower() for value in values
+                        if isinstance(value, str) and value.strip().lower() in valid_efforts
+                    )) if isinstance(values, list) else []
+                context = raw.get("context_length")
+                if type(context) is int and context > 0:
+                    details["context_length"] = context
+            metadata[encode_model_choice(provider, model)] = details
+    return metadata
+
+
+def model_metadata(model: str, provider: str, base_url: str = "") -> dict:
+    """Resolve metadata by configured route identity, including a resolved ``custom`` runtime."""
+    if provider == "custom" and base_url:
+        from hermes_cli.runtime_provider import canonical_custom_identity
+        provider = canonical_custom_identity(base_url=base_url, model=model) or provider
+    return configured_model_metadata().get(encode_model_choice(provider, model), {})
+
+
+def _apply_configured_metadata(models: list[ModelInfo]) -> None:
+    metadata = configured_model_metadata()
+    for model in models:
+        details = metadata.get(model.model_id)
+        if details is None:
+            continue
+        model.name = details.get("name") or model.name
+        if details.get("description"):
+            model.description = " • ".join(filter(None, (model.description, details["description"])))
+        model.field_meta = {**(model.field_meta or {}), "hermes": details}
+
+
 @dataclass
 class _ModelCatalog:
     """Deduplicated ACP model rows from the inventory + named endpoints.
@@ -177,12 +230,14 @@ class _ModelCatalog:
     def semantic(self, provider_id: str) -> str:
         return _semantic_provider(provider_id, self.normalize_provider)
 
-    def add(self, provider_id: str, model_id: str, name: str, description: str) -> None:
+    def add(self, provider_id: str, model_id: str, name: str, description: str, provider_name: str = "") -> None:
         choice_id = encode_model_choice(provider_id, model_id)
         semantic_id = f"{self.semantic(provider_id)}:{model_id}"
         if not choice_id or choice_id in self.seen_ids or semantic_id in self.seen_semantic_ids:
             return
-        self.models.append(ModelInfo(model_id=choice_id, name=name, description=description))
+        self.models.append(ModelInfo(
+            model_id=choice_id, name=name, description=description,
+            field_meta={"hermes": {"provider": provider_id, "provider_name": provider_name or provider_id}}))
         self.seen_ids.add(choice_id)
         self.seen_semantic_ids.add(semantic_id)
 
@@ -219,6 +274,7 @@ class _ModelCatalog:
                 self.add(
                     encoded_provider, rendered_model, f"{provider_name} · {rendered_model}",
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
+                    provider_name,
                 )
 
     def add_named_catalogs(self, catalogs: list, current_choice_provider: str) -> None:
@@ -232,7 +288,7 @@ class _ModelCatalog:
             for named_model, named_desc in named_catalog:
                 is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
-                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+                self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part), named_label)
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
@@ -302,6 +358,7 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
             description=f"Provider: {provider_name} • current",
         ))
 
+    _apply_configured_metadata(available_models)
     if not available_models and current_is_empty:
         return SessionModelState(available_models=[], current_model_id="")
     if available_models:

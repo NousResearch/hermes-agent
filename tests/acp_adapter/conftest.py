@@ -26,6 +26,8 @@ import time
 
 import pytest
 
+from tests.acp_adapter.model_metadata_fixtures import declared_models
+
 
 @pytest.fixture(autouse=True)
 def _offline_model_inventory(monkeypatch):

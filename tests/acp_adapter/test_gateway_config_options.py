@@ -32,7 +32,7 @@ async def test_effort_pick_applies_through_the_reasoning_mutation_and_returns_th
 
 
 def test_the_effort_picker_offers_default_only_while_no_level_is_set():
-    from acp_adapter.gateway_session_meta import config_options
+    from acp_adapter.config_options import config_options
     from acp_adapter.modes import DEFAULT_MODE
 
     def effort(level):

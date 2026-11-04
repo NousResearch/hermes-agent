@@ -333,6 +333,59 @@ ACP mode uses the same Hermes configuration as the CLI:
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run ACP clients; this opens Hermes' interactive model/provider setup.
 
+### Named model labels, groups, and reasoning choices
+
+Named endpoints can declare ACP presentation and capability metadata in their
+`providers.<name>.models` mapping:
+
+```yaml
+providers:
+  relay:
+    api: https://relay.example/v1
+    key_env: RELAY_API_KEY
+    discover_models: false
+    models:
+      "source-a/nested:model":
+        name: Research model
+        description: Main research route
+        group: source-a
+        context_length: 64000
+        reasoning_efforts: [low, high]
+      "source-b/plain":
+        name: Plain model
+        group: source-b
+        reasoning_efforts: []
+```
+
+ACP publishes `name` and `description` as model labels and uses `group` to build
+native model groups. Groups retain the endpoint's identity and display its name,
+so two endpoints declaring the same group remain separate. Selection values stay
+`custom:<provider>:<model>`; colons and nested slashes inside the original model ID
+are preserved. `context_length` continues to use the normal Hermes context-window
+override.
+
+An explicit `reasoning_efforts` list controls the selected model's
+`reasoning_effort` option (category `thought_level`). Only listed levels can be
+selected. An empty list hides that option, rejects effort selections, and disables
+reasoning for that model. Accepted level names are `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`, and `ultra`; the normal transport rules still
+apply to their wire representation. If the field is absent, ACP keeps its legacy
+reasoning ladder for compatibility rather than guessing from the model name.
+
+Selections affect the current session, including restored and forked sessions.
+A model switch keeps a supported effort; otherwise it chooses the nearest
+supported weaker level, or the model's minimum when none is weaker. Reasoning
+changes update request settings without rewriting conversation text or the stored
+system prompt. Model and effort changes return the full `configOptions` list and
+publish `config_option_update`, including when the model's available levels change.
+The legacy `models` and `modes` fields remain available to older clients.
+
+The `default` reset resolves the profile's default for the selected model and
+constrains it to any explicit effort list before applying it. Load, resume, and
+fork also recheck declared capabilities, so a saved pin cannot keep reasoning
+enabled after its list becomes empty. These corrections use the normal idle-session
+controls and retain the guards for active or lost turns.
+
 ## Host integration
 
 Older ACP hosts may still set this variable on the Hermes subprocess they

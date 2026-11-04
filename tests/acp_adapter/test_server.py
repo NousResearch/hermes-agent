@@ -44,10 +44,12 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_edit_approvals_in_modes_and_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    options = {option.category: option for option in resp.config_options}
+    assert options["mode"].current_value == "ask"
+    assert options["model"].current_value == resp.models.current_model_id
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -58,7 +60,7 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_persists_edit_approval_policy_and_returns_the_options(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -68,7 +70,9 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    options = {option.category: option for option in update.config_options}
+    assert options["mode"].current_value == "workspace_session"
+    assert options["model"].current_value == resp.models.current_model_id
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -345,7 +349,9 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        options = {option["category"]: option for option in config_result["configOptions"]}
+        assert options["mode"]["currentValue"] == "workspace_session"
+        assert options["model"]["currentValue"] == new_resp.models.current_model_id
 
 
 

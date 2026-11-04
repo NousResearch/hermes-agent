@@ -1,3 +1,5 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import { $defaultProfileRoute, noteDefaultProfileRoute } from '@/store/default-profile'
 import { $connection } from '@/store/session'
 
@@ -18,19 +20,21 @@ function hostedBasePath(): string | null {
   return hostHas('originScopedPrefs') ? browserPageBasePath() : null
 }
 
-// A folder names a path on the gateway the window is on; the startup profile stays this page's own.
-function folderBasePath(): string {
-  return browserFolderBasePath($connection.get()?.connectionId)
+// The gateway a profile was created, renamed or deleted on: the one the window is on unless the
+// caller names it. A folder names a path on that gateway; the startup profile is this page's own.
+function ownerOf(connectionId?: null | string): string {
+  return (connectionId === undefined ? $connection.get()?.connectionId : connectionId)?.trim() || LOCAL_CONNECTION_ID
 }
 
 function namesProfile(profile: string | undefined, target: string): boolean {
   return (profile ?? '').trim() === target.trim()
 }
 
-export function migrateBrowserProfilePrefs(from: string, to: string): void {
+export function migrateBrowserProfilePrefs(from: string, to: string, connectionId?: null | string): void {
   const basePath = hostedBasePath()
   const fromName = from.trim()
   const toName = to.trim()
+  const owner = ownerOf(connectionId)
 
   if (basePath === null || !fromName || !toName || fromName === toName) {
     return
@@ -39,8 +43,12 @@ export function migrateBrowserProfilePrefs(from: string, to: string): void {
   // A rename never lands on a live profile's name, so a folder or startup
   // profile already stored under the new name was left by a deleted profile.
   // The renamed profile's own prefs, or their absence, replace it.
-  dropBrowserProfilePrefs(toName)
-  migrateBrowserFolderPref(folderBasePath(), fromName, toName)
+  dropBrowserProfilePrefs(toName, owner)
+  migrateBrowserFolderPref(browserFolderBasePath(owner), fromName, toName)
+
+  if (owner !== LOCAL_CONNECTION_ID) {
+    return
+  }
 
   const movedStartup = migrateBrowserStartupProfile(basePath, fromName, toName)
   const current = $defaultProfileRoute.get()
@@ -56,15 +64,21 @@ export function migrateBrowserProfilePrefs(from: string, to: string): void {
   noteDefaultProfileRoute(saved ?? { ...current, profile: toName })
 }
 
-export function dropBrowserProfilePrefs(profile: string): void {
+export function dropBrowserProfilePrefs(profile: string, connectionId?: null | string): void {
   const basePath = hostedBasePath()
   const name = profile.trim()
+  const owner = ownerOf(connectionId)
 
   if (basePath === null || !name) {
     return
   }
 
-  dropBrowserFolderPref(folderBasePath(), name)
+  dropBrowserFolderPref(browserFolderBasePath(owner), name)
+
+  if (owner !== LOCAL_CONNECTION_ID) {
+    return
+  }
+
   dropBrowserStartupProfile(basePath, name)
 
   if (namesProfile($defaultProfileRoute.get()?.profile, name)) {

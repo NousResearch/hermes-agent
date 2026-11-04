@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
 import { $connection, workspaceCwdForNewSession } from '@/store/session'
+import { dropTilesForProfile } from '@/store/session-states'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { migrateBrowserProfilePrefs } from './browser-profile-prefs'
+import { dropBrowserProfilePrefs, migrateBrowserProfilePrefs } from './browser-profile-prefs'
 import { RELAYED_ROSTER_TIMEOUT_MS } from './browser-relay'
 
 type RelayWindow = Window & {
@@ -98,6 +100,7 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   $connection.set(null)
+  $defaultProfileRoute.set(null)
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -303,6 +306,32 @@ describe('a Webapp whose gateway relays to others', () => {
     $connection.set(onHub)
     expect(workspaceCwdForNewSession('research')).toBe('/srv/hub')
     expect(workspaceCwdForNewSession('notes')).toBe('')
+  })
+
+  it("keeps this gateway's saved profile prefs when a same-named profile changes on a relayed one", async () => {
+    servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    const onMini = { ...(await desktop.getConnectionFor!({ connectionId: 'mini', profile: 'research' })) }
+    const onHub = { ...onMini, connectionId: 'local' }
+    const hubDefault = { connectionId: 'local', profile: 'research' }
+
+    $connection.set(onHub)
+    await desktop.settings.setDefaultProjectDir('/srv/hub')
+    await setDefaultProfile(hubDefault)
+    $connection.set(onMini)
+    await desktop.settings.setDefaultProjectDir('/srv/mini')
+
+    // Creating `research` on Mini clears what an earlier Mini `research` left there, nothing here.
+    dropBrowserProfilePrefs('research')
+    expect(workspaceCwdForNewSession('research')).toBe('')
+    // Deleting it from a window on this gateway names the route it was deleted on.
+    $connection.set(onHub)
+    dropTilesForProfile('research', { connectionId: 'mini', profile: 'research' })
+
+    expect(workspaceCwdForNewSession('research')).toBe('/srv/hub')
+    expect(await desktop.profile.getDefault()).toEqual(hubDefault)
+    expect($defaultProfileRoute.get()).toEqual(hubDefault)
   })
 
   it('opens a relayed chat in this tab only, not in a window that boots on this gateway', async () => {

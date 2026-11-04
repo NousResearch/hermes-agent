@@ -23,7 +23,7 @@ The user (NDR) asks to send formal feedback to a vendor/service provider whose p
 
 Follow `email-drafter` skill's draft creation workflow, with these additional steps:
 
-1. **Verify recipients** via `find_contact.py` from `personal-messaging` skill. If vendor addresses are not in contacts, note that the user provided them directly (from chat/forwarded messages) — flag it but proceed since the user is the source.
+1. **Verify recipients** via `find_contact.py` from `messaging-drafts` → `references/personal-messaging-workflow.md`. If vendor addresses are not in contacts, note that the user provided them directly (from chat/forwarded messages) — flag it but proceed since the user is the source.
 2. **Use the vendor-feedback tone** (see `email-drafter` SKILL.md → Stage 2 — Draft → Vendor-feedback / frank escalation tone):
    - State situation factually
    - Name failures with numbers

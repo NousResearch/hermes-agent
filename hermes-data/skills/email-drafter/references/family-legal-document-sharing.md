@@ -112,3 +112,21 @@ When the user says "documents from the lawyer's office", the documents may come 
 ## Subject Line Pattern
 
 `DRA Family: [Document Purpose] — For Your Review`
+
+## Variant: Sibling-Consent Email (validate counsel + GPA before filing) — validated 2026-09-01
+
+Different shape from the doc-sharing email. Used when NDR has settled on counsel + GPA holder and needs the OTHER brothers' explicit buy-in before filing — no documents shared, just a decision request.
+
+- **To:** the brothers directly — `Dharmesh Ranka <dharmesh.ranka1@gmail.com>, Manish Ranka <mdr@draas.com>` (verified via Gmail headers 2026-09-01; do NOT use sheet rows which carry ddr@draas.com / mdr@drahomes.in)
+- **Sender:** ndr@draas.com (DRA governance)
+- **Subject:** `DR Family Succession Petition - Filing, Vakalat & GPA`
+- **Tone:** "Brothers," — direct, numbered asks, same family-governance register as the doc-sharing email but no warm "Dear Jai ji" opening (this is a working coordination email, not a courtesy share)
+
+Structure:
+1. One-liner: we are moving forward with filing the succession petition for late father
+2. **Advocate:** vakalat going to Sanjay Sethia (Law Square) — NDR found him effective (recent trust-related work; refer generically unless NDR names the trust)
+3. **GPA:** giving GPA to Rajendra to attend/present in court on our behalf — ask both brothers: comfortable? If not, NDR files a separate arrangement where Rajendra represents only NDR's share, and the brothers present themselves or appoint another GPA
+4. **Signatures:** Mamatha (Mamta Rathod, sister) ready to sign both petition and GPA
+5. Close: "Please clarify at the earliest so we can proceed — Dharmesh, and Manish, both of you please."
+
+Context from prior sessions that powers this draft: the s.370 amendment ask was sent to Sanjay via WhatsApp 2026-09-01 (certificate jointly in favour of Petitioners 1-5, WHEREFORE updated); GPA holder = Rajendra; 5 petitioners = surviving Class-I heirs of Late Dinesh D Ranka. Also flag: NDR updates the task tracker himself after drafting (P-007/P-038 note the WhatsApp-a-Sanjay status + brothers-email-awaiting-confirmation), and stated he'd update Kelsa attendance records himself once Anbu reverts — the assistant drafts, NDR records.

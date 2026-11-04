@@ -149,6 +149,37 @@ for i, row in enumerate(data_rows, start=2):
 | `HTTP Error 400: Bad Request` on `values/{sheet}` | Sheet name not URL-encoded (contains spaces, dots) | Wrap sheet name in `urllib.parse.quote()` |
 | `HTTP Error 401` on CSV export URL | CSV export (`/export?format=csv`) bypasses OAuth | Use Sheets API v4 `values/{sheet}!` endpoint instead |
 | `ModuleNotFoundError: contact_resolver` | Module does not exist in this environment | Do not attempt to import it; use OAuth + Sheets API directly |
+| Cell reads back as `#ERROR!` after a write | `valueInputOption=USER_ENTERED` parsed the value as a **formula** — Indian phone numbers written as `+91 …` start with `+` | Re-write that cell with `valueInputOption=RAW` (see pitfall below) |
+| Wrong value in the wrong column (label holds the phone, value holds the label) | Column letter miscounted — A1 notation is 1-indexed (A=1) but the API array is 0-indexed, so array index 27 is **AB**, index 28 is **AC** | Re-read the header row and map `headers[i]` → column letter before writing; verify by reading the row back |
+
+### PITFALL — `+91 …` phone numbers break under USER_ENTERED (verified 2026-09-28)
+
+Appending a contact row with `valueInputOption=USER_ENTERED` and a phone value of
+`+91 99305 44141` stores **`#ERROR!`** in that cell: Sheets treats a leading `+` as the
+start of a formula. The row writes "successfully" and the API returns `updatedCells`, so
+the only way to catch it is a read-back.
+
+Two-part fix:
+
+```python
+# 1. Append the row (USER_ENTERED is fine for names/emails/notes)
+# 2. Immediately re-write the phone cells with RAW so no formula parsing happens
+url = (f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/"
+       f"{SHEET_NAME_Q}!AB{row}:AC{row}?valueInputOption=RAW")
+body = {'values': [["Mobile", "+91 99305 44141"]]}   # AB = Phone 1 - Label, AC = Phone 1 - Value
+```
+
+Always read the row back and assert the phone cell equals the number you wrote (not
+`#ERROR!`, not a label) before reporting the contact as done.
+
+### A contact the user just added may exist ONLY in People API (verified 2026-09-28)
+
+"I have added a contact called X" means it went into **Google Contacts / the phone**, not
+into this sheet. The sheet (4,251 rows) had **zero** `Thesia` hits while
+`people().searchContacts(query='Thesia')` on `google-draas` returned the person
+immediately. A zero-hit sheet search is **not** "no such contact" — run
+`find_contact.py` (which queries People API *and* both sheets) before concluding anything,
+then enrich BOTH stores. Full recipe: `references/contact-enrichment-people-api.md`.
 
 ## Notes
 

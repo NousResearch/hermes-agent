@@ -164,7 +164,7 @@ When user says "find X's number" or "look in my Google contacts", try these in o
 
 ### Phase 1 — tools.contact_resolver_tool
 - Import path: `from tools.contact_resolver_tool import _handle_contact_resolver`
-- Check availability: `_check_available()` — returns `False` in this environment (sheets SA DWD requires `GOOGLE_SA_KEY` env var, which is not set)
+- Check availability: `_check_available()` — returns `False` in this environment (the sheets SA path relies on `tools.gws_sa`, which does not exist in this deployment — removed 2026-05-08)
 - **If `_check_available()` returns False, skip directly to Phase 2. Do not waste a tool call trying to invoke the resolver.**
 - Tool arguments: `{"query": "Manohar Singh", "context": "REDSOUL", "account_email": "ndr@draas.com"}` (account_email is the SA DWD subject — ndr owns the contacts sheet)
 

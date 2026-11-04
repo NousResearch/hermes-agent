@@ -1,5 +1,24 @@
 # Voice Entity Resolution — Absorbed from domain/voice-entity-resolution
 
+## ⚠️ `entity_resolver` can fail outright — fall through to `contact_resolver` (observed 2026-09-21)
+
+Calling `entity_resolver(query=..., limit=15)` returned:
+
+```
+[TOOL_ERROR] Tool execution failed: TypeError: _handle() got an unexpected keyword argument 'task_id'
+```
+
+This is a defect in the tool wrapper, not a bad argument — do NOT retry with different
+params, and do not conclude the entity doesn't exist. The normal routing path
+(`entity_resolver` → `contact_resolver` for people) degrades cleanly: **go straight to
+`contact_resolver`** for person lookups. For a PROJECT/land/entity target while
+`entity_resolver` is down, resolve via `contact_resolver` on the associated person (e.g. the
+broker who brought the land), or read the registry sheets directly.
+
+Report the defect to the user only if it actually blocks resolution. The same fault was
+already recorded in the `google-workspace` skill (2026-09-18), so treat it as persistent
+rather than transient and don't burn turns re-testing it.
+
 ## What This Reference Covers
 
 Handles voice message entity resolution — the full 4-phase workflow for extracting project/land/entity context from voice messages before routing to contacts.

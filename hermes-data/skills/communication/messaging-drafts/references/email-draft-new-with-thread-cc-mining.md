@@ -83,6 +83,27 @@ Tell the user:
 - Subject
 - Where to find it (Gmail → Drafts folder)
 
+## Variant — REPLY-ALL on an existing thread when the last message is narrow
+
+Verified 2026-09-21 (Ranka Oasis / "DRA - Jiraaf" thread, external investor + advisor).
+
+Do NOT take the To/Cc of only the LAST message in the thread. On external threads the last
+message is often a one-to-one reply (e.g. Prakash → Vishwas + NDR only), and replying to that
+silently drops the rest of the deal team. Instead:
+
+1. `threads().get(userId='me', id=THREAD_ID, format='metadata', metadataHeaders=['From','To','Cc','Date'])`
+   → walk EVERY message, union the To+Cc addresses. Exclude NDR's own aliases
+   (ndr@draas.com, ndr@drahomes.in) and any no-reply addresses.
+2. Take `Message-ID` from the message you are replying to, and `References` from that same
+   message plus its own Message-ID appended — this is what keeps the draft correctly threaded.
+3. Create with BOTH `raw` and `threadId`:
+   `drafts().create(userId='me', body={'message': {'raw': raw, 'threadId': THREAD_ID}})`
+   The `threadId` in the message body is what lands the draft in the right conversation.
+4. Verify with `drafts().get(format='full')`: To, Cc, In-Reply-To, and `threadId` == original.
+
+Recipient carrying: the user says "reply all" — that means union the thread, then state the
+final To/Cc back to them explicitly so they can eyeball who is on it before sending.
+
 ## Pitfalls
 
 - **Same person, different email aliases:** Nishant may appear as ndr@draas.com and ndr@drahomes.in in the same thread. Only include others, not his aliases.

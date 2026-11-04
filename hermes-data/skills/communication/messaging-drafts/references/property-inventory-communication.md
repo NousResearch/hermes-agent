@@ -1,5 +1,15 @@
 # Property Inventory — External Sales Head Communication
 
+> **Scope note:** this reference covers **one project's** unit inventory to a single sales
+> head. For a **multi-asset portfolio assembled for liquidation / monetisation** (inventory
+> mined out of scattered historical emails, every collateral linked, rates benchmarked
+> against live portals, delivered as a self-contained HTML email body) use the
+> **`asset-liquidation-dossier`** skill instead — it carries NDR's two standing corrections
+> for that class: never flat prose, and the HTML **is** the email body rather than a PDF
+> attachment. See also `gmail-draft-formatting-pitfalls.md` § "Scope correction" — rich HTML
+> in `add_alternative` multipart drafts renders fine; the minimal-HTML rule is for short
+> threaded replies only.
+
 ## When to use
 
 The user asks you to send structured **unit inventory data** (a list of units they own in a project) to an **external sales head / channel partner** who will sell the units. Delivery is via **both** WhatsApp (immediate) and email (formal with HTML table).

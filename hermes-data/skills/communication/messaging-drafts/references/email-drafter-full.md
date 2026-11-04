@@ -17,7 +17,7 @@ author: ndr@draas.com
 - `google_workspace_manager` does NOT exist — do not invoke it as a tool or CLI
 - All Gmail operations: direct Gmail API via Python stdlib (`urllib.request` + `json`)
 - `POST /gmail/v1/users/me/messages.send` returns HTTP 404 on this account — always use the draft workflow instead
-- `POST /gmail/v1/users/me/drafts` with `threadId` in the payload body causes HTTP 400 — threading is done via MIME headers only
+- `POST /gmail/v1/users/me/drafts` **DOES accept `threadId`** — pass it INSIDE the message object: `{"message": {"raw": raw, "threadId": THREAD}}`. At the draft top level the field is ignored and Gmail mints a NEW thread even when `In-Reply-To`/`References` look correct. (An earlier note here claimed `threadId` caused HTTP 400 — that was wrong, re-verified 2026-10-14.) Note the split: `threadId` controls where the draft sits in the SENDER's Drafts list; the RECIPIENT's threading follows the MIME `In-Reply-To`/`References` headers, so set both.
 - For forwarded emails where you need the inner body, use `format=raw` (not `format=full`)
 
 ---
@@ -29,18 +29,21 @@ author: ndr@draas.com
 
 **Correct pattern — always use terminal:**
 ```bash
-cd /data/hermes && python3 - << 'PYEOF'
+cd /opt/hermes && env -u PYTHONPATH /opt/hermes/.venv/bin/python3 - << 'PYEOF'
+import sys; sys.path.insert(0, '/opt/hermes')   # REQUIRED
 import os
 from tools.gws_auth import load_credentials, get_auth_url, has_token
 from google.auth.transport import requests as google_requests
 
-TELEGRAM_ID = os.environ.get("HERMES_SESSION_USER_ID", "")
-if not TELEGRAM_ID or not has_token(TELEGRAM_ID):
-    url = get_auth_url(TELEGRAM_ID) if TELEGRAM_ID else "(no session)"
-    print(f"GWS_AUTH_NEEDED: {url}")
+# NOTE: the module root is /opt/hermes, NOT /data/hermes -- `sys.path.insert(0, '/opt/hermes')`
+# NOTE: has_token() / load_credentials() take ONLY service_name. Identity comes from the
+#       session, so do NOT pass a telegram id (that raises "Invalid or missing service name").
+SERVICE_NAME = "google-draas"  # resolve via gws_resolve_account -- NEVER guess
+if not has_token(service_name=SERVICE_NAME):
+    print("GWS_AUTH_NEEDED")   # then call the send_oauth_url tool
     exit(1)
 
-creds = load_credentials(TELEGRAM_ID)
+creds = load_credentials(SERVICE_NAME)
 creds.refresh(google_requests.Request())
 access_token = creds.token
 # Now use access_token with urllib ...
@@ -61,13 +64,15 @@ import os
 from tools.gws_auth import load_credentials, get_auth_url, has_token
 from google.auth.transport import requests as google_requests
 
-TELEGRAM_ID = os.environ.get("HERMES_SESSION_USER_ID", "")
-if not TELEGRAM_ID or not has_token(TELEGRAM_ID):
-    url = get_auth_url(TELEGRAM_ID) if TELEGRAM_ID else "(no session)"
-    print(f"GWS_AUTH_NEEDED: {url}")
+# NOTE: the module root is /opt/hermes, NOT /data/hermes -- `sys.path.insert(0, '/opt/hermes')`
+# NOTE: has_token() / load_credentials() take ONLY service_name. Identity comes from the
+#       session, so do NOT pass a telegram id (that raises "Invalid or missing service name").
+SERVICE_NAME = "google-draas"  # resolve via gws_resolve_account -- NEVER guess
+if not has_token(service_name=SERVICE_NAME):
+    print("GWS_AUTH_NEEDED")   # then call the send_oauth_url tool
     exit(1)
 
-creds = load_credentials(TELEGRAM_ID)
+creds = load_credentials(SERVICE_NAME)
 creds.refresh(google_requests.Request())
 access_token = creds.token
 # Use access_token in Authorization: Bearer header with urllib — unchanged from before
@@ -188,6 +193,49 @@ Activate on: "email [name]", "reply to [name]'s email", "draft an email to [name
 
 ### For a NEW email
 Always use `contact_resolver` — never guess an email address. Confirm the resolved contact with the user before drafting.
+
+**🔴 HARD RULE (NDR, 2026-10-14): "any email must be looked up through contact."**
+This applies to **every** address you put on an email, a calendar invite or a Drive
+share — not just the To: line. `contact_resolver` alone is **not** sufficient: it reads
+the DRAAS contacts **Sheet**, which carries stale and outright phantom addresses.
+Cross-check the online Google Contacts (People API) on the relevant account and **name
+the source** of each address in your reply.
+
+Verified failure (2026-10-14): a family calendar invite went to the invented
+`rivaanranka@gmail.com` instead of Roshini's real `rmurjani@gmail.com`. The Sheet row
+was corrupted (three addresses concatenated with `:::` in one cell) and carried two more
+addresses she has never had. Her true set is `rnr@draas.com`, `rnr@drahomes.in`,
+`rmurjani@gmail.com` — exactly three.
+
+Rules that follow:
+- **Never build an address from a name pattern.** Near-anagram pairs are a live hazard —
+  Rivaan's real address is `rankarivaan@gmail.com`; `rivaanranka@gmail.com` belongs to nobody.
+- **A zero-hit `searchContacts` is not proof of absence.** Try spelling variants
+  (Roshni/Roshini), the last name, and the email local-part before concluding.
+- **If a wrong address was already used, fix it at the source and say what you reversed.**
+  Calendar: `events().patch(body={"attendees": [...complete list...]}, sendUpdates="all")`.
+  Then correct memory *and* the governing reference.
+
+Full rule, worked case, lookup recipe and the corrupted-row anatomy →
+`references/contact-email-resolution.md`.
+
+**When `contact_resolver` misses, do not guess and do not stop.** Full ladder
+(account_email requirement, honourific stripping, Gmail-search fallback, worked
+Gauri→Gowri example) in the `contact-phone-lookup` skill →
+`references/contact-resolver-fallbacks.md`. Short version:
+- strip the honourific ("Gauri mam" → query `Gauri`), never trust a candidate
+  that matched on a single initial;
+- `gws_gmail_search(query="<name>", service_name="google-draas")` to get the
+  canonical spelling + address, then `from:<address>` to learn their *role* from
+  their subjects;
+- state the resolution in the chat reply and let the user correct it.
+
+**Context recovery before drafting.** A "draft an email to X about this" that
+opens a fresh session has no "this" in it. Recover it with
+`session_search(query="<name>")` sorted `newest`, then scroll the tail of the
+matching session with `session_id` + `around_message_id`. The referent is almost
+always the last thing the previous session offered to do — quote it back in your
+reply so a wrong guess is caught before the draft is written.
 
 ### For a REPLY (existing thread)
 1. Search by recipient domain + subject keyword to find the thread
@@ -349,18 +397,20 @@ After a successful send, always confirm to the user:
 ---
 
 ## Supporting files
+- `references/contact-email-resolution.md` — **read before addressing ANY email, calendar invite or share.** Why the contacts Sheet is not authoritative, how to cross-check online Google Contacts via People API, the anagram hazard, and the verified 2026-10-14 wrong-address incident (Roshini Ranka).
 - `references/zodiac-hotels-liquidation.md` — ZHPL (Zodiac Hotels) entity context, participants, thread details, and decision summary. Populated from session on 2026-05-05.
 - `references/bounce-notification-patterns.md` — Mailer-daemon bounce patterns: invalid domain vs address-not-found vs former employee addresses. Includes @findingform.design leaver list and cleanup query.
 - `references/resignation-acceptance-workflow.md` — Full step-by-step workflow for drafting legally solid resignation acceptance emails: finding the resignation, locating employment documents, extracting legal terms, cross-checking notice periods, structuring the draft, and saving to Gmail. Includes TruBld case data.
 - `references/bali-trip-2026.md` — Bali trip context
 - `references/royal-sundaram-kanta-ranka-2025.md` — Insurance claim context
+- `references/recipient-and-cc-resolution.md` — **read before any multi-recipient email.** Dictated person → address via the saved display name (the phone label and the Gmail display name are the same string); internal staff addresses come from Gmail headers, not the contacts sheet; the one-person-two-addresses rule; how to split To vs Cc when NDR says *"mark X as well"*; the `drafts().get(format="metadata")` Cc verification; and the *"X must confirm"* framing (a request for confirmation, never a record of agreement).
 
 ### Scripts
 - `scripts/bulk-trash-bounces.py` — Reusable bulk trash script for mailer-daemon bounce notifications. Handles pagination automatically, resolves TELEGRAM_ID from `HERMES_SESSION_KEY` fallback, safe for daily cron.
 
 - **`GWS_AUTH_NEEDED` output means auth URL was printed to stdout, not an error.** When the auth check runs, if the token is missing, the Python script prints `GWS_AUTH_NEEDED: https://auth.url...` and exits 1. This is NOT a Python traceback — it is an instruction. The correct response is to extract the URL and send it to the user via Telegram, then retry after they authorize. Never try to "debug" the Python script when this pattern appears.
 - **Mailer-daemon bounce notifications accumulate fast.** When sending to non-existent recipients (e.g. @findingform.design addresses for people who left), Gmail generates multiple identical bounce emails per failed delivery attempt. These pile up in inbox. Proactively trash them — or set up a daily cron to handle them.
-- **Never trust `threadId` in the drafts API body** — it causes HTTP 400. Threading only works via MIME `In-Reply-To`/`References` headers, and even then the draft must be manually opened and sent from the original thread composer.
+- **NEVER invent the anchor's `Message-ID` for `In-Reply-To`/`References` — always read it off the anchor message.** Verified 2026-10-14: a fabricated `<CAH3aL+...@mail.gmail.com>` looked exactly like a real Gmail id, the create call succeeded and returned a correct `threadId`, and nothing errored — yet recipient-side threading would have broken, because it follows `References`. Fetch it with `messages/<id>?format=metadata&metadataHeaders=Message-ID`. A made-up header is fabricated output; if you cannot read the real id, say so and stop. Full write-up: `references/gmail-draft-threading-traps.md` §3c.
 - **Use `format=raw` for forwarded email inner bodies** — `format=full` strips the RFC822 wrapper.
 - **`pdftotext` returns empty on scanned/image-based PDFs** — the text extraction will show 0 bytes. Always check file size first (`wc -c`), then try `pdfinfo` to confirm page count. For scanned PDFs, fall back to OCR with `tesseract` or use `pymupdf` (fitz) which handles image layers better. See `pdf-page-extraction` skill for the full workflow.
 - **Multi-email drafting: confirm threading strategy per email.** When the user asks for two or more emails about the same topic (e.g. stern email to surveyor + cooperative email to insurance manager), do NOT assume they both go in the same thread or both as new emails. Confirm per-email:
@@ -379,8 +429,51 @@ This skill's Gmail API operations (search, trash, list) are safe to embed in cro
 
 ---
 
+## Dictated correction lists — read back, then default defensibly
+
+When the user dictates a list of corrections to an email (voice, often 8–12 numbered points,
+proper nouns garbled), the failure mode is silently mis-parsing a point and shipping the wrong
+instruction to a colleague. Worked example 2026-10-14: a 10-point dictated creative-defect list
+where "standee" arrived as "Stanley", "130" as "tier 150", and the first point came through as
+*"our back panel has the clear as Uber request... this has to be there"* — readable as either
+"correct it" or "keep it", i.e. **opposite** instructions.
+
+Workflow:
+
+1. **Play the list back as a numbered checklist with an explicit verdict per item** — `fix` /
+   `drop` / `soften to a recommendation`. Do not start rewriting the draft until the verdicts
+   are confirmed; one wrong verdict costs more than one extra round trip.
+2. **Pull the genuinely ambiguous items out into their own block** and give BOTH readings with
+   the consequence of each ("(a) correct the landmark list, or (b) leave it as is — which?").
+   Never bury an ambiguity inside the numbered list, where it reads as already settled.
+3. **Restate garbled numbers against a source of truth** ("you said 'tier 150 houses' — the
+   RERA registration reads **130**; using 130 unless you meant otherwise").
+4. **If the reply is non-committal** ("Okay", "yes", a thumbs-up) and does not actually answer
+   the specific questions: implement the **defensible default** — the reading supported by the
+   underlying facts — and **flag it prominently with a one-word veto path** ("I wrote this as a
+   fix because the panel is factually wrong; say the word and I'll strip it in seconds"). Do
+   not stall a deadline-bound deliverable waiting on a clarification the user has already waved
+   through, and do not silently pick a reading either.
+5. **Keep the dropped items visible in your reply** — say what you removed and why ("G+4
+   dropped: you confirmed it's correct"). The user must see that a defect he raised is absent
+   by decision, not by oversight.
+
+## When the user says "that's already sorted" — verify the trail first
+
+Before accepting that a precondition is closed, search the mail trail for the **written**
+confirmation. 2026-10-14: the user said the Sub-Registrar's attestation route was settled, but
+the trail showed NDR's written instruction to confirm it with two SROs (officer name,
+designation, date) had never been answered — which turned the ask from "chase the landowner"
+into "close the upstream gate first". A two-minute search reframed the entire recommendation.
+State plainly what you found and what it implies; don't argue the point, just show the trail.
+
 ## Pitfalls
 
+- **`gws_gmail_reply_draft` addresses the reply to the FROM of the target message — which is YOU when the user sent that message themselves.** Replying to an email in the user's own SENT folder produces a draft with `To: <the user>`. Observed Oct 2026: user said "let's reply to that thread" about a mail he had just sent to a colleague, and the draft came out addressed to himself. **Always read the created draft's headers back (`drafts/<id>?format=metadata`) and confirm `To` is the intended recipient before telling the user the draft is ready.**
+- **`threadId` in the drafts payload DOES work** (contradicts the older note below). `POST /gmail/v1/users/me/drafts` with `{"message": {"raw": ..., "threadId": "<original thread>"}}` was verified Oct 2026 to return a draft whose `threadId` matches the original thread. Without `threadId`, Gmail silently assigns the draft a NEW thread even when `In-Reply-To`/`References` are correct — the draft then sits in its own conversation in the user's Drafts list. Always pass `threadId` when replying into an existing thread.
+- **`DELETE /gmail/v1/users/me/drafts/<id>` returns 204 with an EMPTY body.** Calling `json.loads()` on it raises `JSONDecodeError`. Read the response first and only parse when non-empty, otherwise a successful delete looks like a crash (and a retry then 404s because the draft is already gone).
+- **Verify the Cc with `drafts().get(format="metadata")` — `gws_gmail_get` does NOT return a `Cc` key at all** (re-verified 2026-10-30). An earlier note here said "re-read the sent message's headers and check for a `Cc` key"; that check is useless, because the `gws_gmail_get` header dict simply omits Cc whether or not it is set. A draft created via `gws_gmail_draft_create(cc="A <a@x.com>, B <b@x.com>")` was read back with `build_service("gmail","v1", service_name="google-draas").users().drafts().get(userId="me", id=DRAFT_ID, format="metadata")` and the full Cc list was present, correct and complete. So: the tool DOES carry Cc into the draft; what fails is the *verification*, not the Cc. Use the metadata recipe in `references/recipient-and-cc-resolution.md` §5 and print the Cc line, then read it name-by-name against what NDR dictated. Still tell NDR to eyeball the composer before sending (a human may edit the list), but do not tell him the Cc "did not carry over" without the metadata read.
+- **`gws_gmail_reply_draft` and Cc:** same rule — the reply draft's Cc must be confirmed from metadata, not from `gws_gmail_get`.
 - **BCC in draft creation:** The Gmail API drafts endpoint does NOT accept `bcc` as a top-level field. To add BCC recipients when creating a draft, include `Bcc` in `payload.headers`:
   ```python
   "payload": {"headers": [{"name": "Bcc", "value": "bcc@example.com"}]}
@@ -390,6 +483,8 @@ This skill's Gmail API operations (search, trash, list) are safe to embed in cro
 - **`build_service()` returns a Resource object, not a service with `.credentials`** — always use `load_credentials()` then `discovery.build(..., credentials=creds)` separately.
 - **Bulk operations require pagination** — Gmail API caps at 500 messages per search call regardless of `maxResults`. When trashing or listing large batches, always loop on `nextPageToken` until exhausted. `resultSizeEstimate` is approximate; do not rely on it for exact counts.
 - **Cron sessions: `HERMES_SESSION_USER_ID` may be empty** — cron jobs set `HERMES_SESSION_KEY=agent:main:telegram:dm:<telegram_id>` but not `HERMES_SESSION_USER_ID`. If `has_token(TELEGRAM_ID)` fails with an empty string, extract the Telegram ID from `HERMES_SESSION_KEY` (format: `agent:main:telegram:dm:<numeric_id>`) and use it directly as the fallback `TELEGRAM_ID`.
+- **`ModuleNotFoundError: No module named 'tools'` from the heredoc is the WRONG INTERPRETER, not a missing dependency** (verified 2026-10-14). Running the recipe as `cd /data/hermes && python3` fails, because the module root is `/opt/hermes` and `PYTHONPATH=$HOME/.local` shadows the venv's packages. Use `cd /opt/hermes && env -u PYTHONPATH /opt/hermes/.venv/bin/python3 - << 'PYEOF'` with `import sys; sys.path.insert(0, '/opt/hermes')` as the first line. Do not go hunting for an install fix.
+- **Before drafting an email that asserts the STATE of artifacts, read every artifact it names.** 2026-10-14: NDR asked for links to "this one and two other sheets" plus an ask that a colleague validate which is correct, and the natural draft said "the merger has been done on the Deepseek version" — implying the other two were untouched. Reading all three showed **every copy already had the change applied by its own LLM**, which changed the whole ask from "validate one against two" to "compare all three". Same rule for access claims: `drive_permissions_list` each file rather than assuming the recipient can open it, and state in the draft who already had access. One extra read before drafting beats a wrong premise shipped to a colleague.
 
 ## Drafting checklist
 

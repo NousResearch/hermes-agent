@@ -19,6 +19,7 @@ If the user just wants one message: skip the HTML and use `whatsapp_link` direct
 
 - **WhatsApp message body**: 65,536 chars max per single message (very loose).
 - **wa.me URL**: 2,048 chars max (URL spec, browsers/WhatsApp clients also enforce this). **This is the binding limit.** A 1,500-char message URL-encodes to ~2,000 chars — use 1,200 chars as the safe per-chunk ceiling.
+- **The tool now emits `api.whatsapp.com/send?phone=...&text=...` links (changed 2026-08-07); `wa.me` is stale.** The 2,048 cap applies to these too. The tool's auto-split can still emit over-cap parts (observed 2,166-char part on 2026-09-22) — verify `len(url) ≤ ~1,900` for every part returned and re-chunk at sentence boundaries if a part is over.
 - **Per-message practical limit**: keep each chunk ≤ 1,200 chars so the URL stays well under 2,048 even with full URL-encoding of bullets, em-dashes, and special characters.
 
 ## Number-format pitfall (CRITICAL)

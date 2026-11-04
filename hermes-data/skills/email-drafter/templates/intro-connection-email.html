@@ -1,0 +1,62 @@
+<!--
+Intro / connection email template — NDR introduces a colleague to an external person.
+Used with references/intro-connection-email.md. Replace every {{PLACEHOLDER}}.
+Palette: navy #1F3864 band, amber #f5a623 rules/accents, cream #fbf7ee callout box.
+Send as msg.add_alternative(html, subtype="html") alongside a text/plain version.
+Keep the plain part semantically identical — every project name, the ask, and the contact card.
+-->
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;">
+<div style="max-width:660px;margin:0 auto;background:#ffffff;font-family:Segoe UI,Arial,Helvetica,sans-serif;color:#222;font-size:15px;line-height:1.55;">
+
+  <div style="background:#1F3864;padding:18px 26px;">
+    <div style="color:#ffffff;font-size:17px;font-weight:600;letter-spacing:.2px;">Introducing {{FULL_NAME}} &mdash; {{COMPANY}}</div>
+    <div style="color:#f5a623;font-size:12.5px;margin-top:3px;letter-spacing:.3px;">{{CAPABILITY_LINE_UPPER}}</div>
+  </div>
+
+  <div style="padding:24px 26px 8px 26px;">
+
+    <p style="margin:0 0 14px 0;">{{COLLEAGUE_FIRST_NAME}},</p>
+
+    <p style="margin:0 0 14px 0;">This is <b>{{FULL_NAME}}</b> &mdash; {{WHO_AND_HOW_WE_MET}}. He is doing wonderful things, {{ONE_LINE_ON_WHAT_THEY_DO}}.</p>
+
+    <p style="margin:0 0 10px 0;">Recently he showed me a couple of things he is able to build with some of the frontier models:</p>
+
+    <table cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 16px 0;">
+      <tr>
+        <td style="width:26px;vertical-align:top;color:#f5a623;font-weight:700;font-size:15px;">1.</td>
+        <td style="font-size:14.5px;">{{DEMO_ONE_CONCRETE}}</td>
+      </tr>
+      <tr><td colspan="2" style="height:8px;line-height:8px;font-size:0;">&nbsp;</td></tr>
+      <tr>
+        <td style="width:26px;vertical-align:top;color:#f5a623;font-weight:700;font-size:15px;">2.</td>
+        <td style="font-size:14.5px;">{{DEMO_TWO_CONCRETE}}</td>
+      </tr>
+    </table>
+
+    <p style="margin:0 0 14px 0;">His website is <a href="https://{{DOMAIN}}" style="color:#1F3864;font-weight:600;text-decoration:none;border-bottom:1px solid #f5a623;">{{DOMAIN}}</a> &mdash; please visit it to see the kind of work he does.</p>
+
+    <p style="margin:0 0 14px 0;">The idea is this: as we are doing our content build-out &mdash; {{PROJECTS_WITH_PHASING}} &mdash; I want us to use him to see what the best creativity and utility we can bring into our own websites. It should give our customers and visitors real value, and be {{QUALITY_OBJECTIVE}}.</p>
+
+    <div style="border-left:3px solid #f5a623;background:#fbf7ee;padding:12px 16px;margin:0 0 16px 0;font-size:14.5px;">
+      So I am just connecting the two of you. Please ask him for a <b>demonstration of everything he has done</b>, get a sense of the various things he does, and go through his website so you at least have an idea of where to use him. Then <b>give me your feedback</b>.
+    </div>
+
+    <p style="margin:0 0 16px 0;">{{WHY_THIS_MATTERS_NOW_SENTENCE}}</p>
+
+    <p style="margin:0 0 18px 0;">{{EXTERNAL_FIRST_NAME}}, marking you here so you and {{COLLEAGUE_FIRST_NAME}} can take it forward directly.</p>
+
+    <p style="margin:0 0 4px 0;">Regards,<br><b>Nishant Ranka</b><br><span style="font-size:13px;color:#555;">DRA Realty Private Limited &middot; +91 98800 55634</span></p>
+
+  </div>
+
+  <div style="margin:6px 26px 24px 26px;border-top:1px solid #e3e6ec;padding-top:14px;">
+    <table cellpadding="0" cellspacing="0" border="0" style="font-size:13px;color:#444;line-height:1.6;">
+      <tr><td style="color:#1F3864;font-weight:700;padding-bottom:4px;">{{FULL_NAME}} &mdash; {{COMPANY}}</td></tr>
+      <tr><td>Email: <a href="mailto:{{EMAIL}}" style="color:#1F3864;text-decoration:none;">{{EMAIL}}</a> &nbsp;|&nbsp; Phone: {{PHONE}}</td></tr>
+      <tr><td>Web: <a href="https://{{DOMAIN}}" style="color:#1F3864;text-decoration:none;">{{DOMAIN}}</a></td></tr>
+    </table>
+  </div>
+
+</div>
+</body></html>

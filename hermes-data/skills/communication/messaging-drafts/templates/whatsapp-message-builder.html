@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp Message Builder</title>
+<style>
+  :root {
+    --wa: #25D366; --wa-dark: #075E54; --wa-light: #DCF8C6;
+    --ink: #1c1e21; --mut: #667085; --line: #e4e7ec; --bg: #f5f7fa; --card: #ffffff; --accent: #128C7E;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); }
+  .app { max-width: 860px; margin: 0 auto; }
+  header { margin-bottom: 18px; }
+  h1 { font-size: 24px; margin: 0 0 4px; color: var(--wa-dark); }
+  header p { margin: 0; color: var(--mut); font-size: 14px; line-height: 1.5; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+  label { display: block; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+  input[type="tel"] { width: 100%; padding: 10px 12px; font-size: 15px; border: 1px solid var(--line); border-radius: 8px; outline: none; }
+  input[type="tel"]:focus { border-color: var(--accent); }
+  .hint { font-size: 12.5px; color: var(--mut); margin-top: 6px; line-height: 1.45; }
+  .toolbar { display: flex; align-items: center; gap: 6px; padding: 8px; background: #fafbfc; border: 1px solid var(--line); border-bottom: 0; border-radius: 10px 10px 0 0; flex-wrap: wrap; }
+  .toolbar button { min-width: 34px; height: 32px; padding: 0 10px; border: 1px solid var(--line); background: #fff; border-radius: 7px; font-size: 14px; cursor: pointer; color: var(--ink); }
+  .toolbar button:hover { background: var(--wa-light); border-color: var(--wa); }
+  .toolbar .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .toolbar .stat { margin-left: auto; font-size: 12px; color: var(--mut); padding-right: 4px; }
+  #editor { min-height: 380px; padding: 14px 16px; font-size: 15px; line-height: 1.65; border: 1px solid var(--line); border-radius: 0 0 10px 10px; background: #fff; outline: none; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; }
+  #editor:focus { border-color: var(--accent); }
+  #editor b { font-weight: 700; } #editor i { font-style: italic; } #editor s { text-decoration: line-through; }
+  #editor code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f2f4f7; padding: 1px 5px; border-radius: 4px; font-size: 13.5px; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn { padding: 11px 18px; font-size: 15px; font-weight: 600; border: 0; border-radius: 9px; cursor: pointer; }
+  .btn-primary { background: var(--wa); color: #fff; }
+  .btn-primary:hover { background: #1fb959; }
+  .btn-ghost { background: #fff; border: 1px solid var(--line); color: var(--ink); }
+  .btn-ghost:hover { background: #f8fafc; }
+  #output { display: none; } #output.visible { display: block; }
+  .part { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--wa); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .part h3 { margin: 0 0 6px; font-size: 14px; color: var(--wa-dark); }
+  .part .urlbox { background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #344054; word-break: break-all; white-space: pre-wrap; max-height: 160px; overflow-y: auto; margin-bottom: 10px; }
+  .part .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mini { padding: 7px 12px; font-size: 13px; font-weight: 600; border: 0; border-radius: 7px; cursor: pointer; }
+  .mini-copy { background: var(--accent); color: #fff; }
+  .mini-open { background: #eef4ff; color: #1d4ed8; border: 1px solid #c7d7fe; }
+  .flash { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 99; }
+  .flash.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>WhatsApp Message Builder</h1>
+    <p>Edit the message below (rich text — bold, italic, strikethrough, monospace), then hit <b>Regenerate</b> to produce a fresh WhatsApp deep link. WhatsApp markers applied automatically: <code>*bold*</code>, <code>_italic_</code>, <code>~strike~</code>, <code>```mono```</code>.</p>
+  </header>
+
+  <div class="card">
+    <label for="phone">Recipient WhatsApp number</label>
+    <input type="tel" id="phone" value="+91XXXXXXXXXX" placeholder="+91…">
+    <div class="hint">A 10-digit number without country code gets 91 prepended automatically.</div>
+  </div>
+
+  <div class="card">
+    <div class="toolbar">
+      <button onclick="fmt('bold')" title="Bold (*text*)"><b>B</b></button>
+      <button onclick="fmt('italic')" title="Italic (_text_)"><i>I</i></button>
+      <button onclick="fmt('strike')" title="Strikethrough (~text~)"><s>S</s></button>
+      <button onclick="fmt('code')" title="Monospace (```text```)">```</button>
+      <span class="sep"></span>
+      <button onclick="fmt('clear')" title="Remove formatting">Clear</button>
+      <button onclick="resetEditor()" title="Restore original message">Reset</button>
+      <span class="stat" id="stat"></span>
+    </div>
+    <div id="editor" contenteditable="true" spellcheck="false">
+      <div>Hi [Name],</div>
+      <div><br></div>
+      <div>Your message here with *formatting* applied via the toolbar.</div>
+    </div>
+  </div>
+
+  <div class="card actions">
+    <button class="btn btn-primary" onclick="regenerate()">⚡ Regenerate WhatsApp link</button>
+    <button class="btn btn-ghost" onclick="copyAll()">Copy all link(s)</button>
+  </div>
+
+  <div id="output"></div>
+</div>
+
+<div class="flash" id="flash"></div>
+
+<script>
+  var ORIGINAL_HTML = document.getElementById('editor').innerHTML;
+
+  function flash(msg) {
+    var el = document.getElementById('flash');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(function(){ el.classList.remove('show'); }, 1800);
+  }
+
+  function updateStats() {
+    var txt = toWhatsAppText(document.getElementById('editor'));
+    document.getElementById('stat').textContent = txt.length + ' chars';
+  }
+
+  function fmt(cmd) {
+    var ed = document.getElementById('editor');
+    ed.focus();
+    if (cmd === 'bold') document.execCommand('bold');
+    else if (cmd === 'italic') document.execCommand('italic');
+    else if (cmd === 'strike') document.execCommand('strikeThrough');
+    else if (cmd === 'code') {
+      var sel = window.getSelection();
+      if (sel && !sel.isCollapsed && sel.rangeCount) {
+        var t = sel.toString();
+        var esc = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        document.execCommand('insertHTML', false, '<code>' + esc + '</code>');
+      }
+    } else if (cmd === 'clear') {
+      document.execCommand('removeFormat');
+    }
+    updateStats();
+  }
+
+  function resetEditor() { document.getElementById('editor').innerHTML = ORIGINAL_HTML; updateStats(); }
+
+  function nodeToWA(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    var tag = node.tagName.toLowerCase();
+    var inner = '';
+    for (var i = 0; i < node.childNodes.length; i++) inner += nodeToWA(node.childNodes[i]);
+    var s = inner;
+    if (tag === 'b' || tag === 'strong') s = '*' + s + '*';
+    else if (tag === 'i' || tag === 'em') s = '_' + s + '_';
+    else if (tag === 's' || tag === 'strike' || tag === 'del') s = '~' + s + '~';
+    else if (tag === 'code' || tag === 'pre') s = '```' + s + '```';
+    else if (tag === 'li') s = '• ' + s.trim();
+    if (['p','div','h1','h2','h3','h4','li','ul','ol','blockquote'].indexOf(tag) >= 0) {
+      s = '\n' + s.replace(/^\n+|\n+$/g, '') + '\n';
+    }
+    return s;
+  }
+
+  function toWhatsAppText(root) {
+    var raw = '';
+    for (var i = 0; i < root.childNodes.length; i++) raw += nodeToWA(root.childNodes[i]);
+    raw = raw.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+    return raw.trim();
+  }
+
+  function digitsOf(num) {
+    var d = num.replace(/\D/g, '');
+    if (d.length === 10) d = '91' + d;
+    return d;
+  }
+
+  function buildLinks(text, digits) {
+    var base = 'https://api.whatsapp.com/send?phone=' + digits + '&text=';
+    var budget = 3700;
+    var enc = encodeURIComponent(text);
+    if (base.length + enc.length <= 3900) {
+      return [{ label: '', url: base + enc }];
+    }
+    var paras = text.split(/\n{2,}/);
+    var parts = [];
+    var cur = '';
+    for (var i = 0; i < paras.length; i++) {
+      var p = paras[i];
+      var candidate = cur ? cur + '\n\n' + p : p;
+      if (base.length + encodeURIComponent(candidate).length <= budget) {
+        cur = candidate;
+      } else {
+        if (cur) { parts.push(cur); cur = p; }
+        else {
+          var words = p.split(/(\s+)/), tmp = '';
+          for (var w = 0; w < words.length; w++) {
+            var cand = tmp + words[w];
+            if (base.length + encodeURIComponent(cand).length > budget && tmp) {
+              parts.push(tmp); tmp = words[w];
+            } else { tmp = cand; }
+          }
+          cur = tmp;
+        }
+      }
+    }
+    if (cur) parts.push(cur);
+    var out = [];
+    for (var k = 0; k < parts.length; k++) {
+      out.push({ label: parts.length > 1 ? 'Part ' + (k + 1) + '/' + parts.length + ' — ' : '', url: base + encodeURIComponent(parts[k]) });
+    }
+    return out;
+  }
+
+  function copyText(t, okMsg) {
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = t; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); flash(okMsg); } catch (e) { flash('Copy failed — select manually'); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function(){ flash(okMsg); }, fallback);
+    } else { fallback(); }
+  }
+
+  function regenerate() {
+    var digits = digitsOf(document.getElementById('phone').value);
+    var text = toWhatsAppText(document.getElementById('editor'));
+    if (!text) { flash('Message is empty'); return; }
+    if (!digits) { flash('Enter a phone number'); return; }
+    var links = buildLinks(text, digits);
+    var out = document.getElementById('output');
+    out.innerHTML = '';
+    out.classList.add('visible');
+    links.forEach(function(link) {
+      var card = document.createElement('div');
+      card.className = 'part';
+      var h = document.createElement('h3');
+      h.textContent = (link.label ? link.label : 'WhatsApp link') + ' → ' + document.getElementById('phone').value.trim();
+      var box = document.createElement('div');
+      box.className = 'urlbox';
+      box.textContent = link.url;
+      var btns = document.createElement('div');
+      btns.className = 'btns';
+      var b1 = document.createElement('button');
+      b1.className = 'mini mini-copy';
+      b1.textContent = 'Copy link';
+      b1.onclick = function(){ copyText(link.url, 'Link copied'); };
+      var b2 = document.createElement('button');
+      b2.className = 'mini mini-open';
+      b2.textContent = 'Open in WhatsApp';
+      b2.onclick = function(){ window.open(link.url, '_blank'); };
+      btns.appendChild(b1); btns.appendChild(b2);
+      card.appendChild(h); card.appendChild(box); card.appendChild(btns);
+      out.appendChild(card);
+    });
+    var note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = 'Deep links only — nothing is sent. Tapping a link opens WhatsApp with the message pre-filled; hit Send inside WhatsApp to deliver. Long messages are auto-split into separate parts; send each part as its own WhatsApp message.';
+    out.appendChild(note);
+    flash('Link' + (links.length > 1 ? 's (' + links.length + ')' : '') + ' generated');
+  }
+
+  function copyAll() {
+    var digits = digitsOf(document.getElementById('phone').value);
+    var text = toWhatsAppText(document.getElementById('editor'));
+    if (!text) { flash('Message is empty'); return; }
+    var links = buildLinks(text, digits);
+    copyText(links.map(function(l){ return l.url; }).join('\n\n'), links.length > 1 ? links.length + ' links copied' : 'Link copied');
+  }
+
+  document.getElementById('editor').addEventListener('input', updateStats);
+  updateStats();
+</script>
+</body>
+</html>

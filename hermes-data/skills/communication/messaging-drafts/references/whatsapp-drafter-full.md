@@ -25,6 +25,12 @@ author: ndr@draas.com
 
 # WhatsApp Message Drafter
 
+> **Prakash (psingh@draas.com) specifics — see `references/prakash-draft-review-whatsapp-api.md`:**
+> he insists on reviewing the full draft text before sending (fetch the real draft from Gmail,
+> never reconstruct from memory); when he says he'll send it through his **own WhatsApp API**,
+> give the raw message body only (no deep link); image captions cap at **1024 chars** — report the
+> count and warn that edits overflow it.
+
 ## 1. Trigger Conditions
 
 Activate when the user says anything like:
@@ -38,14 +44,23 @@ Noun resolver has already corrected the contact name before this skill sees it.
 
 ## 2. Stage 1 — Contact Resolution
 
+> **🔴 Never invent an address or handle — including for a calendar invite or email you
+> attach to the same task.** NDR's standing rule (2026-10-14): *"any email must be looked
+> up through contact."* The Sheet is **not** authoritative on its own — it carries stale
+> and phantom addresses, and a corrupted row can hold several addresses in one cell. For
+> anything that carries an **email address** (calendar attendees, Drive shares, cc lists),
+> also query online Google Contacts via People API and state which source each address
+> came from. Rule, worked failure case (Roshini Ranka / `rivaanranka@gmail.com`) and the
+> lookup recipe → `references/contact-email-resolution.md`.
+
 **Primary: try the Google Contacts Sheet.** If the user provides a sheet URL (or you already know the sheet ID from references), use the Sheets API v4 with OAuth — see `references/google-contacts-sheet-access.md` for the working Python recipe.
 
 **Secondary: ask the user for the mobile number.** If no sheet access is available, the contact is not in the sheet, or the user is asking about a personal relation (spouse, family) not in the contacts — ask directly. This is faster and more reliable than searching further.
 
 **Sheet access workflow (when a URL is shared):**
 1. Extract the sheet ID from the URL (`/d/{ID}/`)
-2. Use OAuth (`/data/hermes/oauth-draas.json`) + Sheets API v4
-3. URL-encode the sheet tab name with `urllib.parse.quote()` — tabs often contain spaces/dots that break bare URLs
+2. Use `tools.gws_auth.build_service('sheets','v4',service_name='google-draas')` — get the key from `gws_resolve_account`. **Never** read a token JSON from disk: no `oauth-draas.json` exists any more; per policy OAuth tokens live only inside the `gws-vault` daemon and are reachable only through `build_service()` / the native `gws_*` tools
+3. URL-encode the sheet tab name with `urllib.parse.quote()` — tabs often contain spaces/dots that break bare URLs. For the contacts tab the real title is `NDR DRAAS Google contacts.csv` (**not** `contacts`) — column map + fetch snippet: skill `contact-phone-lookup` → `references/contacts-sheet-tab-and-column-map.md`
 4. Search columns A (First Name) and C (Last Name), then fetch full rows for phone numbers
 5. Present matches with all available phones for the user to confirm
 6. For writing/updating cells in this spreadsheet, see `references/google-sheets-api-read-write.md`
@@ -73,7 +88,7 @@ This was confirmed in Jun 2026: Venkatesh G's email signature contained `Mob: 96
 **Also:** before drafting, confirm the canonical name from the sheet matches the user's target. If the user says "my wife Roshini" and the sheet has two Roshinis, verify which one before proceeding. If uncertain, ask the user to confirm which entry or provide the mobile number directly.
 
 **Do NOT:**
-- Import `contact_resolver` — it doesn't exist; you will get `ModuleNotFoundError`
+- Import `contact_resolver` as a Python module — it doesn't exist; you will get `ModuleNotFoundError`. Call the **tool** `contact_resolver` instead (it already returns the candidate rows with phones, emails and org); `entity_resolver` for projects/entities/land
 - Use CSV export URLs (`/export?format=csv`) — returns 401 without credentials
 - Pass raw (unencoded) sheet names in API URLs — returns 400 Bad Request
 - Search relation fields first to find a person's entry — a contact may NOT have a relation label filled in. The contact's own name fields (First Name + Last Name) are the primary search key. Relation fields should only be searched to find *dependents* or *relatives* of a known contact (e.g., "find all contacts whose relation label is 'wife'"). If you search relation fields for "wife" to find someone's spouse, you may get the wrong person entirely if multiple contacts have that relation label.
@@ -166,6 +181,12 @@ Regards,
 **Pitfall — Drive fullText search won't find the advocate's contact details:** When you search Drive for "PR Krishna" + "Jain Patan Chetty", you get zero hits even though the user has exchanged emails with them. The advocate's details live in the user's email thread (Gmail), not in their Drive documents. Don't waste tool calls looking in Drive — just ask the user for the number. Confirmed this session (June 2026): 0 hits across Drive fullText and Gmail (token scope issue blocked Gmail anyway — but Drive hit zero even with proper fullText search).
 
 ### Polite persistence follow-up (when contact has been unresponsive)
+
+> **Variant — nudging on an email that went unanswered.** Trigger: *"check if he has responded
+> to that email; if not, the same contents, referring to it — tell him maybe you are not
+> checking the mail, so sending a message as well."* Full recipe (two-account Gmail search,
+> proving "no reply" from thread `labelIds`, cross-thread check, the nudge shape, the
+> don't-invent-new-asks rule) → `references/unanswered-email-to-whatsapp-nudge.md`.
 
 Use when the user wants to follow up after silence — someone who hasn't replied to earlier
 messages, and the user wants to be respectful but firm about needing a response. This is a
@@ -477,3 +498,41 @@ Voice transcription errors are common for names. Before generating a WhatsApp li
 - Work vs personal: topic relates to a project, entity, land, or business relationship → work. Otherwise → personal
 - **Roshni Ranka / "RO"**: always personal tone
 - Group message: use `mode="text_only"` — no phone number in link
+
+---
+
+## 8. Sending through the bridge: draft → confirm
+
+When the chat is on the user's auto-send list you can use `wa_send_message` directly. When it is not
+(the normal case), the path is `wa_draft_reply` → show the text → `wa_send_confirmed`.
+
+🔴 **The draft ID comes back SHORT and the send needs the FULL UUID** (confirmed 2026-10-17).
+`wa_draft_reply` returned `345f1294`, but `wa_send_confirmed(draftId="345f1294")` failed with an
+internal bridge error — while draft *listing* kept working, which makes it look like an outage rather
+than a bad key. Sending with the full UUID
+`345f1294-eeae-4c79-8492-dbf833f79079` went through immediately.
+
+So: **before confirming, resolve the short id to the full UUID** via `wa_draft_status()` (no argument
+lists pending drafts) or the draft list, then confirm with that. If a confirm fails, do NOT create a
+replacement draft to "retry" — the original may still be live and you risk two messages. Check
+`wa_draft_status(draftId)` for `state=sent` first, then decide.
+
+## 9. Sharing documents with a contact over WhatsApp
+
+NDR often wants files pushed to a vendor/agent ("send a WhatsApp to Jay with Mum's Aadhaar, PAN and
+photo"). Sequence:
+
+1. **Check whether this bridge can carry media** (`wa_send_media` present and working) before
+   promising attachments.
+2. **The path that always works: a narrow Drive folder + a link in the message text.** Create a
+   small dedicated folder holding ONLY the files that person needs — never hand out the main case
+   pack — set anyone-with-link → viewer, and put the URL in the message body.
+3. **Place the folder inside the root TMP folder**, never at My Drive root (NDR's standing rule).
+4. **Anyone-with-link cannot be given an expiry** through the Drive permissions API. So schedule the
+   revocation explicitly: a `next-agent-action` row, or after the event has passed. Tell NDR the
+   link stays open until that date — do not imply it self-expires.
+5. **State what is NOT in the folder.** e.g. PAN carries no address — say so in the message so the
+   recipient does not go looking for an address on it.
+
+Say plainly in chat which mechanism you used ("the link is in the message; the files open in Drive")
+so NDR knows he is not sending attachments from his phone.

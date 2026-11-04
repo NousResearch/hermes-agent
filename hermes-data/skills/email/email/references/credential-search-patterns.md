@@ -60,6 +60,15 @@ Goal: a definitive YES/NO backed by the actual vendor email text.
 - NDR's only Hetzner asset as of Aug 2026: Cloud Server #128476111 "ndr-playground"
   (seen in the Hetzner Status outage email 29 Jul 2026).
 
+## Vendor quirk: Fidelity NetBenefits / Deutsche Bank retirement plan (NDR, Aug 2026)
+
+- NDR's "401k" is actually the **Deutsche Bank Matched Savings Plan** administered by **Fidelity Investments (NetBenefits)** — quarterly statement emails go to ndr@draas.com from `Your DB Matched Savings Plan <Fidelity…>` with identity label NISHANT D RANKA. Statements date back 10 years in the portal.
+- The plan MIGRATED from the old participant portal **mykplan.com** → **netbenefits.fidelity.com**. The 13-Jul-2011 email "Deutsche Bank Retirement Plan Information" (from nishantranka@gmail.com to ndr@draas.com) carries the legacy login: **user ID NRANKA1979**, portal `mykplan.com/participantsecure_net/login.aspx`.
+- **Password PII-masking gotcha:** the 2011 email's password renders in agent tool output as `Rosh@[Tel]` because the trailing characters match a PII mask — the FULL password is in the original email itself. Direct the user to open the email; do NOT try to reconstruct or guess the masked tail.
+- **Recovery path (migrated plans):** netbenefits.fidelity.com → Forgot username/password → identity verify with SSN + DOB + ZIP → try legacy `NRANKA1979` as user ID. If online reset fails: call **800-835-5095** (the number printed inside Fidelity's own statement emails), identify as former DB employee 2003–04 (Global Trust Company Americas, 60 Wall Street) on the Deutsche Bank Matched Savings Plan.
+- The "Review your Quarterly Statement" notification emails carry direct `click.fidelityinvestments.com` Login links — tapping one pre-identifies the user, only the password step remains.
+- **Portal-only data:** IBKR and Fidelity statement/1042-S emails are NOTIFICATION-ONLY (no attachments). Actual statements/tax forms live behind login (IBKR: Performance & Reports → Statements / Tax Documents).
+
 ## Pitfalls
 
 - `registry.call()` does not exist → use `registry.dispatch(name, args)`.

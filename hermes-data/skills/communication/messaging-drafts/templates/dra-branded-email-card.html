@@ -1,0 +1,127 @@
+<!--
+DRA branded email card — 700px, Arial, #1f4d3a green.
+Proven in NDR's Prestige Hermitage khata thread (Oct 2026).
+
+USE IT TWO WAYS:
+  a) Copy this file and fill the {{PLACEHOLDERS}}.
+  b) Better — when replying inside an existing thread whose earlier message was a
+     branded card, extract THAT message's HTML part and copy its shell instead
+     (see references/thread-html-format-matching.md). The original always wins.
+
+BLOCKS AVAILABLE (use only the ones the original used):
+  HEADER      eyebrow / title / sub-line over a 3px green rule
+  PARA        normal body paragraph, 15px/24px
+  SECTION BOX grey header strip + body + optional muted footer row
+  CALLOUT     amber left-bar box for the one thing that must be noticed
+  TABLE       green header row, alternating rows, tinted totals row
+  NOTE        grey box for a caveat / convention comparison
+  SIGN-OFF    Regards, / Ndr
+  FOOTER      thin rule + identity line
+
+Send as multipart/alternative with a plain-text twin. Never send — draft only.
+-->
+<div dir="ltr"><u></u>
+
+<div style="margin:0;padding:0;background:#eef1f0">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eef1f0;padding:24px 12px">
+<tbody><tr><td align="center">
+<table role="presentation" width="700" cellpadding="0" cellspacing="0" border="0" style="width:700px;max-width:700px;background:#ffffff;border:1px solid #d8dedb;border-radius:4px;font-family:Arial,Helvetica,sans-serif;color:#222a26">
+
+<!-- ============ HEADER ============ -->
+<tbody><tr><td style="padding:26px 34px 18px 34px;border-bottom:3px solid #1f4d3a">
+<div style="font-size:11px;letter-spacing:2px;color:#7d8a83;text-transform:uppercase;padding-bottom:6px">{{COMPANY — e.g. DRA Projects Private Limited}}</div>
+<div style="font-size:21px;line-height:28px;color:#1f4d3a;font-weight:bold">{{TITLE}}</div>
+<div style="font-size:13px;color:#6b7772;padding-top:5px">{{SUB-LINE — e.g. Units 601 · 2101  |  29 October 2026 · follow-up}}</div>
+</td></tr>
+
+<!-- ============ BODY ============ -->
+<tr><td style="padding:24px 34px 8px 34px;font-size:15px;line-height:24px;color:#222a26">
+
+<p style="margin:0 0 14px 0">{{SALUTATION — e.g. Dharmesh, Manish,}}</p>
+
+<p style="margin:0 0 18px 0">{{OPENING PARAGRAPH}}</p>
+
+<!-- ---------- SECTION BOX ---------- -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px 0;border:1px solid #d8dedb;border-radius:3px">
+<tbody><tr><td style="background:#f4f7f5;padding:10px 16px;border-bottom:1px solid #d8dedb;font-size:11px;letter-spacing:1.6px;text-transform:uppercase;color:#4c5f55;font-weight:bold">{{SECTION HEADING}}</td></tr>
+<tr><td style="padding:14px 16px 6px 16px;font-size:14px;line-height:22px">
+<p style="margin:0 0 10px 0">{{SECTION INTRO}}</p>
+<p style="margin:0 0 8px 0"><span style="display:inline-block;min-width:96px;font-weight:bold;color:#1f4d3a">{{LABEL 1}}</span> {{DETAIL 1}}</p>
+<p style="margin:0"><span style="display:inline-block;min-width:96px;font-weight:bold;color:#1f4d3a">{{LABEL 2}}</span> {{DETAIL 2}}</p>
+</td></tr>
+<tr><td style="padding:4px 16px 14px 16px;font-size:13px;line-height:20px;color:#5c6a63;border-top:1px solid #edf0ee">
+{{MUTED FOOTER ROW — the one-line summary}}
+</td></tr>
+</tbody></table>
+
+<!-- ---------- AMBER CALLOUT ---------- -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;background:#fbf7e9;border:1px solid #e8d9a6;border-left:4px solid #c9a227">
+<tbody><tr><td style="padding:14px 16px;font-size:14px;line-height:22px">
+<div style="font-weight:bold;color:#7a5f10;font-size:13px;letter-spacing:0.4px;padding-bottom:6px">{{CALLOUT HEADING — the thing that must not be missed}}</div>
+<p style="margin:0 0 8px 0">{{CALLOUT BODY}}</p>
+<p style="margin:0"><strong>{{CALLOUT EMPHASIS — e.g. Dharmesh — you will need to be available for the OTP.}}</strong></p>
+</td></tr>
+</tbody></table>
+
+<!-- ---------- TABLE ---------- -->
+<div style="font-size:12px;letter-spacing:1.6px;text-transform:uppercase;color:#4c5f55;font-weight:bold;padding:0 0 8px 0">{{TABLE CAPTION}}</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-size:14px;margin:0 0 6px 0">
+<tbody><tr>
+<th align="left" style="background:#1f4d3a;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:0.6px;padding:10px 12px;border:1px solid #1f4d3a">{{COL 1}}</th>
+<th align="center" style="background:#1f4d3a;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:0.6px;padding:10px 12px;border:1px solid #1f4d3a;width:90px">{{COL 2}}</th>
+<th align="center" style="background:#1f4d3a;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:0.6px;padding:10px 12px;border:1px solid #1f4d3a;width:120px">{{COL 3}}</th>
+<th align="left" style="background:#1f4d3a;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:0.6px;padding:10px 12px;border:1px solid #1f4d3a">{{COL 4}}</th>
+</tr>
+<tr>
+<td style="padding:9px 12px;border:1px solid #dbe2de;font-weight:bold;color:#1f4d3a">{{ROW 1 KEY}}</td>
+<td align="center" style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 1 B}}</td>
+<td align="center" style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 1 C}}</td>
+<td style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 1 D}}</td>
+</tr>
+<tr style="background:#f7f9f8">
+<td style="padding:9px 12px;border:1px solid #dbe2de;font-weight:bold;color:#1f4d3a">{{ROW 2 KEY}}</td>
+<td align="center" style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 2 B}}</td>
+<td align="center" style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 2 C}}</td>
+<td style="padding:9px 12px;border:1px solid #dbe2de">{{ROW 2 D}}</td>
+</tr>
+<tr style="background:#eef3f0">
+<td style="padding:10px 12px;border:1px solid #c6d2cb;font-weight:bold;color:#1f4d3a">{{TOTAL KEY}}</td>
+<td align="center" style="padding:10px 12px;border:1px solid #c6d2cb;font-weight:bold">{{TOTAL B}}</td>
+<td align="center" style="padding:10px 12px;border:1px solid #c6d2cb;color:#6b7772">{{TOTAL C}}</td>
+<td style="padding:10px 12px;border:1px solid #c6d2cb;font-weight:bold;color:#1f4d3a">{{TOTAL D}}</td>
+</tr>
+</tbody></table>
+
+<p style="margin:10px 0 6px 0;font-size:13px;line-height:21px;color:#4a5751">
+<strong>Worked out:</strong> {{HOW THE TOTAL IS DERIVED}}
+</p>
+
+<!-- ---------- GREY NOTE BOX ---------- -->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 4px 0;background:#f6f8f7;border:1px solid #e2e8e5;border-radius:3px">
+<tbody><tr><td style="padding:12px 16px;font-size:13px;line-height:21px;color:#4a5751">
+<strong style="color:#1f4d3a">{{NOTE LEAD-IN}}.</strong> {{CAVEAT OR CONVENTION COMPARISON}}
+</td></tr>
+</tbody></table>
+
+<!-- ---------- CLOSING ---------- -->
+<p style="margin:18px 0 0 0">{{CLOSING ASK}}</p>
+
+<p style="margin:20px 0 0 0">Regards,<br>Ndr</p>
+
+</td></tr>
+
+<!-- ============ FOOTER ============ -->
+<tr><td style="padding:16px 34px 26px 34px">
+<div style="border-top:1px solid #e4e9e6;padding-top:12px;font-size:12px;line-height:18px;color:#7d8a83">
+Nishant Ranka · DRA Projects Private Limited · Ranka Chambers, Bangalore<br>
+{{CONTEXT LINE — e.g. Five units at Prestige Hermitage: 601, 2101, 2201, 2301, 2401.}}
+</div>
+</td></tr>
+
+</tbody></table>
+</td></tr>
+</tbody></table>
+</div>
+
+</div>

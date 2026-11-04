@@ -1,7 +1,7 @@
 # Raghav Rao — IDC / Rameshwaram Cafe
-**Date:** 2026-06-04
-**Contact found:** Row 2632, contacts sheet
-**Outcome:** Phone numbers found in far-right columns — initial A:R query returned empty phones
+**Date:** 2026-06-04 (phone discovery) / **2026-10-08 (emails + content share verified)**
+**Contact found:** Row 2633 via `contact_resolver` (row 2632 in an earlier sheet read — rows shift as contacts are added)
+**Outcome:** Phone numbers found in far-right columns — initial A:R query returned empty phones. Emails ARE resolvable via `contact_resolver` — the file name "no-phone" is stale; the phone data was found the same day.
 
 ## What Happened
 
@@ -31,6 +31,21 @@
 | Mobile | +91 70226 49471 |
 | Mobile | +91 63636 88698 |
 | Mumbai | +91 97691 04054 |
+
+## Emails (2026-10-08, via `contact_resolver` row 2633)
+
+| Label | Email |
+|-------|-------|
+| Primary (Home) | raghavidc8@gmail.com |
+| Home | raghavrao1983in@gmail.com |
+| Work | ceo@therameshwaramcafe.org |
+
+**Share convention (verified 2026-10-08):** when granting NDR's content to Raghav, share
+BOTH gmail addresses used (contacts resolver lists three). In practice, sharing the primary
+`raghavidc8@gmail.com` AND the work `ceo@therameshwaramcafe.org` both resolve as ACTIVE
+VIEWER grants; NDR asked to "give him viewer access" as one person, so two grants for the
+same person is the expected outcome — report both with the same expiry. WhatsApp deep link
+goes to **+91 70226 49471** (Mobile #1 — the number NDR actually sent to).
 
 ## Key Lesson
 

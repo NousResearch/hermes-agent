@@ -42,6 +42,49 @@ for uid in ndr rnr sales1.blr pm2.blr vkdas; do
 done
 ```
 
+## PITFALL — a terminal script silently drafts into the WRONG person's mailbox (hit 2026-09-21)
+
+**Symptom:** Prakash asked for an email draft, it was created and verified successfully,
+but he could not see it. It had landed in **ndr@draas.com**, not psingh@draas.com.
+
+**Cause:** `build_service()` resolves the SESSION user. A `terminal()` script with no
+`HERMES_SESSION_USER_ID` set has no session user to resolve, so the vault falls back to
+the default/primary identity — **ndr**. Every `service_name='google-draas'` call then
+authenticates as ndr, because `google-draas` is an ACCOUNT key (ndr@draas.com),
+not a per-person key. `google-ahfl` = ndr@ahfl.in and `google-gmail` = nishantranka@gmail.com
+are ALSO NDR's. So the service_name tells you nothing about whose mailbox you are in.
+
+**Rule — always set `os.environ["HERMES_SESSION_USER_ID"] = "<user-slug>"` at the top of
+any Gmail/Drive script you write, and ALWAYS assert the identity back before acting:**
+
+```python
+import os, sys
+os.environ["HERMES_SESSION_USER_ID"] = "psingh"   # the SESSION user, not a service name
+sys.path.insert(0, '/opt/hermes')
+from tools.gws_auth import build_service
+svc = build_service('gmail','v1', service_name='google-draas')
+me = svc.users().getProfile(userId='me').execute().get('emailAddress')
+assert me == 'psingh@draas.com', f"WRONG MAILBOX: {me}"     # <-- non-negotiable
+```
+
+Slugs observed: `ndr`, `psingh`, `sales1.blr`, `pm2.blr`. The same `google-draas`
+service_name returns a DIFFERENT mailbox per user — verified 2026-09-21:
+ndr → ndr@draas.com, psingh → psingh@draas.com, sales1.blr → sales1.blr@draas.com,
+pm2.blr → pm2.blr@draas.com.
+
+**Attribution caveat that follows from this:** a message authored as ndr appears in
+threads with `From: Nishant Ranka <ndr@draas.com>`. When you reply on behalf of a
+non-ndr user, create it from THEIR mailbox — otherwise the client sees NDR's address
+on a mail he never sent. Recovering from the mistake: give the user that draft's
+**Gmail link** (`https://mail.google.com/mail/u/0/#drafts?compose=<msg_id>`) rather
+than copy-pasting a 34 MB MIME attachment between accounts, then create a fresh draft
+in the correct mailbox and delete the stray one.
+
+**Threads are per-mailbox.** `threadId` from ndr's mailbox is meaningless in psingh's —
+a draft created with a foreign `threadId` will not thread. Omit `threadId` when creating
+in a different mailbox, and keep `In-Reply-To`/`References` so the recipient's client
+still threads it their end.
+
 ## Zero-Tokens-for-All Scenario (vault data loss)
 
 **Pattern:** `has_token` returns `false` for EVERY user and every known service name, AND the previous cron run within 24 hours was successful.

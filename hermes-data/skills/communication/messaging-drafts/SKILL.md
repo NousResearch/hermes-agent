@@ -12,11 +12,175 @@ metadata:
 
 # Messaging Drafts — Umbrella
 
-Covers drafting emails and WhatsApp messages for delivery via Telegram.
+> ## ⚠️ EMAIL FORMAT AUTHORITY
+> Every **email** body follows `email-writing` (load it first). Build email drafts with
+> `/data/hermes/skills/communication/email-writing/scripts/email_draft.py` — markdown in,
+> multipart HTML draft out. Hard-wrapped plain text is a defect. WhatsApp sections below are
+> unaffected by that rule.
+
+Refs: multi-channel-message-fanout.md; wa-dup-chats.md; whatsapp-link-delivery-format.md; whatsapp-drafter-full.md; email-drafter-full.md; advisory-note-to-email-draft.md; threaded-reply-pdf-attachments.md; gmail-draft-threading-traps.md; bulk-personalized-email-draft-campaigns.md; draas-office-maps-links.md; vendor-invoice-request-messages.md; html-email-draft-large-body.md; garbled-voice-dictation-handling.md; format-and-tone-two-modes.md; provider-error-clarification-tone.md; draft-revision.md; answering-a-chase-from-ndr.md.
+Anbu's vocab, daily-plan format, and **dictated REVIEW-email workflow**
+(threaded reply in his own inbox, To: NDR only, signature block) →
+references/anbu-daily-plan-project-vocabulary.md. **Dispute/escalation re
+
+## Editing an already-created draft — recreate, don't update
+
+When the user corrects content in a draft you already made (`gws_gmail_draft_create` /
+`gws_gmail_reply_draft`), do NOT attempt `drafts().update()` via build_service — it fails with
+HttpError 400 "Missing draft message". The reliable path is **delete + recreate**:
+`gws_gmail_draft_delete` the old draft, then `gws_gmail_reply_draft` the corrected body against
+the same source message_id (threading regenerates automatically). Always read back the new
+draft afterwards to verify the correction landed.
+
+## Third-party voice via intermediary
+
+Distinct class: a WhatsApp link written in the voice of someone two hops away (senior official/MP/regulator), sent to an intermediary who forwards it as-is. Chain here: us → intermediary (e.g. Manohar Singh) → the
+official → the authority who decides. Trigger phrases: *"this message is going to go from
+<X> to <Y>"*, *"we are writing on behalf of <X>"*, *"he will be forwarding it as is"*,
+*"write it in a manner where he can forward it"*.
+
+Two hard rules: **write in the third party's voice, never DRA's**, and **never state a report,
+approval, or finding as completed when only a request or application exists** — a request for a
+report is not the report. Surface date conflicts, ambiguous chain-of-custody, and a first-name-only
+addressee as explicit questions *before* generating the link; never silently resolve them.
+
+Full pattern, worked example (Serenity Hillview CLU-conversion cancellation → DC Bengaluru Rural,
+Sep 2026), fact-sourcing order, and the status-inflation trap:
+**`references/third-party-message-via-intermediary.md`**.
+
+## ⚠️ `whatsapp_link` missing from the tool list? Re-verify before telling the user it's unavailable (verified 2026-09-21)
+
+The ground rule is unchanged: **`whatsapp_link` is the ONLY sanctioned way to produce a WhatsApp
+deep link.** Never hand-encode `api.whatsapp.com/send` (or `wa.me`) yourself — manual encoding breaks
+on mobile WhatsApp, and the system prompt is explicit about it.
+
+But the **tool can be absent from the live toolset of a given session while the implementation is
+perfectly healthy on disk.** If you call `whatsapp_link` and get
+`Tool 'whatsapp_link' does not exist. Available tools: ...`:
+
+1. **Do NOT fall back to manual URL construction.** That is the failure mode the rule exists to
+   prevent.
+2. **Do NOT tell the user WhatsApp links aren't possible.** That is a false negative — the
+   capability exists.
+3. **Check for the implementation and call it directly.** The tool lives at
+   `/opt/hermes/tools/whatsapp_link_tool.py` and is registered under the name `whatsapp_link`, but
+   the **importable Python symbol is `whatsapp_link_tool`** (a `def whatsapp_link_tool(args, **kw)`
+   that takes a single dict and returns a JSON string) — not `whatsapp_link`:
+
+   ```python
+   import sys, json
+   sys.path.insert(0, "/opt/hermes")
+   from tools.whatsapp_link_tool import whatsapp_link_tool
+
+   res = whatsapp_link_tool({"phone": "919845136840", "text": "..."})
+   d = json.loads(res)
+   if d.get("parts"):
+       for p in d["parts"]:
+           print(p["url"])     # deliver each part as its OWN Telegram message
+   else:
+       print(d["url"])
+   ```
+
+   The schema lives at `WHATSAPP_LINK_SCHEMA` in that same module — read it (or
+   `grep -n 'def \|^class \|SCHEMA' /opt/hermes/tools/whatsapp_link_tool.py`) to confirm the arg
+   names and the splitting behaviour before calling.
+
+This is **not** a licence to build links by hand — it is calling the sanctioned implementation
+through its Python entry point instead of the tool-call surface. Same encoder, same splitting logic,
+same `api.whatsapp.com/send` output. Tell the user you generated the link, never that you "sent"
+anything.
+
+Also note the module's own docstring already says: *"If this tool is unavailable, tell the user
+rather than improvising an encoding."* Re-verifying on disk satisfies both halves — the encoding is
+not improvised, and the user still gets a real link.
+
+## Long WhatsApp messages SPLIT — deliver every part, limit URL length (verified 2026-09-21; URL-length pitfall verified 2026-09-22 → see `references/whatsapp-deep-link-length.md`)
+
+Any WhatsApp message over roughly 1,400 characters comes back `split: true` with a
+`parts` array (each part its own deep link). Two hard consequences:
+
+1. **Deliver EACH part as its own separate Telegram message.** Never concatenate the
+   parts back into one message — Telegram's own splitter will cut the second link in
+   half and the user taps a broken URL.
+2. **The user WILL sometimes only get Part 1 and report the rest as missing.** Real case
+   2026-09-21: a 5-item task-confirmation message split into 2 parts; the user came back
+   with *"Part 2 of the above message did not come through … can you complete that message
+   for me and give me the link?"* — note the truncation point lands MID-ITEM, so Part 2
+   started mid-sentence in item 4.
+
+**The re-generate recipe (do NOT hand-build the tail):** re-call `whatsapp_link_tool` with
+just the remaining text, starting from the sentence where the delivered part ended. Pass the
+**verbatim remainder** (including the closing ask) so the two halves concatenate cleanly —
+the user will read them as one continuous message in WhatsApp. Then say plainly which item
+the remainder picks up from, so they can see the join.
+
+**Prefer avoiding the split in the first place** for long multi-item briefs: tighten the
+prose, or split deliberately at a numbered-item boundary (part 1 = items 1–3, part 2 =
+items 4–5 + the closing ask) rather than letting the tool cut mid-item. A deliberate split
+is recoverable by the user; an accidental one mid-sentence reads as a glitch.
+
+## Calling the `whatsapp_link` tool from `execute_code` (verified 2026-09-21)
+
+The tool module exposes ONE callable: `whatsapp_link_tool(args_dict)`. There is
+**no** `create_whatsapp_link` function — that name does not exist and calling it
+raises `AttributeError: module 'tools.whatsapp_link_tool' has no attribute
+'create_whatsapp_link'`.
+
+```python
+import sys; sys.path.insert(0, "/opt/hermes")
+import tools.whatsapp_link_tool as w
+
+raw = w.whatsapp_link_tool({"phone": "+918150029900", "text": msg})
+obj = json.loads(raw) if isinstance(raw, str) else raw   # double-encoded: json.loads needed
+print(obj["split"], len(obj.get("parts", [])))
+for p in obj.get("parts", []):
+    print(p["url"])
+```
+
+Notes:
+- The dict keys are `phone` and `text` (NOT `phone_number` / `message`). Read the
+  live schema with `w.WHATSAPP_LINK_SCHEMA` if unsure — it is authoritative.
+- The return value comes back **JSON-encoded as a string inside a JSON structure**;
+  `json.loads` it once before touching `obj["url"]` / `obj["parts"]`.
+- Discovering the callable: `[x for x in dir(w) if not x.startswith("_")]` shows
+  only `WHATSAPP_LINK_SCHEMA`, `registry`, `tool_error`, `whatsapp_link_tool` etc.
+- **Long messages split into `parts`; each part is its own deep link.** When
+  `split: true`, deliver every part as its own separate Telegram message, in order —
+  never concatenate them into one message (Telegram's own splitter then cuts a link
+  in half). Label them "Part 1 / Part 2" for the user. A ~2,100-char message splits
+  into 2 parts; expect a multi-task task-by-task message to split.
+
+## Long WhatsApp message split behaviour
+
+Splitting is decided by encoded-URL length (Telegram's 4096-char single-message
+limit), so it is the *encoded* size that matters — URLs and `%XX` escapes inflate a
+plain-text message by roughly 3–4x. Practical consequences when drafting a
+task-by-task message to a reportee:
+- Aim to keep the plain text under ~1,400 chars if you want a single link.
+- If it splits, the split can land MID-NUMBERED-ITEM (observed: part 1 ended after
+  the "*4. …*" header line, part 2 opened with that item's body). That is acceptable —
+  do NOT try to hand-tune the boundary by editing the message, and do NOT re-run to
+  chase a cleaner split. Just send both parts in order.
+- Write the message so each numbered task header restates enough context that part 2
+  still reads standalone (repeat the project name in the item body, not only in the
+  header line).
+
+## Skills absorbed into this umbrella
+
+| Absorbed skill | Where it lives now | Use it for |
+|----------------|--------------------|-----------|
+| `email-drafter` (content copy) | `references/email-drafter-full.md` | Full new-email / threaded-reply drafting workflow |
+| WhatsApp drafter (content copy) | `references/whatsapp-drafter-full.md` | WhatsApp message drafting workflow |
+| `messaging-drafts` → `references/messaging-links-workflow.md` (2026-09-20) | `references/messaging-links-workflow.md`, `templates/whatsapp-message-builder.html`, `templates/whatsapp-links-docx.py` | Generating `api.whatsapp.com/send` deep links; the batch multi-recipient and QR-code patterns; docs/.xlsx link batches |
+| `messaging-drafts` → `references/personal-messaging-workflow.md` (2026-09-20) | `references/personal-messaging-workflow.md`, `scripts/find_contact.py` | Drafting a WhatsApp/SMS to a **personal** contact (colleague, partner, vendor, advisor) — resolve the person, compose, deliver the link |
+
+⚠️ **Deep links must be produced with the `whatsapp_link` tool** — never hand-encode an
+`api.whatsapp.com`/`wa.me` URL. See `references/messaging-links-workflow.md`.
 
 ## Linked References
 
-- **`references/scheduled-draft-email-via-cron.md`** — Calendar reminder + cron job auto-creating draft emails. IST↔UTC, bridge params, cron prompt structure.
+- **`references/scheduled-draft-email-via-cron.md`** — Cron draft emails; IST↔UTC.
+- **`references/landowner-group-messaging.md`** — Landowner groups; tone.
 - **`references/user-delivery-preferences.md`** — Per-user delivery & review workflows (Bharat's draft-first for Nishant, Nishant's direct style, etc.)
 - **`references/whatsapp-chunked-message-html.md`** — Multi-chunk wa.me HTML for long messages.
 - **`references/whatsapp-text-formatting.md`** — WhatsApp text formatting (*bold*, _italic_, etc.), single-message workflow
@@ -26,6 +190,7 @@ Covers drafting emails and WhatsApp messages for delivery via Telegram.
 - **`references/document-share-and-notify-whatsapp.md`** — End-to-end pattern: find+share Drive files with 7-day viewer expiry → notify via WhatsApp. Covers Rahul/Vinod's WhatsApp-only preference, wa.me URL construction, and per-location structured summary format.
 - **`references/gmail-draft-formatting-pitfalls.md`** — Gmail draft rendering quirks: use `draft_reply_create` (bridge) not raw API for proper thread nesting; keep HTML minimal (bold only, no CSS colors) to avoid raw HTML tags in compose view. Use when the user asks to "break a long message into multiple messages with wa.me links" or "click one by one and send everything". Covers the wa.me phone-segment digit-count pitfall (12 digits for IN), cross-source phone verification, and the page template.
 - **`references/voice-recall-vs-written-record-accuracy.md`** — Voice recall is lossy. When the user dictates based on a prior conversation, find the written record (WhatsApp thread, email, earlier session message) before drafting — the written record is authoritative. Also covers foreign-character-leakage draft QA.
+- **`references/anbu-daily-plan-project-vocabulary.md`** — Resolved name/project vocabulary for Anbu's voice-dictated daily plans to NDR: Ranka OSS vs Ranka Northstar (the "Nostos" garble), Sevaganapalli, the Northstar landowner group, Ranka Iris electrical workstreams, and the copy-paste (not deep-link) delivery format. **Load this whenever Anbu dictates a day plan or a message referencing a DRA project by voice.**
 
 **⚠️ User preference (Nishant, Jul 2026):** The choice between email and WhatsApp is NOT just a delivery preference — it depends on who you're contacting.
 
@@ -37,7 +202,8 @@ Covers drafting emails and WhatsApp messages for delivery via Telegram.
 
 **Rule (Nishant, 11 Jul 2026):** When sharing files, drafting emails, or addressing DRAAS staff, default to their @draas.com work email unless the user explicitly provides an alternate address. Eshwari = echamundeshwari@draas.com (NOT @gmail.com). Roshni = rnr@draas.com. Ranjeeth = drr@drahomes.in. If only a name is given, search Gmail first — never default to a personal Gmail when a work address is discoverable.
 
-See `references/whatsapp-url-encoding-research.md` for the critical `whatsapp_link` tool bug — the tool emits standard `%26` which breaks on Android; always build the link manually with fullwidth substitution when the message contains `&`, `%`, `=`, or `+`.
+- **`references/whatsapp-url-encoding-research.md`** — `whatsapp_link` emits `%26` which breaks on Android; build manually with fullwidth substitution for `&`, `%`, `=`, `+`.
+- **`references/outreach-email-project-brief-embedding.md`** — Outreach emails must carry real project briefs, not a promise to brief.
 | **Internal DRAAS team (office/management)** | **Email** or WhatsApp, per context | Prakash, Eshwari, Roshni, Gowri | Both work. Consider urgency — WhatsApp for urgent, email for formal/detailed. |
 | **External partners/vendors/clients** | **Email** (formal), WhatsApp for quick nudge | Manohar Singh, Bhavik, Raghu | Formal comms by email; WhatsApp for follow-up or urgent coordination. |
 | **Legal/statutory communications** | **Email only** | Advocates, sub-registrar, KRERA | Written record needed. Never WhatsApp for these. |
@@ -79,6 +245,7 @@ What messaging task?
 | `references/email-drafter-full.md` | Email drafting | Gmail API → send |
 | `references/multi-model-brain-dump-to-email-drafts.md` | User provides verbose/rambling brief → generate N HTML email drafts from N different LLM models via OpenRouter for comparison | Save as .html files → deliver via MEDIA: |
 | `references/email-checklist-gap-analysis.md` | Compare two checklists from same thread → identify new/pending items → draft targeted email | Present comparison table for user validation → send |
+| `references/draft-in-place-edit-preserve-thread.md` | **Edit an EXISTING draft** ("add this link", "stop, remove it") → delete + recreate on the SAME thread | `threadId` passed explicitly; harvest In-Reply-To/References BEFORE deleting; assert-guarded body-file edits; byte-length round-trip proves a clean revert; revert the Drive side too (shortcut trash + permission delete) and list both states back |
 | `references/email-tone-matching-workflow.md` | User says "write to [name] in my tone — check my past emails first" | Search Gmail → extract salutation/sign-off/formality → draft matching their established style → confirm before send |
 | `references/voice-dictated-multi-point-email-reply.md` | User dictates 5-15 answers via voice to an email with numbered questions | Transform raw dictation → structured multi-point reply → confirm → optionally forward for internal review |
 | `references/whatsapp-drafter-full.md` | WhatsApp drafting | WhatsApp link via Telegram |
@@ -219,13 +386,42 @@ The second pattern (compound name merge) is distinct: the user said "Husband of 
 | Project | Common Misspellings / Variants |
 |---------|-------------------------------|
 | Allalsandra | Alal Sandra, Allalasandra, Alla Sandra |
-| Ranka North Star | Northstar, North Star, NSR |
+| Ranka North Star | **Nostos (voice near-miss — see below)**, Northstar, North Star, NSR |
+| Ranka OSS | **"Nostos" (voice)**, OSS, OSS Sevaganapalli, Ranka OSS Sevaganapalli |
 | Ranka Amber | Ambar, Amber |
 | Ranka Oasis | Oasis, Oasys |
 | Serenity Hill View | Certainty Hill View (voice), Serentity |
 | Ranka Iris | Iris, Irys |
 | Ranka Stello | Stelo, Stello |
-| Ranka Udaya | Udaya, Udhaya |
+| Ranka Udaya | Udaya, Udhaya, Rankavadaya (voice — syllable merge) |
+| Sevaganapalli | Sevganapalli (voice), Sevaganapally |
+
+### ⚠️ Near-Miss Project Names — the Similarity IS the Danger (2026-09-21)
+
+**A project name that is phonetically CLOSE to a known project is the highest-risk transcription case, because it reads as plausible prose and gets silently resolved.** Being plausible is not being correct.
+
+**Worked failure:** Anbu dictated his daily plan for NDR including *"Ranka Nostos floor plan"*. The agent silently mapped "Nostos" → **Ranka Northstar** and wrote the item as a North Star floor-plan discussion. Both halves were wrong: the project was **Ranka OSS at Sevaganapalli**, and "Nostos" was a voice garble of **OSS** (not of "Northstar" at all). Anbu had to correct it and re-dictate.
+
+**Rules:**
+1. **Never silently normalise a project name in a deliverable.** If the transcribed project is not an exact match to a known project, resolve it against Drive folder names / sheet Notes column / Gmail subjects — or leave it and flag it.
+2. **"Close enough" is not resolution.** Enumerate the candidate projects it *could* be and check which one the day's other items support (here: "Sevganapalli" in the same message pointed to 18 & Oak / Ranka OSS, not to Allalasandra).
+3. **When the user corrects a project name, treat it as a vocabulary addition** — add the new spelling AND the voice-garble variants to the table above.
+
+## Unresolved Names in a Deliverable — Preserve and Flag, Never Substitute
+
+When composing a message that must name a person the contact stores **cannot disambiguate** (a first name with multiple live candidates, or a name with no candidate at all):
+
+1. **Write the name verbatim as the user gave it.** Do not substitute a guess, and do not attach a phone number or organisation you cannot corroborate.
+2. **Complete the deliverable anyway** — do not stall or withhold it pending resolution.
+3. **Flag the open item below the draft**, naming what you searched and what the ambiguity is, so the user can confirm in one round-trip.
+
+**Why:** Anbu's daily-plan messages to NDR are time-critical and he pastes them immediately. Holding the draft hostage to an unresolved name costs him the send window. A verbatim name plus an explicit flag is strictly better than a confident wrong substitution.
+
+**Worked cases (2026-09-21, same message):**
+- **"Vinay"** — 15+ distinct contacts in the sheet; no OSS/planning/survey linkage on any of them. Delivered verbatim, with the count reported back ("the sheet has 15+ Vinays — which one?").
+- **"Gopal Reddy"** — two sheet entries (42Villament land, Kagganur), **neither tied to the North Star JD**, whose recorded landowner group is V. Swaminathan / Ayalur Vaidyanathan / Sunder Padmanabhan. Reported the mismatch rather than picking one.
+
+**Anti-pattern to avoid:** "I've written it as [nearest guess] — correct me if wrong." That phrasing invites the user to skim past a fabricated fact in a message going to their boss.
 
 ### Indian Name Honorific Suffixes — "sa", "ji", "bhai", etc. (Jun 2026)
 
@@ -543,183 +739,12 @@ I repeat: PLEASE PROVIDE THE STATEMENT FROM 01.04.2025 TO DATE. THIS IS URGENT.
 
 **Meeting ask format:**
 ```
-## Meeting — 1 Hour This Week
-I want to hear your thoughts on:
-• Specific question 1
-• Specific question 2
-• etc.
+## Meeting scheduling
 
-Nishant
-```
-
-**Natural case for project/topic descriptions:**
-- Keep descriptions in natural sentence case: "Estate homes & Villa homes" not "Estate Homes & Villa Homes", "investor opportunities" not "Investor Opportunities"
-- Do NOT artificially capitalize every word in headings or bullet descriptions
-- Exception: Proper project names (Ranka Amber, Ranka NorthStar) keep their trademark capitalization
-
-**Key distinction — Collaborative, not Commanding:**
-- Ask for input: "Where do you feel comfortable starting?" rather than "This is what we're doing"
-- Frame as discussion kickoff, not directive
-
-### Pitfall — Document Bundle Email: Permissions Before Send (Jul 2026)
-
-**Trigger:** You compile a multi-file research document (HTML timeline, report) and need to email a link to one or more recipients referencing a set of Drive files.
-
-**Problem:** The natural sequence — create document → upload → send email with links — is WRONG for DRAAS. Doing it this way means the email goes out before the recipient has access to the underlying files, forcing a corrective follow-up.
-
-**Correct workflow — Permissions FIRST, email SECOND:**
-
-1. **Identify ALL files** referenced in the document/email — not just the main doc, but every supporting file (sale deeds, NOCs, title opinions, etc.)
-2. **For each file**, set the recipient as **Viewer (Reader)** with **1-month expiry** on the permission
-   ```python
-   from datetime import datetime, timedelta, timezone
-   expiry = (datetime.now(timezone.utc) + timedelta(days=31)).isoformat()
-   drive.permissions().create(
-       fileId=FILE_ID,
-       body={'type': 'user', 'role': 'reader', 'emailAddress': 'recipient@example.com',
-             'expirationTime': expiry},
-       sendNotificationEmail=False
-   ).execute()
-   ```
-3. **Remove unnecessary existing viewers** — if Nishant says "remove all other viewer access," remove user-type permissions for everyone except Nishant (owner) and the intended recipient. Do NOT remove 'domain' or 'anyone' permissions without explicit instruction. Note: you can only remove permissions on files you own (i.e., files where ndr@draas.com is the owner).
-4. **Verify every file** — confirm the recipient shows in the permission list before sending
-5. **Only THEN send the email** with clickable links to every referenced file
-6. **Email must contain clickable links** — not just descriptive text. Each Drive link should be an `<a href>` in HTML or a raw URL in plain text that the recipient can tap to open.
-
-**Why this matters (Jul 2026 evidence):** A Bin Mangala timeline email was sent with the document link but the referenced files (23 Drive files across Binnamangala and Arya Developers folders) had no permissions set for the recipient. The user had to explicitly correct: "you have not given viewer access to Rahul. Please give him complete viewer access on all files and folders for one month and remove all other viewer access."
-
-**Checking permissions is cheaper than fixing after send:**
-
-**Trigger:** Nishant says "create a detailed instruction sheet" or asks you to draft an email to a third party (Raghu, Manohar, etc.) explaining a multi-step process (DSC application, E-signing, registration steps, NOC process, etc.)
-
-**Problem (corrected Jun 2026):** The default email style is brief and direct. But for instructional emails to third parties, "brief and direct" means "too vague to act on." The first draft in this session ended with "If you need any help or assistance with any step, let me know" — which sounds helpful but actually forces the recipient to figure out the process themselves. Nishant corrected: the email should be a **self-contained guide** the recipient can follow end-to-end without needing to ask for clarifications.
-
-**Fix — write the full guide inline, not a summary:**
-
-1. **Context section first** — 1-2 paragraphs explaining WHY this step is needed (e.g., "The sub-registrar only accepts E-signatures. Raghu cannot double E-sign as both himself and as a representative because the system doesn't support it.") This frames the motivation.
-
-2. **Numbered step-by-step instructions** — Each step a clear heading with:
-   - Exact portal URL (e.g., `https://esign.emudhra.com/`, not just "the eMudhra portal")
-   - What to do at each stage
-   - What documents to prepare (as a checklist)
-   - Expected timeline / cost estimates
-   - Expected outcome per step (e.g., "You will receive an email with a download link and password")
-
-3. **Include the "why" for each major step** — Not just "upload documents" but "the video verification call is recorded — this becomes the legally valid audit trail." The recipient needs to understand the significance, not just the mechanics.
-
-4. **Anticipated friction points** — Call these out explicitly:
-   - "There may be a small video verification call that she will have to set up"
-   - "Post that once she has uploaded all the documents, she will be issued a DSC which will arrive in an email with a link to the file as well as the password"
-   - "Once that is installed on a computer, then when the document comes through for E-sign, she can use it"
-
-5. **Summary table at the end** — Who does what, by which method. Quick reference the recipient can scan.
-
-6. **Offer help as a closing sentence, not a crutch for missing detail** — One line: "If you need any help, let me know." But the steps should already be complete enough that the recipient doesn't need to ask.
-
-**How this differs from the standard brief style:**
-
-| Scenario | Approach |
-|----------|----------|
-| Internal coordination (Gowri, Anbu, Roshni) | Brief, direct — they have context |
-| External party needing instructions (Raghu, Manohar, clients) | **Self-contained full guide** — assume zero prior knowledge of the process |
-| Mixed (internal email that also instructs vendor) | Full instructions for the vendor part, brief for the internal coordination part |
-
-7. **Verify portal/website names before finalizing** — Voice transcription easily mangles portal names (e.g., "eMudhra" → "MUTRA", "esign.emudhra.com" → "Mutra portal"). Before sending an email with a portal URL or platform name, **pause and verify the exact spelling with the user**. This is especially critical for:
-   - URLs in step-by-step instructions — a wrong URL means the recipient can't follow Step 1
-   - Official portal names (eMudhra, NSDL, MUTRA, Kelsa, etc.) — voice homophones are common
-   - Company/project names that sound similar (e.g., "Ranka Amber" vs "Ranka Udaya")
-
-   **Fix:** When the user dictates a portal name in voice, after drafting the email, quote the portal name back: "Just confirming — the portal is **esign.emudhra.com** (eMudhra), correct?" Do this as part of the pre-send confirmation, not in a separate round trip.
-
-**Why this matters:** Writing a summary first and waiting for "redo this in detail" wastes a full round trip. The user's voice instruction "create a detailed instruction sheet" or "request him to please E-sign..." is already the signal to go deep. Default to detailed on first draft when the email content involves a technical/registration process for a third party.
-
-### Calendar Event Confirmation Pitfall (Jun 2026)
-
-**Problem:** In a prior session, a calendar event was created with the wrong attendee email because the agent assumed the contact's email was correct without confirming. The user had to correct both the attendee name AND email address.
-
-**Fix — always confirm ALL of these before creating a calendar event:**
-- Event title
-- Date and time (with timezone)
-- Location
-- Attendee(s) — BOTH display name AND email address(es)
-- Whether to send update notifications
-
-Show as a structured summary:
-```
-Title: Various Discussions
-Date: 9 Jun 2026, 1:00-2:00 PM IST
-Location: DRA Realty Office
-Attendees: Nishant Ranka (ndr@draas.com), Nishant Prakash (nishantprakash@theyelloweye.com)
-```
-Wait for explicit confirmation before creating.
-
-### Calendar Timing — Voice-Transcription Time Ambiguity (Jun 2026)
-
-**Trigger:** User says a time range like "232-330" or "230 to 3" in a voice message to describe a meeting window.
-
-**Problem:** Voice-transcribed time ranges are ambiguous. "232-330" could mean 2:30-3:30, but could also mean 2:30-3:00 with the next meeting at 3:30. The agent parsed it as one long slot; the user corrected it to a shorter slot + separate follow-up meeting.
-
-**Fix — explicitly confirm the end time of each meeting slot, especially when meetings are back-to-back:**
-1. Parse the voice-transcribed time range
-2. When there are two meetings in sequence, confirm BOTH slots independently:
-   - "Meeting A: 2:30-3:00, then Meeting B: 3:00-3:30?" vs "Meeting A: 2:30-3:30, Meeting B: 3:30-4:00?"
-3. Don't assume intervals are clean 30/60-minute blocks — voice can mangle the boundary
-4. If in doubt, spell out both options and ask the user to pick
-
-**Pitfall example (Jun 2026):** User said "232-330 meeting with Anwar and Somaya" — agent created 2:30-3:30. User then clarified "Anwar Sumeya meeting from 230 to 3 pm, 3 to 330 itself" meaning Anwar/Sumaya was 2:30-3:00 and the Ravi meeting was 3:30-4:00. The correction cost an extra round trip.
-
-### Pitfall — Multi-Stakeholder Task Assignment Emails (Voice Dictation)
-
-**Trigger:** User dictates a complex email via voice assigning specific responsibilities to 3+ people (e.g., "Anbu does X, Bhavik handles Y, Nanjesh handles Z under Anbu's coordination").
-
-**Problem:** Voice transcriptions parse cleanly but the agent's interpretation of who-does-what is often wrong. In one session, the responsibility breakdown required **4 rounds of correction** because the structure (primary responsibility vs coordination vs parallel workstream) wasn't made explicit before the draft.
-
-**Fix — always present a responsibility breakdown table BEFORE writing the full draft:**
-
-1. Parse the voice message into discrete tasks and assignees
-2. Present a structured breakdown via Telegram:
-   ```
-   Responsibility breakdown I parsed:
-   • Anbu: BWSSB road cutting, water meter installation (same team)
-   • Bhavik: NOC/approval via consultant, meter release
-   • Nanjesh (under Anbu's coordination): BESCOM road cutting, transformer delivery + installation, LT panel connection
-   
-   Confirm this breakdown is correct before I draft the email?
-   ```
-3. Wait for user confirmation before writing even a first draft
-4. Only after the user confirms the structure, compose the email
-5. If the user corrects the breakdown, update it and re-confirm before drafting
-
-**Why this matters:** Writing a full draft with the wrong responsibility structure wastes time — the user has to read the whole email to spot the error, then correct it, then ask for a rewrite. A structured breakdown takes 2 lines of Telegram text and catches the error in seconds.
-
-### Pitfall — Voice-Dictated Email Addresses Require Confirmation
-
-**Trigger:** User says an email address in a voice message (e.g., "send to vkdas@draas.com").
-
-**Problem:** Voice transcriptions easily mangle email addresses — similar-sounding names (Vinod/Vinood), domain confusion (drahomes.com vs draas.com), and letter repetition (vkdaas vs vkdas). In this session, the same address was corrected TWICE before getting right.
-
-**Fix — before sending or sharing:**
-1. **Pause and confirm** — If you don't have a pre-existing record of that person's email (in contacts sheet, memory, or past emails), ask the user: *"Confirm: vkdas@draas.com — is this correct?"* Spell it out letter by letter.
-2. **Cross-check from a known source** — Before sending, search the contacts sheet, memory, or Gmail history for this person's verified email. If found, use that instead of the voice transcription.
-3. **On first use, confirm** — The first time an email is used for a new recipient in a session, show the full address to the user and ask for confirmation before sending.
-
-**Verification step:** Before calling `gmail.users().messages().send()`, print the To: address to stdout and verify against what the user said.
-
-### Pitfall — Phone Number from Email Signature Is NOT Authoritative
-
-**Trigger:** You extract a phone number from someone's email signature and use it for a WhatsApp link or contact record.
-
-**Problem:** The number in someone's email signature may be their office/main line, not their personal/mobile number. The user's Google Contacts likely has the correct mobile number. Using the signature number without cross-referencing wastes a round-trip when the user corrects you (confirmed Jun 2026: Nilesh Prasar's email signature showed `+91-8095506021` but his Google Contacts had `+91 99059 54753` as mobile).
-
-**Fix — always cross-reference before using:**
-1. Extract the number from the email signature as a candidate
-2. **Search Google Contacts (People API)** — `searchContacts(query="Last Name")`
-3. **Search contact sheets** — NDR CONTACTS sheet, NDR DRAAS Google contacts
-4. **Present ALL numbers found** with their sources (email signature, People API, sheet)
-5. Let the user confirm which number to use
-6. Only then generate the WhatsApp link
-
-**Exception:** If the user explicitly says "use the number from their email signature" or "send it to this number," use it directly.
+Booking a meeting (e.g. "schedule a 1 hour meeting this week") — availability scan, slot picking,
+guest set, and the Meet/Teams link workflow — lives in
+→ **`references/calendar-meeting-scheduling.md`**. Related: `references/calendar-teams-meeting-workflow.md`,
+`references/interview-calendar-meet-workflow.md`.
 
 ## Email — Send (Reply All, Threaded) vs Save as Draft
 
@@ -734,11 +759,7 @@ Wait for explicit confirmation before creating.
 
 ### Save as Draft — Threaded Reply
 
-See `references/gmail-draft-in-thread.md` for full workflow. Key steps:
-1. Find original email → get `threadId` and `Message-ID`
-2. Build MIMEText with To/Cc/Subject/In-Reply-To/References headers
-3. Call `gmail.users().drafts().create()` with `threadId` in the body
-4. Tell user to find the draft in Gmail → Drafts folder
+See `references/gmail-draft-in-thread.md` (full workflow). Attachments version (native `gws_gmail_reply_draft` has none) → `references/gmail-threaded-draft-with-attachments.md`. "in my downloads" but /mnt/uploads lacks it → search Drive by name. Ranka Amber CP kit → `references/ranka-amber-channel-partner-outreach-kit.md`.
 
 ### Post-Send Follow-Up Draft — Same Thread (Reply-All)
 
@@ -801,7 +822,7 @@ service.users().messages().send(userId='me', body={'raw': raw_b64, 'threadId': '
 3. Once complete, token stored at `/data/hermes/users/{telegram_id}/the gws-vault daemon (no token files exist on disk — see api-references/google-workspace-api/references/token-access-canonical.md)`
 4. Resume original task
 
-**Common mistake:** Attempting to use SA key (`tools.gws_sa`) for personal Gmail/Calendar — raises `ValueError`. Always use `tools.gws_auth` for personal data.
+**Common mistake:** Attempting to use SA key (`tools.gws_sa`) — the module does not exist (removed 2026-05-08) and raises `ModuleNotFoundError` for any API. Always use `tools.gws_auth`; use `tools.gws_dwd_tools` to act as another Workspace account.
 
 ### WhatsApp Drafting
 See `references/whatsapp-drafter-full.md` — contact resolver + wa.me link via Telegram.
@@ -857,6 +878,44 @@ WhatsApp drafts have **three delivery modes**, chosen based on how the user inte
 | Deep link (individual) | Raw clickable URL in plain Telegram text with `phone=` param | User wants to tap-and-send directly to one person. No attachments to add. |
 | Deep link (group) | Raw clickable URL in plain Telegram text with `text=` param **only** (no `phone=`) | User wants to send to a group chat — they select the group when WhatsApp opens. |
 | Copy-paste | Markdown code block (triple backticks, no language tag) | User wants to copy the text and send manually. |
+
+### ⚠️ HARD RULE — GROUP MESSAGE = NO PHONE NUMBER IN THE LINK, EVER (NDR, 2026-09-24)
+
+When NDR says a message is **for a group / the group / team group**, the generated deep link
+MUST NOT contain a phone number. **Never.** Only the message text goes into the link:
+
+- Correct: `https://api.whatsapp.com/send?text=<encoded-message>` (no `phone=` param)
+- Wrong: `https://api.whatsapp.com/send?phone=91XXXXXXXXXX&text=...` for a group message
+
+WhatsApp opens a "Send to…" picker when no phone is present, so the user selects the group
+themselves. A `phone=` in a group link forces it to one person — wrong for a group.
+
+**Trigger recognition:** "message for my engineering team", "for the group", "send this to the
+[team/group]", "share in the [X] group" — ANY group/team context → omit phone. When ambiguous
+(a single person vs a group), ASK before generating — do not default to a phone.
+
+### ⚠️ HARD RULE — WHATSAPP DRAFTING FORMAT (NDR, 2026-09-24)
+
+WhatsApp message drafts (deep links AND copy-paste) MUST be drafted in **WhatsApp markdown**
+formatting, structured for easy reading:
+
+1. **Paragraphs always** — one idea per paragraph, blank line between paragraphs. Never dump a
+   voice dictation as one unbroken wall of text.
+2. **Bullets where necessary, only where necessary** — use `•`/`-` bullets for parallel items
+   (lists of works, options, steps, deliverables). Do not bullet narrative prose; keep
+   explanation as paragraphs.
+3. **WhatsApp markdown** — use `*bold*` for key figures, asks and headings-worth; `_italic_`
+   as needed. Remember WhatsApp markdown uses single asterisks (`*text*`), NOT `**text**`
+   (that is Telegram/Discord syntax).
+4. **Rewrite for clarity without losing meaning** — reorganize the dictation into a clean,
+   scannable order. Keep EVERY fact, figure, name, number, and ask verbatim in meaning; never
+   drop or invent content. The message must read naturally, not as raw transcription.
+5. **Opening address** — start with the addressee name (e.g. "Anbu,") when NDR dictates one.
+6. Keep the closing ask/question explicit at the end.
+
+The `redraft` skill's general formatting doctrine (paragraphs, bullets for parallel items,
+numbered lists for sequences, bold on asks/figures) applies to the restructured body — but the
+WhatsApp-specific markdown (`*single asterisks*`) is the messaging-drafts rule.
 
 ### WhatsApp Follow-On Message Pattern
 
@@ -1006,34 +1065,20 @@ END:VCARD
 ## Ranka Udaya — Standard Client Outreach Kit (Housing.com Enquiries)
 
 **Trigger:** Client enquiry from Housing.com — user provides client name and mobile number.
+Full kit (3-link format, draft template, delivery rules, product context, Drive folder):
+`references/ranka-udaya-outreach-kit.md`.
 
-**Standard 3-link format:**
-```
-🌐 Website/Project:  https://share.google/Q80Ehv6gG0QX4sEK6
-🏠 Drone/360° Tour:  https://digitour.housing.com/droneview/ranka_udaya
-📍 Google Maps Pin:  https://maps.app.goo.gl/RTjczx8dPYQXaYQE6
-```
+## Serenity Estate — Standard Outreach Kit (Sarjapur–Hosur workforce housing, PS 2026-10-01)
 
-**Draft template:**
-```
-Hi [Client Name], thank you for your enquiry on Housing.com! 🙏
-
-Please find below the complete details for **Ranka Udaya** — our premium residential project:
-
-🏠 Virtual Tour: https://digitour.housing.com/droneview/ranka_udaya
-
-🌐 Project Details: https://share.google/Q80Ehv6gG0QX4sEK6
-
-📍 Location Map: https://maps.app.goo.gl/RTjczx8dPYQXaYQE6
-
-Please go through the project details and let me know if you'd like to schedule a site visit or need any more information. Happy to help! 😊
-```
-
-**Delivery:** Show draft in code block → ask user to confirm → deliver as `MEDIA:` or copy-paste. Do NOT use `send_message(target='telegram')` for WhatsApp drafts — triggers cross-user blocking. If user approves, give wa.me deep link directly (api.whatsapp.com format).
-
-**Product context (DRAAS):** Ranka Udaya = raw residential plot (38 plots, plain land, no farm/agricultural framing). Not a farm plot, not a villa. Investment thesis is land appreciation + affordable entry vs. comparables in the Shoolagiri corridor.
-
+**Trigger:** outreach/utility messages for DRA Group's Serenity Estate project (38 plots, 8×1-BHK
+G+3 per plot, ₹1.2 Cr asset at ~25% upfront, ₹60k/mo rent = 6% net / min 10% pre-tax launch offer).
+Full kit (verified project facts, 8 broadcast utility messages, 8 personalised lead messages,
+source-doc read recipe, naming guardrail vs "Serenity Hillview"):
 **Ranka Udaya Drive folder:** `10sk0X6dq9-Rzo2BajJKNFkEts_pfRxLT`
+
+Ranka Udaya RG (rental-guarantee) facts + the Lead Outreach Message Bank HTML pattern (Oct 2026): `references/ranka-udaya-rg-message-bank.md`.
+
+**Ranka Udaya RG — lead outreach MESSAGE BANK (HTML)** — when the user shares project marketing copy (Google Doc / RG insert PDF) and asks for "utility messages", "messages to the leads", or an HTML selectable message bank, build the interactive filterable HTML (category chips + per-message copy + select-to-send bar) per `references/ranka-udaya-lead-message-bank.md`. Contains the verified RG product facts (₹1.2 Cr · 8×1-BHK · ₹60k/mo guarantee · 6% p.a. 5 yrs · HNTDA + RERA TNRERA/30/LO/0642/2026 · 99000 29200), the "Serenity Estate → Ranka Udaya" rebrand rule, and the 8-category investor message recipe.
 
 ## Long Messages — Multi-Link Split (Alternative to HTML Card)
 
@@ -1074,65 +1119,7 @@ When the encoded WhatsApp URL exceeds ~4,096 chars in plain text, Telegram split
 
 **Delivery (MANDATORY — DO NOT SKIP):** Send the HTML file to the user **directly via Telegram** using `send_message` with `MEDIA:` path. Do NOT just save it to `/tmp/` and tell the user it's there — the user is on Telegram and cannot access the bot's filesystem.
 
-✅ **Correct pattern** (verified working Jun 2026):
-```
-write_file(path="/tmp/whatsapp-{contact}-{topic}.html", content=html_body)
-send_message(message="Here's your file — MEDIA:/tmp/whatsapp-{contact}-{topic}.html")
-```
-
-Any writable path works (including `/tmp/`) as long as you send via MEDIA immediately after. The `/data/hermes/cron/output/` path is also fine for persistent copies. The MEDIA delivery is the critical step — not the save location.
-
-**Trigger proactively:** If message body is 500+ words, 4+ substantive paragraphs, or multi-section legal/financial content, generate HTML card immediately. Do not generate plain deep link first and wait to be told it got split.
-
-**Multi-reference WhatsApp messages** — When the message needs links to multiple documents (sheet + layout PDF + brochure + masterplan + plot list), always generate an HTML card. The cumulative URL-encoded text is too long for a single WhatsApp URL, and Telegram will split it. The HTML card keeps the user in control: they open it in their browser, review the full message, and tap a single green button that opens WhatsApp with everything pre-filled.
-
-**⚠️ /tmp accessibility pitfall:** The user cannot access `/tmp/` from Telegram. Saving an HTML file there without also sending it via MEDIA is equivalent to not delivering it at all. Always pair file-creation with MEDIA delivery.
-
-**⚠️ Container directory pitfall (Jun 2026):** The `/data/hermes/cron/output/` directory may not exist on all setups. Before writing there, ensure the path exists or fall back to `/tmp/` + MEDIA delivery.
-
-### HTML Card — Unknown Phone Number Pattern (Jun 2026)
-
-**Trigger:** The user wants a WhatsApp link to a contact whose phone number you cannot find (not in contacts sheet, People API, memory, past sessions, or any Drive document).
-
-**Problem:** Without a phone number, `wa.me` or `api.whatsapp.com` links cannot pre-select a recipient. The user has to manually choose the contact when WhatsApp opens. This works fine for short links but fails for long/multi-reference messages where the URL gets split or truncated.
-
-**Resolution:** Generate an interactive HTML card with:
-1. A **phone number input field** (with label + placeholder)
-2. A **green "Send via WhatsApp" button** whose `href` updates live as the user types
-3. A **message preview box** so the user can see what will be sent
-4. Drive links or other reference links listed below the preview
-5. JavaScript that builds the `api.whatsapp.com/send?phone=...&text=...` URL dynamically with proper encoding
-
-**HTML structure template:**
-```html
-<div class="card">
-  <h2>Contact Name — Project/Role</h2>
-  <div class="phone-row">
-    <input type="tel" id="phoneInput" placeholder="e.g. 9199xxxxxxxx">
-  </div>
-  <a id="waBtn" class="btn" href="#" target="_blank">📤 Send via WhatsApp</a>
-  <div class="preview">Message preview...</div>
-  <div class="links">
-    <strong>DRIVE LINKS:</strong>
-    <a href="...">Document 1</a>
-    <a href="...">Document 2</a>
-  </div>
-</div>
-<script>
-  var message = "...";
-  document.getElementById('phoneInput').addEventListener('input', function() {
-    var raw = this.value.replace(/[^0-9]/g, '');
-    document.getElementById('waBtn').href = 'https://api.whatsapp.com/send?phone=' + raw + '&text=' + encodeURIComponent(message);
-  });
-</script>
-```
-
-**Key rules:**
-- NO ampersands (`&`) in the message text — use "and" instead, or the full-width ampersand workaround
-- Keep the message concise (under 400 chars) so the wa.me link doesn't get truncated
-- Use `api.whatsapp.com/send` NOT `wa.me` — `wa.me` double-decodes query strings
-- JavaScript's `encodeURIComponent` handles URL-encoding — no manual encoding needed
-- Deliver via `send_message(message="MEDIA:/tmp/whatsapp-{contact}.html")` immediately
+Full recipe (correct pattern, proactive trigger, multi-reference rule, /tmp + container-dir pitfalls, and the Unknown-Phone interactive-card template with JS): `references/whatsapp-html-card-fallback.md`.
 
 ## Email → WhatsApp Group Briefing Pattern
 

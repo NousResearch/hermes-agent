@@ -115,5 +115,5 @@ for sender in BLACKLISTED_SENDERS:
 
 ### Related
 
-- `reference/not-spam-whitelist.md` — the opposite operation (auto-unspam whitelisted senders from Gmail SPAM using a Google Sheet whitelist)
+- `references/not-spam-whitelist.md` — the opposite operation (auto-unspam whitelisted senders from Gmail SPAM using a Google Sheet whitelist)
 - `email` skill Section 5, which links here

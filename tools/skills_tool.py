@@ -57,6 +57,8 @@ def clear_skills_cache() -> None:
     """Drop the scanned catalog (memory + disk) so the next listing re-scans (explicit reloads
     must re-scan now)."""
     _SKILLS_CACHE.clear()
+    _clear_signature_memo()
+    _SIG_TTL.clear()  # a reload re-reads the knob
     with suppress(OSError):
         _catalog_cache_path().unlink(missing_ok=True)
 
@@ -148,6 +150,24 @@ def _store_disk_catalog(signature, rows) -> None:
         logger.debug("Catalog disk cache not stored: %s", e)
 
 
+def cached_skill_rows() -> list | None:
+    """Rows from the most recent scan, without re-validating the tree (None before any scan).
+
+    The rows are the unfiltered catalog (visibility is applied on the way out). Callers that need a
+    cheap label — telemetry provenance, a name→directory lookup on the invoke path — must not pay
+    another walk or another parse; seconds of staleness cannot change a provenance label.
+    """
+    newest = None
+    for entry in list(_SKILLS_CACHE.values()):
+        try:
+            ts, rows = entry[1], entry[2]
+        except (IndexError, TypeError):
+            continue
+        if newest is None or ts > newest[0]:
+            newest = (ts, rows)
+    return newest[1] if newest is not None else None
+
+
 def _dir_tree_signature(root, sig, depth=_SIGNATURE_MAX_DEPTH) -> None:
     """Append ``(dir, skill_md_mtime_ns, child names, owns_skill_md)`` for *root* and the dirs below.
 
@@ -190,12 +210,58 @@ def _platform_tag() -> str:
     return getattr(getattr(_skill_utils, "sys", None), "platform", "")
 
 
+# Reuse window for that walk (``skills.signature_ttl_s``). 0 (default) keeps the exact contract:
+# every call re-walks, so a skill written by another process shows up on the next palette open.
+# > 0 serves a keystroke burst from one walk; the trade is that an out-of-process edit can take up
+# to that long to appear. In-process mutations never wait: they clear this memo outright.
+_SIG_MEMO: dict = {}
+_SIG_MEMO_MAX = 8
+
+
+def _clear_signature_memo() -> None:
+    _SIG_MEMO.clear()
+
+
+_SIG_TTL: list = []
+
+
+def _signature_ttl_s() -> float:
+    """The signature's reuse window, in seconds (0 = always re-walk). Fail-open to exact.
+
+    Read once per process and re-read by ``clear_skills_cache()``: consulting the config from the
+    scan path perturbs the per-identity command slots that key on the same signature, so the knob
+    applies on a reload (``/skills reload``, an edit, a restart) rather than mid-scan.
+    """
+    if _SIG_TTL:
+        return _SIG_TTL[0]
+    value = 0.0
+    try:
+        from hermes_cli.config import load_config_readonly
+        value = max(0.0, float((load_config_readonly().get("skills") or {}).get("signature_ttl_s", 0.0)))
+    except Exception:
+        value = 0.0
+    _SIG_TTL.append(value)
+    return value
+
+
 def _compute_dirs_signature(dirs_to_scan) -> tuple:
     """The expensive half of the scan signature: the stat walk over every directory the catalog reads."""
+    ttl = _signature_ttl_s()
+    key = tuple(str(d) for d in dirs_to_scan)
+    now = time.monotonic()
+    if ttl > 0:
+        hit = _SIG_MEMO.get(key)
+        if hit is not None and now - hit[0] < ttl:
+            return hit[1]
     sig: list = []
     for d in dirs_to_scan:
         _dir_tree_signature(str(d), sig)
-    return tuple(sig)
+    out = tuple(sig)
+    if ttl > 0:
+        if len(_SIG_MEMO) >= _SIG_MEMO_MAX:
+            _SIG_MEMO.pop(next(iter(_SIG_MEMO)))
+        _SIG_MEMO[key] = (now, out)
+    return out
 
 
 def _compute_scan_signature(dirs_to_scan, disabled) -> tuple:

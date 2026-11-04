@@ -12,6 +12,7 @@ scoped or not, exactly as before.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -280,6 +281,43 @@ def holds_admission(authority, session_id) -> bool:
         logging.getLogger('gateway.run').warning("Skipping auto-resume of %s: retained store %s cannot answer: %s",
                                                  session_id, getattr(authority, 'profile_id', '?'), exc)
         return True
+
+
+def _prepare_owner_scope(home: Path):
+    """Enter ``owner_scope``'s profile scope in this (worker) thread and return what it bound:
+    ``(secrets, terminal scope)``, or ``None`` when *home* is not a directory (``owner_scope`` binds
+    nothing then). Entering the real scope keeps one definition of how it is built."""
+    if not home.is_dir():
+        return None
+    from agent.secret_scope import current_secret_scope
+    from gateway.run import _profile_runtime_scope
+    from tools.terminal_scope import get_terminal_scope
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        return current_secret_scope(), get_terminal_scope()
+
+
+@asynccontextmanager
+async def async_owner_scope(authority):
+    """``owner_scope`` for a coroutine on the gateway loop: the profile's ``.env``, ``config.yaml`` and
+    terminal policy are read in a worker thread, then only the context variables are set here.
+
+    Every RPC a client sends enters its owner's scope, and the classic CLI, Ink and Desktop poll
+    ``subagent.list`` / ``process.list`` every 1-5 s per session: built on the loop, that scope was the
+    largest single cost of RPC dispatch on a multiplexed gateway with many sessions open."""
+    runner = getattr(authority, 'runner', None)
+    home = Path(str(authority.profile_id))
+    if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False) or not home.is_absolute():
+        with owner_scope(authority):  # the launch scope (frozen sources) or nullcontext: no profile files
+            yield
+        return
+    prepared = await asyncio.to_thread(_prepare_owner_scope, home)
+    if prepared is None:
+        yield
+        return
+    from gateway.run import _profile_runtime_scope
+    secrets, terminal = prepared
+    with _profile_runtime_scope(home, secrets, prepared_terminal_scope=terminal):
+        yield
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

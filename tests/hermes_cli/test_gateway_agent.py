@@ -8,7 +8,7 @@ import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, GatewayConnection
 
 SID = "local-abc"
 
@@ -761,6 +761,23 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
     result = submit_against(GatewayClientError(DISCONNECTED))
     assert result["failed"] is True and result["error"] == DISCONNECTED
     assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
+
+
+def test_a_submit_that_never_left_keeps_the_turn_for_the_resend():
+    """NOT_SENT: the owner never saw the prompt. The CLI keeps the turn's local state (no history row,
+    the ``/model --once`` pick) so the resend is the same turn, as a pre-submit notice does."""
+    conn = GatewayConnection(connect=connect_with(RefusingClient(GatewayClientError(NOT_SENT))))
+    conn.start(5)
+    try:
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        pick = {"model": "picked-model", "provider": "openrouter"}
+        agent._turn_route, agent._turn_reasoning = dict(pick), None
+        result = agent.run_conversation("q", conversation_history=[])
+        assert result["failed"] is True and result["error"] == NOT_SENT
+        assert result["admitted"] is False and result["messages"] == []
+        assert agent._turn_route == pick  # the pick is still owed
+    finally:
+        conn.close()
 
 
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):

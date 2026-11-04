@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify'
 import { useEffect, useMemo, useState } from 'react'
 
 import { CopyButton } from '@/components/ui/copy-button'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { artifactDownloadName, type ArtifactKind } from '@/lib/artifact-detect'
@@ -95,7 +96,7 @@ function ArtifactLiveView({ content, kind, title }: { content: string; kind: Art
   }
 
   return (
-    <iframe
+    <PreviewDocumentFrame
       className="block size-full border-0 bg-white"
       sandbox="allow-scripts"
       srcDoc={composeArtifactHtml(content)}

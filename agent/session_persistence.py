@@ -24,8 +24,8 @@ from agent.memory_context import sanitize_context
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
 from agent.message_metadata import (
-    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID, copy_identity_fields,
-    tool_call_uid_from_history)
+    DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS, RESTORED_FROM_STORE, TOOL_CALL_UID,
+    copy_identity_fields, message_uid_or_none, tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -199,6 +199,16 @@ def _db_flush_seed_ids(agent) -> set:
     return seed_ids if isinstance(seed_ids, set) else set()
 
 
+def _db_flush_store_uids(agent) -> set:
+    """``message_uid``s this agent saw durable in its CURRENT session (flushed by it, or scanned as already-durable
+    history): the provenance that lets the write path skip a marker-stripped copy of one of them (#134799)."""
+    session_id = getattr(agent, "session_id", None)
+    scope = getattr(agent, "_db_store_uid_scope", None)
+    if not (isinstance(scope, tuple) and scope[0] == session_id):
+        scope = agent._db_store_uid_scope = (session_id, set())
+    return scope[1]
+
+
 def _db_flush_scan_start(agent, messages: list[dict]) -> int:
     """Skip the identity-matched, still-marked prefix of the previous flush's snapshot."""
     scan_start = 0
@@ -308,11 +318,20 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
     batch_rows: list[dict[str, Any]] = []
     batch_msgs: list[dict] = []
     tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
+    # Durable-uid re-insert guard: a row whose uid this agent already saw durable is marked RESTORED_FROM_STORE;
+    # resolve_and_repair_transcript_batch skips it only if that uid is still ACTIVE, inside the write
+    # transaction, and never for a snapshot-carrying dict (the CAS rewrite owns its live edit).
+    store_uids = _db_flush_store_uids(agent)
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
-        if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
+        if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg):
+            continue
+        uid = message_uid_or_none(msg)
+        if msg.get(_DB_PERSISTED_MARKER):
+            if uid is not None:
+                store_uids.add(uid)
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
         is_history = id(msg) in history_ids
@@ -320,6 +339,8 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
             (is_history and not replay_history) or id(msg) in seed_ids
         ) and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT):
             msg[_DB_PERSISTED_MARKER] = True
+            if uid is not None:
+                store_uids.add(uid)
             continue
         if getattr(agent, "_mute_notification_reply", False) and not is_history:
             # Only new rows, never the cached history prefix. Keep evidence/model
@@ -331,7 +352,10 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
             # minted (same-batch pairing happens inside the insert).
             if (tool_uid := tool_call_uid_from_history(messages, msg_idx, tool_uid_owners)) is not None:
                 msg[TOOL_CALL_UID] = tool_uid
-        batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
+        row = _db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message)
+        if uid is not None and uid in store_uids:
+            row[RESTORED_FROM_STORE] = True
+        batch_rows.append(row)
         batch_msgs.append(msg)
     return batch_rows, batch_msgs
 
@@ -347,6 +371,7 @@ def _db_flush_write(agent, batch_rows: list[dict[str, Any]], batch_msgs: list[di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    _db_flush_store_uids(agent).update(uid for msg in batch_msgs if (uid := message_uid_or_none(msg)) is not None)
     if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
         # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
         # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:

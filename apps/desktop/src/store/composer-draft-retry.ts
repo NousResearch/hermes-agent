@@ -1,6 +1,6 @@
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 
-import { type ComposerAttachment, freshDraftScope } from './composer'
+import { type ComposerAttachment, draftKey as scopeKey } from './composer'
 
 /** The identity of an uncertain send that was restored into a composer draft.
  *  Sending that exact draft again is the explicit retry (same `submission_id`,
@@ -16,10 +16,11 @@ export interface ComposerDraftRetry {
 // storage with last-writer-wins per KEY, so one window never drops another's.
 const RETRY_PREFIX = 'hermes:composer-draft-retry:v1:'
 
-const attachmentIds = (attachments: ComposerAttachment[]) => attachments.map(a => a.occurrenceId ?? a.id)
+/** The identity half of a draft's attachments (what `matchingDraftRetry` compares). */
+export const retryAttachmentIds = (attachments: readonly ComposerAttachment[]) => attachments.map(a => a.occurrenceId ?? a.id)
 
 export function draftRetry(id: string, text: string, attachments: ComposerAttachment[]): ComposerDraftRetry {
-  return { id, text, attachmentIds: attachmentIds(attachments) }
+  return { id, text, attachmentIds: retryAttachmentIds(attachments) }
 }
 
 export function draftRetryTextMatches(retry: ComposerDraftRetry | undefined, text: string): boolean {
@@ -34,13 +35,23 @@ export function matchingDraftRetry(
 ): ComposerDraftRetry | undefined {
   return retry &&
     draftRetryTextMatches(retry, text) &&
-    JSON.stringify(retry.attachmentIds) === JSON.stringify(attachmentIds(attachments))
+    JSON.stringify(retry.attachmentIds) === JSON.stringify(retryAttachmentIds(attachments))
     ? retry
     : undefined
 }
 
-/** The storage key of a draft scope, the same resolution the draft stash uses. */
-const scopeKey = (scope: string | null | undefined) => scope?.trim() || freshDraftScope()
+/** The identity a loaded draft carries. The draft store persists text only, so a draft that comes
+ *  back after the page died has lost its attachments: its identity then names exactly what is
+ *  offered (the words), and Enter on it is still the explicit retry instead of a new message. */
+export function loadedDraftRetry(
+  retry: ComposerDraftRetry | undefined,
+  text: string,
+  attachments: ComposerAttachment[]
+): ComposerDraftRetry | undefined {
+  return retry && attachments.length === 0 && retry.attachmentIds.length > 0 && draftRetryTextMatches(retry, text)
+    ? { ...retry, attachmentIds: [] }
+    : retry
+}
 
 export function readDraftRetry(scope: string | null | undefined): ComposerDraftRetry | undefined {
   try {

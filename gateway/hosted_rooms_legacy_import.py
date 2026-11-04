@@ -66,8 +66,9 @@ def _select_expressions(legacy: sqlite3.Connection, target: sqlite3.Connection, 
     return pairs
 
 
-def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
+def _copy_rows(target: sqlite3.Connection, source: Path, *, only: frozenset[str] | None = None) -> int:
     """Copy every room ``target`` does not have yet, with all of its child rows; returns rooms copied.
+    ``only``: copy just these room ids and no install-wide (room-less) table rows.
 
     A room id present in both stores is skipped as a unit: grafting the legacy events under this
     store's room would leave ``next_seq`` behind ``MAX(seq)`` and every later append colliding.
@@ -97,8 +98,11 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
             rows = legacy.execute(f"SELECT {', '.join(expr for _, expr in pairs)} FROM {name}")
             if "room_id" in columns:
                 room_index = columns.index("room_id")
-                rows = (row for row in rows if str(row[room_index]) not in existing)
+                rows = (row for row in rows if str(row[room_index]) not in existing
+                        and (only is None or str(row[room_index]) in only))
                 verb = "INSERT"
+            elif only is not None:
+                continue
             else:
                 verb = "INSERT OR IGNORE"
             if name == "hosted_rooms":

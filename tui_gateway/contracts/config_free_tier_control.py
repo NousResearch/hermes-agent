@@ -141,6 +141,8 @@ class SetupRuntimeCheckResult(Result):
     model: str | None = None
     source: str | None = None
     error: str | None = None
+    #: ``local_runtime_unavailable``: the selected model is the managed local server and it is down.
+    error_code: str | None = None
     free_tier_route: bool | None = None
     profile: str | None = None
 
@@ -473,6 +475,8 @@ class ModelCapabilities(Result):
 
     fast: bool
     ultrafast: bool = False
+    # This account's Codex catalog lists ``daybreak_blue`` for the model (``agent/codex_service_tiers.py``).
+    daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
 

@@ -1,6 +1,6 @@
 import type { HermesApiRequest, HermesSelectPathsOptions, HermesStagedUpload } from '@/global'
 import { blobToDataUrl } from '@/lib/base64'
-import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
+import { type BrowserBootstrap, browserFetch, endpointUrl } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
 
@@ -19,6 +19,11 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   '.tiff': 'image/tiff',
   '.webp': 'image/webp'
 }
+
+// Image types the composer attaches but the browser cannot stage: /api/chat/image-upload
+// takes only the raster formats it can sniff, and the send reads an image chip
+// back from that host path. A blob: URL here would become a chip whose Send fails.
+const UNSENDABLE_IMAGE_EXTENSIONS = new Set(['.ico', '.svg'])
 
 export const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntries(
   Object.entries(IMAGE_MIME_BY_EXTENSION).map(([extension, mime]) => [mime, extension])
@@ -46,15 +51,10 @@ function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
   }
 }
 
-// The page reaches its opaque-origin frame through srcdoc, never a URL: Chromium refuses to
-// navigate a frame to a URL over 2 MiB, so a base64 data URL left any page above ~1.5 MB blank.
-// Decoded as the data URL's charset=utf-8 did, and escaped for a double-quoted attribute (`&`
-// first) so no byte of the page parses as markup of this same-origin wrapper.
-// A srcdoc document inherits the wrapper's blob: base URL, so `#anchor` links would resolve to
-// blob:…#anchor and do nothing. A page without its own <base> gets about:srcdoc, placed inside
-// the page's own <head> start tag (else its <html> tag, else after any doctype): a base before
-// <head> opens an implicit head, and the parser then drops the authored tag and its attributes.
-// After the doctype, the page keeps its rendering mode.
+// Keep HTML as inert attribute data until the external loader sends it to the preview
+// route. A blob/srcdoc would inherit the app CSP; a data URL hits Chromium's 2 MiB
+// navigation limit. The preview's inner srcdoc needs an explicit base for #anchors.
+// Insert it inside the authored head (or after the doctype) to retain attributes and mode.
 const SRCDOC_BASE = '<base href="about:srcdoc">'
 const LEADING_DOCTYPE = /^\s*<!doctype[^>]*>/i
 const BASE_ELEMENT = /<base[\s/>]/i
@@ -73,7 +73,7 @@ function withSrcdocBase(page: string): string {
   return page.slice(0, at) + SRCDOC_BASE + page.slice(at)
 }
 
-function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
+function sandboxedHtmlBlob(bytes: Uint8Array, bootstrap: BrowserBootstrap): Blob {
   const srcdoc = withSrcdocBase(new TextDecoder('utf-8').decode(bytes))
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
@@ -85,7 +85,8 @@ function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
     '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
     '<style>html,body,iframe{box-sizing:border-box;width:100%;height:100%;margin:0;border:0}</style>',
     '</head><body>',
-    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${srcdoc}"></iframe>`,
+    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" data-preview-html="${srcdoc}" src="${endpointUrl('/assets/webapp-preview.html', bootstrap.basePath).href}"></iframe>`,
+    `<script src="${endpointUrl('/assets/webapp-preview.js', bootstrap.basePath).href}"></script>`,
     '</body></html>'
   ].join('')
 
@@ -243,6 +244,10 @@ export function createBrowserUploadsBridge({
     const extension = normalizedExtension(ext)
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
 
+    if (UNSENDABLE_IMAGE_EXTENSIONS.has(extension)) {
+      throw new Error("SVG and ICO images can't be attached in the browser. Attach a PNG, JPEG, GIF, WebP or BMP instead.")
+    }
+
     // /api/chat/image-upload stores images up to 25 MiB, but the send reads the staged image back
     // with the 16 MiB file-read cap: refuse a larger one here, before it shows as attached.
     if (imageMime && bytes.byteLength > BROWSER_UPLOAD_MAX_BYTES) {
@@ -272,7 +277,7 @@ export function createBrowserUploadsBridge({
     const isHtml = extension === '.htm' || extension === '.html'
 
     const blob = isHtml
-      ? sandboxedHtmlBlob(bytes)
+      ? sandboxedHtmlBlob(bytes, bootstrap)
       : new Blob([bytes.buffer], { type: 'application/octet-stream' })
 
     const url = URL.createObjectURL(blob)

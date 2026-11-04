@@ -29,6 +29,7 @@ import { $removedSessionIds } from '@/store/session-removal'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { SidebarLoadErrorState, SidebarSessionSkeletons, SidebarStorageCorruptNotice } from './section-states'
 import { SimplifiedAgentList } from './simplified-agent-list'
+import { SimplifiedGlobalMenu } from './simplified-global-menu'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
 import { sessionRowKey } from './simplified-session-identity'
@@ -148,6 +149,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
       data-tour="sessions-sidebar"
     >
       <SidebarContent className="gap-2.5 overflow-y-auto px-3 pb-3 pt-[calc(var(--titlebar-height)+0.5rem)]">
+        <SimplifiedGlobalMenu onNavigate={props.onNavigate} />
         <SimplifiedNewSession
           onFallback={() => {
             $newChatProfile.set(null)

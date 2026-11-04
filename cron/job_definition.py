@@ -31,13 +31,14 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),
     }
-    if isinstance(merged.get("schedule"), str):
-        merged["schedule"] = parse_schedule(merged["schedule"])
     # The zone gate create_job/update_job apply: a typo'd shipped zone would otherwise be stored
     # and every installer's job would silently fall back to that user's own profile zone.
     if "timezone" in merged:
         merged["timezone"] = normalize_timezone(merged["timezone"])
         prune_inherited_knobs(merged)
+
+    if isinstance(merged.get("schedule"), str):
+        merged["schedule"] = parse_schedule(merged["schedule"])
 
     # A zone change moves every wall-clock occurrence exactly like an expr change: the instant on
     # file belongs to the old zone and the next scan would re-anchor past it without firing.

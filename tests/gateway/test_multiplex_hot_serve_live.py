@@ -428,12 +428,47 @@ def test_unsupervised_host_without_profile_flag_can_stop(mux):
 
 
 def hot_profile(mux, name):
-    """A profile directory created behind the multiplexer's back: nothing signals the socket, so
-    only an explicit verb serves it before the 30s watcher tick."""
-    home = mux['root'] / 'profiles' / name
-    home.mkdir(parents=True, mode=0o700)
-    (home / 'config.yaml').write_text(json.dumps(mux['config']), encoding='utf-8')
-    return home
+    """A profile created behind the multiplexer's back, landing parked in one rename: the 30s
+    profile watcher skips parked profiles, so it stays unserved until ``serve_hot``."""
+    staging = mux['root'].parent / f'{name}.staging'
+    staging.mkdir(mode=0o700)
+    (staging / 'config.yaml').write_text(json.dumps(mux['config']), encoding='utf-8')
+    (staging / 'gateway.parked').touch()
+    return staging.rename(mux['root'] / 'profiles' / name)
+
+
+def lifecycle(root, verb, home):
+    """``serve-profile``/``unserve-profile`` *home*. Past 5s the verb answers ``pending`` and keeps
+    running; then wait (bounded) until ``identify`` shows the transition."""
+    serve = verb == 'serve-profile'
+    reply = control(root, verb, {'name': home.name})
+    if reply.get('pending'):
+        wait_until(lambda: (home.resolve() in served_homes(control(root, 'identify'))) == serve,
+                   timeout=60, interval=.2, what=f'{verb} {home.name} after pending')
+        reply = {('served' if serve else 'unserved'): home.name}
+    return reply
+
+
+def serve_hot(root, home):
+    """Unpark *home* and serve it by the verb. A watcher tick landing in between serves it first;
+    then retire and re-serve it by the verb (ticks are 30s apart), so ``served`` is the verb's own."""
+    (home / 'gateway.parked').unlink()
+    reply = lifecycle(root, 'serve-profile', home)
+    if 'already served' in reply.get('error', ''):
+        assert lifecycle(root, 'unserve-profile', home).get('unserved') == home.name
+        reply = lifecycle(root, 'serve-profile', home)
+    assert reply.get('served') == home.name, reply
+
+
+def unserve_hot(root, home):
+    """Retire *home* by the verb, then park it as ``hermes -p <name> gateway stop`` does. Parking
+    after the verb keeps the watcher from retiring it first; a tick in between that re-served it is
+    retired by a second verb, which waits out any in-flight watcher reconcile (one lock)."""
+    reply = lifecycle(root, 'unserve-profile', home)
+    (home / 'gateway.parked').touch()
+    again = lifecycle(root, 'unserve-profile', home)
+    assert again.get('unserved') == home.name or 'is not served' in again.get('error', ''), again
+    return reply
 
 
 def mint(root, home, desc):
@@ -488,9 +523,8 @@ def test_serve_and_unserve_profile_verbs_add_and_retire_its_session_owner(mux):
         with pytest.raises(AssertionError, match='bootstrap binding rejected'):
             mint(root, hot, desc)
 
-        served = control(root, 'serve-profile', {'name': 'hot'})
-        assert served.get('served') == 'hot', (served, tail(mux))
-        assert 'hot' in served['served_profiles'], served
+        assert 'is parked' in control(root, 'serve-profile', {'name': 'hot'}).get('error', '')
+        serve_hot(root, hot)
         desc = control(root, 'identify')
         assert served_homes(desc) == {root.resolve(), boot.resolve(), hot.resolve()}, desc
         wait_recorded(root, lambda r: r == ['default', 'boot', 'hot'], 'hot recorded')
@@ -503,10 +537,8 @@ def test_serve_and_unserve_profile_verbs_add_and_retire_its_session_owner(mux):
         assert not owned_session(root, desc, sid)
 
         stale = mint(root, hot, desc)  # minted while served, redeemed after the unserve
-        (hot / 'gateway.parked').touch()  # as `hermes -p hot gateway stop` does: no watcher re-serve
-        unserved = control(root, 'unserve-profile', {'name': 'hot'})
+        unserved = unserve_hot(root, hot)
         assert unserved.get('unserved') == 'hot', (unserved, tail(mux))
-        assert 'hot' not in unserved['served_profiles'], unserved
         desc = control(root, 'identify')
         assert served_homes(desc) == {root.resolve(), boot.resolve()}, desc
         wait_recorded(root, lambda r: r == ['default', 'boot'], 'hot withdrawn from the recorded set')
@@ -538,12 +570,11 @@ def test_unserve_profile_during_a_running_turn_stops_it_before_retiring(mux, pee
 
     async def unserve_mid_turn():
         assert await asyncio.to_thread(peer.blocked.wait, 10), 'hot turn never reached the model'
-        (hot / 'gateway.parked').touch()
-        unserved = await asyncio.to_thread(control, root, 'unserve-profile', {'name': 'hot'})
+        unserved = await asyncio.to_thread(unserve_hot, root, hot)
         assert unserved.get('unserved') == 'hot' and not peer.release.is_set(), (unserved, tail(mux))
 
     try:
-        assert control(root, 'serve-profile', {'name': 'hot'}).get('served') == 'hot'
+        serve_hot(root, hot)
         desc = control(root, 'identify')
         _, terminal = asyncio.run(submit_turn(desc, mint(root, hot, desc), during_turn=unserve_mid_turn))
         payload = terminal['params'].get('payload', {})

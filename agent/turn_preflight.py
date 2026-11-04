@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
-    compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression, ensure_compression_feasibility_checked,
+    compression_skipped_due_to_lock, context_compression_timed_out, conversation_history_after_compression,
 )
+from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,

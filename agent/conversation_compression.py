@@ -1376,9 +1376,7 @@ def run_compress_context_with_progress_timeout(
 
 
 from agent.conversation_compression_checkpoint import _checkpoint_blocked, _checkpoint_incapable
-from agent.conversation_compression_feasibility import (  # re-exported
-    ensure_compression_feasibility_checked, lazy_compression_feasibility_check, revalidate_compression_feasibility,
-)
+from agent.conversation_compression_feasibility import lazy_compression_feasibility_check
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
@@ -4432,9 +4430,7 @@ __all__ = [
     "COMPACTION_STATUS_MARKER",
     "check_compression_model_feasibility",
     "compress_context",
-    "ensure_compression_feasibility_checked",
     "is_compaction_progress_status",
     "replay_compression_warning",
-    "revalidate_compression_feasibility",
     "try_shrink_image_parts_in_messages",
 ]

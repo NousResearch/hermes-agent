@@ -194,7 +194,7 @@ def test_near_threshold_probe_clamps_before_first_compaction():
     """A fresh instance probes once its request first reaches the smallest window any summariser may
     have, so the aux clamp lands before the first compaction fires on the main-window threshold (#114707);
     requests below that stay probe-free (#28957)."""
-    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
     agent = _make_agent(main_context=1_000_000)
@@ -222,7 +222,7 @@ def test_a_moved_compression_route_reprobes_a_warm_agent_and_drops_the_old_ceili
     route mid-session. The ceiling installed for the old summariser's window is dropped and the new
     route is probed, as a main-model switch does; an unchanged route is not probed again."""
     from agent.auxiliary_task_config import session_auxiliary_scope
-    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 
     agent = _make_agent(main_context=1_000_000)
     compressor = agent.context_compressor = ContextCompressor(
@@ -252,7 +252,7 @@ def test_a_route_change_reprobes_after_any_path_that_latched_the_probe(first_pro
     """A model switch (``revalidate``) and the first compaction (lazy probe) latch the probe too: they record
     the route they measured, so a later compression-route change still re-probes."""
     from agent.auxiliary_task_config import session_auxiliary_scope
-    from agent.conversation_compression import (
+    from agent.conversation_compression_feasibility import (
         ensure_compression_feasibility_checked, lazy_compression_feasibility_check, revalidate_compression_feasibility,
     )
 
@@ -282,7 +282,7 @@ def test_a_moved_providers_entry_reprobes_a_warm_agent():
     """The compression task names a ``providers:`` entry; moving that entry to another server moves the
     summariser even though the task block itself is unchanged."""
     from agent.auxiliary_task_config import session_auxiliary_scope
-    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 
     agent = _make_agent(main_context=1_000_000)
     agent.context_compressor = ContextCompressor(
@@ -307,7 +307,7 @@ def test_a_replacement_summariser_is_measured_with_its_own_context_length_pin():
     """``auxiliary.compression.context_length`` belongs to the configured summariser: a replacement with
     its own pin is measured with that pin, not the one captured when the agent was built."""
     from agent.auxiliary_task_config import session_auxiliary_scope
-    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 
     agent = _make_agent(main_context=1_000_000)
     compressor = agent.context_compressor = ContextCompressor(
@@ -334,7 +334,7 @@ def test_a_replacement_summariser_is_measured_with_its_own_context_length_pin():
 def test_an_unreadable_compression_route_never_stops_the_main_request():
     """A side-task entry the route check cannot read (``base_url: 123``) must not raise out of the main
     request's preflight; the probe is simply re-run."""
-    from agent.conversation_compression import ensure_compression_feasibility_checked
+    from agent.conversation_compression_feasibility import ensure_compression_feasibility_checked
 
     agent = _make_agent(main_context=1_000_000)
     agent.context_compressor = ContextCompressor(

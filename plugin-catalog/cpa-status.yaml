@@ -1,6 +1,6 @@
 name: cpa-status
 repo: https://github.com/duu261/hermes-cliproxyapi-provider
-sha: 40996aed421d211cb71bd9b8e68060edbb18961b
+sha: 08fdae8c4607851ac25a2870c19139f961cc95b7
 subdir: cpa-status
 description: "/cpa in chat for CLIProxyAPI (CPA) pools: account health per provider (active, limited, cooling, error, disabled), the CPA version with an update hint, and on request each account's live quota (Claude, Codex, xAI, Antigravity, Devin, Kimi, Kiro), the same usage reads as CPA's own web UI. Companion to cliproxyapi-provider and reads the same cliproxyapi config. Disclosure: only when you type the command, and with the management key env var you name per instance: GET the credentials list and CPA's own update check (at most once per 6 hours); for /cpa quota, POST CPA's api-call so CPA makes each built-in vendor's usage request with that account's token (Antigravity and Devin are vendor POSTs, the rest GETs), and GET CPA plugin quota for Kiro; at most 20 accounts, 4 requests in flight. Stops at the first rejected key: one failed try, or up to 4 if the key is revoked mid-run; CPA bans an IP after five failed management logins. Writes only lock files and a rejected-key marker (salted HMAC, never a key) under $HERMES_HOME/cache/cliproxyapi/locks/. Known limit: Hermes strips from agent subprocesses only the key env vars a registered provider declares, so the management key env var stays readable by agent shells."
 maintainer: duu261
@@ -8,7 +8,7 @@ tier: community
 category: models
 requires_hermes: ">=0.21.7"
 docs_url: https://github.com/duu261/hermes-cliproxyapi-provider#cpa-pool-status-companion-plugin
-version: "0.7.2"
+version: "0.7.3"
 capabilities:
   provides_tools: []
   provides_hooks: []

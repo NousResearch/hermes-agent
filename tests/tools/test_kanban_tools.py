@@ -576,6 +576,8 @@ def test_schedule_exposed_to_codex_runtime_workers():
     from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
 
     assert "kanban_schedule" in EXPOSED_TOOLS
+    # A codex-runtime worker on a duplicate escalation needs the archive remedy too.
+    assert "kanban_archive" in EXPOSED_TOOLS
 
 
 def test_block_dependency_without_open_parent_is_rekinded(worker_env):
@@ -1492,8 +1494,11 @@ class TestDefaultTaskId:
 # A dispatched worker cannot reach `hermes kanban archive` (its subprocess env
 # is fenced as a delegate descendant) and kanban_complete refuses a foreign
 # task id. kanban_archive is the sanctioned path: the worker may archive a
-# foreign card only when its OWN card body names that card — the escalation
-# mandate the supervisor wrote. Every assertion below reads board state back.
+# foreign card only when its OWN card body carries an explicit
+# `ARCHIVE_MANDATE: <id>` line naming it — the mandate the supervisor wrote.
+# Prose alone grants nothing: an escalation body names the twin it wants retired
+# AND the live survivor it must keep, so a body-wide "archive" test would
+# authorise archiving the survivor. Every assertion below reads board state back.
 
 def _own_body(worker_env, body):
     from hermes_cli import kanban_db as kb
@@ -1517,7 +1522,7 @@ def _status(tid):
 
 
 def test_archive_lands_on_foreign_twin_named_in_own_mandate(worker_env):
-    """The escalation card archives the twin its body names; status is read back."""
+    """The escalation card archives the twin its mandate names; status is read back."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
@@ -1525,7 +1530,8 @@ def test_archive_lands_on_foreign_twin_named_in_own_mandate(worker_env):
     twin = _new_task()
     _own_body(worker_env, (
         f"**Kanban supervisor escalation** — `duplicate_card` on `{twin}`\n\n"
-        f"evidence: duplicates live card t_orig\n\n"
+        f"- evidence: duplicates live card t_orig\n\n"
+        f"ARCHIVE_MANDATE: {twin}\n\n"
         f"1. Pick the survivor, archive the twin, and keep the survivor's workspace."
     ))
 
@@ -1542,17 +1548,17 @@ def test_archive_refuses_foreign_card_its_own_body_does_not_name(worker_env):
     from tools import kanban_tools as kt
 
     stranger = _new_task(title="someone else's work", assignee="peer")
-    _own_body(worker_env, "duplicate_card on `t_someoneelse` — archive that twin")
+    _own_body(worker_env, "ARCHIVE_MANDATE: t_someoneelse\n\nduplicate_card — archive that twin")
 
     out = json.loads(kt._handle_archive({"task_id": stranger, "reason": "not mine"}))
 
     assert out.get("ok") is not True, out
-    assert "does not name" in out["error"]
+    assert "does not authorise archiving" in out["error"]
     assert _status(stranger) == "ready"
 
 
 def test_archive_refuses_a_body_that_merely_mentions_the_card(worker_env):
-    """Mentioning a card id without an archive directive is not a mandate."""
+    """Mentioning a card id without a mandate line is not a mandate."""
     from tools import kanban_tools as kt
 
     twin = _new_task()
@@ -1562,6 +1568,76 @@ def test_archive_refuses_a_body_that_merely_mentions_the_card(worker_env):
 
     assert out.get("ok") is not True, out
     assert _status(twin) == "ready"
+
+
+def test_archive_refuses_prose_that_says_archive_but_carries_no_mandate_line(worker_env):
+    """The pre-fix defect: "archive the twin t_x" in prose is not permission."""
+    from tools import kanban_tools as kt
+
+    twin = _new_task()
+    _own_body(worker_env, f"duplicate_card on {twin} — archive the twin, keep the survivor")
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
+
+    assert out.get("ok") is not True, out
+    assert _status(twin) == "ready"
+
+
+def test_archive_refuses_a_negated_directive(worker_env):
+    """"Do not archive t_x" must never authorise archiving t_x."""
+    from tools import kanban_tools as kt
+    _archive_mandate_covers = kt._archive_mandate_covers
+
+    twin = _new_task()
+    _own_body(worker_env, f"Do not archive {twin}.")
+
+    out = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
+
+    assert out.get("ok") is not True, out
+    assert _status(twin) == "ready"
+    assert not _archive_mandate_covers(f"Do not archive {twin}.", twin)
+    # A mandate line contradicted in the same body is void, not a licence.
+    assert not _archive_mandate_covers(
+        f"ARCHIVE_MANDATE: {twin}\n\nDo not archive {twin}.", twin)
+
+
+# Verbatim `duplicate_card` escalation body as kanban-supervisor.py's
+# `escalation_body()` writes it (escalated card t_twin0001, live survivor
+# t_surv0002). This suite is fenced off the real profile directory by
+# tests/home_io_guard.py, so the live generator is exercised by
+# profiles/nico/scripts/check-kanban-archive-remedy.py; this fixture pins the
+# shape the generator must keep for the permission to stay single-card.
+REAL_DUPLICATE_ESCALATION = """\
+**Kanban supervisor escalation** — `duplicate_card` on `t_twin0001`
+
+Recover: ship the thing
+
+- status: `ready` · assignee: `nico` · age: 5m · priority: 2
+- evidence: duplicates live card t_surv0002
+
+ARCHIVE_MANDATE: t_twin0001
+_That line, and only that line, authorises `kanban_archive` for the named card. Do not archive any other id this body mentions._
+
+**Decision needed** (pick one, then act on the source card):
+1. Pick the survivor, then archive the twin `t_twin0001` with `kanban_archive(task_id="t_twin0001", reason="duplicate of <survivor id>")`. Its reply is read back from the board — report archived only when it says `"status": "archived"`.
+2. Merge the useful content into the survivor before archiving.
+
+_Auto-created by kanban-supervisor. Deduplicated per card+condition; it will not be re-created while this one is open._
+"""
+
+
+def test_duplicate_escalation_body_mandates_the_twin_not_the_survivor():
+    """The real escalation shape: twin accepted, live survivor refused."""
+    from tools import kanban_tools as kt
+
+    body = REAL_DUPLICATE_ESCALATION
+    assert "t_twin0001" in body and "t_surv0002" in body
+    assert "ARCHIVE_MANDATE: t_twin0001" in body
+    assert "ARCHIVE_MANDATE: t_surv0002" not in body
+    assert kt._archive_mandate_covers(body, "t_twin0001")
+    assert not kt._archive_mandate_covers(body, "t_surv0002")
+    # The mandate's own "Do not archive any other id" sentence must not void it.
+    assert kt._archive_mandate_covers(body, "t_twin0001")
 
 
 def test_archive_refuses_the_workers_own_card(worker_env):
@@ -1583,7 +1659,7 @@ def test_archive_refuses_a_running_target(worker_env):
     with kbc.connect() as conn:
         busy = kb.create_task(conn, title="in flight", assignee="peer")
         kb.claim_task(conn, busy)
-    _own_body(worker_env, f"archive the twin {busy}")
+    _own_body(worker_env, f"ARCHIVE_MANDATE: {busy}")
 
     out = json.loads(kt._handle_archive({"task_id": busy, "reason": "duplicate"}))
 
@@ -1597,7 +1673,7 @@ def test_archive_refuses_delegate_children(monkeypatch, worker_env):
     from tools import kanban_tools as kt
 
     twin = _new_task()
-    _own_body(worker_env, f"archive the twin {twin}")
+    _own_body(worker_env, f"ARCHIVE_MANDATE: {twin}")
     monkeypatch.setattr(
         kt, "_delegation_ctx",
         lambda predicate, default: predicate == "is_delegated_child_process_context",
@@ -1627,7 +1703,7 @@ def test_archive_is_idempotent_on_an_already_archived_card(worker_env):
     from tools import kanban_tools as kt
 
     twin = _new_task()
-    _own_body(worker_env, f"archive the twin {twin}")
+    _own_body(worker_env, f"ARCHIVE_MANDATE: {twin}")
     first = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
     second = json.loads(kt._handle_archive({"task_id": twin, "reason": "duplicate"}))
 
@@ -1647,9 +1723,19 @@ def test_archive_is_registered_on_the_worker_visible_tool_surface():
 
 
 def test_archive_mandate_matches_whole_ids_only():
-    from tools.kanban_tools import _archive_mandate_covers
+    from tools import kanban_tools as kt
+    _archive_mandate_covers = kt._archive_mandate_covers
 
-    assert _archive_mandate_covers("archive the twin t_abcd1234", "t_abcd1234")
-    assert not _archive_mandate_covers("archive the twin t_abcd12345", "t_abcd1234")
-    assert not _archive_mandate_covers("archive the twin t_abcd1234x", "t_abcd1234")
+    assert _archive_mandate_covers("ARCHIVE_MANDATE: t_abcd1234", "t_abcd1234")
+    assert not _archive_mandate_covers("ARCHIVE_MANDATE: t_abcd12345", "t_abcd1234")
+    assert not _archive_mandate_covers("ARCHIVE_MANDATE: t_abcd1234x", "t_abcd1234")
+    assert not _archive_mandate_covers("ARCHIVE_MANDATE: t_abcd1234", "t_abcd12345")
     assert not _archive_mandate_covers("", "t_abcd1234")
+
+
+def test_archive_mandate_accepts_a_list_marked_mandate_line():
+    from tools import kanban_tools as kt
+    _archive_mandate_covers = kt._archive_mandate_covers
+
+    assert _archive_mandate_covers("- `ARCHIVE_MANDATE: t_abcd1234`", "t_abcd1234")
+    assert _archive_mandate_covers("> ARCHIVE_MANDATE: t_abcd1234", "t_abcd1234")

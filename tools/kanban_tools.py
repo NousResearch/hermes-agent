@@ -975,25 +975,45 @@ def _handle_comment(args: dict, **kw) -> str:
         return _ok(task_id=tid, comment_id=cid)
 
 
-# Verbs that turn a mandate body naming a card into an instruction to retire it.
-_ARCHIVE_MANDATE_VERBS = ("archive", "retire", "supersede", "duplicate")
+# A mandate is machine-readable, one card per line: ``ARCHIVE_MANDATE: t_abc123``.
+# Prose cannot carry this permission: an escalation body names the twin it wants
+# retired AND the live survivor it must keep, so any body-wide verb test ("the
+# word archive appears somewhere") authorises the survivor too. The supervisor
+# emits this line with ``escalation_body()``; nothing else grants the permission.
+_ARCHIVE_MANDATE_LINE = re.compile(
+    r"(?mi)^[ \t]*(?:[-*+>][ \t]*)*`?ARCHIVE_MANDATE:`?[ \t]*`?([A-Za-z0-9][A-Za-z0-9_-]*)`?[ \t]*$")
+_ARCHIVE_NEGATION = re.compile(
+    r"(?i)\b(?:do\s+not|don'?t|never|must\s+not|should\s+not|no\s+need\s+to)\b")
+_ARCHIVE_VERB = re.compile(
+    r"(?i)\b(?:archive|archived|archiving|retire|retired|retiring|supersede|superseded)\b")
+
+
+def _mentions_id(text: str, tid: str) -> bool:
+    """Whether ``tid`` appears as a whole token (not a prefix of a longer id)."""
+    return re.search(rf"(?<![\w-]){re.escape(tid)}(?![\w-])", text) is not None
 
 
 def _archive_mandate_covers(body: Optional[str], tid: str) -> bool:
-    """Whether ``body`` authorises archiving ``tid``: the id appears as a whole
-    token AND the mandate says what to do with it.
+    """Whether ``body`` authorises archiving exactly ``tid``.
 
-    A supervisor escalation body satisfies both ("`duplicate_card` on `t_x` …
-    archive the twin"); a body that merely mentions a related card id ("blocked
-    by t_x") does not. Board bodies are authored by the card's creator, not by
-    the worker doing the archiving, so this is the escalation mandate itself.
+    Only an explicit ``ARCHIVE_MANDATE: <task id>`` line counts, and only for the
+    id it names. A body that merely discusses a card, however close to the word
+    "archive", grants nothing; a sentence that negates archiving the same card
+    ("do not archive t_x") voids the mandate rather than creating one. Board
+    bodies are authored by the card's creator, not by the worker doing the
+    archiving, so this is the escalation mandate itself.
     """
     if not body or not tid:
         return False
-    if not re.search(rf"(?<![\w-]){re.escape(tid)}(?![\w-])", body):
+    mandated = {m.group(1) for m in _ARCHIVE_MANDATE_LINE.finditer(body)}
+    if tid not in mandated:
         return False
-    low = body.lower()
-    return any(verb in low for verb in _ARCHIVE_MANDATE_VERBS)
+    for sentence in re.split(r"[\n.;!?]+", body):
+        if not _mentions_id(sentence, tid):
+            continue
+        if _ARCHIVE_NEGATION.search(sentence) and _ARCHIVE_VERB.search(sentence):
+            return False
+    return True
 
 
 @_kanban_handler("kanban_archive")
@@ -1026,9 +1046,10 @@ def _handle_archive(args: dict, **kw) -> str:
             mandate = kb.get_task(conn, own)
             _check(
                 mandate is not None and _archive_mandate_covers(mandate.body, tid),
-                f"kanban_archive refused: this worker owns {own}, whose body does "
-                f"not name {tid} as a card to archive. A worker may archive only "
-                f"a card its own card's mandate names; anything else needs an "
+                f"kanban_archive refused: this worker owns {own}, whose body "
+                f"carries no `ARCHIVE_MANDATE: {tid}` line, so it does not "
+                f"authorise archiving {tid}. A worker may archive only the exact "
+                f"card its own card's mandate names; anything else needs an "
                 f"orchestrator session or the CLI.")
         if target.status == "archived":
             return _ok(task_id=tid, status="archived", already_archived=True)

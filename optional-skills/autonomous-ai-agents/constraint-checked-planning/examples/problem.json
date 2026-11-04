@@ -1,0 +1,14 @@
+{
+  "budget_limit": 12000,
+  "zone_capacity_kw": {
+    "zone-a": 10,
+    "zone-b": 10
+  },
+  "workloads": [
+    {
+      "id": "api",
+      "required_kw": 8,
+      "min_zones": 2
+    }
+  ]
+}

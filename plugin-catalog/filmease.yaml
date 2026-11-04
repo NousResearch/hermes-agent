@@ -1,13 +1,13 @@
 name: filmease
 repo: https://github.com/Filmease/filmease-hermes-plugin
-sha: 62d2d7b9e046a188da1f3bbe764a20e16f1c1d13
+sha: 9cf214809c6e44f28a96faca883f57b7bdcb0a68
 description: "Find streamable movies and manage a FilmEase watchlist, ratings, private reviews, viewing history, taste, and streaming preferences. Portable skill plus remote MCP; FilmEase account and Hermes-managed OAuth required (native config step documented). Remote FilmEase service records authenticated activity and service analytics. Disclosure — sends movie queries, titles, filters and requested account changes to FilmEase's hosted MCP service at filmease-mcp.fancy-fire-1eba.workers.dev, which records authenticated tool activity, request summaries, latency and errors as service analytics; needs a FilmEase account and a user-added native `mcp_servers.filmease` entry with `auth: oauth` (Hermes stores the token); write calls ask for approval (`trust: untrusted`)."
 maintainer: Filmease
 tier: community
 category: tools
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/Filmease/filmease-hermes-plugin#readme
-version: "0.1.1"
+version: "0.1.2"
 title: FilmEase
 platforms: []
 capabilities:

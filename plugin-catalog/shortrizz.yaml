@@ -1,7 +1,7 @@
 name: shortrizz
 repo: https://github.com/mojomast/hermes-shortrizz
-sha: 5b1dbd4bc096427611d424b18972927d27171e95
-version: "0.2.0"
+sha: cc83a3ba408b509f5ad031d4a776d3e5a8d820bd
+version: "0.2.1"
 description: >-
   Skill id shortrizz:shortrizz-clipper. Self-hosted AI clipper: turn a long
   video (yt-dlp URL or local file) into captioned 9:16 shorts. Transcribes on

@@ -1601,6 +1601,33 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
     return [r["child_id"] for r in rows]
 
 
+# Terminal ("no longer waiting on a parent") states. A child in any other
+# state still depends on its parent being promoted via ``done``; a ``blocked``
+# parent never promotes its children (Operating Manual §1.4 / LESSONS L-006,
+# L-023, L-036). Keep this in sync with ``VALID_STATUSES`` above.
+TERMINAL_STATUSES = frozenset({"done", "archived"})
+
+
+def waiting_child_ids(
+    conn: sqlite3.Connection, task_id: str
+) -> list[tuple[str, str]]:
+    """Return ``(child_id, status)`` for every child of ``task_id`` whose
+    status is NOT terminal.
+
+    These are the children still waiting on the parent. Used by the
+    ``review-required`` block gate: blocking a parent that still has a
+    waiting child (e.g. a QA card) stalls the whole pipeline, because a
+    ``blocked`` parent is never promoted and therefore never promotes the
+    child.
+    """
+    waiting: list[tuple[str, str]] = []
+    for cid in child_ids(conn, task_id):
+        child = get_task(conn, cid)
+        if child is not None and child.status not in TERMINAL_STATUSES:
+            waiting.append((cid, child.status))
+    return waiting
+
+
 def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
     rows = conn.execute(

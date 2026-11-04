@@ -1610,8 +1610,30 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     failed: list[str] = []
+    # Hard gate (Operating Manual §1.4 / LESSONS L-006, L-023, L-036) — mirror
+    # of tools/kanban_tools.py::_handle_block. A `review-required:` block is a
+    # hand-off, not a real blocker; refusing it while a child still waits keeps
+    # the pipeline from stalling (a blocked parent never promotes its child).
+    is_review_required = bool(reason) and reason.strip().lower().startswith(
+        "review-required"
+    )
     with kb.connect() as conn:
         for tid in ids:
+            if is_review_required:
+                waiting = kb.waiting_child_ids(conn, tid)
+                if waiting:
+                    detail = ", ".join(
+                        f"{cid} ({status})" for cid, status in waiting
+                    )
+                    failed.append(tid)
+                    print(
+                        f"refusing review-required block of {tid}: it has "
+                        f"waiting child task(s) {detail}; a blocked parent never "
+                        f"promotes its children. Finish the child card(s) "
+                        f"first, or use a non-'review-required' block reason.",
+                        file=sys.stderr,
+                    )
+                    continue
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
             if not kb.block_task(

@@ -111,6 +111,21 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_block_review_required_refused_with_waiting_child(kanban_home):
+    """CLI parity: review-required block with a waiting child is refused."""
+    import re
+    out = kc.run_slash("create 'parent' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"create 'qa-child' --assignee qa --parent {tid}")
+    refused = kc.run_slash(f"block {tid} 'review-required: needs review'")
+    assert "refusing" in refused
+    assert kc.run_slash(f"show {tid}").count("running") >= 1
+    # A genuine blocker is still allowed even with the waiting child present.
+    allowed = kc.run_slash(f"block {tid} 'genuine blocker: need input'")
+    assert "Blocked" in allowed
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

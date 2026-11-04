@@ -451,6 +451,30 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect()
         try:
+            # Hard gate (Operating Manual §1.4 / LESSONS L-006, L-023, L-036).
+            # A `review-required:` reason is a hand-off, not a real blocker.
+            # If the task still has a waiting (non-terminal) child — e.g. a QA
+            # card the CEO already created — blocking the parent stalls the
+            # pipeline: a `blocked` parent is never promoted, so its child is
+            # never promoted either. Refuse and spell out the two legal exits.
+            # Case-insensitive so "Review-Required: …" is caught too.
+            if str(reason).strip().lower().startswith("review-required"):
+                waiting = kb.waiting_child_ids(conn, tid)
+                if waiting:
+                    detail = ", ".join(
+                        f"{cid} ({status})" for cid, status in waiting
+                    )
+                    return tool_error(
+                        f"refusing to block {tid} with a 'review-required' "
+                        f"reason: it has waiting child task(s) {detail}. A "
+                        f"blocked parent never promotes its children, so this "
+                        f"would stall the pipeline. Do one of: (1) finish the "
+                        f"child card(s) first (complete/archive them), then "
+                        f"block; or (2) use a block reason that does NOT start "
+                        f"with 'review-required' if this is a genuine blocker. "
+                        f"To hand off while a QA child waits, use "
+                        f"kanban_comment + kanban_complete instead of blocking."
+                    )
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,

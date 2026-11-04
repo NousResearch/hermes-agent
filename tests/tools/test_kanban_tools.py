@@ -450,6 +450,84 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
+# ---------------------------------------------------------------------------
+# Hard gate: review-required block + waiting child (AC1-AC4, §1.4/L-006/L-023)
+# ---------------------------------------------------------------------------
+
+def _add_child(parent_id, title="qa-child", assignee="qa"):
+    """Attach a fresh (todo) child to ``parent_id``; return its id."""
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        cid = kb.create_task(conn, title=title, assignee=assignee)
+        kb.link_tasks(conn, parent_id, cid)
+    finally:
+        conn.close()
+    return cid
+
+
+def _task_status(tid):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        return kb.get_task(conn, tid).status
+    finally:
+        conn.close()
+
+
+def test_block_review_required_refused_with_waiting_child(worker_env):
+    """AC1: review-required block with a waiting child → error, stays running."""
+    cid = _add_child(worker_env)
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "review-required: needs QA review"})
+    d = json.loads(out)
+    assert d.get("error"), d
+    assert "review-required" in d["error"]
+    assert cid in d["error"]  # names the waiting child
+    assert _task_status(worker_env) == "running"
+
+
+def test_block_review_required_case_insensitive(worker_env):
+    """AC4: "Review-Required: …" is caught the same way (case-insensitive)."""
+    _add_child(worker_env)
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "Review-Required: ship it"})
+    assert json.loads(out).get("error")
+    assert _task_status(worker_env) == "running"
+
+
+def test_block_review_required_allowed_without_child(worker_env):
+    """AC2a: review-required with no children → allowed, unchanged."""
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "review-required: no child here"})
+    assert json.loads(out)["ok"] is True
+    assert _task_status(worker_env) == "blocked"
+
+
+def test_block_review_required_allowed_when_children_terminal(worker_env):
+    """AC2b: review-required with all children done/archived → allowed."""
+    cid = _add_child(worker_env)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        assert kb.archive_task(conn, cid)
+    finally:
+        conn.close()
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "review-required: child archived"})
+    assert json.loads(out)["ok"] is True
+    assert _task_status(worker_env) == "blocked"
+
+
+def test_block_non_review_reason_allowed_with_waiting_child(worker_env):
+    """AC3: a genuine (non review-required) block may still block with a child."""
+    _add_child(worker_env)
+    from tools import kanban_tools as kt
+    out = kt._handle_block({"reason": "genuine blocker: need credentials"})
+    assert json.loads(out)["ok"] is True
+    assert _task_status(worker_env) == "blocked"
+
+
 def test_heartbeat_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "progress"})

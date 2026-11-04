@@ -407,7 +407,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",
-            "default": "default — set model.context_length in config to override",
+            "default": "fallback, not a detected limit — set model.context_length in config to override",
         }.get(resolved.context_source, "detected")
         ctx_display = (
             f"{context_length / 1_000_000:.1f}M" if context_length >= 1_000_000

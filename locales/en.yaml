@@ -2718,6 +2718,7 @@ cli:
     goal_turns: "⊙ goal {used}/{max}"
     goal: "⊙ goal"
     ctx_pinned: " pinned"
+    ctx_fallback: " fallback"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} item)"

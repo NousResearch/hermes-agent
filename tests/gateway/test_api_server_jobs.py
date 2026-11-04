@@ -168,6 +168,26 @@ class TestCreateJob:
                 assert data["retry_create"] is False
                 assert "private callback URL and token" not in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_create_and_update_carry_the_pinned_timezone(self, adapter):
+        """POST and PATCH /api/jobs accept ``timezone`` like every other create/edit door; the
+        handler used to drop it on create and filter it out on PATCH, so the pin was lost."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", mock_create
+            ), patch(f"{_MOD}._cron_update", mock_update):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "pre-market", "schedule": "0 9 * * 1-5", "prompt": "p",
+                    "timezone": "America/New_York"})
+                assert resp.status == 200
+                assert mock_create.call_args[1]["timezone"] == "America/New_York"
+                resp = await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json={"timezone": "Asia/Hong_Kong"})
+                assert resp.status == 200
+                assert mock_update.call_args[0][1] == {"timezone": "Asia/Hong_Kong"}
+
 
     @pytest.mark.asyncio
     async def test_create_job_prompt_too_long(self, adapter):

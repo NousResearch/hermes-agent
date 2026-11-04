@@ -17,6 +17,33 @@ def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
 
+class TestCLISecretFlags:
+    @pytest.mark.parametrize('flag', ['--api-key', '--token', '--password'])
+    @pytest.mark.parametrize('separator', [' ', '='])
+    @pytest.mark.parametrize('quote', ['', '"', "'", '\\"'])
+    def test_opaque_cli_values_on_ps_and_direct_surfaces(self, flag, separator, quote):
+        from agent.redact import redact_terminal_output
+        secret = 'syntheticOpaqueCLIcredential0123456789'
+        text = f'server {flag}{separator}{quote}{secret}{quote} --port 8003'
+        for result in [redact_sensitive_text(text, force=True),
+                       redact_terminal_output(text, command='ps auxww', force=True)]:
+            assert secret not in result
+            assert '--port 8003' in result
+            assert flag + separator + quote + '***' + quote in result
+            assert redact_sensitive_text(result, force=True) == result
+
+    def test_reference_and_neighbor_flags_are_preserved(self):
+        text = 'server --api-key "${API_KEY}" --token $TOKEN --password $PASSWORD --token-count 42 --password-policy strong --api-key-file /keys/key'
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+    def test_quoted_password_space_and_file_read_sentinel(self):
+        text = 'server --password="synthetic password with spaces" --port 1234'
+        result = redact_sensitive_text(text, force=True, file_read=True)
+        assert 'synthetic password' not in result
+        assert '«redacted-secret»' in result
+        assert '--port 1234' in result
+
+
 class TestKnownPrefixes:
 
     def test_dotted_sk_and_prefixless_zhipu_keys_fully_masked_on_every_surface(self):

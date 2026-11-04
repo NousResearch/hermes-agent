@@ -8,6 +8,7 @@ import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
+import { verifyElectronArtifact } from './electron-artifact-verify.mjs'
 
 /** @param {string} source @param {string} name @returns {string} */
 export function pinnedPackageRoot(source, name) {
@@ -75,6 +76,20 @@ async function preparePackagingTools({ source, out, cache, target = `${process.p
 }
 
 /**
+ * Verify the downloaded Electron zip against the official release manifest before it enters the
+ * prepared inputs. electron-builder only verifies against the manifest of the source it downloaded
+ * from (ELECTRON_MIRROR when set), so a mirror could otherwise substitute both bytes and manifest.
+ * @param {string} archive
+ * @param {import('app-builder-lib').Configuration} config
+ * @param {string} cache
+ * @returns {Promise<string>}
+ */
+async function verifiedElectronArchive(archive, config, cache) {
+  await verifyElectronArtifact(archive, { version: config.electronVersion, cacheDir: path.join(cache, 'electron') })
+  return archive
+}
+
+/**
  * @param {{ source: string, out: string, cache: string, target: string, formats: string[], builderRoot: string, config: import('app-builder-lib').Configuration, dmgbuild: string | null }} options
  * @returns {Promise<string>}
  */
@@ -90,7 +105,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
       artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
     sevenZip.getPath7za(), icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
   ])
-  const electron = copyTool(archive, path.join(out, 'electron.zip'))
+  const electron = copyTool(await verifiedElectronArchive(archive, config, cache), path.join(out, 'electron.zip'))
   /** @type {import('./prepared-packaging.mjs').PackagingToolsets} */
   const toolsets = {
     sevenZip: copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip')),

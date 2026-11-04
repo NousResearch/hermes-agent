@@ -49,7 +49,8 @@ from agent.message_sanitization import (
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
+    append_streamed_reasoning_detail, reasoning_field_text, separate_glued_reasoning_blocks,
+    streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated, log_runaway_cut
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -3120,11 +3121,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream
-            # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
-            if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
-                reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            reasoning_text = reasoning_field_text(delta)
             # A profile-declared text carrier doubles as the readable reasoning.
             reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
@@ -3236,9 +3233,7 @@ class _StreamingCall(StreamingWaitMonitor):
         choices = final_response.choices
         message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
         if message is not None:
-            reasoning_text = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
-            if reasoning_text is None and isinstance(getattr(message, "model_extra", None), dict):
-                reasoning_text = message.model_extra.get("reasoning_content") or message.model_extra.get("reasoning")
+            reasoning_text = reasoning_field_text(message)
             if isinstance(reasoning_text, str) and reasoning_text:
                 self._emit_reasoning(reasoning_text)
             content = getattr(message, "content", None)

@@ -566,6 +566,15 @@ class CLISessionMixin:
             _sync_process_session_id, datetime)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
         old_session_id = self.session_id
+        # CLI-owned plugin hook: fire before any session-finalization or identity mutation.
+        with contextlib.suppress(Exception):
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("on_session_pre_switch"):
+                invoke_hook(
+                    "on_session_pre_switch",
+                    old_session_id=old_session_id,
+                    cli=self,
+                )
         _boundary_snapshot = None
         if self.agent:
             if self.conversation_history:
@@ -659,6 +668,19 @@ class CLISessionMixin:
             from hermes_cli.cli_shutdown import _gateway_owns_session_end
             if not _gateway_owns_session_end(self.agent):  # the gateway resets when end_session closes it
                 self._notify_session_boundary("on_session_reset")
+
+        # Fire only after every switch step above completed successfully. Keep this outside the
+        # ``self.agent`` branch: new_session() still owns and completes an identity switch when no
+        # agent is attached (for example during lightweight CLI construction/tests).
+        with contextlib.suppress(Exception):
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if has_hook("on_session_post_switch"):
+                invoke_hook(
+                    "on_session_post_switch",
+                    old_session_id=old_session_id,
+                    new_session_id=self.session_id,
+                    cli=self,
+                )
 
         if not silent:
             if title:

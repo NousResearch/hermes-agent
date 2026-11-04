@@ -14,8 +14,9 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-# A bypass session's (``--ignore-user-config``, safe mode) empty ``auxiliary:`` section, set by its
-# ``policy_scope`` so its side tasks never read the profile. None (the default) reads config.yaml.
+# A bypass session's (``--ignore-user-config``, safe mode) own saved ``auxiliary:`` section (code defaults
+# only), set by its ``policy_scope`` so its side tasks never read the profile. None (the default) reads
+# config.yaml.
 _SESSION_AUXILIARY: ContextVar = ContextVar("session_auxiliary", default=None)
 
 

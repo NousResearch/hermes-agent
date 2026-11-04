@@ -1139,8 +1139,9 @@ def policy_scope(policy, *, authority=None):
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
         # Side tasks follow the profile's config.yaml, as every other side-task reader does; a bypass
-        # session never reads the profile, so its side tasks see an empty section.
-        aux_scope = session_auxiliary_scope({}) if policy.ignore_user_config else contextlib.nullcontext()
+        # session never reads the profile: its side tasks use its own saved section (code defaults only).
+        aux_scope = (session_auxiliary_scope(policy.config(authority, secrets=False).get('auxiliary'))
+                     if policy.ignore_user_config else contextlib.nullcontext())
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
               policy.client_env_scope()):
             yield

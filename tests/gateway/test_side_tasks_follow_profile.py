@@ -100,20 +100,29 @@ def test_the_chats_main_model_stays_where_it_was(tmp_path, monkeypatch):
 
 
 def test_an_ignore_user_config_chat_never_reads_the_profiles_side_tasks(tmp_path, monkeypatch):
-    from dataclasses import replace
+    """A bypass chat's side tasks come from its own saved section, which is code defaults only: the
+    profile's ``auxiliary:`` is never read, and the built-in per-task defaults (vision's 120s timeout)
+    still apply."""
     from tests.fakes.fake_llm_provider import FakeLLMServer
+    from gateway.session_local import _bypass_policy
     from gateway.session_policy import policy_scope
+    from agent.auxiliary_client import _get_task_timeout
     from agent.auxiliary_task_config import _get_auxiliary_task_config
     with FakeLLMServer() as main, FakeLLMServer() as aux:
         cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': main.base_url,
                          'api_key': 'main-key'}}
-        policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
-        bypass = replace(policy, ignore_user_config=True)
+        _policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
         cfg['auxiliary'] = {'compression': {'provider': 'custom', 'model': 'late', 'base_url': aux.base_url,
-                                            'api_key': 'late-key'}}
+                                            'api_key': 'late-key'},
+                            'vision': {'model': 'profile-vision', 'timeout': 999}}
         _write(config_path, cfg)
+        bypass = _bypass_policy({'cwd': str(tmp_path), 'model': 'primary-model', 'provider': 'custom',
+                                 'base_url': main.base_url, 'api_key': 'main-key', 'ignore_user_config': True},
+                                private_secrets={})
         with policy_scope(bypass, authority=owner()):
-            assert _get_auxiliary_task_config('compression') == {}
+            assert not _get_auxiliary_task_config('compression').get('model')
+            assert not _get_auxiliary_task_config('vision').get('model')
+            assert _get_task_timeout('vision') == 120
 
 
 def test_every_side_task_reader_sees_the_same_route(tmp_path, monkeypatch):

@@ -1,8 +1,11 @@
+import { mergeTranslations } from '@hermes/shared/i18n'
+
 // health: allow FILE_LINES -- locale data: translated copy for the usage-window plan UI (allowance gauges, Large/Free tags, the limit card), one key per string
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruBoot } from './ru_boot'
+import { ruCapabilities } from './ru_capabilities'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
@@ -24,6 +27,7 @@ import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
+import type { Translations } from './types'
 
 export const ruOverrides = {
   catalog: ruCatalog,
@@ -3899,4 +3903,5 @@ export const ruOverrides = {
   }
 } satisfies TranslationOverrides
 
-export const ru = defineLocale(ruOverrides)
+// ru_capabilities fills only the Capabilities strings that were still English; defineLocale(ruOverrides) stays the base.
+export const ru = mergeTranslations<Translations>(defineLocale(ruOverrides), ruCapabilities)

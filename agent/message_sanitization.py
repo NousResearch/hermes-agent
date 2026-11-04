@@ -421,6 +421,9 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+    # vLLM and other text-only OpenAI-compatible hosts answer imaged history with HTTP 400
+    # "<model-id> is not a multimodal model"; unmatched, every retry re-sends the image and fails.
+    "is not a multimodal model",
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it

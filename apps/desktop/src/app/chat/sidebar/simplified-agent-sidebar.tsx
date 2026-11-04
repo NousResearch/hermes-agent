@@ -32,6 +32,7 @@ import { SimplifiedAgentList } from './simplified-agent-list'
 import { SimplifiedGlobalMenu } from './simplified-global-menu'
 import { SimplifiedNewSession } from './simplified-new-session'
 import { SimplifiedPinnedSessions } from './simplified-pinned-sessions'
+import { SimplifiedPluginPages } from './simplified-plugin-pages'
 import { sessionRowKey } from './simplified-session-identity'
 import { SimplifiedSessionList } from './simplified-session-list'
 import { ambiguousSessionIds, simplifiedPins } from './simplified-session-model'
@@ -163,6 +164,7 @@ export function SimplifiedAgentSidebar(props: ComponentProps<typeof ChatSidebar>
           }}
           sessions={all}
         />
+        <SimplifiedPluginPages onNavigate={props.onNavigate} />
         <SearchField
           aria-label={t.sidebar.searchAria}
           containerClassName="mx-0 gap-2.5 px-2 opacity-60 focus-within:opacity-100"

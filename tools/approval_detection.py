@@ -341,6 +341,12 @@ _PS_RECURSE = r"-r(?:e(?:c(?:u(?:r(?:s(?:e)?)?)?)?)?)?\b"
 _PS_FORCE = r"-fo(?:r(?:c(?:e)?)?)?\b"
 _PS_FORCE_ONLY_F = r"-f(?:o(?:r(?:c(?:e)?)?)?)?\b"
 _PS_DELETE_VERB = r"(?:remove-item|rmdir|erase|del|rd|ri|rm)"
+# powershell/pwsh as the program a command runs: line start, a shell separator, or a launcher
+# (sudo, env, cmd /c, ssh <host>), with an optional directory prefix (`C:\\...\\powershell.exe`).
+_PS_EXE_AT_COMMAND_POSITION = (
+    r"(?:^|[;&|({`\n]|\b(?:sudo|env|exec|nohup|start)\s|\bcmd(?:\.exe)?\s+/[ck]\s|\bssh\s+[^\s;&|-]\S*\s)"
+    r"\s*(?:[^\s;&|\"']*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
+)
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -366,9 +372,13 @@ DANGEROUS_PATTERNS = [
     # The same delete later in the script: `powershell -NoProfile "gci C:\\data | ri -r -fo"` (Windows
     # PowerShell runs a positional argument as the command) puts the verb after a pipe, `;` or a
     # `{ }` block, where the rule above walks past it. Like that rule, no switch is required:
-    # `gci -Recurse -File | ri` deletes every file with none. The separator must sit inside the quoted
-    # script, so an outer-shell `powershell -c Get-Date; rm notes.txt` is left to the rm rules.
-    (r'\b(?:powershell|pwsh)(?:\.exe)?\b[^\n"\']*["\'][^"\'\n]*[|;{(]\s*' + _PS_DELETE_VERB + r'\b', "Windows PowerShell destructive delete (later in the script)"),
+    # `gci -Recurse -File | ri` deletes every file with none. The executable must be at command
+    # position (or behind sudo/cmd /c/ssh <host>) and the quote must open its first non-flag argument,
+    # so `echo powershell "gci | ri"`, `pwsh -v; jq ".a | del(.b)"` and `cd ~/powershell-scripts &&
+    # git grep "a|rd"` stay quiet, and an outer-shell `powershell -c Get-Date; rm notes.txt` is left
+    # to the rm rules.
+    (_PS_EXE_AT_COMMAND_POSITION + r'(?:\s+-\S+)*\s+["\'][^"\'\n]*[|;{(]\s*' + _PS_DELETE_VERB + r'(?![\w-])',
+     "Windows PowerShell destructive delete (later in the script)"),
     (r'\b(?:powershell|pwsh)(?:\.exe)?\b.*\s-(?:encodedcommand|enc|e)\b', "PowerShell encoded command execution"),
     # ── Windows destructive tier: native Windows EXEs/cmdlets reachable from ANY backend on a
     # Windows host (incl. git-bash). Input is lowercased by the variant loop, so patterns are
@@ -382,7 +392,7 @@ DANGEROUS_PATTERNS = [
     # Remove-Item aliases after a pipe — `gci C:\data | ri -r -fo` runs the same recursive forced
     # delete from a positional script whose first command is not itself a delete verb, whether or
     # not a `powershell` prefix precedes it.
-    (r'\|\s*' + _PS_DELETE_VERB + r'\b[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
+    (r'\|\s*' + _PS_DELETE_VERB + r'(?![\w-])[^\n;|&]*\s(?:' + _PS_RECURSE + r'|' + _PS_FORCE + r')', "PowerShell destructive delete (alias after pipe)"),
     # Bare cmd builtins with /s (recurse) or /q (quiet); plain `del file.txt` is covered only by the prefixed rule.
     (r'\b(?:del|erase|rd|rmdir)\s+(?:/[a-z]\s+)*/[sq]\b', "Windows destructive delete (recursive/quiet switch)"),
     # Remote content piped to Invoke-Expression — PowerShell's `curl | sh`.
@@ -628,6 +638,9 @@ DANGEROUS_PATTERNS_COMPILED = [
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+    # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`); a quoted script PowerShell really
+    # runs is matched by the anchored "later in the script" rule instead.
+    "PowerShell destructive delete (alias after pipe)",
 })
 
 # Content-level rules (ported from tirith in #133832, where they were separate findings with their own

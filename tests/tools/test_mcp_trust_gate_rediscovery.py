@@ -314,3 +314,27 @@ def test_session_expired_replay_runs_when_the_user_already_granted_the_tool():
         result, asked = _call()
     assert result == {"result": "ok"} and asked == []
     new.call_tool.assert_awaited_once()
+
+
+EVERY_CALL = {"approve_every_call": True, "command": "srv-bin"}
+
+
+def test_recheck_on_an_every_call_server_asks_despite_a_remembered_grant():
+    """``approve_every_call`` honours no grant: the hint-flip re-check asks where ``untrusted`` would skip."""
+    task = _install(_server(EVERY_CALL))
+    new = _session(read_only=False)
+    with _recycled_wake_rediscovers(task, new), patch.object(handlers, "_trust_granted", return_value=True):
+        result, asked = _call(answer="decline")
+    assert len(asked) == 1 and "NOT run" in result["error"]
+    new.call_tool.assert_not_awaited()
+
+
+def test_every_call_server_does_not_replay_a_tool_a_reconnect_turned_write_capable():
+    task = _install(_server({"approve_every_call": True, "url": "https://mcp.example.test/mcp"}))
+    old = task.session
+    old.call_tool.side_effect = RuntimeError("Session terminated")
+    new = _session(read_only=False)
+    with _reconnect_before_retry(task, new):
+        result, asked = _call()
+    assert "NOT run without approval" in result["error"] and asked == []
+    old.call_tool.assert_awaited_once()

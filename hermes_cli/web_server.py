@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
+from hermes_cli.config_mutation_lock import CONFIG_MUTATION_LOCK
 from hermes_cli.version_info import get_version_info
 
 try:
@@ -674,11 +675,9 @@ def get_install_id() -> Optional[str]:
     return _shared_get_install_id(cache=_INSTALL_ID_CACHE)
 
 
-# Serializes config.yaml read-modify-write cycles for handlers on worker threads
-# (asyncio.to_thread): config.py's _CONFIG_LOCK covers each load/save call, not
-# the span between them, so two off-loop updates could drop each other's writes.
-# RLock so nested helpers that also take it can't self-deadlock.
-_CONFIG_MUTATION_LOCK = threading.RLock()
+# Serializes config.yaml read-modify-write cycles for handlers on worker threads (asyncio.to_thread);
+# it is the lock profile provisioning takes, so neither drops the other's writes.
+_CONFIG_MUTATION_LOCK = CONFIG_MUTATION_LOCK
 
 # A finished ``gateway-restart`` child does not mean the gateway is back (it
 # exits once the restart is handed off), so in-flight reuse stops coalescing

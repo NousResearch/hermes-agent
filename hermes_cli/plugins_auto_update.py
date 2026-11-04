@@ -158,7 +158,8 @@ def summary_lines(outcome: dict[str, Any]) -> list[str]:
 
 def plugins_slash_action(parts: list[str]) -> list[str]:
     """``/plugins update`` (update every plugin with an update, unattended) and ``/plugins auto-update
-    [on|off]`` for the classic CLI and the TUI (which runs the same handler in its slash worker)."""
+    [on|off]`` for the classic CLI, and ``auto-update`` for the TUI's slash worker. The TUI sends
+    ``/plugins update`` to ``plugins.manage update_all`` instead: the batch outlives the worker's 45 s."""
     if parts[0] == "update":
         return ["Plugin updates:", *summary_lines(update_all_unattended())]
     arg = parts[1].lower() if len(parts) > 1 else ""

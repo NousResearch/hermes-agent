@@ -389,17 +389,28 @@ def _capture_dump(redact: bool = True) -> str:
     return redact_debug_support_text(text) if redact else text
 
 
+def _scrub_profile_scope_values(text: str) -> str:
+    """Mask opaque profile secrets without changing the bounded browser vault registry."""
+    from agent.redact import redact_registered_vault_values
+    from agent.secret_scope import build_profile_secret_scope
+
+    values = tuple(value for value in build_profile_secret_scope(get_hermes_home()).values()
+                   if len(value) >= 8)
+    return redact_registered_vault_values(text, extra_values=values)
+
+
 def collect_debug_report(
     *, log_lines: int = 200, dump_text: str = "",
-    log_snapshots: Optional[dict[str, LogSnapshot]] = None) -> str:
+    log_snapshots: Optional[dict[str, LogSnapshot]] = None, redact: bool = True) -> str:
     """Build the summary debug report (system dump + log tails) as upload-ready text.
 
     ``dump_text`` is pre-captured dump output; when empty, ``hermes dump`` is run internally.
+    ``redact=False`` preserves raw text for the explicit debug-share opt-out.
     """
     buf = io.StringIO()
-    buf.write(dump_text or _capture_dump())
+    buf.write(dump_text or _capture_dump(redact=redact))
     if log_snapshots is None:
-        log_snapshots = _capture_default_log_snapshots(log_lines)
+        log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
     # In-process sanitiser heal counters: populated only inside a process that ran agent turns
     # (gateway /debug share); a fresh CLI's errors.log tail carries the same escalation lines.
     with contextlib.suppress(Exception):
@@ -420,7 +431,8 @@ def collect_debug_report(
         filename = LOG_FILES.get(name, f"{name}.log")
         buf.write(f"\n--- {filename} (last {_tail_budget(name, log_lines)} lines) ---\n"
                   f"{snap.tail_text}\n")
-    return buf.getvalue()
+    text = buf.getvalue()
+    return _scrub_profile_scope_values(text) if redact else text
 
 
 # Nous-S3 envelope format id; the discord-support viewer keys off it.
@@ -436,7 +448,7 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
     dump_text = _capture_dump(redact=redact)
     log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
     report = collect_debug_report(log_lines=log_lines, dump_text=dump_text,
-                                  log_snapshots=log_snapshots)
+                                  log_snapshots=log_snapshots, redact=redact)
     banner = _REDACTION_BANNER if redact else ""
     bundle: dict[str, str] = {"report": banner + report}
     from hermes_cli.logs import LOG_FILES
@@ -444,6 +456,8 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
         if full := log_snapshots[name].full_text:
             filename = LOG_FILES.get(name, f"{name}.log")
             bundle[filename] = banner + dump_text + f"\n\n--- full {filename} ---\n" + full
+    if redact:
+        bundle = {label: _scrub_profile_scope_values(text) for label, text in bundle.items()}
     return bundle
 
 

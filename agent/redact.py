@@ -10,6 +10,7 @@ import re
 import shlex
 import threading
 import unicodedata
+from collections.abc import Iterable
 from urllib.parse import unquote_plus
 
 # Shared with agent/file_safety's read-block list so the two defenses can't
@@ -71,14 +72,16 @@ def clear_vault_redaction_values() -> None:
         _VAULT_REDACTION_VALUES.pop(_vault_scope(), None)
 
 
-def redact_registered_vault_values(text: str) -> str:
-    """Exact-substring scrub of every vault secret value registered for the current profile."""
+def redact_registered_vault_values(text: str, *, extra_values: Iterable[str] = ()) -> str:
+    """Scrub this profile's vault values plus call-local values without changing the registry."""
     if not isinstance(text, str) or not text:
         return text
     with _VAULT_REDACTION_LOCK:
         bucket = _VAULT_REDACTION_VALUES.get(_vault_scope())
-        values = sorted(bucket, key=len, reverse=True) if bucket else ()  # longest first: a substring never shadows its superstring
-    for value in values:
+        values = set(bucket) if bucket else set()
+    values.update(value for value in extra_values if value)
+    # Longest first: a substring never shadows its superstring.
+    for value in sorted(values, key=len, reverse=True):
         if value in text:
             text = text.replace(value, "«redacted-vault-secret»")
     return text

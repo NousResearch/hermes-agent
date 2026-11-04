@@ -81,6 +81,8 @@ export function CanonicalGroupPreview({ binding, draft, room, visible, context, 
     Number.isSafeInteger(latestSeq) && latestSeq >= 0 &&
     gateway === 'open' && connection === binding.connectionId && profile === binding.profile
 
+  // Request generation, pending token and mount fences — not an atom mirror.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref writes (see eslint rule comment)
   useEffect(() => {
     if (!eligible) {
       generation.current += 1

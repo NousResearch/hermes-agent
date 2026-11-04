@@ -85,7 +85,7 @@ it.each([
 ])('shows the server result for %s without local mention parsing', async (draft, selected) => {
   request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
     ? { driver: true, methods: ['groups.preview'] } : reply(selected))
-  render(<CanonicalGroupPreview binding={binding} draft={draft as string} room={room} visible latestSeq={0} />)
+  render(<CanonicalGroupPreview binding={binding} draft={draft as string} latestSeq={0} room={room} visible />)
   const expected = (selected as typeof roster).map(member => member.display_name).join(', ')
   expect(await screen.findByText(new RegExp(`First-round selected: ${expected}`))).toBeTruthy()
 })
@@ -97,15 +97,15 @@ it('drops out-of-order drafts, roster observations and source changes', async ()
 
     return new Promise(resolve => { deferred[params.text] = resolve })
   })
-  const view = render(<CanonicalGroupPreview binding={binding} draft="old" room={room} visible latestSeq={0} />)
+  const view = render(<CanonicalGroupPreview binding={binding} draft="old" latestSeq={0} room={room} visible />)
   await waitFor(() => expect(deferred.old).toBeDefined())
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" room={room} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" latestSeq={0} room={room} visible />)
   await waitFor(() => expect(deferred.new).toBeDefined())
   await act(async () => deferred.new(reply([roster[1]])))
   expect(screen.getByText(/First-round selected: Beta/)).toBeTruthy()
   await act(async () => deferred.old(reply([roster[0]])))
   expect(screen.queryByText(/First-round selected: Alpha/)).toBeNull()
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" room={{ ...room, revision: 2 }} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" latestSeq={0} room={{ ...room, revision: 2 }} visible />)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
   await act(async () => (host.state.profile as unknown as { set: (value: string) => void }).set('other'))
   expect(screen.queryByText(/First-round selected/)).toBeNull()
@@ -115,16 +115,16 @@ it('drops out-of-order drafts, roster observations and source changes', async ()
 it('does not reuse a previous preview after hide/show, empty draft, or connection switch', async () => {
   request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
     ? { driver: true, methods: ['groups.preview'] } : reply([roster[0]]))
-  const view = render(<CanonicalGroupPreview binding={binding} draft="hello" room={room} visible latestSeq={0} />)
+  const view = render(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible />)
   await screen.findByText(/First-round selected: Alpha/)
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" room={room} visible={false} latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible={false} />)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" room={room} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible />)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
   await screen.findByText(/First-round selected: Alpha/)
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="" room={room} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="" latestSeq={0} room={room} visible />)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" room={room} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible />)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
   await screen.findByText(/First-round selected: Alpha/)
   await act(async () => (host.state.connectionId as unknown as { set: (value: string) => void }).set('other'))
@@ -146,7 +146,7 @@ it.each(['room', 'profile', 'connection', 'activation', 'visibility', 'draft-aba
   let activeBinding = binding
   let activeRoom = room
   let draft = 'first'
-  const view = render(<CanonicalGroupPreview binding={activeBinding} draft={draft} room={activeRoom} visible latestSeq={0} />)
+  const view = render(<CanonicalGroupPreview binding={activeBinding} draft={draft} latestSeq={0} room={activeRoom} visible />)
   await waitFor(() => expect(pending).toHaveLength(1))
   expect(pending[0].params).toEqual({ room_id: 'room', text: 'first', latest_seq: 0, profile: 'default' })
   expect(pending[0].route).toMatchObject({ connectionId: 'local', profile: 'default', targetProfile: 'default' })
@@ -154,7 +154,7 @@ it.each(['room', 'profile', 'connection', 'activation', 'visibility', 'draft-aba
   if (scenario === 'room') {
     activeBinding = { ...binding, roomId: 'other-room' }
     activeRoom = { ...room, room_id: 'other-room' }
-    view.rerender(<CanonicalGroupPreview binding={activeBinding} draft={draft} room={activeRoom} visible latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={activeBinding} draft={draft} latestSeq={0} room={activeRoom} visible />)
   } else if (scenario === 'profile' || scenario === 'connection') {
     const state = scenario === 'profile' ? host.state.profile : host.state.connectionId
     await act(async () => (state as unknown as { set: (v: string) => void }).set('away'))
@@ -163,16 +163,16 @@ it.each(['room', 'profile', 'connection', 'activation', 'visibility', 'draft-aba
   } else if (scenario === 'activation') {
     await act(async () => control.epoch(1))
   } else if (scenario === 'visibility') {
-    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} room={room} visible={false} latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} latestSeq={0} room={room} visible={false} />)
     expect(screen.queryByRole('status')).toBeNull()
-    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} room={room} visible latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} latestSeq={0} room={room} visible />)
   } else if (scenario === 'draft-aba') {
-    view.rerender(<CanonicalGroupPreview binding={binding} draft="middle" room={room} visible latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={binding} draft="middle" latestSeq={0} room={room} visible />)
     await waitFor(() => expect(pending).toHaveLength(2))
-    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} room={room} visible latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} latestSeq={0} room={room} visible />)
   } else {
     activeRoom = { ...room, revision: 2, members: [{ ...roster[0], display_name: 'New Alpha' }, roster[1]] }
-    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} room={activeRoom} visible latestSeq={0} />)
+    view.rerender(<CanonicalGroupPreview binding={binding} draft={draft} latestSeq={0} room={activeRoom} visible />)
   }
 
   const expectedCount = scenario === 'draft-aba' ? 3 : 2
@@ -191,10 +191,10 @@ it('does not dispatch an old draft after late capabilities or an unmounted debou
   let release!: (value: unknown) => void
   request.mockImplementation((_route, method) => method === 'groups.capabilities'
     ? new Promise(resolve => { release = resolve }) : Promise.resolve(reply([roster[0]])))
-  const view = render(<CanonicalGroupPreview binding={binding} draft="old" room={room} visible latestSeq={0} />)
+  const view = render(<CanonicalGroupPreview binding={binding} draft="old" latestSeq={0} room={room} visible />)
   await waitFor(() => expect(release).toBeDefined())
   await act(async () => (host.state.connectionId as unknown as { set: (v: string) => void }).set('away'))
-  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" room={room} visible latestSeq={0} />)
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="new" latestSeq={0} room={room} visible />)
   await act(async () => (host.state.connectionId as unknown as { set: (v: string) => void }).set('local'))
   await act(async () => release({ driver: true, methods: ['groups.preview'] }))
   expect(request.mock.calls.filter(call => call[1] === 'groups.preview')).toHaveLength(0)

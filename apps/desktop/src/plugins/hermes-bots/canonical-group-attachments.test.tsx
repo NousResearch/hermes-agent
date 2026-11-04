@@ -5,7 +5,9 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', () => ({
+vi.mock('@hermes/plugin-sdk', async () => ({
+  ...await (await import('./group-test-utils')).pluginSdkMock({}),
+  randomUuid: (await import('@hermes/shared')).randomUuid,
   host: { requestProfile: request },
   Button: (props: ComponentProps<'button'>) => <button {...props} />
 }))

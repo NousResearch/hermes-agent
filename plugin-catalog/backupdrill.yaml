@@ -1,0 +1,18 @@
+name: backupdrill
+repo: https://github.com/backupdrill/cli
+sha: 21d3b891692e6dbad11d4f2b7cefec80d4019b02
+subdir: plugin
+title: BackupDrill
+description: "Back up a Supabase project to your own S3, R2 or B2 bucket with the open-source backupdrill CLI (the Postgres database, plus Storage files once their S3 keys are set), then restore the snapshot into a throwaway Postgres in Docker to check it comes back. Disclosure — a skill only, with no Python, hooks or server: it has the agent run npx -y backupdrill@2.7.1 in shell commands, which npx downloads from npm on first run. The CLI connects to the user's Supabase project and their own bucket, and a drill pulls a postgres image from Docker Hub. The connection string and bucket keys stay in a .env.backupdrill file the user fills in; each command loads it in a subshell and never prints it. Nothing is sent to BackupDrill."
+maintainer: BackupDrill
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://backupdrill.com/docs/cli
+version: "1.1.3"
+image: https://raw.githubusercontent.com/backupdrill/cli/21d3b891692e6dbad11d4f2b7cefec80d4019b02/plugin/assets/icon.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

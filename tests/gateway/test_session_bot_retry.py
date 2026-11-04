@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from hermes_state_runtime import list_session_admissions
 
 KEY = 'c' * 32
@@ -37,7 +37,7 @@ async def bot(tmp_path, monkeypatch):
                              _evict_cached_agent=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
-    owner = Principal('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
+    owner = SessionActor('uid:1000', 'default', frozenset({'session:create', 'session:read', 'session:submit'}), 'native')
     chat = create_local_session(authority, owner, {'request_id': 'bot', 'source': 'gui', 'cwd': str(tmp_path),
                                                     'model': 'fixture', 'toolsets': []})
     title_new_session(authority, chat, 'Bot Chat')

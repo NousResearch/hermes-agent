@@ -1,0 +1,15 @@
+name: workflow-record
+repo: https://github.com/NousResearch/hermes-labs-plugins
+sha: fde77be2bc939dbc71d425aab41731ad88173e67
+subdir: workflow-record
+description: "hermes record: demonstrate a browser workflow once (clicks, field values, navigations) and its bundled skill lets /learn turn the recording into a skill that replays it with the browser tools. A Hermes Labs plugin: built by Nous Research, not supported. Disclosure — attaches over CDP to a Chromium you point it at (--cdp, BROWSER_CDP_URL, browser.cdp_url or 127.0.0.1:9222) and records what you do in that tab until Ctrl-C; password, one-time-code and card fields are masked inside the page as {SECRET:name} and never written. Recordings stay local in <HERMES_HOME>/recordings; nothing is sent anywhere until you run /learn on one, which hands it to your active model."
+maintainer: NousResearch
+tier: community
+category: automation
+docs_url: https://github.com/NousResearch/hermes-labs-plugins/tree/main/workflow-record
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

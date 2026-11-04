@@ -330,9 +330,10 @@ class CLIStatusBarMixin:
                 context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
-            from agent.context_pin import is_context_pinned
-            snapshot["context_pinned"] = is_context_pinned(
-                context_length, getattr(compressor, "_config_context_length", None))
+            from agent.context_pin import agent_context_marker
+            marker = agent_context_marker(agent)
+            snapshot["context_pinned"] = marker == "pinned"
+            snapshot["context_fallback"] = marker == "fallback"
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 pct = round((context_tokens / context_length) * 100)
@@ -947,7 +948,7 @@ class CLIStatusBarMixin:
         re-reading config per render could advertise a chord that isn't bound — and this sits on
         the hot render path.
 
-        Two reasons (Copilot round-13 on 19835): See #19835.
+        Two reasons (review round-13 on 19835): See #19835.
         """
         return getattr(self, "_voice_record_key_display_cache", None) or "Ctrl+B"
 
@@ -1056,7 +1057,8 @@ class CLIStatusBarMixin:
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    pin = t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned") else ""
+                    pin = (t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned")
+                           else t("cli.status_bar.ctx_fallback") if snapshot.get("context_fallback") else "")
                     context_label = f"{mark}{ctx_used}/{ctx_total}{pin}"
                 else:
                     context_label = t("cli.status_bar.ctx_unknown")

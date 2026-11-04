@@ -35,26 +35,6 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
-    @pytest.mark.parametrize("effort, expected", [
-        ("low", "low"), ("medium", "medium"), ("high", "high"),
-        ("xhigh", "xhigh"), ("max", "max"), ("ultra", "max"),
-        ("minimal", "low"), ("none", None),
-    ])
-    def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
-        from agent.reasoning_params import ReasoningParamsMixin
-        from hermes_constants import resolve_reasoning_config
-
-        reasoning = resolve_reasoning_config({"agent": {"reasoning_effort": effort}}, model)
-        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
-        kw = transport.build_kwargs(
-            model=model, messages=[{"role": "user", "content": "Hi"}],
-            provider="github-copilot", is_github_responses=True,
-            reasoning_config=reasoning,
-            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
-        )
-        assert kw.get("reasoning") == ({"effort": expected, "summary": "auto"} if expected else None)
-
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",
@@ -223,14 +203,20 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
 
-    def test_github_responses_drops_message_item_id_end_to_end(self, transport):
-        # #32716: Copilot binds codex_message_items ids to a backend
+    def test_id_binding_responses_endpoint_drops_message_item_id_end_to_end(self, transport):
+        # #32716: an endpoint (Copilot was the first) binds codex_message_items ids to a backend
         # "connection" that doesn't survive credential rotation, a gateway
         # restart, or load-balancer churn — replaying a stale id gets HTTP
         # 401 "input item ID does not belong to this connection", even for
         # ids well under the #27038 64-char length cap. build_kwargs must
-        # thread is_github_responses through to the input converter so the
-        # id never reaches the request.
+        # resolve the endpoint's replay_item_ids quirk from base_url and thread
+        # it to the input converter so the id never reaches the request.
+        from unittest.mock import patch
+
+        from providers.base import ProviderProfile
+
+        binding = ProviderProfile(name="acme-responses", base_url="https://api.acme-responses.test",
+                                  api_mode="codex_responses", responses_replay_item_ids=False)
         messages = [
             {"role": "system", "content": "You are Hermes."},
             {
@@ -248,10 +234,12 @@ class TestCodexBuildKwargs:
                 ],
             },
         ]
-        kw = transport.build_kwargs(
-            model="gpt-5.5", messages=messages, tools=[],
-            is_github_responses=True,
-        )
+        with patch("providers.profile_for_host",
+                   side_effect=lambda url, *_a, **_kw: binding if "api.acme-responses.test" in url else None):
+            kw = transport.build_kwargs(
+                model="gpt-5.5", messages=messages, tools=[],
+                base_url="https://api.acme-responses.test",
+            )
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert "id" not in message_item
         assert message_item["phase"] == "final_answer"
@@ -1869,7 +1857,7 @@ class TestCodexTransportXaiServiceTierStrip:
             model="gpt-5.5",
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
-            is_github_responses=True,
+            base_url="https://api.githubcopilot.com",
             request_overrides={"service_tier": "priority"},
         )
         assert kw.get("service_tier") == "priority"

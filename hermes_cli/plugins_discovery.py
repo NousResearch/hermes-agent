@@ -131,6 +131,13 @@ def _get_enabled_plugins() -> Optional[set]:
         return None
 
 
+def is_skipped_plugin_dir(name: str) -> bool:
+    """True for directory names discovery never treats as plugins. Cache/dunder dirs (__pycache__,
+    __MACOSX__, …) can raise PermissionError when walked and take down every later tool call
+    (#86996); foreign-harness dirs hold another tool's manifest convention."""
+    return (name.startswith("__") and name.endswith("__")) or name in _FOREIGN_HARNESS_MANIFEST_DIRS
+
+
 def scan_directory(
     path: Path, source: str, *, skip_names: Optional[set[str]] = None, prefix: str = "", depth: int = 0
 ) -> list[PluginManifest]:
@@ -147,14 +154,8 @@ def scan_directory(
         logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
         return manifests
     for child in children:
-        # Cache/dunder dirs (__pycache__, __MACOSX__, …) are never
-        # plugins. Walking them can raise PermissionError and take
-        # down every subsequent tool call (#86996).
-        if child.name.startswith("__") and child.name.endswith("__"):
-            logger.debug("Skipping dunder plugin path %s", child)
-            continue
-        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
-            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
+        if is_skipped_plugin_dir(child.name):
+            logger.debug("Skipping %s (dunder or foreign-harness manifest dir)", child)
             continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.
@@ -205,7 +206,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use"})
+          {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -254,6 +255,17 @@ class ManifestGate:
     log: Optional[tuple] = None  # (level, message, *args)
 
 
+IN_BOTH_LISTS = "listed in both plugins.enabled and plugins.disabled — disabled wins"
+
+
+def plugins_in_both_lists() -> list[str]:
+    """Keys of the plugins the loader skips because both lists name them, by the loader's own
+    config read and name matching (path key, bare leaf, manifest name)."""
+    winners = resolve_manifest_winners(collect_directory_manifests())
+    disabled, enabled = _get_disabled_plugins(), _get_enabled_plugins()
+    return [key for key, manifest in winners.items() if gate_manifest(manifest, disabled, enabled).error == IN_BOTH_LISTS]
+
+
 def gate_manifest(
     manifest: PluginManifest, disabled: set[str], enabled: Optional[set[str]]
 ) -> ManifestGate:
@@ -276,6 +288,15 @@ def gate_manifest(
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:
+        if enabled and names & enabled:
+            # Contradictory config (#131980): the disable wins, but a silent DEBUG skip hides the
+            # conflict — the plugin "loads nowhere" while plugins.enabled still lists it. Fail loud.
+            return _placeholder(
+                IN_BOTH_LISTS,
+                logging.WARNING,
+                "Plugin '%s' is listed in both plugins.enabled and plugins.disabled; the disable "
+                "wins and it will not load — remove it from one of the two lists",
+            )
         return _placeholder("disabled via config", logging.DEBUG, "Skipping disabled plugin '%s'")
     # Exclusive plugins (memory providers) have their own activation path; record only.
     if manifest.kind == "exclusive":

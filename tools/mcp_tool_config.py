@@ -215,6 +215,16 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     for key in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
         if key in os.environ:
             env[key] = os.environ[key]
+    # Pin the ACTIVE (served) profile's home so a stdio child never falls back to the
+    # platform-default home (issue #18594). Without it a child spawned by a multiplexed host
+    # or a dashboard/desktop backend serving ``--open-profile`` resolves HERMES_HOME to the
+    # LAUNCH profile's home (or the platform default) and writes to the wrong profile — and a
+    # Python child that imports hermes_constants trips the ``_warn_profile_fallback_once``
+    # guard. Resolve at call time: ``get_hermes_home()`` honours the served-profile
+    # contextvar, which does not cross the process boundary, while ``os.environ`` holds only
+    # the launch profile's home. An explicit server ``env.HERMES_HOME`` still wins below.
+    from hermes_constants import get_hermes_home
+    env["HERMES_HOME"] = str(get_hermes_home())
     if user_env:
         # An entry rendered from one whole ``${VAR}`` that is unset (or empty) counts as absent, so
         # a plugin can forward an optional var without the child seeing the literal placeholder.
@@ -629,31 +639,58 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
     return flagged
 
 
+def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
+    """Why a server's ``tool_costs``/``spend_limit``/``cost_unit`` is unusable, else None. A budget the
+    user declared must never be silently dropped while its server keeps spending, so the server is skipped."""
+    from tools.mcp_tool_costs import config_cost_policy
+    try:
+        config_cost_policy(name, cfg if isinstance(cfg, dict) else None)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
-    """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
+    """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
-        return servers
+        validate_mcp_server_entry = None
     safe_servers = {}
     for name, cfg in servers.items():
-        issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
+        issues = validate_mcp_server_entry(name, cfg) if validate_mcp_server_entry and isinstance(cfg, dict) else None
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
+        elif (bad_costs := _malformed_cost_table(name, cfg)) is not None:
+            logger.error("Skipping MCP server '%s': %s (fix tool_costs/spend_limit/cost_unit in config.yaml)",
+                         name, bad_costs)
         else:
             safe_servers[name] = cfg
     return safe_servers
 
 
-def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
-    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
+def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
+    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
+
+    The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
+    a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
+    from tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
-            if name in safe_servers:
-                logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
+            if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
+                logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
+            elif name in safe_servers:
+                native = safe_servers[name]
+                carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
+                if carried:
+                    safe_servers[name] = {**native, **carried}
+                    logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
+                                   "with the package's declared %s", name, ", ".join(carried))
+                else:
+                    logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
                 safe_servers[name] = dict(cfg)
     except Exception:
@@ -677,12 +714,17 @@ def _load_mcp_config() -> dict[str, dict]:
         except Exception:
             pass
         safe_servers: dict[str, dict] = {}
-        for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
+        servers = servers if isinstance(servers, dict) else {}
+        kept = _filter_suspicious_mcp_servers(servers)
+        for name, cfg in kept.items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
-        _portable_mcp_servers(safe_servers)
+        # A same-name package must not revive a server whose native budget was rejected (a mistyped
+        # tighter limit would fall back to the package's looser one while the server keeps spending).
+        rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
+        _portable_mcp_servers(safe_servers, rejected)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

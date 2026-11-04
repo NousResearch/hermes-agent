@@ -40,6 +40,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +382,9 @@ class RaftAdapter(BasePlatformAdapter):
         env = {**hermes_subprocess_env(), "RAFT_PROFILE": profile, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         env["HOME"] = env["HERMES_REAL_HOME"]  # the raft CLI's own login lives under the user's HOME
         try:
-            self._bridge_process = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
+            # Owned: the bridge dies with this gateway however it dies (a SIGKILLed or OOM-killed
+            # gateway used to leave `raft agent bridge` polling Raft for a channel nobody serves).
+            self._bridge_process = spawn_owned(cmd, purpose="raft-bridge", env=env, stdin=subprocess.DEVNULL)
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:
             logger.exception("[raft] Failed to spawn bridge")
@@ -399,6 +402,11 @@ class RaftAdapter(BasePlatformAdapter):
             logger.warning("[raft] Bridge process killed after timeout (pid=%d)", proc.pid)
         except Exception:
             logger.exception("[raft] Error stopping bridge")
+        if proc.poll() is not None:
+            # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
+            # timeout=0: disconnect() runs this on the event loop, which must not sleep on a child
+            # the TERM to the leader alone left in its group.
+            release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:

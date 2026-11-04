@@ -92,6 +92,14 @@ export const zhHant: Translations = {
     webUi: "管理面板",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "目前記憶提供者",
+    noProvider: "無 — 僅內建",
+    builtinLayer: "內建層",
+    builtinNote: "MEMORY.md 和 USER.md 是 Hermes 自己的記憶，獨立於任何外部提供者。兩者預設都會載入工作階段；設定開關 (memory.memory_enabled / memory.user_profile_enabled) 可分別關閉。外部提供者是對它們的補充，絕不會取代它們。",
+  },
+
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",

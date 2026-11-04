@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import time
 from types import MappingProxyType
 
 from pm.filesystem import long_root, native
@@ -67,12 +68,14 @@ def build_requirements_environment(
     requirements: Sequence[str], *, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
     wheelhouse: Path | None = None, offline: bool = False, sealed: bool = False,
-    explicit: bool = False,
+    explicit: bool = False, lock: Path | None = None,
 ) -> Path:
     """Create and check a fresh environment. Never mutate an existing destination.
 
     Wheelhouse builds disable indexes and source builds. Failure removes only
-    this invocation's exclusively claimed output, not prior builds.
+    this invocation's exclusively claimed output, not prior builds. *lock* is the
+    uv.lock the requirements were exported from: its overrides apply to the
+    install and the closing check.
     """
     from pm.environment import _fresh_build, managed_environment
     from pm.operations import _require_install_allowed, _requirements
@@ -80,6 +83,7 @@ def build_requirements_environment(
     _require_install_allowed(explicit)
     requirements = _requirements(requirements) if requirements or isinstance(requirements, str) else []
     out = Path(out).absolute()
+    lock = Path(lock).absolute() if lock is not None else None
     wheelhouse = Path(wheelhouse).absolute() if wheelhouse is not None else None
     if wheelhouse is not None and not wheelhouse.is_dir():
         raise InstallError("venv", f"wheelhouse directory is missing: {wheelhouse}")
@@ -90,8 +94,8 @@ def build_requirements_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
-        environment.install_requirements(requirements, wheelhouse=wheelhouse)
+    with _fresh_build(environment, sealed=sealed, lock=lock):
+        environment.install_requirements(requirements, wheelhouse=wheelhouse, lock=lock)
     return environment.executable
 
 
@@ -154,7 +158,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk
-    from pm.store import tree_digest
+    from pm.store import digest_matches
 
     if isinstance(names, str):
         raise TypeError("names must be a sequence, not a string")
@@ -182,7 +186,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if (not fact or fact.get("entry") != expected
                 or not entry.is_dir() or not entry.resolve().is_relative_to(source_store)
                 or not facts.installed(package.name, version, source_store, identity)
-                or tree_digest(entry) != fact.get("digest")):
+                or not digest_matches(entry, fact.get("digest"))):
             raise InstallError(package.name, "tool source failed verification", "run preparation again")
         _copy_links(package, entry)
         binary = package.binary(entry, target)
@@ -236,8 +240,11 @@ def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: 
                 raise InstallError(package.name, "tool copy source failed verification", "run preparation again")
         staged = Facts(out / "facts.json", strict=True)
         for package in packages:
+            started = time.monotonic()
             _install(package, lock, staged, destination, target,
                      copy_from=(facts, source), _lock_held=True, _fresh_copy=True)
+            # Copy plus re-digest of a large tree runs silently for minutes on Windows.
+            print(f"    copied {package.name} ({time.monotonic() - started:.1f}s)", flush=True)
     return out
 
 

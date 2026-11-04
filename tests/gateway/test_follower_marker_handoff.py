@@ -18,7 +18,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session import AsyncSessionStore
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_ingress import admit_message
     from tests.gateway.test_prompt_attachments import _authority
 
@@ -41,7 +41,7 @@ async def test_follower_is_claimed_only_after_the_settled_turn_released_its_adop
     runner._clear_durable_active_turn = partial(GatewayRunner._clear_durable_active_turn, runner)
     authority.runner._clear_durable_active_turn = runner._clear_durable_active_turn
     adapter = SimpleNamespace(gateway_runner=runner)
-    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    actor = SessionActor('human', 'p', frozenset({'session:submit'}), 't')
     ref = SessionRef('p', 's')
 
     async def admit_native(event):

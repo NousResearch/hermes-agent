@@ -94,6 +94,8 @@ hermes_cli/web_dist/
 .web_ui_build.lock
 apps/desktop/build/
 apps/desktop/dist/
+apps/desktop/dist-webapp/
+.dist-webapp-build-*
 
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)
@@ -241,6 +243,10 @@ docs/superpowers/*
 /google_token.json
 /google_oauth_pending.json
 /webhook_subscriptions.json
+/bws_cache.json
+/bws_cache.enc.json
+/op_cache.json
+/photon-sidecar.json
 /channel_directory.json
 /channel_aliases.json
 /feishu_comment_pairing.json
@@ -248,6 +254,7 @@ docs/superpowers/*
 /profiles/
 /credentials/
 /mcp-tokens/
+/webapp/
 /pairing/
 /platforms/
 /backups/

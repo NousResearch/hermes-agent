@@ -1,0 +1,37 @@
+name: rigforge
+repo: https://github.com/DECRUX9812/rigforge-plugin
+sha: b44503ced8a58ca71e4c190cab55bc4a29b76ad2
+title: Rigforge
+description: >-
+  A build studio for robots and printed machines, inside Hermes Desktop. Describe a
+  machine — or click a card — and get the whole build: posed 3D geometry with real
+  forward kinematics and an exploded view, joint torque sizing that picks real
+  servos (or a belt stage when one cannot), a per-rail power budget with wire gauge
+  and fuse sizing, an ESP32 pin map that refuses strapping and flash pins, firmware
+  generated from that same map, a priced BOM with SKUs, per-part STL packs,
+  OpenSCAD and an assembly order. Deterministic and fully offline — every number
+  is computed, never narrated. Two agent tools (rigforge_build, rigforge_state)
+  let the agent queue a build and read back the studio's computed spec; a
+  ::rigforge{...} transcript directive turns a chat line into a "load into studio"
+  card, and a dashboard backend keeps the page and the agent in sync. Desktop page
+  plus agent tools; no hooks, no middleware, no env vars.
+maintainer: DECRUX9812
+tier: community
+category: desktop
+version: "1.0.0"
+docs_url: https://github.com/DECRUX9812/rigforge-plugin#readme
+image: https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/b44503ced8a58ca71e4c190cab55bc4a29b76ad2/docs/screenshots/hero.png
+screenshots:
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/b44503ced8a58ca71e4c190cab55bc4a29b76ad2/docs/screenshots/quad.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/b44503ced8a58ca71e4c190cab55bc4a29b76ad2/docs/screenshots/gripper.png
+  - https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/b44503ced8a58ca71e4c190cab55bc4a29b76ad2/docs/screenshots/posed.png
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - rigforge_build
+    - rigforge_state
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

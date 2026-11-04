@@ -85,6 +85,9 @@ S = "hunter2pass"
     (None, "env", ["OPENAI_API_KEY=" + S]),
     (None, "docker", ["run", "-e", "GH_AUTH=" + S, "img"]),
     (None, "docker", ["run", "--env=AWS_SECRET_ACCESS_KEY=" + S, "img"]),
+    (None, "docker", ["run", "-eGITHUB_TOKEN=" + S, "img"]),
+    (None, "java", ["-Dx.keyStorePassword=" + S, "-jar", "s.jar"]),
+    (None, "java", ["-Dapi.token=" + S, "-jar", "s.jar"]),
     (None, "srv", ["--conn", f"postgres://u:{S}@db/x"]),
     ("https://mcp.example.com/sse?api_key=" + S + "&x=1", None, None),
     ("https://mcp.example.com/sse?token=" + S, None, None),
@@ -114,6 +117,8 @@ def test_a_secret_named_value_never_reaches_the_line(url, command, args):
     ("docker", ["run", "mcp/postgres@sha256:" + "ab" * 32]),
     ("srv", ["--max-tokens", "4096", "AUTHOR=me"]),
     ("srv", ["--token", "--exec", "./evil.js"]),   # the next long flag is a flag, not the token
+    ("python", ["--token", "-c", "print(1)"]),     # ... and so is a short one
+    ("srv", ["--api-key", "-rf"]),
 ])
 def test_what_runs_is_never_masked(command, args):
     """Hiding execution is worse than showing a secret: no positional, short flag, package, image,
@@ -165,6 +170,7 @@ def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, s
     (None, "node", ["packages/server2/dist/build/index20240101.js", "--port", "8080"],
      "node packages/server2/dist/build/index20240101.js --port 8080"),
     (None, "mysql", ["-p", "--verbose"], "mysql -p --verbose"),
+    (None, "java", ["-Dfoo=bar", "-jar", "server.jar"], "java -Dfoo=bar -jar server.jar"),
     ("https://mcp.linear.app/v1/sse", None, None, "https://mcp.linear.app/v1/sse"),
 ])
 def test_launch_line_keeps_ordinary_commands_paths_and_urls(url, command, args, line):

@@ -1268,16 +1268,17 @@ def test_startup_warn_does_not_emit_per_profile_line_when_fleet_is_current(monke
     assert captured.out == ""
 
 
-# ── #148719 part 2 review: state whitelist + owed-profile constraint ──
+# ── #148719 part 2 review: state whitelist + marker-aware owed constraint ──
 #
 # The first iteration treated every non-current state as a gateway this update owes a
-# restart for. That misattributes ``external`` (a separate checkout this update did not
-# touch) and ``restart_pending`` (a deferred self-restart the gateway already accepted) —
-# neither is cleared by this update's ``hermes gateway restart``. These tests pin the
-# whitelist to {stale, unknown, down} and prove external/restart_pending stay invisible
-# while genuine stale rows remain named. They also cover the owed-profile constraint that
-# stops an unrelated stale profile from being attributed to this update, including the
-# multiplexer row that serves an owed profile under another profile's name.
+# restart for. That misattributes ``external`` (a separate checkout) and ``restart_pending``
+# (a deferred self-restart) — neither is cleared by this update's ``hermes gateway restart``.
+# These tests pin the whitelist to {stale, unknown, down} and prove external/restart_pending
+# stay invisible while genuine stale rows remain named. The owed-profile constraint now
+# reads the marker's own inventory when the host obligation is armed (not an unrelated
+# latest.json receipt), keeps a multiplexer serving an owed profile, and fails closed —
+# generic fallback only — for an inventory-less/malformed marker so arbitrary fleet rows are
+# never attributed to this update.
 
 def _patch_collect_fleet_versions(monkeypatch, rows):
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: rows)
@@ -1293,7 +1294,10 @@ def test_collect_stale_fleet_rows_whitelists_only_stale_unknown_down(monkeypatch
         {"profile": "external_one", "pid": 15, "code_sha": "9" * 40, "code_version": "0.19.0", "state": "external"},
         {"profile": "pending_one", "pid": 16, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "restart_pending"},
     ])
-    rows = update_cmd_fleet._collect_stale_fleet_rows()
+    # Every profile is owed, so the whitelist is the only filter in play.
+    owed = {("gateway", p) for p in
+            ("stale_one", "unknown_one", "down_one", "current_one", "external_one", "pending_one")}
+    rows = update_cmd_fleet._collect_stale_fleet_rows(owed=owed)
     profiles = [row["profile"] for row in rows]
     assert profiles == ["stale_one", "unknown_one", "down_one"]
 
@@ -1303,7 +1307,7 @@ def test_startup_banner_omits_external_and_restart_pending_rows(monkeypatch, cap
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(
         expected_sha=disk_sha,
-        runtimes=[{"kind": "gateway", "profile": "alpha"}],
+        runtimes=[{"kind": "gateway", "profile": "alpha"}, {"kind": "gateway", "profile": "delta"}],
     )
     _patch_marker_sha(monkeypatch, disk_sha)
     _patch_collect_fleet_versions(monkeypatch, [
@@ -1354,12 +1358,93 @@ def test_collect_stale_fleet_rows_keeps_multiplexer_serving_owed_profile(monkeyp
     assert [row["profile"] for row in rows] == ["mux"]
 
 
-def test_collect_stale_fleet_rows_unconstrained_when_owed_empty(monkeypatch):
-    """An empty/None owed set (marker-armed startup, unverified coverage) keeps all
-    diagnostic rows rather than dropping every per-profile line."""
+def test_collect_stale_fleet_rows_fails_closed_when_owed_empty_or_none(monkeypatch):
+    """An empty/None owed set fails closed: no per-profile rows, generic fallback carries
+    the banner. Arbitrary fleet rows are never attributed to this update."""
     _patch_collect_fleet_versions(monkeypatch, [
         {"profile": "default", "pid": 1, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
         {"profile": "coder", "pid": 2, "code_sha": None, "code_version": None, "state": "unknown"},
     ])
-    assert len(update_cmd_fleet._collect_stale_fleet_rows(owed=None)) == 2
-    assert len(update_cmd_fleet._collect_stale_fleet_rows(owed=set())) == 2
+    assert update_cmd_fleet._collect_stale_fleet_rows(owed=None) == []
+    assert update_cmd_fleet._collect_stale_fleet_rows(owed=set()) == []
+
+
+def test_startup_banner_marker_inventory_constraints_to_owed_profile(monkeypatch, capsys):
+    """Marker inventory names one owed profile; an unrelated stale profile is not named."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "default", "pid": 4242, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "unrelated", "pid": 4243, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+    ])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "profile `default`" in err
+    assert "PID 4242 is stale" in err
+    assert "profile `unrelated`" not in err
+
+
+def test_startup_banner_marker_inventory_keeps_multiplexer_serving_owed(monkeypatch, capsys):
+    """A multiplexer serving an owed profile is named even when its own profile differs."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _patch_collect_fleet_versions(monkeypatch, [
+        {
+            "profile": "mux", "pid": 99, "code_sha": "7" * 40, "code_version": "0.20.0",
+            "state": "stale", "served_profiles": ["default", "coder"],
+        },
+    ])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "profile `mux`" in err
+    assert "PID 99 is stale" in err
+
+
+def test_owed_gateways_for_banner_inventoryless_or_malformed_marker_returns_none(monkeypatch):
+    """An inventory-less or malformed marker yields None (fail closed on attribution)."""
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._fleet_restart_obligation_armed", lambda: True)
+    # Inventory-less legacy marker: armed, but no inventory field.
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._obligation_fields", lambda: {"expected_sha": "e" * 40})
+    assert update_cmd_fleet._owed_gateways_for_banner({}, None) is None
+    # Malformed inventory JSON.
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._obligation_fields", lambda: {"inventory": "not-json"})
+    assert update_cmd_fleet._owed_gateways_for_banner({}, None) is None
+    # Unsupported inventory shape (wrong version).
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._obligation_fields", lambda: {"inventory": '{"version": 2, "runtimes": []}'})
+    assert update_cmd_fleet._owed_gateways_for_banner({}, None) is None
+
+
+def test_startup_banner_inventoryless_marker_falls_back_to_generic(monkeypatch, capsys):
+    """An inventory-less marker fails closed: no per-profile attribution, generic fallback."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    # Simulate the fail-closed outcome: marker armed but owed unverifiable.
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._owed_gateways_for_banner", lambda r, p: None)
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "default", "pid": 4242, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "other", "pid": 4243, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+    ])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert "did not restart running gateways" in err
+    assert "Run `hermes update` or `hermes gateway restart`." in err
+    assert "profile `default`" not in err
+    assert "profile `other`" not in err

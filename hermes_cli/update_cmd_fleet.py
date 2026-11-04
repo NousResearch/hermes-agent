@@ -535,6 +535,42 @@ def _warn_pending_fleet_restart(*, startup: bool = False, stale_rows: list[dict]
 _STALE_DIAGNOSTIC_STATES = frozenset({"stale", "unknown", "down"})
 
 
+def _owed_gateways_for_banner(
+    receipt: dict, pending_manual: list[dict] | None,
+) -> set[tuple[str, str]] | None:
+    """The owed ``(gateway, profile)`` identities this banner should constrain rows to.
+
+    A marker-armed startup uses the marker's own inventory — the host obligation owns its
+    inventory, and a ``latest.json`` receipt from a different update cannot narrow a
+    host-scoped obligation. ``_obligation_fields()`` exposes the marker fields and
+    ``_marker_owed_gateways()`` converts its recorded ``runtimes`` into the same
+    ``(gateway, profile)`` identities as the receipt path (#148719 part 2 review).
+
+    Returns ``None`` for an inventory-less (legacy) or malformed marker, and for a receipt
+    whose coverage is unverified — in every such case the banner fails closed on
+    per-profile attribution (no specific gateway named) rather than attributing arbitrary
+    fleet rows to this update.
+    """
+    if _fleet_restart_obligation_armed():
+        fields = _obligation_fields()
+        if not fields:
+            return None  # nothing armed, or a malformed record: fail closed
+        inventory_raw = fields.get("inventory")
+        if not inventory_raw:
+            return None  # inventory-less (legacy) marker: fail closed
+        try:
+            inventory = json.loads(inventory_raw)
+        except (ValueError, TypeError):
+            return None  # malformed inventory JSON: fail closed
+        try:
+            return _marker_owed_gateways(inventory)
+        except ValueError:
+            return None  # unsupported inventory shape: fail closed
+    with suppress(Exception):
+        return _receipt_owed_gateways(receipt, pending_manual or [])
+    return None
+
+
 def _collect_stale_fleet_rows(owed: set[tuple[str, str]] | None = None) -> list[dict]:
     """Live fleet rows this banner should name: ``stale`` / ``unknown`` / ``down`` only.
 
@@ -547,13 +583,11 @@ def _collect_stale_fleet_rows(owed: set[tuple[str, str]] | None = None) -> list[
     gateway already accepted) are excluded — a per-profile ``hermes gateway restart`` from
     this update clears neither of them.
 
-    When ``owed`` is supplied (the receipt's ``(gateway, profile)`` identities this update
-    actually owes), rows are constrained to those profiles so an unrelated stale profile is
-    not attributed to this update. A multiplexer row that serves an owed profile is kept
-    even when its own ``profile`` field names another. ``owed=None`` or an empty ``owed``
-    (unverified coverage, or a marker-armed startup whose receipt does not correspond to
-    this update) keeps the unconstrained diagnostic set rather than silently dropping every
-    row — the generic fallback still carries the banner when no diagnostic row survives.
+    ``owed`` constrains the rows to the profiles this update actually owes (a multiplexer
+    row that serves an owed profile is kept even under another profile's name). An empty or
+    ``None`` ``owed`` (unverified coverage, an inventory-less/malformed marker, or a receipt
+    that owes no gateway) fails closed: no per-profile rows are emitted, and the generic
+    fallback carries the banner — arbitrary fleet rows are never attributed to this update.
     """
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
@@ -563,10 +597,10 @@ def _collect_stale_fleet_rows(owed: set[tuple[str, str]] | None = None) -> list[
         return []
     rows = [row for row in fleet if row.get("state") in _STALE_DIAGNOSTIC_STATES]
     if not owed:
-        return rows
+        return []
     owed_profiles = {profile for kind, profile in owed if kind == "gateway"}
     if not owed_profiles:
-        return rows
+        return []
     return [
         row for row in rows
         if row.get("profile") in owed_profiles
@@ -585,9 +619,7 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pending_manual = retain_receipt_manual_serves(receipt)
     with suppress(Exception):
         if _update_owes_fleet_restart(receipt=receipt, pending_manual=pending_manual):
-            owed = None
-            with suppress(Exception):
-                owed = _receipt_owed_gateways(receipt, pending_manual or [])
+            owed = _owed_gateways_for_banner(receipt, pending_manual)
             stale_rows = _collect_stale_fleet_rows(owed=owed)
             _warn_pending_fleet_restart(startup=True, stale_rows=stale_rows)
     with suppress(Exception):

@@ -217,6 +217,136 @@ def test_near_threshold_probe_clamps_before_first_compaction():
     assert compressor.should_compress(200_000) is True
 
 
+def test_a_moved_compression_route_reprobes_a_warm_agent_and_drops_the_old_ceiling():
+    """A gateway session's side tasks follow the profile, so a warm agent can meet a new compression
+    route mid-session. The ceiling installed for the old summariser's window is dropped and the new
+    route is probed, as a main-model switch does; an unchanged route is not probed again."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression import ensure_compression_feasibility_checked
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    old = {"compression": {"provider": "custom", "model": "retired", "base_url": "http://localhost/v1"}}
+    new = {"compression": {"provider": "custom", "model": "replacement", "base_url": "http://localhost/v1"}}
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[80_000, 900_000]):
+        with session_auxiliary_scope(old):
+            ensure_compression_feasibility_checked(agent, 200_000)
+            ensure_compression_feasibility_checked(agent, 200_000)
+        assert aux_client.call_count == 1
+        assert compressor.threshold_tokens == 80_000
+        with session_auxiliary_scope(new):
+            ensure_compression_feasibility_checked(agent, 200_000)
+    assert aux_client.call_count == 2
+    assert compressor._aux_context_ceiling is None
+    assert compressor.threshold_tokens == 750_000
+
+
+@pytest.mark.parametrize("first_probe", ["main_model_switch", "first_compaction"])
+def test_a_route_change_reprobes_after_any_path_that_latched_the_probe(first_probe):
+    """A model switch (``revalidate``) and the first compaction (lazy probe) latch the probe too: they record
+    the route they measured, so a later compression-route change still re-probes."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression import (
+        ensure_compression_feasibility_checked, lazy_compression_feasibility_check, revalidate_compression_feasibility,
+    )
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    old = {"compression": {"provider": "custom", "model": "small", "base_url": "http://localhost/v1"}}
+    new = {"compression": {"provider": "custom", "model": "large", "base_url": "http://localhost/v1"}}
+    first = revalidate_compression_feasibility if first_probe == "main_model_switch" else lazy_compression_feasibility_check
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[80_000, 900_000]):
+        with session_auxiliary_scope(old):
+            first(agent)
+        assert compressor.threshold_tokens == 80_000
+        with session_auxiliary_scope(new):
+            ensure_compression_feasibility_checked(agent, 200_000)
+    assert aux_client.call_count == 2
+    assert compressor._aux_context_ceiling is None
+    assert compressor.threshold_tokens == 750_000
+
+
+def test_a_moved_providers_entry_reprobes_a_warm_agent():
+    """The compression task names a ``providers:`` entry; moving that entry to another server moves the
+    summariser even though the task block itself is unchanged."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression import ensure_compression_feasibility_checked
+
+    agent = _make_agent(main_context=1_000_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    task = {"compression": {"provider": "work-gateway", "model": "small"}}
+    entries = [{"base_url": "http://old.invalid/v1"}, {"base_url": "http://new.invalid/v1"}]
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
+         patch("agent.model_metadata.get_model_context_length", side_effect=[80_000, 900_000]), \
+         patch("hermes_cli.runtime_provider_custom._get_named_custom_provider", side_effect=lambda *a, **k: entries[0]):
+        with session_auxiliary_scope(task):
+            ensure_compression_feasibility_checked(agent, 200_000)
+            entries.pop(0)
+            ensure_compression_feasibility_checked(agent, 200_000)
+    assert aux_client.call_count == 2
+
+
+def test_a_replacement_summariser_is_measured_with_its_own_context_length_pin():
+    """``auxiliary.compression.context_length`` belongs to the configured summariser: a replacement with
+    its own pin is measured with that pin, not the one captured when the agent was built."""
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    from agent.conversation_compression import ensure_compression_feasibility_checked
+
+    agent = _make_agent(main_context=1_000_000)
+    compressor = agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._emit_status = lambda message: None
+    agent._compression_feasibility_checked = False
+    agent._aux_compression_context_length_config = 80_000  # captured at agent start, for the old summariser
+    client = MagicMock(base_url="http://localhost/v1", api_key="test-key")
+    old = {"compression": {"provider": "custom", "model": "small", "base_url": "http://localhost/v1",
+                           "context_length": 80_000}}
+    new = {"compression": {"provider": "custom", "model": "large", "base_url": "http://localhost/v1",
+                           "context_length": 900_000}}
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")):
+        with session_auxiliary_scope(old):
+            ensure_compression_feasibility_checked(agent, 200_000)
+        assert compressor.threshold_tokens == 80_000
+        with session_auxiliary_scope(new):
+            ensure_compression_feasibility_checked(agent, 200_000)
+    assert compressor._aux_context_ceiling is None
+    assert compressor.threshold_tokens == 750_000
+
+
+def test_an_unreadable_compression_route_never_stops_the_main_request():
+    """A side-task entry the route check cannot read (``base_url: 123``) must not raise out of the main
+    request's preflight; the probe is simply re-run."""
+    from agent.conversation_compression import ensure_compression_feasibility_checked
+
+    agent = _make_agent(main_context=1_000_000)
+    agent.context_compressor = ContextCompressor(
+        "test-main-model", config_context_length=1_000_000, threshold_percent=0.75, quiet_mode=True,
+    )
+    agent._compression_feasibility_checked = True
+    agent._compression_feasibility_route = ("custom", "small", "http://localhost/v1", "")
+    with patch("agent.auxiliary_task_config._get_auxiliary_task_config", side_effect=AttributeError("strip")):
+        ensure_compression_feasibility_checked(agent, 1_000)
+    assert agent._compression_feasibility_checked is False
+
+
 # ── Core warning logic ──────────────────────────────────────────────
 
 
@@ -323,14 +453,15 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     get_model_context_length so custom endpoints that lack /models still
     report the correct context window (fixes #8499)."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.85)
-    agent._aux_compression_context_length_config = 1_000_000
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
     mock_get_client.return_value = (mock_client, "custom/big-model")
 
     agent._emit_status = lambda msg: None
-    agent._check_compression_model_feasibility()
+    from agent.auxiliary_task_config import session_auxiliary_scope
+    with session_auxiliary_scope({"compression": {"context_length": 1_000_000}}):
+        agent._check_compression_model_feasibility()
 
     mock_ctx_len.assert_called_once_with(
         "custom/big-model",

@@ -5,7 +5,7 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { journaledTurnFinished, ownerPendingTurns } from '@/lib/inflight-turn-journal'
+import { journaledTurnFinished, type OwnerPendingTurns, ownerPendingTurns } from '@/lib/inflight-turn-journal'
 import type { SessionMessage, SessionMessagesResponse, SessionResumeResult } from '@/types/hermes'
 
 import { reconcileDurableHistory } from './utils'
@@ -16,6 +16,14 @@ export interface GraftedTranscriptPage {
   transcript: ChatMessage[]
   /** That transcript reconciled with the view's local rows. */
   snapshot: ChatMessage[]
+}
+
+export interface ResumeBarrierReread {
+  /** The page read again after the barrier, when one was needed and read. */
+  page: GraftedTranscriptPage | null
+  /** The owner's pending list for journal recovery. Withheld when a finished turn's page could not be read again,
+   *  so the journal is folded as before instead of retired beside a page that may lack the reply. */
+  owner: OwnerPendingTurns | undefined
 }
 
 /** Graft a newest-tail REST page onto the view: older pages kept, local tail reconciled. */
@@ -57,11 +65,12 @@ export async function rereadPageAfterResumeBarrier(
   early: GraftedTranscriptPage | null,
   storedSessionId: string,
   scope: ProfileScope
-): Promise<GraftedTranscriptPage | null> {
+): Promise<ResumeBarrierReread> {
+  const owner = ownerPendingTurns(resumed.info?.pending_submissions)
   const tail = early?.snapshot.at(-1)
 
   if (!early || !tail || resumed.messages?.length) {
-    return null
+    return { page: null, owner }
   }
 
   const idleWithLocalTail =
@@ -70,20 +79,17 @@ export async function rereadPageAfterResumeBarrier(
     !resumed.queued &&
     !early.transcript.some(message => message.id === tail.id)
 
-  if (
-    !idleWithLocalTail &&
-    !journaledTurnFinished(storedSessionId, ownerPendingTurns(resumed.info?.pending_submissions))
-  ) {
-    return null
+  if (!idleWithLocalTail && !journaledTurnFinished(storedSessionId, owner)) {
+    return { page: null, owner }
   }
 
   const page = await getLatestSessionMessages(storedSessionId, scope).catch(() => null)
 
   if (!page || (early.page.session_id && page.session_id && page.session_id !== early.page.session_id)) {
-    return null
+    return { page: null, owner: undefined }
   }
 
-  return graftTranscriptPage(page, early.snapshot, storedSessionId, scope)
+  return { page: await graftTranscriptPage(page, early.snapshot, storedSessionId, scope), owner }
 }
 
 const durableRowId = ({ id, row_id }: SessionMessage): number | undefined => {

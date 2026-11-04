@@ -232,7 +232,25 @@ def test_the_gateway_a_start_restarts_does_not_end_it_by_serving_an_earlier_conf
     assert _progress(client) is None
 
 
-@pytest.mark.parametrize("ending", ["restart failed", "followed as long as the pane waits", "stopped"])
+def test_a_later_starts_restart_replaces_the_one_an_earlier_start_is_followed_by(client, nous, gateway, builds):
+    first = _start_in_background(client)
+    builds.wait_started()
+    second = _start_in_background(client)
+
+    builds.finish_one()
+    _joined(first)
+    builds.wait_started()
+    gateway["restart"] = {**gateway["restart"], "restart_pid": RESTART_PID + 1}
+    builds.finish_one()
+    _joined(second)
+
+    # No status read saw the first restart fail before the second replaced it as the newest one;
+    # the second fails too.
+    gateway["failure"] = {"pid": RESTART_PID + 1, "exit_code": 1, "reason": "port 9120 is in use"}
+    assert _progress(client) is None
+
+
+@pytest.mark.parametrize("ending", ["restart failed", "followed as long as the pane waits", "stop", "restart"])
 def test_a_followed_restart_is_no_longer_reported_once_it_cannot_serve_the_start(
         client, nous, gateway, instant_build, monkeypatch, ending):
     from hermes_cli.web_routers import webapp_access as routes
@@ -244,10 +262,10 @@ def test_a_followed_restart_is_no_longer_reported_once_it_cannot_serve_the_start
     if ending == "restart failed":
         assert _progress(client)["step"] == "restarting"
         gateway["failure"] = {"pid": RESTART_PID, "exit_code": 1, "reason": "port 9187 is in use"}
-    elif ending == "stopped":
+    elif ending in ("stop", "restart"):
         assert _progress(client)["step"] == "restarting"
         gateway["restart"] = {**gateway["restart"], "restart_pid": RESTART_PID + 1}
-        assert client.post("/api/webapp-access/stop").status_code == 200
+        assert client.post(f"/api/webapp-access/{ending}").status_code == 200
 
     assert _progress(client) is None
 

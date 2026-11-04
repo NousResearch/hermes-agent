@@ -163,7 +163,9 @@ def _normalize_nostr_allow_entries(entries: set) -> set:
 
 def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool:
     """Whether *user_id* (under any platform-specific alias) is in *allowed_ids*."""
-    check_ids = {user_id}
+    # Tiers the adapter resolved for the SAME principal (Feishu open_id/user_id/union_id). They come
+    # from the signed inbound event, so a sender can only ever add their own IDs here.
+    check_ids = {user_id, *(getattr(source, "user_id_aliases", ()) or ())}
 
     # WhatsApp (Baileys + Cloud): phone<->LID / JID aliases match the same principal.
     if source.platform in {Platform.WHATSAPP, Platform.WHATSAPP_CLOUD}:
@@ -739,6 +741,10 @@ class GatewayAuthorizationMixin:
         user_id = source.user_id
         if not user_id:
             return False
+        # Every tier the adapter resolved for this principal (Feishu open_id / tenant user_id /
+        # union_id). A grant keyed on ANY of them is the same person, and the primary tier can flip
+        # when the app gains a scope mid-life — see the Feishu employee-id regression.
+        authz_ids = {user_id, *(getattr(source, "user_id_aliases", ()) or ())}
 
         entry = _registry_entry(source.platform)
         platform_allow_env = authz_field(source.platform.value, "allowed_users_env", entry) or ""
@@ -751,7 +757,10 @@ class GatewayAuthorizationMixin:
         # Pairing store: a first-class grant created only by an operator approving a code. Honored as
         # a UNION with the allowlist (approval also mirrors into it).
         pairing_store = self._pairing_store_for(source)
-        if pairing_store is not None and pairing_store.is_approved(source.platform.value if source.platform else "", user_id):
+        if pairing_store is not None and any(
+            pairing_store.is_approved(source.platform.value if source.platform else "", candidate)
+            for candidate in authz_ids
+        ):
             return True
 
         platform_allowlist = _auth_env(platform_allow_env)

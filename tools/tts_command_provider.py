@@ -6,7 +6,7 @@ context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-ti
 process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
-``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
+``{speed}``, ``{instructions}``. Built-in provider names always win over a same-named ``providers`` entry.
 """
 
 from __future__ import annotations
@@ -340,9 +340,14 @@ def _configured_command_tts_output_path(path: Path, config: dict[str, Any]) -> P
 
 def _generate_command_tts(
     text: str, output_path: str, provider_name: str, config: dict[str, Any], tts_config: dict[str, Any],
+    instructions: Optional[str] = None,
 ) -> str:
     """Generate speech by running a user-configured shell command; returns the audio path it wrote.
-    Raises ``ValueError`` for bad provider config, ``RuntimeError`` for timeouts / bad exits / no output."""
+    Raises ``ValueError`` for bad provider config, ``RuntimeError`` for timeouts / bad exits / no output.
+
+    ``instructions`` is the tool's voice-design/style guidance; it reaches the command as the
+    ``{instructions}`` placeholder so style-capable local backends (voice-design TTS servers) can
+    honour it, and is an empty string when the caller supplied none."""
     command_template = str(config.get("command") or "").strip()
     if not command_template:
         raise ValueError(f"tts.providers.{provider_name}.command is not configured")
@@ -359,6 +364,7 @@ def _generate_command_tts(
             "format": _get_command_tts_output_format(config, str(output)),
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
             "speed": str(config.get("speed", tts_config.get("speed", ""))),
+            "instructions": str(instructions or ""),
         }
         command = render_command_template(command_template, placeholders)
         try:

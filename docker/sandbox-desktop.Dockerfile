@@ -12,6 +12,25 @@
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
 # see through the substitution, hence the inline ignore.
 ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26
+
+# The pm-pinned Chromium from pm/lock.json, staged by the stdlib-only pm
+# provisioner (sha256-verified, the same path the Hermes image uses) in a
+# throwaway stage, so the published image still carries no Hermes code. Only
+# the store entry (chromium-<revision>/ with Playwright's INSTALLATION_COMPLETE
+# marker) is copied into /opt/playwright below. `npx playwright install` used to
+# fetch whatever build the npm-resolved Playwright wanted, which lagged the pin.
+# hadolint ignore=DL3006
+FROM ${SANDBOX_BASE} AS chromium
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+WORKDIR /src
+ENV HERMES_RUNTIME_DIR=/opt/pm-store
+COPY pm/ pm/
+COPY hermes_constants.py hermes_constants.py
+COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
+RUN python3 -c 'from pm import ensure; ensure("chromium", explicit=True)' && \
+    entry="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").path)')" && \
+    mkdir -p /out && mv "$entry" /out/
+
 # hadolint ignore=DL3006
 FROM ${SANDBOX_BASE}
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -43,14 +62,16 @@ RUN apt-get -o Acquire::Retries=3 update && \
         at-spi2-core libgtk-3-0 libnss3 libasound2 libxss1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Headed Chromium through Playwright (the same build the Hermes -desktop image
-# uses), so the agent's browser and the dock's Browser icon share one binary and
-# one --user-data-dir: tools/bot_desktop/sandbox_host.py finds it under
-# /opt/playwright. --with-deps pulls the Chromium runtime libraries.
+# Headed Chromium: the pm-pinned build the Hermes image uses, so the agent's
+# browser and the dock's Browser icon share one binary and one --user-data-dir:
+# tools/bot_desktop/sandbox_host.py finds it under /opt/playwright. Playwright
+# only installs the Chromium runtime libraries here, never the browser.
+COPY --from=chromium /out/ /opt/playwright/
 RUN for i in 1 2 3; do \
-        npx --yes playwright@1 install --with-deps chromium && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
-    done && chmod -R a+rX /opt/playwright
+        npx --yes playwright@1 install-deps chromium && break || \
+        { [ "$i" = 3 ] && exit 1; echo "playwright chromium deps install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+    done && chmod -R a+rX /opt/playwright && \
+    for chrome in /opt/playwright/chromium-*/chrome-linux*/chrome; do "$chrome" --version; done
 
 # cua-driver: computer_use's MCP driver. Pinned release tarball from the
 # cua-driver-rs-v* tags (never releases/latest: prereleases publish 0 assets).

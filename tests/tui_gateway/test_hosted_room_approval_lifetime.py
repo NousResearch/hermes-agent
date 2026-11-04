@@ -256,3 +256,63 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path,
     assert service.status("room-1")["pending_actions"][0]["request_id"] == (
         "approval-B"
     )
+
+
+def test_allow_paused_after_its_live_read_cannot_answer_after_a_concurrent_stop(pending_approval, monkeypatch):
+    """An Allow whose live-attempt read raced another window's Stop is ordered with that Stop."""
+    import threading
+
+    service, task, _lease = pending_approval
+    statuses_at_dispatch = []
+
+    class _RecordingRPC(_FakeRPC):
+        def approve(self, **kwargs):
+            statuses_at_dispatch.append(driver.get_task(service.db_path, task["identity"])["status"])
+            return super().approve(**kwargs)
+
+    service.rpc = service.runtime.rpc = _RecordingRPC()
+    for hook in ("_interrupt_stopping_task", "_settle_stopping_completion", "_peer_stop_acknowledged"):
+        monkeypatch.setattr(service.runtime, hook, lambda *_args: False)
+    read, stop_progress = threading.Event(), threading.Event()
+    approver = threading.current_thread()
+    real_list_tasks = driver.list_tasks
+
+    def list_tasks(*args, **kwargs):
+        rows = real_list_tasks(*args, **kwargs)
+        if threading.current_thread() is approver and not read.is_set():
+            read.set()
+            assert stop_progress.wait(10), "Stop neither finished nor waited for this Allow"
+        return rows
+
+    class _SignallingLock:
+        """Stop waiting on this lock is as far as it can get while the Allow holds it."""
+        def __init__(self, lock):
+            self._lock = lock
+
+        def __enter__(self):
+            if not self._lock.acquire(blocking=False):
+                if threading.current_thread() is not approver:
+                    stop_progress.set()
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *exc):
+            self._lock.release()
+
+    monkeypatch.setattr(driver, "list_tasks", list_tasks)
+    service._approval_stop_lock = _SignallingLock(threading.RLock())
+    stopper = threading.Thread(target=lambda: (read.wait(10), service.stop_room("room", cancel_id="stop"),
+                                               stop_progress.set()))
+    stopper.start()
+    try:
+        result = service.approve_room_task(
+            "room", member_id="ops", task_id=task["identity"].task_id,
+            execution_generation=task["execution_generation"], request_id="approval", choice="once")
+    except RuntimeError as exc:
+        result = str(exc)
+    stopper.join(10)
+    assert not stopper.is_alive()
+    # Either the member got its answer while the attempt still ran, or the Allow was refused.
+    assert statuses_at_dispatch in ([], ["running"]), (statuses_at_dispatch, result)
+    assert driver.get_task(service.db_path, task["identity"])["status"] == "stopping"
+    assert ("room", "ops") not in service._pending_actions

@@ -134,6 +134,10 @@ class HostedRoomService:
         self.discussion_limits = _discussion_limits(self.root)
         hosted_rooms.prune_disbanded_rooms(self.db_path)
         self._policy_lock = threading.RLock()
+        # Orders Stop with an approval's live check and dispatch: an Allow either reaches the member
+        # before Stop marks its attempt stopping, or sees the stop and is refused. Taken before
+        # ``_policy_lock``, never inside it.
+        self._approval_stop_lock = threading.RLock()
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
             self.db_path,
@@ -698,6 +702,10 @@ class HostedRoomService:
 
     def stop_room(
         self, room_id: str, *, cancel_id: str, require_acknowledged: bool = False) -> int:
+        with self._approval_stop_lock:
+            return self._stop_room(room_id, cancel_id=cancel_id, require_acknowledged=require_acknowledged)
+
+    def _stop_room(self, room_id: str, *, cancel_id: str, require_acknowledged: bool) -> int:
         gateway_id, epoch = self._owned_authority(room_id)
         fence = hosted_rooms.request_room_stop(
             self.db_path, room_id=room_id, cancel_id=cancel_id, expected_gateway_id=gateway_id,
@@ -710,6 +718,11 @@ class HostedRoomService:
                 # A replay retains its original fence; work admitted afterward belongs to the
                 # next message. Disband must drain all work before deleting the room.
                 if require_acknowledged or int(task["payload"]["source_event_seq"]) < int(fence["seq"])}
+            # A stopped attempt's approval is spent: a concurrent Allow waiting on the lock finds nothing.
+            stopped = {(task["identity"].task_id, task.get("execution_generation")) for task in tasks.values()}
+            for key in [key for key, action in self._pending_actions.items() if key[0] == room_id
+                        and (action.get("task_id"), action.get("execution_generation")) in stopped]:
+                self._pending_actions.pop(key, None)
             for task in tasks.values():
                 own_cancel_id = (
                     task.get("status") == "stopping" and str(task.get("cancel_id") or ""))
@@ -767,33 +780,44 @@ class HostedRoomService:
                 str(pending.get("request_id") or ""), pending.get("task_id"),
                 int(pending.get("execution_generation") or 0),
             ) == (requested_approval_id, task_id, execution_generation)
-        live = _approvable_attempts(driver.list_tasks(self.db_path, room_id=room_id))
-        with self._policy_lock:
-            action = self._pending_actions.get(key)
-            if not requested_approval_id or not matches(action):
-                raise RuntimeError("room approval is no longer pending")
-            if (member_id, task_id, execution_generation) not in live:
-                self._pending_actions.pop(key, None)
-                raise RuntimeError("room approval is no longer pending")
-        if choice not in {"once", "deny"}:
-            raise RuntimeError("room approval choice must be once or deny")
+        # The live check and the dispatch hold the Stop lock, so a Stop either lands first (and this
+        # Allow is refused) or after the member already has its answer.
+        with self._approval_stop_lock:
+            live = _approvable_attempts(driver.list_tasks(self.db_path, room_id=room_id))
+            with self._policy_lock:
+                action = self._pending_actions.get(key)
+                if not requested_approval_id or not matches(action):
+                    raise RuntimeError("room approval is no longer pending")
+                if (member_id, task_id, execution_generation) not in live:
+                    self._pending_actions.pop(key, None)
+                    raise RuntimeError("room approval is no longer pending")
+            if choice not in {"once", "deny"}:
+                raise RuntimeError("room approval choice must be once or deny")
+            result = self._dispatch_approval(
+                route, client, action, task_id=task_id, execution_generation=execution_generation,
+                request_id=requested_approval_id, choice=choice)
+            with self._policy_lock:
+                if matches(self._pending_actions.get(key)):
+                    self._pending_actions.pop(key, None)
+        self.runtime.wakeup()
+        return result
+
+    def _dispatch_approval(
+        self, route, client, action: Mapping[str, Any], *, task_id: str, execution_generation: int,
+        request_id: str, choice: str) -> Mapping[str, Any]:
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(
                 task_id=task_id, execution_generation=execution_generation,
-                request_id=requested_approval_id, choice=choice, grant=route.grant)
+                request_id=request_id, choice=choice, grant=route.grant)
         else:
             session_id = str(action.get("session_id") or "")
             if not session_id:
                 raise RuntimeError("local room approval identity is unavailable")
             result = self.rpc.approve(
-                session_id=session_id, request_id=requested_approval_id, choice=choice)
+                session_id=session_id, request_id=request_id, choice=choice)
         if result is None:
             raise RuntimeError("room approval target is unavailable")
-        with self._policy_lock:
-            if matches(self._pending_actions.get(key)):
-                self._pending_actions.pop(key, None)
-        self.runtime.wakeup()
         return result
 
     def status(self, room_id: str | None = None) -> dict[str, Any]:

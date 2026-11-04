@@ -256,7 +256,7 @@ _CLI_SECRET_FLAG_RE = re.compile(
     r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
     r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
     r"|credential)s?)"
-    r"(?P<sep>\s*=\s*|\s+)"
+    r"(?P<sep>\s*=|\s+)"
     r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)",
     re.IGNORECASE,
 )
@@ -264,11 +264,17 @@ _CLI_LOGIN_P_RE = re.compile(
     r"(?P<flag>\b(?:docker|podman|nerdctl)\s+login\b[^\n;|&]*?\s-p\s*)"
     r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)"
 )
-# Azure/SQL connection-string keys. They are ``Name=value`` inside a quoted string, so
+# Azure connection-string keys. They are ``Name=value`` inside a quoted string, so
 # every ENV pass declines them: the name is mixed case and carries no underscore boundary.
+# The key must open a connection-string segment (start, ``;``, a quote or whitespace before
+# it, no space around ``=``): ``this.accountKey = x`` / ``dt.PrimaryKey = new …`` in source
+# read through read_file or a terminal stays byte-identical, or the agent cannot patch it.
+# A spaced ``AccountKey = …`` (ini files, PowerShell) only counts when the value is a
+# 16+ char base64 run carrying a digit, which an identifier like ``config.Key`` or
+# ``StorageAccountKeyFromVault`` is not.
 _CONNSTR_SECRET_KEY_RE = re.compile(
-    r"(?P<flag>\b(?:AccountKey|SharedAccessKey|SharedAccessSignature|PrimaryKey|SecondaryKey)"
-    r"(?:\s*=\s*))"
+    r"(?P<flag>(?<![^;'\"\s])(?:AccountKey|SharedAccessKey|SharedAccessSignature)"
+    r"(?:=|[ \t]*+=[ \t]*+(?=[A-Za-z+/]*[0-9])(?=[A-Za-z0-9+/]{16,}={0,2}(?![\w.(]))))"
     r"(?P<value>[^;\s'\"&]+)",
     re.IGNORECASE,
 )
@@ -276,7 +282,7 @@ _CONNSTR_SECRET_KEY_RE = re.compile(
 # Cheap pre-gates: every flag the regexes above can match contains one of these.
 _CLI_SECRET_FLAG_GATE = re.compile(r"-{1,2}[A-Za-z]")
 _CLI_LOGIN_GATE = re.compile(r"(?:docker|podman|nerdctl)\s+login\b", re.IGNORECASE)
-_CONNSTR_GATE = re.compile(r"(?:AccountKey|SharedAccessKey|PrimaryKey|SecondaryKey)", re.IGNORECASE)
+_CONNSTR_GATE = re.compile(r"(?:AccountKey|SharedAccessKey|SharedAccessSignature)", re.IGNORECASE)
 
 # Lowercase env names: only underscore-boundary forms (``openai_key=``) — NOT
 # bare ``password=``/``token=``, which appear in prose, URLs, and form bodies.
@@ -345,7 +351,7 @@ _CFG_ANCHORED_RE = re.compile(
 # stays backtrackable (see _CFG_DOTTED_RE).
 _YAML_CFG_NAMES = (
     r"(?:api[ _.\-]?key|token|secret|passwd|password|credential"
-    r"|client[ _.\-]?key[ _.\-]?data)"
+    r"|client[ _.\-]?key[ _.\-]?data|(?:private|signing|encryption|master|hmac)[ _.\-]?key)"
 )
 _YAML_ASSIGN_RE = re.compile(
     rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
@@ -600,8 +606,11 @@ _B64_PEM_RE = re.compile(r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]{60,}")
 _PGP_PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?-----END PGP PRIVATE KEY BLOCK-----"
 )
+# Line ends may be CRLF (Windows writes .ppk that way) or a JSON-escaped ``\\n``.
+_PPK_EOL = r"(?:\r?\n|\\r\\n|\\n)"
 _PUTTY_PRIVATE_LINES_RE = re.compile(
-    r"(?m)^(Private-Lines:[ \t]*[0-9]+[ \t]*\n)(?:[A-Za-z0-9+/=]{16,}[ \t]*\n?)+"
+    rf"(?<![\w-])(Private-Lines:[ \t]*+[0-9]++[ \t]*+(?P<eol>{_PPK_EOL}))"
+    rf"(?:[A-Za-z0-9+/=]{{16,}}+[ \t]*+{_PPK_EOL}?)++"
 )
 _AGE_SECRET_KEY_RE = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{20,}")
 
@@ -629,7 +638,7 @@ def _is_b64_pem_key(blob: str) -> bool:
 # swallowing intervening lines and corrupting tool OUTPUT for any source containing a postgresql:// f-string
 # template. See issue #33801.
 _DB_CONNSTR_RE = re.compile(
-    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s]*:)([^@\s]+)(@)",
+    r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^:\s]*+:)((?:[^@\s:]++|:(?!//))++)(@)",
     re.IGNORECASE,
 )
 
@@ -850,10 +859,14 @@ def _mask_flag_value(match: "re.Match[str]") -> str:
 # prose is a placeholder or a word (``--token TOKEN``, ``[--password PASSWORD]``, ``use
 # --token to pass…``), the next flag (``psql --password -h db``) or a sub-option spec
 # (``docker build --secret id=npmrc``). None of those is the credential.
-# A metavar is upper case (``TOKEN``, ``DB_PASSWORD``); a prose word is short and lower case.
-# A long or mixed-case alphabetic value (``correcthorsebatterystaple``) is still masked.
+# A metavar is upper case (``TOKEN``, ``DB_PASSWORD``), snake case (``db_name``) or a
+# camelCase type name (cobra's ``stringArray``); a prose word is short and lower case.
+# A long single lower-case word (``correcthorsebatterystaple``) or anything carrying a
+# digit or symbol is still masked.
 _FLAG_PLACEHOLDER_RE = re.compile(
-    r"(?:[A-Z][A-Z_]*|[a-z]{1,8})[\]).,:;]*|[-\[(<].*|[a-z][\w-]*=.*"
+    r"(?:[A-Z][A-Z_]*|[a-z]{1,8}|[a-z]+(?:_[a-z]+)+|[a-z]+(?:[A-Z][a-z]+)+)[\]).,:;]*"
+    r"|[-\[(<].*|[a-z][\w-]*=.*"
+    r"|\S*(?:xxx|XXX|\.\.\.)"  # a docs sample: ``--api-key sk-or-v1-xxx``
 )
 
 
@@ -1124,6 +1137,9 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
+_DSN_PW_PLACEHOLDER_RE = re.compile(r"<[^<>]*>|\$\{?\w+\}?")
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
     """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
     def _redact_db(m):
@@ -1131,6 +1147,9 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
         # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
         pw = m.group(2)
         if code_file and pw.startswith("{") and pw.endswith("}"):
+            return m.group(0)
+        # Password-only URLs in docs: ``redis://:<password>@`` / ``redis://:${REDIS_PASSWORD}@``.
+        if m.group(1).endswith("://:") and _DSN_PW_PLACEHOLDER_RE.fullmatch(pw):
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
@@ -1232,11 +1251,11 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             lambda m: "[REDACTED PRIVATE KEY]" if _is_b64_pem_key(m.group(0)) else m.group(0),
             text,
         )
-    if "PGP PRIVATE KEY BLOCK" in text:
+    if "END PGP PRIVATE KEY BLOCK" in text:  # no END, no match: skip the quadratic scan
         text = _PGP_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
     if "Private-Lines:" in text:
         text = _PUTTY_PRIVATE_LINES_RE.sub(
-            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]\n", text
+            lambda m: m.group(1) + "[REDACTED PRIVATE KEY]" + m.group("eol"), text
         )
     if "AGE-SECRET-KEY-1" in text:
         text = _AGE_SECRET_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)

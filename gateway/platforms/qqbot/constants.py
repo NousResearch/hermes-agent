@@ -19,7 +19,11 @@ DEFAULT_API_TIMEOUT = 30.0
 FILE_UPLOAD_TIMEOUT = 120.0
 CONNECT_TIMEOUT_SECONDS = 20.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
-MAX_RECONNECT_ATTEMPTS = 100
+# In-adapter retries only need to ride out brief jitter (10 tries ≈ 7 min at the
+# 2/5/10/30/60... backoff). Long-term retry belongs to the runner's
+# _platform_reconnect_watcher (30s→300s cap, never gives up on retryable fatals) —
+# not 1.5h of in-adapter backoff that ends in a silent death.
+MAX_RECONNECT_ATTEMPTS = 10
 RATE_LIMIT_DELAY = 60  # seconds
 QUICK_DISCONNECT_THRESHOLD = 5.0  # seconds
 MAX_QUICK_DISCONNECT_COUNT = 3

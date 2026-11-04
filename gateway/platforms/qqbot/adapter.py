@@ -204,11 +204,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             # Tighter keepalive pool so idle CLOSE_WAIT sockets drain faster behind proxies.
             # See #18451.
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            from tools.url_safety import create_ssrf_safe_async_client
-            self._http_client = create_ssrf_safe_async_client(
-                timeout=30.0, follow_redirects=True,
-                event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
+            await self._reset_http_client()
 
             await self._open_gateway_ws(log_url=True)
             self._listen_task = asyncio.create_task(self._listen_loop())
@@ -251,6 +247,19 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             await self._http_client.aclose()
             self._http_client = None
         self._fail_pending("Disconnected")
+
+    async def _reset_http_client(self) -> None:
+        """Replace the shared httpx client with a brand-new one (swap in first, then
+        close the old), so reconnects never retry on a wedged connection pool — a
+        stale client would fail every subsequent token fetch (2026-11-03 incident)."""
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from tools.url_safety import create_ssrf_safe_async_client
+        old, self._http_client = self._http_client, create_ssrf_safe_async_client(
+            timeout=30.0, follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]}, limits=platform_httpx_limits())
+        if old is not None:
+            with contextlib.suppress(Exception):
+                await old.aclose()
 
     # ── Token management ──
 
@@ -376,7 +385,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if code == 4008:
                     logger.info("[%s] Rate limited (4008), waiting %ds", self._log_tag, RATE_LIMIT_DELAY)
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
+                        await self._hand_off_to_gateway_reconnect("rate limited (4008)")
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     await reconnect()
@@ -394,8 +403,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
                 await reconnect()
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
+                    await self._hand_off_to_gateway_reconnect(f"WebSocket close code {code}")
                     return
 
             except Exception as exc:
@@ -406,10 +414,28 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 self._fail_pending("Connection interrupted")
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                    logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    await self._hand_off_to_gateway_reconnect(f"repeated WebSocket errors: {exc}")
                     return
                 await reconnect()
+
+    async def _hand_off_to_gateway_reconnect(self, reason: str) -> None:
+        """Give up on in-adapter retries and hand off to the runner's reconnect watcher.
+
+        Must set a *retryable* fatal error (``_mark_disconnected`` alone would leave the
+        runner unaware and the channel dead forever — 2026-11-03 incident). The
+        notification runs in a detached task: the runner's fatal handler answers with
+        ``disconnect()``, which cancels ``_listen_task`` (our caller) — an inline await
+        would be cut short by CancelledError: no log, no reconnect (same rationale as
+        photon's ``_dispatch_fatal_notification``). ``_notify_fatal_error`` keeps a
+        strong ref to the detached task, so it won't be GC'd mid-flight."""
+        logger.error(
+            "[%s] Giving up reconnecting after %d attempts (%s); handing off to gateway reconnect watcher",
+            self._log_tag, MAX_RECONNECT_ATTEMPTS, reason)
+        self._set_fatal_error(
+            "qq_reconnect_exhausted",
+            f"QQ reconnect attempts exhausted ({reason}); handed off to gateway for background retry",
+            retryable=True)
+        asyncio.create_task(self._notify_fatal_error())
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
@@ -417,6 +443,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         await asyncio.sleep(delay)
 
         self._heartbeat_interval = 30.0  # reset until Hello
+        # Start from a clean connection pool: a wedged httpx client would fail every
+        # token fetch for the rest of the reconnect loop (2026-11-03 incident).
+        await self._reset_http_client()
         try:
             await self._open_gateway_ws()
             self._mark_connected()

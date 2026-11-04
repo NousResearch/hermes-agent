@@ -1397,3 +1397,140 @@ class TestReadEventsClosedWsGuard:
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
 
+
+
+# ---------------------------------------------------------------------------
+# Reconnect: HTTP client rebuild + fatal hand-off to runner
+# ---------------------------------------------------------------------------
+
+class TestReconnectRebuildsHttpClient:
+    """Regression (2026-11-03 incident): _reconnect must build a fresh httpx client
+    before retrying, so a wedged connection pool can't fail every subsequent
+    token fetch for the rest of the reconnect loop."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_reconnect_creates_fresh_client_and_closes_old(self, monkeypatch):
+        import gateway.platforms.qqbot.adapter as adapter_mod
+        from gateway.platforms.qqbot import QQAdapter
+
+        monkeypatch.setattr(adapter_mod, "RECONNECT_BACKOFF", [0])
+
+        adapter = self._make_adapter()
+        old_client = httpx.AsyncClient()
+        adapter._http_client = old_client
+
+        async def _fail_open():
+            raise RuntimeError("no gateway")
+
+        adapter._open_gateway_ws = _fail_open
+
+        assert await adapter._reconnect(0) is False
+        assert adapter._http_client is not old_client
+        assert isinstance(adapter._http_client, httpx.AsyncClient)
+        assert old_client.is_closed
+        await adapter._http_client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_succeeds_with_new_client(self, monkeypatch):
+        import gateway.platforms.qqbot.adapter as adapter_mod
+        from gateway.platforms.qqbot import QQAdapter
+
+        monkeypatch.setattr(adapter_mod, "RECONNECT_BACKOFF", [0])
+
+        adapter = self._make_adapter()
+        old_client = httpx.AsyncClient()
+        adapter._http_client = old_client
+
+        async def _open_ok():
+            return None
+
+        adapter._open_gateway_ws = _open_ok
+        adapter._mark_connected = mock.Mock()
+
+        assert await adapter._reconnect(0) is True
+        assert adapter._http_client is not old_client
+        assert old_client.is_closed
+        await adapter._http_client.aclose()
+
+
+class TestReconnectExhaustionHandsOffToRunner:
+    """Regression (2026-11-03 incident): exhausting the in-adapter reconnect budget
+    must set a retryable fatal error and notify the runner (detached task), instead
+    of silently going dead via _mark_disconnected only."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_sets_retryable_fatal_and_notifies(self, monkeypatch):
+        import gateway.platforms.qqbot.adapter as adapter_mod
+
+        monkeypatch.setattr(adapter_mod, "MAX_RECONNECT_ATTEMPTS", 1)
+        monkeypatch.setattr(adapter_mod, "RECONNECT_BACKOFF", [0])
+        monkeypatch.setattr(adapter_mod, "RATE_LIMIT_DELAY", 0)
+
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        async def _always_fail(backoff_idx):
+            return False
+
+        adapter._reconnect = _always_fail
+
+        notify_calls = []
+
+        async def _record_notify():
+            notify_calls.append(True)
+
+        adapter._notify_fatal_error = _record_notify
+
+        await asyncio.wait_for(adapter._listen_loop(), timeout=5)
+        for _ in range(10):  # let the detached notification task run
+            await asyncio.sleep(0)
+
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "qq_reconnect_exhausted"
+        assert adapter.fatal_error_retryable is True
+        assert notify_calls == [True]
+        assert adapter._running is False
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_on_close_code_also_hands_off(self, monkeypatch):
+        import gateway.platforms.qqbot.adapter as adapter_mod
+        from gateway.platforms.qqbot.adapter import QQCloseError
+
+        monkeypatch.setattr(adapter_mod, "MAX_RECONNECT_ATTEMPTS", 2)
+        monkeypatch.setattr(adapter_mod, "RECONNECT_BACKOFF", [0])
+
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        async def _always_fail(backoff_idx):
+            return False
+
+        adapter._reconnect = _always_fail
+
+        async def _raise_close():
+            raise QQCloseError(4009, "Session timed out")
+
+        adapter._read_events = _raise_close
+        notify_calls = []
+
+        async def _record_notify():
+            notify_calls.append(True)
+
+        adapter._notify_fatal_error = _record_notify
+
+        await asyncio.wait_for(adapter._listen_loop(), timeout=5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        assert adapter.fatal_error_code == "qq_reconnect_exhausted"
+        assert adapter.fatal_error_retryable is True
+        assert notify_calls == [True]
+        assert adapter._running is False

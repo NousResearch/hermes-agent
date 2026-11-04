@@ -19,6 +19,11 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.model_metadata_catalog import (
+    _catalog_key_matches,
+    _longest_key_match,
+    _normalize_model_version,
+)
 from agent.model_metadata_llamacpp import llamacpp_context
 from agent.model_metadata_memo_bounds import MEMO_LOCK, bound_codex_caches, remember_endpoint_models as _remember_endpoint_models
 
@@ -540,35 +545,6 @@ def _server_root(base_url: str) -> str:
     """Probe root for a local server: IPv4-resolved, ``/v1`` suffix stripped."""
     server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     return server_url.removesuffix("/v1")
-
-
-# Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
-# match only on an id boundary, after folding aggregator slugs (``solar-pro-3``) into the native form.
-_BOUNDARY_MATCHED_KEY_PREFIXES = ("solar-",)
-_HYPHENATED_GENERATION_RE = re.compile(
-    rf"((?:{'|'.join(map(re.escape, _BOUNDARY_MATCHED_KEY_PREFIXES))})[a-z]+)-(\d{{1,2}})(?=[-:.@]|$)")
-
-
-def _catalog_key_matches(key: str, model_lower: str) -> bool:
-    """Substring match with version separators normalised on both sides, so a relay slug like
-    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398).
-    Boundary-matched families: a key must be followed by ``-:.@`` or the end, and a key ending in
-    ``-`` is the family default for bare names (``org/`` allowed) continuing with a lineup letter."""
-    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
-        model_lower = _HYPHENATED_GENERATION_RE.sub(r"\1\2", model_lower)
-        if key.endswith("-"):
-            return re.match(re.escape(key) + "[a-z]", model_lower.rsplit("/", 1)[-1]) is not None
-        return re.search(re.escape(key) + r"(?:[-:.@]|$)", model_lower) is not None
-    return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
-
-
-def _longest_key_match(table: dict[str, int], model_lower: str) -> Optional[tuple[str, int]]:
-    """First ``(key, value)`` whose key is a substring of ``model_lower``, longest key first so
-    specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order."""
-    for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
-        if _catalog_key_matches(key, model_lower):
-            return key, value
-    return None
 
 
 def _ollama_show_context(data: dict[str, Any], *, gguf_first: bool, minimum: Optional[int] = None) -> Optional[int]:
@@ -1626,11 +1602,6 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     return None
 
 
-def _normalize_model_version(model: str) -> str:
-    """Dots -> dashes so Nous ids (claude-opus-4-6) compare with OpenRouter's (claude-opus-4.6)."""
-    return model.replace(".", "-")
-
-
 def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
     """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
 
@@ -2071,8 +2042,10 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
     # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
-    # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    # but its model name still matches DEFAULT_CONTEXT_LENGTHS. Identity guard on: with every probe
+    # already failed, a sibling model id (``flash`` vs ``flash-next``) must not inherit the table
+    # entry's window — nothing on the wire contradicts the mismatch.
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower(), require_decorative_residual=True)
     if hit:
         logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
         return hit[1]
@@ -2317,7 +2290,9 @@ def get_model_context_length(
     if local_ctx:
         return local_ctx
     # 8. Hardcoded defaults: `key in model` only — the reverse would let "claude-sonnet-4" match "claude-sonnet-4-6" and return 1M.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    # Identity guard on: an unprobed last resort must also refuse to hand a table entry's window to a
+    # sibling model id that merely contains it.
+    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower(), require_decorative_residual=True)
     if hit:
         return hit[1]
     # 9. Default fallback — warn (deduped) so small-context models don't silently get 256K.

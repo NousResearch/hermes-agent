@@ -15,7 +15,7 @@ import uuid
 from contextlib import ExitStack, contextmanager
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 
-from utils import atomic_json_write, atomic_write_text, fsync_directory
+from utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,7 +24,6 @@ from hermes_cli.active_sessions import _FileLock
 log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
-_SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
@@ -141,13 +140,6 @@ def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
 
 
-def has_mailbox(profile_home: Path | str) -> bool:
-    """Whether any delivery was ever admitted for this profile (the mailbox directory is created on
-    first admission only). A cheap pre-check for pollers: no mailbox means nothing to claim, so the
-    owner lookup — a state.db open plus the exclusive active-session registry lock — can be skipped."""
-    return _root(profile_home).is_dir()
-
-
 _warned_unhardened: set[Path] = set()
 # Mailbox dirs already reported unusable by this process: WARNING once per dir, DEBUG after,
 # because the receipt readers re-enter ``_locked`` while Bot Chat is waiting.
@@ -254,18 +246,13 @@ def _read(path: Path) -> dict[str, Any] | None:
     return record
 
 
-# Tickets already reported unreadable by this process. The live poller rescans the
-# dir twice a second, so a persistent bad ticket is WARNING once and DEBUG after.
-_warned_unreadable: set[Path] = set()
-
-
 def _ticket_shape_error(path: Path, record: dict[str, Any]) -> str | None:
     """Why a parsed ticket is unusable by the scans, or None when it is well-formed.
 
     A ticket that parses as JSON but lost a field (truncated rewrite, foreign
     writer, hand edit) used to raise KeyError/TypeError out of the sequence
     scan and the claim sweep — wedging admission and delivery for the whole
-    profile exactly like corrupt JSON did before ``_scan_read`` existed.
+    profile exactly like corrupt JSON would.
     """
     owner = record.get("owner")
     created_at, sequence = record.get("created_at"), record.get("sequence", record.get("created_at"))
@@ -279,51 +266,6 @@ def _ticket_shape_error(path: Path, record: dict[str, Any]) -> str | None:
     if not isinstance(owner, dict) or not all(isinstance(owner.get(k), str) and owner[k] for k in _OWNER_KEYS):
         return "owner pin is incomplete"
     return None
-
-
-def _scan_read(path: Path) -> dict[str, Any] | None:
-    """Bulk-scan variant: one unreadable or malformed ticket must not wedge the whole dir.
-
-    Directory scans (sequence high-water mark, queued-claim sweep) may only
-    treat a file as absent when it is provably absent; an unreadable ticket
-    degrades to "that one delivery is uninspectable" with a warning.
-    Exact-id reads (admission idempotency, completion, result lookup) keep
-    using _read so a permission error still fails closed instead of
-    licensing an overwrite of a possibly-live receipt.
-    """
-    try:
-        record = _read(path)
-        problem = None if record is None else _ticket_shape_error(path, record)
-    except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
-        record, problem = None, str(exc)
-    if problem is not None:
-        level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
-        _warned_unreadable.add(path)
-        log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, problem)
-        return None
-    _warned_unreadable.discard(path)
-    return record
-
-
-def _next_sequence(root: Path) -> int:
-    """Allocate the next admission sequence under the dir lock.
-
-    The high-water mark lives in a counter file beside the tickets, so a ticket
-    the scan cannot read does not drop its sequence and hand a later admission
-    a duplicate or lower one. Readable tickets still bootstrap dirs written
-    before the counter existed. Wall time can roll back; sequences never do.
-    """
-    counter = root / _SEQUENCE_FILE
-    try:
-        persisted = int(counter.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        persisted = 0
-    scanned = max((record.get("sequence", record["created_at"])
-                   for candidate in root.glob("*.json")
-                   if (record := _scan_read(candidate)) is not None), default=0)
-    sequence = max(persisted, scanned) + 1
-    atomic_write_text(counter, str(sequence), mode=0o600, fsync_dir=True)
-    return sequence
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
@@ -377,40 +319,6 @@ def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
     """
     owner = find_canonical_live_owner(profile_home)  # raises while the authority is unreachable
     return owner is not None or bool(record.get("admission_id"))
-
-
-def claim_pending_delivery(profile_home, owner):
-    """Retired UI poller: only session_bot may migrate and admit queued records.
-
-    Keep this refusal until the legacy notification poller's call site is removed.
-    A previously claimed record can still publish its terminal receipt below.
-    """
-    return
-
-
-def complete_delivery(
-    profile_home: Path | str, delivery_id: str, *, status: str,
-    reply: str = "", error: str = "", reason: str = "",
-) -> dict[str, Any]:
-    """Persist an immutable terminal receipt; duplicate identical completion is safe."""
-    key = _delivery_id(delivery_id)
-    if status not in _TERMINAL:
-        raise ValueError("invalid terminal delivery status")
-    outcome = dict(status=status, reply=reply, error=error, reason=reason)
-    with _locked(profile_home) as root:
-        path = root / f"{key}.json"
-        record = _read(path)
-        if record is None:
-            raise FileNotFoundError(f"delivery not found: {key}")
-        if record["status"] in _TERMINAL:
-            if any(record.get(k) != v for k, v in outcome.items()):
-                raise ValueError("delivery already has a different terminal receipt")
-            return record
-        if record["status"] != "claimed":
-            raise ValueError("delivery must be claimed before completion")
-        record.update(outcome, completed_at=time.time_ns())
-        _write(path, record)
-        return record
 
 
 def cancel_queued_delivery(

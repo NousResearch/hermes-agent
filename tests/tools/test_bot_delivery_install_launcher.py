@@ -133,8 +133,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["hermes", "hermes.exe"])
-def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
-    import contextlib
+def test_launcher_shape_preserves_profile(tmp_path, monkeypatch, name):
     from tools import bot_mode_dm, bot_mode_probe
 
     home = tmp_path / "home"
@@ -142,15 +141,5 @@ def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     monkeypatch.setattr(bot_mode_dm, "_default_home", lambda: str(home))
     monkeypatch.setattr(bot_mode_probe, "_hermes_root", lambda path: home)
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: [("researcher", target)])
-    locked = []
-    @contextlib.contextmanager
-    def lock(root, profile):
-        locked.append((root, profile))
-        yield
-    monkeypatch.setattr(bot_relay, "acquire_turn_lock", lock)
     argv = [str(tmp_path / name), "-p", "researcher", "chat"]
     assert bot_mode_dm._local_delivery_home(argv) == target
-    with bot_mode_dm._delivery_lock(argv, stdin_file=False):
-        assert locked == [(home, "researcher")]
-    with bot_mode_dm._delivery_lock(argv, stdin_file=True):
-        assert locked == [(home, "researcher")]

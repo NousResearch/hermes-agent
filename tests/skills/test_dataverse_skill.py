@@ -86,3 +86,15 @@ def test_compares_against_xurl_not_retired_xitter():
     assert "xitter" not in text, "xitter was replaced by xurl on main"
     assert "## Comparison with xurl" in text
     assert "OAuth 2.0" in text
+
+
+def test_documents_data_source_cost_rate_limits_and_terms():
+    text = _text()
+    assert "## Data Source, Cost & Terms" in text
+    assert text.find("## Data Source, Cost & Terms") < text.find("## How to Run")
+    for snippet in ("Subnet 13", "public", "per record", "1,000 posts per request",
+                    "miner_policy.md",
+                    "terms of service", "--dry-run"):
+        assert snippet in text, f"expected {snippet!r} in SKILL.md"
+    # access requires a payment method; don't advertise the key as free
+    assert "free Macrocosmos API key" not in text

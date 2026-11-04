@@ -21,7 +21,7 @@ Search real-time X/Twitter and Reddit posts through the decentralized
 Bittensor Subnet 13 network with the `dv` CLI, and run Gravity collection
 tasks that gather data for up to 7 days and export Parquet datasets.
 Read-only — no posting, replying, or account actions, and no X or Reddit
-credentials needed; a single free Macrocosmos API key covers both platforms.
+credentials needed; a single paid Macrocosmos API key covers both platforms.
 
 ---
 
@@ -40,7 +40,8 @@ reads on the user's own account — that is the `xurl` skill.
 
 ## Prerequisites
 
-The `dv` binary and a free Macrocosmos API key.
+The `dv` binary and a Macrocosmos API key (paid, credit-based — see
+Data Source, Cost & Terms below).
 
 ```bash
 # Install via Cargo (Rust toolchain required)
@@ -51,7 +52,8 @@ git clone https://github.com/macrocosm-os/dataverse-cli
 cd dataverse-cli && cargo install --path .
 ```
 
-Get a key at https://app.macrocosmos.ai/account?tab=api-keys, then either:
+Create a key at https://app.macrocosmos.ai/account?tab=api-keys (the account
+needs a payment method on file before keys can be issued), then either:
 
 - run `dv auth` interactively — stores the key with 0600 permissions in
   `~/.config/dataverse/config.toml` (Linux) or
@@ -60,6 +62,52 @@ Get a key at https://app.macrocosmos.ai/account?tab=api-keys, then either:
 
 Never ask the user to paste the key into chat; `dv auth` and `MC_API` keep it
 out of session context. `--dry-run` output redacts the key.
+
+---
+
+## Data Source, Cost & Terms
+
+**Where the data comes from.** Results are served by the Macrocosmos
+Constellation API (`constellation.api.cloud.macrocosmos.ai`), backed by
+Bittensor Subnet 13 (Data Universe). Requests are distributed to independent
+SN13 miners, which scrape *public* X and Reddit posts. Validators re-check
+samples of what miners return and score them on it. The skill never touches
+the official X or Reddit APIs or the user's own platform accounts.
+Docs: https://docs.macrocosmos.ai/subnets/subnet-13-data-universe
+
+**Cost.** Billing is per record returned. Creating an API key requires a
+payment method at app.macrocosmos.ai. Published plans
+(https://datauniverse.macrocosmos.ai, check there for current rates):
+
+| Plan | Monthly fee | Included | API price |
+|------|-------------|----------|-----------|
+| Pay as you go | none | $1 free credit | $0.15 / 1K records |
+| Astronaut | $99 | 300K records | $0.12 / 1K records |
+| Cosmonaut | $499 | 4M records | $0.08 / 1K records |
+
+So a default `dv search` (`-l 100`) costs at most ~$0.015 on pay-as-you-go,
+and a 100K-row Gravity build ~$15. To keep spend down:
+- use `--dry-run` to check a request — it sends nothing and costs nothing
+- keep `-l` (result limit) as small as the task allows
+- set `--max-rows` on `dv gravity build`, and cancel Gravity tasks you no
+  longer need (`dv gravity cancel`) instead of leaving them running for 7 days
+- confirm with the user before starting a Gravity task or a large build
+
+**Rate limits.** On-Demand search returns at most 1,000 posts per request
+(hence `-l` 1–1000); the number of requests is not capped. Requests are
+served by a live miner network, so on 5xx (`service temporarily
+unavailable`) or 429, back off for several seconds and retry a few times at
+most rather than looping.
+
+**Platform terms and responsible use.** Only public posts are collected, and
+SN13 miners must follow X and Reddit terms of service and data-protection
+law (UK GDPR / GDPR) under the Macrocosmos miner policy:
+https://github.com/macrocosm-os/data-universe/blob/main/docs/miner_policy.md
+The posts still belong to their authors, and the user is responsible for
+using collected data in line with X and Reddit terms and applicable privacy
+law (GDPR, CCPA). Use it for analysis, research, and monitoring. Don't use it
+to profile, track, or harass individuals, re-identify pseudonymous users, or
+republish bulk raw posts.
 
 ---
 
@@ -186,7 +234,7 @@ exists.
 | **Reads X** | Yes (keyword/user search, post lookup) | Yes (search, timelines, mentions, raw v2 API) |
 | **Writes to X** | No | Yes (post, reply, like, repost, DM, media) |
 | **Reddit** | Yes | No |
-| **Auth** | One free Macrocosmos API key | X developer app + OAuth 2.0 PKCE |
+| **Auth** | One paid Macrocosmos API key | X developer app + OAuth 2.0 PKCE |
 | **Data source** | Bittensor SN13 miners | Official X API |
 | **Bulk collection** | Yes (Gravity → Parquet) | No |
 

@@ -1148,6 +1148,25 @@ def _note_target_error(job: dict, msg: str, errors: list) -> None:
     errors.append(msg)
 
 
+def _note_local_media_drop(job: dict, target: dict, media_files: list, errors: list) -> None:
+    """Record a local chat's attachments as undelivered, in the phrasing the other lanes use.
+
+    A local delivery takes text only: the chat has no push transport, and the delivered row is
+    rendered as plain text rather than through ``renderMediaTags``, so the ``MEDIA:`` tag is
+    already stripped by the time it arrives. Recording the loss keeps the run from reporting a
+    clean ``delivered`` while an attachment is missing. No-op when there is no media, which is
+    why the caller invokes it unconditionally.
+    """
+    if not media_files:
+        return
+    _note_target_error(
+        job,
+        f"{len(media_files)} media attachment(s) not delivered to local chat "
+        f"{target['chat_id']} (a local chat cannot receive attachments; "
+        "the transcript keeps the original reply)",
+        errors)
+
+
 def _warn_live_lane_failure(job: dict, msg: str, is_relay: bool) -> None:
     """Relay targets have no standalone fallback, so the log line must not promise one."""
     if is_relay:
@@ -1915,17 +1934,7 @@ def _deliver_result(
                                                 cleaned_delivery_content, diagnostic=for_failure)
             if local_error:
                 delivery_errors.append(local_error)
-            if media_files:
-                # The note takes text only (a local chat has no push transport, and it renders the
-                # delivered row as plain text, not ``renderMediaTags``), so the tag stripped above
-                # is gone here. Record the loss as every other lane does, or the run reports a
-                # clean ``delivered`` while the attachment is missing.
-                _note_target_error(
-                    job,
-                    f"{len(media_files)} media attachment(s) not delivered to local chat "
-                    f"{target['chat_id']} (a local chat cannot receive attachments; "
-                    "the transcript keeps the original reply)",
-                    delivery_errors)
+            _note_local_media_drop(job, target, media_files, delivery_errors)
             continue
 
         t = _prepare_target_delivery(

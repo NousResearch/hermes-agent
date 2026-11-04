@@ -1,0 +1,20 @@
+name: request-dump-viewer
+repo: https://github.com/alinsavix/hermes-request-dump-viewer
+sha: d41af717fa79c0b1015a574bcfd94723dd37f3b1
+version: "0.4.3"
+description: "Inspect local Hermes request dumps, messages, tool calls, schemas, and diffs in a dashboard tab. Disclosure — reads matching request dumps and Hermes state.db read-only; its capture switch writes only plugin-data/request-dump-viewer state and sets or clears HERMES_DUMP_REQUESTS in the gateway process. No network, shell, telemetry, or credential-store access."
+maintainer: TDV Alinsa
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/alinsavix/hermes-request-dump-viewer/blob/d41af717fa79c0b1015a574bcfd94723dd37f3b1/README.md
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/alinsavix/hermes-request-dump-viewer/d41af717fa79c0b1015a574bcfd94723dd37f3b1/assets/screenshots/01-overview.jpeg
+  - https://raw.githubusercontent.com/alinsavix/hermes-request-dump-viewer/d41af717fa79c0b1015a574bcfd94723dd37f3b1/assets/screenshots/07-diff.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+  provides_middleware: []
+  requires_env: []

@@ -2215,7 +2215,7 @@ class TestStartupTimeoutPhaseDetail:
         session = cbs._CuaDriverSession(bridge)
         bridge.start()  # before the Event patch, so only the ready wait sees it
         try:
-            with patch.object(cbs._CuaDriverSession, "_lifecycle_coro", _wedged_lifecycle), \
+            with patch.multiple(cbs._CuaDriverSession, _prepare_transport=lambda self: None, _lifecycle_coro=_wedged_lifecycle), \
                  patch.object(cbs.threading, "Event", _FastReadyEvent):
                 with pytest.raises(RuntimeError) as excinfo:
                     session.start()

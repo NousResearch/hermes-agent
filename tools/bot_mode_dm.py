@@ -74,40 +74,24 @@ def message_agent_tool_schema() -> dict:
         "function": {
             "name": MESSAGE_AGENT_TOOL_NAME,
             "description": (
-                "Send a message to ANOTHER agent (teammate) on this install, or to an "
-                "agent on a registered peer gateway. This is FIRE-AND-FORGET and "
-                "asynchronous, like texting: it validates the target against the live "
-                "roster, delivers your message into that agent's own Bot Chat with your "
-                "attribution automatically prefixed, and returns immediately with a "
-                "dispatch acknowledgement — status queued plus a delivery_id (the hand-off to a background "
-                "delivery process, not a delivery receipt). It does NOT return their reply and you must "
-                "not wait or poll for one — send it, finish your turn, and that process's "
-                "completion notification wakes you with the outcome: their reply, or the "
-                "delivery failure — unless the ack returns reply_delivery=\"poll\", in which case "
-                "follow its process(action=\"wait\") instruction before ending the turn. COMPOSE the message yourself: write what YOU want to say to "
-                "that agent (lead with the point; include the concrete ask or result). "
-                "Never paste the user's words verbatim — paraphrase the actionable "
-                "substance, and keep private 1:1 chat content private. Message one "
-                "clearly relevant teammate when it genuinely helps the user's goal; "
-                "don't fan out to several agents unless the user explicitly asked. "
-                "Use the teammate roster in your system prompt (names + roles) to pick "
-                "the right recipient; targets: a teammate name (e.g. 'researcher'), "
-                "'<peer>/<agent>' for an agent on a registered peer gateway "
-                "(e.g. 'spark/researcher', or just '<peer>' for the peer's main agent), "
-                "or an agent on another connected machine from your roster (use "
-                "'<handle>@<connection>' if the same handle exists on several)."
+                "Send a message to ANOTHER agent (teammate) on this install, a registered peer gateway, or "
+                "another connected machine. FIRE-AND-FORGET: it validates the target against the live roster, "
+                "delivers into that agent's Bot Chat with your attribution prefixed, and returns a dispatch "
+                "ack at once (status queued + delivery_id: a hand-off, not a receipt). It never returns the "
+                "reply: finish your turn; the completion notification wakes you with the outcome (its "
+                "`outcome` line says who answered or why not) — unless the ack says reply_delivery=\"poll\": "
+                "then follow its process(action=\"wait\") instruction first. COMPOSE the message yourself "
+                "(lead with the point and the concrete ask); never paste the user's words verbatim or share "
+                "private 1:1 content. Targets: a roster name ('researcher'), '<peer>/<agent>' or '<peer>' for "
+                "a peer gateway, '<handle>@<connection>' when a handle exists on several machines."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": (
-                            "Who to message: a teammate profile name from your roster "
-                            "('researcher', 'hermes' for the default agent), or "
-                            "'<peer>' / '<peer>/<agent>' for a registered peer gateway. "
-                            f"Up to {FAN_OUT_MAX} comma-separated names fan out: one combined reply."
-                        ),
+                        "description": (f"Who to message ('hermes' is the default agent). Up to {FAN_OUT_MAX} "
+                                        "comma-separated names fan out: one combined reply."),
                     },
                     "message": {
                         "type": "string",
@@ -845,7 +829,6 @@ _BLOCKED_DETAIL = {
     "waiting_approval": "is waiting for its user to approve a command in its own Bot Chat",
     "waiting_clarify": "is waiting for its user to answer a question in its own Bot Chat",
     "paused": "is not starting new turns right now (its gateway is restarting or updating)",
-    "working": "is busy with an earlier turn and takes yours after it",
 }
 
 

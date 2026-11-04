@@ -659,6 +659,16 @@ class EmailAdapter(BasePlatformAdapter):
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
+
+        # Publish runtime status for this adapter. Without it gateway_state.json
+        # keeps whatever the runner last stamped - after a transient IMAP fetch
+        # timeout that stamp is "fatal", so a healthy reconnected adapter reads
+        # as dead to the nightly audit / dashboard (incident t_c90dca67).
+        try:
+            self._mark_connected()
+        except Exception as _status_err:  # observability must never break connect
+            logger.debug("[Email] Runtime status publish failed: %s", _status_err)
+
         return True
 
     async def disconnect(self) -> None:
@@ -671,6 +681,12 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+
+        try:
+            self._mark_disconnected()
+        except Exception as _status_err:
+            logger.debug("[Email] Runtime status publish failed: %s", _status_err)
+
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:

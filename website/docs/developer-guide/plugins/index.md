@@ -1830,7 +1830,7 @@ def _handle_todo(raw_args: str) -> str:
     return todo.read_text() if todo.exists() else "No TODO.md here."
 
 def _handle_where(raw_args: str) -> str:
-    platform = get_session_env("HERMES_SESSION_PLATFORM")  # "" outside a session
+    platform = get_session_env("HERMES_SESSION_PLATFORM")  # unbound: falls back to os.environ, then ""
     return f"{platform or 'local'} chat {get_session_env('HERMES_SESSION_CHAT_ID') or '(none)'}"
 ```
 

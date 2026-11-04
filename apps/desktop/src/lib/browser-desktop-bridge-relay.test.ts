@@ -208,6 +208,56 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(stream.pathname.startsWith('/hermes/api/relay/mini/')).toBe(true)
   })
 
+  it('closes a terminal on the gateway it started on after the window moves to another', async () => {
+    servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    const onMini = { ...(await desktop.getConnectionFor!({ connectionId: 'mini' })) }
+    $connection.set(onMini)
+    const dialed: URL[] = []
+    const META = '\u0000HERMES_TERMINAL_META:'
+
+    vi.stubGlobal(
+      'WebSocket',
+      class {
+        static OPEN = 1
+        readyState = 1
+        binaryType = 'blob'
+        onclose: ((event: CloseEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        onmessage: ((event: MessageEvent) => void) | null = null
+        constructor(url: string | URL) {
+          const target = new URL(url)
+          dialed.push(target)
+          // A shell starts as `t1`; a close dial is acknowledged, then closes normally.
+          const closing = target.searchParams.get('action') === 'close'
+
+          queueMicrotask(() => {
+            const meta = closing ? { closed: true, terminalId: 't1' } : { cwd: '/', shell: 'bash', terminalId: 't1' }
+            this.onmessage?.(new MessageEvent('message', { data: META + JSON.stringify(meta) }))
+
+            if (closing) {
+              this.onclose?.(new CloseEvent('close', { code: 1000 }))
+            }
+          })
+        }
+        close() {}
+        send() {}
+      }
+    )
+
+    const started = await desktop.terminal.start({ restoreKey: 'tab-1' })
+    // A new chat on this gateway's own sidebar "+" moves the window; the shell stays on Mini.
+    $connection.set({ ...onMini, connectionId: 'local' })
+    await desktop.terminal.dispose(started.id)
+
+    expect(dialed.map(url => [url.pathname, url.searchParams.get('action')])).toEqual([
+      ['/hermes/api/relay/mini/api/host-terminal', null],
+      ['/hermes/api/relay/mini/api/host-terminal', 'close']
+    ])
+    expect(dialed[1]?.searchParams.get('attach')).toBe('t1')
+  })
+
   it("loads an HTML preview's own scripts from this gateway while the window is on a relayed one", async () => {
     servingGateway()
     const desktop = install()

@@ -217,6 +217,31 @@ def test_find_op_pinned_path_not_on_path(tmp_path, monkeypatch):
 
 
 
+def _child_env_under_staged_source(environ: dict[str, str]) -> dict[str, str]:
+    from agent.secret_sources.base import reset_source_environment, set_source_environment
+
+    token = set_source_environment(environ)
+    try:
+        return op._op_child_env("")
+    finally:
+        reset_source_environment(token)
+
+
+def test_op_child_env_keeps_the_system_root_of_a_plain_staged_copy():
+    # dict(os.environ) on Windows holds upper-cased keys and, unlike os.environ, matches them exactly (#147935).
+    assert _child_env_under_staged_source({"SYSTEMROOT": r"C:\Windows"})["SYSTEMROOT"] == r"C:\Windows"
+
+
+@pytest.mark.platforms("windows")
+def test_op_child_started_from_a_staged_copy_sees_the_system_root():
+    env = _child_env_under_staged_source(dict(os.environ))
+    probe = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ.get('SystemRoot', ''))"],
+        env=env, capture_output=True, text=True, timeout=30, check=True,
+    )
+    assert probe.stdout.strip() == os.environ["SystemRoot"]
+
+
 def test_op_child_env_forwards_config_directory(monkeypatch):
     """The op child must retain an explicit 1Password config location."""
     monkeypatch.setenv("OP_CONFIG_DIR", "/tmp/op-config")

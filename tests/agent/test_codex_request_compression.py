@@ -1,5 +1,6 @@
 """Codex Responses bodies go out zstd-compressed to the official backend only (official-client parity)."""
 
+import asyncio
 import json
 
 import pytest
@@ -44,3 +45,29 @@ def test_other_destinations_stay_raw_json(base_url, path):
         client.close()
     assert "Content-Encoding" not in request.headers
     assert json.loads(request.content) == payload
+
+
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_codex_profile_can_disable_request_compression(tmp_path, monkeypatch, async_mode):
+    """#148898: the official backend can reject zstd bytes for otherwise valid JSON."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "agent:\\n  codex_request_compression: false\\n".replace("\\n", "\n"), encoding="utf-8"
+    )
+    client = build_keepalive_http_client(OFFICIAL, async_mode=async_mode)
+    assert client is not None
+    try:
+        payload = {"model": "gpt-6.1-sol", "input": "hello"}
+        request = client.build_request("POST", f"{OFFICIAL}/responses", json=payload)
+        for hook in client.event_hooks["request"]:
+            if async_mode:
+                asyncio.run(hook(request))
+            else:
+                hook(request)
+        assert "Content-Encoding" not in request.headers
+        assert json.loads(request.content) == payload
+    finally:
+        if async_mode:
+            asyncio.run(client.aclose())
+        else:
+            client.close()

@@ -611,7 +611,10 @@ class ImageRenderParams(Params):
     path: str
     cols: int  # cell budget; the image keeps its aspect inside it and never upscales
     rows: int
-    graphics: JsonValue | None = None  # truthy: the client owns a real terminal and can take escapes
+    graphics: bool = False  # the client owns a real terminal and can take escapes
+    # The client's own ``auto`` pick from its terminal's env (ui-tui lib/terminalGraphics.ts); the
+    # gateway's env names no client's terminal.
+    terminal: Literal["kitty", "unicode"] = "unicode"
 
 
 class ImageRenderResult(Result):

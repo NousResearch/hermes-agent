@@ -31,11 +31,16 @@ def test_render_without_a_terminal_returns_half_block_cells(monkeypatch, photo):
     assert result["cells"][0][0] == [0, 200, 90, 255, 0, 200, 90, 255]
 
 
-def test_render_kitty_for_a_kitty_terminal(monkeypatch, photo):
-    for key in ("TMUX", "TERM_PROGRAM", "WEZTERM_PANE"):
+def _plain_daemon_env(monkeypatch):
+    for key in ("TMUX", "STY", "TERM_PROGRAM", "WEZTERM_PANE", "KITTY_WINDOW_ID", "ITERM_SESSION_ID"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("TERM", "xterm-kitty")
-    result = _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8, "graphics": True})
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+def test_render_kitty_for_a_client_on_a_kitty_terminal(monkeypatch, photo):
+    # A shared daemon started outside kitty (Desktop, a service) still serves a kitty TUI.
+    _plain_daemon_env(monkeypatch)
+    result = _render(monkeypatch, {"path": photo, "cols": 20, "rows": 8, "graphics": True, "terminal": "kitty"})
     assert result["mode"] == "kitty"
     assert result["transmit"].startswith("\x1b_G") and len(result["placeholder"]) == result["rows"]
 
@@ -46,6 +51,18 @@ def test_render_draws_every_image_the_cli_draws(monkeypatch, tmp_path):
         path = tmp_path / f"scan{suffix}"
         PIL.new("RGBA", (64, 64), (0, 200, 90, 255)).save(path)
         assert _render(monkeypatch, {"path": str(path), "cols": 20, "rows": 8})["mode"] == "unicode"
+
+
+def test_render_follows_the_client_terminal_not_the_daemon_env(monkeypatch, photo):
+    # A daemon started from kitty must not send placeholders to an iTerm/VS Code/dashboard client.
+    _plain_daemon_env(monkeypatch)
+    monkeypatch.setenv("TERM", "xterm-kitty")
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    params = {"path": photo, "cols": 20, "rows": 8, "graphics": True}
+    assert _render(monkeypatch, {**params, "terminal": "unicode"})["mode"] == "unicode"
+    assert _render(monkeypatch, params)["mode"] == "unicode"  # an older client that declares nothing
+    # A pinned protocol is still the user's explicit opt-in.
+    assert _render(monkeypatch, {**params, "terminal": "unicode"}, inline_images="kitty")["mode"] == "kitty"
 
 
 def test_render_honours_off_and_refuses_non_images(monkeypatch, photo, tmp_path):

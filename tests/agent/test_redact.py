@@ -1786,12 +1786,31 @@ class TestFlagAndKeyShapedCredentials:
         "https://acct.blob.core.windows.net/?AccountKey=Zq8xR2vT9pL4mN7k==",
         "redis://:$Zq8xR2vT9pL4mN7k@cache:6379",
         "redis://:<Zq8xR2vT9pL4mN7k>@cache:6379",
+        "AccountKey=-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANZq8xR2vT9pL4mN7k\n-----END PRIVATE KEY-----",
+        "tool --password \"Abc'def Zq8xR2vT9pL4mN7k\"",
+        "tool --password 'Abc\"def Zq8xR2vT9pL4mN7k'",
+        "docker login -u me -p \"Abc'def Zq8xR2vT9pL4mN7k\" ghcr.io",
+        "log: BlobEndpoint=https://a.blob.core.windows.net/;SharedAccessSignature=sv=2025-01-01&sig=Zq8xR2vT9pL4mN7k",
+        "     3|Private-Lines: 1\n     4|AAAAIZq8xR2vT9pL4mN7kAAAA\n     5|Private-MAC: x",
+        "3|Private-Lines: 1\r\n4|AAAAIZq8xR2vT9pL4mN7kAAAA\r\n5|Private-MAC: x\r\n",
     ])
     def test_crlf_ppk_tls_urls_and_yaml_key_names_are_masked(self, text):
         from agent.redact import redact_for_egress
 
         assert "Zq8xR2vT9pL4mN7k" not in redact_sensitive_text(text, force=True)
         assert "Zq8xR2vT9pL4mN7k" not in redact_for_egress(text)
+
+    @pytest.mark.parametrize("text", [
+        "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=Zq8xR2vT9pL4mN7kQwErTyUi0==;EndpointSuffix=x",
+        "mysql --password=Zq8xR2vT9pL4mN7kQwE -h db",
+    ])
+    def test_file_reads_get_the_non_reusable_marker_for_flag_values(self, text):
+        out = redact_sensitive_text(text, force=True, file_read=True)
+        assert "Zq8xR2" not in out and "«redacted" in out
+
+    @pytest.mark.parametrize("text", ['{"signing_key": "s3cr3t-x"}', "{'signing_key': 's3cr3t-x'}"])
+    def test_short_qualified_key_values_are_masked_in_json_and_mappings(self, text):
+        assert "s3cr3t-x" not in redact_sensitive_text(text, force=True)
 
     def test_connection_string_keys_are_masked(self):
         text = (
@@ -1805,22 +1824,24 @@ class TestFlagAndKeyShapedCredentials:
         bus = f"Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKey={self.SECRET}"
         assert self.SECRET not in redact_sensitive_text(bus, force=True)
 
-    @pytest.mark.parametrize("material", [
-        "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF4kMaterialAAAABBBBCCCCDDDD\n-----END PGP PRIVATE KEY BLOCK-----",
-        "PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\nAAAAB3NzaC1yc2ElQOYBF4kMaterialAAAABBBB\n",
-        "AGE-SECRET-KEY-1LQOYBF4KMATERIALAAAABBBBCCCCDDDD",
+    @pytest.mark.parametrize(("material", "body"), [
+        ("-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF4kMaterialAAAABBBBCCCCDDDD\n-----END PGP PRIVATE KEY BLOCK-----",
+         "lQOYBF4kMaterialAAAABBBBCCCCDDDD"),
+        ("PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nPrivate-Lines: 1\nAAAAB3NzaC1yc2ElQOYBF4kMaterialAAAABBBB\n",
+         "lQOYBF4kMaterialAAAABBBB"),
+        ("AGE-SECRET-KEY-1LQOYBF4KMATERIALAAAABBBBCCCCDDDD", "LQOYBF4KMATERIALAAAABBBBCCCCDDDD"),
     ])
-    def test_non_pem_private_key_formats_are_masked_on_every_surface(self, material):
+    def test_non_pem_private_key_formats_are_masked_on_every_surface(self, material, body):
         from agent.redact import redact_for_egress, redact_terminal_output
 
-        leaked_value = "lQOYBF4kMaterialAAAABBBBCCCCDDDD"
+        assert body in material
         for out in (
             redact_sensitive_text(material, force=True),
             redact_for_egress(material),
             redact_terminal_output(material, "cat ~/.ssh/id_rsa"),
         ):
-            assert leaked_value not in out
-            assert leaked_value.upper() not in out
+            assert body not in out
+            assert "[REDACTED PRIVATE KEY]" in out
 
     def test_a_base64_pem_key_is_masked_on_every_surface(self):
         from agent.redact import redact_for_egress, redact_terminal_output

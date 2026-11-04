@@ -206,6 +206,26 @@ describe('inline transcript images', () => {
     expect(second.output()).toContain('▀')
   })
 
+  it('paints a remount from a resolved render on its first frame, before any request settles', async () => {
+    const msg: Msg = { images: ['/tmp/remount.png'], kind: 'image', role: 'system', text: '' }
+
+    const render: ImageRenderResponse = {
+      cells: [[[255, 0, 0, 255, 255, 0, 0, 255]]],
+      cols: 1,
+      mode: 'unicode',
+      rows: 1
+    }
+
+    mount([msg], render)
+    await settle()
+
+    // A virtual-scroll remount: its first synchronous frame already has the image's real height.
+    const again = mount([msg], render)
+
+    expect(again.output()).toContain('▀')
+    expect(again.request).not.toHaveBeenCalled()
+  })
+
   it('draws nothing when inline images are off', async () => {
     const { output } = mount([{ images: ['/tmp/off.png'], kind: 'image', role: 'system', text: '' }], { mode: 'off' })
 

@@ -2522,6 +2522,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=None,
             user_id_alt=sender_profile["user_id_alt"],
+            user_id_aliases=sender_profile.get("user_id_aliases", ()),
         )
         synthetic_event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message,
@@ -2692,6 +2693,7 @@ class FeishuAdapter(BasePlatformAdapter):
             user_name=sender_profile["user_name"],
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
+            user_id_aliases=sender_profile.get("user_id_aliases", ()),
             is_bot=is_bot,
             message_id=message_id,
         )
@@ -3286,7 +3288,15 @@ class FeishuAdapter(BasePlatformAdapter):
         primary_id = user_id or open_id
         name_lookup_id = open_id if is_bot else (primary_id or union_id)  # bots/basic_batch only takes open_id
         display_name = await self._resolve_sender_name_from_api(name_lookup_id, is_bot=is_bot)
-        return {"user_id": primary_id, "user_name": display_name, "user_id_alt": union_id}
+        # Which tier is primary depends on the app's scopes: granting contact:user.employee_id:readonly
+        # starts populating sender_id.user_id, so a sender approved by open_id flips to an unknown ID
+        # and loses every grant. Hand authz ALL tiers so an approval survives the flip.
+        return {
+            "user_id": primary_id,
+            "user_name": display_name,
+            "user_id_alt": union_id,
+            "user_id_aliases": tuple(v for v in (open_id, user_id, union_id) if v),
+        }
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
         """Return a cached sender name only while its TTL is still valid."""

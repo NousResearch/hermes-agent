@@ -78,6 +78,10 @@ class SessionSource:
     thread_id: Optional[str] = None  # forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # platform-specific stable alt ID (Signal UUID, Feishu union_id)
+    # Other ID tiers of the SAME principal, consulted by authorization ONLY (Feishu open_id / tenant
+    # user_id / union_id). Never used for session keys: those stay on ``user_id_alt``, so a newly
+    # granted Feishu scope that starts populating ``user_id`` cannot re-key an existing session.
+    user_id_aliases: tuple[str, ...] = ()
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # message author is a bot/webhook (Discord)
     # Platform-neutral SCOPE discriminator (Discord guild / Slack workspace / Matrix server) driving
@@ -107,6 +111,9 @@ class SessionSource:
     detached_route: Optional[str] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        # from_dict/relay hand us a JSON list; keep the field a tuple so it stays hashable/comparable.
+        if not isinstance(self.user_id_aliases, tuple):
+            self.user_id_aliases = tuple(self.user_id_aliases or ())
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
         if self.scope_id is None and self.guild_id is not None:
             self.scope_id = self.guild_id
@@ -133,7 +140,7 @@ class SessionSource:
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
-    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
+    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id", "user_id_aliases")
 
     def to_dict(self) -> dict[str, Any]:
         d = {"platform": self.platform.value}

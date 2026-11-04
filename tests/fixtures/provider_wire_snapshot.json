@@ -18,7 +18,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -82,7 +81,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -139,7 +137,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -206,7 +203,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -269,7 +265,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -332,7 +327,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -409,7 +403,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -499,7 +492,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -588,7 +580,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -665,7 +656,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -723,7 +713,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -780,7 +769,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -841,7 +829,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -899,7 +886,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -956,7 +942,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1017,7 +1002,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1075,7 +1059,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1132,7 +1115,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1193,7 +1175,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1251,7 +1232,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1308,7 +1288,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1369,7 +1348,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1427,7 +1405,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1484,7 +1461,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1758,7 +1734,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1816,7 +1791,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1873,7 +1847,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1934,7 +1907,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -1992,7 +1964,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2049,7 +2020,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2110,7 +2080,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2168,7 +2137,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2225,7 +2193,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2291,7 +2258,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -2356,7 +2322,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -2419,7 +2384,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -2680,7 +2644,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2738,7 +2701,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2795,7 +2757,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2878,7 +2839,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -2974,7 +2934,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3069,7 +3028,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3146,7 +3104,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3204,7 +3161,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3261,7 +3217,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3322,7 +3277,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3380,7 +3334,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3437,7 +3390,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3520,7 +3472,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3616,7 +3567,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3711,7 +3661,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3788,7 +3737,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3846,7 +3794,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3903,7 +3850,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -3964,7 +3910,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4023,7 +3968,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4080,7 +4024,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4431,7 +4374,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -4496,7 +4438,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -4559,7 +4500,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -4621,7 +4561,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4679,7 +4618,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4736,7 +4674,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4797,7 +4734,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4856,7 +4792,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4914,7 +4849,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -4976,7 +4910,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5036,7 +4969,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5095,7 +5027,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5162,7 +5093,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5227,7 +5157,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5290,7 +5219,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -5352,7 +5280,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5411,7 +5338,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5469,7 +5395,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5536,7 +5461,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5600,7 +5524,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5657,7 +5580,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5718,7 +5640,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5776,7 +5697,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5833,7 +5753,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5894,7 +5813,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -5952,7 +5870,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6009,7 +5926,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6070,7 +5986,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6128,7 +6043,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6185,7 +6099,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6247,7 +6160,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6313,7 +6225,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6377,7 +6288,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6440,7 +6350,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6506,7 +6415,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6571,7 +6479,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -6633,7 +6540,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6691,7 +6597,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -6748,7 +6653,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7540,7 +7444,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7599,7 +7502,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7656,7 +7558,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7746,7 +7647,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7844,7 +7744,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -7945,7 +7844,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8022,7 +7920,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8080,7 +7977,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8137,7 +8033,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8199,7 +8094,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8258,7 +8152,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8316,7 +8209,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8377,7 +8269,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8435,7 +8326,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8492,7 +8382,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -8952,7 +8841,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9019,7 +8907,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9079,7 +8966,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9143,7 +9029,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9204,7 +9089,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9264,7 +9148,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9344,7 +9227,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9438,7 +9320,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9530,7 +9411,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -9624,12 +9504,6 @@
      "role": "user"
     },
     {
-     "content": [
-      {
-       "text": "",
-       "type": "text"
-      }
-     ],
      "role": "assistant",
      "tool_calls": [
       {
@@ -9718,12 +9592,6 @@
      "role": "user"
     },
     {
-     "content": [
-      {
-       "text": "",
-       "type": "text"
-      }
-     ],
      "role": "assistant",
      "tool_calls": [
       {
@@ -9811,12 +9679,6 @@
      "role": "user"
     },
     {
-     "content": [
-      {
-       "text": "",
-       "type": "text"
-      }
-     ],
      "role": "assistant",
      "tool_calls": [
       {
@@ -10067,7 +9929,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10125,7 +9986,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10182,7 +10042,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10243,7 +10102,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10301,7 +10159,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10358,7 +10215,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10419,7 +10275,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10478,7 +10333,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10535,7 +10389,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10781,7 +10634,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10840,7 +10692,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10897,7 +10748,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -10969,7 +10819,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -11037,7 +10886,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -11094,7 +10942,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -11513,7 +11360,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -11572,7 +11418,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -11630,7 +11475,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "reasoning_content": " ",
      "role": "assistant",
      "tool_calls": [
@@ -11698,7 +11542,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -11762,7 +11605,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {
@@ -11819,7 +11661,6 @@
      "role": "user"
     },
     {
-     "content": "",
      "role": "assistant",
      "tool_calls": [
       {

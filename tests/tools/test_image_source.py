@@ -110,7 +110,7 @@ class TestBoundedHostRead:
         big = tmp_path / "big.png"
         with big.open("wb") as fh:  # sparse: stat says cap+1, no disk used
             fh.write(PNG)
-            fh.truncate(isrc._MAX_INGEST_BYTES + 1)
+            fh.truncate(isrc._MAX_HOST_READ_BYTES + 1)
         opened = []
         real_open = Path.open
         monkeypatch.setattr(Path, "open", lambda self, *a, **k: opened.append(self.name) or real_open(self, *a, **k))
@@ -154,7 +154,7 @@ class TestBoundedHostRead:
         monkeypatch.setattr(Path, "open", recording_open)
         res = await isrc.resolve_image_source(str(img), isrc.ResolveContext())
         assert res.data == PNG
-        assert reads and all(0 <= n <= isrc._MAX_INGEST_BYTES + 1 for n in reads)
+        assert reads and all(0 <= n <= isrc._MAX_HOST_READ_BYTES + 1 for n in reads)
 
 
 class TestNonLocalBackendConfinement:
@@ -285,6 +285,25 @@ class TestExecReadSafety:
                 "/workspace/-i-etc-shadow.png", isrc.ResolveContext(task_id="t1"))
         assert f"head -c {isrc._MAX_INGEST_BYTES + 1} < " in captured["cmd"]
         assert "'-i-etc-shadow.png'" in captured["cmd"] or "-i-etc-shadow.png" in captured["cmd"]
+
+    @pytest.mark.asyncio
+    async def test_exec_read_refuses_a_file_over_50_mib(self, tmp_path, monkeypatch):
+        """The exec-read returns base64 on stdout (~4x the file in this process), so it keeps a
+        50 MiB budget even though host-file reads allow 250 MiB."""
+        import re
+
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        sandbox_file = PNG + b"\0" * (60 * 1024 * 1024)
+
+        def fake_execute(cmd, **kw):  # behaves like the real `head -c N < f | base64`
+            limit = int(re.search(r"head -c (\d+)", cmd).group(1))
+            return {"returncode": 0, "output": base64.b64encode(sandbox_file[:limit]).decode()}
+
+        with patch("tools.image_source._get_active_env",
+                   return_value=SimpleNamespace(execute=fake_execute)):
+            with pytest.raises(isrc.SourceTooLarge):
+                await isrc.resolve_image_source("/workspace/big.png", isrc.ResolveContext(task_id="t1"))
 
 
     @pytest.mark.asyncio

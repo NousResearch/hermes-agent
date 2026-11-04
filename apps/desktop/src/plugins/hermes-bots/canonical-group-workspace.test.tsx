@@ -26,7 +26,7 @@ import { host } from '@hermes/plugin-sdk'
 
 import { CANONICAL_GROUP_CAPABILITIES, LEGACY_STANDALONE_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './canonical-group-contract-test-utils'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
+import { attemptCanonicalGroupSend, prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { renderGatewayRooms } from './gateway-group-rooms-test-harness'
 import { $groupChatWorkspace } from './group-chat'
@@ -884,6 +884,28 @@ it('hands a refused converged intent back for editing without losing either wind
   expect(sends[0].event_id).toBe(other.params.event_id)
   expect(sends[1].event_id).not.toBe(other.params.event_id)
   expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+})
+
+// AM3: another window retrying the refused intent before this window's edit is saved keeps both
+// this window's held words and its edit.
+it('keeps this window\'s held words when another window retries the refused intent it is editing', async () => {
+  const binding = { connectionId: 'local', profile: 'team', roomId: 'converged-retry' }
+  room((params, attempt) => attempt === 1 ? Promise.reject(refusal('invalid_params', false)) : receipt(params))
+  const scope = await openRoom(binding)
+  await waitFor(() => expect(editor(scope).disabled).toBe(false))
+  const other = await prepareCanonicalGroupSend(binding, { text: 'Too long for the gateway', attachments: [] })
+  await typeAndSend(scope, 'My own words')
+  await within(scope).findByText(REFUSED)
+  await waitFor(() => expect(editor(scope).disabled).toBe(false))
+  // The other window sends its intent again before this window saves an edit.
+  expect(await attemptCanonicalGroupSend(binding, other.params.event_id)).toBe(1)
+
+  fireEvent.change(editor(scope), { target: { value: 'Shorter' } })
+  fireEvent.click(within(scope).getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(sentIds()).toHaveLength(2))
+  await waitFor(() => expect(editor(scope).disabled).toBe(false))
+  expect(new Set(sentIds())).toEqual(new Set([other.params.event_id]))
+  expect(editor(scope).value).toBe('My own words\n\nShorter')
 })
 
 // AM3: also when its room closed before the refusal arrived.

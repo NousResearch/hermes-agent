@@ -54,6 +54,21 @@ const canSendNow = (gate: { restored: boolean; busy: boolean; stopping: boolean;
 const admittedNothing = (error: unknown) =>
   (error as { data?: { admitted?: unknown } } | null)?.data?.admitted === false
 
+interface HeldDraft { text: string; attachments: Attachment[]; reply: RoomReply | null }
+
+/** Words already held (from an earlier converged Send) are this window's own and never replaced:
+ *  newer words join them, so both come back once the room's intent is finished with. */
+function holdDraft(held: HeldDraft | null, next: HeldDraft): HeldDraft {
+  if (!held) {return next}
+  const ids = new Set(held.attachments.map(attachment => attachment.attachment_id))
+
+  return {
+    text: [held.text, next.text].filter(text => text.trim()).join('\n\n'),
+    attachments: [...held.attachments, ...next.attachments.filter(attachment => !attachment.attachment_id || !ids.has(attachment.attachment_id))],
+    reply: held.reply
+  }
+}
+
 /** A Send is delivered only by a receipt for this exact intent. */
 function confirmSend(result: unknown, eventId: string, unconfirmed: string) {
   const receipt = result as { accepted?: unknown; client_event_id?: unknown } | null
@@ -103,7 +118,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [sendHint, setSendHint] = useState('')
   const revision = useRef(0)
   // This window's typed draft while it sends the room's one pending intent another window prepared.
-  const heldDraft = useRef<{ text: string; attachments: Attachment[]; reply: RoomReply | null } | null>(null)
+  const heldDraft = useRef<HeldDraft | null>(null)
   const [reply, setReply] = useState<RoomReply | null>(null)
   // A handed-back journal entry keeps its thread even without a visible reply chip.
   const draftThread = useRef<string | undefined>(undefined)
@@ -291,7 +306,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
 
     // Another window won the room's slot: send its intent first, keep this window's words.
     if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments, reply?.thread)) {
-      heldDraft.current = { ...typed, reply }
+      heldDraft.current = holdDraft(heldDraft.current, { ...typed, reply })
     }
 
     const words = { text: String(exact.params.payload.text ?? ''), attachments: (exact.params.payload.attachments as Attachment[] | undefined) ?? [] }

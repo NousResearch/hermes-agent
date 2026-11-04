@@ -1,0 +1,20 @@
+name: proactive-agent
+repo: https://github.com/JerryLiu369/hermes-proactive-agent
+sha: 7d68c16204e5bd89ca237891e60f54f1da3c95ed
+version: "0.1.4"
+description: >-
+  Proactive agent execution governor for Hermes: adaptive 30s foreground terminal detach,
+  8-round circuit breaker, and zero-intrusion platform allowlist.
+maintainer: JerryLiu369
+tier: community
+category: agent-ops
+docs_url: https://github.com/JerryLiu369/hermes-proactive-agent
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - pre_api_request
+    - system_prompt
+  provides_middleware: []
+  requires_env: []

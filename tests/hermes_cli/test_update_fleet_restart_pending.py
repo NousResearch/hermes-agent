@@ -1266,3 +1266,100 @@ def test_startup_warn_does_not_emit_per_profile_line_when_fleet_is_current(monke
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ── #148719 part 2 review: state whitelist + owed-profile constraint ──
+#
+# The first iteration treated every non-current state as a gateway this update owes a
+# restart for. That misattributes ``external`` (a separate checkout this update did not
+# touch) and ``restart_pending`` (a deferred self-restart the gateway already accepted) —
+# neither is cleared by this update's ``hermes gateway restart``. These tests pin the
+# whitelist to {stale, unknown, down} and prove external/restart_pending stay invisible
+# while genuine stale rows remain named. They also cover the owed-profile constraint that
+# stops an unrelated stale profile from being attributed to this update, including the
+# multiplexer row that serves an owed profile under another profile's name.
+
+def _patch_collect_fleet_versions(monkeypatch, rows):
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: rows)
+
+
+def test_collect_stale_fleet_rows_whitelists_only_stale_unknown_down(monkeypatch):
+    """external / restart_pending / current rows are never selected as owed-stale."""
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "stale_one", "pid": 11, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "unknown_one", "pid": 12, "code_sha": None, "code_version": None, "state": "unknown"},
+        {"profile": "down_one", "pid": 13, "code_sha": None, "code_version": "0.20.0", "state": "down"},
+        {"profile": "current_one", "pid": 14, "code_sha": "e" * 40, "code_version": "0.21.0", "state": "current"},
+        {"profile": "external_one", "pid": 15, "code_sha": "9" * 40, "code_version": "0.19.0", "state": "external"},
+        {"profile": "pending_one", "pid": 16, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "restart_pending"},
+    ])
+    rows = update_cmd_fleet._collect_stale_fleet_rows()
+    profiles = [row["profile"] for row in rows]
+    assert profiles == ["stale_one", "unknown_one", "down_one"]
+
+
+def test_startup_banner_omits_external_and_restart_pending_rows(monkeypatch, capsys):
+    """external and restart_pending rows are not named in the startup banner."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "alpha"}],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "alpha", "pid": 4242, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "beta", "pid": 4243, "code_sha": "9" * 40, "code_version": "0.19.0", "state": "external"},
+        {"profile": "gamma", "pid": 4244, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "restart_pending"},
+        {"profile": "delta", "pid": 4245, "code_sha": None, "code_version": "0.20.0", "state": "down"},
+    ])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    # Genuine stale/down rows are named with their exact restart command.
+    assert "profile `alpha`" in err
+    assert "PID 4242 is stale" in err
+    assert "profile `delta`" in err
+    assert "is down" in err
+    # external and restart_pending are never attributed to this update.
+    assert "profile `beta`" not in err
+    assert "profile `gamma`" not in err
+    assert "external" not in err
+    assert "restart_pending" not in err
+
+
+def test_collect_stale_fleet_rows_constrains_to_owed_profiles(monkeypatch):
+    """A non-empty owed set hides stale profiles this update does not owe."""
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "default", "pid": 1, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "coder", "pid": 2, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "other", "pid": 3, "code_sha": None, "code_version": None, "state": "unknown"},
+    ])
+    owed = {("gateway", "default")}
+    rows = update_cmd_fleet._collect_stale_fleet_rows(owed=owed)
+    profiles = [row["profile"] for row in rows]
+    assert profiles == ["default"]
+
+
+def test_collect_stale_fleet_rows_keeps_multiplexer_serving_owed_profile(monkeypatch):
+    """A multiplexer row serving an owed profile is kept even if its own profile differs."""
+    _patch_collect_fleet_versions(monkeypatch, [
+        {
+            "profile": "mux", "pid": 99, "code_sha": "7" * 40, "code_version": "0.20.0",
+            "state": "stale", "served_profiles": ["default", "coder"],
+        },
+    ])
+    owed = {("gateway", "default")}
+    rows = update_cmd_fleet._collect_stale_fleet_rows(owed=owed)
+    assert [row["profile"] for row in rows] == ["mux"]
+
+
+def test_collect_stale_fleet_rows_unconstrained_when_owed_empty(monkeypatch):
+    """An empty/None owed set (marker-armed startup, unverified coverage) keeps all
+    diagnostic rows rather than dropping every per-profile line."""
+    _patch_collect_fleet_versions(monkeypatch, [
+        {"profile": "default", "pid": 1, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"},
+        {"profile": "coder", "pid": 2, "code_sha": None, "code_version": None, "state": "unknown"},
+    ])
+    assert len(update_cmd_fleet._collect_stale_fleet_rows(owed=None)) == 2
+    assert len(update_cmd_fleet._collect_stale_fleet_rows(owed=set())) == 2

@@ -527,12 +527,33 @@ def _warn_pending_fleet_restart(*, startup: bool = False, stale_rows: list[dict]
         print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
 
 
-def _collect_stale_fleet_rows() -> list[dict]:
-    """Live fleet rows still on stale code: ``stale`` / ``unknown`` / ``down`` rows only.
+# States the pending-restart banner is meant to diagnose: a live gateway still on
+# pre-update code that this update's per-profile ``hermes gateway restart`` will clear.
+# ``external`` is a separate checkout this update did not touch, and ``restart_pending``
+# is a deferred self-restart the gateway already accepted — neither is cleared by this
+# update's restart, so naming either as "owed" misattributes it (#148719 part 2 review).
+_STALE_DIAGNOSTIC_STATES = frozenset({"stale", "unknown", "down"})
+
+
+def _collect_stale_fleet_rows(owed: set[tuple[str, str]] | None = None) -> list[dict]:
+    """Live fleet rows this banner should name: ``stale`` / ``unknown`` / ``down`` only.
 
     Bounded by the existing probe: ``_update_owes_fleet_restart`` already ran the same call
     to decide whether to warn at all, so this only adds a second probe when the warning
-    _is_ firing. Returns ``[]`` on any probe failure so the banner still prints.
+    _is_ firing. Returns ``[]`` on any probe failure so the banner still prints via the
+    fallback.
+
+    ``external`` (a separate checkout) and ``restart_pending`` (a deferred self-restart the
+    gateway already accepted) are excluded — a per-profile ``hermes gateway restart`` from
+    this update clears neither of them.
+
+    When ``owed`` is supplied (the receipt's ``(gateway, profile)`` identities this update
+    actually owes), rows are constrained to those profiles so an unrelated stale profile is
+    not attributed to this update. A multiplexer row that serves an owed profile is kept
+    even when its own ``profile`` field names another. ``owed=None`` or an empty ``owed``
+    (unverified coverage, or a marker-armed startup whose receipt does not correspond to
+    this update) keeps the unconstrained diagnostic set rather than silently dropping every
+    row — the generic fallback still carries the banner when no diagnostic row survives.
     """
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
@@ -540,7 +561,17 @@ def _collect_stale_fleet_rows() -> list[dict]:
     except Exception as exc:
         logger.debug("Pending fleet restart: stale-row probe failed: %s", exc)
         return []
-    return [row for row in fleet if row.get("state") not in (None, "current")]
+    rows = [row for row in fleet if row.get("state") in _STALE_DIAGNOSTIC_STATES]
+    if not owed:
+        return rows
+    owed_profiles = {profile for kind, profile in owed if kind == "gateway"}
+    if not owed_profiles:
+        return rows
+    return [
+        row for row in rows
+        if row.get("profile") in owed_profiles
+        or any(served in owed_profiles for served in (row.get("served_profiles") or []))
+    ]
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:
@@ -554,7 +585,10 @@ def _warn_pending_fleet_restart_on_startup() -> None:
         pending_manual = retain_receipt_manual_serves(receipt)
     with suppress(Exception):
         if _update_owes_fleet_restart(receipt=receipt, pending_manual=pending_manual):
-            stale_rows = _collect_stale_fleet_rows()
+            owed = None
+            with suppress(Exception):
+                owed = _receipt_owed_gateways(receipt, pending_manual or [])
+            stale_rows = _collect_stale_fleet_rows(owed=owed)
             _warn_pending_fleet_restart(startup=True, stale_rows=stale_rows)
     with suppress(Exception):
         warn_pending_manual_serves(startup=True, pending_manual=pending_manual)

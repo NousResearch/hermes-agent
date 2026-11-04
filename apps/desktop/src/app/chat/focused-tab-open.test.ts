@@ -13,6 +13,8 @@ import type { TileDock } from '@/store/session-states'
 import { openSession } from '../open-session'
 import { $workspaceIsPage } from '../routes'
 
+import { startNewSessionBesideFocusedTab } from './focused-tab-open'
+
 // A plain click on a session (sidebar row, switcher, picker) belongs to the tab
 // the user is in. Routing it into main instead replaced whichever tab happened
 // to hold main — a tab the user neither picked nor could identify, and one that
@@ -218,5 +220,63 @@ describe('a plain session click opens in the focused tab', () => {
     openSession('target', navigate, 'tab')
 
     expect(mainGroup().panes).toEqual(['workspace', tilePane('chat-a'), tilePane('target')])
+  })
+})
+
+describe('"New session" with a session tab focused opens a new tab', () => {
+  // Stands in for useSessionActions().openNewSessionTile: the backend create is
+  // async, then the tile opens at the requested slot and takes focus.
+  const createTile = (id: string) =>
+    vi.fn(async (_dir: TileDock, options: { anchor: string; before: null | string }) => {
+      await Promise.resolve()
+      states.openSessionTile(id, 'center', options.anchor, options.before, SESSIONS)
+      states.patchSessionTile(id, { runtimeId: `rt-${id}` })
+      states.$sessionStates.set({ ...states.$sessionStates.get(), [`rt-${id}`]: state(0) })
+      states.focusOpenSession(id, SESSIONS)
+    })
+
+  const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+
+  beforeEach(() => {
+    reset()
+    tree.declareDefaultTree(model.group(['workspace'], { active: 'workspace', id: 'main' }))
+    session.$selectedStoredSessionId.set('main-chat')
+  })
+
+  afterEach(reset)
+
+  it('opens a new tab beside the focused tab, leaving that tab and main alone', async () => {
+    openTile('chat-a', 3)
+    openTile('chat-b', 2)
+    states.focusOpenSession('chat-a', SESSIONS)
+    const open = createTile('target')
+
+    expect(startNewSessionBesideFocusedTab(open)).toBe(true)
+    await settle()
+
+    expect(open).toHaveBeenCalledWith('center', { anchor: tilePane('chat-a'), before: tilePane('chat-b'), listed: false })
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('chat-a'), tilePane('target'), tilePane('chat-b')])
+    expect(mainGroup().active).toBe(tilePane('target'))
+    expect(session.$selectedStoredSessionId.get()).toBe('main-chat')
+  })
+
+  it('keeps an untouched untitled tab, which already is a new session', async () => {
+    openTile('draft-a', 0)
+    const open = createTile('target')
+
+    expect(startNewSessionBesideFocusedTab(open)).toBe(true)
+    await settle()
+
+    expect(open).not.toHaveBeenCalled()
+    expect(mainGroup().panes).toEqual(['workspace', tilePane('draft-a')])
+  })
+
+  it('defers to main when main is the focused tab', () => {
+    openTile('chat-a', 3)
+    states.frontMainIfSelected('main-chat')
+    const open = createTile('target')
+
+    expect(startNewSessionBesideFocusedTab(open)).toBe(false)
+    expect(open).not.toHaveBeenCalled()
   })
 })

@@ -387,11 +387,13 @@ describe('barge capture on the audio clock', () => {
 
   it('does not deliver an utterance when the owner cancels inside onSpeech', async () => {
     const onUtterance = vi.fn()
+
     const stop = monitorSpeechDuringPlayback({
       isPlaying: () => false,
       onSpeech: () => stop(),
       onUtterance
     })
+
     await flushMicrotasks()
     advance(600)
     micLevel = 0.2

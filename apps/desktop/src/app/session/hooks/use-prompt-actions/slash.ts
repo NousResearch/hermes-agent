@@ -1029,9 +1029,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             applyReasoningSlashResult(result.value)
             // Typed while a reply streams: the owner applies the level from the next turn.
             renderSlashOutput(
-              result.status === 'deferred'
-                ? translateNow('shell.modelMenu.pickDeferred', value)
-                : `reasoning: ${value}`
+              result.status === 'deferred' ? translateNow('shell.modelMenu.pickDeferred', value) : `reasoning: ${value}`
             )
           } catch (err) {
             if (isMissingRpcMethod(err)) {

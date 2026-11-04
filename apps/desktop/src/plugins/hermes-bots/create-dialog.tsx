@@ -166,7 +166,11 @@ function capabilityPayload(
  *  default backend, no gateway switch) or '' for the active gateway. */
 function requestOnTarget<T>(target: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
   return target
-    ? host.requestProfile({ connectionId: target, mode: 'remote', profile: 'default', targetProfile: 'default' }, method, params)
+    ? host.requestProfile(
+        { connectionId: target, mode: 'remote', profile: 'default', targetProfile: 'default' },
+        method,
+        params
+      )
     : host.request(method, params)
 }
 
@@ -209,7 +213,15 @@ function useCapabilitiesDraft(ready: boolean, slug: string, draft: null | string
 
 /** New Bot's live Capabilities tab: a hint until the name is usable, a spinner
  *  until its draft profile exists, then the real surface pinned to that draft. */
-function CapabilitiesTab({ connection, draft, hint }: { connection?: string; draft: null | string; hint: null | string }) {
+function CapabilitiesTab({
+  connection,
+  draft,
+  hint
+}: {
+  connection?: string
+  draft: null | string
+  hint: null | string
+}) {
   const b = useBots()
   const note = 'px-2 py-3 text-center text-xs text-(--ui-text-tertiary)'
 
@@ -1178,7 +1190,10 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
       return false
     }
 
-    host.notify({ kind: 'info', message: enabled ? `${botName} added to “${group}”` : `${botName} removed from “${group}”` })
+    host.notify({
+      kind: 'info',
+      message: enabled ? `${botName} added to “${group}”` : `${botName} removed from “${group}”`
+    })
 
     return true
   }
@@ -1359,7 +1374,9 @@ function GroupEngineNote({ connectionId, engine, selected }: GroupEngineNoteProp
 
   return (
     <p className="text-xs text-(--ui-text-secondary)" data-group-engine={engine} role="note">
-      {engine === 'elsewhere' ? b.crossGateway.selectionElsewhere(connectionName(selected[0])) : b.crossGateway.desktopDriven}
+      {engine === 'elsewhere'
+        ? b.crossGateway.selectionElsewhere(connectionName(selected[0]))
+        : b.crossGateway.desktopDriven}
     </p>
   )
 }
@@ -1433,62 +1450,81 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
-    engine !== null && engine !== 'elsewhere'
+  const canCreate =
+    selected.length >= 2 && Boolean(name.trim() || selected.length) && engine !== null && engine !== 'elsewhere'
 
   const creating = useRef(false)
 
   const create = async () => {
-    if (creating.current) {return}
+    if (creating.current) {
+      return
+    }
     creating.current = true
 
     try {
-    const base = (name.trim() || placeholder).slice(0, 64)
+      const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !base) {
-      return
-    }
+      if (selected.length < 2 || !base) {
+        return
+      }
 
-    const route = observedRoute
+      const route = observedRoute
 
-    if (!route) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+      if (!route) {
+        throw new Error(b.canonical.driverUnavailable)
+      }
 
-    const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(route, capability, source, b.canonical.driverUnavailable)
+      const { mode: currentMode, sourceCurrent } = await revalidateGroupCreationMode(
+        route,
+        capability,
+        source,
+        b.canonical.driverUnavailable
+      )
 
-    if (!sourceCurrent()) {
-      throw new Error(b.canonical.driverUnavailable)
-    }
+      if (!sourceCurrent()) {
+        throw new Error(b.canonical.driverUnavailable)
+      }
 
-    const engine = groupCreationEngine(currentMode, selected, route.connectionId)
+      const engine = groupCreationEngine(currentMode, selected, route.connectionId)
 
-    if (engine === 'elsewhere') {
-      throw new Error(b.crossGateway.selectionElsewhere(connectionName(selected[0])))
-    }
+      if (engine === 'elsewhere') {
+        throw new Error(b.crossGateway.selectionElsewhere(connectionName(selected[0])))
+      }
 
-    if (engine === 'gateway') {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      if (engine === 'gateway') {
+        const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
 
-      // Creation already succeeded; leave it on its owner without adopting a stale result.
-      if (!sourceCurrent()) {return}
-      const key = registerCanonicalGroup(route, created.room)
+        // Creation already succeeded; leave it on its owner without adopting a stale result.
+        if (!sourceCurrent()) {
+          return
+        }
+        const key = registerCanonicalGroup(route, created.room)
+        onClose()
+        onCreated?.(key, 'key')
+
+        return
+      }
+
+      const groupName = persistDesktopDrivenGroup(
+        base,
+        selected,
+        allMeta,
+        image,
+        sourceCurrent,
+        b.canonical.driverUnavailable,
+        route.connectionId
+      )
+      host.notify({
+        kind: 'info',
+        message: `“${groupName}” created with ${selected.length} bots`
+      })
       onClose()
-      onCreated?.(key, 'key')
-
-      return
-    }
-
-    const groupName = persistDesktopDrivenGroup(base, selected, allMeta, image, sourceCurrent, b.canonical.driverUnavailable, route.connectionId)
-    host.notify({
-      kind: 'info',
-      message: `“${groupName}” created with ${selected.length} bots`
-    })
-    onClose()
-    onCreated?.(groupName, 'name')
+      onCreated?.(groupName, 'name')
     } catch (error) {
       host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
-    } finally { creating.current = false }
+    } finally {
+      creating.current = false
+    }
   }
 
   return (
@@ -1579,7 +1615,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
                     </div>
                     {spansConnections && (
                       <Badge className="shrink-0 rounded-full px-1.5 text-[0.625rem]" data-device-badge variant="muted">
-                        {bot.connectionLabel || (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
+                        {bot.connectionLabel ||
+                          (botOnConnection(bot, connectionId) ? b.bot.thisDevice : bot.connectionId)}
                       </Badge>
                     )}
                     <Checkbox

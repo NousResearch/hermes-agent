@@ -168,8 +168,8 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
                     }
               }
               onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
-              pinned={pinned}
               ownerRoute={sessionOwnerRouteFromRow(row)}
+              pinned={pinned}
               profile={row.profile}
               sessionId={row.id}
               title={title}

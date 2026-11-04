@@ -8,7 +8,6 @@ the gateway closing the socket (its grant was revoked) closes the browser's too.
 import json
 import socket
 import threading
-import time
 import urllib.parse
 from types import SimpleNamespace
 
@@ -20,6 +19,7 @@ from hermes_cli.web_routers import webapp_relay_proxy
 # Fixtures: the relay app (one app plays hub and gateway), and the voice streams' stand-in providers.
 from tests.hermes_cli.test_webapp_relay import ORIGIN, _pair, _relay_app, _sign_in
 from tests.hermes_cli.test_webapp_socket_tickets import voice
+from tests.waiting import wait_until
 
 _REAL_RELAY_CLIENT = webapp_relay_proxy.relay_client
 _SPEAK = "/api/audio/speak-stream"
@@ -46,10 +46,8 @@ def live_gateway(relay_app, monkeypatch):
                                            log_level="warning", ws="websockets"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    deadline = time.monotonic() + 15
-    while not server.started:
-        assert time.monotonic() < deadline and thread.is_alive(), "loopback gateway did not start"
-        time.sleep(0.02)
+    wait_until(lambda: server.started or not thread.is_alive(), timeout=15, what="the loopback gateway starting")
+    assert server.started, "loopback gateway did not start"
     try:
         yield SimpleNamespace(app=relay_app, url=f"http://127.0.0.1:{port}")
     finally:

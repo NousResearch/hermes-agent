@@ -8,7 +8,7 @@ const host = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => ({ host, randomUuid: (await import('@hermes/shared')).randomUuid }))
 
-import { actCanonicalGroup, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, createCanonicalGroup, discoverCanonicalGroups } from './canonical-groups'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -17,7 +17,7 @@ beforeEach(() => {
 })
 
 it('pins discovery and every subsequent request to its captured authority, including empty filtered pages', async () => {
-  const route = captureCanonicalGroupRoute()
+  const route = { connectionId: 'source-a', profile: 'default' }
   const room = { room_id: 'room-a', name: 'Team', members: [] }
   host.state.connectionId.get.mockReturnValue('source-b')
   host.state.profile.get.mockReturnValue('other')
@@ -45,7 +45,7 @@ it('pins discovery and every subsequent request to its captured authority, inclu
 })
 
 it('creates only same-authority rosters and dispatches exact advertised attempt identities without inference', async () => {
-  const route = captureCanonicalGroupRoute()
+  const route = { connectionId: 'source-a', profile: 'default' }
 
   const members = [
     { name: 'alice', handle: 'alice', connectionId: 'source-a', display_name: 'Alice' },

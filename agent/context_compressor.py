@@ -35,10 +35,10 @@ from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin
 from agent.context_compressor_prune import ProactivePruneMixin
 from agent.context_compressor_summary import SummaryDispatchMixin
-from agent.context_compressor_retry import retryable_user_text
+from agent.context_compressor_retry import retryable_user_text, typed_prompt_content
 from agent.context_compressor_tail import (
     _message_ref, demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
-    elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule,
+    elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -48,6 +48,7 @@ from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
 )
+from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
@@ -2189,10 +2190,9 @@ class ContextCompressor(
         """Resolve and cache the model's context length on first access."""
         if self._resolved_context_length is None:
             self._resolved_context_length = get_model_context_length(
-                self.model, base_url=self.base_url, api_key=self.api_key,
-                config_context_length=self._config_context_length, provider=self.provider,
-                custom_providers=self.custom_providers,
-            )
+                self.model, base_url=self.base_url, api_key=self.api_key, config_context_length=self._config_context_length,
+                provider=self.provider, custom_providers=self.custom_providers)
+            self._context_default = (self.model, self.base_url, last_defaulted_context_length())  # agent.context_pin label
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
             self._emit_init_summary_once()
@@ -5102,9 +5102,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if isinstance(_min_tail_users, int) and not isinstance(_min_tail_users, bool) and _min_tail_users > 1:
             cut_idx = self._ensure_last_n_user_messages_in_tail(messages, cut_idx, head_end, _min_tail_users)
 
-        # Floor guarantees progress (>= 1 message claimed); re-align FORWARD only so a raised cut
+        # Floor guarantees progress (>= 1 non-handoff message claimed); re-align FORWARD only so a raised cut
         # can't split a tool group (backward would give the floor's message back).
-        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, tail_cut_progress_floor(self, messages, head_end, cut_idx))))
 
     def has_content_to_compress(self, messages: list[dict[str, Any]]) -> bool:
         """True if a non-empty middle region exists (lets the gateway ``/compress`` guard skip the LLM call)."""
@@ -5421,7 +5421,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # back to the OS. #76905's trim lifecycle covers the gateway/TUI housekeeping loops but not the
             # CLI compression path, so RSS keeps the pre-compaction high-water mark until exit. (#70782)
             from hermes_cli.mem_trim import trim_memory
-            trim_memory(reason="post-compression")
+            trim_memory(reason="post-compression", collect=False)  # a full GC freezes every thread (#146375)
         except Exception as exc:
             logger.debug("post-compression memory trim failed: %s: %s", type(exc).__name__, exc)
 
@@ -5691,8 +5691,8 @@ def history_before_user_originated_turn(
     handoff, live_view = split_user_originated_turn(messages[index])
     if live_view is None:
         raise ValueError("selected row is not a user-originated turn")
-    prefix = [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else [])
-    return prefix, live_view
+    live_view["content"] = typed_prompt_content(live_view.get("content"), messages[index])  # never the placeholder
+    return [message.copy() for message in messages[:index]] + ([handoff] if handoff is not None else []), live_view
 
 
 def _handoff_carries_live_user_content(message: Any) -> bool:

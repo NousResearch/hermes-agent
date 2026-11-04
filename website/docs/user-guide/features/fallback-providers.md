@@ -239,7 +239,7 @@ A billing or quota failure quarantines only the failed custom endpoint for the a
 
 The task-specific chain is most precise and wins when present. The top-level `fallback_providers` chain is the same policy the main agent uses, so free-only or same-provider fallback rules apply to auxiliary tasks on `auto` as well.
 
-**Built-in text discovery chain (compression, web extract, title generation, etc.):**
+**Built-in text discovery chain (compression, title generation, etc.):**
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →

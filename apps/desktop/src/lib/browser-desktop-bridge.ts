@@ -126,6 +126,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   const uploads = createBrowserUploadsBridge({
     api: activeApi,
+    assetsBasePath: bootstrap.basePath,
     bootstrap: activeBootstrap,
     currentProfile,
     objectUrls,

@@ -208,6 +208,27 @@ describe('a Webapp whose gateway relays to others', () => {
     expect(stream.pathname.startsWith('/hermes/api/relay/mini/')).toBe(true)
   })
 
+  it("loads an HTML preview's own scripts from this gateway while the window is on a relayed one", async () => {
+    servingGateway()
+    const desktop = install()
+    await desktop.connections!.list()
+    $connection.set({ ...(await desktop.getConnectionFor!({ connectionId: 'mini' })) })
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return 'blob:https://hub.example/preview'
+    })
+
+    // The wrapper is a document on this origin, so its outer script runs as this gateway's page.
+    await desktop.saveImageBuffer(new TextEncoder().encode('<p>hi</p>'), '.html')
+    const wrapper = new DOMParser().parseFromString(await blobs[0]!.text(), 'text/html')
+
+    expect(new URL(wrapper.querySelector('script')!.src).pathname).toBe('/hermes/assets/webapp-preview.js')
+    expect(new URL(wrapper.querySelector('iframe')!.src).pathname).toBe('/hermes/assets/webapp-preview.html')
+  })
+
   it("keeps the default folder a relayed gateway's profile chose apart from this gateway's", async () => {
     servingGateway()
     const desktop = install()

@@ -80,6 +80,41 @@ async def test_resume_replays_partial_batch_without_transcript(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_terminal_replay_uses_competing_response_answers(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+
+    async def answer(event):
+        return 'ok'
+
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    fresh = None
+    worker = None
+    try:
+        await _resume(owner)
+        peer, worker, out = _start_batch(authority)
+        await _wait_for(lambda: any(frame.get('method') == 'clarify' for frame in peer.frames))
+        request_id = _request_id(peer)
+        await _lock(owner, request_id, 'q0', 'monitor partial')
+        final = {'q0': 'rival free', 'q1': '["blue"]'}
+        await owner.dispatch({'jsonrpc': '2.0', 'id': request_id,
+                              'result': {'answers': final, 'outcome': 'submitted'}})
+        await asyncio.to_thread(worker.join, 5)
+        assert out['answers'] == final
+        fresh = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        restored = await _resume(fresh)
+        entry = next(item for item in restored['result']['request_receipts'] if item['id'] == request_id)
+        assert entry['params']['answers'] == final
+        assert (await _reconcile(fresh, request_id))['result']['answers'] == final
+    finally:
+        if worker is not None:
+            _stop_batch(authority, worker)
+        if fresh is not None:
+            await fresh.close()
+        await owner.close()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_reads_open_and_submitted_receipts_without_replaying_locks(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
 
@@ -123,6 +158,17 @@ async def test_reconcile_reads_open_and_submitted_receipts_without_replaying_loc
         repeated = await _reconcile(owner, request_id, **identity)
         assert repeated == receipt
         assert out['answers'] == {'q0': 'blue', 'q1': None}
+        fresh = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        try:
+            restored = await _resume(fresh)
+            assert request_id not in {entry['id'] for entry in restored['result']['open_requests']}
+            receipt_entry = next(
+                entry for entry in restored['result']['request_receipts'] if entry['id'] == request_id
+            )
+            assert receipt_entry['params']['answers'] == {'q0': 'blue', 'q1': None}
+            assert restored['result']['messages'] == []
+        finally:
+            await fresh.close()
 
         expired = await _reconcile(owner, 'srq-does-not-exist', **identity)
         assert expired['result'] == {'status': 'expired', 'request_id': 'srq-does-not-exist'}

@@ -75,6 +75,10 @@ def _settle(request_id, pending, result):
     _open.pop(request_id, None)
     pending.result = result
     if pending.qids is not None:
+        if isinstance(result, dict) and isinstance(result.get("answers"), dict):
+            # A competing response frame may settle the form instead of the final clarify.lock.
+            # Retained terminal replay must describe that accepted result, not stale partial locks.
+            pending.locked = dict(result["answers"])
         _settled[request_id] = pending
         _settled.move_to_end(request_id)
         while len(_settled) > _SETTLED_LIMIT:
@@ -159,6 +163,14 @@ def open_requests(events, session_id) -> list[dict]:
     with _lock:
         return [pending.snapshot(request_id) for request_id, pending in _open.items()
                 if pending.session_id == session_id and pending.events is events and pending.qids is not None]
+
+
+def request_receipts(events, session_id) -> list[dict]:
+    """Latest settled batch forms for this stream, so a fresh viewer can reconcile their receipts."""
+    with _lock:
+        retained = [(request_id, pending) for request_id, pending in _settled.items()
+                    if pending.session_id == session_id and pending.events is events]
+        return [pending.snapshot(request_id) for request_id, pending in retained[-16:]]
 
 
 def withdraw(events, session_id, method) -> int:

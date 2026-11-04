@@ -153,6 +153,8 @@ class CanonicalSnapshot(Result):
     prompts: list[CanonicalPendingPrompt]
     # Live server→client requests for this exact authority stream; batch params carry accepted locks.
     open_requests: list[OpenRequestEntry] | None = None
+    # Bounded settled batch forms; clarify.reconcile supplies their authoritative terminal receipt.
+    request_receipts: list[OpenRequestEntry] | None = None
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None

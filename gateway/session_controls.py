@@ -634,7 +634,7 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
-        from gateway.session_server_requests import open_requests
+        from gateway.session_server_requests import open_requests, request_receipts
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
         from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
@@ -661,6 +661,8 @@ class AuthorityConnection:
                 'pending': [] if metadata_only else [asdict(r) for r in snapshot.pending],
                 'prompts': [] if metadata_only else list(snapshot.prompts), 'info': info,
                 'open_requests': open_requests(self.authority.sessions[ref.session_id].event_stream, ref.session_id),
+                'request_receipts': request_receipts(
+                    self.authority.sessions[ref.session_id].event_stream, ref.session_id),
                 'pending_connection': None if metadata_only else pending_connection(self.authority, ref.session_id)}
 
     def _spawn_notice(self, ref):

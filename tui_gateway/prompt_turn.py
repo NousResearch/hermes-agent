@@ -426,6 +426,7 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     accepted = False
+    run_turn = session.get("_run_turn")
     try:
         # Retain Desktop's routed socket across slow dispatch preparation without
         # announcing a message: only the admitted worker owns message.start.
@@ -440,8 +441,10 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     finally:
         if not accepted:
             with session["history_lock"]:
-                session["running"] = False
-            _emit("session.info", sid, {"running": False})
+                # Refusal may already have released our claim; a successor owns its own busy state.
+                if session.get("_run_turn") == run_turn:
+                    session["running"] = False
+                    _emit("session.info", sid, {"running": False})
 
 
 def _run_post_turn_followups(

@@ -1,6 +1,7 @@
 """Keep a routed client alive while a claimed follow-up prepares its worker (#89978)."""
 
 import contextlib
+import threading
 
 import pytest
 
@@ -48,6 +49,37 @@ def test_followup_retains_route_before_database_preparation_and_worker_publicati
     workers[0]()
     assert [event for event, _ in events].count("message.start") == 1
     assert session["running"] is False
+
+
+def test_refused_followup_cleanup_preserves_newer_turn_claim(monkeypatch, followup):
+    session, events = followup
+    refused = threading.Event()
+    resume_cleanup = threading.Event()
+    submit = server._run_prompt_submit
+
+    def refuse_then_wait(*args, **kwargs):
+        accepted = submit(*args, **kwargs)
+        assert accepted is False and session["running"] is False
+        refused.set()
+        assert resume_cleanup.wait(timeout=5)
+        return accepted
+
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_: "temporarily not owned")
+    monkeypatch.setattr(server, "_run_prompt_submit", refuse_then_wait)
+    worker = threading.Thread(target=server._dispatch_followup_turn,
+                              args=("rid", "route", session, "continue", "goal continuation"))
+    worker.start()
+    try:
+        assert refused.wait(timeout=5)
+        assert server._notif_claim_turn(session)
+        assert session["_run_turn"] == 2
+    finally:
+        resume_cleanup.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert session["running"] is True
+    assert [(event, payload) for event, payload in events if event == "session.info"] == [
+        ("session.info", {"running": True})]
 
 
 @pytest.mark.parametrize("refusal", ["closing", "replaced", "retiring", "ownership", "preparation_error"])

@@ -31,7 +31,6 @@ Design constraints (mirroring the source PR):
 from __future__ import annotations
 
 import re
-from typing import List
 
 # Cap on extracted keywords — mirrors the probe bound in the source PR.
 MAX_EXPANSION_TERMS = 6
@@ -63,7 +62,7 @@ _STOP_WORDS = frozenset(
     + "is are was were be been being am have has had having do does did "
       "done will would could should shall can may might must".split()
     # prepositions / conjunctions
-    + "in on at to for of with by from about into through during before "
+    + "in on at to for of with by from about into through during before not no "
       "after between under over and or but if then because so as while "
       "when where".split()
     # question / request words
@@ -82,6 +81,7 @@ _STOP_WORDS = frozenset(
 )
 
 _TOKEN_RE = re.compile(r"[^\s]+")
+_NON_WORD_RE = re.compile(r"\W")
 # Strip leading/trailing punctuation from a token but keep interior
 # hyphens/dots/underscores (identifiers like chat-send, app.config).
 _EDGE_PUNCT_RE = re.compile(r"^[^\w\u0080-\uffff]+|[^\w\u0080-\uffff]+$")
@@ -96,7 +96,7 @@ def has_fts_operators(query: str) -> bool:
     return bool(_FTS_OPERATOR_RE.search(query or ""))
 
 
-def extract_keywords(query: str, max_terms: int = MAX_EXPANSION_TERMS) -> List[str]:
+def extract_keywords(query: str, max_terms: int = MAX_EXPANSION_TERMS) -> list[str]:
     """Extract up to *max_terms* meaningful keywords from a query.
 
     Tokenizes on whitespace, strips edge punctuation, drops stop words
@@ -106,7 +106,7 @@ def extract_keywords(query: str, max_terms: int = MAX_EXPANSION_TERMS) -> List[s
     """
     if not query:
         return []
-    keywords: List[str] = []
+    keywords: list[str] = []
     seen = set()
     for match in _TOKEN_RE.finditer(query):
         token = _EDGE_PUNCT_RE.sub("", match.group(0))
@@ -126,7 +126,7 @@ def extract_keywords(query: str, max_terms: int = MAX_EXPANSION_TERMS) -> List[s
     return keywords
 
 
-def expansion_is_noop(query: str, keywords: List[str]) -> bool:
+def expansion_is_noop(query: str, keywords: list[str]) -> bool:
     """Return True when expansion did not narrow the query.
 
     If every token of the original query survived extraction, the OR
@@ -143,6 +143,9 @@ def expansion_is_noop(query: str, keywords: List[str]) -> bool:
     return original_tokens == {k.lower() for k in keywords}
 
 
-def build_expansion_query(keywords: List[str]) -> str:
-    """Join keywords into a single FTS5 OR probe query."""
-    return " OR ".join(keywords)
+def build_expansion_query(keywords: list[str]) -> str:
+    """Join keywords into a single FTS5 OR probe query. A keyword carrying punctuation
+    (``HOME/.config/hermes``) is quoted so FTS5 reads it as a phrase, not as syntax: the
+    sanitizer alone leaves fragments such as a bare ``.config`` that FTS5 rejects. CJK
+    keywords stay bare because the CJK route re-quotes its own tokens."""
+    return " OR ".join(f'"{k}"' if _NON_WORD_RE.search(k) and not _CJK_RE.search(k) else k for k in keywords)

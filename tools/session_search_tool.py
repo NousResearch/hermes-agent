@@ -352,6 +352,10 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         detail=result_detail)
 
 
+def _demote_automation(rows: list) -> list:
+    return sorted(rows, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
+
+
 def _supplement_thin_results(db, query: str, raw_results: list, limit: int, **search) -> tuple[list, list[str]]:
     """Append one bounded keyword OR probe below the strict FTS rows when they cover fewer
     than ``limit`` sessions: FTS5 ANDs every word, so a conversational query ("that thing we
@@ -367,7 +371,8 @@ def _supplement_thin_results(db, query: str, raw_results: list, limit: int, **se
         limit=_DISCOVER_SCAN_LIMIT, offset=0, fields=_DISCOVER_SEARCH_FIELDS, **search), [],
         "supplemental keyword probe failed", with_exc=True)
     seen_ids = {r.get("id") for r in raw_results}
-    extras = [r for r in supplemental if r.get("id") not in seen_ids]
+    # Demoted within their own tier: an expanded interactive row never outranks a strict cron hit.
+    extras = _demote_automation([r for r in supplemental if r.get("id") not in seen_ids])
     return (list(raw_results) + extras, keywords) if extras else (raw_results, [])
 
 
@@ -392,13 +397,13 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
-    raw_results, expanded_terms = _supplement_thin_results(
-        db, query, raw_results, limit, role_filter=role_filter or ["user", "assistant"], sort=sort,
-        after_ts=after_ts, before_ts=before_ts)
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
-    raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
+    raw_results = _demote_automation(raw_results)
+    raw_results, expanded_terms = _supplement_thin_results(
+        db, query, raw_results, limit, role_filter=role_filter or ["user", "assistant"], sort=sort,
+        after_ts=after_ts, before_ts=before_ts)
     # See #19434.
     if not raw_results and not title_result:
         return _discover_payload(db, query, detail, [], message=(

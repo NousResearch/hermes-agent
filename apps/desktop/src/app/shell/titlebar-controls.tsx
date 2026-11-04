@@ -34,6 +34,7 @@ import {
 } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
@@ -184,6 +185,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+  const simplified = useStore($simplifiedAgentMode)
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -264,6 +266,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
+      hidden: simplified,
       label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')

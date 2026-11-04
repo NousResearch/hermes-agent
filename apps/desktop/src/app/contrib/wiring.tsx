@@ -171,6 +171,7 @@ import { MainWindowOverlays } from './main-window-overlays'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { SimplifiedNavigationSurface } from './simplified-navigation-surface'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import {
@@ -1166,6 +1167,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [actions, currentView]
   )
 
+  const globalNavNode = useMemo(
+    () => <SimplifiedNavigationSurface onNavigate={item => actions.onNavigate(item)} />,
+    [actions]
+  )
+
   const terminalNode = useMemo(() => <TerminalSurface />, [])
 
   const statusbarNode = useMemo(
@@ -1189,12 +1195,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const api = useMemo<WiringApi>(
     () => ({
+      globalNav: globalNavNode,
       chatRoutes: chatRoutesNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
+    [globalNavNode, chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,

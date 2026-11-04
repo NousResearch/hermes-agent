@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Ці елементи керування доступні лише авторизованому користувачу Matrix."
       not_requester: "Ці елементи керування доступні лише користувачу, який запросив цю дію."
   feishu:
+    clarify:
+      title: "Hermes потребує вашої відповіді"
+      other: "✏️ Інше (ввести відповідь)"
+      awaiting_typed: "Очікуємо текстову відповідь від {user}…"
+    picker:
+      apply_error: "Помилка застосування вибору: {error}"
     approval:
       action_session: "На сеанс"
       action_always: "Завжди"

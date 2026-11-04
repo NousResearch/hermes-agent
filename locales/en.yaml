@@ -1431,6 +1431,12 @@ platform:
       not_requester: "Only the user who requested this action can use these controls."
 
   feishu:
+    clarify:
+      title: "Hermes needs your input"
+      other: "✏️ Other (type answer)"
+      awaiting_typed: "Awaiting typed response from {user}…"
+    picker:
+      apply_error: "Error applying selection: {error}"
     approval:
       # Feishu keeps shorter button words than the shared card (emoji prefixes are added in code).
       action_session: "Session"

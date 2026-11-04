@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Ní féidir ach le húsáideoir Matrix údaraithe na rialtáin seo a úsáid."
       not_requester: "Ní féidir ach leis an úsáideoir a d'iarr an gníomh seo na rialtáin seo a úsáid."
   feishu:
+    clarify:
+      title: "Tá d'ionchur de dhíth ar Hermes"
+      other: "✏️ Eile (clóscríobh freagra)"
+      awaiting_typed: "Ag fanacht le freagra clóscríofa ó {user}…"
+    picker:
+      apply_error: "Earráid agus an rogha á cur i bhfeidhm: {error}"
     approval:
       action_session: "Seisiún"
       action_always: "I gcónaí"

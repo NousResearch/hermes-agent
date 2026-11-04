@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "只有已授權的 Matrix 使用者可以使用這些控制項。"
       not_requester: "只有提出此操作的使用者可以使用這些控制項。"
   feishu:
+    clarify:
+      title: "Hermes 需要你的輸入"
+      other: "✏️ 其他（輸入答案）"
+      awaiting_typed: "等待 {user} 輸入回應…"
+    picker:
+      apply_error: "套用選擇時發生錯誤：{error}"
     approval:
       action_session: "本次工作階段"
       action_always: "永久"

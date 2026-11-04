@@ -68,7 +68,7 @@ _LARK_SDK_IMPORTS = (
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
         "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
         "ReplyMessageRequest", "ReplyMessageRequestBody",
-        "UpdateMessageRequest", "UpdateMessageRequestBody",
+        "UpdateMessageRequest", "UpdateMessageRequestBody", "PatchMessageRequest", "PatchMessageRequestBody",
     )),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
     ("lark_oapi.core.const", ("FEISHU_DOMAIN", "LARK_DOMAIN")),
@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1284,7 +1285,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(BasePlatformAdapter):
+class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1344,6 +1345,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._approval_counter = itertools.count(1)
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._init_choice_card_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
@@ -2196,9 +2198,9 @@ class FeishuAdapter(BasePlatformAdapter):
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Synchronous SDK card-action callback.
 
-        Approval/update-prompt buttons return the resolved card inline (the only reliable way
-        to sync all clients) and schedule the async resolution; other clicks are routed as
-        synthetic commands via ``_handle_card_action_event``.
+        Approval/update-prompt/clarify/picker buttons return the settled card inline (the only
+        reliable way to sync all clients) and schedule any async resolution; other clicks are routed
+        as synthetic commands via ``_handle_card_action_event``.
         """
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
@@ -2207,11 +2209,9 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
-        if isinstance(action_value, dict):
-            if action_value.get("hermes_action"):
-                return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-            if action_value.get("hermes_update_prompt_action"):
-                return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+        for key, handler in self._CARD_ACTION_ROUTES if isinstance(action_value, dict) else ():
+            if action_value.get(key):
+                return getattr(self, handler)(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
 

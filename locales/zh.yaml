@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "只有已授权的 Matrix 用户才能使用这些控件。"
       not_requester: "只有发起此操作的用户才能使用这些控件。"
   feishu:
+    clarify:
+      title: "Hermes 需要你的输入"
+      other: "✏️ 其他（输入回答）"
+      awaiting_typed: "等待 {user} 输入回答…"
+    picker:
+      apply_error: "应用所选项时出错：{error}"
     approval:
       action_session: "本会话"
       action_always: "始终"

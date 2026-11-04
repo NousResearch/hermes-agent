@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "Bu kontrolleri yalnızca yetkili bir Matrix kullanıcısı kullanabilir."
       not_requester: "Bu kontrolleri yalnızca bu işlemi isteyen kullanıcı kullanabilir."
   feishu:
+    clarify:
+      title: "Hermes girdinize ihtiyaç duyuyor"
+      other: "✏️ Diğer (yanıt yazın)"
+      awaiting_typed: "{user} kullanıcısının yazılı yanıtı bekleniyor…"
+    picker:
+      apply_error: "Seçim uygulanırken hata: {error}"
     approval:
       action_session: "Oturum"
       action_always: "Her zaman"

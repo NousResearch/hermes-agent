@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "これらの操作は、認可された Matrix ユーザーのみが使用できます。"
       not_requester: "これらの操作は、このアクションをリクエストしたユーザーのみが使用できます。"
   feishu:
+    clarify:
+      title: "Hermes が入力を求めています"
+      other: "✏️ その他（回答を入力）"
+      awaiting_typed: "{user} からの入力を待っています…"
+    picker:
+      apply_error: "選択の適用エラー: {error}"
     approval:
       action_session: "セッション中"
       action_always: "常に"

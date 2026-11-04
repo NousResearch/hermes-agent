@@ -1371,6 +1371,12 @@ platform:
       unauthorized: "لا يمكن استخدام عناصر التحكم هذه إلا لمستخدم Matrix مصرّح له."
       not_requester: "لا يمكن استخدام عناصر التحكم هذه إلا للمستخدم الذي طلب هذا الإجراء."
   feishu:
+    clarify:
+      title: "Hermes يحتاج إلى ردّك"
+      other: "✏️ غير ذلك (اكتب الإجابة)"
+      awaiting_typed: "بانتظار رد مكتوب من {user}…"
+    picker:
+      apply_error: "خطأ في تطبيق الاختيار: {error}"
     approval:
       action_session: "الجلسة"
       action_always: "دائمًا"

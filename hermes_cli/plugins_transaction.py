@@ -22,17 +22,20 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     ``security.allow_lazy_installs``): the active-replacement consent veto is
     skipped, so an unattended install carries that decision instead of being
     refused non-interactively. *node_deps* asks the Node-sidecar question and
-    runs npm in *staged* before publication; an npm failure publishes nothing."""
+    runs npm in *staged* before publication; an npm failure only warns, as it did after publication."""
     from hermes_cli import plugins_cmd
+    from hermes_cli.plugins_cmd_install import _stage_node_deps
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
+    if node_deps:
+        _stage_node_deps(plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
     if require_consent and not assume_consent:
         from pm.workspace import enabled_plugin_dirs
 
         if target.resolve() in enabled_plugin_dirs(installing=target):
-            # A *node_deps* request asks the Node question once, below, where an npm failure blocks.
+            # A *node_deps* request already asked the Node question above; ask it once.
             consented, reason = plugins_cmd._install_plugin_python_deps(
                 plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console(), node=not node_deps)
             if not consented:
@@ -43,11 +46,6 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
 
                 raise plugins_cmd.PluginOperationError(
                     outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
-    from hermes_cli.plugins_cmd_install import _stage_node_deps
-
-    if node_deps and (reason := _stage_node_deps(
-            plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())):
-        raise plugins_cmd.PluginOperationError(f"Node dependencies could not be installed: {reason}")
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),

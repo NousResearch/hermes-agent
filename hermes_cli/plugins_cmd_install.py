@@ -68,7 +68,7 @@ class _ConsentRefusal(str):
 
 def _stage_node_deps(manifest: dict, tree: Path, console) -> Optional[str]:
     """The Node-sidecar y/n question and ``npm`` run for *tree* (a staged tree before publication).
-    Returns the npm failure reason, or None when it succeeded, was declined or nothing is declared."""
+    An npm failure is a warning, never a refusal; its reason is returned (None otherwise)."""
     if not (tree / "package.json").is_file():
         return None
     console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
@@ -76,7 +76,9 @@ def _stage_node_deps(manifest: dict, tree: Path, console) -> Optional[str]:
             ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console):
         from pm.workspace import install_node_sidecar
 
-        return install_node_sidecar(tree, explicit=True)
+        if reason := install_node_sidecar(tree, explicit=True):
+            console.print(f"[yellow]⚠[/yellow] Node deps: {reason}")
+        return reason
     console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
     return None
 
@@ -114,8 +116,8 @@ def _install_plugin_python_deps(
     # Node sidecar (package.json): the npm ci executor — separate consent
     # question, same try-then-enable posture. Failure never blocks the
     # python path below.
-    if has_package_json and (node_reason := _stage_node_deps(manifest, target, console)):
-        console.print(f"[yellow]⚠[/yellow] Node deps: {node_reason}")
+    if has_package_json:
+        _stage_node_deps(manifest, target, console)
 
     if not has_python:
         return True, None
@@ -660,9 +662,9 @@ def cmd_install(
         console.print(f"[dim]Cloning {git_url}{f' (subdir: {_subdir})' if _subdir else ''}...[/dim]")
     _interactive_scan_decision = interactive_scan_decision(console, "Install")
 
-    # Node deps install in the staged tree before publication, for the same installs that used to
-    # be asked about them after it (not --no-deps, not --no-enable).
-    node_deps = not no_deps and enable is not False
+    # Node deps install in the staged tree before publication, for the installs that used to be
+    # asked about them after it: not --no-deps, not --no-enable, and not a non-TTY run without --enable.
+    node_deps = not no_deps and (bool(enable) or (enable is None and _pc()._is_tty()))
 
     def _install() -> tuple:
         if entry is not None:

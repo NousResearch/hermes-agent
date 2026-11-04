@@ -121,29 +121,32 @@ def _tty_install_recording_npm(root, monkeypatch, files: dict, npm_error=None):
 _NODE_PLUGIN = {'plugin.yaml': yaml.safe_dump({'name': 'node-plugin'}), '__init__.py': 'def register(ctx):\n    pass\n'}
 
 
-@pytest.mark.parametrize('npm_error', [None, 'npm ci exited 1: boom'])
-def test_cli_install_runs_node_deps_in_the_staged_tree_before_publication(admission_env, monkeypatch, npm_error):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
-    """``hermes plugins install`` ran npm in the live plugin tree after publication, so a failed npm
-    left a published plugin without its Node deps. npm now runs in the staged tree inside the install
-    transaction: its node_modules ship with the plugin, and an npm failure publishes nothing."""
+_BUILD_ONLY_PACKAGE_JSON = json.dumps({'name': 'node-plugin', 'private': True, 'devDependencies': {'esbuild': '^0.20.0'}})
+
+
+@pytest.mark.parametrize('package_json, npm_error', [
+    (json.dumps({'name': 'node-plugin', 'version': '1.0.0'}), None),
+    (json.dumps({'name': 'node-plugin', 'version': '1.0.0'}), 'npm ci exited 1: boom'),
+    (_BUILD_ONLY_PACKAGE_JSON, 'npm install exited 1: no network'),
+], ids=['npm-ok', 'npm-fails', 'build-only-npm-fails'])
+def test_cli_install_runs_node_deps_in_the_staged_tree_before_publication(admission_env, monkeypatch, capsys, package_json, npm_error):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    """``hermes plugins install`` ran npm in the live plugin tree after publication. npm now runs in
+    the staged tree before publication, so its node_modules ship with the plugin. An npm failure
+    (e.g. a build-only package.json with prebuilt files committed) still only warns: the plugin is
+    published and enabled, as before."""
     root, home = admission_env
-    files = {**_NODE_PLUGIN, 'package.json': json.dumps({'name': 'node-plugin', 'version': '1.0.0'})}
-    uri, calls = _tty_install_recording_npm(root, monkeypatch, files, npm_error)
+    uri, calls = _tty_install_recording_npm(root, monkeypatch, {**_NODE_PLUGIN, 'package.json': package_json}, npm_error)
     installed = home / 'plugins' / 'node-plugin'
 
-    if npm_error:
-        with pytest.raises(SystemExit):
-            plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
-    else:
-        plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
+    plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
 
     assert len(calls) == 1
     tree, live_tree_existed = calls[0]
     assert tree != installed and not live_tree_existed, f'npm ran in {tree} after publication'
-    if npm_error:
-        assert not installed.exists()
-    else:
-        assert (installed / 'node_modules' / 'marker').read_text(encoding='utf-8') == 'ok'
+    assert (installed / 'node_modules' / 'marker').read_text(encoding='utf-8') == 'ok'
+    assert 'node-plugin' in yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))['plugins']['enabled']
+    out = capsys.readouterr().out
+    assert ('Node deps: npm ' in out) is bool(npm_error), out
 
 
 def test_cli_install_without_package_json_runs_no_node_step(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
@@ -247,9 +250,9 @@ def test_publish_assume_consent_skips_replacement_veto(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('yes_deps', [False, True])
-def test_active_replacement_npm_failure_publishes_nothing(tmp_path, monkeypatch, yes_deps):
-    """Replacing an active plugin without --yes-deps ran npm through the consent gate, which only
-    warns on failure, so the replacement was published without its Node deps."""
+def test_active_replacement_npm_failure_warns_and_publishes(tmp_path, monkeypatch, capsys, yes_deps):
+    """Replacing an active plugin runs npm once, in the staged tree before publication; an npm
+    failure warns and the replacement is still published, with and without --yes-deps."""
     from hermes_cli import plugins_transaction
     from pm import workspace as ws
 
@@ -259,18 +262,17 @@ def test_active_replacement_npm_failure_publishes_nothing(tmp_path, monkeypatch,
         (tree / 'plugin.yaml').write_text(yaml.safe_dump({'name': 'active-plugin'}), encoding='utf-8')
     (staged / 'package.json').write_text('{}', encoding='utf-8')
     monkeypatch.setattr(ws, 'enabled_plugin_dirs', lambda **kwargs: [target])
-    syncs, npm, prompts = [], [], []
-    monkeypatch.setattr('pm.client.sync_venv', lambda **kwargs: syncs.append(kwargs))
-    monkeypatch.setattr(ws, 'install_node_sidecar', lambda path, **kwargs: npm.append(path) or 'npm ci exited 1')
+    events, prompts = [], []
+    monkeypatch.setattr('pm.client.sync_venv', lambda **kwargs: events.append('publish'))
+    monkeypatch.setattr(ws, 'install_node_sidecar', lambda path, **kwargs: events.append(path) or 'npm ci exited 1')
     monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
     monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
     monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'y')
 
-    with pytest.raises(plugins_cmd.PluginOperationError, match='Node dependencies could not be installed'):
-        plugins_transaction.publish_plugin(staged, target, {}, {'active-plugin': {}}, require_consent=True,
-                                           assume_consent=yes_deps, node_deps=True)
-    assert (syncs, npm, len(prompts)) == ([], [staged], 1)
-    assert sorted(p.name for p in target.iterdir()) == ['plugin.yaml']
+    plugins_transaction.publish_plugin(staged, target, {}, {'active-plugin': {}}, require_consent=True,
+                                       assume_consent=yes_deps, node_deps=True)
+    assert (events, len(prompts)) == ([staged, 'publish'], 1)
+    assert 'Node deps: npm ci exited' in capsys.readouterr().out
 
 
 def test_install_parser_offers_yes_deps_exclusive_with_no_deps():

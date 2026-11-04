@@ -481,12 +481,37 @@ install_never_free_environ()
 from pathlib import Path
 
 _root = Path(__file__).resolve().parent
-try:
-    os.getcwd()
-except FileNotFoundError:
-    # Reaped workspaces leave children in a deleted cwd. PM resolves relative
-    # import paths before the CLI's guards, so recover before any PM work.
-    os.chdir(_root)
+
+
+def ensure_readable_cwd(getcwd=os.getcwd, sleep=time.sleep) -> None:
+    """Leave the process in a cwd that ``os.getcwd()`` can read.
+
+    PM resolves relative import paths before the CLI's guards, so this runs
+    before any PM work. A worker that inherited a cwd on a stalled network
+    mount (SMB) gets EINTR from getcwd; retry briefly, then move to a local dir
+    instead of dying before the command is even parsed.
+    """
+    for delay in (0.02, 0.1, 0.4, None):
+        try:
+            getcwd()
+            return
+        except FileNotFoundError:
+            os.chdir(_root)  # reaped workspace: the cwd was deleted
+            return
+        except InterruptedError as exc:
+            error = exc
+            if delay is not None:
+                sleep(delay)
+        except OSError as exc:
+            error = exc
+            break
+    fallback = next(d for d in (os.environ.get("HERMES_HOME"), os.path.expanduser("~"), str(_root))
+                    if d and os.path.isdir(d))
+    sys.stderr.write(f"hermes: cwd unreadable ({error}); continuing from {fallback}\n")
+    os.chdir(fallback)
+
+
+ensure_readable_cwd()
 
 
 def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | None:

@@ -200,6 +200,10 @@ def bind_worker_context(frame):
     _watch_submitter(Path(context['db']), context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
+    # A workspace on a stalled network share answers getcwd() with EINTR; lazy imports (rich)
+    # call getcwd() and would kill the turn before its first tool call.
+    from hermes_bootstrap import ensure_readable_cwd
+    ensure_readable_cwd()
 
 
 _TURNS_DONE = threading.Event()

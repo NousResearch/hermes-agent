@@ -88,13 +88,16 @@ class TestNetworkFsExistingWalWarn:
         assert warnings[0].levelno == logging.WARNING
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
-    def test_fresh_db_on_network_fs_keeps_wal_and_stays_silent(self, tmp_path, monkeypatch, caplog):
-        # Scope boundary: the fresh-DB refusal is reserved for the cross-VM class, so a brand-new database on
-        # NFS keeps WAL (single-writer NFS is legitimate) and gets no warning.
+    def test_fresh_db_on_network_fs_starts_in_delete_and_says_so(self, tmp_path, monkeypatch, caplog):
+        # Policy changed by the field report on NFS WAL stalls: a brand-new database on a network filesystem now
+        # starts in DELETE (an unset database.journal_mode), with one WARNING naming the `wal` override. The
+        # override itself is pinned in test_network_fs_journal_default.py.
         monkeypatch.setattr(hermes_state_wal, "_path_on_network_fs", lambda p: True)
+        monkeypatch.setattr(hermes_state_wal, "_journal_mode_explicitly_configured", lambda: False)
+        hermes_state_wal._network_fs_new_store_warned_paths.clear()
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
-        mode = apply_wal_with_fallback(conn, db_label="fresh.db")
+        with caplog.at_level(logging.WARNING, logger=hermes_state_wal.logger.name):
+            mode = apply_wal_with_fallback(conn, db_label="fresh.db")
         conn.close()
-        if mode != "wal":
-            pytest.skip("environment refuses WAL for unrelated reasons")
-        assert not [r for r in caplog.records if "network filesystem" in r.getMessage()]
+        assert mode == "delete"
+        assert [r for r in caplog.records if "network filesystem" in r.getMessage()]

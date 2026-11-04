@@ -33,9 +33,9 @@ interface SimplifiedSessionListProps {
   pinPending?: (row: SessionInfo) => boolean
   ambiguousIds: ReadonlySet<string>
   onResumeSession: (id: string, row?: SessionInfo) => void
-  onDeleteSession: (id: string) => void
-  onArchiveSession: (id: string) => void
-  onBranchSession: (id: string) => void
+  onDeleteSession: (id: string, session?: SessionInfo) => void
+  onArchiveSession: (id: string, session?: SessionInfo) => void
+  onBranchSession: (id: string, profile?: string, session?: SessionInfo) => void
   onUpdate: (row: SessionInfo, field: 'pinned' | 'unread', value: boolean) => void
 }
 
@@ -149,9 +149,9 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
         {!props.ambiguousIds.has(row.id) && (
           <Tooltip>
             <SessionActionsMenu
-              onArchive={() => props.onArchiveSession(row.id)}
-              onBranch={() => props.onBranchSession(row.id)}
-              onDelete={() => props.onDeleteSession(row.id)}
+              onArchive={() => props.onArchiveSession(row.id, row)}
+              onBranch={() => props.onBranchSession(row.id, row.profile, row)}
+              onDelete={() => props.onDeleteSession(row.id, row)}
               onPin={
                 props.pinPending?.(row)
                   ? undefined
@@ -169,6 +169,7 @@ export function SimplifiedSessionList(props: SimplifiedSessionListProps) {
               }
               onToggleUnread={() => props.onUpdate(row, 'unread', row.unread !== true)}
               pinned={pinned}
+              ownerRoute={sessionOwnerRouteFromRow(row)}
               profile={row.profile}
               sessionId={row.id}
               title={title}

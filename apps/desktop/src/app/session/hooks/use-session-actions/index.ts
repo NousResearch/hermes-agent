@@ -12,6 +12,7 @@ import {
 import { defaultNewSessionTarget, prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import type { SessionInfo } from '@/hermes'
 import {
   deleteSession,
   fetchStoredTranscriptAcrossBackends,
@@ -2964,7 +2965,7 @@ export function useSessionActions({
   // transcript directly (no resume/active-session dependency), so it works on
   // right-click and nests under its parent.
   const branchStoredSession = useCallback(
-    async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
+    async (storedSessionId: string, sessionProfile?: string | null, ownerRow?: SessionInfo): Promise<boolean> => {
       clearNotifications()
 
       // Right-clicking a session outside the paginated sidebar window is a cache
@@ -2974,7 +2975,7 @@ export function useSessionActions({
       // project tree, and prefers the self-describing row — an ownerless legacy
       // Recents copy of the same id must not mask the row carrying the owner.
       const stored =
-        cachedSessionRow(storedSessionId) ?? (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
+        ownerRow ?? cachedSessionRow(storedSessionId) ?? (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
 
       const profile = sessionProfile ?? stored?.profile
 
@@ -3010,7 +3011,7 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, ownerRow?: SessionInfo) => {
       clearNotifications()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
@@ -3021,7 +3022,7 @@ export function useSessionActions({
       const listed = findListedSession(storedSessionId)
 
       const removed =
-        listed?.session ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        ownerRow ?? listed?.session ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to
@@ -3061,12 +3062,7 @@ export function useSessionActions({
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
 
-      const removedOwner: SessionOwnerScope = removed?.connection_id
-        ? {
-            connectionId: removed.connection_id,
-            profile: removed.profile || 'default'
-          }
-        : profile
+      const removedOwner: SessionOwnerScope = sessionOwnerRouteFromRow(removed) ?? profile
 
       const previousArchived = $archivedSessions.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -3237,11 +3233,11 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, ownerRow?: SessionInfo) => {
       clearNotifications()
 
       const listed = findListedSession(storedSessionId)
-      const archived = listed?.session
+      const archived = ownerRow ?? listed?.session
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
 
@@ -3274,7 +3270,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, sessionOwnerRouteFromRow(archived) ?? profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
@@ -3316,14 +3312,14 @@ export function useSessionActions({
   // back off, drop the archived-view row, and resurface the session in the
   // sidebar without waiting for a full refresh.
   const unarchiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, ownerRow?: SessionInfo) => {
       clearNotifications()
 
-      const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archived = ownerRow ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const profile = archived?.profile?.trim() || undefined
 
       try {
-        await setSessionArchived(storedSessionId, false, profile)
+        await setSessionArchived(storedSessionId, false, sessionOwnerRouteFromRow(archived) ?? profile)
 
         // Drop the archived-view row first so the view reflects the restore
         // even when the session cannot be re-listed below (e.g. it belongs to

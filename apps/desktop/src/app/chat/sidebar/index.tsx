@@ -346,9 +346,9 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
-  onBranchSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, session?: SessionInfo) => void
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
+  onBranchSession: (sessionId: string, profile?: string, session?: SessionInfo) => void
   onNewSessionInWorkspace: (path: null | string, owner?: AgentProfileRoute) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
    *  (or `center` to stack a tab); `anchor`/`before` optionally pin it to a

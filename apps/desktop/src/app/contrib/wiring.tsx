@@ -1075,19 +1075,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // The sidebar row menu reuses this verb in the Archived view too, where the
     // row is already archived — dispatch by state so the verb restores there
     // instead of re-archiving (#98813).
-    onArchiveSession: sessionId => {
-      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+    onArchiveSession: (sessionId, row) => {
+      const listed = row ?? $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
 
       const isArchived =
         listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
 
-      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+      void (isArchived ? unarchiveSession(sessionId, row) : archiveSession(sessionId, row))
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
-    onBranchSession: sessionId => void branchStoredSession(sessionId),
+    onBranchSession: (sessionId, profile, row) => void branchStoredSession(sessionId, profile, row),
     onCancel: cancelRun,
     onDeleteSelectedSession: () => {
       const id = $selectedStoredSessionId.get()
@@ -1096,7 +1096,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         void removeSession(id)
       }
     },
-    onDeleteSession: sessionId => void removeSession(sessionId),
+    onDeleteSession: (sessionId, row) => void removeSession(sessionId, row),
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,

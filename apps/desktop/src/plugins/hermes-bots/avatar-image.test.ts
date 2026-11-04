@@ -13,6 +13,18 @@ vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
 import { generateAvatarImage, IMAGE_GENERATE_TIMEOUT_MS } from './avatar-image'
 
 describe('generateAvatarImage (#86161)', () => {
+  it('includes the loaded profile description in the avatar prompt', async () => {
+    request.mockResolvedValue({ success: true, image_data: 'data:image/png;base64,AA==' })
+
+    await generateAvatarImage('designer', 'Designer', 'Reviews engineering designs')
+
+    expect(request).toHaveBeenLastCalledWith(
+      'image.generate',
+      expect.objectContaining({ prompt: expect.stringContaining('Reviews engineering designs') }),
+      IMAGE_GENERATE_TIMEOUT_MS
+    )
+  })
+
   it('opts the image.generate RPC out of the socket generic 30 s deadline', async () => {
     request.mockResolvedValue({ success: true, image_data: 'data:image/png;base64,AA==' })
 

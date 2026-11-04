@@ -59,8 +59,8 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 
 const noop = () => undefined
 
-function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+function renderRow(bot: RosterRow, onEdit: (bot: RosterRow) => void = noop) {
+  render(<BotRow bot={bot} onDelete={noop} onEdit={onEdit} onGroup={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }
@@ -142,13 +142,16 @@ describe('the row delegates the open and claims no activation authority', () => 
     expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'in-place' }]])
   })
 
-  it.each([{ metaKey: true }, { ctrlKey: true }])('modifier click %j opens the Bot Chat as a stacked tab', modifiers => {
-    const bot = { connectionId: 'local', name: 'research' } as RosterRow
+  it.each([{ metaKey: true }, { ctrlKey: true }])(
+    'modifier click %j opens the Bot Chat as a stacked tab',
+    modifiers => {
+      const bot = { connectionId: 'local', name: 'research' } as RosterRow
 
-    fireEvent.click(renderRow(bot), modifiers)
+      fireEvent.click(renderRow(bot), modifiers)
 
-    expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
-  })
+      expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
+    }
+  )
 
   it('never resolves a remote default into the same-named local bot', async () => {
     const bot = {
@@ -217,6 +220,72 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('Edit profile reads the saved description from the selected owner', () => {
+  it.each([
+    {
+      connectionId: 'local',
+      profile: 'designer',
+      targetProfile: 'designer',
+      saved: 'Reviews engineering designs',
+      opening: undefined
+    },
+    {
+      connectionId: 'local',
+      profile: 'default',
+      targetProfile: 'default',
+      saved: 'Runs scheduled reports',
+      opening: 'Stale roster text'
+    },
+    {
+      connectionId: 'remote-a',
+      profile: 'designer',
+      targetProfile: 'backend-designer',
+      saved: 'Reviews engineering designs',
+      opening: 'Stale roster text'
+    },
+    { connectionId: 'local', profile: 'designer', targetProfile: 'designer', saved: '', opening: 'Stale roster text' }
+  ])(
+    'loads $connectionId::$profile, including an intentional empty value ($saved)',
+    async ({ connectionId, profile, targetProfile, saved, opening }) => {
+      const bot: RosterRow = {
+        name: profile,
+        description: opening,
+        connectionId,
+        connectionKind: connectionId === 'local' ? 'local' : 'remote',
+        sourceScoped: true,
+        route: { connectionId, mode: connectionId === 'local' ? 'local' : 'remote', profile, targetProfile }
+      }
+
+      const onEdit = vi.fn()
+
+      requestProfile.mockResolvedValue({ name: targetProfile, description: saved })
+
+      fireEvent.contextMenu(renderRow(bot, onEdit))
+      fireEvent.click(await screen.findByText('Edit…'))
+      await vi.waitFor(() => expect(onEdit).toHaveBeenCalledWith({ ...bot, description: saved }))
+
+      expect(requestProfile).toHaveBeenCalledWith(bot.route, 'profiles.describe', { name: targetProfile }, undefined, {
+        spawnPriority: 'foreground'
+      })
+      expect(bot.description).toBe(opening)
+    }
+  )
+
+  it('does not open an empty editor when the saved profile cannot be read', async () => {
+    const bot: RosterRow = { name: 'designer', connectionId: 'local', sourceScoped: true }
+    const onEdit = vi.fn()
+    const error = new Error('Profile read failed')
+
+    requestProfile.mockRejectedValue(error)
+
+    fireEvent.contextMenu(renderRow(bot, onEdit))
+    fireEvent.click(await screen.findByText('Edit…'))
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalled())
+
+    expect(onEdit).not.toHaveBeenCalled()
   })
 })
 

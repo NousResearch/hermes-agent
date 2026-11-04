@@ -63,6 +63,7 @@ import { $activeGroupMemberKeys } from './group-presence'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
+import { loadBotEditorProfile } from './profile-editor'
 import { duplicateBot } from './profile-ops'
 import { botRecentSession, openBotRecentSession } from './recent-session'
 import { openRosterBot } from './roster-actions'
@@ -323,7 +324,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => void openRosterBot(bot)}>{b.bot.openBotChat}</ContextMenuItem>
-        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>{b.bot.openBotChatInNewTab}</ContextMenuItem>
+        <ContextMenuItem onSelect={() => void openRosterBot(bot, { intent: 'tab' })}>
+          {b.bot.openBotChatInNewTab}
+        </ContextMenuItem>
         <ContextMenuItem onSelect={() => openBotScreen(bot, meta)}>{b.screen.menu}</ContextMenuItem>
         <ContextMenuCheckboxItem
           checked={Boolean(meta?.screenAutoOpen)}
@@ -393,8 +396,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
-            void ensureBotMetadata(bot)
-              .then(() => onEdit(bot))
+            void loadBotEditorProfile(bot)
+              .then(onEdit)
               .catch(error => host.notifyError?.(error, b.bot.loadFailed))
           }
         >

@@ -24,7 +24,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_worker_client as wc
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_kanban import build_kanban_policy
 from hermes_state_runtime import RuntimeStoreError
 
@@ -188,7 +188,7 @@ def test_admission_refuses_a_dead_pin_before_owner_admitted(seat_home, monkeypat
         kb.recompute_ready(conn)
         task = kb.claim_task(conn, task_id)
     assert task is not None
-    actor = Principal("owner", franky_home, frozenset({"session:create"}), "transport")
+    actor = SessionActor("owner", franky_home, frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(authority=SimpleNamespace(profile_id=franky_home), actor=actor,
                                  native_owner=True)
     params = dict(board="default", task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)

@@ -57,6 +57,47 @@ def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
     return coerced[:64] or fallback
 
 
+# Chat-template control tokens: ChatML/Qwen ``<|im_start|>``, Llama ``<|eot_id|>``, Harmony
+# ``<|channel|>``, DeepSeek ``<｜User｜>``, Gemma ``<start_of_turn>``, Mistral ``[INST]``.
+# Self-hosted servers (llama.cpp, vLLM, Ollama) tokenize the rendered prompt with special-token
+# parsing on, so the literal text in a web page or file becomes a REAL role boundary: a forged
+# turn escapes the ``untrusted_tool_result`` wrapper (Qwen2.5 on llama.cpp, wrapped web_extract
+# result: obeyed the forged turn 3 of 5), and even a benign template file splits the conversation.
+# Forged conversations are a top real-world class in Perplexity's BrowseSafe++ corpus.
+# ``<s>``/``</s>`` are left alone: they collide with HTML strikethrough.
+_TEMPLATE_PIPE_TOKEN_RE = re.compile(r"<([|\uff5c])([A-Za-z0-9_\u2581.\-]{1,64})([|\uff5c])>")
+_TEMPLATE_WORD_TOKEN_RE = re.compile(
+    r"<((?:start|end)_of_turn)>|\[(/?(?:INST|SYSTEM_PROMPT|TOOL_RESULTS|TOOL_CALLS|AVAILABLE_TOOLS))\]"
+)
+
+
+def neutralize_template_tokens(text: str) -> str:
+    """Swap a template token's outer brackets for look-alikes (``‹|im_start|›``, ``［INST］``):
+    the model still reads it, the tokenizer never matches a special token. Deterministic."""
+    if "<" not in text and "[" not in text:
+        return text
+    text = _TEMPLATE_PIPE_TOKEN_RE.sub("\u2039\\1\\2\\3\u203a", text)
+    return _TEMPLATE_WORD_TOKEN_RE.sub(
+        lambda m: f"\u2039{m.group(1)}\u203a" if m.group(1) else f"\uff3b{m.group(2)}\uff3d", text
+    )
+
+
+def neutralize_local_template_tokens(api_messages: list, agent: Any) -> bool:
+    """On a self-hosted route (a local/LAN URL, or a ``custom``/``lmstudio`` endpoint wherever it
+    runs), neutralize template tokens in every ``user``/``tool`` row of a per-call API copy
+    (system and assistant text is Hermes's own). Named vendor APIs escape message text before
+    tokenizing, so their rows stay byte-exact."""
+    from agent.model_metadata import is_local_endpoint
+
+    base_url = getattr(agent, "base_url", None) or ""
+    if getattr(agent, "provider", None) not in ("custom", "lmstudio") and not (
+        base_url and is_local_endpoint(base_url)
+    ):
+        return False
+    rows = [m for m in api_messages if isinstance(m, dict) and m.get("role") in ("user", "tool")]
+    return _sanitize_messages(rows, neutralize_template_tokens, deep=False)
+
+
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     if text.isascii():

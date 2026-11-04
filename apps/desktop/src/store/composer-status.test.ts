@@ -45,6 +45,18 @@ describe('reconcileBackgroundProcesses', () => {
     vi.useRealTimers()
   })
 
+  it('carries whole-minute uptime and silence for running processes only', () => {
+    reconcileBackgroundProcesses(SID, [
+      { ...running('a'), idle_seconds: 9_879, uptime_seconds: 9_930 },
+      { ...exited('b', 0), idle_seconds: 50, uptime_seconds: 60 }
+    ])
+
+    const [live, finished] = items()
+
+    expect([live!.quietMinutes, live!.runtimeMinutes]).toEqual([164, 165])
+    expect([finished!.quietMinutes, finished!.runtimeMinutes]).toEqual([undefined, undefined])
+  })
+
   it('maps registry entries to status items', () => {
     reconcileBackgroundProcesses(SID, [running('a'), exited('b', 0), exited('c', 1)])
 

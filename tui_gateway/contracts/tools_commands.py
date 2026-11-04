@@ -100,6 +100,7 @@ class ProcessEntry(_Open):
     owner_task_id: str | None = None
     started_at: str | None = None
     uptime_seconds: int | None = None
+    idle_seconds: int | None = None
     status: str = "running"
     output_preview: str = ""
     output_tail: str | None = None

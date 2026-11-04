@@ -3772,6 +3772,7 @@ export interface ProcessEntry {
   owner_task_id?: string | null
   started_at?: string | null
   uptime_seconds?: number | null
+  idle_seconds?: number | null
   status?: string
   output_preview?: string
   output_tail?: string | null

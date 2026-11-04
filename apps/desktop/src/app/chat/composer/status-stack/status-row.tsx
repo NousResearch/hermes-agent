@@ -1,6 +1,7 @@
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { formatDurationSeconds } from '@/components/assistant-ui/tool/fallback-model/format'
 import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
 import { StatusRow } from '@/components/chat/status-row'
 import { Codicon } from '@/components/ui/codicon'
@@ -148,6 +149,7 @@ export const StatusItemRow = memo(function StatusItemRow({
             {item.currentTool}
           </span>
         )}
+        <BackgroundActivity item={item} s={s} />
         {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (
           <span className="shrink-0 rounded bg-destructive/15 px-1 text-[0.58rem] font-semibold text-destructive tabular-nums">
             {s.exit(item.exitCode)}
@@ -157,3 +159,37 @@ export const StatusItemRow = memo(function StatusItemRow({
     </Fragment>
   )
 })
+
+/** Silence long enough that a running process reads as a likely leftover rather than live work. */
+export const QUIET_AFTER_MINUTES = 5
+
+const minutesLabel = (minutes: number) => formatDurationSeconds(minutes * 60)
+
+/** How long a running background process has been up, or — once it has gone quiet — how long
+ *  since it last printed, so an idle preview server or a read hung on a dead mount is visible
+ *  without opening its terminal. */
+function BackgroundActivity({ item, s }: { item: ComposerStatusItem; s: Translations['statusStack'] }) {
+  if (item.type !== 'background' || item.state !== 'running') {
+    return null
+  }
+
+  const quiet = item.quietMinutes !== undefined && item.quietMinutes >= QUIET_AFTER_MINUTES
+
+  if (quiet) {
+    return (
+      <span className="shrink-0 truncate text-[0.62rem] leading-4 text-amber-700 tabular-nums dark:text-amber-300">
+        {s.quietFor(minutesLabel(item.quietMinutes!))}
+      </span>
+    )
+  }
+
+  if (!item.runtimeMinutes) {
+    return null
+  }
+
+  return (
+    <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70 tabular-nums">
+      {s.runningFor(minutesLabel(item.runtimeMinutes))}
+    </span>
+  )
+}

@@ -3982,6 +3982,8 @@ export const esOverrides = {
     stop: 'Detener',
     dismiss: 'Descartar',
     exit: code => `salida ${code}`,
+    quietFor: duration => `sin salida desde hace ${duration}`,
+    runningFor: duration => `activo desde hace ${duration}`,
     control: {
       goalActiveTurns: (turn: number, maxTurns: number) => `Turno ${turn}/${maxTurns}`,
       goalDoneTurns: (turns: number) => `${turns} ${turns === 1 ? 'turno' : 'turnos'}`,

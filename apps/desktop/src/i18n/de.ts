@@ -3994,6 +3994,8 @@ export const deOverrides = {
     stop: 'Stopp',
     dismiss: 'Verwerfen',
     exit: code => `exit ${code}`,
+    quietFor: duration => `keine Ausgabe seit ${duration}`,
+    runningFor: duration => `läuft seit ${duration}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Runde ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} Runde${turns === 1 ? '' : 'n'}`,

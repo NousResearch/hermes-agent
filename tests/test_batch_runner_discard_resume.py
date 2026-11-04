@@ -209,3 +209,42 @@ def test_combine_batch_files_keeps_tool_search_bridge_tools(tmp_path):
     assert kept == 1
     out = (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
     assert "bridge q" in out
+
+
+def test_combine_batch_files_keeps_tools_registered_after_import(tmp_path, monkeypatch):
+    """Late plugin/MCP registrations must not be rejected by a stale module snapshot."""
+    monkeypatch.setattr(
+        batch_runner.registry,
+        "get_tool_to_toolset_map",
+        lambda: {"late_registered_mcp_tool": "late_mcp"},
+    )
+    (tmp_path / "batch_1.jsonl").write_text(
+        json.dumps({
+            "conversations": [{"from": "human", "value": "late mcp q"}],
+            "completed": True,
+            "tool_stats": {"late_registered_mcp_tool": {"count": 1, "success": 1, "failure": 0}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    kept, _found = _scan_runner(tmp_path)._combine_batch_files()
+
+    assert kept == 1
+    assert "late mcp q" in (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")
+
+
+def test_combine_batch_files_keeps_inline_executor_tools(tmp_path):
+    """Tools dispatched outside the registry remain valid trajectory entries."""
+    (tmp_path / "batch_1.jsonl").write_text(
+        json.dumps({
+            "conversations": [{"from": "human", "value": "inline tool q"}],
+            "completed": True,
+            "tool_stats": {"message_agent": {"count": 1, "success": 1, "failure": 0}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    kept, _found = _scan_runner(tmp_path)._combine_batch_files()
+
+    assert kept == 1
+    assert "inline tool q" in (tmp_path / "trajectories.jsonl").read_text(encoding="utf-8")

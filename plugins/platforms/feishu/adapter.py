@@ -1790,7 +1790,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
-                extra_state={"body": prompt.text.replace(self._ea_deadline_line(), "")},  # deadline is moot once resolved
+                extra_state={"body": prompt.text.replace(self._ea_deadline_line(), ""),  # deadline is moot once resolved
+                             "request_id": prompt.request_id or ""},
             )
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -2381,8 +2382,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if not state:
             return
         try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            from tools.approval import resolve_gateway_approval_card
+            count = resolve_gateway_approval_card(state["session_key"], choice, state.get("request_id"))
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

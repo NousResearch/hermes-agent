@@ -152,6 +152,51 @@ def test_ambiguous_model_lets_the_configured_provider_decide(two_scopes_one_mode
     assert rp.canonical_custom_identity(model=RELAY_MODEL) == "custom:glm-flash-echo"
 
 
+RELAY_A_URL = "https://relay-a.internal/v1"
+RELAY_B_URL = "https://relay-b.internal/v1"
+
+
+@pytest.fixture
+def two_relays_one_model(monkeypatch):
+    """Two accounts, two *different* relays, one model id between them — the production shape
+    reported on #118457.
+
+    Distinct endpoints matter because the model leg must never consult the URL: if it did, this
+    fixture and the shared-endpoint one would disagree, and only this one would notice."""
+    config = {
+        "providers": {
+            "glm-flash": {
+                "api": RELAY_A_URL,
+                "key_env": "GLM_KEY_A",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+            "glm-flash-echo": {
+                "api": RELAY_B_URL,
+                "key_env": "GLM_ECHO_KEY_B",
+                "default_model": RELAY_MODEL,
+                "models": [RELAY_MODEL],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", dict)
+    return config
+
+
+def test_model_leg_is_ambiguous_across_distinct_relays_too(two_relays_one_model):
+    """Two relays, one model id: the model leg has no URL to consult, so it goes silent here
+    exactly as it does when the endpoint is shared. The configured scope then decides — checked in
+    *both* directions, so a URL-dependent tie-break cannot pass by answering what insertion order
+    would have answered anyway."""
+    assert rp.find_custom_provider_identity_by_model(RELAY_MODEL) is None
+    assert rp.canonical_custom_identity(
+        model=RELAY_MODEL, config_provider="glm-flash-echo") == "custom:glm-flash-echo"
+    assert rp.canonical_custom_identity(
+        model=RELAY_MODEL, config_provider="glm-flash") == "custom:glm-flash"
+
+
 class TestIsRoutableProvider:
     """``is_routable_provider`` gates session-resume fallback: a persisted
     provider name that no longer resolves (renamed/removed) must be detected

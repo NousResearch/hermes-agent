@@ -1222,6 +1222,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     Boolean(connection?.isFullscreen),
     overlayInsets?.left
   )
+
   const controlsVars = useTitlebarControlsVars(controlsPos)
 
   const titlebarChrome = {

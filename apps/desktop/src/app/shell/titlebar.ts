@@ -23,8 +23,6 @@ export function titlebarIconSizeCss(scale = 1): string {
 }
 
 export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 12
-// Preserve other platforms' first paint until native window state arrives.
-const TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
 // Windows/Linux (native overlay is on the right) and macOS fullscreen
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
@@ -127,11 +125,8 @@ export function titlebarControlsPosition(
     return { left: TITLEBAR_EDGE_INSET, top }
   }
 
-  const isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
-  const fallbackX = isMac ? TITLEBAR_FALLBACK_WINDOW_BUTTON_X : TITLEBAR_NON_MAC_FALLBACK_WINDOW_BUTTON_X
-
   return {
-    left: (windowButtonPosition?.x ?? fallbackX) + TITLEBAR_CONTROL_OFFSET_X,
+    left: (windowButtonPosition?.x ?? TITLEBAR_FALLBACK_WINDOW_BUTTON_X) + TITLEBAR_CONTROL_OFFSET_X,
     top
   }
 }

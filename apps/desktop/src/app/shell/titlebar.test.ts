@@ -40,9 +40,8 @@ describe('titlebarControlsPosition', () => {
     expect(titlebarControlsPosition(undefined)).toEqual(titlebarControlsPosition({ x: 12, y: 10 }))
   })
 
-  it.each(['Win32', 'Linux x86_64'])('preserves the previous startup spacing on %s', platform => {
-    vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
-    expect(titlebarControlsPosition(undefined).left).toBe(24 + TITLEBAR_CONTROL_OFFSET_X)
+  it('starts Windows/Linux at the edge before native state arrives', () => {
+    expect(titlebarControlsPosition(knownWindowButtonPosition(undefined, false)).left).toBe(TITLEBAR_EDGE_INSET)
   })
 })
 

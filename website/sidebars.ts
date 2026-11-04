@@ -390,7 +390,9 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-devops',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/devops/devops-accessiblecapture-app-install',
                     'user-guide/skills/optional/devops/devops-actual-setup',
+                    'user-guide/skills/optional/devops/devops-core-testflight',
                     'user-guide/skills/optional/devops/devops-docker-management',
                     'user-guide/skills/optional/devops/devops-hermes-s6-container-supervision',
                     'user-guide/skills/optional/devops/devops-inference-sh-cli',

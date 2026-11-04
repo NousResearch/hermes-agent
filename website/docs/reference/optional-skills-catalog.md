@@ -88,7 +88,9 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**accessiblecapture-app-install**](/docs/user-guide/skills/optional/devops/devops-accessiblecapture-app-install) | Install and verify an exact native iOS build. |
 | [**actual-setup**](/docs/user-guide/skills/optional/devops/devops-actual-setup) | Set up Actual Computer (actual.inc) inference in Hermes. |
+| [**core-testflight**](/docs/user-guide/skills/optional/devops/devops-core-testflight) | Verify exact TestFlight readiness and device state. |
 | [**docker-management**](/docs/user-guide/skills/optional/devops/devops-docker-management) | Manage Docker containers, images, volumes, and Compose. |
 | [**hermes-s6-container-supervision**](/docs/user-guide/skills/optional/devops/devops-hermes-s6-container-supervision) | Modify or debug s6 services in the Hermes Docker image. |
 | [**inference-sh-cli**](/docs/user-guide/skills/optional/devops/devops-inference-sh-cli) | Run 150+ AI apps (image, video, LLM) via inference.sh CLI. |

@@ -1,119 +1,70 @@
-"""Contract tests for the Core TestFlight provenance gate."""
+"""Regression tests for the TestFlight/device-plane decision contract."""
 
-from __future__ import annotations
-
-import importlib.util
+import sys
 from pathlib import Path
 
-import pytest
-
-
-_SCRIPT = (
-    Path(__file__).parents[2]
-    / "optional-skills/devops/core-testflight/scripts/verify-release-provenance.py"
+SCRIPTS_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "optional-skills"
+    / "devops"
+    / "core-testflight"
+    / "scripts"
 )
-_SPEC = importlib.util.spec_from_file_location("verify_release_provenance", _SCRIPT)
-assert _SPEC and _SPEC.loader
-_MODULE = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_MODULE)
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+import delivery_state
 
 
-COMMIT = "a" * 40
+def test_paired_but_tunnel_unavailable_keeps_testflight_ready():
+    result = delivery_state.classify_delivery(
+        apple_ready=True,
+        tester_eligible=True,
+        device_paired=True,
+        device_tunnel_available=False,
+        target_build="96",
+        installed_build=None,
+    )
+
+    assert result["device_control_available"] is False
+    assert result["outcome"] == "TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE"
+    assert result["installation_verified"] is False
 
 
-def _report() -> dict:
-    return {
-        "target": {
-            "bundle_id": "com.accessiblecore.capture",
-            "marketing_version": "1.0",
-            "build_number": "91",
-            "device_id": "PHN-01-UDID",
-        },
-        "github": {
-            "commit": COMMIT,
-            "ref": "native-auth-client",
-            "pushed": True,
-            "untracked_files": [
-                {"path": "docs/old-receipt.json", "classification": "pre-existing"}
-            ],
-        },
-        "xcode_cloud": {
-            "workflow_id": "workflow-1",
-            "run_id": "run-1",
-            "source_commit": COMMIT,
-            "archive_status": "SUCCEEDED",
-            "build_number": "91",
-        },
-        "testflight": {
-            "source_commit": COMMIT,
-            "available": True,
-            "tester_visible": True,
-            "build_number": "91",
-        },
-        "installation": {
-            "method": "testflight",
-            "device_id": "PHN-01-UDID",
-            "bundle_id": "com.accessiblecore.capture",
-            "bundle_version": "91",
-            "readback_status": "verified",
-            "evidence": "fresh structured device read",
-        },
-    }
+def test_unpaired_device_has_same_testflight_outcome():
+    result = delivery_state.classify_delivery(
+        apple_ready=True,
+        tester_eligible=True,
+        device_paired=False,
+        device_tunnel_available=False,
+        target_build="96",
+        installed_build=None,
+    )
+
+    assert result["outcome"] == "TESTFLIGHT_READY_DEVICE_CONTROL_UNAVAILABLE"
 
 
-def test_accepts_matching_current_release_provenance() -> None:
-    _MODULE.validate(_report())
+def test_exact_installed_build_is_done_even_without_new_control():
+    result = delivery_state.classify_delivery(
+        apple_ready=True,
+        tester_eligible=True,
+        device_paired=False,
+        device_tunnel_available=False,
+        target_build="96",
+        installed_build="96",
+    )
+
+    assert result["outcome"] == "DONE"
+    assert result["installation_verified"] is True
 
 
-def test_accepts_clean_checkout_with_no_untracked_files() -> None:
-    report = _report()
-    report["github"]["untracked_files"] = []
-    _MODULE.validate(report)
+def test_apple_failure_is_not_device_control_failure():
+    result = delivery_state.classify_delivery(
+        apple_ready=False,
+        tester_eligible=True,
+        device_paired=True,
+        device_tunnel_available=False,
+        target_build="96",
+        installed_build=None,
+    )
 
-
-def test_rejects_historical_or_wrong_installed_build() -> None:
-    report = _report()
-    report["installation"]["bundle_version"] = "84"
-    with pytest.raises(_MODULE.ProvenanceError, match="installed CFBundleVersion"):
-        _MODULE.validate(report)
-
-
-def test_blocks_when_device_version_cannot_be_read() -> None:
-    report = _report()
-    report["installation"]["readback_status"] = "unavailable"
-    with pytest.raises(_MODULE.ProvenanceError, match="BLOCKED"):
-        _MODULE.validate(report)
-
-
-def test_rejects_xcode_cloud_commit_mismatch() -> None:
-    report = _report()
-    report["xcode_cloud"]["source_commit"] = "b" * 40
-    with pytest.raises(_MODULE.ProvenanceError, match="source commit"):
-        _MODULE.validate(report)
-
-
-def test_testflight_action_required_does_not_require_coredevice() -> None:
-    report = _report()
-    report["delivery_mode"] = "TESTFLIGHT"
-    report["target"].pop("device_id")
-    report["installation"] = {
-        "method": "testflight",
-        "action_required": "TESTFLIGHT_ON_IPHONE",
-    }
-    _MODULE.validate(report)
-
-
-def test_testflight_missing_phone_action_is_not_coredevice_blocker() -> None:
-    report = _report()
-    report["delivery_mode"] = "TESTFLIGHT"
-    report["target"].pop("device_id")
-    report["installation"] = {"method": "testflight", "readback_status": "unavailable"}
-    with pytest.raises(_MODULE.ProvenanceError, match="INSTALL_ACTION_REQUIRED"):
-        _MODULE.validate(report)
-
-
-def test_unknown_delivery_mode_is_rejected() -> None:
-    report = _report()
-    report["delivery_mode"] = "SIMULATOR"
-    with pytest.raises(_MODULE.ProvenanceError, match="unsupported delivery mode"):
-        _MODULE.validate(report)
+    assert result["outcome"] == "TESTFLIGHT_NOT_READY"

@@ -331,7 +331,10 @@ class GatewayModelCommandsMixin:
             configured_base_url=model_cfg.get("base_url"),
         )
         if ctx_len:
-            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}"))
+            from agent.context_pin import context_window_suffix
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx_len:,}") + context_window_suffix(
+                ctx_len, config_ctx, model=result.new_model, provider=result.target_provider,
+                base_url=result.base_url or ctx.current_base_url or ""))
         if mi and mi.max_output:
             lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
         if mi:

@@ -116,7 +116,9 @@ Hermes automatically applies prompt caching on the Bedrock **Converse API** path
 
 For models whose context window isn't in Hermes' static table, Hermes can probe the real limit by sending oversized requests at fixed tiers (~1.3M and ~2.2M tokens) and parsing the `maximum` reported in Bedrock's length-validation error. Probed values feed the same metadata cache as the static table; stale cached entries that under-report a model's window (e.g. entries seeded before a model's 1M window went GA) are dropped automatically in favor of the larger known value.
 
-When neither the probe nor the static table knows a model, Hermes uses a 128,000-token fallback and logs a WARNING naming the model. Set `model.context_length` in `config.yaml` to the model's real window.
+When the static table has no row for a model from Anthropic, OpenAI or xAI, Hermes uses that model family's window from its general model catalog (`agent/model_metadata.py`). This is how a new tier gets its real window before the Bedrock table is updated. Other vendors' catalog rows are vendor-direct windows that can exceed what Bedrock serves (Llama 3 8B is 8K on Bedrock), so those models do not borrow them.
+
+When nothing knows a model, Hermes uses a 128,000-token fallback and logs a WARNING naming the model. The banner, status bar, `/usage`, `/model` and the gateway session line mark that window `fallback` so it is not mistaken for a detected limit. Set `model.context_length` (or `model_overrides.bedrock.<model id>.context_window`) in `config.yaml` to the model's real window.
 
 **Application inference profiles.** An ARN such as `arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456` names no model, so neither the probe nor the static table can size it. Hermes calls `bedrock:GetInferenceProfile` in the ARN's region and sizes the window from the model the profile wraps (1M for a profile wrapping Claude Sonnet 4.6). Without that permission the 128,000-token default applies and a WARNING names the profile; set `model.context_length` explicitly to override either way.
 

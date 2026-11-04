@@ -1548,6 +1548,9 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
+      largePasteAttachTitle: 'Convertir les longs collages en pièces jointes',
+      largePasteAttachDesc:
+        'Au-delà de 3 000 caractères, un texte collé est joint en fichier .txt au lieu d’être inséré dans la zone de saisie. Désactivez pour garder les longs collages dans la zone de saisie, utile quand le texte collé est le prompt lui-même (spécifications, tâches d’agent, journaux).',
       showOptions: 'Afficher les options'
     },
     hudModifier: {

@@ -669,6 +669,7 @@ function LargePasteAttachSetting() {
     <ToggleRow
       checked={enabled}
       description={c.largePasteAttachDesc}
+      id={settingElementId(SETTING_IDS.chat.largePasteAttach)}
       label={c.largePasteAttachTitle}
       onChange={setLargePasteAttachEnabled}
     />

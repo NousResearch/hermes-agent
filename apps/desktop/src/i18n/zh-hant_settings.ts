@@ -823,6 +823,9 @@ export const zhHantSettings = {
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
         '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+      largePasteAttachTitle: '將大段貼上轉為附件',
+      largePasteAttachDesc:
+        '貼上超過 3,000 個字元的文字時，會以 .txt 檔案附加，而不是直接插入輸入框。關閉後，長篇貼上內容會保留在輸入框中，適合貼上的內容本身就是提示詞的情況（規格說明、代理任務、記錄）。',
       showOptions: '顯示選項'
     },
     hudModifier: {

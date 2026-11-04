@@ -1540,6 +1540,9 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
+      largePasteAttachTitle: 'Große Einfügungen in Anhänge umwandeln',
+      largePasteAttachDesc:
+        'Werden mehr als 3.000 Zeichen eingefügt, wird der Text als .txt-Datei angehängt statt direkt eingefügt. Ausschalten, um lange Einfügungen im Eingabefeld zu behalten – praktisch, wenn der eingefügte Text selbst der Prompt ist (Spezifikationen, Agent-Aufgaben, Logs).',
       showOptions: 'Optionen anzeigen'
     },
     hudModifier: {

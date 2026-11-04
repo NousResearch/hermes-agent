@@ -1543,6 +1543,9 @@ export const esOverrides = {
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Tamaño máximo de vista previa / carga de imagen en megabytes',
+      largePasteAttachTitle: 'Convertir pegados grandes en adjuntos',
+      largePasteAttachDesc:
+        'Al pegar más de 3.000 caracteres, el texto se adjunta como archivo .txt en lugar de insertarse en el campo de texto. Desactívalo para mantener los pegados largos en el campo de texto; útil cuando el texto pegado es el propio prompt (especificaciones, tareas para agentes, registros).',
       showOptions: 'Mostrar opciones'
     },
     hudModifier: {

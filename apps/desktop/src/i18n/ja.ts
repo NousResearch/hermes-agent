@@ -920,7 +920,10 @@ export const jaOverrides = {
       keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
-        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。',
+      largePasteAttachTitle: '大きな貼り付けを添付ファイルに変換',
+      largePasteAttachDesc:
+        '3,000 文字を超えるテキストを貼り付けると、入力欄に挿入せず .txt ファイルとして添付します。オフにすると、長い貼り付けも入力欄に残ります。貼り付けたテキストそのものがプロンプトのとき（仕様、エージェントへのタスク、ログなど）に便利です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',

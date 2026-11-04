@@ -151,6 +151,11 @@ export const SETTINGS_MANIFEST = {
       subpage: 'attachments',
       keywords: ['attachment', 'image', 'preview', 'upload', 'file size', 'limit', 'MB'],
       copy: t => ({ label: t.settings.config.attachmentSizeTitle, description: t.settings.config.attachmentSizeDesc })
+    },
+    largePasteAttach: {
+      subpage: 'attachments',
+      keywords: ['paste', 'large paste', 'pasted content', 'clipboard', 'inline', 'txt', 'attachment'],
+      copy: t => ({ label: t.settings.config.largePasteAttachTitle, description: t.settings.config.largePasteAttachDesc })
     }
   },
   advanced: {

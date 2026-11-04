@@ -3177,6 +3177,8 @@
     "settings.config.keepAwakeOff",
     "settings.config.keepAwakeTitle",
     "settings.config.keepAwakeWhileWorking",
+    "settings.config.largePasteAttachDesc",
+    "settings.config.largePasteAttachTitle",
     "settings.config.loading",
     "settings.config.minimizeToTrayDesc",
     "settings.config.minimizeToTrayTitle",

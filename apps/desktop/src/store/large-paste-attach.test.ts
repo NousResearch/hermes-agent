@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $largePasteAttachEnabled, setLargePasteAttachEnabled } from './large-paste-attach'
 
@@ -16,12 +16,15 @@ describe('large-paste-attach store', () => {
     expect($largePasteAttachEnabled.get()).toBe(true)
   })
 
-  it('restores a stored "false" on init', () => {
+  it('restores a stored "false" on init', async () => {
     window.localStorage.setItem(STORAGE_KEY, 'false')
 
-    // Re-import into a fresh module registry via dynamic import with a cache
-    // bust; the atom initializer reads storage at module scope.
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe('false')
+    // The atom reads storage once, at module scope: load a fresh copy of the
+    // module, as an app start would.
+    vi.resetModules()
+    const fresh = await import('./large-paste-attach')
+
+    expect(fresh.$largePasteAttachEnabled.get()).toBe(false)
   })
 
   it('persists flips and survives storage failures', () => {

@@ -91,6 +91,71 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     assert not any('Python dependencies' in str(line) for line in lines)
 
 
+def _tty_install_recording_npm(root, monkeypatch, files: dict, npm_error=None):
+    """A committed local plugin made of *files*, a TTY that answers yes, and an ``npm`` stub that
+    writes a marker into the tree it runs in. Returns ``(uri, calls)``: ``(tree, live_tree_existed)``."""
+    from pm import workspace
+
+    source = root / 'plugin-source'
+    source.mkdir()
+    for name, text in files.items():
+        (source / name).write_text(text, encoding='utf-8')
+    env = {k: v for k, v in os.environ.items() if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'}}
+    for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')]:
+        subprocess.run(['git', *args], cwd=source, env=env, check=True, capture_output=True, timeout=30)
+    calls = []
+
+    def fake_npm(path, **_kwargs):
+        calls.append((path, (plugins_cmd._plugins_dir() / 'node-plugin').exists()))
+        (path / 'node_modules').mkdir()
+        (path / 'node_modules' / 'marker').write_text('ok', encoding='utf-8')
+        return npm_error
+
+    monkeypatch.setattr(workspace, 'install_node_sidecar', fake_npm)
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda _prompt: 'y')
+    return source.as_uri(), calls
+
+
+_NODE_PLUGIN = {'plugin.yaml': yaml.safe_dump({'name': 'node-plugin'}), '__init__.py': 'def register(ctx):\n    pass\n'}
+
+
+@pytest.mark.parametrize('npm_error', [None, 'npm ci exited 1: boom'])
+def test_cli_install_runs_node_deps_in_the_staged_tree_before_publication(admission_env, monkeypatch, npm_error):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    """``hermes plugins install`` ran npm in the live plugin tree after publication, so a failed npm
+    left a published plugin without its Node deps. npm now runs in the staged tree inside the install
+    transaction: its node_modules ship with the plugin, and an npm failure publishes nothing."""
+    root, home = admission_env
+    files = {**_NODE_PLUGIN, 'package.json': json.dumps({'name': 'node-plugin', 'version': '1.0.0'})}
+    uri, calls = _tty_install_recording_npm(root, monkeypatch, files, npm_error)
+    installed = home / 'plugins' / 'node-plugin'
+
+    if npm_error:
+        with pytest.raises(SystemExit):
+            plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
+    else:
+        plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
+
+    assert len(calls) == 1
+    tree, live_tree_existed = calls[0]
+    assert tree != installed and not live_tree_existed, f'npm ran in {tree} after publication'
+    if npm_error:
+        assert not installed.exists()
+    else:
+        assert (installed / 'node_modules' / 'marker').read_text(encoding='utf-8') == 'ok'
+
+
+def test_cli_install_without_package_json_runs_no_node_step(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
+    root, home = admission_env
+    uri, calls = _tty_install_recording_npm(root, monkeypatch, _NODE_PLUGIN)
+
+    plugins_cmd.cmd_install(uri, enable=True, allow_removed=True)
+
+    assert calls == []
+    assert (home / 'plugins' / 'node-plugin' / 'plugin.yaml').is_file()
+
+
 def test_yes_deps_carries_consent_through_non_interactive_install(admission_env, monkeypatch, capsys):
     """--yes-deps (#122134): the flag is the user's own answer to the consent
     question, so a non-interactive install publishes AND enables in one run

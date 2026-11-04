@@ -16,21 +16,23 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
                    *, target_digest: str | None = None, require_consent: bool = False,
-                   assume_consent: bool = False) -> None:
+                   assume_consent: bool = False, node_deps: bool = False) -> None:
     """Publish *staged* into *target*. *assume_consent* is consent the caller
     already holds (``--yes-deps``, or a memory-provider migration under
     ``security.allow_lazy_installs``): the active-replacement consent veto is
     skipped, so an unattended install carries that decision instead of being
-    refused non-interactively."""
+    refused non-interactively. *node_deps* asks the Node-sidecar question and
+    runs npm in *staged* before publication; an npm failure publishes nothing."""
+    from hermes_cli import plugins_cmd
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
     if require_consent and not assume_consent:
-        from hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs
 
         if target.resolve() in enabled_plugin_dirs(installing=target):
+            node_deps = False  # the consent gate below asks the Node question on *staged* itself
             consented, reason = plugins_cmd._install_plugin_python_deps(
                 plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
             if not consented:
@@ -41,6 +43,11 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
 
                 raise plugins_cmd.PluginOperationError(
                     outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
+    from hermes_cli.plugins_cmd_install import _stage_node_deps
+
+    if node_deps and (reason := _stage_node_deps(
+            plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())):
+        raise plugins_cmd.PluginOperationError(f"Node dependencies could not be installed: {reason}")
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),

@@ -698,6 +698,15 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
+def _carried(package, recorded: list[str]) -> list[str]:
+    """The recorded extras a sync carries forward: still declared and not dropped by the user
+    (`hermes pm install --without NAME`). An explicit request still enables a declined extra."""
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    return [extra for extra in _still_declared(package, recorded) if _extra_key(extra) not in refused]
+
+
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
@@ -715,7 +724,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact["extras"])) | set(extras or []))
     stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
     return _runtime_state_matches(fact, stamp, project_root=root)
 
@@ -807,7 +816,7 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
+    enabled = sorted(set(_carried(package, fact.get("extras", shipped or []))) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 
@@ -837,9 +846,83 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
         raise
 
 
+def _refuse_declined(package, extras: Optional[list[str]], *, explicit: bool) -> None:
+    """A lazy install (first use of a feature) never re-adds an extra the user dropped."""
+    if not extras or explicit:
+        return
+    from pm.extras import declined_extras, declined_reasons, install_hint
+
+    refused = declined_extras(package.project_root())
+    dropped = [extra for extra in extras if _extra_key(extra) in refused]
+    if dropped:
+        reasons = declined_reasons(package.project_root())
+        why = "; ".join(f"an update left {extra!r} out because {reasons[_extra_key(extra)]}" for extra in dropped
+                        if _extra_key(extra) in reasons)
+        raise InstallError("venv", why or f"extras {dropped} were removed with `hermes pm install --without`",
+                           "run `" + "`, `".join(install_hint(extra) for extra in dropped) + "` to enable them again")
+
+
+def _without_new_declines(package, extras: Optional[list[str]], automatic) -> Optional[list[str]]:
+    """*extras* minus the *automatic* entries the user has declined, read under the dependency lock.
+
+    An automatic entry (configured-platform repair, the main-era venv carry, a container's shipped
+    baseline) was chosen before this sync took the lock, from a decline record a concurrent
+    `hermes pm install --without NAME` may since have changed; only the lock-held read counts.
+    """
+    if not extras or not automatic:
+        return extras
+    from pm.extras import declined_extras
+
+    refused = declined_extras(package.project_root())
+    derived = {_extra_key(extra) for extra in automatic}
+    return [extra for extra in extras if _extra_key(extra) not in derived or _extra_key(extra) not in refused]
+
+
+def decline_extras(names: list[str]) -> None:
+    """Record ``hermes pm install --without NAME`` for extras, under the dependency lock: an
+    in-flight `--extra NAME` sync clears its decline before releasing it, so an unlocked write
+    landing mid-sync would be erased."""
+    if not names:
+        return
+    from pm.extras import record_declined_extras
+
+    with _venv_install_lock(patient=True):
+        record_declined_extras(add=names, project_root=paths.repo_root())
+
+
+def _sync_locked(extras, *, package, plugins, repair: bool, explicit: bool, shipped, frozen,
+                 evict_incompatible_plugins: bool) -> None:
+    """sync_venv's body under the held dependency lock."""
+    from pm import receipt
+    from pm.publication import StagedPlugin
+
+    change = _publication(plugins)
+    if isinstance(change, StagedPlugin) and not change.active:
+        _publish_inactive(change)
+    elif evict_incompatible_plugins:
+        from pm.plugin_eviction import sync_evicting
+
+        facts = Facts(paths.runtime_facts_path())
+        fact = facts.get("venv") or _facts().get("venv") or {}
+        sync_evicting(package, facts, fact, extras=extras, shipped=shipped, frozen=frozen, explicit=explicit)
+    else:
+        inputs = {"plugin_dirs": change.members} if change is not None else _member_inputs(plugins)
+        facts = Facts(paths.runtime_facts_path(), strict=repair)
+        fact = facts.get("venv") or _facts().get("venv") or {}
+        enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs=inputs,
+                                                   repair=repair, shipped=shipped, frozen=frozen)
+        current = not repair and _runtime_state_matches(fact, stamp)
+        if not current and not repair and not explicit and not lazy_installs_allowed():
+            raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
+        receipt.record_feature_list(enabled)
+        _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
+                          current=current, repair=repair, explicit=explicit)
+
+
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
               plugins: PluginInput | None = None, repair: bool = False,
-              evict_incompatible_plugins: bool = False) -> None:
+              evict_incompatible_plugins: bool = False, automatic: Optional[list[str]] = None,
+              carried: Optional[list[str]] = None) -> None:
     """Make the venv match uv.lock + the enabled extras. Extras union into
     the installed state (one ledger); no-op when the stamp already matches.
     ``repair`` restores the recorded dependency graph into a fresh generation,
@@ -850,7 +933,12 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
     source of plugin members (see pm.plugin_inputs); None discovers them from config.
     ``evict_incompatible_plugins`` is the update's contract: a discovered plugin that
     keeps the environment from building is disabled instead of failing the sync
-    (see pm.plugin_eviction).
+    (see pm.plugin_eviction). ``automatic`` names the entries of ``extras`` Hermes chose
+    on the user's behalf: one the user declined is left out, and none of them opts a
+    declined extra back in; every other requested extra does (``--extra NAME``).
+    ``carried`` names the automatic entries this sync carries over from a pre-PM venv:
+    one that keeps the environment from building is left out, recorded and reported
+    (see pm.carried_extras).
 
     Lazy installs OFF = the frozen feature set: when
     security.allow_lazy_installs is false AND the bundle's
@@ -873,33 +961,41 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
+        if carried and (repair or plugins is not None or not set(carried) <= set(extras or ())):
+            raise ValueError("carried extras belong to a feature sync of the discovered selection")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
-        from pm.publication import StagedPlugin
+        from functools import partial
+        sync = partial(_sync_locked, package=package, plugins=plugins, repair=repair, explicit=explicit,
+                       shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)
+        automatic = [*(automatic or ()), *(carried or ())]  # a carried extra is automatic too
         with _venv_install_lock(patient=explicit or repair):
+            extras = _without_new_declines(package, extras, automatic)
+            _refuse_declined(package, extras, explicit=explicit)
             recover_publication(paths.repo_root())
-            change = _publication(plugins)
-            if isinstance(change, StagedPlugin) and not change.active:
-                _publish_inactive(change)
-            elif evict_incompatible_plugins:
-                from pm.plugin_eviction import sync_evicting
+            try:
+                sync(extras)
+            except Exception as failure:
+                from pm.carried_extras import BUILD_VERDICTS, failing_carried, record_left_out, refuse_transient
 
-                facts = Facts(paths.runtime_facts_path())
-                fact = facts.get("venv") or _facts().get("venv") or {}
-                sync_evicting(package, facts, fact, extras=extras, shipped=shipped, frozen=frozen, explicit=explicit)
-            else:
-                inputs = {"plugin_dirs": change.members} if change is not None else _member_inputs(plugins)
-                facts = Facts(paths.runtime_facts_path(), strict=repair)
-                fact = facts.get("venv") or _facts().get("venv") or {}
-                enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs=inputs,
-                                                           repair=repair, shipped=shipped, frozen=frozen)
-                current = not repair and _runtime_state_matches(fact, stamp)
-                if not current and not repair and not explicit and not lazy_installs_allowed():
-                    raise _refuse_lazy("venv", str(extras) if extras else "venv out of sync")
-                receipt.record_feature_list(enabled)
-                _commit_selection(package, facts, change, enabled=enabled, stamp=stamp, inputs=inputs,
-                                  current=current, repair=repair, explicit=explicit)
+                if not carried or not extras or not isinstance(failure, BUILD_VERDICTS):
+                    raise
+                fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
+                failing = failing_carried(package, failure, extras=extras, carried=carried, fact=fact,
+                                          shipped=shipped, frozen=frozen, explicit=explicit)
+                refuse_transient(failing, failure)
+                extras = [extra for extra in extras if extra not in failing]
+                sync(extras)
+                record_left_out(package, failing)
+            derived = {_extra_key(extra) for extra in automatic}
+            opted_in = [extra for extra in extras or () if _extra_key(extra) not in derived]
+            if opted_in and explicit and not repair:
+                from pm.extras import record_declined_extras
+
+                # An explicit request is the opt-back-in. Cleared before the lock is released, or a
+                # sync queued behind this one still reads the decline and publishes without the extra.
+                record_declined_extras(remove=opted_in, project_root=package.project_root())
         outcome = "ok"
     except BaseException as exc:
         receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")

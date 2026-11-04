@@ -71,14 +71,13 @@ _ASSET_RE = re.compile(
 _OS_LABEL = {"mac": "macOS", "win": "Windows", "linux": "Linux (AppImage)"}
 _ARCH_LABEL = {
     ("mac", "arm64"): "Apple Silicon (M-series)",
-    ("mac", "x64"): "Intel",
     ("win", "x64"): "x86 (64-bit)",
     ("win", "arm64"): "ARM (arm64 / aarch64)",
     ("linux", "x64"): "x86 (64-bit)",
     ("linux", "arm64"): "arm64",
 }
 _KIND_LABEL = {"dmg": "DMG", "msix": "MSIX", "AppImage": "AppImage"}
-_ROW_ORDER = [("mac", "arm64"), ("mac", "x64"), ("win", "x64"), ("win", "arm64"),
+_ROW_ORDER = [("mac", "arm64"), ("win", "x64"), ("win", "arm64"),
               ("linux", "x64"), ("linux", "arm64")]
 
 
@@ -183,12 +182,8 @@ _COMMIT_EXPECTED = [
      r"^HermesBundled-[^-]+-win\.msixbundle$"),
     ("macOS Apple Silicon (DMG)", "darwin-arm64",
      r"^HermesBundled-[^-]+-mac-arm64\.dmg$"),
-    ("macOS Intel (DMG)", "darwin-x64",
-     r"^HermesBundled-[^-]+-mac-x64\.dmg$"),
     ("macOS Apple Silicon (ZIP)", "darwin-arm64",
      r"^HermesBundled-[^-]+-mac-arm64\.zip$"),
-    ("macOS Intel (ZIP)", "darwin-x64",
-     r"^HermesBundled-[^-]+-mac-x64\.zip$"),
     ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
@@ -199,7 +194,7 @@ _COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
 COMMIT_RECEIPT_NAMES = sorted({leg for _label, leg, _pattern in _COMMIT_EXPECTED})
 _COMMIT_JOBS = {
     "win32-x64": "build-win32-x64", "win32-arm64": "build-win32-arm64",
-    "darwin-x64": "build-darwin-x64", "darwin-arm64": "build-darwin-arm64",
+    "darwin-arm64": "build-darwin-arm64",
     "windows-universal": "assemble-win32-bundle", "termux": "termux-deb",
 }
 
@@ -574,17 +569,16 @@ def splice(body: str, block: str) -> str:
 def render_channel_summary(manifest: dict) -> str:
     request = manifest["request"]
     rows = []
-    for platform in ("darwin", "win32"):
-        for arch in ("arm64", "x64"):
-            selected = [row for row in manifest["packages"] if row["platform"] == platform
-                        and row["arch"] == arch and row["variant"] == "bundled"]
-            label = f"{platform} {arch}"
-            if len(selected) != 1:
-                rows.append(f"| {label} | Unavailable | — |")
-                continue
-            item = selected[0]
-            url = r2.public_url_for(request["publicBase"], item["artifact"]["key"])
-            rows.append(f"| {label} | {item['version']} | [Download]({url}) |")
+    for platform, arch in (("darwin", "arm64"), ("win32", "arm64"), ("win32", "x64")):
+        selected = [row for row in manifest["packages"] if row["platform"] == platform
+                    and row["arch"] == arch and row["variant"] == "bundled"]
+        label = f"{platform} {arch}"
+        if len(selected) != 1:
+            rows.append(f"| {label} | Unavailable | — |")
+            continue
+        item = selected[0]
+        url = r2.public_url_for(request["publicBase"], item["artifact"]["key"])
+        rows.append(f"| {label} | {item['version']} | [Download]({url}) |")
     return (f"## Channel `{request['channel']}` build `{request['buildId']}`\n\n"
             f"Source `{request['commit']}` ({request['sourceVersion']}); sequence {request['sequence']}.\n\n"
             "| Native package | Version | Download |\n|---|---|---|\n" + "\n".join(rows) + "\n")

@@ -122,7 +122,7 @@ def _archive_answer(archive: str) -> str | None:
         return archive.strip()
     else:
         answer = archive.rpartition("## Response")[2].strip()
-    if not answer or _sched._is_cron_silence_response(answer):
+    if not answer or _sched._is_cron_silence_response(_delivery._extract_cron_deliverable_response(answer)):
         return None
     return answer
 
@@ -273,6 +273,9 @@ _CRON_HINT = (
     "to the user — do NOT use send_message or try to deliver "
     "the output yourself. Just produce your report/output as your "
     "final response and the system handles the rest. "
+    "For a normal report, include a line that says exactly {deliverable_marker} "
+    "before the deliverable; only content after it is sent. Keep working notes before it. "
+    "Control responses below retain their exact formats. "
     "SILENT: If there is genuinely nothing new to report, respond "
     "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
     "[SILENT] is a literal ASCII control token — never translate or "
@@ -354,7 +357,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + _run_time_line() + prompt
+    prompt = _CRON_HINT.format(deliverable_marker=_delivery.CRON_DELIVERABLE_MARKER) + _run_time_line() + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

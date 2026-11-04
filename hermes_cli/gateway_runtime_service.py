@@ -252,17 +252,29 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _no_supervisor(home: Path, deadline: float) -> None:
-    """Android/Termux has no service manager (main refuses `gateway install/start` there and says
-    "Run manually: hermes gateway"): an unmanaged detached start is its only owner. Python 3.13+
-    reports ``sys.platform == "android"``; older Termux interpreters report linux and reach the
-    systemd probe, which finds no unit and lands on the same unmanaged start."""
+    """No service manager to query. Android/Termux and the BSDs have none (main refuses
+    ``gateway install/start`` there and says to run the gateway directly): an unmanaged
+    detached start is the only owner. Python 3.13+ reports ``sys.platform == "android"``;
+    CPython suffixes the BSD release major (``openbsd8``, ``freebsd14``, ``netbsd10``),
+    which an exact platform table never matches. Older Termux interpreters report linux
+    and reach the systemd probe, which finds no unit and lands on the same unmanaged start."""
+
+
+# CPython's sys.platform on the BSDs is ``openbsd8`` / ``freebsd14`` / ``netbsd10`` (release
+# major appended). None of them has systemd, launchd, or Task Scheduler.
+_NO_SUPERVISOR_PREFIXES = ("openbsd", "freebsd", "netbsd", "dragonfly")
+
+
+def _supervisor_backend(platform: str):
+    if platform.startswith(_NO_SUPERVISOR_PREFIXES):
+        return _no_supervisor
+    return {"linux": _systemd, "darwin": _launchd, "win32": _windows, "android": _no_supervisor}.get(platform)
 
 
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
     from hermes_cli.service_manager import _s6_running
 
-    backend = _s6 if _s6_running() else {"linux": _systemd, "darwin": _launchd, "win32": _windows,
-                                         "android": _no_supervisor}.get(sys.platform)
+    backend = _s6 if _s6_running() else _supervisor_backend(sys.platform)
     if backend is None:
         raise RuntimeStartError("unsupported_supervisor_platform")
     try:

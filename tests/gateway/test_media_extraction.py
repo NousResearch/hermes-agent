@@ -371,6 +371,24 @@ caption
         )
         assert tags == [], f"generated image re-emitted after compression: {tags}"
 
+    def test_reply_tagging_one_file_still_gets_the_untagged_tts_note(self, tmp_path):
+        """The final reply carries each producer artifact exactly once: a reply that tags another
+        file (a chart) still gets the TTS voice note, and one that tags the note itself is left alone."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.run_turn_runner import TurnRunner
+
+        voice, chart = str(tmp_path / "tts_1.ogg"), str(tmp_path / "chart.png")
+        messages = [
+            {"role": "user", "content": "plot it and read me the summary"},
+            {"role": "assistant", "tool_calls": [{"id": "t", "function": {"name": "text_to_speech"}}]},
+            {"role": "tool", "tool_call_id": "t", "content": json.dumps(
+                {"success": True, "file_path": voice, "media_tag": f"[[audio_as_voice]]\nMEDIA:{voice}"})},
+        ]
+        for reply, expected in ((f"Summary.\nMEDIA:{chart}", {chart, voice}), (f"Summary.\nMEDIA:{voice}", {voice})):
+            final = TurnRunner._append_auto_media_tags(MagicMock(), reply, {"messages": messages}, [], set())
+            delivered = [path for path, _is_voice in BasePlatformAdapter.extract_media(final)[0]]
+            assert sorted(delivered) == sorted(expected), final
+
 
     
     

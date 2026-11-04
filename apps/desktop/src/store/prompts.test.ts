@@ -369,6 +369,43 @@ describe('answerApproval', () => {
     expect(request.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(1)
   })
 
+  it.each([
+    ['rejects', false],
+    ['succeeds', true]
+  ])('keeps a newer identified prompt and its server route when the legacy timeout settles and the pending read %s', async (_label, pendingOk) => {
+    const legacy = { command: 'old command', description: 'old approval', sessionId: 's1' }
+    setApprovalRequest(legacy)
+    const live = { command: 'new command', description: 'new approval', requestId: 'new', serverRequestId: 'srv-new', sessionId: 's1' }
+    const timeout = new Error('request timed out after 330s: approval.respond')
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'approval.respond') {
+        // The newer prompt arrives live while the legacy answer is still waiting.
+        setApprovalRequest(live)
+        throw timeout
+      }
+
+      if (method === 'approval.pending') {
+        if (!pendingOk) {
+          throw new Error('pending read failed')
+        }
+
+        return { approvals: [{ command: live.command, description: live.description, request_id: 'new' }] }
+      }
+
+      return { acknowledged: true }
+    })
+
+    await expect(answerApproval({ request }, legacy, 'once')).rejects.toBe(timeout)
+    await vi.waitFor(() => {
+      expect(request).toHaveBeenCalledWith('approval.pending', { session_id: 's1' })
+    })
+    await Promise.resolve()
+    expect(sessionApprovalRequests('s1').get()).toEqual([
+      expect.objectContaining({ command: 'new command', requestId: 'new', serverRequestId: 'srv-new' })
+    ])
+  })
+
   it('propagates non-timeout failures without a retry', async () => {
     let calls = 0
 

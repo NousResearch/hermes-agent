@@ -162,7 +162,8 @@ const approval = {
 
     $approvalQueues.set({ ...queues, [key]: next })
   },
-  clear(sessionId?: string | null, requestId?: string) {
+  // ``legacyOnly`` retires just the entries without a request id; identified ones keep their server route.
+  clear(sessionId?: string | null, requestId?: string, legacyOnly = false) {
     if (sessionId === undefined) {
       approvalRevision += 1
     } else {
@@ -179,7 +180,11 @@ const approval = {
         continue
       }
 
-      const remaining = requestId ? queue.filter(item => item.requestId !== requestId) : EMPTY_APPROVALS
+      const remaining = legacyOnly
+        ? queue.filter(item => item.requestId)
+        : requestId
+          ? queue.filter(item => item.requestId !== requestId)
+          : EMPTY_APPROVALS
 
       if (remaining.length === queue.length) {
         continue
@@ -392,8 +397,9 @@ export async function answerApproval(
   } catch (error) {
     if (isRequestTimeoutError(error) && !request.requestId) {
       // The answer may have landed; a stale legacy prompt must not be resubmitted
-      // against a newer FIFO entry. Retire it, then restore the server's pending state.
-      clearApprovalRequest(request.sessionId, undefined)
+      // against a newer FIFO entry. Retire it (and only it: an identified prompt that arrived
+      // meanwhile keeps its server route), then restore the server's pending state.
+      clearApprovalRequest(request.sessionId, undefined, true)
       void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
       throw error
     }

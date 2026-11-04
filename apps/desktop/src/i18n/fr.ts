@@ -4657,6 +4657,7 @@ export const frOverrides = {
           confirm: 'Compacter',
           hint: 'Résumez le contexte ancien pour libérer de la place. Continuez dans cette même conversation.',
           question: 'Compacter cette conversation en un résumé ?',
+          questionNamed: title => `Compacter « ${title} » en un résumé ?`,
           working: 'Compaction…'
         },
         empty: 'Aucune donnée de contexte pour le moment',

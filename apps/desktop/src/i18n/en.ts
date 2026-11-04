@@ -4214,6 +4214,7 @@ export const en: Translations = {
           confirm: 'Compact',
           hint: 'Summarize older context to make room. Continue in this same conversation.',
           question: 'Compress this chat into a summary?',
+          questionNamed: title => `Compress “${title}” into a summary?`,
           working: 'Compacting…'
         },
         empty: 'No context data yet',

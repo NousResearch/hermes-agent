@@ -5,7 +5,7 @@ import { useI18n } from '@/i18n'
 import { $compactingSessions } from '@/store/compaction'
 import { confirm } from '@/store/confirm'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $busy } from '@/store/session'
+import { $activeSessionId, $busy, $sessions } from '@/store/session'
 import { $focusedRuntimeId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
 export interface CompactConversationAction {
@@ -16,6 +16,20 @@ export interface CompactConversationAction {
   /** No runtime session to compact yet (fresh draft). */
   unavailable: boolean
   onRequest: () => void
+}
+
+/** The chat's own title, so the confirm names what compacts when another
+ *  surface (a Bot group room) is in front of it. Untitled chats keep the
+ *  generic copy rather than a preview snippet. */
+function chatTitle(runtimeId: string): string | undefined {
+  const storedId = $sessionStates.get()[runtimeId]?.storedSessionId
+
+  return storedId
+    ? $sessions
+        .get()
+        .find(session => session.id === storedId)
+        ?.title?.trim() || undefined
+    : undefined
 }
 
 function sessionBusy(sessionId: string): boolean {
@@ -54,7 +68,13 @@ export function useCompactConversation({
     }
 
     void (async () => {
-      const ok = await confirm({ confirmLabel: copy.confirm, description: copy.hint, title: copy.question })
+      const title = chatTitle(target)
+
+      const ok = await confirm({
+        confirmLabel: copy.confirm,
+        description: copy.hint,
+        title: title ? copy.questionNamed(title) : copy.question
+      })
 
       if (!ok || $focusedRuntimeId.get() !== target || sessionBusy(target) || $compactingSessions.get()[target]) {
         return
@@ -62,10 +82,7 @@ export function useCompactConversation({
 
       await sessionTileDelegate()?.executeSlash('/compress', target, { typed: false })
     })().catch(error => notifyError(error, failed))
-  }, [busy, copy.confirm, copy.hint, copy.question, failed, pending, sessionId])
+  }, [busy, copy, failed, pending, sessionId])
 
-  return useMemo(
-    () => ({ busy, onRequest, pending, unavailable: !sessionId }),
-    [busy, onRequest, pending, sessionId]
-  )
+  return useMemo(() => ({ busy, onRequest, pending, unavailable: !sessionId }), [busy, onRequest, pending, sessionId])
 }

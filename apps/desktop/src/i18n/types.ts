@@ -3679,6 +3679,7 @@ export interface Translations extends NoticeTranslations {
           confirm: string
           hint: string
           question: string
+          questionNamed: (title: string) => string
           working: string
         }
         empty: string

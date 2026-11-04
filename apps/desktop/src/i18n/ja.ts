@@ -3053,6 +3053,7 @@ export const jaOverrides = {
           confirm: '圧縮',
           hint: '古いコンテキストを要約して空きを作ります。同じ会話を続けられます。',
           question: 'この会話を要約に圧縮しますか？',
+          questionNamed: title => `「${title}」を要約に圧縮しますか？`,
           working: '圧縮中…'
         },
         empty: 'コンテキストデータはまだありません',

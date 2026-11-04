@@ -1,15 +1,18 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { $activeSessionId } from '@/store/session'
-import { type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
+import { $activeSessionId, $sessions } from '@/store/session'
+import { $sessionStates, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
 import { useCompactConversation } from './use-compact-conversation'
 
 afterEach(() => {
   settleConfirm(false)
   $activeSessionId.set(null)
+  $sessions.set([])
+  $sessionStates.set({})
   setSessionTileDelegate(null as unknown as SessionTileDelegate)
 })
 
@@ -44,4 +47,16 @@ it('compacts nothing when the user switched chats while the confirmation was ope
   })
 
   expect(executeSlash).not.toHaveBeenCalled()
+})
+
+it('names the chat it will compact in the confirmation when the chat has a title', () => {
+  setSessionTileDelegate({ executeSlash: vi.fn(async () => {}) } as unknown as SessionTileDelegate)
+  $activeSessionId.set('rt-a')
+  $sessionStates.set({ 'rt-a': { ...createClientSessionState(), storedSessionId: 'stored-a' } as never })
+  $sessions.set([{ id: 'stored-a', title: 'Release notes' } as never])
+
+  const { result } = renderHook(() => useCompactConversation({ busy: false, sessionId: 'rt-a' }))
+
+  act(() => result.current.onRequest())
+  expect($confirmRequest.get()?.title).toBe('Compress “Release notes” into a summary?')
 })

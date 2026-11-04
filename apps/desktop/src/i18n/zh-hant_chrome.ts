@@ -408,6 +408,7 @@ export const zhHantChrome = {
           confirm: '壓縮',
           hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
           question: '將此對話壓縮為摘要？',
+          questionNamed: title => `將「${title}」壓縮為摘要？`,
           working: '正在壓縮…'
         },
         empty: '尚無上下文資料',

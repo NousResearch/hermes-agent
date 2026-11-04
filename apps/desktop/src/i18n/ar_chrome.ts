@@ -469,6 +469,7 @@ export const arChrome = {
           confirm: 'ضغط',
           hint: 'لخّص السياق القديم لإفساح المجال. تابع في هذه المحادثة نفسها.',
           question: 'ضغط هذه المحادثة في ملخص؟',
+          questionNamed: title => `ضغط «${title}» في ملخص؟`,
           working: 'جارٍ الضغط…'
         }
       },

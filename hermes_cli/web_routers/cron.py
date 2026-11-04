@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
-    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
+    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _keep_zero_tool_allowlist, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
@@ -72,9 +72,11 @@ def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Pat
         # Same normalization as deliver, but empty CLEARS the override (failures
         # fall back to deliver) rather than coalescing — the field is optional.
         normalized["failure_deliver"] = _cron_optional_text(normalized["failure_deliver"])
-    for key in ("context_from", "enabled_toolsets"):
-        if key in normalized:
-            normalized[key] = _cron_string_list(normalized[key])
+    if "context_from" in normalized:
+        normalized["context_from"] = _cron_string_list(normalized["context_from"])
+    if "enabled_toolsets" in normalized:
+        # [] is the zero-tool allowlist, not a clear — only context_from's [] collapses to null.
+        normalized["enabled_toolsets"] = _cron_string_list(normalized["enabled_toolsets"], keep_empty=True)
     return normalized
 
 
@@ -660,6 +662,7 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
         profile_name, profile_home = _cron_profile_home(selected)
         existing = _found(_call_cron_for_profile(profile_name, "get_job", job_id))
         updates = _normalize_dashboard_cron_updates(body.updates, profile_home)
+        _keep_zero_tool_allowlist(updates, existing)
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(updates.get("context_from"), profile_name)
         if _EXECUTION_FIELDS.intersection(updates):

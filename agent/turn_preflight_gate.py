@@ -16,6 +16,46 @@ from agent.turn_preflight import PreflightGateVerdict, run_preflight_compression
 
 logger = logging.getLogger("agent.conversation_loop")
 
+# A request at or above this share of the context window, with no preflight compression
+# able to run, is one provider call away from a context-length error.
+_CONTEXT_EXHAUSTION_WARN_RATIO = 0.9
+
+
+def _warn_if_context_exhaustion_unrecoverable(
+    agent: Any, v: PreflightGateVerdict, *, compressor: Any, request_pressure_tokens: Any,
+    compression_attempts: Any, max_compression_attempts: Any, defer_preflight: Any,
+) -> None:
+    """Log when a nearly full request has no preflight compression path left.
+
+    Compression is the only thing that shrinks a turn before the provider sees it. When it is
+    disabled, blocked for insufficient progress, deferred to real usage, cooling down after a
+    failure, or out of attempts, a request at 90%+ of the window reaches the provider as is and
+    usually fails there. The warning names the reason so the log explains the failure that
+    follows. It never changes the gate's decision."""
+    window = int(getattr(compressor, "context_length", 0) or 0)
+    try:
+        pressure = int(request_pressure_tokens or 0)
+    except (TypeError, ValueError):
+        return
+    if window <= 0 or pressure < int(window * _CONTEXT_EXHAUSTION_WARN_RATIO):
+        return
+    cooldown = getattr(compressor, "get_active_compression_failure_cooldown", lambda: None)()
+    reasons = [name for name, active in (
+        ("compression disabled", not getattr(agent, "compression_enabled", True)),
+        ("insufficient progress", bool(v._preflight_compression_blocked)),
+        ("deferred to provider usage", bool(defer_preflight(pressure))),
+        ("failure cooldown", bool(cooldown)),
+        ("no compression attempts left", max_compression_attempts - compression_attempts <= 0),
+    ) if active]
+    if not reasons:
+        return
+    logger.warning(
+        "Request ~%s tokens is %.0f%% of the %s-token context window and preflight "
+        "compression cannot run (%s); the provider will likely reject it. Start a new "
+        "session or compress manually.",
+        f"{pressure:,}", pressure / window * 100, f"{window:,}", ", ".join(reasons),
+    )
+
 
 def run_preflight_gate(
     agent: Any, *, request_pressure_tokens: Any, _moa_prepared_request: Any,
@@ -87,15 +127,21 @@ def run_preflight_gate(
             f"{_last_preflight_pressure:,}",
             f"{request_pressure_tokens:,}",
         )
+    # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
+    # estimate waits for the provider's count.
+    _defer_preflight = (
+        (lambda _t: False) if getattr(agent, "_request_pressure_anchored", False)
+        else getattr(_compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
+    )
+    _warn_if_context_exhaustion_unrecoverable(
+        agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
+        compression_attempts=compression_attempts, max_compression_attempts=max_compression_attempts,
+        defer_preflight=_defer_preflight,
+    )
     return run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
-        # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
-        # estimate waits for the provider's count.
-        defer_preflight=(
-            (lambda _t: False) if getattr(agent, "_request_pressure_anchored", False)
-            else getattr(_compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
-        ),
+        defer_preflight=_defer_preflight,
         moa_prepared_request=_moa_prepared_request, system_message=system_message,
         user_message=user_message, max_compression_attempts=max_compression_attempts,
         effective_task_id=effective_task_id,

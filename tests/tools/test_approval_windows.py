@@ -140,6 +140,27 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r'cmd /c powershell "gci C:\data | ri -r"',
         r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "gci | ri"',
         r'cd C:\x && pwsh -NoProfile "gci | Remove-Item"',
+        # A quoted script a launcher runs is code, not prose.
+        r'ssh host "gci C:\data | ri -r -fo"',
+        r'cmd /c "gci | ri -r -fo"',
+        r'iex "gci | ri -r -fo"',
+        r'echo "gci | ri -r -fo" | pwsh -',
+        r"""ssh host "pwsh -c 'gci | ri'" """,
+        # Launchers with their own options before the positional script.
+        r'xargs pwsh "gci C:\data | ri"',
+        r'doas pwsh "gci C:\data | ri"',
+        r'time pwsh "gci C:\data | ri"',
+        r'timeout 5 pwsh "gci C:\data | ri"',
+        r'nice pwsh "gci C:\data | ri"',
+        r'command pwsh "gci C:\data | ri"',
+        r'busybox pwsh "gci C:\data | ri"',
+        r'wsl pwsh "gci C:\data | ri"',
+        r'sudo -u bob pwsh "gci C:\data | ri"',
+        r'env FOO=1 pwsh "gci C:\data | ri"',
+        r'ssh -o X=1 host pwsh "gci C:\data | ri"',
+        r'ssh -p 22 host pwsh "gci C:\data | ri"',
+        # A nested quote does not end the outer script.
+        r"""powershell -NoProfile "Set-Location 'C:\work dir'; rd build -r" """,
     ])
     def test_destructive_powershell_forms_are_gated(self, cmd):
         assert _is_dangerous(cmd), cmd
@@ -166,6 +187,8 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r'pwsh -v; jq ".a | del(.b)" f.json',
         r'echo powershell "gci | ri"',
         r'git commit -m "fix: powershell \"gci | ri\" detection"',
+        'echo "gci | ri -r -fo"',
+        'echo "use ssh: gci | ri -r"',
     ])
     def test_read_only_and_lookalike_commands_stay_quiet(self, cmd):
         assert not _is_dangerous(cmd), cmd

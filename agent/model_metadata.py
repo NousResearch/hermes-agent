@@ -52,10 +52,13 @@ _TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 
 def _strip_provider_prefix(model: str) -> str:
     """Strip a registry-known provider prefix: ``"local:m"`` -> ``"m"``. Ollama ``model:tag``
-    ids are preserved even when the model half is a provider name (``qwen:0.5b``)."""
+    ids are preserved even when the model half is a provider name (``qwen:0.5b``), and so are
+    ``::``-namespaced ids (TensorZero's ``tensorzero::function::variant``), never ``provider:model``."""
     if ":" not in model or model.startswith("http"):
         return model
     prefix, suffix = model.split(":", 1)
+    if suffix.startswith(":"):
+        return model
     try:
         from providers import get_provider_profile
         is_provider = get_provider_profile(prefix.strip().lower()) is not None

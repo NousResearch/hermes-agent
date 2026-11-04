@@ -138,6 +138,46 @@ def redirect_or_steer(agent, text: str) -> str | None:
     return "steer" if steer(text) else None
 
 
+def steer_active_children(agent, text: str) -> int:
+    """Queue *text* into every live child of *agent*; returns how many accepted it.
+
+    A parent blocked inside ``delegate_task`` only drains its own steer queue after the tool
+    returns, i.e. after the child finishes, so a steer aimed at a looping child would sit unread
+    for the whole delegation (#112095, #141973). Children are the parent's own ``_active_children``
+    (identity-scoped, the same snapshot ``interrupt()`` fans out to)."""
+    children = getattr(agent, "_active_children", None)
+    if not isinstance(children, (list, tuple, set)) or not children:
+        return 0
+    lock = getattr(agent, "_active_children_lock", None)
+    try:
+        with lock if lock is not None else contextlib.nullcontext():
+            snapshot = list(children)
+    except Exception:  # health: allow BLE001 -- a foreign agent's lock; no snapshot means no fan-out, never a failed steer
+        return 0
+    accepted = 0
+    for child in snapshot:
+        steer = getattr(child, "steer", None)
+        if not callable(steer):
+            continue
+        try:
+            accepted += bool(steer(text))
+        except Exception as exc:  # health: allow BLE001 -- one child's failure must not fail the parent's accepted steer; logged
+            logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
+    return accepted
+
+
+def correct_live_turn(agent, verb: str, text: str) -> str | None:
+    """A ``steer`` / ``redirect`` from a surface into a turn it knows is live: ``"redirect"``,
+    ``"steer"`` (the steer boundary took it), or None when refused. A correction that lands on the
+    parent's steer boundary while it runs tools also goes to its live subagents, which the parent
+    cannot reach until they finish."""
+    in_tools = getattr(agent, "_executing_tools", False)
+    taken = redirect_or_steer(agent, text) if verb == "redirect" else ("steer" if agent.steer(text) else None)
+    if taken == "steer" or (taken == "redirect" and in_tools):
+        steer_active_children(agent, text)
+    return taken
+
+
 def _ic_codex_method(agent, name: str):
     """Codex app-server owns its model/tool loop; return its ``name`` hook or None."""
     if getattr(agent, "api_mode", None) != "codex_app_server":

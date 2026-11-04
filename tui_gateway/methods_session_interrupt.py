@@ -115,11 +115,12 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
     try:
-        if verb == "redirect" and session.get("running"):
-            # Between two model requests of the running turn there is nothing to cancel: the words
-            # take its steer boundary and answer like session.steer, not a refusal queued behind it.
-            from agent.interrupt_control import redirect_or_steer
-            taken = redirect_or_steer(session["agent"], text)
+        if session.get("running"):
+            # A redirect between two model requests of the running turn has nothing to cancel: the
+            # words take its steer boundary and answer like session.steer, not a refusal queued
+            # behind it. Either verb landing there also reaches the subagents the turn waits on.
+            from agent.interrupt_control import correct_live_turn
+            taken = correct_live_turn(session["agent"], verb, text)
             accepted = taken is not None
             if taken == "steer":
                 accepted_status = "queued"

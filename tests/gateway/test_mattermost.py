@@ -395,6 +395,87 @@ class TestMattermostMentionBehavior:
 
 
 # ---------------------------------------------------------------------------
+# Thread free-response (mention arms the thread)
+# ---------------------------------------------------------------------------
+
+class TestMattermostThreadFreeResponse:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter._thread_free_response = True
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, message, root_id="", post_id="post_1", channel_id="chan_456"):
+        post_data = {
+            "id": post_id,
+            "user_id": "user_123",
+            "channel_id": channel_id,
+            "message": message,
+            "root_id": root_id,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_top_level_mention_arms_its_thread(self):
+        """@mention on a top-level post arms the thread its replies form; later replies pass without mention."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("@hermes-bot what's the weather?", post_id="root_a"))
+            assert self.adapter.handle_message.call_count == 1
+            await self.adapter._handle_ws_event(self._make_event("and tomorrow?", root_id="root_a", post_id="post_b"))
+            assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_mention_inside_thread_arms_root(self):
+        """@mention in a thread reply arms the thread root for subsequent replies."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("@hermes-bot help", root_id="root_x", post_id="post_1"))
+            assert self.adapter.handle_message.call_count == 1
+            await self.adapter._handle_ws_event(self._make_event("still there?", root_id="root_x", post_id="post_2"))
+            assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_other_threads_not_armed(self):
+        """Arming one thread does not open other threads or top-level posts."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("@hermes-bot hi", root_id="root_x", post_id="post_1"))
+            self.adapter.handle_message.reset_mock()
+            await self.adapter._handle_ws_event(self._make_event("hello?", root_id="root_other", post_id="post_2"))
+            await self.adapter._handle_ws_event(self._make_event("hello?", post_id="post_3"))
+            assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default(self):
+        """With thread_free_response off (default), a reply in an armed-by-mention thread is still skipped."""
+        self.adapter._thread_free_response = False
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(self._make_event("@hermes-bot hi", post_id="root_a"))
+            assert self.adapter.handle_message.call_count == 1
+            await self.adapter._handle_ws_event(self._make_event("and tomorrow?", root_id="root_a", post_id="post_b"))
+            assert self.adapter.handle_message.call_count == 1
+
+    def test_armed_threads_lru_capped(self):
+        """The armed-thread set is bounded (LRU eviction)."""
+        from plugins.platforms.mattermost.adapter import _MAX_ARMED_THREADS
+        for i in range(_MAX_ARMED_THREADS + 10):
+            self.adapter._arm_thread(f"root_{i}")
+        assert len(self.adapter._armed_threads) == _MAX_ARMED_THREADS
+        assert "root_0" not in self.adapter._armed_threads
+        assert f"root_{_MAX_ARMED_THREADS + 9}" in self.adapter._armed_threads
+
+
+# ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------
 

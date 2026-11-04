@@ -43,6 +43,10 @@ optional_env:
     description: "Comma-separated channel IDs where @mention is not required."
     prompt: "Free-response channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_THREAD_FREE_RESPONSE
+    description: "Once @mentioned in a thread, respond to later replies in that thread without @mention (default false)."
+    prompt: "Free response in threads where the bot was mentioned? (true/false)"
+    password: false
   - name: MATTERMOST_ALLOWED_CHANNELS
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"

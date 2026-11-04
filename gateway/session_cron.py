@@ -20,12 +20,12 @@ _owners = {}
 
 
 def bind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = Path(authority.db.db_path).parent.resolve()
     _owners[home] = (os.getpid(), authority, asyncio.get_running_loop())
 
 
 def unbind_owner(authority):
-    home = Path(authority.db.db_path).resolve().parent
+    home = Path(authority.db.db_path).parent.resolve()
     bound = _owners.get(home)
     if bound is not None and bound[1] is authority:
         del _owners[home]

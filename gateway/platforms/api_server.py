@@ -3683,7 +3683,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         already persisted: the transcript's unanswered tail row is adopted from ``conversation_history``
         as THIS turn's user message instead of being appended a second time
         (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
-        if getattr(self.gateway_runner, "session_authority", None) is not None:
+        if self.platform == Platform.API_SERVER and getattr(self.gateway_runner, "session_authority", None) is not None:
             from gateway.session_api_turn import run_api_turn
             return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
                 ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,

@@ -30,10 +30,13 @@ _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
 _EFFECTIVE_CACHE: dict[tuple[str, bool, bool], tuple[Any, ...]] = {}
 
 
-def _effective(raw: dict[str, Any], *, strict_policy: bool = False) -> dict[str, Any]:
+def _effective(
+    raw: dict[str, Any], *, strict_policy: bool = False, managed_config: dict | None = None
+) -> dict[str, Any]:
     expanded = _config._expand_env_vars(raw)
     merged = managed_scope.apply_managed_overlay(
-        expanded if isinstance(expanded, dict) else {}, strict_policy=strict_policy
+        expanded if isinstance(expanded, dict) else {},
+        strict_policy=strict_policy, managed_config=managed_config
     )
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
@@ -57,6 +60,7 @@ def load_user_config_effective(
     fail_closed: bool = False,
     strict_policy: bool = False,
     side_effect_free: bool = False,
+    managed_config: dict | None = None,
 ) -> dict[str, Any]:
     """User ``config.yaml`` → ``${VAR}`` expansion → managed overlay → model-key canonicalization.
     NO ``DEFAULT_CONFIG`` merge: a key absent from the file (and from the managed layer) is absent
@@ -68,6 +72,7 @@ def load_user_config_effective(
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
     ``strict_policy=True`` separately rejects invalid managed roots and preserves explicit nulls.
+    ``managed_config`` supplies one pre-read policy snapshot and bypasses the effective cache.
     ``side_effect_free`` suppresses backup writes; ordinary backups occur only on a fresh parse.
     Cached on the user + managed file signatures and the values of every referenced env var."""
     from agent.safe_worker_policy import worker_config_snapshot
@@ -76,7 +81,7 @@ def load_user_config_effective(
     # snapshot IS the user layer (same seam load_config / read_raw_config honour).
     snapshot = worker_config_snapshot()
     if snapshot is not None:
-        return _effective(snapshot, strict_policy=strict_policy)
+        return _effective(snapshot, strict_policy=strict_policy, managed_config=managed_config)
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)
@@ -85,7 +90,7 @@ def load_user_config_effective(
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(cache_key)
         n = len(cache_sig) if cache_sig is not None else 0
-        if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
+        if managed_config is None and cached is not None and cache_sig is not None and cached[:n] == cache_sig:
             if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
                 return copy.deepcopy(cached[n])
 
@@ -112,13 +117,14 @@ def load_user_config_effective(
                     backup_config(config_path, "good")
 
         env_snapshot = _config._env_ref_snapshot(raw)
-        managed = managed_scope.load_managed_config(strict_policy=strict_policy)
+        managed = (managed_scope.load_managed_config(strict_policy=strict_policy)
+                   if managed_config is None else managed_config)
         if managed:
             _config._env_ref_snapshot(managed, env_snapshot)
-        effective = _effective(raw, strict_policy=strict_policy)
+        effective = _effective(raw, strict_policy=strict_policy, managed_config=managed)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
-        if cache_sig is not None and not recovered:
+        if cache_sig is not None and not recovered and managed_config is None:
             _EFFECTIVE_CACHE[cache_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot)
         else:
             _EFFECTIVE_CACHE.pop(cache_key, None)

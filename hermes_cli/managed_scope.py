@@ -146,7 +146,9 @@ def _parse_managed_env(path: Path) -> dict[str, str]:
     return load_env_file(path)
 
 
-def apply_managed_overlay(config: dict, *, strict_policy: bool = False) -> dict:
+def apply_managed_overlay(
+    config: dict, *, strict_policy: bool = False, managed_config: dict | None = None
+) -> dict:
     """Overlay administrator-pinned config values on top of an already-built dict.
 
     ``${VAR}`` refs in the managed config expand against the PROCESS env only, so a user cannot
@@ -156,7 +158,8 @@ def apply_managed_overlay(config: dict, *, strict_policy: bool = False) -> dict:
     strict reads raise and preserve explicit nulls. Mutates and returns ``config``.
     """
     try:
-        managed = load_managed_config(strict_policy=strict_policy)
+        managed = (load_managed_config(strict_policy=strict_policy)
+                   if managed_config is None else managed_config)
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).

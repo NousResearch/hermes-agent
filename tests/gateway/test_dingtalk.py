@@ -379,6 +379,34 @@ class TestExtractMedia:
         # Without fileName, mime defaults to octet-stream but msg_type_str=="image" still wins
         assert mtypes == ["application/octet-stream"]
 
+    @pytest.mark.asyncio
+    async def test_video_message_reaches_the_gateway_with_its_resolved_url(self):
+        """msgtype='video' carries no text; its download code must be resolved and dispatched as
+        VIDEO media instead of the whole message being skipped as empty."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        from gateway.platforms.event import MessageType
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra={"client_id": "id", "client_secret": "s"}))
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._robot_sdk = MagicMock()
+        adapter._robot_sdk.robot_message_file_download_with_options_async = AsyncMock(
+            return_value=SimpleNamespace(body=SimpleNamespace(download_url="https://dl.example/v.mp4")))
+        adapter.handle_message = AsyncMock()
+        # The shape dingtalk-stream's ChatbotMessage.from_dict gives a video: content left in extensions.
+        msg = SimpleNamespace(
+            message_id="m-video", conversation_id="cid-1", conversation_type="1", sender_id="u1",
+            sender_staff_id="s1", sender_nick="Alice", text=None, image_content=None, rich_text_content=None,
+            rich_text=None, message_type="video", robot_code="robot", session_webhook="", create_at=0,
+            is_in_at_list=False, extensions={"content": {"downloadCode": "DL-VIDEO", "videoType": "mp4", "duration": "12"}})
+
+        await adapter._on_message(msg)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.VIDEO
+        assert event.media_urls == ["https://dl.example/v.mp4"]
+        assert event.media_types == ["video/mp4"]
+
 # ---------------------------------------------------------------------------
 # Group gating — require_mention + allowed_users (parity with other platforms)
 # ---------------------------------------------------------------------------

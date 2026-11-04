@@ -244,7 +244,11 @@ class PluginHost:
         except BaseException:
             # register() may have queued host-side on_unload callbacks before raising: run them, as
             # the in-process failure path does, so the failed load leaves nothing behind in the host.
-            self._unload(plugin_key)
+            # Best effort: a failing cleanup must not replace the load error being re-raised.
+            try:
+                self._unload(plugin_key)
+            except Exception:
+                logger.warning("Plugin '%s' cleanup after a failed load failed", plugin_key, exc_info=True)
             raise
         finally:
             self._loading = None

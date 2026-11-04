@@ -1,0 +1,26 @@
+name: camel-guard
+repo: https://github.com/nativ3ai/hermes-camel-guard
+sha: e38eaa075e33de581d0ec4740c763c083cdfc359
+subdir: plugin
+title: CaMeL Guard
+description: Gate sensitive tools on trusted user capabilities after untrusted tool output.
+maintainer: nativ3ai
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "1.1.0"
+docs_url: https://github.com/nativ3ai/hermes-camel-guard/blob/e38eaa075e33de581d0ec4740c763c083cdfc359/README.md
+readme: true
+known_issues:
+  - Coarse capability authorization does not constrain individual tool arguments.
+  - Enforce blocks sensitive actions when the configured model cannot classify intent.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_end
+    - on_session_reset
+  provides_middleware: []
+  requires_env: []

@@ -398,6 +398,7 @@ from hermes_cli.subcommands.codex_runtime import build_codex_runtime_parser
 from hermes_cli.subcommands.egress import build_egress_parser
 from hermes_cli.subcommands.migrate import build_migrate_parser
 from hermes_cli.subcommands.checkpoints import build_checkpoints_parser
+from hermes_cli.subcommands.clock import build_clock_parser
 from hermes_cli.subcommands.bundles import build_bundles_parser
 from hermes_cli.subcommands.curator import build_curator_parser
 from hermes_cli.subcommands.pets import build_pets_parser
@@ -3350,6 +3351,7 @@ def _build_cli_parser():
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
     build_backup_parser(subparsers, cmd_backup=cmd_backup)
     build_checkpoints_parser(subparsers)
+    build_clock_parser(subparsers)
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_config_parser(subparsers, cmd_config=cmd_config)
     build_skin_parser(subparsers, cmd_skin=cmd_skin)

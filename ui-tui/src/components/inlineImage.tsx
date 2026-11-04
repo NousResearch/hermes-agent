@@ -16,31 +16,106 @@ import { HalfBlockImage, KittyImage } from './cellImage.js'
 // under the dashboard PTY the gateway answers with half-blocks.
 const IS_TTY = Boolean(process.stdout?.isTTY)
 
-// Renders outlive virtual-scroll remounts. kitty keeps a transmitted image
-// under its id, so each (image, size) goes over the tty once per process.
-const renders = new Map<string, Promise<ImageRenderResponse | null>>()
+// Renders outlive virtual-scroll remounts. The key carries a revision (the
+// tool call id) so a second picture at an old path is a new request; `off`
+// is never kept, so a file that appears later or a config change still shows.
+// A small LRU: kitty entries drop their transmit once written, but half-block
+// grids stay resident.
+const RENDER_CACHE_MAX = 48
+
+interface RenderEntry {
+  pending: Promise<ImageRenderResponse | null>
+  /** Set once resolved, so a remount paints on its first frame. */
+  result?: ImageRenderResponse
+}
+
+const renders = new Map<string, RenderEntry>()
+
+// kitty keeps a transmitted image under its id, so each (image, size) goes
+// over the tty once per process.
 const transmitted = new Set<string>()
 
-const requestRender = (gw: ReturnType<typeof useGateway>['gw'], path: string, cols: number) => {
-  const key = `${path}\0${cols}`
-  let pending = renders.get(key)
+const renderKey = (path: string, revision: string | undefined, cols: number) => `${path}\0${revision ?? ''}\0${cols}`
 
-  if (!pending) {
-    pending = gw
+/** A resolved render, ready to paint. */
+const usableRender = (key: string): ImageRenderResponse | null => renders.get(key)?.result ?? null
+
+const remember = (key: string, entry: RenderEntry) => {
+  renders.delete(key)
+  renders.set(key, entry)
+
+  for (const oldest of renders.keys()) {
+    if (renders.size <= RENDER_CACHE_MAX) {
+      break
+    }
+
+    renders.delete(oldest)
+  }
+}
+
+const requestRender = (
+  gw: ReturnType<typeof useGateway>['gw'],
+  write: (data: string) => boolean,
+  path: string,
+  revision: string | undefined,
+  cols: number
+) => {
+  const key = renderKey(path, revision, cols)
+  const cached = renders.get(key)
+
+  if (cached) {
+    remember(key, cached)
+
+    return cached.pending
+  }
+
+  const entry: RenderEntry = {
+    pending: gw
       .request('image.render', { cols, graphics: IS_TTY, path, rows: INLINE_IMAGE_MAX_ROWS })
       .then(res => asRpcResult<ImageRenderResponse>(res))
       .catch(() => null)
       .then(res => {
-        if (!res) {
-          renders.delete(key) // a dropped request retries on the next mount
+        if (!res || res.mode === 'off') {
+          // A dropped request or `off` retries on the next mount.
+          if (renders.get(key) === entry) {
+            renders.delete(key)
+          }
+
+          return res
         }
+
+        // Single-flight: every mount of this key shares this one write.
+        const sent = `${res.color}:${res.cols}x${res.rows}`
+
+        if (res.mode === 'kitty' && res.transmit) {
+          try {
+            if (!transmitted.has(sent)) {
+              write(res.transmit)
+              transmitted.add(sent)
+            }
+          } catch {
+            // a dead tty paints nothing either way
+          }
+
+          res = { ...res, transmit: undefined }
+        }
+
+        entry.result = res
 
         return res
       })
-    renders.set(key, pending)
   }
 
-  return pending
+  remember(key, entry)
+
+  return entry.pending
+}
+
+interface InlineImageProps {
+  cols: number
+  path: string
+  /** Tells two pictures at one path apart (the tool call id); see `Msg.imageRevision`. */
+  revision?: string
 }
 
 /**
@@ -50,38 +125,27 @@ const requestRender = (gw: ReturnType<typeof useGateway>['gw'], path: string, co
  * like text. The engine (`agent/terminal_image.py`) picks the mode from
  * `display.inline_images` and does the decode and layout.
  */
-export const InlineImage = memo(function InlineImage({ cols, path }: { cols: number; path: string }) {
+export const InlineImage = memo(function InlineImage({ cols, path, revision }: InlineImageProps) {
   const { gw } = useGateway()
   const { write } = useStdout()
-  const [image, setImage] = useState<ImageRenderResponse | null>(null)
   const budget = Math.max(1, Math.min(INLINE_IMAGE_MAX_COLS, cols))
+  const key = renderKey(path, revision, budget)
+  // Seeded from a resolved render so a virtual-scroll remount has its real height on the first frame.
+  const [image, setImage] = useState<ImageRenderResponse | null>(() => usableRender(key))
 
   useEffect(() => {
     let live = true
 
-    void requestRender(gw, path, budget).then(res => {
-      if (!live || !res) {
-        return
+    void requestRender(gw, write, path, revision, budget).then(res => {
+      if (live && res) {
+        setImage(res)
       }
-
-      const sent = `${res.color}:${res.cols}x${res.rows}`
-
-      if (res.mode === 'kitty' && res.transmit && !transmitted.has(sent)) {
-        try {
-          write(res.transmit)
-          transmitted.add(sent)
-        } catch {
-          // a dead tty paints nothing either way
-        }
-      }
-
-      setImage(res)
     })
 
     return () => {
       live = false
     }
-  }, [budget, gw, path, write])
+  }, [budget, gw, path, revision, write])
 
   if (image?.mode === 'kitty' && image.color && image.placeholder?.length) {
     return <KittyImage color={image.color} placeholder={image.placeholder} />
@@ -111,6 +175,7 @@ export const MessageImages = ({ cols, msg, spaced = false, t }: MessageImagesPro
           cols={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
           key={path}
           path={path}
+          revision={msg.imageRevision}
         />
       ))}
     </Box>

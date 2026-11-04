@@ -254,14 +254,14 @@ _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0
 # everywhere else it is a port or a path.
 _CLI_SECRET_FLAG_RE = re.compile(
     r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
-    r"|client[-_]?secret|access[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
+    r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
     r"|credential)s?)"
     r"(?P<sep>\s*=\s*|\s+)"
     r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)",
     re.IGNORECASE,
 )
 _CLI_LOGIN_P_RE = re.compile(
-    r"(?P<flag>\b(?:docker|podman|nerdctl)\s+login\b[^\n]*?\s-p\s*)"
+    r"(?P<flag>\b(?:docker|podman|nerdctl)\s+login\b[^\n;|&]*?\s-p\s*)"
     r"(?P<value>(?P<q>['\"])[^'\"]+(?P=q)|\S+)"
 )
 # Azure/SQL connection-string keys. They are ``Name=value`` inside a quoted string, so
@@ -835,10 +835,39 @@ def _mask_flag_value(match: "re.Match[str]") -> str:
         return match.group(0)
     if stripped.isdigit():
         return match.group(0)  # ``--token 60`` is a timeout, not a credential
+    if match.re is _CLI_SECRET_FLAG_RE:
+        if "=" not in match.group("sep") and _is_flag_placeholder(value):
+            return match.group(0)
+        if _is_flag_path_reference(match.group("flag"), stripped):
+            return match.group(0)
     masked = _mask_token(stripped)
     start = match.start("value") - match.start(0)
     end = match.end("value") - match.start(0)
     return match.group(0)[:start] + masked + match.group(0)[end:]
+
+
+# A space-separated flag is followed by whatever comes next, which in ``--help`` output and
+# prose is a placeholder or a word (``--token TOKEN``, ``[--password PASSWORD]``, ``use
+# --token to pass…``), the next flag (``psql --password -h db``) or a sub-option spec
+# (``docker build --secret id=npmrc``). None of those is the credential.
+# A metavar is upper case (``TOKEN``, ``DB_PASSWORD``); a prose word is short and lower case.
+# A long or mixed-case alphabetic value (``correcthorsebatterystaple``) is still masked.
+_FLAG_PLACEHOLDER_RE = re.compile(
+    r"(?:[A-Z][A-Z_]*|[a-z]{1,8})[\]).,:;]*|[-\[(<].*|[a-z][\w-]*=.*"
+)
+
+
+def _is_flag_placeholder(value: str) -> bool:
+    """True for an unquoted space-separated flag value that is a word, not a credential."""
+    return value[0] not in "'\"" and _FLAG_PLACEHOLDER_RE.fullmatch(value) is not None
+
+
+def _is_flag_path_reference(flag: str, value: str) -> bool:
+    """``--credentials ~/.config/gcloud/creds.json`` names a file, same rule as the ENV passes:
+    only password-class flags mask a path, and only while no segment looks opaque."""
+    if _PASSWORD_KEY_RE.search(flag) or not value.startswith(("/", "~", "./", "../")):
+        return False
+    return not any(_OPAQUE_PATH_SEGMENT_RE.fullmatch(seg) for seg in value.split("/"))
 
 
 def _redact_cli_secrets(text: str) -> str:

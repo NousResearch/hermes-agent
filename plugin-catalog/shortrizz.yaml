@@ -1,0 +1,37 @@
+name: shortrizz
+repo: https://github.com/mojomast/hermes-shortrizz
+sha: 4abcb7d11239a3a5121f451fc159a01d1c593bff
+version: "0.1.0"
+description: >-
+  Skill id shortrizz:shortrizz-clipper. Self-hosted AI clipper: turn a long
+  video (yt-dlp URL or local file) into captioned 9:16 shorts. Transcribes on
+  CPU with faster-whisper, picks 30-60 s moments with an LLM (or a built-in
+  heuristic), reframes with face tracking and burns in word-by-word captions
+  (Hormozi, MrBeast, Abdaal or custom styles). Writes MP4s, clips.json and an
+  HTML gallery. Renders run as background jobs; poll shortrizz_status.
+  Publishing is a dry-run plan only; nothing is uploaded. Downloads the video
+  you name with yt-dlp; the optional LLM call sends the transcript to the
+  OpenAI-compatible endpoint you configure. Needs ffmpeg on PATH. Only clip
+  content you have rights to.
+maintainer: mojomast
+tier: community
+category: tools
+title: Shortrizz
+docs_url: https://github.com/mojomast/hermes-shortrizz/blob/4abcb7d11239a3a5121f451fc159a01d1c593bff/README.md
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/styles.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/gallery.jpg
+  - https://raw.githubusercontent.com/mojomast/hermes-shortrizz/4abcb7d11239a3a5121f451fc159a01d1c593bff/docs/media/contact-sheet.jpg
+capabilities:
+  provides_tools:
+    - shortrizz_make_shorts
+    - shortrizz_status
+    - shortrizz_list_styles
+    - shortrizz_render_style
+    - shortrizz_publish_plan
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

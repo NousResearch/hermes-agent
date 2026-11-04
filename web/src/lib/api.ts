@@ -4,6 +4,7 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
+import { readBasePath } from "./api-base-path";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
@@ -48,15 +49,6 @@ import { dashboardServingProfile } from "./profile-bootstrap";
 // incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
 // ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
 // rebuild. Empty string means "served at root".
-function readBasePath(): string {
-  if (typeof window === "undefined") return "";
-  const raw = window.__HERMES_BASE_PATH__ ?? "";
-  if (!raw) return "";
-  // Normalise: ensure leading slash, strip trailing slash.
-  const withLead = raw.startsWith("/") ? raw : `/${raw}`;
-  return withLead.replace(/\/+$/, "");
-}
-
 export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
@@ -572,6 +564,14 @@ export const api = {
     fetchJSON<ManagedFileReadResponse>(
       `/api/files/read?path=${encodeURIComponent(path)}`,
     ),
+  fileDownloadUrl: async (path: string) => {
+    const { ticket } = await fetchJSON<{ ticket: string }>("/api/files/ticket", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ route: "managed_download", path }),
+    });
+    return `${BASE}/api/files/download?${new URLSearchParams({ path, ticket })}`;
+  },
   uploadFile: (path: string, file: File, overwrite = true) => {
     // Stream the raw bytes as multipart/form-data. Do NOT set Content-Type —
     // the browser adds the multipart boundary automatically. Sending the file

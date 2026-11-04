@@ -1,4 +1,4 @@
-"""Path-bound tickets for browser file URLs (``/api/fs/download``, ``/api/files/stream``).
+"""Path-bound tickets for browser managed-file, filesystem and media URLs.
 
 A download link or an ``<audio>``/``<video>`` source cannot send the session
 header, and the session token grants host shells and file access, so it must
@@ -47,7 +47,9 @@ _MAX_TICKETS = 1024
 
 #: A download reads the file where the profile's workspace is, like native Desktop's download;
 #: media plays through the managed stream route.
-ROUTES: Mapping[str, str] = {"download": "/api/fs/download", "stream": "/api/files/stream"}
+ROUTES: Mapping[str, str] = {
+    "download": "/api/fs/download", "managed_download": "/api/files/download", "stream": "/api/files/stream",
+}
 
 _Scope = tuple[str, tuple[tuple[str, str], ...]]
 
@@ -112,7 +114,7 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
     a request admitted with *session_token*, it records that browser credential's generation and
     redeems only while it is current."""
     route_path = ROUTES[route]
-    download = route == "download"
+    download = route in ("download", "managed_download")
     now = time.monotonic()
     ticket = secrets.token_urlsafe(32)
     entry = _Ticket(

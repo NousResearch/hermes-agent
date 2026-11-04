@@ -105,7 +105,7 @@ class ManagedFileDelete(BaseModel):
 
 class FileTicketRequest(BaseModel):
     """POST /api/files/ticket — the exact query the ticketed download/stream URL carries."""
-    route: Literal["download", "stream"]
+    route: Literal["download", "managed_download", "stream"]
     path: str
     profile: Optional[str] = None
     session_id: Optional[str] = None

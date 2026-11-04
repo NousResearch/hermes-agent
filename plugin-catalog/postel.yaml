@@ -1,0 +1,31 @@
+name: postel
+title: Postel
+repo: https://github.com/robinfaraj/postel-mcp
+sha: adaa9363ffbaf6b74a5a11e15f88acb0392d6406
+subdir: agent-plugin
+description: >-
+  Find posts that went viral in your niche, write your version in your own voice, and save, schedule
+  or publish it to X, LinkedIn, Bluesky and Mastodon, through Postel's hosted MCP server (Streamable
+  HTTP, OAuth 2.1), with the postel-writing workflow skill bundled. Portable Agent Plugins v1 package
+  (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to
+  Postel's server at www.postel.app; the tool set is served by that server at runtime and is not
+  covered by the pinned sha. Research (search-viral-tweets) works without signing in; every other
+  tool acts on the user's Postel account after `hermes mcp add postel --url
+  https://www.postel.app/api/mcp --auth oauth`, and a first sign-in can create a Postel account.
+  Viral posts, drafts, voice profiles and the posting schedule join the session context, so they
+  reach the user's model provider. Write tools change drafts, generate-post and refine-post spend
+  Postel AI credits, and schedule-post and publish-post post to the user's connected networks; the
+  package marks the server untrusted, so Hermes asks before every tool the server does not mark
+  read-only and blocks them in unattended runs. Hermes stores and refreshes the OAuth tokens.
+maintainer: robinfaraj
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/robinfaraj/postel-mcp/blob/adaa9363ffbaf6b74a5a11e15f88acb0392d6406/agent-plugin/README.md
+version: "1.1.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

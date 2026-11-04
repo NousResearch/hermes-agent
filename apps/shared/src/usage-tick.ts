@@ -60,8 +60,19 @@ function contextFields(p: UsageTickPayload): Partial<TickUsage> {
   // A compressor, sized or not, sets `context_source` (`tui_usage`'s keying; `_get_usage`'s `if comp`).
   const fields: Partial<TickUsage> = p.context_source == null || compressions === undefined ? {} : { compressions }
 
-  if (!used || !max) {
-    return fields
+  if (!max) {
+    // The owner's own tick always reports `context_length`; null or 0 means it cannot size the
+    // window now, so the readout is cleared instead of keeping the previous model's. A sidecar
+    // tick omits the field and changes nothing.
+    return p.context_length === undefined ? fields : { ...fields, context_max: 0 }
+  }
+
+  // The window is a reading even before anything is counted in it: `update_model` adopts the new
+  // model's window and zeroes the previous model's occupancy. Occupancy figures stay absent until
+  // there is one -- `mergeUsage`/`mergeUsageStable` drop the carried ones (`dropStaleContext`), so
+  // the bar shows the window with an unknown occupancy, never a measured `0`.
+  if (!used) {
+    return { ...fields, context_max: max }
   }
 
   const source = p.context_source || 'provider_usage'
@@ -140,16 +151,46 @@ export function usageFromTick<Nested = Usage>(
   return payload.model ? { ...derived, model: payload.model } : derived
 }
 
+/** Context figures priced by a previous window. A payload that states a `context_max` without a
+ *  measured `context_used` reports the window alone: a model switch adopts the new model's window
+ *  and zeroes the old model's occupancy (`ContextCompressor.update_model`), so the old figures are
+ *  not readings in the new window. A shallow merge would pair them, so they are dropped here and the
+ *  bar renders the occupancy as unknown (`—`) instead of as a measured zero. Anything the payload
+ *  itself carries always wins. */
+const CONTEXT_READINGS = ['context_used', 'context_percent', 'context_estimated', 'context_source'] as const
+
+type ContextPatch = {
+  context_estimated?: boolean | null
+  context_max?: null | number
+  context_percent?: null | number
+  context_source?: null | string
+  context_used?: null | number
+}
+
+export function dropStaleContext<P extends object>(next: ContextPatch, merged: P): P {
+  if (next.context_max === undefined || typeof next.context_used === 'number') {
+    return merged
+  }
+
+  for (const key of CONTEXT_READINGS) {
+    if (next[key] === undefined) {
+      delete (merged as Partial<TickUsage>)[key]
+    }
+  }
+
+  return merged
+}
+
 /** Merge a usage payload into the stored one: a partial tick keeps the fields it omits, but the plan gauge follows the latest complete payload. Both builders (`gateway/session_usage.py::tui_usage`, `tui_gateway/server.py::_get_usage`) always send `calls` and send `plan_gauge` only on a window plan, so a complete payload without it means the session is off the plan (or the allowance reset) and the old gauge goes. */
 export function mergeUsage<P extends object, N extends { calls?: number; plan_gauge?: unknown }>(
   previous: P,
   next: N | null | undefined
 ): P & Partial<N> {
-  const merged = { ...previous, ...next }
+  const merged = { ...previous, ...next } as P & Partial<N>
 
   if (next?.calls !== undefined && next.plan_gauge == null) {
     delete (merged as { plan_gauge?: unknown }).plan_gauge
   }
 
-  return merged
+  return dropStaleContext((next ?? {}) as Partial<TickUsage>, merged as Partial<TickUsage>) as P & Partial<N>
 }

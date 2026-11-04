@@ -5,6 +5,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 import type { UsageLimit } from '@hermes/shared/plan-usage'
+import { dropStaleContext } from '@hermes/shared/usage-tick'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -106,7 +107,7 @@ export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined)
     return prev
   }
 
-  const merged: Usage = { ...prev, ...patch }
+  const merged: Usage = dropStaleContext(patch as Partial<Usage>, { ...prev, ...patch })
 
   return usageChanged(prev, merged) ? merged : prev
 }
@@ -588,7 +589,7 @@ function applyUsageTick(payload: Extract<AnyGatewayEvent, { type: 'session.usage
   const usage = usageFromTick(payload) // canonical: the owner's counters at the top level
 
   if (usage) {
-    patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+    patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, usage as Partial<Usage>) }))
   }
 }
 

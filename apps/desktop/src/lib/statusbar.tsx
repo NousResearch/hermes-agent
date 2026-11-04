@@ -43,18 +43,22 @@ export function contextBar(percent: number | undefined, width = 10): string {
 
 export function usageContextLabel(usage: UsageStats): string {
   if (usage.context_max) {
-    return `${usage.context_estimated ? '~' : ''}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max)}`
+    // An unknown occupancy — a model switch adopts the new window before anything is counted in it —
+    // reads `—`, never a fabricated `0`: the fields are omitted, not zeroed (gateway/session_usage.py).
+    const used = usage.context_used == null ? '—' : compactNumber(usage.context_used)
+
+    return `${usage.context_estimated ? '~' : ''}${used}/${compactNumber(usage.context_max)}`
   }
 
   return usage.total > 0 ? `${compactNumber(usage.total)} tok` : ''
 }
 
 export function contextBarLabel(usage: UsageStats): string {
-  if (!usage.context_max) {
+  if (!usage.context_max || usage.context_percent == null) {
     return ''
   }
 
-  const pct = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
+  const pct = Math.max(0, Math.min(100, Math.round(usage.context_percent)))
 
   return `[${contextBar(usage.context_percent)}] ${usage.context_estimated ? '~' : ''}${pct}%`
 }

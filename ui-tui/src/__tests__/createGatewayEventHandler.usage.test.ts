@@ -91,4 +91,22 @@ describe('canonical session.usage tick', () => {
     expect(usageFromTick({ input_tokens: 0, prompt_tokens: 1000 })).toEqual({ input: 1000, prompt: 1000 })
     expect(usageFromTick({ model: 'only-a-model' })).toBeUndefined()
   })
+
+  it('sizes a window a model switch adopted before anything is counted in it', () => {
+    // `ContextCompressor.update_model` adopts the new model's window and zeroes the previous
+    // model's occupancy, so the tick carries the window alone: the occupancy is unknown, not a
+    // measured zero, and the bar renders `—` rather than inventing a count.
+    expect(
+      usageFromTick({ context_length: 200000, last_prompt_tokens: 0, context_source: 'provider_usage' })
+    ).toEqual({ context_max: 200000 })
+  })
+
+  it('clears the readout when the owner cannot size the window at all', () => {
+    // A switch to a route that reports no window publishes `context_length: null`; leaving the
+    // previous model's window and percentage up is exactly the staleness this guards against.
+    expect(usageFromTick({ context_length: null, last_prompt_tokens: 0, model: 'switched' })).toEqual({
+      context_max: 0,
+      model: 'switched'
+    })
+  })
 })

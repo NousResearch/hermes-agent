@@ -22,7 +22,15 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
   const copy = t.shell.statusbar.contextUsagePanel
   const contextMax = usage.context_max ?? 0
   const contextUsed = usage.context_used ?? 0
-  const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
+
+  // A window with no occupancy reading yet (a model switch adopts the new window and zeroes the old
+  // model's count) reads `—`: `gateway/session_usage.py::tui_usage` leaves the field out instead of
+  // sending a measured zero, and the popover must not turn that into one.
+  const contextUsedLabel =
+    usage.context_used == null ? '—' : `${usage.context_estimated ? '~' : ''}${compactNumber(usage.context_used)}`
+
+  const contextPercent =
+    usage.context_percent == null ? null : Math.max(0, Math.min(100, Math.round(usage.context_percent)))
 
   const categories = useMemo(
     () =>
@@ -41,17 +49,14 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
         <p className="font-medium text-foreground">{copy.title}</p>
 
         <span className="text-[0.6875rem] text-muted-foreground">
-          {copy.tokenSummary(
-            `${usage.context_estimated ? '~' : ''}${compactNumber(contextUsed)}`,
-            compactNumber(contextMax)
-          )}
+          {copy.tokenSummary(contextUsedLabel, compactNumber(contextMax))}
         </span>
       </div>
 
       <p className="flex items-center justify-between gap-2 text-[0.6875rem] text-foreground">
         <span>
           {usage.context_estimated ? '~' : ''}
-          {copy.percentFull(contextPercent)}
+          {contextPercent === null ? '—' : copy.percentFull(contextPercent)}
         </span>
 
         {usage.compressions !== undefined && (

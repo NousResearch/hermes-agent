@@ -327,6 +327,19 @@ async def _project_result(authority, ref, live, params, result, editor_servers, 
                 logger.warning('Session %s moved without dropping its terminal environment', ref.session_id,
                                exc_info=True)
         _project_committed(authority, ref, operation, result)
+        if operation == 'model' and live is not None:
+            # The pick evicted the cached agent, so the ``session.info`` above could not repaint the
+            # window: publish it on its own frame, immediately (a 1M -> 500k switch must not wait for
+            # the next turn's first tick). Clear the old window if resolution fails or times out.
+            from gateway.session_usage import publish_switch_usage
+            from gateway.session_mutation_model import committed_context_length
+            window = None
+            try:
+                window = await asyncio.wait_for(committed_context_length(authority, live), timeout=2.0)
+            except Exception:  # health: allow BLE001 -- a failed resolve must not undo the switch
+                logger.warning('Session %s switched without a resolvable context window', ref.session_id,
+                               exc_info=True)
+            publish_switch_usage(authority, ref.session_id, live, window)
     if live is not None:
         if operation == 'rewind' and owns_projection:
             authority.runner._evict_cached_agent(live.route)

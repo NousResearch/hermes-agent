@@ -325,6 +325,7 @@ class SessionUsagePayload(Payload):
     ``usage``, or ``session.stats`` for the raw counters. The embedded ticker never sends them."""
 
     usage: Usage | None = None
+    context_reset: bool | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None

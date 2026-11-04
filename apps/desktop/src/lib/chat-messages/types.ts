@@ -84,6 +84,7 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  context_reset?: boolean
   /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
    * its local receipt clock when older gateways omit it. */
   timestamp?: number

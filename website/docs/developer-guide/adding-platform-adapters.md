@@ -889,3 +889,97 @@ async def disconnect(self):
 | `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
 | `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
 | `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |
+
+## Durable native event metadata
+
+Ordinary native messages cross a durable admission boundary. Arbitrary `raw_message`
+objects, callbacks, and dynamically attached event attributes do not survive that
+boundary. Keep durable adapter context in `MessageEvent.metadata` only when the
+adapter explicitly implements the synchronous, pure method:
+
+```python
+def validate_native_metadata(self, event: MessageEvent) -> bool:
+    # Check an exact schema and bind every journal reference to this adapter's
+    # current identity, event.source, message_id, and durable journal state.
+    return self.journal.matches_event(event)
+```
+
+The default is refusal of nonempty custom metadata. An opt-in returns exactly
+`True`; exceptions and other results refuse the event. The gateway invokes the
+validator on the source-owning adapter in its bound transport profile, after
+restoring connector provenance. This does not replace gateway sender authorization.
+Validation uses the profile's existing secret snapshot without hydrating external
+secret providers; the synchronous validator must not perform network I/O.
+The existing built-in WhatsApp metadata contract remains separate and unchanged.
+
+Custom metadata must be a JSON object with top-level keys prefixed by the platform
+name plus `_` (for example, `example_journal_ref`). Values may contain only JSON
+scalars, lists, and objects with string keys; numbers must be finite. The object is
+limited to 16 KiB of UTF-8 JSON, nesting depth 8 (root depth 0), and 1,024 nodes,
+including object keys. Reserved gateway metadata cannot be smuggled in as a
+top-level key. Namespaced data never grants authorization or becomes a gateway
+control field.
+
+The validator receives an isolated event copy with `raw_message=None` and only
+declared source fields (no process-local transport references or callbacks).
+Mutations cannot rewrite the admitted event. It may run repeatedly at admission, preflight,
+and restoration immediately before execution. It must not send, mutate journal
+state, install callbacks, or rely on a call happening exactly once. Refuse stale,
+closed, mismatched, or uncertain journal references instead of resurrecting work.
+
+Validated metadata survives serialization and restoration, but the validator does
+**not** restore adapter lifecycle callbacks or raw SDK objects. An adapter that
+needs process-local ownership or routing context on the actual executing event
+may additionally implement `native_execution_scope(event)`, an asynchronous
+context manager:
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def native_execution_scope(self, event: MessageEvent):
+    # Validate current ownership; bind only live, adapter-owned references.
+    # Set and finally reset any ContextVars used during this execution.
+    yield
+```
+
+A missing hook is a no-op; no base-class override is required. Plugins supporting
+older hosts can detect this capability by importing
+`gateway.session_adapter_execution.execute_native_handler` (do not detect the
+plugin's own hook method). The gateway enters this scope on the source-owning adapter,
+inside the authority's bound execution profile, immediately around the restored
+native handler. It does not run for API or automation admissions. Authorization,
+connector provenance, and metadata validation still precede the hook; provenance
+and metadata are checked again after its asynchronous entry. Entry may attach
+process-local references or derived raw data, but must not replace the source or
+rewrite declared persisted event data (text, metadata, media, or reply context).
+
+The scope may refuse stale journal ownership by raising. It must reset its context
+in `finally`; handler exceptions and cancellation propagate even if its exit tries
+to suppress them. It is not a success/delivery callback: the handler may return
+without starting a model, and final delivery may happen later. Adapter delivery
+methods must bind their own event-owned route. Existing processing-start and
+processing-complete callbacks are not called a second time by this scope.
+For adapters opting into this scope, the gateway owns completion after the actual
+delivery: a live waiter completes its original inbound event, while a recovered
+turn with no waiter completes its restored event. A late receipt-only observer
+never completes that same turn again. Do not register an additional recovered
+completion callback in the session's post-delivery slot. A real waiter handoff
+exposes its restored event as `original._native_execution_event`; process-local
+ownership must not be inferred from a missing original event. Existing producer
+lifecycles and complete-only adapters keep their own cleanup behavior.
+
+A shared-FIFO busy waiter reports `on_processing_complete` only for an actual
+opted-in native admission on an adapter overriding `on_processing_start`, preserving
+the existing queued-follow-up eligibility rule. Approval, steering, and plugin-handled
+inputs that bypass native admission do not acquire a new completion callback.
+It uses the original inbound event after delivery, not the restored execution copy. Success requires a
+completed admission and successful delivery (or a legitimately empty completed
+reply). A pause notice for input still queued or uncertain is not completion.
+This path does not take another turn's session-key post-delivery callback.
+
+On restart, never reconstruct an uncertain worker's ownership merely because its
+original in-memory event is absent. A durable journal must prove whether replay
+is allowed; this hook does not provide worker-exit evidence or permit resending an
+uncertain delivery. Lifecycle-specific adapters should test real admission,
+restoration, cancellation, and no-waiter delivery before adopting the extension.

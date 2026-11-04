@@ -1761,3 +1761,17 @@ class TestGoogleChatStandaloneSend:
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
 
+
+@pytest.mark.asyncio
+async def test_busy_completion_does_not_reap_another_turns_typing_card(adapter):
+    from gateway.session_ingress import _complete_shared_busy
+    adapter._typing_messages['spaces/S'] = 'spaces/S/messages/OTHER_TURN'
+    adapter._patch_message = AsyncMock()
+    event = MessageEvent(text='busy follow-up', message_id='next', source=adapter.build_source(
+        chat_id='spaces/S', user_id='sender', chat_type='dm'))
+    event._shared_busy_admission = ('terminal', 'completed')
+    event._native_completion_owner = True
+    await _complete_shared_busy(adapter, event, ProcessingOutcome.SUCCESS)
+    assert adapter._typing_messages['spaces/S'] == 'spaces/S/messages/OTHER_TURN'
+    adapter._patch_message.assert_not_awaited()
+

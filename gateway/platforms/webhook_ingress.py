@@ -219,7 +219,7 @@ async def _prepared(authority, event):
     """``(validated payload, principal)`` of this delivery. Preparing the payload runs the same
     authorization as admission, so a refused sender raises here."""
     import json
-    from gateway.session_envelope import prepare_native, restore_native
+    from gateway.session_envelope import prepare_native, restore_native_source
     from gateway.session_ingress_media import abandon_capture, capture_lease
     with capture_lease(authority) as scope:
         try:
@@ -227,7 +227,7 @@ async def _prepared(authority, event):
         except BaseException:
             await abandon_capture(scope)
             raise
-    source = restore_native(payload).source
+    source = restore_native_source(payload, authority.runner)
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                            source.thread_id, source.user_id], separators=(',', ':'))
     return payload, 'messaging:' + identity

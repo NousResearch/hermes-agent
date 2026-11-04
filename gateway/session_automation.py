@@ -471,7 +471,7 @@ def snapshot_automation(authority, adapter, event, identity):
     from gateway.session_detached import detached_route_of
     if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
-    from gateway.session_envelope import restore_native
+    from gateway.session_envelope import restore_native_source
     owner = authority.logical_owner(entry.session_id)
     envelope = committed_route_envelope(authority, entry)
     if envelope is None:
@@ -479,20 +479,19 @@ def snapshot_automation(authority, adapter, event, identity):
     # Persisted origins deliberately omit relay trust. Borrow only an exact
     # committed source's private proof, revalidated against the live connector.
     # Recheck only the source/provenance: a completed input's retained media is already released.
-    restored = restore_native({'text': event.text, 'native_text_v1': {
-        key: value for key, value in envelope.items() if key != 'media'}}, runner)
+    restored_source = restore_native_source({'native_text_v1': envelope}, runner)
     # The wake runs as the committed human source; the producer's source, rebuilt from the route's
     # stored origin, only names the route. Its labels, first speaker and stored profile drift from
     # the latest committed turn, so compare the route both resolve to now (``_owner`` checked it).
-    if (runner.session_store._generate_session_key(restored.source) != entry.session_key
-            or runner._adapter_for_source(restored.source) is not adapter):
+    if (runner.session_store._generate_session_key(restored_source) != entry.session_key
+            or runner._adapter_for_source(restored_source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
     provenance = deepcopy(envelope['provenance'])
     source = deepcopy(envelope['source'])
     # Never anchor the wake to the stale human message; ``to_dict`` already omits a null anchor.
     source.pop('message_id', None)
     if 'relay' in provenance:
-        # The relay seal binds the source; restore_native verified it over the anchored source.
+        # The relay seal binds the source; restore_native_source verified it over the anchored source.
         from gateway.session_ingress_context import reseal_relay
         provenance = reseal_relay(adapter, source, provenance)
     # Producer timestamps and platform reply IDs change on retry. Neither belongs
@@ -849,14 +848,13 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
                                                             **(metadata or {})})
         await authority.admit_automation(adapter, event, identity)
         return True
-    from gateway.session_envelope import restore_native
+    from gateway.session_envelope import restore_native_source
     envelope = committed_route_envelope(authority, entry)
     if envelope is None:
         return False
     # The route's committed source, which ``snapshot_automation`` re-derives and compares.
-    restored = restore_native({'text': text, 'native_text_v1': {
-        k: v for k, v in envelope.items() if k != 'media'}}, runner)
-    event = MessageEvent(text=text, message_type=MessageType.TEXT, source=restored.source, internal=True,
+    restored_source = restore_native_source({'native_text_v1': envelope}, runner)
+    event = MessageEvent(text=text, message_type=MessageType.TEXT, source=restored_source, internal=True,
                          message_id=identity, metadata={'gateway_session_key': key,
                                                         'gateway_session_id': entry.session_id,
                                                         **(metadata or {})})

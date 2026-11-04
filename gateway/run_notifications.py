@@ -910,7 +910,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         route to borrow the primary relay by otherwise finds no adapter after a restart."""
         from gateway.session_authorities import active_authority
         from gateway.session_automation import committed_route_envelope
-        from gateway.session_envelope import restore_native
+        from gateway.session_envelope import restore_native_source
         from hermes_state_runtime import RuntimeStoreError
         authority = active_authority(self)
         if authority is None:
@@ -921,11 +921,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return None
         # The seal is rechecked against the live connector, as ``snapshot_automation`` does.
         try:
-            restored = restore_native({'text': '', 'native_text_v1': {
-                key: value for key, value in envelope.items() if key != 'media'}}, self)
+            restored_source = restore_native_source({'native_text_v1': envelope}, self)
         except RuntimeStoreError:
             return None
-        return self._adapter_for_source(restored.source)
+        return self._adapter_for_source(restored_source)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict, *, raise_not_accepted: bool = False,

@@ -14,6 +14,7 @@ import os
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.session_adapter_metadata import project_adapter_metadata, validate_adapter_metadata
 from gateway.session_ingress_media import capture_native_media, restore_native_media
 from hermes_state_runtime import RuntimeStoreError
 
@@ -41,10 +42,13 @@ def _native_metadata(event):
     """JSON projection of the adapter metadata a native replay keeps; ``None`` refuses the event.
     An oversized ``whatsapp_native`` (vCards with photos) is dropped, never refused."""
     metadata = event.metadata
+    if type(metadata) is not dict:
+        return None
     if not metadata:
         return {}
-    if (not isinstance(metadata, dict) or event.source.platform.value != 'whatsapp'
-            or not set(metadata) <= _WHATSAPP_METADATA):
+    if event.source.platform.value != 'whatsapp':
+        return project_adapter_metadata(event)
+    if not set(metadata) <= _WHATSAPP_METADATA:
         return None
     kind, native = metadata.get('whatsapp_native_type'), metadata.get('whatsapp_native')
     if (kind is not None and not (isinstance(kind, str) and 0 < len(kind) <= 64)
@@ -65,6 +69,9 @@ def _native_metadata(event):
 def _adapter_event(event, **changes):
     """An adapter's event at the envelope boundary: an absent media list (``None``) is no media.
     Any other non-list still reaches ``_validate_native`` and refuses."""
+    if event.source is not None and _native_metadata(event) is None:
+        _refuse(event, 'invalid_params', 'metadata')
+    changes['metadata'] = deepcopy(event.metadata)
     changes.update({name: [] for name in _MEDIA_FIELDS if getattr(event, name) is None})
     return _drop_remote_media(replace(event, **changes) if changes else event)
 
@@ -184,7 +191,20 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
     adapter = runner._adapter_for_source(source)
     if adapter is None or runner._adapter_for_source(restored_source) is not adapter:
         _refuse(event, 'not_found', 'adapter' if adapter is None else 'adapter_mismatch')
+    _validate_adapter_metadata(runner, event, provenance)
     return encoded_source
+
+
+def _validate_adapter_metadata(runner, event, provenance):
+    if event.source.platform.value != 'whatsapp':
+        if _native_metadata(event) is None:
+            _refuse(event, 'invalid_params', 'metadata')
+        if not event.metadata:
+            return
+        if runner is None or runner._adapter_for_source(event.source) is None:
+            _refuse(event, 'not_found', 'adapter')
+        if not validate_adapter_metadata(runner, event, provenance):
+            _refuse(event, 'invalid_params', 'metadata')
 
 
 def snapshot_native(runner, event):
@@ -314,6 +334,9 @@ def restore_native(payload, runner=None):
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
+    if 'automation' not in envelope:
+        from gateway.session_ingress_context import callback_runner
+        _validate_adapter_metadata(runner or callback_runner(), event, envelope.get('provenance'))
     if 'automation' in envelope:
         event.internal = True
         if envelope['automation'].get('heartbeat'):

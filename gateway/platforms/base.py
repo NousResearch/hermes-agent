@@ -3438,13 +3438,8 @@ class BasePlatformAdapter(ABC):
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
-        hook = getattr(self, hook_name, None)
-        if not callable(hook):
-            return
-        try:
-            await hook(*args, **kwargs)
-        except Exception as e:
-            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+        from gateway.platforms.base_post_delivery import run_processing_hook
+        await run_processing_hook(self, hook_name, *args, **kwargs)
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:

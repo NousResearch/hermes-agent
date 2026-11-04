@@ -1,0 +1,15 @@
+name: muse-code-exec
+repo: https://github.com/pstarkgit/hermes-muse-code-exec
+sha: b5398681b1fa594d9e39bbdf97afea703d45ded9
+description: Muse Spark in Hermes billed to the Muse Code subscription via the attested CLI, with native Hermes tools over MCP.
+maintainer: pstarkgit
+tier: community
+category: models
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/pstarkgit/hermes-muse-code-exec
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

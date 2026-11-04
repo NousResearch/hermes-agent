@@ -16,7 +16,7 @@ _QUESTION_KEYS = ("qid", "question", "choices", "multi_select")
 def ask_clarify_batch(turn, questions) -> dict:
     from gateway.session_server_requests import ask_viewer_result
     from tools.clarify_gateway import get_clarify_timeout
-    authority, session_id, _generation = turn._approval_owner
+    authority, session_id, generation = turn._approval_owner
     live = authority.sessions.get(session_id)
     agent = (getattr(turn._ctx, "agent_holder", None) or [None])[0]
     interrupted = (lambda: bool(getattr(agent, "_interrupt_requested", False))) if agent is not None else (
@@ -28,7 +28,8 @@ def ask_clarify_batch(turn, questions) -> dict:
     # ``qids``: the viewer's batch panel locks each answer with ``clarify.lock`` (#140400).
     result = ask_viewer_result(live.event_stream, session_id, "clarify", {"questions": wire},
                                cancelled=interrupted, timeout=timeout if timeout > 0 else None,
-                               qids=[entry["qid"] for entry in questions])
+                               qids=[entry["qid"] for entry in questions],
+                               authority_epoch=getattr(authority, "epoch", None), execution_generation=generation)
     if result is None:
         return {"answers": {}, "outcome": "cancelled" if interrupted() else "timed_out"}
     answers = result.get("answers")

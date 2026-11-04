@@ -9,7 +9,7 @@ from pydantic import RootModel
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
-from .sessions import TodoState
+from .sessions import OpenRequestEntry, TodoState
 from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
@@ -138,6 +138,7 @@ class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    messages_omitted: bool | None = None
     # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
     display_messages: list[TranscriptMessage] | None = None
     message_count: int
@@ -150,6 +151,8 @@ class CanonicalSnapshot(Result):
     execution_generation: int
     pending: list[CanonicalPendingAdmission]
     prompts: list[CanonicalPendingPrompt]
+    # Live server→client requests for this exact authority stream; batch params carry accepted locks.
+    open_requests: list[OpenRequestEntry] | None = None
     info: CanonicalSnapshotInfo
     # The open ``manage_connections`` card, so a resume restores it while the tool waits.
     pending_connection: ConnectionRequestPayload | None = None

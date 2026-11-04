@@ -226,6 +226,8 @@ class AuthorityConnection:
         handlers['message.react'] = partial(react, self)
         from gateway.session_clarify_lock import clarify_lock
         handlers['clarify.lock'] = partial(clarify_lock, self)
+        from gateway.session_clarify_reconcile import clarify_reconcile
+        handlers['clarify.reconcile'] = partial(clarify_reconcile, self)
         from gateway.session_connections import handlers as connection_handlers
         handlers.update(connection_handlers(self))
         from gateway.session_control_actions import control
@@ -498,7 +500,9 @@ class AuthorityConnection:
         from gateway.session_skin import resolved_skin
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
-                'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
+                'capabilities': ['durable-admission-v1', 'metadata-resume-v1', 'event-replay-v1',
+                                 'batch-clarify-reconnect-v1', 'local-cli-create-v1',
+                                 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -614,6 +618,10 @@ class AuthorityConnection:
             # whose earlier open found it busy (Desktop's warm `session.activate` resumes on one connection).
             from gateway.session_policy_refresh import refresh_resumed_policy
             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
+        # Admission-only mounts never return transcript payloads. Their live batch-clarify requests are
+        # replayed separately under batch-clarify-reconnect-v1, with no transcript or scalar-request params.
+        omit = params.get('omit_messages') is True
+        metadata_only = omit and params.get('defer_history') is True
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         self._spawn_notice(ref)
@@ -626,26 +634,34 @@ class AuthorityConnection:
             await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         from gateway.session_connections import pending_connection
+        from gateway.session_server_requests import open_requests
         # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
         from tui_gateway.tool_progress import _todo_state_from_history
         history, display = list(snapshot.history), {}
-        if params.get('display_projection'):
+        if params.get('display_projection') and not metadata_only:
             # A micro-compaction merge stays in ``messages`` (an undo target); its originals are what shows.
             display['display_messages'] = display_projection(
                 [row for row in history if not model_only(row)], self.authority.profile_id)
+        if omit:
+            # Recheck deletion after attach, then withhold every transcript-derived field requested by
+            # the caller. Ordinary omit retains the todo projection; admission-only mode does not.
+            transcript = await asyncio.to_thread(self.authority.unless_deleted, ref, lambda: {
+                'messages': [], 'messages_omitted': True, 'message_count': len(history),
+                'todo_state': None if metadata_only else _todo_state_from_history(history)})
+        else:
+            transcript = {'messages': history, 'message_count': len(history),
+                          'todo_state': _todo_state_from_history(history)}
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': history, **display, 'message_count': len(history),
+                **transcript, **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,
-                'pending': [asdict(r) for r in snapshot.pending],
-                'prompts': list(snapshot.prompts), 'info': info,
-                'pending_connection': pending_connection(self.authority, ref.session_id),
-                # The newest todo result in the transcript, the snapshot the session's agent hydrates
-                # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
-                'todo_state': _todo_state_from_history(history)}
+                'pending': [] if metadata_only else [asdict(r) for r in snapshot.pending],
+                'prompts': [] if metadata_only else list(snapshot.prompts), 'info': info,
+                'open_requests': open_requests(self.authority.sessions[ref.session_id].event_stream, ref.session_id),
+                'pending_connection': None if metadata_only else pending_connection(self.authority, ref.session_id)}
 
     def _spawn_notice(self, ref):
         """Low-disk auto-prune question for this viewer, off the resume reply's path."""

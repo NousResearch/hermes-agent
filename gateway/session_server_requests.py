@@ -12,6 +12,7 @@ viewer's response frame.
 from __future__ import annotations
 
 import contextlib
+from collections import OrderedDict
 import threading
 import uuid
 
@@ -21,25 +22,63 @@ REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25
 
 
-class _Pending:
-    __slots__ = ("event", "events", "locked", "method", "qids", "result", "session_id", "value")
+class RequestIdentityMismatch(Exception):
+    """A fenced caller named a different authority epoch or execution generation."""
 
-    def __init__(self, session_id, qids=None, events=None, method=None):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _check_fences(pending, authority_epoch, execution_generation):
+    if authority_epoch is not None and pending.authority_epoch != authority_epoch:
+        raise RequestIdentityMismatch('stale_epoch')
+    if execution_generation is not None and pending.execution_generation != execution_generation:
+        raise RequestIdentityMismatch('stale_generation')
+
+
+class _Pending:
+    __slots__ = ("authority_epoch", "event", "events", "execution_generation", "locked", "method", "params",
+                 "qids", "result", "session_id", "value")
+
+    def __init__(self, session_id, qids=None, events=None, method=None, params=None,
+                 authority_epoch=None, execution_generation=None):
         self.event = threading.Event()
         self.session_id = session_id
         self.method = method
         # The live session's own event stream the request went out on: one per authority (profile) and
         # session mount, so a viewer of another profile's same-named session can never settle it.
         self.events = events
+        self.params = dict(params or {})
+        self.authority_epoch = authority_epoch
+        self.execution_generation = execution_generation
         self.value = ""
         self.result = None
         # A batch clarify: its question ids and the answers ``clarify.lock`` has locked so far.
         self.qids = tuple(qids) if qids else None
         self.locked = {}
 
+    def snapshot(self, request_id):
+        """Reconnect frame with only locks already accepted by this authority."""
+        params = {"session_id": self.session_id, **self.params, "answers": dict(self.locked)}
+        return {"id": request_id, "method": self.method, "params": params}
+
 
 _lock = threading.Lock()
 _open: dict[str, _Pending] = {}
+_settled: OrderedDict[str, _Pending] = OrderedDict()
+_SETTLED_LIMIT = 128
+
+
+def _settle(request_id, pending, result):
+    """Commit one outcome and retain only batch receipts, bounded and under the registry lock."""
+    _open.pop(request_id, None)
+    pending.result = result
+    if pending.qids is not None:
+        _settled[request_id] = pending
+        _settled.move_to_end(request_id)
+        while len(_settled) > _SETTLED_LIMIT:
+            _settled.popitem(last=False)
 
 
 def owned_by(authority, session_id, events) -> bool:
@@ -80,15 +119,13 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id, pending.events):
             return False
-        _open.pop(frame["id"], None)
-        locked = dict(pending.locked) if pending.qids is not None else None
-    result = frame.get("result") if "error" not in frame else None
-    if locked is not None:
-        # One rule with main's sidecar registry: the frame's answers over the locks, or a cancel-all.
-        result = settle_batch(locked, result)
-    value = result.get("value") if isinstance(result, dict) else ""
-    pending.value = value if isinstance(value, str) else ""
-    pending.result = result if isinstance(result, dict) else None
+        result = frame.get("result") if "error" not in frame else None
+        if pending.qids is not None:
+            # One rule with main's sidecar registry: the frame's answers over the locks, or a cancel-all.
+            result = settle_batch(dict(pending.locked), result)
+        value = result.get("value") if isinstance(result, dict) else ""
+        pending.value = value if isinstance(value, str) else ""
+        _settle(frame["id"], pending, result if isinstance(result, dict) else None)
     pending.event.set()
     return True
 
@@ -101,12 +138,13 @@ def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, t
 
 
 def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S,
-                      qids=None):
+                      qids=None, authority_epoch=None, execution_generation=None):
     """The same round trip for a structured answer (``clarify``: ``ClarifyResult``): the viewer's
     ``result`` dict, or None on interrupt, timeout, an error response or no attached viewer.
     ``qids`` makes it a batch, which always ends with ``{answers: <locked so far>, outcome}`` once
     asked: ``lock_answer`` (the ``clarify.lock`` verb) answers it per question."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, qids=qids)
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, qids=qids,
+                   authority_epoch=authority_epoch, execution_generation=execution_generation)
     return pending.result if pending is not None else None
 
 
@@ -116,19 +154,30 @@ def waiting(events, session_id, method) -> bool:
         return any(p.session_id == session_id and p.events is events and p.method == method for p in _open.values())
 
 
-def withdraw(events, session_id, method) -> int:
-    """Settle every open *method* request on this live session's stream with no answer, the way a
-    viewer that answered would: the asker reads None and every renderer gets ``request.cancel
-    reason: resolved``."""
+def open_requests(events, session_id) -> list[dict]:
+    """Live batch requests for this exact authority stream, including confirmed locks."""
     with _lock:
-        settled = [_open.pop(rid) for rid, p in list(_open.items())
-                   if p.session_id == session_id and p.events is events and p.method == method]
+        return [pending.snapshot(request_id) for request_id, pending in _open.items()
+                if pending.session_id == session_id and pending.events is events and pending.qids is not None]
+
+
+def withdraw(events, session_id, method) -> int:
+    """Settle every open *method* request on this stream: no answer for scalar requests, a
+    ``cancelled`` result retaining locks for batches, and ``request.cancel reason: resolved``."""
+    with _lock:
+        settled = []
+        for request_id, pending in list(_open.items()):
+            if pending.session_id == session_id and pending.events is events and pending.method == method:
+                result = settle_batch(dict(pending.locked), ended="cancelled") if pending.qids is not None else None
+                _settle(request_id, pending, result)
+                settled.append(pending)
     for pending in settled:
         pending.event.set()
     return len(settled)
 
 
-def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id, events: False):
+def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id, events: False,
+                authority_epoch=None, execution_generation=None):
     """Lock one answer of an open batch request (``clarify.lock``; editable until the last lock;
     ``None`` = skipped). Returns the question ids still unanswered; the lock that empties it settles
     the request with ``{answers, outcome: submitted}``. ``None`` when no open batch has that id or the
@@ -138,23 +187,51 @@ def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id
         pending = _open.get(request_id)
         if pending is None or pending.qids is None or not session_ok(pending.session_id, pending.events):
             return None
+        _check_fences(pending, authority_epoch, execution_generation)
         if question_id not in pending.qids:
             raise ValueError(question_id)
         pending.locked[question_id] = answer
         remaining = [qid for qid in pending.qids if qid not in pending.locked]
         if not remaining:
-            _open.pop(request_id, None)
-            pending.result = settle_batch(pending.locked, ended="submitted")
+            _settle(request_id, pending, settle_batch(dict(pending.locked), ended="submitted"))
     if not remaining:
         pending.event.set()
     return remaining
 
 
-def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
+def reconcile(request_id, *, session_ok=lambda session_id, events: False,
+              authority_epoch=None, execution_generation=None):
+    """Read one open batch or its retained decision; never lock, settle or replay anything."""
+    with _lock:
+        pending = _open.get(request_id)
+        if pending is not None:
+            if pending.qids is None or not session_ok(pending.session_id, pending.events):
+                return {"status": "expired", "request_id": request_id}
+            _check_fences(pending, authority_epoch, execution_generation)
+            return {"status": "open", "request_id": request_id,
+                    "authority_epoch": pending.authority_epoch,
+                    "execution_generation": pending.execution_generation,
+                    "answers": dict(pending.locked),
+                    "remaining": [qid for qid in pending.qids if qid not in pending.locked]}
+        pending = _settled.get(request_id)
+        if pending is None or not session_ok(pending.session_id, pending.events):
+            return {"status": "expired", "request_id": request_id}
+        _check_fences(pending, authority_epoch, execution_generation)
+        result = pending.result or {}
+        outcome = result.get("outcome")
+        return {"status": outcome if outcome in {"submitted", "cancelled", "timed_out"} else "cancelled",
+                "request_id": request_id,
+                "authority_epoch": pending.authority_epoch,
+                "execution_generation": pending.execution_generation,
+                "answers": dict(result.get("answers") or {}), "remaining": None}
+
+
+def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None,
+         authority_epoch=None, execution_generation=None):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids, events, method)
+    pending = _Pending(session_id, qids, events, method, params, authority_epoch, execution_generation)
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
@@ -169,12 +246,14 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
         if timeout is not None and waited >= timeout:
             break
     with _lock:
-        still_open = _open.pop(request_id, None) is pending
-        if still_open and pending.qids is not None:
+        still_open = _open.get(request_id) is pending
+        if still_open:
             # A batch keeps every answer locked before the wait ended (main's sidecar: "locked
             # answers survive a timeout"); sudo/secret have no question ids and stay unanswered.
-            pending.result = settle_batch(pending.locked,
-                                          ended="cancelled" if reason == "interrupted" else "timed_out")
+            result = (settle_batch(dict(pending.locked),
+                                   ended="cancelled" if reason == "interrupted" else "timed_out")
+                      if pending.qids is not None else None)
+            _settle(request_id, pending, result)
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.

@@ -13,7 +13,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 async def clarify_lock(connection, ref, params):
-    from gateway.session_server_requests import lock_answer, may_settle
+    from gateway.session_server_requests import RequestIdentityMismatch, lock_answer, may_settle
     # The dispatcher already refused unknown keys and mistyped fields against the declared
     # ``ClarifyLockParams`` (``tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.
@@ -29,7 +29,11 @@ async def clarify_lock(connection, ref, params):
         # The same rule the closing response frame for this request id goes through.
         return may_settle(authority, actor, session_id, events)
     try:
-        remaining = lock_answer(request_id, question_id, answer, session_ok=entitled)
+        remaining = lock_answer(request_id, question_id, answer, session_ok=entitled,
+                                authority_epoch=params.get('authority_epoch'),
+                                execution_generation=params.get('execution_generation'))
+    except RequestIdentityMismatch as exc:
+        raise RuntimeStoreError(exc.reason) from None
     except ValueError:
         raise RuntimeStoreError('invalid_params') from None
     if remaining is None:

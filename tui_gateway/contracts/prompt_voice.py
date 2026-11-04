@@ -259,6 +259,8 @@ class ClarifyLockParams(Params):
     question_id: str
     answer: JsonValue = ""  # non-string answers are JSON-encoded server-side
     profile: str | None = None
+    authority_epoch: int | None = None
+    execution_generation: int | None = None
 
 
 class ClarifyLockStatus(WireEnum):

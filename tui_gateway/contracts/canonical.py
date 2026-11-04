@@ -375,6 +375,29 @@ canonical_method("clarify.lock", params=ClarifyLockParams, result=ClarifyLockRes
                      "locked); only a viewer attached to that session with session:respond may lock.")
 
 
+class ClarifyReconcileParams(Params):
+    request_id: str
+    profile: str | None = None
+    authority_epoch: int | None = None
+    execution_generation: int | None = None
+
+
+class ClarifyReconcileResult(Result):
+    """Authoritative current state, never a mutation or an instruction to retry a lock."""
+
+    status: Literal['open', 'submitted', 'cancelled', 'timed_out', 'expired']
+    request_id: str
+    authority_epoch: int | None = None
+    execution_generation: int | None = None
+    answers: dict[str, str | None] | None = None
+    remaining: list[str] | None = None
+
+
+canonical_method("clarify.reconcile", params=ClarifyReconcileParams, result=ClarifyReconcileResult,
+                 doc="Read an open batch's confirmed locks or its bounded terminal receipt without replaying "
+                     "a mutation; expired covers unknown, evicted, unavailable and foreign requests.")
+
+
 # ── cron / kanban / a2a producers ─────────────────────────────────────────────────────────────
 
 

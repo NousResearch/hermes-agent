@@ -310,6 +310,12 @@ class HostedRoomService:
     def _publish_route(self, key: tuple[str, str], route: PeerMemberRoute, client=None) -> None:
         """Make a persisted route live as ``ready`` (and bind its client when given)."""
         with self._policy_lock:
+            previous, current = self.peer_routes.get(key), self.peer_clients.get(key)
+            if (previous is not None and replace(previous, grant=route.grant) == route
+                    and isinstance(current, PeerRunsHTTPClient) and isinstance(client, PeerRunsHTTPClient)
+                    and current.base_url == client.base_url):
+                # The active worker still polls this client; keep its observed approval identities.
+                client = current
             self.peer_routes[key], self._peer_route_status[key] = route, "ready"
             if client is not None:
                 self.peer_clients[key] = client

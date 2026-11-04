@@ -41,7 +41,9 @@ _RECEIPT_SCOPE_FIELDS = (
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "tool", "progress_at")
+_RUN_STATUS_KEYS = (
+    "run_id", "status", "output", "error", "approval", "last_event", "tool", "progress_at",
+    "execution_generation")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -200,6 +202,17 @@ def digest_reauthorization_error(
 
 def _run_path(record: Mapping[str, Any], *suffix: str) -> str:
     return "/".join(("/v1/runs", urllib.parse.quote(str(record["run_id"]), safe=""), *suffix))
+
+
+def _run_status(full: Mapping[str, Any]) -> dict[str, Any]:
+    status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
+    if "pending_controls" in full:
+        prompt = next((p for p in full["pending_controls"] if p.get("kind") == "approval"), None)
+        status["approval"] = None if prompt is None else {
+            "request_id": prompt["prompt_id"],
+            **{key: prompt[key] for key in ("command", "description", "choices", "edit", "timeout_s")
+               if key in prompt}}
+    return status
 
 
 class PeerRunsHTTPClient:
@@ -507,12 +520,13 @@ class PeerRunsHTTPClient:
                     raise error
                 return status
         delay = self._next_poll_delay(cached)
-        entry = {"delay": delay, "next_poll_at": now + delay}
+        entry = {"delay": delay, "next_poll_at": now + delay,
+                 "approvals": cached.get("approvals", {}) if cached is not None else {}}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
             if full.get("status") == "unknown" and str(full.get("run_id") or "") == run_id:
                 full = self._resolve_unknown(record, full, grant)
-            status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
+            status = _run_status(full)
             if (
                 str(status.get("run_id") or "") != run_id
                 or status.get("status") not in _KNOWN_RUN_STATES):
@@ -521,6 +535,11 @@ class PeerRunsHTTPClient:
             previous = cached["status"] if cached is not None else {}
             self._status_cache = {run_id: {"status": previous, "error": exc, **entry}}
             raise
+        if approval := status.get("approval"):
+            # Keep the identity shown to the user even if a later poll fails or replaces it.
+            entry["approvals"].setdefault(approval["request_id"], {
+                "request_id": approval["request_id"],
+                **{key: status[key] for key in ("execution_generation",) if key in status}})
         self._status_cache = {run_id: {"status": status, **entry}}
         if status.get("status") in _TERMINAL_RUN_STATES:
             self._terminal_receipts.add(
@@ -568,6 +587,7 @@ class PeerRunsHTTPClient:
         return {
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
+            "run_execution_generation": status.get("execution_generation"),
             "status": status.get("status"), "run_id": status.get("run_id"),
             "approval": status.get("approval"),
             **{key: status[key] for key in ("tool", "progress_at") if key in status}}
@@ -583,8 +603,24 @@ class PeerRunsHTTPClient:
         if not request_id:
             raise PeerRunsHTTPError("an exact approval request_id is required")
         self._require_room_grant(grant)
-        return self._post_run_action(
-            record, "approval", body={"choice": choice, "request_id": request_id}, grant=grant)
+        cached = self._status_cache.get(str(record["run_id"]), {})
+        identity = cached.get("approvals", {}).get(request_id)
+        if identity is None:
+            status = self._poll_receipt(record, grant=grant)
+            if "execution_generation" in status:
+                if (status.get("approval") or {}).get("request_id") != request_id:
+                    raise PeerRunsHTTPError("room approval is no longer pending")
+                identity = {"request_id": request_id, "execution_generation": status["execution_generation"]}
+            else:
+                identity = {"request_id": request_id}
+        try:
+            return self._post_run_action(record, "approval", body={"choice": choice, **identity}, grant=grant)
+        except PeerRunsHTTPError as exc:
+            if exc.error_code in {"stale_generation", "approval_not_pending", "approval_not_active"}:
+                raise PeerRunsHTTPError(
+                    "room approval is no longer pending", status_code=exc.status_code,
+                    error_code=exc.error_code) from exc
+            raise
 
     def _post_run_action(
         self, record: Mapping[str, Any], action: str, *, body: dict[str, Any], grant: str

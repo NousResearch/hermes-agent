@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 from collections import OrderedDict
+import json
 import threading
 import uuid
 
@@ -60,7 +61,7 @@ class _Pending:
 
     def snapshot(self, request_id):
         """Reconnect frame with only locks already accepted by this authority."""
-        params = {"session_id": self.session_id, **self.params, "answers": dict(self.locked)}
+        params = {"session_id": self.session_id, **self.params, "answers": _answers_snapshot(self)}
         return {"id": request_id, "method": self.method, "params": params}
 
 
@@ -68,6 +69,28 @@ _lock = threading.Lock()
 _open: dict[str, _Pending] = {}
 _settled: OrderedDict[str, _Pending] = OrderedDict()
 _SETTLED_LIMIT = 128
+
+
+def _answers_snapshot(pending):
+    """JSON values for replay/reconcile; native response frames encode multi-select as JSON text."""
+    answers = dict(pending.locked)
+    questions = pending.params.get("questions")
+    if not isinstance(questions, list):
+        return answers
+    for question in questions:
+        if not isinstance(question, dict) or not question.get("multi_select"):
+            continue
+        qid = question.get("qid")
+        value = answers.get(qid)
+        if not isinstance(value, str):
+            continue
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(decoded, list):
+            answers[qid] = decoded
+    return answers
 
 
 def _settle(request_id, pending, result):
@@ -235,7 +258,7 @@ def reconcile(request_id, *, session_ok=lambda session_id, events: False,
                 "request_id": request_id,
                 "authority_epoch": pending.authority_epoch,
                 "execution_generation": pending.execution_generation,
-                "answers": dict(result.get("answers") or {}), "remaining": None}
+                "answers": _answers_snapshot(pending), "remaining": None}
 
 
 def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None,

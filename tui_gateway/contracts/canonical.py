@@ -389,7 +389,7 @@ class ClarifyReconcileResult(Result):
     request_id: str
     authority_epoch: int | None = None
     execution_generation: int | None = None
-    answers: dict[str, str | None] | None = None
+    answers: dict[str, JsonValue] | None = None
     remaining: list[str] | None = None
 
 

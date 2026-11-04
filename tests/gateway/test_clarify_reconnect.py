@@ -87,6 +87,9 @@ async def test_terminal_replay_uses_competing_response_answers(tmp_path, monkeyp
         return 'ok'
 
     authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr('tests.gateway.test_clarify_lock_owner.QUESTIONS', [
+        QUESTIONS[0], {**QUESTIONS[1], 'choices': ['blue'], 'multi_select': True},
+    ])
     owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
     fresh = None
     worker = None
@@ -104,8 +107,9 @@ async def test_terminal_replay_uses_competing_response_answers(tmp_path, monkeyp
         fresh = AuthorityConnection(authority, object(), {'user_id': 'owner'})
         restored = await _resume(fresh)
         entry = next(item for item in restored['result']['request_receipts'] if item['id'] == request_id)
-        assert entry['params']['answers'] == final
-        assert (await _reconcile(fresh, request_id))['result']['answers'] == final
+        expected_replay = {'q0': 'rival free', 'q1': ['blue']}
+        assert entry['params']['answers'] == expected_replay
+        assert (await _reconcile(fresh, request_id))['result']['answers'] == expected_replay
     finally:
         if worker is not None:
             _stop_batch(authority, worker)

@@ -835,7 +835,12 @@ def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Opt
     where underscores and hyphens are interchangeable for Telegram. Native
     callers retain the filesystem-only lookup; plugin skills are interactive.
     """
-    return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
+    if not interactive:
+        return resolve_slash_key(command, get_skill_commands())
+    # Filesystem first: only a /plugin:skill token needs the plugin projection (and its discovery,
+    # which imports every plugin). See _interactive_command_info.
+    key = resolve_slash_key(command, get_skill_commands())
+    return key if key is not None else resolve_slash_key(command, get_interactive_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
@@ -849,11 +854,25 @@ def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
     return cmd_key if cmd_key in table else None
 
 
+def _interactive_command_info(cmd_key: str) -> Optional[dict[str, Any]]:
+    """One interactive command's info by key, paying plugin discovery only for a plugin key.
+
+    The merged map needs the plugin projection to RESOLVE ``/plugin:skill``, and building it imports
+    every plugin (~7 s on a large install). Plugin keys are namespaced, so a filesystem skill resolves
+    from the filesystem map alone — which is the overwhelmingly common invocation."""
+    info = get_skill_commands().get(cmd_key)
+    if info is not None:
+        return info
+    if ":" not in str(cmd_key).lstrip("/"):
+        return None
+    return get_plugin_skill_commands().get(cmd_key)
+
+
 def build_skill_invocation_message(
     cmd_key: str, user_instruction: str = "", task_id: str | None = None, runtime_note: str = "",
 ) -> Optional[str]:
     """Build the user message for a skill slash command, or None if not found."""
-    skill_info = get_interactive_skill_commands().get(cmd_key)
+    skill_info = _interactive_command_info(cmd_key)
     loaded = _load_skill_payload(skill_info.get("skill_identifier") or skill_info["skill_dir"], task_id=task_id) if skill_info else None
     if not loaded:
         return None
@@ -895,7 +914,10 @@ def build_stacked_skill_invocation_message(
     """Build the user message for a stacked multi-skill slash invocation:
     ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded.
     Keys come from ``split_stacked_skill_commands``; native callers only ever pass filesystem keys."""
-    commands = get_interactive_skill_commands()
+    commands = get_skill_commands()
+    # Plugin skill keys are namespaced ``<plugin>:<skill>``; a filesystem key never carries ``:``.
+    if any(":" in str(k).lstrip("/") for k in cmd_keys if k):
+        commands = _merge_interactive_skill_commands(commands, get_plugin_skill_commands())
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,

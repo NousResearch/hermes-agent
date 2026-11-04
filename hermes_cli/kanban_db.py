@@ -1006,6 +1006,32 @@ def _host_prefix() -> str:
     return f"{_claimer_id().split(':', 1)[0]}:"
 
 
+def _host_key(host: str) -> str:
+    """Case- and punctuation-insensitive machine name (``TheMateMachine`` == ``the-mate-machine``)."""
+    return re.sub(r"[^a-z0-9]", "", (host or "").lower())
+
+
+def host_local_lock(lock: Optional[str]) -> bool:
+    """True when the ``host:pid`` claim ``lock`` was issued by this machine.
+
+    Every reclaim path judges pids, so it must first decide whether the claim's pids are this
+    host's at all. It compared the raw ``host:`` string, which is not stable: a machine rename, a
+    NetBIOS/DNS spelling change, or a container that mounts this board reports the same machine
+    under a different spelling. Claims written before the change then look foreign to the process
+    that must reap them, and NO path touches them — the crash sweep skips them, the TTL and stale
+    sweeps are held by the owner gate — so a card killed by a gateway restart held its profile's
+    worker slot until an operator reclaimed it by hand (4 Nov: ``TheMateMachine:15104`` written at
+    21:10, ``The-Mate-Machine:3612`` reading from 21:56; two cards stranded for 38 minutes).
+
+    Comparing the normalised machine name keeps a genuinely different host foreign while making
+    the same machine's claim readable across a respelling. The pid itself is still never trusted by
+    existence alone: the spawn fingerprint decides liveness, and signalling refuses a recycled pid.
+    """
+    key = _host_key(_claimer_id().split(":", 1)[0])
+    host = str(lock or "").split(":", 1)[0]
+    return bool(key) and _host_key(host) == key
+
+
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -2345,7 +2371,6 @@ def release_stale_claims(
     """
     now = int(time.time())
     reclaimed = 0
-    host_prefix = _host_prefix()
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
@@ -2357,7 +2382,7 @@ def release_stale_claims(
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
-        host_local = (row["claim_lock"] or "").startswith(host_prefix)
+        host_local = host_local_lock(row["claim_lock"])
         hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).

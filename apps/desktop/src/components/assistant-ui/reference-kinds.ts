@@ -30,6 +30,7 @@ export type ReferenceKind =
   | 'skill'
   | 'theme'
   | 'emoji'
+  | 'message'
   | 'other'
 
 interface ReferenceStyle {
@@ -116,6 +117,15 @@ export const REFERENCE_STYLES: Record<ReferenceKind, ReferenceStyle> = {
     label: 'Themes'
   },
   emoji: { codicon: 'smiley', paths: [], label: 'Emoji' },
+  message: {
+    codicon: 'comment',
+    paths: [
+      'M8 9h8',
+      'M8 13h6',
+      'M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3h-5l-5 3v-3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3h12z'
+    ],
+    label: 'Messages'
+  },
   other: { codicon: 'symbol-misc', paths: FILE_PATHS, label: 'Other' }
 }
 
@@ -135,7 +145,7 @@ export function referenceStyle(type: string | undefined): ReferenceStyle {
  * above: `command`/`skill`/`theme` arrive via `/`, and `diff`/`staged`/`emoji`
  * have no value to carry.
  */
-export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session'] as const
+export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', 'line', 'terminal', 'session', 'message'] as const
 
 /**
  * The one pattern that recognises a reference in text.
@@ -144,7 +154,7 @@ export const WIRE_REFERENCE_KINDS = ['file', 'folder', 'url', 'image', 'tool', '
  * a space — so the quoted forms are tried BEFORE bare `\S+`, or a quoted value
  * would end at the first space and strand the rest as prose.
  */
-const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
+const REFERENCE_PATTERN = /@(file|folder|url|image|tool|line|terminal|session|message):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/
 
 /**
  * A fresh matcher for every surface that has to find references in text: the

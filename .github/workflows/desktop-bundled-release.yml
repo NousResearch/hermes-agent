@@ -2318,10 +2318,10 @@ jobs:
   stable-store:
     name: Submit the verified Store package
     # Runs beside stable-publish: it materializes and digest-checks its own Store candidate
-    # from the admitted manifest and never reads stable-publish's output. It commits the
-    # submission held (Manual), so certification runs before the gate; only the
-    # publication pass switches it to Immediate, so a run whose stable-publish fails
-    # leaves a held submission no customer sees, never a live build.
+    # from the admitted manifest and never reads stable-publish's output. It leaves an
+    # uncommitted Immediate draft; only the publication pass commits it, and it then goes
+    # live as soon as it passes certification. A run whose stable-publish fails leaves a
+    # draft no customer sees, never a live build.
     needs: [validate]
     if: inputs.release-phase == 'publish' && inputs.skip-store != true
     # The Store is not a release gate: a failed submission leaves the release publishable
@@ -2360,8 +2360,8 @@ jobs:
           files=(verified/Store-*.msixbundle)
           test "${#files[@]}" -eq 1
           test -f "${files[0]}"
-          # Committed held (Manual); the publication pass switches it to
-          # Immediate (scripts/releases/store.py).
+          # An uncommitted Immediate draft; the publication pass commits
+          # it (scripts/releases/store.py).
           python -m scripts.releases.store submit "${files[0]}"
       - name: Name the Store package for a manual upload
         if: failure()

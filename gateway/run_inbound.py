@@ -245,7 +245,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
+        if not getattr(event, "_bot_loop_admitted", False) and not (
+                self._admit_bot_message_for_source(source) and self._admit_bot_chain(event)):
             return None
         return event, source, False
 

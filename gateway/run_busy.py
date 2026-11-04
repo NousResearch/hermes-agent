@@ -616,7 +616,11 @@ class GatewayBusySessionMixin:
         return None if getattr(event, "internal", False) else event.message_id
 
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
-        """Send a busy-path reply anchored to the event (thread metadata included)."""
+        """Send a busy-path reply anchored to the event (thread metadata included). Never to a bot:
+        an ack, redirect or drain notice is a new inbound message for its turn loop (#137027)."""
+        if getattr(event.source, "is_bot", False):
+            logger.debug("Busy-path notice suppressed for bot-authored message in %s", event.source.chat_id)
+            return
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
@@ -922,9 +926,6 @@ class GatewayBusySessionMixin:
         return message
 
     async def _send_busy_ack_reply(self, event: MessageEvent, adapter, message: str) -> None:
-        if getattr(event.source, "is_bot", False):
-            logger.debug("Busy ack suppressed for bot-authored message in %s", event.source.chat_id)
-            return
         try:
             await self._send_busy_reply(event, adapter, message)
         except Exception as e:
@@ -953,7 +954,7 @@ class GatewayBusySessionMixin:
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
-        if not self._admit_bot_message_for_source(event.source):
+        if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
 

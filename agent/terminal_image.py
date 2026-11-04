@@ -74,8 +74,9 @@ _SIXEL_REPLY = b"\x1b[?1;0;"
 def probe_vscode_images() -> bool | None:
     """Whether VS Code's terminal will draw images; ``None`` outside a local VS Code terminal.
 
-    Run once before prompt_toolkit owns the tty (the reply is read from stdin). Skipped over SSH:
-    a reply slower than the deadline would reach the prompt as typed text. Cached.
+    Run once before prompt_toolkit owns the tty (the reply is read from stdin). Skipped over SSH,
+    where the reply often misses the deadline (the prompt's parser then drops it, see
+    ``hermes_cli.pt_input_extras``). Cached.
     """
     global _VSCODE_IMAGES
     if _VSCODE_IMAGES is not None or os.environ.get("TERM_PROGRAM", "").lower() != "vscode":

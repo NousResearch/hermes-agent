@@ -455,7 +455,7 @@ When asked to create or modify database migrations:
 | `Ctrl+B` | 将运行中的任务移至后台 |
 | `Ctrl+V` | 将图片粘贴到对话中 |
 | `Ctrl+O` | 转录模式 — 查看 Claude 的思考过程 |
-| `Ctrl+G` 或 `Ctrl+X Ctrl+E` | 在外部编辑器中打开 prompt |
+| `Ctrl+G` | 在外部编辑器中打开 prompt |
 | `Esc Esc` | 回退对话或代码状态/总结 |
 
 ### 模式切换

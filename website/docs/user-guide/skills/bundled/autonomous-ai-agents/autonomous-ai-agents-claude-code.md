@@ -464,7 +464,7 @@ When asked to create or modify database migrations:
 | `Ctrl+B` | Background a running task |
 | `Ctrl+V` | Paste image into conversation |
 | `Ctrl+O` | Transcript mode — see Claude's thinking process |
-| `Ctrl+G` or `Ctrl+X Ctrl+E` | Open prompt in external editor |
+| `Ctrl+G` | Open prompt in external editor |
 | `Esc Esc` | Rewind conversation or code state / summarize |
 
 ### Mode Toggles

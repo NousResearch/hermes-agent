@@ -50,7 +50,7 @@ Do not use it for anything that must stay private, for interactive back-and-fort
 3. Funds, on one rail:
    - **USDG on Robinhood Chain** (the default): 1 USDG per task, plus a little ETH on Robinhood Chain for a one-time approval. Run the approval once from the `terminal` tool; the key is read from the environment:
      ```bash
-     npx -y brainchain-mcp@0.4.0 approve
+     npx -y brainchain-mcp@0.4.1 approve
      ```
    - **USDC on Base**: 1 USDC per task; payments are signatures, so no ETH and no approval. Set `BRAINCHAIN_PAY_ON: base` in the server's `env` below.
 4. The `brainchain` MCP server in `~/.hermes/config.yaml`, then restart the session:
@@ -58,7 +58,7 @@ Do not use it for anything that must stay private, for interactive back-and-fort
    mcp_servers:
      brainchain:
        command: npx
-       args: ["-y", "brainchain-mcp@0.4.0"]
+       args: ["-y", "brainchain-mcp@0.4.1"]
        env:
          BRAINCHAIN_PAYER_KEY: "${BRAINCHAIN_PAYER_KEY}"
          BRAINCHAIN_BUDGET_UNITS: "5000000"

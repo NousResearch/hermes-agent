@@ -51,10 +51,17 @@ def _stray_hint(strays: set) -> str:
     those fields; with a reserved field mixed in (e.g. `model`), the per-task hint would steer the
     caller into a second refusal from _route_one. The refusal itself lists every stray key."""
     if strays and strays <= _ROUTING_HINT_KEYS:
+        if len(strays) == 1:
+            field = next(iter(strays))
+            example = f'{{"goal": "...", "{field}": "<route value>"}}'
+            return (
+                " Routing fields are per-task: send them inside a tasks=[...] entry — "
+                f"tasks=[{example}] — not at the top level."
+                " A single task is a one-entry array."
+            )
         return (
-            " Routing fields are per-task: send them inside a tasks=[...] entry — "
-            "tasks=[{\"goal\": \"...\", \"option\": \"<route name>\"}] — not at the top level."
-            " A single task is a one-entry array."
+            " Routing fields are per-task: send them inside a tasks=[...] entry, "
+            "not at the top level. A single task is a one-entry array."
         )
     return ""
 

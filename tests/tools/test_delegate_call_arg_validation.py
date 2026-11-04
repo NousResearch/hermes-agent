@@ -78,6 +78,16 @@ class TestStrayTopLevelOptionRefused:
         spy.assert_not_called()
         assert "option" in out["error"] and "tasks=" in out["error"]
 
+    def test_routing_hint_uses_the_actual_per_task_key(self):
+        # A profile_routes caller must not be told to use model_map's "option" key.
+        for field, value in (("profile", "research"), ("service_tier", "fast")):
+            for dispatch in (_live, _registry):
+                with patch("tools.delegate_tool.delegate_task") as spy:
+                    result = dispatch({"goal": GOOD_GOAL, field: value})
+                spy.assert_not_called()
+                assert f'"{field}":' in result["error"]
+                assert '"option":' not in result["error"]
+
     def test_any_undeclared_key_refused(self):
         with patch("tools.delegate_tool.delegate_task") as spy:
             out = _registry({"goal": GOOD_GOAL, "temperature": 0.2})

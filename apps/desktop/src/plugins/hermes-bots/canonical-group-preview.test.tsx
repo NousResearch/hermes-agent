@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import type { ComponentProps } from 'react'
+import { type ComponentProps, StrictMode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
@@ -237,18 +237,28 @@ it.each(['send', 'stop', 'once', 'deny', 'restored'])('preserves %s behavior aft
     fireEvent.change(input, { target: { value: 'exact draft Ω' } })
   } else { await waitFor(() => expect(input.value).toBe('exact draft Ω')) }
 
-  await waitFor(() => expect(rejectPreview).toBeDefined())
   const before = await readCanonicalGroupSend(binding)
   expect(before).toEqual(original)
+
+  if (scenario === 'restored') {
+    // A journaled pending intent fails closed: there is no preview RPC to reject, and the exact
+    // journal entry plus the composer stay untouched until the explicit Retry.
+    await new Promise(resolve => setTimeout(resolve, 350))
+    expect(rejectPreview).toBeUndefined()
+    expect(request.mock.calls.some(call => call[1] === 'groups.preview')).toBe(false)
+    expect(input.value).toBe('exact draft Ω')
+    expect(screen.getByText('report.txt')).toBeTruthy()
+    expect(await readCanonicalGroupSend(binding)).toEqual(original)
+
+    return
+  }
+
+  await waitFor(() => expect(rejectPreview).toBeDefined())
   await act(async () => rejectPreview(new Error('preview failed')))
   expect(input.value).toBe('exact draft Ω')
   expect(screen.getByText('report.txt')).toBeTruthy()
   expect(await readCanonicalGroupSend(binding)).toEqual(before)
   expect(screen.queryByText(/First-round selected/)).toBeNull()
-
-  if (scenario === 'restored') { expect((await readCanonicalGroupSend(binding))?.params.event_id).toBe(original?.params.event_id);
-
- return }
 
   if (scenario === 'send') {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -434,4 +444,142 @@ it.each(['capability-lost', 'rpc-rejected'])('review regression: hide prior prev
   await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.capabilities').length).toBeGreaterThanOrEqual(2))
   if (scenario === 'rpc-rejected') {await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.preview').length).toBeGreaterThanOrEqual(2))}
   await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+})
+
+it('hides the projection while a journaled pending intent is displayed', async () => {
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
+    ? { driver: true, methods: ['groups.preview'] } : reply([roster[0]]))
+  const view = render(<CanonicalGroupPreview binding={binding} draft="follow-up" latestSeq={0} pendingIntent room={room} visible />)
+  await new Promise(resolve => setTimeout(resolve, 350))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.capabilities')).toHaveLength(0)
+  expect(screen.queryByRole('status')).toBeNull()
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="follow-up" latestSeq={0} room={room} visible />)
+  expect(await screen.findByText(/First-round selected: Alpha/)).toBeTruthy()
+})
+
+it('discards a projection that resolves after a pending intent appears', async () => {
+  let resolvePreview!: (value: unknown) => void
+  request.mockImplementation((_route, method) => {
+    if (method === 'groups.capabilities') {return Promise.resolve({ driver: true, methods: ['groups.preview'] })}
+
+    return new Promise(resolve => { resolvePreview = resolve })
+  })
+  const view = render(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible />)
+  await waitFor(() => expect(resolvePreview).toBeDefined())
+  view.rerender(<CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} pendingIntent room={room} visible />)
+  await act(async () => resolvePreview(reply([roster[0]])))
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(screen.queryByText(/First-round selected/)).toBeNull()
+})
+
+it('settles a preview after the StrictMode mount/cleanup/remount rehearsal', async () => {
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities'
+    ? { driver: true, methods: ['groups.preview'] } : reply([roster[0]]))
+  render(<StrictMode><CanonicalGroupPreview binding={binding} draft="hello" latestSeq={0} room={room} visible /></StrictMode>)
+  expect(await screen.findByText(/First-round selected: Alpha/)).toBeTruthy()
+})
+
+it('hides the preview for a hydrated pending intent and retries its exact journaled payload', async () => {
+  const attachment = { attachment_id: 'file-1', kind: 'file', name: 'report.txt', mime: 'text/plain', size: 1 }
+  const saved = await prepareCanonicalGroupSend(binding, { text: 'follow-up', thread_id: 'thread-7', attachments: [attachment] })
+  let sendAck!: (value: unknown) => void
+  request.mockImplementation((_route, method) => {
+    if (method === 'groups.state') {return Promise.resolve({ room, context: { purpose: '', notes: '', routing: 'lead', lead_member_id: 'one' }, driver_status: {} })}
+
+    if (method === 'groups.log') {return Promise.resolve({ events: [
+      { seq: 1, room_id: 'room', event_id: 'opener', kind: 'message.user', actor: { kind: 'user', id: 'user' }, payload: { text: 'opening', thread_id: 'thread-7' } },
+      { seq: 2, room_id: 'room', event_id: saved.params.event_id, kind: 'message.user', actor: { kind: 'user', id: 'user' }, payload: { text: 'follow-up', thread_id: 'thread-7' } }
+    ] })}
+
+    if (method === 'groups.capabilities') {return Promise.resolve({ driver: true, methods: ['groups.preview'] })}
+
+    if (method === 'groups.preview') {return Promise.resolve(leadReply(roster[0], 2))}
+
+    if (method === 'groups.send') {return new Promise(resolve => { sendAck = resolve })}
+
+    return Promise.resolve({})
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = await screen.findByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.value).toBe('follow-up'))
+  await screen.findByText('report.txt')
+  await screen.findByText('An unconfirmed send was restored. Retry it before sending another message.')
+  await new Promise(resolve => setTimeout(resolve, 350))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.preview')).toHaveLength(0)
+  expect(screen.queryByText(/decides the first round|First-round selected/)).toBeNull()
+  expect(await readCanonicalGroupSend(binding)).toEqual(saved)
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(sendAck).toBeDefined())
+  const sent = request.mock.calls.find(call => call[1] === 'groups.send')![2]
+  expect(sent).toMatchObject({ room_id: 'room', event_id: saved.params.event_id,
+    payload: { text: 'follow-up', thread_id: 'thread-7', attachments: [attachment] } })
+  expect(await readCanonicalGroupSend(binding)).toEqual(saved)
+  await act(async () => sendAck({}))
+  await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+  await waitFor(() => expect(input.value).toBe(''))
+})
+
+it('hides the preview when a hydrated event was already committed and retries it for server dedup', async () => {
+  const saved = await prepareCanonicalGroupSend(binding, { text: 'deduped follow-up', thread_id: 'thread-7' })
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room, context: { purpose: '', notes: '', routing: 'lead', lead_member_id: 'one' }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [
+      { seq: 1, room_id: 'room', event_id: saved.params.event_id, kind: 'message.user', actor: { kind: 'user', id: 'user' }, payload: { text: 'deduped follow-up', thread_id: 'thread-7' } }
+    ] }}
+
+    if (method === 'groups.capabilities') {return { driver: true, methods: ['groups.preview'] }}
+
+    if (method === 'groups.preview') {return leadReply(roster[0], 1)}
+
+    return {}
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = await screen.findByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.value).toBe('deduped follow-up'))
+  await screen.findByText('An unconfirmed send was restored. Retry it before sending another message.')
+  await new Promise(resolve => setTimeout(resolve, 350))
+  expect(request.mock.calls.filter(call => call[1] === 'groups.preview')).toHaveLength(0)
+  expect(screen.queryByText(/decides the first round|First-round selected/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+  const sent = request.mock.calls.find(call => call[1] === 'groups.send')![2]
+  expect(sent.event_id).toBe(saved.params.event_id)
+  expect(sent.payload).toMatchObject({ text: 'deduped follow-up', thread_id: 'thread-7' })
+  await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
+  expect(input.value).toBe('')
+})
+
+it('hides the preview while another window wins the send slot and restores this composer', async () => {
+  let sendAck!: (value: unknown) => void
+  request.mockImplementation((_route, method) => {
+    if (method === 'groups.state') {return Promise.resolve({ room, driver_status: {} })}
+
+    if (method === 'groups.log') {return Promise.resolve({ events: [] })}
+
+    if (method === 'groups.capabilities') {return Promise.resolve({ driver: true, methods: ['groups.preview'] })}
+
+    if (method === 'groups.preview') {return Promise.resolve(reply([roster[0]]))}
+
+    if (method === 'groups.send') {return new Promise(resolve => { sendAck = resolve })}
+
+    return Promise.resolve({})
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = await screen.findByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.disabled).toBe(false))
+  fireEvent.change(input, { target: { value: 'my draft' } })
+  await screen.findByText(/First-round selected: Alpha/)
+  const winner = await prepareCanonicalGroupSend(binding, { text: 'winner text', thread_id: 'thread-9' })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(sendAck).toBeDefined())
+  const sent = request.mock.calls.find(call => call[1] === 'groups.send')![2]
+  expect(sent).toMatchObject({ event_id: winner.params.event_id, payload: { text: 'winner text', thread_id: 'thread-9' } })
+  await waitFor(() => expect(input.value).toBe('winner text'))
+  await waitFor(() => expect(screen.queryByText(/First-round selected/)).toBeNull())
+  expect(request.mock.calls.filter(call => call[1] === 'groups.preview' && (call[2] as { text?: string }).text === 'winner text')).toHaveLength(0)
+  await act(async () => sendAck({}))
+  await waitFor(() => expect(input.value).toBe('my draft'))
+  expect(await screen.findByText(/First-round selected: Alpha/)).toBeTruthy()
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
 })

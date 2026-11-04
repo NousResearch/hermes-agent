@@ -272,7 +272,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       <div className="px-4">
       <div className="mx-auto w-full max-w-3xl">
         <CanonicalGroupPreview binding={binding} context={state?.context} draft={draft} latestSeq={events.at(-1)?.seq ?? 0}
-          room={state?.room} thread={reply?.thread} visible={visible} />
+          pendingIntent={!!pending} room={state?.room} thread={reply?.thread} visible={visible} />
       </div>
       <RoomComposer
         above={reply && <RoomReplyChip cancelLabel={labels.cancelReply} label={fill(labels.replyingTo, { name: reply.name })}

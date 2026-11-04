@@ -31,13 +31,16 @@ interface Shown {
   lead?: string
 }
 
-export function CanonicalGroupPreview({ binding, draft, room, visible, context, latestSeq, thread }: {
+export function CanonicalGroupPreview({ binding, draft, room, visible, context, latestSeq, thread, pendingIntent }: {
   binding: CanonicalGroupBinding; draft: string; room?: CanonicalRoom; visible: boolean
   context?: CanonicalRoomContext | null
   /** The room log tail this composer has observed; the server refuses a preview of any other snapshot. */
   latestSeq: number
   /** The thread a reply sends into. Absent is the new thread a fresh send mints. */
   thread?: string
+  /** A journaled pending send is displayed or in flight: its thread and admission state cannot be
+   *  projected from this composer, so fail closed instead of stating the wrong recipients. */
+  pendingIntent?: boolean
 }) {
   const labels = useCanonicalGroupLabels()
   const connection = useValue(host.state.connectionId)
@@ -73,9 +76,16 @@ export function CanonicalGroupPreview({ binding, draft, room, visible, context, 
   const generation = useRef(0)
   const mounted = useRef(true)
 
-  useEffect(() => () => { mounted.current = false; generation.current += 1 }, [])
+  // Development StrictMode rehearses mount/cleanup/remount, so setup must restore the mount flag.
+  // Per-observation generation fencing is unchanged; the mounted flag alone fences an unmount.
+  // eslint-disable-next-line no-restricted-syntax -- mount lifetime flag, not a reactive mirror
+  useEffect(() => {
+    mounted.current = true
 
-  const eligible = visible && !!draft.trim() && new TextEncoder().encode(draft).length <= 65536 && !!room &&
+    return () => { mounted.current = false }
+  }, [])
+
+  const eligible = !pendingIntent && visible && !!draft.trim() && new TextEncoder().encode(draft).length <= 65536 && !!room &&
     Array.isArray(room.members) && typeof room.revision === 'number' &&
     typeof room.authority_gateway_id === 'string' && typeof room.authority_epoch === 'number' &&
     Number.isSafeInteger(latestSeq) && latestSeq >= 0 &&

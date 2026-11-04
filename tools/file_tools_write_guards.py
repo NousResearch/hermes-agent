@@ -289,6 +289,13 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
+    # -q (every kanban worker), cron and unattended platforms: fail closed now, never auto-approve. Checked
+    # before BOTH surfaces: a gateway-admitted ``chat -q`` turn registers a notify callback for its route that
+    # nobody answers, so the gateway branch would block for the full approvals.timeout.
+    from tools.approval_context import _no_user_can_answer
+    if _no_user_can_answer():
+        return blocked.format(why=_NO_HUMAN)
+
     # Gateway surface: block on the button round-trip when a notify callback
     # is registered for this session. One-operation only — no scope buttons.
     session_key = get_current_session_key()
@@ -322,11 +329,6 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         if callback is None:
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
-            return blocked.format(why=_NO_HUMAN)
-        # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
-        # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
-        from tools.approval_context import _no_user_can_answer
-        if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)
         # Same observer payload as the gateway branch (#131876), fired like the
         # dangerous-command CLI prompt in tools/approval.py.

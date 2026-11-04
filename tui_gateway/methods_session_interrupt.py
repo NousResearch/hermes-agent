@@ -127,7 +127,12 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             # restart the pre-correction prompt.
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
-    return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
+    reply = {"status": accepted_status if accepted else "rejected", "text": text}
+    # The agent reports when this steer joins the conversation (``steer.delivered``); a client that
+    # sees the flag holds the steer under the live reply until then instead of sealing at arrival.
+    if accepted and verb == "steer" and getattr(session["agent"], "steer_delivered_callback", None):
+        reply["delivery_event"] = True
+    return _ok(rid, reply)
 
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):

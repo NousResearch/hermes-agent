@@ -262,6 +262,7 @@ class AIAgent(
         notice_callback: Callable[..., Any] | None = None, notice_clear_callback: Callable[..., Any] | None = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
         reaction_callback: Optional[Callable[[str], None]] = None,
+        steer_delivered_callback: Optional[Callable[[list[str]], None]] = None,
         max_tokens: int | None = None, reasoning_config: dict[str, Any] | None = None, service_tier: str | None = None,
         request_overrides: dict[str, Any] | None = None, prefill_messages: list[dict[str, Any]] | None = None,
         platform: str | None = None, user_id: str | None = None, user_id_alt: str | None = None, user_name: str | None = None,

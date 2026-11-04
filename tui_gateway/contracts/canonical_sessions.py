@@ -278,6 +278,8 @@ class CanonicalCorrectionAck(Result):
     # Only on a 'rejected' no agent ever saw (none was live): safe to admit as the next prompt. A plain
     # 'rejected' may follow delivery (a Codex steer whose ACK timed out), so clients never re-send it.
     delivered: Literal[False] | None = None
+    # An accepted steer whose agent emits ``steer.delivered`` when the steer joins the conversation.
+    delivery_event: Literal[True] | None = None
 
 
 class CanonicalCorrectionResult(RootModel):

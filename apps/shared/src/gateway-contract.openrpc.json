@@ -8488,6 +8488,19 @@
             ],
             "default": null,
             "title": "Delivered"
+          },
+          "delivery_event": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivery Event"
           }
         },
         "required": [
@@ -37196,6 +37209,18 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "delivery_event": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delivery Event"
           }
         },
         "required": [
@@ -42988,6 +43013,36 @@
           "text"
         ],
         "title": "StatusUpdatePayload",
+        "type": "object"
+      },
+      "SteerDeliveredPayload": {
+        "additionalProperties": false,
+        "description": "``agent_callbacks`` steer_delivered_callback: the steer submissions one drain joined, oldest first.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "texts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Texts"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "SteerDeliveredPayload",
         "type": "object"
       },
       "SteerStatus": {
@@ -50508,6 +50563,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/StatusUpdatePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "steer.delivered",
+      "summary": "Mid-turn steers joined the conversation; the next API call is the first to read them.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SteerDeliveredPayload"
           }
         }
       ]

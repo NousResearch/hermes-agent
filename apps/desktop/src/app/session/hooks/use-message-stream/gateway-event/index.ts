@@ -27,7 +27,13 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
+import {
+  dropTurnHeldSteers,
+  handleSteerDeliveredEvent,
+  handleToolEvent,
+  handleToolProgressEvent,
+  retireTurnToolProgress
+} from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -93,6 +99,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleMessageStreamEvent,
   handleToolProgressEvent,
   handleToolEvent,
+  handleSteerDeliveredEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,
   handleStatusEvent
@@ -300,6 +307,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId) {
           noteSessionEvent(sessionId)
           retireTurnToolProgress(event.type, sessionId)
+          dropTurnHeldSteers(event.type, sessionId, deps.updateSessionState)
         }
       }
     },

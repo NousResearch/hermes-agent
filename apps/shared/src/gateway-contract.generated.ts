@@ -3668,6 +3668,7 @@ export interface SessionCorrectionParams {
 export interface SessionCorrectionResult {
   status: CorrectionStatus
   text: string
+  delivery_event?: boolean | null
 }
 export type CorrectionStatus = 'queued' | 'redirected' | 'rejected'
 export interface SpawnTreeSaveParams {
@@ -5231,6 +5232,7 @@ export interface CanonicalCorrectionAck {
   execution_generation: number
   authority_epoch: number
   delivered?: false | null
+  delivery_event?: true | null
 }
 /** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
 export interface CanonicalVoiceStopped {
@@ -5885,6 +5887,11 @@ export interface SessionTitlePayload {
 /** ``agent_callbacks`` reaction_callback. */
 export interface ReactionPayload {
   kind: string
+}
+/** ``agent_callbacks`` steer_delivered_callback: the steer submissions one drain joined, oldest first. */
+export interface SteerDeliveredPayload {
+  count: number
+  texts?: string[] | null
 }
 /** ``server`` background_review_callback. */
 export interface ReviewSummaryPayload {
@@ -7243,6 +7250,8 @@ export interface BackendGatewayEventMap {
   'skin.changed': SkinPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
   'status.update': StatusUpdatePayload
+  /** Mid-turn steers joined the conversation; the next API call is the first to read them. */
+  'steer.delivered': SteerDeliveredPayload
   /** A child finished (status + observability rollup). */
   'subagent.complete': SubagentEventPayload
   /** Batched tool-name progress from a child. */
@@ -7344,6 +7353,7 @@ export const GATEWAY_EVENT_TYPES = [
   'skills.changed',
   'skin.changed',
   'status.update',
+  'steer.delivered',
   'subagent.complete',
   'subagent.progress',
   'subagent.spawn_requested',

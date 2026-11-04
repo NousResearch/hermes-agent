@@ -2,6 +2,7 @@ import type { PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { insertBeforeHeldSteers } from '@/app/session/hooks/use-prompt-actions/rewind'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
@@ -202,17 +203,14 @@ export function useMessageStream({
           let nextMessages: ChatMessage[]
 
           if (!prev.some(m => m.id === streamId)) {
-            nextMessages = [
-              ...prev,
-              {
-                id: streamId,
-                role: 'assistant',
-                parts: seed(),
-                timestamp: occurredAt,
-                pending: true,
-                branchGroupId: groupId
-              }
-            ]
+            nextMessages = insertBeforeHeldSteers(prev, {
+              id: streamId,
+              role: 'assistant',
+              parts: seed(),
+              timestamp: occurredAt,
+              pending: true,
+              branchGroupId: groupId
+            })
           } else {
             nextMessages = prev.map(m => {
               if (m.id !== streamId) {
@@ -739,19 +737,16 @@ export function useMessageStream({
             )
           } else {
             // No streaming bubble — create a standalone interim message
-            nextMessages = [
-              ...nextMessages,
-              {
-                id: nextStreamMessageId('assistant-interim'),
-                role: 'assistant' as const,
-                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
-                timestamp: occurredAt,
-                completedAt: occurredAt,
-                pending: false,
-                interim: true,
-                branchGroupId: state.pendingBranchGroup ?? undefined
-              }
-            ]
+            nextMessages = insertBeforeHeldSteers(nextMessages, {
+              id: nextStreamMessageId('assistant-interim'),
+              role: 'assistant' as const,
+              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+              timestamp: occurredAt,
+              completedAt: occurredAt,
+              pending: false,
+              interim: true,
+              branchGroupId: state.pendingBranchGroup ?? undefined
+            })
           }
         }
 
@@ -1057,7 +1052,7 @@ export function useMessageStream({
               // instead of appending the same text a second time (#123801).
               nextMessages = settleAt(identicalInterimIndex)
             } else if (finalText) {
-              nextMessages = [...prev, newAssistantFromCompletion()]
+              nextMessages = insertBeforeHeldSteers(prev, newAssistantFromCompletion())
             }
           } else {
             // Nothing streamed after the boundary and no `message.start` since
@@ -1077,7 +1072,7 @@ export function useMessageStream({
             if (sealed?.interim === true && chatMessageText(sealed).trim() === finalText) {
               nextMessages = settleAt(sealedIndex)
             } else if (finalText) {
-              nextMessages = [...prev, newAssistantFromCompletion()]
+              nextMessages = insertBeforeHeldSteers(prev, newAssistantFromCompletion())
             }
           }
         }

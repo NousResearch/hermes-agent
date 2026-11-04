@@ -3003,30 +3003,7 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
 
 
-def _systemd_env_line(name: str, value: str) -> str:
-    """One ``Environment="NAME=value"`` line: ``\\`` and ``"`` escaped for systemd's quoting, ``%``
-    doubled so specifier expansion leaves the value alone."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'Environment="{name}={escaped}"\n'
-
-
-def _installed_unit_ld_library_path(system: bool) -> str:
-    """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
-    return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
-
-
-def _ld_library_path_line(system: bool, target_home_dir: str | None = None) -> str:
-    """Carry the installer's LD_LIBRARY_PATH into the unit (glibc reads it only at process start, so
-    ~/.hermes/.env is too late for CUDA libs — #14613); system units remap caller-home components.
-
-    The installed unit is the fallback source: the unit is regenerated and compared on every
-    start/restart/status, and a shell without the export (ssh, cron, ``sudo`` strips ``LD_*``)
-    must not be able to "repair" the line away."""
-    raw = os.environ.get("LD_LIBRARY_PATH", "") or _installed_unit_ld_library_path(system)
-    components = [p for p in raw.split(":") if p]
-    if target_home_dir is not None:
-        components = [_remap_path_for_user(p, target_home_dir) for p in components]
-    return _systemd_env_line("LD_LIBRARY_PATH", ":".join(components)) if components else ""
+from hermes_cli.gateway_unit_env import _install_env_lines, _ld_library_path_line
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
@@ -3230,14 +3207,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
             f'Environment="LOGNAME={username}"\n'
-        ) + _ld_library_path_line(system=True, target_home_dir=home_dir)
+        ) + _ld_library_path_line(system=True, target_home_dir=home_dir) + _install_env_lines(
+            system=True, target_home_dir=home_dir)
         wanted_by = "multi-user.target"
     else:
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
         identity_lines = ordering_lines = ""
-        env_lines = _ld_library_path_line(system=False)
+        env_lines = _ld_library_path_line(system=False) + _install_env_lines(system=False)
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)

@@ -1271,7 +1271,7 @@ def _build_gateway_agent_history(
         if separate_observed_context and msg.get("observed") and role == "user" and content:
             if inject_timestamps and isinstance(content, str):
                 content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-            observed_group_context.append(str(content).strip())
+            observed_group_context.append(defang_verified_sender_claims(str(content).strip()))  # stored raw, sent inert
             continue
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.
@@ -2167,7 +2167,7 @@ from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
-    profile_from_session_key_namespace)
+    defang_verified_sender_claims, profile_from_session_key_namespace)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE

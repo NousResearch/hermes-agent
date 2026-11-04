@@ -179,7 +179,7 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, absorb_envelope_sender
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
@@ -6650,16 +6650,14 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             lambda ev: logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(ev.media_urls)))
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it."""
+        """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation, sender) or seed it."""
         if (existing := pending.get(key)) is None:
             pending[key] = event
             return
-        existing.absorb_reply_expected(event)
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
+        existing.absorb_merged(event)
+        existing.extend_media(event)
         if event.text:
             existing.text = self._merge_caption(existing.text, event.text)
-        absorb_envelope_sender(existing, event)
 
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""

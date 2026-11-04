@@ -2,7 +2,9 @@
 
 Contracts:
 - the card payload names the command line / URL before consent; the model's result does not
-- credentials in args and URLs never reach the line; invisible and reordering characters show as escapes
+- the whole command is on the line, never cut; a value is masked only when its own name says it is
+  secret, never a positional, short flag, package, image, script or URL path
+- invisible, reordering and combining characters show as escapes
 """
 
 import json
@@ -15,7 +17,7 @@ import pytest
 
 from tools.connectors import live
 from tools.connectors.mcp import apply_answer
-from tools.connectors.mcp_launch import MAX_TARGET_CHARS, launch_target
+from tools.connectors.mcp_launch import launch_target
 from tools.connectors.tool import manage_connections
 
 
@@ -53,34 +55,82 @@ def test_card_names_the_launch_target_and_the_model_result_does_not():
     assert "launch" not in out["targets"][0]
 
 
-@pytest.mark.parametrize("url,command,args,secret", [
-    (None, "uvx", ["srv", "--token", "ghp_abcdefghijklmnopqrstuvwxyz0123456789"], "ghp_abcdef"),
-    (None, "uvx", ["srv", "--password=hunter2"], "hunter2"),
-    (None, "curl", ["-H", "Authorization: Bearer opaqueopaqueopaque123"], "opaqueopaque"),
-    ("https://mcp.example.com/sse?api_key=abcdef1234567890&x=1", None, None, "abcdef1234567890"),
-    ("https://user:hunter2pass@mcp.example.com/mcp", None, None, "hunter2pass"),
-    ("https://mcp.example.com/v1/tok_ABCdef123456GHIjkl7890/sse", None, None, "ABCdef123456"),
-    (None, "node", ["x" * 380, "--api-key=sk-live-abcdef1234567890XYZ"], "abcdef1234567890"),
-    (None, "mysql", ["-u", "root", "-p", "hunter2"], "hunter2"),
-    (None, "mysql", ["-u", "root", "-phunter2xyz"], "hunter2xyz"),
-    (None, "srv", ["-P", "s3cr3tpw"], "s3cr3tpw"),
-    (None, "srv", ["-k", "plainkeyvalue"], "plainkeyvalue"),
-    (None, "srv", ["-t", "opaque-short-tok"], "opaque-short-tok"),
-    (None, "srv", ["-H", "Authorization: Basic dXNlcjpwYXNz"], "dXNlcjpwYXNz"),
-    (None, "srv", ["--header=X-Api-Key: plainvalue1"], "plainvalue1"),
-    (None, "srv", ["AbCdEf1234567890GhIjKl"], "AbCdEf1234"),
-    (None, "srv", ["--config", "eyJhcGlfa2V5IjoiYWJjZGVmZ2hpamtsbW5vcCJ9AifQ=="], "AifQ"),
-    (None, "srv", ["--config", "eyJhcGlfa2V5IjoiYWJjZGVmZ2hpamtsbW5vcCJ9AifQ=="], "eyJhcG"),
-    (None, "srv", ["--seed=0123456789abcdef0123456789abcdef"], "0123456789abcdef"),
-    ("https://mcp.example.com/mcp#opaquefragment", None, None, "opaquefragment"),
-    ("https://mcp.example.com/mcp?k=shortval", None, None, "shortval"),
-    ("https://mcp.example.com/v1/Ab3dEf9hIj12/sse", None, None, "Ab3dEf9hIj12"),
-    ("https://shortuser:pw@mcp.example.com/mcp", None, None, "shortuser"),
+S = "hunter2pass"
+
+
+@pytest.mark.parametrize("url,command,args", [
+    (None, "uvx", ["srv", "--token", S]),
+    (None, "uvx", ["srv", "--password=" + S]),
+    (None, "srv", ["--api-key", S]),
+    (None, "srv", ["--apiKey", S]),
+    (None, "srv", ["--api_key", S]),
+    (None, "srv", ["--API-KEY", S]),
+    (None, "srv", ["--client-secret", S]),
+    (None, "srv", ["--auth", S]),
+    (None, "srv", ["--credentials", S]),
+    (None, "srv", ["--private-key", S]),
+    (None, "srv", ["--passwd", S]),
+    (None, "srv", ["--token:" + S]),
+    (None, "srv", ["--auth-token=" + S]),
+    (None, "curl", ["-H", "Authorization: Bearer " + S]),
+    (None, "srv", ["--header", "Proxy-Authorization: Basic " + S]),
+    (None, "srv", ["-HAuthorization: Bearer " + S]),
+    (None, "srv", ["-H", "Cookie: sid=" + S]),
+    (None, "srv", ["--header=X-Api-Key: " + S]),
+    (None, "srv", ["-H", "X-Auth-Token: " + S]),
+    (None, "srv", ["-H", "Api-Key: " + S]),
+    (None, "env", ["GITHUB_TOKEN=" + S, "node", "s.js"]),
+    (None, "env", ["SLACK_BOT_TOKEN=" + S, "node", "s.js"]),
+    (None, "env", ["DB_PASSWORD=" + S]),
+    (None, "env", ["OPENAI_API_KEY=" + S]),
+    (None, "docker", ["run", "-e", "GH_AUTH=" + S, "img"]),
+    (None, "docker", ["run", "--env=AWS_SECRET_ACCESS_KEY=" + S, "img"]),
+    (None, "srv", ["--conn", f"postgres://u:{S}@db/x"]),
+    ("https://mcp.example.com/sse?api_key=" + S + "&x=1", None, None),
+    ("https://mcp.example.com/sse?token=" + S, None, None),
+    ("https://mcp.example.com/sse?access_token=" + S, None, None),
+    ("https://mcp.example.com/sse?key=" + S, None, None),
+    ("https://user:" + S + "@mcp.example.com/mcp", None, None),
+    (None, "node", ["x" * 380, "--api-key=" + S]),
 ])
-def test_launch_line_never_carries_a_credential(url, command, args, secret):
-    line = launch_target(url, command, args)["target"]
-    assert secret not in line
-    assert len(line) <= MAX_TARGET_CHARS
+def test_a_secret_named_value_never_reaches_the_line(url, command, args):
+    assert S not in launch_target(url, command, args)["target"]
+
+
+@pytest.mark.parametrize("command,args", [
+    ("npx", ["-y", "-p", "@scope/real-pkg", "server-bin"]),          # npx -p is the package that runs
+    ("docker", ["run", "-i", "--rm", "-t", "ghcr.io/github/github-mcp-server"]),  # -t is a tty flag
+    ("docker", ["run", "-i", "--rm", "-p", "8080:8080", "mcp/everything"]),
+    ("node", ["dist/McpServer2024Main"]),
+    ("python", ["MyServer2Script1234567"]),
+    ("deno", ["run", "--allow-net", "https://deno.land/x/MyMcpServer2/mod.ts"]),
+    ("deno", ["run", "-A", "https://raw.githubusercontent.com/u/r/0123456789abcdef0123/server.ts"]),
+    ("node", ["--author", "./evil.js"]),
+    ("node", ["--keymap", "./evil.js"]),
+    ("node", ["--tokenizer", "./evil.js"]),
+    ("python", ["-m", "srv", "--token-file", "/home/me/.tok"]),
+    ("python", ["srv.py", "-k", "./plugin_to_load.py"]),
+    ("npx", ["-y", "sk-learn-mcp-server-for-models"]),
+    ("docker", ["run", "mcp/postgres@sha256:" + "ab" * 32]),
+    ("srv", ["--max-tokens", "4096", "AUTHOR=me"]),
+    ("srv", ["--token", "--exec", "./evil.js"]),   # the next long flag is a flag, not the token
+])
+def test_what_runs_is_never_masked(command, args):
+    """Hiding execution is worse than showing a secret: no positional, short flag, package, image,
+    script, URL path or non-secret-named flag value is masked."""
+    line = launch_target(None, command, args)["target"]
+    assert "***" not in line
+    assert all(a in line for a in args)
+
+
+def test_a_positional_or_short_flag_secret_is_shown_as_the_user_approves_it():
+    # The documented trade-off: only a name marks a value secret.
+    assert launch_target(None, "mysql", ["-u", "root", "-p" + S, S])["target"] == f"mysql -u root -p{S} {S}"
+
+
+def test_a_remote_url_keeps_its_path_and_other_query_values():
+    url = "https://mcp.example.com/v1/Ab3dEf9hIj12/sse?api_key=" + S + "&region=eu#frag"
+    assert launch_target(url, None, None)["target"] == "https://mcp.example.com/v1/Ab3dEf9hIj12/sse?api_key=***&region=eu#frag"
 
 
 def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_escapes_controls():
@@ -96,6 +146,10 @@ def test_launch_line_keeps_markup_as_text_quotes_spaced_args_and_escapes_control
     ("\ufeffx\u00ady", "\\ufeffx\\xady"),               # BOM, soft hyphen
     ("a\u200d\u200e\u200fb", "a\\u200d\\u200e\\u200fb"),  # ZWJ, LRM, RLM
     ("line\nbreak", "'line\\nbreak'"),                # whitespace inside one arg: quoted
+    ("pk\u0336g", "pk\\u0336g"),                     # combining stroke: would draw a struck k
+    ("a\u20ddb", "a\\u20ddb"),                       # enclosing mark (Me)
+    ("pk\ufffcg", "pk\\ufffcg"),                     # object replacement character
+    ("caf\u00e9", "caf\u00e9"),                       # a precomposed letter stays as written
 ])
 def test_launch_line_shows_invisible_and_reordering_characters_as_escapes(arg, shown):
     line = launch_target(None, "node", [arg])["target"]
@@ -141,9 +195,8 @@ def test_enable_reads_env_and_cwd_from_the_configured_entry():
                                                 "cwd": "/w"}
 
 
-
-def test_an_overlong_line_keeps_its_head_and_its_tail():
-    line = launch_target(None, "node", ["srv.js", *["--log-level=info"] * 40, "--exec", "~/.ssh/steal.js"])["target"]
-    assert len(line) <= MAX_TARGET_CHARS
-    assert line.startswith("node srv.js --log-level=info")
-    assert line.endswith("--exec ~/.ssh/steal.js") and " … " in line
+def test_an_overlong_line_is_never_cut():
+    pad = ["--log-level=info"] * 15
+    line = launch_target(None, "node", ["server.js", *pad, "--exec", "/tmp/steal.js", *pad])["target"]
+    assert "--exec /tmp/steal.js" in line and "…" not in line
+    assert line == " ".join(["node", "server.js", *pad, "--exec", "/tmp/steal.js", *pad])

@@ -1,11 +1,13 @@
 {
  "counts": {
   "http": {
-   "undecided": 325
+   "keep-host-wide": 1,
+   "undecided": 324
   },
   "rpc": {
    "authority": 105,
-   "undecided": 180
+   "keep-host-wide": 1,
+   "undecided": 179
   },
   "websocket": {
    "undecided": 9
@@ -279,7 +281,7 @@
   {"current_path": "hermes_cli.web_routers.ops:approve_pairing", "decision": "undecided", "handler": "POST /api/pairing/approve", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:clear_pending_pairing", "decision": "undecided", "handler": "POST /api/pairing/clear-pending", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ops:revoke_pairing", "decision": "undecided", "handler": "POST /api/pairing/revoke", "kind": "http", "ref": ""},
-  {"current_path": "hermes_cli.web_routers.profiles:create_profile_endpoint", "decision": "undecided", "handler": "POST /api/profiles", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.profiles:create_profile_endpoint", "decision": "keep-host-wide", "handler": "POST /api/profiles", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:set_active_profile_endpoint", "decision": "undecided", "handler": "POST /api/profiles/active", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:import_profile_endpoint", "decision": "undecided", "handler": "POST /api/profiles/import", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:post_profiles_sessions_pull_requests", "decision": "undecided", "handler": "POST /api/profiles/sessions/pull-requests", "kind": "http", "ref": ""},
@@ -506,7 +508,7 @@
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "process.list", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "process.stop", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "profiles.configure", "kind": "rpc", "ref": "D3"},
-  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "profiles.create", "kind": "rpc", "ref": "D3"},
+  {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "keep-host-wide", "handler": "profiles.create", "kind": "rpc", "ref": ""},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "profiles.describe", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "profiles.get_asset", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "profiles.list", "kind": "rpc", "ref": ""},

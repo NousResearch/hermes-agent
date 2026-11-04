@@ -107,6 +107,38 @@ export const agentAvatarCache = new LruCache<string, { at: number; url: null | s
 const AVATAR_MISS_TTL_MS = 30_000
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
 
+// Observer pattern for cache mutations: Components can subscribe to cache changes
+// for a specific handle and re-render when the avatar URL updates (e.g., from a
+// server push or another component's refresh).
+const cacheObservers = new Map<string, Set<() => void>>()
+
+export function subscribeToCacheChange(handle: string, callback: () => void): () => void {
+  const key = handle.toLowerCase()
+  if (!cacheObservers.has(key)) {
+    cacheObservers.set(key, new Set())
+  }
+  cacheObservers.get(key)!.add(callback)
+
+  // Return unsubscribe function
+  return () => {
+    cacheObservers.get(key)?.delete(callback)
+  }
+}
+
+function notifyCacheChange(handle: string): void {
+  const key = handle.toLowerCase()
+  const observers = cacheObservers.get(key)
+  if (observers) {
+    for (const callback of observers) {
+      try {
+        callback()
+      } catch (e) {
+        console.error('[avatar cache observer error]', e)
+      }
+    }
+  }
+}
+
 export async function resolveAgentAvatar(handle: string): Promise<null | string> {
   const key = handle.trim().toLowerCase()
 
@@ -175,17 +207,20 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
   agentAvatarInflight.set(key, run)
   const out = await run
   agentAvatarCache.set(key, { at: Date.now(), url: out })
+  notifyCacheChange(key)
 
   return out
 }
 
-const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
+export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   const match = AGENT_MESSAGE_RE.exec(text)
   const sender = (match?.[1] || match?.[3] || 'agent').trim()
   const handle = (match?.[2] || match?.[3] || sender).trim()
   const body = (match?.[4] || '').trim()
   const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
+  const handleLower = handle.toLowerCase()
 
+  // Fetch avatar from gateway and update cache on first mount and when handle changes.
   useEffect(() => {
     let live = true
 
@@ -199,6 +234,20 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
       live = false
     }
   }, [handle])
+
+  // Subscribe to cache mutations: if another source updates the avatar in the cache,
+  // this component will render the fresh URL (e.g., server push, art backfill completion,
+  // or another tab updating the avatar).
+  useEffect(() => {
+    const unsubscribe = subscribeToCacheChange(handleLower, () => {
+      const cached = agentAvatarCache.get(handleLower)
+      if (cached?.url) {
+        setAvatar(cached.url)
+      }
+    })
+
+    return unsubscribe
+  }, [handleLower])
 
   // Grok-bots shape: an inter-agent delivery is a timeline EVENT, not a
   // conversation bubble — a subtle centered notice ("Message from 🤖 X"),

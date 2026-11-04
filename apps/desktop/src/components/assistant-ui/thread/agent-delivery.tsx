@@ -2,7 +2,7 @@ import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
 import { messageContentText } from '@/components/assistant-ui/thread/content'
-import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
+import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar, subscribeToCacheChange } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
 // from 🤖 <sender>…"` run through the terminal tool IS the messaging
@@ -123,6 +123,7 @@ const NOTICE_CLASS =
 
 const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
   const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
+  const handleLower = handle.toLowerCase()
 
   useEffect(() => {
     let live = true
@@ -137,6 +138,18 @@ const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
       live = false
     }
   }, [handle])
+
+  // Subscribe to cache mutations for this handle
+  useEffect(() => {
+    const unsubscribe = subscribeToCacheChange(handleLower, () => {
+      const cached = agentAvatarCache.get(handleLower)
+      if (cached?.url) {
+        setAvatar(cached.url)
+      }
+    })
+
+    return unsubscribe
+  }, [handleLower])
 
   return avatar ? (
     <img alt="" aria-hidden className="size-4 shrink-0 rounded-full object-cover" src={avatar} />

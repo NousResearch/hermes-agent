@@ -1,8 +1,8 @@
 import { compactNumber } from '@hermes/shared'
 import { useMemo } from 'react'
 
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -113,17 +113,16 @@ function CompactConversationRow({ compact }: { compact: CompactConversationActio
           {copy.working}
         </p>
       ) : (
-        <Button
-          className="w-full justify-start"
+        // A menu item, so choosing it closes the dropdown before the shared
+        // confirmation opens instead of leaving the popover under the modal.
+        <DropdownMenuItem
+          className="text-xs"
           disabled={compact.busy || compact.unavailable}
-          onClick={compact.onRequest}
-          size="xs"
-          type="button"
-          variant="ghost"
+          onSelect={compact.onRequest}
         >
           <Codicon name="archive" size="0.75rem" />
           {copy.action}
-        </Button>
+        </DropdownMenuItem>
       )}
     </div>
   )

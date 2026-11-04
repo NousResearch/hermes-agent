@@ -392,6 +392,29 @@ function enqueueDeliveryStatus(args) {
 let sock = null;
 let connectionState = 'disconnected';
 
+// Cache display names, not participant rosters. A short TTL avoids repeated
+// metadata requests when an approved group sends several messages at once.
+const groupNames = new Map();
+const GROUP_NAME_TTL_MS = 5 * 60 * 1000;
+
+async function resolveGroupName(chatId) {
+  const cached = groupNames.get(chatId);
+  if (cached && Date.now() - cached.at < GROUP_NAME_TTL_MS) return cached.name;
+  if (sock && connectionState === 'connected') {
+    try {
+      const metadata = await sock.groupMetadata(chatId);
+      const name = typeof metadata?.subject === 'string' ? metadata.subject.trim() : '';
+      if (name) {
+        groupNames.set(chatId, { name, at: Date.now() });
+        return name;
+      }
+    } catch (err) {
+      console.warn('[bridge] group name lookup failed:', err.message);
+    }
+  }
+  return cached?.name || chatId.split('@')[0];
+}
+
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
   try {
@@ -574,10 +597,13 @@ async function startSocket() {
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) {
+        // Status updates and self-chat group echoes stay ignored. In bot mode,
+        // owner-typed group messages may proceed only through the existing
+        // owner-message gate and the already configured group allowlist.
+        if (chatId.includes('status') || (isGroup && WHATSAPP_MODE !== 'bot')) {
           emitDebugEvent({
             stage: 'ignored',
-            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            reason: chatId.includes('status') ? 'from_me_status' : 'from_me_group',
             chatId: redactWhatsAppId(chatId),
           });
           continue;
@@ -599,7 +625,17 @@ async function startSocket() {
             fromMe: true,
             fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
             recentlySent: recentlySentIds,
-            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+            // Group owner messages are scoped to approved group JIDs, not
+            // private-chat customer IDs. The outbound echo guard still runs
+            // before this check inside classifyOwnerMessageGate().
+            allowlistMatches: (id) => isGroup
+              ? matchesInboundWhatsAppGroup({
+                  chatId: id,
+                  groupPolicy: WHATSAPP_GROUP_POLICY,
+                  groupAllowedUsers: GROUP_ALLOWED_USERS,
+                  sessionDir: SESSION_DIR,
+                })
+              : matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
             messageId: msg.key.id,
             chatId,
           });
@@ -760,6 +796,9 @@ async function startSocket() {
         },
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
       });
+      // The helper only knows the group JID; resolve its actual subject before
+      // delivering the event so the gateway and agent see the group's name.
+      if (isGroup) event.chatName = await resolveGroupName(chatId);
       event.fromOwner = fromOwner;
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
@@ -1141,6 +1180,29 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// Read-only directory of groups in the connected WhatsApp account.
+// Adapted from upstream Hermes PR #124173; same loopback-only HTTP boundary.
+app.get('/groups', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    return res.json(Object.values(groups).map(group => {
+      const subject = typeof group.subject === 'string' ? group.subject.trim() : '';
+      const name = subject || groupNames.get(group.id)?.name || group.id.split('@')[0];
+      if (subject) groupNames.set(group.id, { name, at: Date.now() });
+      return {
+        id: group.id,
+        name,
+        participants: Array.isArray(group.participants) ? group.participants.length : 0,
+      };
+    }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // Health check

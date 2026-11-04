@@ -1007,6 +1007,58 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(self._bridge_url("typing"), json={"chatId": to_whatsapp_jid(chat_id)}, timeout=aiohttp.ClientTimeout(total=5)):
                 pass
 
+    async def list_channels(self) -> Optional[list[dict[str, Any]]]:
+        """Use the existing channel-directory hook to name approved WhatsApp groups.
+
+        Keep historic DM targets; a read-only Baileys /groups call supplies live
+        group names without changing group send/intake permissions.
+        """
+        if not self._running or not self._http_session:
+            return None
+        if await self._check_managed_bridge_exit():
+            return None
+        try:
+            async with self._bridge_req("get", "groups", 15) as resp:
+                if resp.status != 200:
+                    return None
+                groups = await resp.json()
+        except Exception as exc:
+            logger.debug("Could not list WhatsApp groups: %s", exc)
+            return None
+        if not isinstance(groups, list):
+            return None
+
+        from gateway.channel_directory import _build_from_sessions
+        historic = await asyncio.to_thread(_build_from_sessions, "whatsapp")
+        allowed = self._group_allow_from
+        by_id = {}
+        for entry in historic:
+            chat_id = str(entry.get("id") or "")
+            if not chat_id:
+                continue
+            if chat_id.endswith("@g.us") and (
+                self._group_policy in ("disabled", "pairing")
+                or (self._group_policy == "allowlist" and chat_id not in allowed)
+            ):
+                continue
+            by_id[chat_id] = entry
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            chat_id = str(group.get("id") or "")
+            if not chat_id.endswith("@g.us"):
+                continue
+            if self._group_policy in ("disabled", "pairing"):
+                continue
+            if self._group_policy == "allowlist" and chat_id not in allowed:
+                continue
+            by_id[chat_id] = {
+                "id": chat_id,
+                "name": str(group.get("name") or chat_id.split("@")[0]),
+                "type": "group",
+            }
+        return list(by_id.values())
+
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         if not self._running or not self._http_session:
             return {"name": "Unknown", "type": "dm"}

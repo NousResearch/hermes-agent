@@ -96,4 +96,43 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
     expect(document.querySelector('a[href="#section-2"]')).not.toBeNull()
   })
+
+  // Cases proposed by @hierophantos in #126734.
+  it('routes a file:// link with a #L42 line fragment as an inline link', async () => {
+    // The fragment is part of the href, not a separate markdown construct —
+    // mediaKind() strips it before reading the extension, so a code file with
+    // a line anchor still resolves to 'file' and keeps the inline link.
+    render(
+      <MarkdownTextContent isRunning={false} text="See [geometry.py:42](file:///Users/me/proj/geometry.py#L42)." />
+    )
+
+    const link = await screen.findByRole('link', { name: 'geometry.py:42' })
+
+    expect(link.getAttribute('href')).toBe('file:///Users/me/proj/geometry.py#L42')
+    expect(link.getAttribute('title')).toBe('file:///Users/me/proj/geometry.py#L42')
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+  })
+
+  it('routes a bracketed file:// target containing spaces as an inline link', async () => {
+    // CommonMark requires `<...>` destinations for paths with spaces (same
+    // reason as the `~/My Notes/...` case above), here combined with an
+    // explicit file:// scheme instead of a bare path.
+    render(<MarkdownTextContent isRunning={false} text={'See [notes](<file:///Users/me/my notes/todo.md>)'} />)
+
+    const link = await screen.findByRole('link', { name: 'notes' })
+
+    expect(link.getAttribute('href')).toBe('file:///Users/me/my notes/todo.md')
+    expect(link.getAttribute('title')).toBe('file:///Users/me/my notes/todo.md')
+  })
+
+  it('renders a file link that is the whole content of a list item as an inline link, not a card', async () => {
+    // A tight list unwraps the item's paragraph, so the link becomes the
+    // li's only child; it must stay the inline link, not escalate to a card.
+    render(<MarkdownTextContent isRunning={false} text={'- [geometry.py](file:///Users/me/proj/geometry.py)'} />)
+
+    const link = await screen.findByRole('link', { name: 'geometry.py' })
+
+    expect(link.closest('li')?.textContent).toBe('geometry.py')
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+  })
 })

@@ -287,7 +287,8 @@ def release(*, product_id: str, store_file: str, tenant_id: str, client_id: str,
     mode_key = _key(submission, "targetPublishMode") or "targetPublishMode"
     target = "Manual" if hold else "Immediate"
     publish_now = "Once it is certified, select Publish now in Partner Center."
-    if submission.get(mode_key) == target and state in _COMMITTED:
+    current = submission.get(mode_key)
+    if current == target and state in _COMMITTED:
         if hold:
             _notice(f"Store submission {pending} is held (MS_STORE_HOLD). {publish_now}")
             return "held"
@@ -297,6 +298,13 @@ def release(*, product_id: str, store_file: str, tenant_id: str, client_id: str,
         call("PUT", path, submission)
         call("POST", f"{path}/commit")
     except _Refused as refused:
+        # Nothing new was committed, so the committed mode decides: only Manual needs Publish now.
+        if current == "Immediate" and state in _COMMITTED:
+            _notice(f"Store submission {pending} stays as it was: the submission API refused to "
+                    f"switch it to {target} ({refused}). It was committed with auto-publish on, "
+                    "so it goes live by itself once it is certified; MS_STORE_HOLD cannot hold "
+                    "a submission that is already committed.")
+            return "already-immediate"
         _notice(f"Store submission {pending} stays as it was: the submission API refused to switch "
                 f"it to {target} ({refused}). {publish_now}")
         return "held"

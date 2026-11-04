@@ -162,7 +162,10 @@ def _rpc(ws, rid: int, method: str, params: dict) -> dict:
 def _until(ws, pred: Callable[[dict], bool]) -> dict:
     deadline = time.monotonic() + TURN_S
     while True:
-        msg = json.loads(ws.recv(timeout=max(0.1, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"no matching websocket message within {TURN_S}s")
+        msg = json.loads(ws.recv(timeout=remaining))
         if pred(msg):
             return msg
 

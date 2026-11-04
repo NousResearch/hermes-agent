@@ -1,6 +1,6 @@
 name: veyrul-media
 repo: https://github.com/the-media-vampire/veyrul-integrations
-sha: ddf52ba5ad9b06f0c5187259da2edcd14fd1ec6d
+sha: 9c6526334919c682af8936d9059d90a1b951f11c
 subdir: hermes-plugin
 version: "1.0.0"
 title: Veyrul Media Knowledge
@@ -9,7 +9,7 @@ maintainer: the-media-vampire
 tier: community
 category: tools
 requires_hermes: ">=0.22.7"
-docs_url: https://github.com/the-media-vampire/veyrul-integrations/tree/ddf52ba5ad9b06f0c5187259da2edcd14fd1ec6d/hermes-plugin
+docs_url: https://github.com/the-media-vampire/veyrul-integrations/tree/9c6526334919c682af8936d9059d90a1b951f11c/hermes-plugin
 readme: true
 platforms: [linux, macos, windows]
 capabilities:

@@ -196,6 +196,38 @@ def test_run_slash_rollback_allowed_with_y():
     assert seen["tokens"][0] == "rollback"
 
 
+def test_run_slash_prune_allowed_with_y():
+    from hermes_cli.curator import run_slash
+
+    seen = {}
+
+    def fake(tokens):
+        seen["tokens"] = list(tokens)
+        _emit("curator: pruned")
+        return 0
+
+    with patch("hermes_cli.curator.cli_main", side_effect=fake):
+        out = run_slash("prune -y")
+    assert "pruned" in out
+    assert seen["tokens"][0] == "prune"
+
+
+def test_run_slash_adopt_all_unmanaged_allowed_with_y():
+    from hermes_cli.curator import run_slash
+
+    seen = {}
+
+    def fake(tokens):
+        seen["tokens"] = list(tokens)
+        _emit("curator: adopted")
+        return 0
+
+    with patch("hermes_cli.curator.cli_main", side_effect=fake):
+        out = run_slash("adopt --all-unmanaged -y")
+    assert "adopted" in out
+    assert seen["tokens"][0] == "adopt"
+
+
 @pytest.mark.asyncio
 async def test_idle_dispatch_routes_curator_through_run_slash():
     """`/curator` must reach the handler through the idle command table.

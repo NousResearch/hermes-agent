@@ -146,7 +146,7 @@ def _cmd_status(args) -> int:
     from tools import skill_usage
     _print_curator_config(curator)
     if locked := skill_usage.locked_skill_names():
-        print(f"\nlocked ({len(locked)}): {', '.join(locked)}  "
+        _emit(f"\nlocked ({len(locked)}): {', '.join(locked)}  "
               f"(the agent cannot change these; `hermes curator unlock <skill>` lifts it)")
     rows = skill_usage.curated_report()
     if not rows:
@@ -292,20 +292,20 @@ def _set_lock(args, locked: bool) -> int:
     verb = "lock" if locked else "unlock"
     existing = _find_skill(args.skill)
     if existing is None:
-        print(f"curator: no skill named '{args.skill}' in the active profile — nothing to {verb}. "
+        _emit(f"curator: no skill named '{args.skill}' in the active profile — nothing to {verb}. "
               f"`hermes skills list` shows the names.")
         return 1
     key = existing["path"].name  # directory name: the key the skill_manage guard resolves to
     if not skill_usage.set_locked(key, locked):
-        print(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
+        _emit(f"curator: could not record the {verb} for '{key}' (skills/.usage.json not writable).")
         return 1
     if locked:
-        print(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "
+        _emit(f"curator: locked '{key}'. The agent can no longer change it: skill_manage, write_file, "
               f"patch and terminal refuse, in normal turns and the background passes alike, and the "
               f"curator won't archive it. It stays readable and auto-loadable, and you can still edit it "
               f"yourself. Unlock with `hermes curator unlock {key}`.")
     else:
-        print(f"curator: unlocked '{key}'. The agent may edit it again.")
+        _emit(f"curator: unlocked '{key}'. The agent may edit it again.")
     return 0
 
 
@@ -735,7 +735,8 @@ _SUBCOMMANDS = (
              help="Adopt every curation-eligible skill that has no provenance marker"),
         _arg("--dry-run", **_STORE_TRUE,
              help="List what would be adopted without writing anything"),
-        _arg("--yes", **_STORE_TRUE, help="Skip the confirmation prompt for --all-unmanaged")),
+        _arg("-y", "--yes", **_STORE_TRUE,
+             help="Skip the confirmation prompt for --all-unmanaged")),
     ("restore", "Restore an archived skill", _cmd_restore, _SKILL),
     ("list-archived", "List archived skills", _cmd_list_archived),
     ("archive", "Manually archive a skill (move to .archive/, excluded from prompt)", _cmd_archive,

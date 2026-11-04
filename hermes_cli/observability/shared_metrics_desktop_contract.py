@@ -33,6 +33,8 @@ DESKTOP_IA_ACTIONS = {
     "session": ('opened_pinned', 'opened_agent', 'opened_search'),
     "section": ('pinned_expanded', 'pinned_collapsed', 'agent_expanded', 'agent_collapsed', 'gateway_expanded', 'gateway_collapsed'),
     "search": ('opened', 'used', 'results', 'empty', 'partial_failure', 'selected', 'cleared', 'early'),
+    "pin_count": ("zero", "one", "two", "three", "overflow"),
+    "profile_pin_count": ("zero", "one", "two", "three", "overflow"),
     "pin": ('pinned_request', 'agent_request', 'search_request', 'pinned', 'unpinned', 'failed'),
     "new_session": ('sidebar', 'command', 'agent_row', 'picker_opened', 'picker_on_new', 'specific', 'default', 'dismissed'),
     "gateway": ('popover_open', 'popover_connecting', 'popover_offline', 'system', 'logs', 'reconnect', 'offline_agent'),

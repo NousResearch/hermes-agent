@@ -592,6 +592,7 @@ Async pin outcomes are discarded after consent, scope or sidebar-mode changes.
 | `ia.section.*` | User-initiated Pinned/agent/gateway expand and collapse; automatic pinned-chat reveals do not count. |
 | `ia.search.*` | Focus, settled nonempty searches, results/empty/partial failure, result selection and clearing. Queries must settle for 500ms after requests complete. Local matches are included. `early` means a settled search within 10 seconds of sidebar mount, a discovery proxy rather than proof of confusion. |
 | `ia.pin.*` | Request source and confirmed pin/unpin or write failure. Repeated clicks while a write is in flight do not produce additional outcomes. Refresh failure after an acknowledged write is not a pin failure. |
+| `ia.pin_count.*`, `ia.profile_pin_count.*` | Successful sidebar-load snapshots in buckets `zero`, `one`, `two`, `three`, `overflow` (4+). The first counts the complete loaded sidebar response; the second counts only the consenting active profile on its gateway. Pinned rows are backfilled beyond recency limits and deduplicated across slices by gateway/profile/lineage. Hidden/archived chats are excluded. Partial failures suppress the total; failed profiles never become zero samples. No profile names are transmitted. |
 | `ia.new_session.*` | Sidebar/command/agent-row entry points; picker opened, opened while no stored chat is focused, agent/default selected, or explicitly dismissed. Command entry includes shortcut and command dispatch; existing `session.new` counters distinguish shortcut/palette. |
 | `ia.gateway.*` | Popover opening state, system/logs clicks, reconnect requests, and agent-settings clicks against a known-offline gateway. |
 
@@ -604,8 +605,15 @@ the daily report once without IA counters, preserving the existing metrics;
 network errors are not retried by this compatibility path. A consent or scope
 change cancels that retry. Other unknown codes still normalize to `other`.
 
-Deferred: authoritative pin totals and per-profile pin distributions (loaded
-sidebar rows are paginated), reconnect success/duration (the current handler
+Pin buckets are observations of acknowledged list responses, independent of
+search, collapse state, and optimistic pin writes. They are not a fleet-wide
+census of offline gateways. A profile can occupy multiple buckets during a day;
+use distinct profile presence (or the highest observed bucket), not refresh
+counts, for daily distributions. Older rows without a pin flag are not counted
+as confirmed zeros. Profiles contribute their own count when active and consented;
+collection does not opt in inactive profiles on their behalf.
+
+Deferred: reconnect success/duration (the current handler
 can resolve without an established connection), first-message latency, blank
 session abandonment and subsequent agent switches (require draft/tile lifecycle
 correlation), and “dead end” classification (reading a page without clicking is

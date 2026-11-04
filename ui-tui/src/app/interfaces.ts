@@ -351,6 +351,8 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  // `display.inline_images` isn't off: transcript rows draw (and reserve rows for) their images.
+  inlineImages: boolean
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number

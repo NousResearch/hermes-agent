@@ -1,8 +1,10 @@
 import { Box, useStdout } from '@hermes/ink'
 import type { ImageRenderResult } from '@hermes/shared/gateway-events'
+import { useStore } from '@nanostores/react'
 import { memo, useEffect, useState } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
+import { $uiInlineImages } from '../app/uiStore.js'
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { INLINE_IMAGE_MAX_COLS, INLINE_IMAGE_MAX_ROWS } from '../config/limits.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
@@ -177,9 +179,15 @@ interface MessageImagesProps {
   t: Theme
 }
 
-/** A transcript row's images (`msg.images`), stacked at the body indent; nothing when it has none. */
-export const MessageImages = ({ cols, msg, spaced = false, t }: MessageImagesProps) =>
-  msg.images?.length ? (
+/**
+ * A transcript row's images (`msg.images`), stacked at the body indent; nothing
+ * when it has none or `display.inline_images` is off (the height estimate
+ * reserves nothing then either: lib/virtualHeights.ts).
+ */
+export const MessageImages = ({ cols, msg, spaced = false, t }: MessageImagesProps) => {
+  const enabled = useStore($uiInlineImages)
+
+  return enabled && msg.images?.length ? (
     <Box flexDirection="column" marginLeft={transcriptGutterWidth(msg.role, t.brand.prompt)} marginTop={spaced ? 1 : 0}>
       {msg.images.map(path => (
         <InlineImage
@@ -191,3 +199,4 @@ export const MessageImages = ({ cols, msg, spaced = false, t }: MessageImagesPro
       ))}
     </Box>
   ) : null
+}

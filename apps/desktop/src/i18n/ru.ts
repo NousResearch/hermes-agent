@@ -6,39 +6,24 @@ import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
+import { ruCronControl } from './ru_cron_control'
 import { ruErrorCodes } from './ru_error_codes'
 import { ruFirstRun } from './ru_first_run'
+import { ruGatewayHost } from './ru_gateway_host'
+import { ruMemoryLayers } from './ru_memory_layers'
 import { ruModelMenu } from './ru_model_menu'
 import { ruModelSettings } from './ru_model_settings'
 import { ruNotices } from './ru_notices'
 import { ruNotifications } from './ru_notifications'
 import { ruOnboarding } from './ru_onboarding'
-import { ruPluginSettings } from './ru_plugins'
+import { ruPluginPreviewAccess } from './ru_plugin_preview_access'
+import { ruPluginSettings, ruPluginsTab } from './ru_plugins'
+import { RU_NOUN, RU_PLURAL } from './ru_plural'
+import { ruPreviewWeb } from './ru_preview_web'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
-
-// RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
-// RU_NOUN: (count, one, few, many) — формы род. множественного
-// count может быть number или string (часть подписей en.ts передаёт строки)
-const ruNum = (count: number | string) => (typeof count === 'string' ? Number(count) || 0 : count)
-
-const RU_PLURAL = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
-
-const RU_NOUN = (count: number | string, one: string, few: string, many: string) => {
-  const c = ruNum(count)
-  const n = Math.abs(c) % 10
-  const nn = Math.abs(c) % 100
-
-  return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
-}
 
 export const ruOverrides = {
   catalog: ruCatalog,
@@ -164,6 +149,8 @@ export const ruOverrides = {
       microphoneConstraintsUnsupported: 'Ограничения микрофона не поддерживаются этим устройством.',
       microphoneFailed: 'Ошибка микрофона',
       microphoneInUse: 'Микрофон уже используется другим приложением.',
+      microphoneNeedsHttps:
+        'Микрофону нужно защищённое соединение. Откройте Webapp по HTTPS или через SSH-туннель к 127.0.0.1, чтобы им пользоваться.',
       microphonePermissionDenied: 'Доступ к микрофону запрещён.',
       microphoneStartFailed: 'Не удалось начать запись с микрофона.',
       microphoneUnsupported: 'Это окружение не поддерживает запись с микрофона.',
@@ -347,6 +334,7 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    memoryLayers: ruMemoryLayers,
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {
@@ -410,7 +398,7 @@ export const ruOverrides = {
       advancedOutput: 'Ограничения вывода',
       advancedDelegation: 'Субагенты',
       advancedDesktop: 'Приложение и запуск',
-      gatewayConnection: 'Это окно',
+      gatewayConnection: 'Основной шлюз',
       gatewayDevices: 'Сохранённые подключения',
       gatewayManagedUpdates: 'Удалённые обновления',
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
@@ -1017,7 +1005,7 @@ export const ruOverrides = {
       intro:
         'Управляйте этим устройством и всеми шлюзами Hermes, до которых можно дотянуться через удалённые, SSH или Cloud-соединения.',
       stagedNote:
-        'Переключайтесь между шлюзами из раздела «Сеансы». Профили, чаты, мессенджеры и cron-задачи остаются за своим шлюзом; работа на других шлюзах продолжается.',
+        'Все шлюзы остаются подключёнными. Профили, чаты, мессенджеры и cron-задачи остаются за своим шлюзом, а «Сеансы» могут показывать их все сразу.',
       launchModeTitle: 'При запуске возвращаться к «Сеансам» на последнем шлюзе',
       launchModeDesc: 'Если выключено, «Сеансы» открываются на основном шлюзе.',
       searchPlaceholder: 'Поиск шлюзов…',
@@ -1078,8 +1066,7 @@ export const ruOverrides = {
     },
     gateway: {
       loading: 'Загрузка настроек шлюза…',
-      unavailableTitle: 'Настройки шлюза недоступны',
-      unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+      ...ruGatewayHost,
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:
@@ -1334,8 +1321,8 @@ export const ruOverrides = {
       defaultDirTitle: 'Папка проекта по умолчанию',
       defaultDirDesc:
         'Новые сеансы начинаются в этой папке, если вы не выбрали другую. Оставьте пустым, чтобы использовать домашнюю директорию.',
-      defaultDirUpdated:
-        'Папка проекта по умолчанию обновлена — начните новый чат (Ctrl/⌘+N), чтобы она вступила в силу',
+      defaultDirUpdated: shortcut =>
+        `Папка проекта по умолчанию обновлена — начните новый чат${shortcut ? ` (${shortcut})` : ''}, чтобы она вступила в силу`,
       defaultsTo: label => `По умолчанию: ${label}.`,
       change: 'Изменить',
       choose: 'Выбрать',
@@ -1436,9 +1423,7 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
-    plugins: {
-      pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
-    },
+    plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
@@ -1490,6 +1475,10 @@ export const ruOverrides = {
     changesApplyNewSessions: 'Изменения применяются к новым сеансам.',
     skillUpdated: 'Навык обновлён',
     edit: 'Изменить',
+    lock: 'Заблокировать',
+    locked: 'Заблокирован',
+    lockHint: 'Пока навык заблокирован, агент не может его менять. Вы по-прежнему можете редактировать его сами.',
+    unlockedHint: 'Заблокируйте навык, чтобы агент не мог его менять. Вы по-прежнему можете редактировать его сами.',
     archive: 'В архив',
     skillArchivedTitle: 'Навык в архиве',
     skillArchivedMessage: 'Восстановить через hermes curator restore.',
@@ -1788,9 +1777,6 @@ export const ruOverrides = {
       resume: 'Продолжить',
       runNow: 'Запустить сейчас',
       memoryData: 'Данные памяти',
-      memoryDataDesc: 'Встроенные файлы памяти, внедряемые в каждый сеанс',
-      memoryProvider: name => `Активный провайдер: ${name}`,
-      builtinMemory: 'встроенный',
       memoryFile: 'Память агента (MEMORY.md)',
       userFile: 'Профиль пользователя (USER.md)',
       bytes: size => size,
@@ -1890,6 +1876,32 @@ export const ruOverrides = {
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: 'Токен бота не нужен',
+      intro: (platform: string) => `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
+      link: (platform: string) => `Привязать ${platform}`,
+      linkAnother: (platform: string) => `Привязать ещё один аккаунт ${platform}`,
+      linkedAccounts: 'Привязанные аккаунты',
+      unlink: 'Отвязать',
+      unlinkFailed: 'Не удалось отвязать аккаунт',
+      stepOpen: (platform: string) => `1. Отсканируйте код телефоном или откройте бота в ${platform}.`,
+      stepSend: '2. Отправьте боту это сообщение с аккаунта, который хотите привязать:',
+      open: (platform: string) => `Открыть ${platform}`,
+      copy: 'Скопировать сообщение',
+      copied: 'Скопировано',
+      copyFailed: (command: string) => `Не удалось скопировать. Введите ${command} вручную.`,
+      waiting: 'Ждём, пока бот получит сообщение. Код действует один раз.',
+      linked: (platform: string) => `Аккаунт ${platform} привязан. Напишите боту, чтобы говорить с агентом.`,
+      expired: 'Срок действия кода истёк до использования. Получите новый код и попробуйте снова.',
+      refused: (platform: string) => `${platform} отклонил привязку. Получите новый код и попробуйте снова.`,
+      qrAlt: (platform: string) => `QR-код общего бота ${platform}`,
+      managed: 'Под управлением Team Gateway',
+      managedNote: (platform: string) => `На этом экземпляре сообщения идут через Team Gateway, поэтому шлюз отключает прямое подключение ${platform} при каждом запуске. Чтобы использовать его вместе с ретранслятором, задайте GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true в окружении шлюза (прямое подключение не даёт экземпляру масштабироваться до нуля и может доставлять сообщения дважды).`,
+      managedIntro: 'Аккаунты этого агента привязываются в Nous Portal.',
+      openPortal: 'Привязать аккаунты в Nous Portal',
+      noNewAccount: (platform: string) => `Код больше не активен, и новый аккаунт не появился. Если вашего аккаунта ${platform} нет в списке, получите новый код и попробуйте снова.`
+    },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
       subtitle:
@@ -2090,8 +2102,11 @@ export const ruOverrides = {
     exported: 'Профиль экспортирован',
     failedImport: 'Не удалось импортировать профиль',
     failedExport: 'Не удалось экспортировать профиль',
+    exportNeedsHost: name =>
+      `Браузер не может сохранить архив профиля. На хосте Hermes выполните: hermes profile export ${name}`,
     allProfiles: 'Все профили',
     showAllProfiles: 'Показать все профили',
+    notServedHere: 'Здесь не обслуживается',
     switchToProfile: name => `Переключиться на ${name}`,
     switchToConnection: name => `Переключиться на ${name}`,
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,
@@ -2099,10 +2114,7 @@ export const ruOverrides = {
     connectGateway: 'Управлять шлюзами…',
     fleet: {
       localDevice: 'Это устройство (локальный бэкенд — установит Hermes, если его нет, иначе откроет новую сессию)',
-      switchDeviceTitle: 'Переключиться на это устройство?',
-      switchDeviceDesc: 'Откроется новая сессия на этом компьютере. Текущий разговор останется на другом шлюзе.',
-      switchDeviceConfirm: 'Переключить',
-      installDeviceTitle: 'Переключиться на это устройство?',
+      installDeviceTitle: 'Установить Hermes на это устройство?',
       installDeviceDesc:
         'Hermes будет установлен локально, затем откроется новая сессия на этом компьютере. Установка не начнётся, пока вы не подтвердите.',
       installDeviceConfirm: 'Установить локально',
@@ -2191,6 +2203,7 @@ export const ruOverrides = {
   },
 
   cron: {
+    control: ruCronControl,
     close: 'Закрыть cron',
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
@@ -2646,7 +2659,7 @@ export const ruOverrides = {
       '/init': 'Просканировать репозиторий и создать или обновить инструкции AGENTS.md',
       '/suggestions': 'Просмотреть, принять или отклонить предложенные автоматизации',
       '/blueprint': 'Настроить автоматизацию по шаблону',
-      '/browser': 'Управлять браузером агента [connect|disconnect|status|use]',
+      '/browser': 'Управлять браузером агента [connect|disconnect|status]',
       '/palette': 'Открыть палитру команд',
       '/usage': 'Показать расход токенов и лимиты; reset использует накопленный сброс лимита Codex',
       '/subscription': 'Показать план Nous и изменить его в браузере',
@@ -2931,6 +2944,8 @@ export const ruOverrides = {
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsClient: 'Это устройство',
+    versionDetailsBackend: 'Подключённый бэкенд',
     latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',
@@ -3180,7 +3195,9 @@ export const ruOverrides = {
       ultra: 'Ультра',
       sendsOnRoute: (level: string) => `на этом маршруте отправляется ${level}`,
       updateFailed: 'Не удалось обновить опцию модели',
-      fastFailed: 'Не удалось обновить быстрый режим'
+      fastFailed: 'Не удалось обновить быстрый режим',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Не удалось обновить Daybreak'
     },
     gatewayMenu: {
       gateway: 'Шлюз',
@@ -3303,6 +3320,7 @@ export const ruOverrides = {
     }
   },
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `Эти имена нельзя безопасно ввести в ${shell}: ${paths}`,
     terminalReadOnly: 'Вывод только для чтения',
     terminalReadOnlyHelp:
       'Чтобы ответить на запрос, остановите фоновую команду и запустите её в новом терминале. Он откроет отдельную оболочку и не подключится к этому процессу.',
@@ -3347,6 +3365,14 @@ export const ruOverrides = {
     terminalNew: 'Новый терминал',
     terminalCloseOthers: 'Закрыть другие',
     terminalCloseAll: 'Закрыть все',
+    terminalNewOn: 'Новый терминал на…',
+    terminalGatewayRemoved: 'Удалённый шлюз',
+    terminalGatewayRemovedBody:
+      'Шлюз, на котором работал этот терминал, удалён, поэтому его нельзя открыть снова. Закройте эту вкладку.',
+    terminalGatewayNoShellBody:
+      'У этого шлюза нет доступа к оболочке, поэтому терминал нельзя открыть снова. Закройте эту вкладку.',
+    terminalDisconnectedBody:
+      'Терминал отключён. Нажмите Enter, чтобы запустить новую оболочку; история прокрутки сохранена.',
     addToChat: 'Добавить в чат'
   },
   preview: {
@@ -3405,51 +3431,7 @@ export const ruOverrides = {
       sentMessage: count =>
         `${count} ${RU_NOUN(count, 'запись лога', 'записи лога', 'записей лога')} добавлено в композер`
     },
-    web: {
-      appFailedToBoot: 'Приложение предпросмотра не запустилось',
-      serverNotFound: 'Сервер не найден',
-      remoteLoopback:
-        'Этот адрес указывает на машину, на которой работает ваш агент, а не на эту. Панель браузера загружает страницы локально, поэтому для удалённого dev-сервера нужен порт-форвардинг или доступный hostname.',
-      failedToLoad: 'Не удалось загрузить предпросмотр',
-      tryAgain: 'Попробовать снова',
-      restarting: 'Hermes перезапускается...',
-      askRestart: 'Попросить Hermes перезапустить сервер',
-      lookingRestart: taskId => `Hermes ищет сервер предпросмотра для перезапуска (${taskId})`,
-      restartingTitle: 'Перезапуск сервера предпросмотра',
-      restartingMessage: 'Hermes работает в фоне. Следите за прогрессом в консоли предпросмотра.',
-      startRestartFailed: message => `Не удалось запустить перезапуск сервера: ${message}`,
-      restartFailed: 'Перезапуск сервера не удался',
-      hideConsole: 'Скрыть консоль предпросмотра',
-      showConsole: 'Показать консоль предпросмотра',
-      hideDevTools: 'Скрыть DevTools предпросмотра',
-      openDevTools: 'Открыть DevTools предпросмотра',
-      goBack: 'Назад',
-      goForward: 'Вперёд',
-      reload: 'Перезагрузить страницу',
-      address: 'Адрес',
-      addressPlaceholder: 'Введите адрес',
-      blankPageBody: 'Введите адрес выше, чтобы просматривать, или попросите Hermes открыть страницу.',
-      finishedRestarting: message => `Hermes завершил перезапуск сервера предпросмотра${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Перезапуск сервера не удался: ${message}`,
-      unknownError: 'неизвестная ошибка',
-      restartedTitle: 'Сервер предпросмотра перезапущен',
-      reloadingNow: 'Перезагружаем предпросмотр.',
-      restartFailedTitle: 'Перезапуск предпросмотра не удался',
-      restartFailedMessage: 'Hermes не смог перезапустить сервер.',
-      stillWorking:
-        'Hermes всё ещё работает, но результата перезапуска пока нет. Команда сервера может выполняться в foreground.',
-      workspaceReloading: 'Рабочее пространство изменилось, перезагружаем предпросмотр',
-      fileChanged: url => `Файл изменился, перезагружаем предпросмотр: ${url}`,
-      filesChanged: (count, url) =>
-        `${count} ${RU_NOUN(count, 'изменение файла', 'изменения файла', 'изменений файла')}, перезагружаем предпросмотр: ${url}`,
-      watchFailed: message => `Не удалось отслеживать файл предпросмотра: ${message}`,
-      moduleMimeDescription:
-        'Модульные скрипты раздаются с неверным MIME-типом. Обычно это значит, что статический файл-сервер раздаёт Vite/React-приложение вместо dev-сервера проекта.',
-      loadFailedConsole: (code, message) => `Не удалось загрузить${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: 'Страница предпросмотра недоступна.',
-      openTarget: url => `Открыть ${url}`,
-      fallbackTitle: 'Предпросмотр'
-    }
+    web: ruPreviewWeb
   },
   interfaceMode: {
     title: 'Режим интерфейса',
@@ -3513,7 +3495,8 @@ export const ruOverrides = {
     saveApply: 'Сохранить и применить',
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
-    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`
+    tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
+    tabActions: title => `Действия: ${title}`
   },
   contextMenu: {
     link: {
@@ -3547,6 +3530,18 @@ export const ruOverrides = {
       errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
       errorAddCredits: 'Пополнить кредиты',
       errorOpenBillingSettings: 'Открыть настройки оплаты',
+      errorHideDetails: 'Скрыть подробности ошибки',
+      errorDetailsCopy: 'Копировать подробности',
+      errorCopyRaw: 'Копировать ошибку',
+      errorContinue: 'Продолжить',
+      errorOpenProviderSettings: provider => `Открыть настройки ${provider}`,
+      errorOpenSetupGuide: 'Открыть руководство по настройке',
+      errorSetupGuideLink: 'Руководство по настройке',
+      errorOpenModelSettings: 'Открыть настройки модели',
+      errorStartNewChatLink: 'Начать новый чат',
+      errorChooseModelLink: 'Выбрать другую модель',
+      errorRetryAtResetShort: time => `Повторить в ${time}`,
+      errorRateLimitResetBody: (provider, time) => `Вы достигли лимита запросов ${provider}. Он сбросится в ${time}.`,
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',
@@ -3849,11 +3844,13 @@ export const ruOverrides = {
     imageAttach: 'Прикрепление изображения',
     imageWriteFailed: 'Не удалось записать изображение на диск.',
     imageAttachFailed: 'Прикрепление изображения не удалось',
+    attachFailed: 'Прикрепление не удалось',
     attachImages: 'Прикрепить изображения',
     clipboard: 'Буфер обмена',
     noClipboardImage: 'Изображение в буфере обмена не найдено',
     clipboardPasteFailed: 'Вставка из буфера обмена не удалась',
     dropFiles: 'Перетащите файлы',
+    dropFilesMore: (count: number) => `и ещё ${count}`,
     handoff: {
       pickPlatform: 'Выберите назначение',
       success: platform => `Передаём в ${platform}. Возобновите здесь в любой момент.`,

@@ -6,14 +6,21 @@ import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
+import { zhCronControl } from './zh_cron_control'
+import { zhErrorCodes } from './zh_error_codes'
 import { zhErrorLayers } from './zh_error_layers'
 import { zhFirstRun } from './zh_first_run'
+import { zhGatewayHost } from './zh_gateway_host'
 import { zhLocalModels } from './zh_local_models'
+import { zhMemoryLayers } from './zh_memory_layers'
 import { zhModelMenu } from './zh_model_menu'
 import { zhModelSettings } from './zh_model_settings'
 import { zhNotices } from './zh_notices'
 import { zhNotifications } from './zh_notifications'
 import { zhOnboarding } from './zh_onboarding'
+import { zhPluginPreviewAccess } from './zh_plugin_preview_access'
+import { zhPluginUpdate } from './zh_plugin_update'
+import { zhPreviewWeb } from './zh_preview_web'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
 import { zhThemePicker } from './zh_theme_picker'
@@ -239,6 +246,7 @@ export const zhOverrides = {
       microphoneConstraintsUnsupported: '此设备不支持当前麦克风约束。',
       microphoneFailed: '麦克风出错',
       microphoneInUse: '麦克风正被其他应用占用。',
+      microphoneNeedsHttps: '麦克风需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后使用。',
       microphonePermissionDenied: '麦克风权限被拒绝。',
       microphoneStartFailed: '无法开始麦克风录音。',
       microphoneUnsupported: '当前运行环境不支持麦克风录音。',
@@ -447,6 +455,7 @@ export const zhOverrides = {
   },
 
   settings: {
+    memoryLayers: zhMemoryLayers,
     subpages: {
       appearanceTheme: '主题',
       appearanceTypography: '字体与缩放',
@@ -479,7 +488,7 @@ export const zhOverrides = {
       advancedOutput: '输出限制',
       advancedDelegation: '子智能体',
       advancedDesktop: '桌面与启动',
-      gatewayConnection: '当前窗口',
+      gatewayConnection: '主网关',
       gatewayDevices: '已保存的连接',
       gatewayManagedUpdates: '远程更新',
       gatewayManagedUpdatesUnavailable: '远程更新需要支持托管 SSH 更新的桌面版本。',
@@ -667,6 +676,15 @@ export const zhOverrides = {
         versionLabel: '版本',
         reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
         latestCommit: '最新提交',
+        sourceMoved: sha =>
+          sha ? `自你审阅后仓库已变更。请先审阅新版本（提交 ${sha}）再安装。` : '自你审阅后仓库已变更。正在读取新版本…',
+        legacyBackendConfirm:
+          '此后端比本应用旧，无法保证安装的就是你审阅过的版本：如果仓库此后有变更，安装的会是更新的版本。更新后端即可获得这一保证。',
+        installAnyway: '仍然安装',
+        partialInstall: sha =>
+          sha
+            ? `插件只安装了一部分：代理部分已安装在提交 ${sha}，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。`
+            : '插件只安装了一部分：代理部分已安装，但由于仓库在你审阅后有变更，桌面部分未能随之安装。在“高级”中打开强制重装，可用显示的版本替换两部分；或取消，仅保留代理部分。',
         nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
@@ -1304,8 +1322,7 @@ export const zhOverrides = {
     connections: {
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
-      stagedNote:
-        '可在“会话”侧边栏切换网关。配置档案、聊天、消息和定时任务归属于各自网关；其他网关上的工作会继续运行。',
+      stagedNote: '所有网关都保持连接。配置档案、聊天、消息和定时任务归属于各自网关，“会话”可以同时显示全部网关。',
       launchModeTitle: '启动时返回上次使用网关的会话视图',
       launchModeDesc: '关闭时，会话将在主网关上打开。',
       searchPlaceholder: '搜索网关…',
@@ -1381,8 +1398,7 @@ export const zhOverrides = {
     },
     gateway: {
       loading: '正在加载网关设置...',
-      unavailableTitle: '网关设置不可用',
-      unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
+      ...zhGatewayHost,
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:
@@ -1874,7 +1890,7 @@ export const zhOverrides = {
       autoArchiveFailed: '无法更新自动归档设置',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
-      defaultDirUpdated: '默认项目目录已更新',
+      defaultDirUpdated: () => '默认项目目录已更新',
       defaultsTo: label => `默认使用 ${label}。`,
       change: '更改',
       choose: '选择',
@@ -2042,11 +2058,16 @@ export const zhOverrides = {
     changesApplyNewSessions: '更改将应用于新会话。',
     skillUpdated: '技能已更新',
     edit: '编辑',
+    lock: '锁定',
+    locked: '已锁定',
+    lockHint: '锁定期间，智能体无法更改此技能。你仍可以自己编辑。',
+    unlockedHint: '锁定后，智能体将无法更改此技能。你仍可以自己编辑。',
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
     tabPlugins: '插件',
     plugins: {
+      ...zhPluginPreviewAccess,
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
       pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
@@ -2079,9 +2100,7 @@ export const zhOverrides = {
       catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
       pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
       pinnedBadge: (sha: string) => `固定 @ ${sha}`,
-      updateToPin: (sha: string) => `更新到 ${sha}`,
-      updateFailed: (name: string) => `无法更新 ${name}`,
-      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`,
+      ...zhPluginUpdate,
       uninstall: '卸载',
       uninstallTip: (name: string, profile: string) => `从 ${profile} 卸载 ${name}`,
       uninstallConfirmTitle: (name: string) => `卸载 ${name}？`,
@@ -2392,9 +2411,6 @@ export const zhOverrides = {
       resume: '恢复',
       runNow: '立即运行',
       memoryData: '记忆数据',
-      memoryDataDesc: '注入每个会话的内置记忆文件',
-      memoryProvider: name => `当前提供方：${name}`,
-      builtinMemory: '内置',
       memoryFile: '智能体记忆（MEMORY.md）',
       userFile: '用户画像（USER.md）',
       bytes: size => size,
@@ -2494,6 +2510,32 @@ export const zhOverrides = {
     restartNow: '立即重启',
     restarting: '正在重启…',
     restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    relayLink: {
+      title: 'Team Gateway',
+      badge: '无需机器人令牌',
+      intro: (platform: string) => `${platform} 通过共享的 Hermes 机器人连接到此智能体。关联你的 ${platform} 账号，然后给机器人发消息即可与智能体对话。`,
+      link: (platform: string) => `关联 ${platform}`,
+      linkAnother: (platform: string) => `关联另一个 ${platform} 账号`,
+      linkedAccounts: '已关联账号',
+      unlink: '取消关联',
+      unlinkFailed: '无法取消关联该账号',
+      stepOpen: (platform: string) => `1. 用手机扫描二维码，或在 ${platform} 中打开机器人。`,
+      stepSend: '2. 用要关联的账号向机器人发送这条消息：',
+      open: (platform: string) => `打开 ${platform}`,
+      copy: '复制消息',
+      copied: '已复制',
+      copyFailed: (command: string) => `复制失败。请手动输入 ${command}。`,
+      waiting: '正在等待机器人收到你的消息。此代码只能使用一次。',
+      linked: (platform: string) => `${platform} 账号已关联。给机器人发消息即可与智能体对话。`,
+      expired: '代码在使用前已过期。请获取新代码后重试。',
+      refused: (platform: string) => `${platform} 拒绝了关联。请获取新代码后重试。`,
+      qrAlt: (platform: string) => `共享 ${platform} 机器人的二维码`,
+      managed: '由 Team Gateway 管理',
+      managedNote: (platform: string) => `此实例的消息由 Team Gateway 承载，因此网关每次启动都会关闭 ${platform} 的直连。若要与中继同时使用，请在网关环境中设置 GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true（直连会使实例无法缩容到零，并可能重复投递消息）。`,
+      managedIntro: '此代理的账号在 Nous Portal 中关联。',
+      openPortal: '在 Nous Portal 中关联账号',
+      noNewAccount: (platform: string) => `该代码已失效，且没有出现新账号。如果你的 ${platform} 账号不在列表中，请获取新代码后重试。`
+    },
     telegramQr: {
       title: '选择连接 Telegram 机器人的方式',
       subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
@@ -2685,8 +2727,10 @@ export const zhOverrides = {
     exported: '配置档案已导出',
     failedImport: '导入配置档案失败',
     failedExport: '导出配置档案失败',
+    exportNeedsHost: name => `浏览器无法保存配置档案归档。请在 Hermes 主机上运行：hermes profile export ${name}`,
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
+    notServedHere: '此处未提供',
     switchToProfile: name => `切换到 ${name}`,
     switchToConnection: name => `切换到 ${name}`,
     switchConnectionFailed: name => `无法连接到 ${name}`,
@@ -2697,13 +2741,10 @@ export const zhOverrides = {
       gateway: gateway => `${gateway} 上的配置档案`,
       gatewayUnreachable: gateway => `${gateway} · 无法连接`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
-      switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,
+      switchTo: (name, gateway) => `打开 ${gateway} 上的 ${name}`,
       deleteOn: gateway => `（位于 ${gateway}）`,
       localDevice: '此设备（本地后端——若未安装 Hermes 则会安装，否则打开一个新会话）',
-      switchDeviceTitle: '切换到此设备？',
-      switchDeviceDesc: '这会在这台电脑上打开一个新会话。当前对话仍留在另一个网关上。',
-      switchDeviceConfirm: '切换',
-      installDeviceTitle: '切换到此设备？',
+      installDeviceTitle: '在此设备上安装 Hermes？',
       installDeviceDesc: '这将在本地安装 Hermes，然后在这台电脑上打开一个新会话。确认之前不会开始安装。',
       installDeviceConfirm: '本地安装',
       connectExistingInstead: '改为连接现有环境'
@@ -2824,6 +2865,7 @@ export const zhOverrides = {
   },
 
   cron: {
+    control: zhCronControl,
     close: '关闭定时任务',
     title: '定时任务',
     count: count => `${count} 个任务`,
@@ -3127,7 +3169,6 @@ export const zhOverrides = {
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
-      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
@@ -3289,7 +3330,7 @@ export const zhOverrides = {
       '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',
       '/suggestions': '查看建议的自动化项目（接受或跳过）',
       '/blueprint': '使用 blueprint 模板设置自动化',
-      '/browser': '管理智能体浏览器 [connect|disconnect|status|use]',
+      '/browser': '管理智能体浏览器 [connect|disconnect|status]',
       '/palette': '打开模糊搜索命令面板（也可使用 Ctrl+P）',
       '/usage': '显示 Token 用量与速率限制；`reset` 可兑换保留的 Codex 限额重置',
       '/subscription': '查看你的 Nous 方案，并在浏览器中更改',
@@ -3668,6 +3709,8 @@ export const zhOverrides = {
     versionDetailsTitle: '版本详情',
     versionDetailsBody: '此安装在应用外部管理。请使用与安装时相同的方式更新。',
     versionDetailsVersion: '版本',
+    versionDetailsClient: '本设备',
+    versionDetailsBackend: '已连接的后端',
     versionDetailsCommit: '提交',
     versionDetailsBuildOrigin: '构建来源',
     versionDetailsDistribution: '发行版',
@@ -3891,7 +3934,9 @@ export const zhOverrides = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由实际发送 ${level}`,
       updateFailed: '模型选项更新失败',
-      fastFailed: '快速模式更新失败'
+      fastFailed: '快速模式更新失败',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失败'
     },
     gatewayMenu: {
       gateway: '网关',
@@ -4027,6 +4072,7 @@ export const zhOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `无法在 ${shell} 中安全地输入这些名称：${paths}`,
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
       '如需回应提示，请停止后台命令，再在新终端中运行。新终端会打开独立的 shell，不会连接到此进程。',
@@ -4071,6 +4117,14 @@ export const zhOverrides = {
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
+    terminalNewOn: '新建终端于…',
+    terminalGatewayRemoved: '已移除的网关',
+    terminalGatewayRemovedBody:
+      '此终端所在的网关已被移除，无法重新打开。请关闭此标签页。',
+    terminalGatewayNoShellBody:
+      '此网关不提供 Shell 访问，此终端无法重新打开。请关闭此标签页。',
+    terminalDisconnectedBody:
+      '终端已断开。按 Enter 启动新的 shell；滚动记录会保留。',
     addToChat: '添加到对话'
   },
 
@@ -4133,59 +4187,7 @@ export const zhOverrides = {
       sentTitle: '已发送到对话',
       sentMessage: count => `已将 ${count} 条日志添加到输入框`
     },
-    web: {
-      appFailedToBoot: '预览应用启动失败',
-      serverNotFound: '未找到服务器',
-      remoteLoopback:
-        '该地址指向运行代理的那台机器，而不是本机。浏览器面板在本地加载页面，因此远程开发服务器需要端口转发或可访问的主机名。',
-      failedToLoad: '预览加载失败',
-      tryAgain: '重试',
-      restarting: 'Hermes 正在重启...',
-      askRestart: '让 Hermes 重启服务器',
-      lookingRestart: taskId => `Hermes 正在查找要重启的预览服务器 (${taskId})`,
-      restartingTitle: '正在重启预览服务器',
-      restartingMessage: 'Hermes 正在后台工作。可在预览控制台查看进度。',
-      startRestartFailed: message => `无法启动服务器重启：${message}`,
-      restartFailed: '服务器重启失败',
-      hideConsole: '隐藏预览控制台',
-      showConsole: '显示预览控制台',
-      hideDevTools: '隐藏预览 DevTools',
-      openDevTools: '打开预览 DevTools',
-      goBack: '后退',
-      goForward: '前进',
-      reload: '重新加载页面',
-      address: '地址',
-      addressPlaceholder: '输入地址',
-      blankPageBody: '在上方输入地址开始浏览，或让 Hermes 打开一个页面。',
-      finishedRestarting: message => `Hermes 已完成预览服务器重启${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `服务器重启失败：${message}`,
-      unknownError: '未知错误',
-      restartedTitle: '预览服务器已重启',
-      reloadingNow: '正在重新加载预览。',
-      restartFailedTitle: '预览重启失败',
-      restartFailedMessage: 'Hermes 无法重启服务器。',
-      stillWorking: 'Hermes 仍在工作，但还没有收到重启结果。服务器命令可能正在前台运行。',
-      workspaceReloading: '工作区已变更，正在重新加载预览',
-      fileChanged: url => `文件已变更，正在重新加载预览：${url}`,
-      filesChanged: (count, url) => `${count} 个文件变更，正在重新加载预览：${url}`,
-      watchFailed: message => `无法监听预览文件：${message}`,
-      moduleMimeDescription:
-        '模块脚本使用了错误的 MIME 类型。这通常表示静态文件服务器正在服务 Vite/React 应用，而不是项目开发服务器。',
-      loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
-      unreachableDescription: '无法访问预览页面。',
-      openTarget: url => `打开 ${url}`,
-      fallbackTitle: '预览',
-      annotate: '标注',
-      annotateOn: '停止标注',
-      annotateNeedPage: '请先在内置浏览器中打开页面。',
-      annotateFailed: '无法开始标注',
-      commenting: '标注中',
-      addComments: count => (count === 1 ? '添加 1 条批注' : `添加 ${count} 条批注`),
-      commentPlaceholder: '添加批注…',
-      commentTitle: n => `批注 ${n}`,
-      saveComment: '保存',
-      cancelComment: '取消批注'
-    }
+    web: zhPreviewWeb
   },
 
   interfaceMode: {
@@ -4248,7 +4250,8 @@ export const zhOverrides = {
     saveApply: '保存并应用',
     notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
     zoneCount: count => `${count} 个区域`,
-    tabCount: count => `${count} 个标签页`
+    tabCount: count => `${count} 个标签页`,
+    tabActions: title => `${title} 的操作`
   },
 
   contextMenu: {
@@ -4300,63 +4303,80 @@ export const zhOverrides = {
       errorGenericProvider: 'AI 服务',
       ...zhErrorLayers,
       errorCodes: {
+        ...zhErrorCodes,
         provider_policy_blocked: {
-          title: '账户设置阻止了此模型',
-          body: provider => `${provider} 无法按你账户的数据或隐私设置路由此请求。请选择其他模型或切换服务商。`
+          title: (provider, model) => `${provider} 设置阻止了 ${model || '此模型'}`,
+          body: provider =>
+            `你的 ${provider} 隐私设置排除了此模型的所有端点。请在 ${provider} 上更改设置，或选择其他模型。`
         },
         content_policy_blocked: {
-          title: 'AI 服务拒绝回答此请求',
-          body: provider => `${provider} 拒绝回答这条消息。请修改后重新发送。`
+          title: provider => `${provider} 拒绝了此消息`,
+          body: provider => `${provider} 的安全过滤器拒绝了它。请修改消息后重新发送。`
         },
         format_error: {
-          title: 'AI 服务拒绝了请求格式',
-          body: provider => `${provider} 不接受此请求的构造方式。请切换服务商，或发送诊断信息以便我们排查。`
+          title: provider => `${provider} 拒绝了此请求`,
+          body: provider => `${provider} 无法接受此对话的结构。请切换服务商；若问题持续，请新建聊天。`
         },
         invalid_response: {
-          title: 'AI 服务返回了无法读取的回复',
-          body: provider => `${provider} 返回了 Hermes 无法读取的内容。请稍后重试。`
+          title: '无法读取回复',
+          body: provider => `${provider} 返回了空的或损坏的回复。请稍后重试。`
         },
         empty_response: {
-          title: 'AI 服务返回了空回复',
+          title: '未能获得回复',
           body: provider => `${provider} 没有为此消息返回内容。请稍后重试。`
         },
         rate_limit: {
-          title: 'AI 服务繁忙',
-          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+          title: provider => `${provider} 当前繁忙`,
+          body: provider => `你已达到 ${provider} 的速率限制。请稍等片刻后重试。`
         },
         upstream_rate_limit: {
-          title: 'AI 服务繁忙',
-          body: provider => `${provider} 正在限制请求数量。请稍等片刻后重试。`
+          title: (_provider, model) => `${model || '此模型'} 当前繁忙`,
+          body: (provider, model) =>
+            `${model || '此模型'} 在 ${provider} 的上游受到速率限制，与你的账户无关。请稍后重试。`
         },
         overloaded: {
-          title: 'AI 服务负载过高',
-          body: provider => `${provider} 当前遇到问题。请稍后重试或切换服务商。`
+          title: provider => `${provider} 当前繁忙`,
+          body: provider => `${provider} 负载过高，无法处理此请求。请稍后重试。`
         },
         server_error: {
-          title: 'AI 服务发生错误',
-          body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
+          title: provider => `${provider} 出现问题`,
+          body: provider => `${provider} 返回了服务器错误。请稍后重试。`
         },
         timeout: {
-          title: '无法连接到 AI 服务',
-          body: provider => `无法连接到 ${provider}，或其未及时响应。请检查网络连接后重试。`
+          title: provider => `无法连接 ${provider}`,
+          body: provider => `Hermes 无法连接到 ${provider}。请检查网络连接后重试。`
         },
         ssl_cert_verification: {
-          title: '安全连接失败',
-          body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
-        },
-        cron_session_read_only: {
-          title: '此聊天属于一个定时任务',
-          body: '它只运行该任务，因此你的消息未被执行。请新建聊天后再发送。'
+          title: provider => `无法验证 ${provider} 的连接`,
+          body: provider => `代理或过时的证书存储阻止了与 ${provider} 的安全连接。设置指南介绍了修复方法。`
         },
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
-        },
-        workspace_unavailable: {
-          title: '此聊天的文件夹已不存在',
-          body: '此聊天使用的文件夹已被移动或删除，因此你的消息未被执行。请重新创建该文件夹，或使用“移动到项目”为聊天指定其他文件夹，然后重试。'
         }
       },
+      errorAuthKinds: {
+        api_key: {
+          title: provider => `${provider} 拒绝了你的 API 密钥`,
+          body: () => '已保存的密钥无效或已被撤销。请更新密钥，然后重新发送消息。'
+        },
+        oauth: {
+          title: provider => `重新登录 ${provider}`
+        }
+      },
+      errorDetails: '查看错误详情',
+      errorHideDetails: '隐藏错误详情',
+      errorDetailsCopy: '复制详情',
+      errorCopyRaw: '复制错误',
+      errorContinue: '继续',
+      errorOpenProviderSettings: provider => `打开 ${provider} 设置`,
+      errorOpenSetupGuide: '打开设置指南',
+      errorSetupGuideLink: '设置指南',
+      errorOpenModelSettings: '打开模型设置',
+      errorStartNewChatLink: '新建聊天',
+      errorChooseModelLink: '选择其他模型',
+      errorRetryAtResetShort: time => `于 ${time} 重试`,
+      errorRateLimitResetBody: (provider, time) => `你已达到 ${provider} 的速率限制，将于 ${time} 重置。`,
       errorRetry: '重试',
       errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
       errorSwitchModelFailed: '无法切换模型',
@@ -4364,18 +4384,15 @@ export const zhOverrides = {
       errorUseCreditsFailed: '无法开启用额度继续',
       errorAddCredits: '添加额度',
       errorOpenBillingSettings: '打开账单设置',
-      errorLimitResets: time => `限额将于 ${time} 重置`,
-      errorRetryAtReset: time => `限额重置后重试（${time}）`,
       errorRetryScheduled: (time, wait) => `将于 ${time} 重试 — 还剩 ${wait}`,
       errorRetryScheduledCancel: '取消',
       errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
       errorSignInAgain: provider => `重新登录 ${provider}`,
-      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
+      errorOauthExpired: provider => `你的 ${provider} 登录已过期或被撤销。请重新登录以继续聊天。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',
-      errorCopyDiagnostics: '复制错误详情',
       errorSendDiagnostics: '发送诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',
@@ -4666,6 +4683,7 @@ export const zhOverrides = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    attachFailed: '附加失败',
     pastedContent: '粘贴内容',
     pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
@@ -4673,6 +4691,7 @@ export const zhOverrides = {
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
     dropFiles: '拖放文件',
+    dropFilesMore: (count: number) => `以及另外 ${count} 项`,
     handoff: {
       pickPlatform: '选择目标平台',
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,

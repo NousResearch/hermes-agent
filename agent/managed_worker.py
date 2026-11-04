@@ -431,10 +431,8 @@ def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
-        if kwargs['api_key'] is None:
-            from gateway.session_worker_construct import worker_api_key
-            kwargs['api_key'] = worker_api_key(policy, kwargs)
-        return factory(**kwargs)
+        from gateway.session_worker_construct import worker_route
+        return factory(**{**kwargs, **worker_route(policy, kwargs)})
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)
@@ -446,9 +444,9 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
-    from hermes_cli.process_identity import process_birth
+    from hermes_cli.process_identity import worker_birth
     me = psutil.Process()
-    return {'pid': me.pid, 'birth': process_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
+    return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 
 
 def main():

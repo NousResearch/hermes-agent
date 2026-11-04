@@ -138,6 +138,7 @@ class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    # True when the resume asked ``omit_messages``: ``messages`` is empty and the client pages the transcript.
     messages_omitted: bool | None = None
     # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
     display_messages: list[TranscriptMessage] | None = None
@@ -319,6 +320,7 @@ class CanonicalEventsResult(Result):
     truncated: bool
     snapshot_required: bool
     count: int
+    open_requests: list[OpenRequestEntry] | None = None
 
 
 for _name, _params, _result in (

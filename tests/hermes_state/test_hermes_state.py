@@ -98,24 +98,6 @@ def db(tmp_path):
     session_db.close()
 
 
-@pytest.fixture(autouse=True)
-def _no_fts_rebuild_throttle(monkeypatch):
-    """Zero the FTS-rebuild inter-chunk throttle for every test in this file.
-
-    ``optimize_fts_storage`` sleeps ``max(_FTS_REBUILD_MIN_PAUSE,
-    chunk_cost * _FTS_REBUILD_DUTY_FACTOR)`` between chunks so a LIVE
-    gateway/CLI sharing the DB isn't starved of the write lock. Tests run
-    against a private tmp-path DB with no concurrent process — the sleep
-    protects nobody and was pure dead time (measured: 4.1s of a 4.6s
-    migration test was time.sleep; ~20s across the file, whose total was
-    ~52s). The duty-cycle POLICY (sleep >= 4x chunk cost) stays covered by
-    the production constants themselves; no test asserts on wall-clock
-    pacing.
-    """
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_MIN_PAUSE", 0.0)
-    monkeypatch.setattr(SessionDB, "_FTS_REBUILD_DUTY_FACTOR", 0.0)
-
-
 # =========================================================================
 # Connection lifecycle
 # =========================================================================

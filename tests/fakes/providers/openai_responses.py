@@ -69,9 +69,11 @@ class Reasoning:
 
 @dataclass
 class Message:
-    """An assistant ``message`` output item (streamed as ``output_text`` deltas)."""
+    """An assistant ``message`` output item (streamed as ``output_text`` deltas); ``phase`` is the
+    Codex ``commentary`` / ``final_answer`` label (unset by default)."""
 
     text: str
+    phase: str | None = None
 
 
 @dataclass
@@ -93,6 +95,7 @@ class Turn:
     input_tokens: int = 100
     output_tokens: int = 20
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     drop_after_events: int | None = None  # close the socket after N events (no terminal event)
 
 
@@ -215,7 +218,7 @@ def _built_item(item: Item, idx: int) -> Any:
     if isinstance(item, Message):
         return ResponseOutputMessage(
             id=f"msg_{idx}_{uuid.uuid4().hex[:8]}", role="assistant", status="completed", type="message",
-            content=[ResponseOutputText(annotations=[], text=item.text, type="output_text")])
+            content=[ResponseOutputText(annotations=[], text=item.text, type="output_text")], phase=item.phase)
     args = item.args if isinstance(item.args, str) else json.dumps(item.args)
     return ResponseFunctionToolCall(id=f"fc_{idx}_{uuid.uuid4().hex[:8]}", call_id=f"call_{uuid.uuid4().hex[:10]}",
                                     name=item.name, arguments=args, type="function_call", status="completed")
@@ -260,7 +263,8 @@ def turn_events(turn: Turn) -> list[dict[str, Any]]:
     usage = ResponseUsage(
         input_tokens=turn.input_tokens, output_tokens=turn.output_tokens,
         total_tokens=turn.input_tokens + turn.output_tokens,
-        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens),
+        input_tokens_details=InputTokensDetails(cached_tokens=turn.cached_tokens,
+                                                 cache_write_tokens=turn.cache_write_tokens),
         output_tokens_details=OutputTokensDetails(reasoning_tokens=0))
     events.append(ResponseCompletedEvent(response=_response(resp_id, "completed", built, usage),
                                          sequence_number=seq(), type="response.completed"))

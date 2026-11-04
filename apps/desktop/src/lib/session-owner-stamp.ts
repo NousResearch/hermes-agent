@@ -15,10 +15,15 @@ import type { SessionInfo } from '@/types/hermes'
  * would let a later resume fall back to a same-named local profile
  * ("session not found" on turn two). `local` is never stamped here — a bare
  * local row already routes correctly while local is the primary, and a `local`
- * tag would only pin it against the fail-closed owner resolution. The one
- * exception, `local` serving as a registry SECONDARY, is stamped by its caller
- * (`stampProjectSessions` in store/projects), because there a bare row would
- * route to the remote primary.
+ * tag would only pin it against the fail-closed owner resolution.
+ * Two callers stamp `local` themselves: `local` serving as a registry
+ * SECONDARY (`stampProjectSessions` in store/projects), because there a bare
+ * row would route to the remote primary; and a gateway-served Webapp tab,
+ * whose REST door (`installBrowserDesktopBridge`) tags every listed row with
+ * `local`, the tab's only source, so a listed row and a new chat name the same
+ * owner. A Webapp resume already routed through `local` (the tab's connection
+ * is `mode: 'remote'`, `connectionId: 'local'`, so the ambient owner is
+ * `local`); the tag only replaces the remembered-owner hint.
  */
 export function stampRowsWithOwningConnection(
   sessions: SessionInfo[],

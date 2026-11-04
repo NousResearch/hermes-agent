@@ -40,17 +40,20 @@ def _check_fences(pending, authority_epoch, execution_generation):
 
 class _Pending:
     __slots__ = ("authority_epoch", "event", "events", "execution_generation", "locked", "method", "params",
-                 "qids", "result", "session_id", "value")
+                 "qids", "replay", "result", "session_id", "value")
 
-    def __init__(self, session_id, qids=None, events=None, method=None, params=None,
+    def __init__(self, session_id, qids=None, events=None, method=None, params=None, replay=True,
                  authority_epoch=None, execution_generation=None):
         self.event = threading.Event()
         self.session_id = session_id
         self.method = method
+        # The frame's params as sent, so a viewer that reconnects gets the request again; ``replay`` False
+        # for an automatic window request (a preview click), which a second delivery would run twice.
+        self.params = {"session_id": session_id, **dict(params or {})}
+        self.replay = replay
         # The live session's own event stream the request went out on: one per authority (profile) and
         # session mount, so a viewer of another profile's same-named session can never settle it.
         self.events = events
-        self.params = dict(params or {})
         self.authority_epoch = authority_epoch
         self.execution_generation = execution_generation
         self.value = ""
@@ -61,7 +64,9 @@ class _Pending:
 
     def snapshot(self, request_id):
         """Reconnect frame with only locks already accepted by this authority."""
-        params = {"session_id": self.session_id, **self.params, "answers": _answers_snapshot(self)}
+        params = dict(self.params)
+        if self.qids is not None:
+            params["answers"] = _answers_snapshot(self)
         return {"id": request_id, "method": self.method, "params": params}
 
 
@@ -157,10 +162,12 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
     return True
 
 
-def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S) -> str:
+def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=REQUEST_TIMEOUT_S,
+               replay=True) -> str:
     """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
-    session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer.
+    ``replay=False``: a reconnecting viewer is not handed it again (``open_requests``)."""
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, replay=replay)
     return pending.value if pending is not None else ""
 
 
@@ -181,11 +188,12 @@ def waiting(events, session_id, method) -> bool:
         return any(p.session_id == session_id and p.events is events and p.method == method for p in _open.values())
 
 
-def open_requests(events, session_id) -> list[dict]:
-    """Live batch requests for this exact authority stream, including confirmed locks."""
+def open_requests(events, session_id, *, batch_only=False) -> list[dict]:
+    """Live requests for this exact stream; admission-only snapshots expose only batch forms."""
     with _lock:
         return [pending.snapshot(request_id) for request_id, pending in _open.items()
-                if pending.session_id == session_id and pending.events is events and pending.qids is not None]
+                if pending.session_id == session_id and pending.events is events and pending.replay
+                and (pending.qids is not None or not batch_only)]
 
 
 def request_receipts(events, session_id) -> list[dict]:
@@ -246,7 +254,7 @@ def reconcile(request_id, *, session_ok=lambda session_id, events: False,
             return {"status": "open", "request_id": request_id,
                     "authority_epoch": pending.authority_epoch,
                     "execution_generation": pending.execution_generation,
-                    "answers": dict(pending.locked),
+                    "answers": _answers_snapshot(pending),
                     "remaining": [qid for qid in pending.qids if qid not in pending.locked]}
         pending = _settled.get(request_id)
         if pending is None or not session_ok(pending.session_id, pending.events):
@@ -261,16 +269,16 @@ def reconcile(request_id, *, session_ok=lambda session_id, events: False,
                 "answers": _answers_snapshot(pending), "remaining": None}
 
 
-def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None,
+def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, replay=True,
          authority_epoch=None, execution_generation=None):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids, events, method, params, authority_epoch, execution_generation)
+    pending = _Pending(session_id, qids, events, method, params, replay=replay,
+                       authority_epoch=authority_epoch, execution_generation=execution_generation)
     with _lock:
         _open[request_id] = pending
-    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
-                         "params": {"session_id": session_id, **params}})
+    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": pending.params})
     waited = 0.0
     reason = "timeout"
     while not pending.event.wait(_POLL_S):

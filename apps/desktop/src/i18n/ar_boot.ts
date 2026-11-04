@@ -78,6 +78,7 @@ export const arBoot = {
   promptNotices: {
     legacySendUnconfirmed:
       'تعذّر على هذا الخادم تأكيد الإرسال السابق لهذه الرسالة، لذا ربما تم تنفيذها بالفعل. راجع المحادثة قبل إرسالها مرة أخرى.',
+    restoredDraftAttachmentsDropped: 'لم تتم استعادة مرفقات رسالتك غير المرسلة. أرفقها مرة أخرى قبل إرسالها.',
     mcpReloadDeferred:
       'هذه المحادثة مشغولة: يُطبَّق تغيير MCP بعد انتهاء دورها وإعادة تحميل MCP مجددًا، أو عند إعادة فتح المحادثة',
     mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
@@ -140,6 +141,8 @@ export const arBoot = {
     versionDetailsTitle: 'تفاصيل الإصدار',
     versionDetailsBody: 'هذا التثبيت مُدار خارج التطبيق. حدّثه بالطريقة نفسها التي استخدمتها لتثبيته.',
     versionDetailsVersion: 'الإصدار',
+    versionDetailsClient: 'هذا الجهاز',
+    versionDetailsBackend: 'الخادم المتصل',
     versionDetailsCommit: 'الالتزام',
     versionDetailsBuildOrigin: 'مصدر البناء',
     versionDetailsDistribution: 'التوزيع',

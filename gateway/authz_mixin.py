@@ -709,9 +709,12 @@ class GatewayAuthorizationMixin:
         transport profile like the budget. A human message resets its conversation's chain; a bot message
         past ``max_hops``, a repeat of the same ask, or a bot answering the reply this bot just gave it
         starts no turn (#137027)."""
+        from gateway.session_ingress import executing_admission
         source = event.source
         is_bot = bool(getattr(source, "is_bot", False))
-        if getattr(event, "internal", False) or (not is_bot and not self._bot_loop_guard_instance().tracking_chains):
+        # A committed admission re-enters the handler to execute; ingress already judged that message.
+        if executing_admission.get() or getattr(event, "internal", False) or (
+                not is_bot and not self._bot_loop_guard_instance().tracking_chains):
             return True
         allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
             self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))

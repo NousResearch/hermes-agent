@@ -83,7 +83,16 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
         source = SessionSource(platform=Platform.MATTERMOST, chat_id=CHAT, chat_type="dm", user_id=user, is_bot=is_bot)
         return MessageEvent(text=text, message_id=text, source=source)
 
-    assert await runner._hm_admit_event(_event(PEER, "question", True)) is not None
+    from gateway.session_ingress import executing_admission
+
+    first = _event(PEER, "question", True)
+    assert await runner._hm_admit_event(first) is not None
+    # The session authority executes the admitted row through the same handler: not a second hop.
+    token = executing_admission.set(True)
+    try:
+        assert await runner._hm_admit_event(first) is not None
+    finally:
+        executing_admission.reset(token)
     assert await runner._hm_admit_event(_event(PEER, "answer to your answer", True)) is None
     assert await runner._hm_admit_event(_event(HUMAN, "hi", False)) is not None
     assert await runner._hm_admit_event(_event(PEER, "new question", True)) is not None

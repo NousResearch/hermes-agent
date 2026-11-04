@@ -50,8 +50,8 @@ class Target:
     alias: Optional[str] = None
     # The existing account a reconnect repairs, by id: an unnamed account, which no alias can address.
     repair_id: Optional[str] = None
-    # What an MCP row will run or contact ({kind, target}), scrubbed; the card shows it before consent.
-    launch: Optional[dict[str, str]] = None
+    # What an MCP row will run or contact ({kind, target, env?, cwd?}), scrubbed; the card shows it before consent.
+    launch: Optional[dict[str, Any]] = None
 
     @property
     def resolved(self) -> bool:

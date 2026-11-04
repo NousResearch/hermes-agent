@@ -154,6 +154,22 @@ describe('the MCP setup card', () => {
     expect(container.querySelector('[data-slot="mcp-launch-target"]')).toBeNull()
   })
 
+  it('names the env vars and working directory a stdio server adds, never their values', () => {
+    const launch = {
+      cwd: '/srv/acme',
+      env: ['ACME_TOKEN', 'NODE_OPTIONS'],
+      kind: 'stdio' as const,
+      target: 'npx -y @acme/mcp'
+    }
+
+    setConnectionRequest({ ...REQUEST, targets: [{ ...LINEAR, launch }] })
+    const { container } = renderTool()
+
+    expect(container.querySelector('[data-slot="mcp-launch-target"]')?.textContent).toBe(
+      'Runs: npx -y @acme/mcp' + 'Working dir: /srv/acme' + 'Env: ACME_TOKEN, NODE_OPTIONS'
+    )
+  })
+
   it('lists every target once settled, in the same three words as the connector card', () => {
     renderTool({
       settled_by: 'continue',

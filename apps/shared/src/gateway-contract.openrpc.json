@@ -14054,7 +14054,7 @@
       },
       "ConnectionTargetLaunch": {
         "additionalProperties": false,
-        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never the env map or headers.",
+        "description": "What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed\ndisplay text, never env values or headers.",
         "properties": {
           "kind": {
             "$ref": "#/components/schemas/ConnectionTargetLaunchKind"
@@ -14062,6 +14062,33 @@
           "target": {
             "title": "Target",
             "type": "string"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Env"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
           }
         },
         "required": [

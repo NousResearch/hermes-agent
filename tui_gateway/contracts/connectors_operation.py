@@ -127,10 +127,14 @@ class ConnectionTargetLaunchKind(WireEnum):
 
 class ConnectionTargetLaunch(Payload):
     """What an MCP row will run (``stdio`` command line) or contact (``remote`` URL); scrubbed
-    display text, never the env map or headers."""
+    display text, never env values or headers."""
 
     kind: ConnectionTargetLaunchKind
     target: str
+    # stdio only: the names of the env vars the entry adds to the child (values never ride here).
+    env: list[str] | None = None
+    # stdio only: the configured working directory, when one is set.
+    cwd: str | None = None
 
 
 class ConnectionOperationTarget(Payload):

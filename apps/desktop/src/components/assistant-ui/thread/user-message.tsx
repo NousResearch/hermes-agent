@@ -225,8 +225,9 @@ export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
     let live = true
 
     void resolveAgentAvatar(handle).then(url => {
-      if (live && url) {
-        setAvatar(url)
+      if (live) {
+        // Set avatar to the result (which may be null if not found)
+        setAvatar(url ?? null)
       }
     })
 
@@ -237,13 +238,12 @@ export const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
 
   // Subscribe to cache mutations: if another source updates the avatar in the cache,
   // this component will render the fresh URL (e.g., server push, art backfill completion,
-  // or another tab updating the avatar).
+  // or another tab updating the avatar). When url is null (avatar removed), resymbolize to 🤖.
   useEffect(() => {
     const unsubscribe = subscribeToCacheChange(handleLower, () => {
       const cached = agentAvatarCache.get(handleLower)
-      if (cached?.url) {
-        setAvatar(cached.url)
-      }
+      // Set avatar to the cached URL (which may be null if removed)
+      setAvatar(cached?.url ?? null)
     })
 
     return unsubscribe

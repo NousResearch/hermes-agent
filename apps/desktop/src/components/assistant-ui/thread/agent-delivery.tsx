@@ -129,8 +129,9 @@ const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
     let live = true
 
     void resolveAgentAvatar(handle).then(url => {
-      if (live && url) {
-        setAvatar(url)
+      if (live) {
+        // Set avatar to the result (which may be null if not found)
+        setAvatar(url ?? null)
       }
     })
 
@@ -143,9 +144,8 @@ const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
   useEffect(() => {
     const unsubscribe = subscribeToCacheChange(handleLower, () => {
       const cached = agentAvatarCache.get(handleLower)
-      if (cached?.url) {
-        setAvatar(cached.url)
-      }
+      // Set avatar to the cached URL (which may be null if removed)
+      setAvatar(cached?.url ?? null)
     })
 
     return unsubscribe

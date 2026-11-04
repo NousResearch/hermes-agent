@@ -1,0 +1,27 @@
+name: openaccountants
+repo: https://github.com/lEWFkRAD/openaccountants-hermes-plugin
+sha: 3504466c219c65b435a1288ca209770b8f356ff3
+subdir: ""
+description: >-
+  OpenAccountants tax skills for Hermes: 2,100+ jurisdiction tax skills
+  (countries, US states, cross-border, verticals) register as read-only plugin
+  skills, and the hosted OpenAccountants connector ships as the package MCP
+  server for today's figures. Disclosure: network calls to
+  https://www.openaccountants.com/api/mcp when enabled; no shell commands, no
+  runtime writes, no credentials required. The repository mirrors
+  https://github.com/openaccountants/openaccountants (its merged
+  plugins/openaccountants-hermes bundle) on a 15-minute schedule; the SHA pin
+  freezes one reviewed snapshot.
+maintainer: Jeffrey Watts
+tier: community
+category: general
+requires_hermes: ">=0.19"
+docs_url: https://github.com/lEWFkRAD/openaccountants-hermes-plugin
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

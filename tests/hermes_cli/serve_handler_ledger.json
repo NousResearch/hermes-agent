@@ -5,7 +5,7 @@
    "undecided": 324
   },
   "rpc": {
-   "authority": 105,
+   "authority": 106,
    "keep-host-wide": 1,
    "undecided": 179
   },
@@ -367,6 +367,7 @@
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.keep_going_on_credits", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.state", "kind": "rpc", "ref": "D3"},
   {"current_path": "legacy fallback; standalone: legacy server.dispatch", "decision": "undecided", "handler": "billing.step_up", "kind": "rpc", "ref": "D3"},
+  {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "bot_relay.cancel", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.deliver", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.outbox.drain", "kind": "rpc", "ref": ""},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "bot_relay.reply", "kind": "rpc", "ref": ""},

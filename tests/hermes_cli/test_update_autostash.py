@@ -730,3 +730,49 @@ def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_
 
     stash_mod._park_stashed_changes(stash_ref)
     assert stash_mod._unrestored_autostash_notice() is None
+
+
+def test_partial_restore_keeps_what_merged_and_leaves_the_conflict_to_the_stash(tmp_path, capsys):
+    """When a merge still conflicts on one path, the rest of the restore must stand: the update
+    keeps its version of the conflicting path (no markers), the stash stays because it is the only
+    copy of that edit, and the receipt says the restore was partial."""
+    def run(*args, check=True):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@example.com")
+    run("config", "user.name", "t")
+    run("config", "core.autocrlf", "false")
+    merger = tmp_path / "tools" / "terminal_tool.py"
+    merger.parent.mkdir()
+    other = tmp_path / "tools" / "other_tool.py"
+    merger.write_text('TOP = 0\nHEADER = "x"\nVALUE = 1\nTAIL = "y"\n', encoding="utf-8")
+    other.write_text("X = 1\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "init")
+
+    # One autostash holding both edits: one whose hunk only shifted, one that truly conflicts.
+    merger.write_text('TOP = 0\nHEADER = "x"\nVALUE = 2\nTAIL = "y"\n', encoding="utf-8")
+    other.write_text("X = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+
+    merger.write_text(
+        'TOP = 0\nI1 = 1\nI2 = 2\nI3 = 3\nI4 = 4\nHEADER = "x"\nVALUE = 1\nTAIL = "y"\n',
+        encoding="utf-8")
+    other.write_text("X = 3\n", encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-qm", "pulled change")
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+
+    assert restored is False
+    assert "VALUE = 2" in merger.read_text(encoding="utf-8"), "the mergeable file keeps its restore"
+    assert other.read_text(encoding="utf-8") == "X = 3\n", "the conflicting path holds the update's version"
+    assert run("diff", "--name-only", "--diff-filter=U").stdout.strip() == "", "no conflict markers left"
+    assert run("stash", "list").stdout.strip(), "the conflicting edit lives only in the stash"
+    detail = next(s for s in probe.steps if s["name"] == "local_changes_stash")["detail"]
+    assert "partially restored" in detail
+    assert "tools/other_tool.py" in capsys.readouterr().out

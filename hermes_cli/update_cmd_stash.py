@@ -35,6 +35,11 @@ _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manuall
 #: outcome may claim the update completed (#122557).
 _pending_autostash: Optional[tuple[str, int]] = None
 
+#: Paths the restore could not reconcile: the update kept its version there and the user's
+#: edits stayed in the stash only. Non-empty switches the completion notice from "did NOT
+#: restore them" to what was actually left out.
+_partial_restore_conflicts: list[str] = []
+
 
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
@@ -319,6 +324,13 @@ def _unrestored_autostash_notice() -> Optional[str]:
     if _pending_autostash is None:
         return None
     stash_ref, file_count = _pending_autostash
+    if _partial_restore_conflicts:
+        listed = "\n".join(f"  • {path}" for path in _partial_restore_conflicts[:10])
+        return (f"⚠ hermes update restored your local changes except {len(_partial_restore_conflicts)} path(s) "
+                f"that still conflict ({file_count} were stashed).\n"
+                f"{listed}\n"
+                f"  Those paths were left at the updated version; your edits are only in: {stash_ref}\n"
+                f"  Recover one with: git show {stash_ref}:<path> > <path>.mine")
     return (f"⚠ hermes update stashed {file_count} local modification(s) and did NOT restore them.\n"
             f"  Stash ref: {stash_ref}\n"
             f"  Review with: git stash show --stat {stash_ref}\n"
@@ -584,20 +596,86 @@ def _confirm_restore(stash_ref: str, input_fn) -> bool:
     return False
 
 
-def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=None) -> list[str] | None:
-    """``git stash apply``; the untracked paths the update replaced (empty on a full restore), or
-    None (tree reset, stash kept) on conflicts or any failure other than the already-exists class.
+@dataclass(frozen=True)
+class _RestoreResult:
+    """What a restore actually put back. ``conflicts`` are paths the merge could not
+    reconcile: they sit at the update's version while the user's edits stay in the stash."""
+
+    replaced: list[str]
+    conflicts: list[str]
+
+
+def _conflicted_paths(git_cmd: list[str], cwd: Path) -> list[str]:
+    from hermes_cli.update_cmd_git import _git_run
+    unmerged = _git_run(git_cmd, ["diff", "--name-only", "--diff-filter=U"], cwd)  # conflicts can exist even on rc 0
+    return [line.strip() for line in unmerged.stdout.splitlines() if line.strip()]
+
+
+def _merged_paths(git_cmd: list[str], cwd: Path, conflicts: list[str]) -> list[str]:
+    """Paths the stash actually merged — everything it changed that is not still conflicting."""
+    from hermes_cli.update_cmd_git import _git_run
+    changed = _git_run(git_cmd, ["diff", "--name-only", "HEAD"], cwd).stdout.split()
+    return [path for path in changed if path not in conflicts]
+
+
+def _keep_update_version(git_cmd: list[str], cwd: Path, paths: list[str]) -> None:
+    """Reset conflicted paths to the update's version — index entry and worktree — so a
+    conflict marker can never reach a build. Every other path keeps its restore."""
+    from hermes_cli.update_cmd_git import _git_run
+    _git_run(git_cmd, ["reset", "-q", "--", *paths], cwd)
+    _git_run(git_cmd, ["checkout", "--", *paths], cwd)
+
+
+def _apply_stash_step(git_cmd: list[str], cwd: Path, stash_ref: str):
+    """``git stash apply`` and its conflicted paths.
+
+    ``git stash apply`` is a merge, not a patch apply: files whose hunks still fit are merged in
+    before one path conflicts. Resetting the whole tree because of that one path threw away every
+    restore that had already succeeded (measured on a real update: 14 of 15 files, all reverted).
+    A conflicted path is therefore put back to the update's version — no conflict markers reach a
+    build — and everything else keeps its restore. The full reset survives only for the case where
+    nothing merged at all. Returns ``(result, conflicts, partial)``.
+    """
+    from hermes_cli.update_cmd_git import _git_run
+    restore = _git_run(git_cmd, ["stash", "apply", stash_ref], cwd)
+    conflicts = _conflicted_paths(git_cmd, cwd)
+    failed_otherwise = (restore.returncode != 0
+                        and not _stash_apply_failed_only_on_existing_untracked(restore.stderr))
+    if not conflicts and not failed_otherwise:
+        return restore, [], False
+    if conflicts and _merged_paths(git_cmd, cwd, conflicts):
+        _keep_update_version(git_cmd, cwd, conflicts)
+        _git_run(git_cmd, ["reset", "-q"], cwd)  # a restore leaves the tree dirty, never staged
+        return restore, conflicts, True
+    _reset_hard(git_cmd, cwd)
+    return restore, conflicts, False
+
+
+def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=None) -> Optional[_RestoreResult]:
+    """Restore the stash. Returns what landed — ``replaced`` untracked paths the update now owns,
+    ``conflicts`` paths left at the update's version — or None when nothing could be restored.
     ``checkout_move`` binds the apply (and a conflict's reset) to the paused gateways' tree gate."""
     from hermes_cli.update_cmd_git import _no_move
     print("→ Restoring local changes...")
     with (checkout_move or _no_move)(stash_ref) as step:
-        restore, conflicted_files = _apply_stash_step(git_cmd, cwd, stash_ref)
+        restore, conflicts, partial = _apply_stash_step(git_cmd, cwd, stash_ref)
         # Tracked changes applied in full (the already-exists class refuses only untracked files):
         # the tree this changed is the restore's result, not a tear.
-        step["whole"] = not conflicted_files and (
+        step["whole"] = not conflicts and not partial and (
             restore.returncode == 0 or _stash_apply_failed_only_on_existing_untracked(restore.stderr))
+    if partial:
+        global _partial_restore_conflicts
+        _partial_restore_conflicts = list(conflicts)
+        print("⚠ Local changes partially restored: every file that merged is in place.")
+        print("  Left at the updated version (your edits are only in the stash):")
+        for path in conflicts:
+            print(f"  • {path}")
+        print(f"  Stash ref: {stash_ref}")
+        print(f"  Recover a file with: git show {stash_ref}:<path> > <path>.mine")
+        _record_stash_disposition("parked", stash_ref, f"partially restored; {len(conflicts)} path(s) left at the updated version")
+        return _RestoreResult([], conflicts)
     if step["whole"] and restore.returncode == 0:
-        return []
+        return _RestoreResult([], [])
     if step["whole"]:
         # Tracked changes applied; git refused to overwrite untracked files that already exist. That is
         # harmless only when the occupant IS the stashed copy (undeletable at stash time, #70127). When
@@ -605,34 +683,20 @@ def _apply_stash(git_cmd: list[str], cwd: Path, stash_ref: str, checkout_move=No
         replaced = _untracked_files_replaced_by_update(git_cmd, cwd, stash_ref, restore.stderr)
         if not replaced:
             print("  ⚠ Some stashed untracked files already exist in the working tree and were kept as-is.")
-        return replaced
+        return _RestoreResult(replaced, [])
     print("✗ Update pulled new code, but restoring local changes hit conflicts.")
     _print_nonempty(restore.stdout)
     _print_nonempty(restore.stderr)
-    if conflicted_files:
+    if conflicts:
         print("\nConflicted files:")
-        for f in conflicted_files.splitlines():
-            print(f"  • {f}")
+        for path in conflicts:
+            print(f"  • {path}")
     print("\nYour stashed changes are preserved — nothing is lost.")
     print(f"  Stash ref: {stash_ref}")
     print("Working tree reset to clean state.")
-    print(f"Restore your changes later with: git stash apply {stash_ref}")
+    print(f"Restore your changes later with: git stash show -p {stash_ref} | git apply --3way")
     _record_stash_disposition("parked", stash_ref, "restore hit conflicts")
     return None  # code update succeeded; cmd_update continues (deps, skills, gateway)
-
-
-def _apply_stash_step(git_cmd: list[str], cwd: Path, stash_ref: str):
-    """``git stash apply`` and its conflicted paths. Any failure but the already-exists class is
-    reset to the clean tree here, inside the bound step: conflict markers make hermes unrunnable,
-    and the changes stay in the stash."""
-    from hermes_cli.update_cmd_git import _git_run
-    restore = _git_run(git_cmd, ["stash", "apply", stash_ref], cwd)
-    unmerged = _git_run(git_cmd, ["diff", "--name-only", "--diff-filter=U"], cwd)  # conflicts can exist even on rc 0
-    conflicted_files = unmerged.stdout.strip()
-    if conflicted_files or (restore.returncode != 0
-                            and not _stash_apply_failed_only_on_existing_untracked(restore.stderr)):
-        _reset_hard(git_cmd, cwd)
-    return restore, conflicted_files
 
 
 def _drop_restored_stash(git_cmd: list[str], cwd: Path, stash_ref: str) -> None:
@@ -666,10 +730,13 @@ def _restore_stashed_changes(
         print(f"  Restore manually with: git stash apply {stash_ref}")
         _record_stash_disposition("parked", stash_ref, "untracked baseline unknown")
         return False
+    global _partial_restore_conflicts
+    _partial_restore_conflicts = []
     clean_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
-    replaced = _apply_stash(git_cmd, cwd, stash_ref, checkout_move)
-    if replaced is None:
+    result = _apply_stash(git_cmd, cwd, stash_ref, checkout_move)
+    if result is None:
         return False  # disposition already recorded inside _apply_stash
+    replaced, conflicts = result.replaced, result.conflicts
 
     def reject(failing_target: str, detail) -> None:
         _reject_unsafe_stash_restore(
@@ -700,6 +767,10 @@ def _restore_stashed_changes(
         print(f"  Stash ref: {stash_ref}")
         print(f"  Recover a file with: git show {stash_ref}^3:<path> > <path>.mine")
         _record_stash_disposition("parked", stash_ref, f"untracked files replaced by the update: {', '.join(replaced[:10])}")
+        return False
+    if conflicts:
+        # Partial restore: the tree is healthy, but the conflicting paths hold the update's
+        # version and the stash is the only copy of the user's edits there — so it stays.
         return False
     _drop_restored_stash(git_cmd, cwd, stash_ref)
     _record_stash_disposition("restored", stash_ref)

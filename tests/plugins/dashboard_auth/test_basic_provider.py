@@ -62,6 +62,24 @@ class TestPasswordHashing:
         # Distinct random salts → distinct encoded hashes.
         assert basic.hash_password("pw") != basic.hash_password("pw")
 
+    def test_fallback_when_hashlib_has_no_scrypt(self, basic, monkeypatch):
+        # OpenBSD LibreSSL: hashlib.scrypt is absent and cryptography refuses scrypt.
+        monkeypatch.delattr(basic.hashlib, "scrypt", raising=False)
+        try:
+            import scrypt  # noqa: F401
+        except ImportError:
+            with pytest.raises(AttributeError):
+                basic.hash_password("hunter2")
+            return
+        derived = basic._scrypt_derive(b"password", b"NaCl", 1024, 8, 16, 64)
+        assert derived.hex() == (
+            "fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b373162"
+            "2eaf30d92e22a3886ff109279d9830dac727afb94a83ee6d8360cbdfa2cc0640"
+        )
+        encoded = basic.hash_password("hunter2")
+        assert basic._verify_password("hunter2", encoded)
+        assert not basic._verify_password("wrong", encoded)
+
 
 # ---------------------------------------------------------------------------
 # Provider behaviour

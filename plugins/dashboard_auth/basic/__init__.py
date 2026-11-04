@@ -47,15 +47,33 @@ _SIG_LEN = hashlib.sha256().digest_size
 LAST_SKIP_REASON: str = ""
 
 
-# ---- Password hashing (stdlib scrypt) ----
+# ---- Password hashing (stdlib scrypt, py-scrypt on LibreSSL) ----
+
+def _scrypt_derive(password: bytes, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    """RFC 7914 scrypt. OpenBSD's LibreSSL Python has no ``hashlib.scrypt`` and
+    ``cryptography`` refuses scrypt there too; the ``scrypt`` module (py-scrypt)
+    produces the same digest."""
+    scrypt_fn = getattr(hashlib, "scrypt", None)
+    if scrypt_fn is not None:
+        return scrypt_fn(password, salt=salt, n=n, r=r, p=p, dklen=dklen, maxmem=0)
+    try:
+        import scrypt as scrypt_mod
+    except ImportError as exc:
+        raise AttributeError(
+            "hashlib has no scrypt and the scrypt package is not installed"
+        ) from exc
+    try:
+        return scrypt_mod.hash(password, salt, N=n, r=r, p=p, buflen=dklen)
+    except scrypt_mod.error as exc:
+        raise ValueError(str(exc)) from exc
+
 
 def hash_password(password: str) -> str:
     """Return a ``scrypt$n$r$p$<salt_b64>$<dk_b64>`` hash string. Public so operators can
     precompute ``password_hash`` for config.yaml (the plaintext then never sits at rest):
     ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('pw'))"``."""
     salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
-    dk = hashlib.scrypt(
-        password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN, maxmem=0)
+    dk = _scrypt_derive(password.encode("utf-8"), salt, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_DKLEN)
     salt_b64, dk_b64 = base64.b64encode(salt).decode(), base64.b64encode(dk).decode()
     return f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${salt_b64}${dk_b64}"
 
@@ -72,7 +90,7 @@ def _verify_password(password: str, encoded: str) -> bool:
     except (ValueError, TypeError):
         return False
     try:
-        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p, dklen=len(expected), maxmem=0)
+        actual = _scrypt_derive(password.encode("utf-8"), salt, n, r, p, len(expected))
     except (ValueError, MemoryError):
         return False
     return hmac.compare_digest(actual, expected)

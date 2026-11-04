@@ -502,6 +502,27 @@ it.each([
   expect(screen.getByRole('button', { name: /disband/i })).toBeTruthy()
 })
 
+it('keeps Stop and Deny while the gateway\'s methods cannot be read, and holds back Allow and room edits', async () => {
+  const approval = { kind: 'approval', member_id: 'ops', task_id: 'clean', execution_generation: 1, request_id: 'r-clean',
+    approval: { request_id: 'r-clean', command: 'rm -rf build', description: 'Clear the build folder', choices: ['once', 'deny'] } }
+
+  request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? Promise.reject(new Error('request timed out'))
+    : method === 'groups.state' ? { room: { name: 'Room' }, driver_status: { working: true, pending_actions: [approval] } }
+      : method === 'groups.log' ? { events: [] } : method === 'groups.stop' ? { cancelled: 1 } : { approved: true })
+  render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'unknown-methods' }} />)
+  const card = (await screen.findByText('rm -rf build')).closest('[data-task-id]') as HTMLElement
+  await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.capabilities')).toBe(true))
+  expect(within(card).queryByRole('button', { name: 'Allow once' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull()
+  expect(screen.queryByRole('button', { name: /disband/i })).toBeNull()
+  const deny = within(card).getByRole('button', { name: 'Deny' }) as HTMLButtonElement
+  await waitFor(() => expect(deny.disabled).toBe(false))
+  fireEvent.click(deny)
+  await waitFor(() => expect(request.mock.calls.filter(c => c[1] === 'groups.approve').map(c => c[2].choice)).toEqual(['deny']))
+  fireEvent.click(screen.getByRole('button', { name: 'Stop the group' }))
+  await screen.findByText('Stop requested')
+})
+
 it('hides unadvertised header actions while working and ignores pasted files', async () => {
   const methods = ['groups.capabilities', 'groups.state', 'groups.log', 'groups.send']
   request.mockImplementation(async (_route, method) => method === 'groups.capabilities' ? { driver: true, methods }

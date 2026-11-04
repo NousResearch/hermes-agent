@@ -542,8 +542,8 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         conn.execute(
             "UPDATE tasks SET status='ready', current_run_id=NULL, "
             "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
-            "last_failure_error=? WHERE id=?",
-            ("provider authentication failed", spawn_failed_id),
+            "last_failure_error=?, last_failure_run_id=? WHERE id=?",
+            ("provider authentication failed", spawn_run_id, spawn_failed_id),
         )
         conn.commit()
 

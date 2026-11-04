@@ -58,12 +58,14 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # "authoritative" in worker progress prose, parking a healthy card forever
 # (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|"
+    r"\b(quota|rate[\s_\-]?limit|"
     r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
     r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
-    r"invalid[\s_]api[\s_]key)\b",
+    r"invalid[\s_]api[\s_]key)\b"
+    r"|\bHTTP(?:/\d(?:\.\d)?)?\s+403\s+(?:forbidden|unauthori[sz]ed)\b"
+    r"|\bHTTP(?:/\d(?:\.\d)?)?\s+429\s+(?:too\s+many\s+requests|rate[\s_\-]?limit)\b",
     re.IGNORECASE,
 )
 
@@ -1228,8 +1230,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
                 conn.execute(
-                    "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
-                    (dead.error_text[:500], row["id"]),
+                    "UPDATE tasks SET last_failure_error = ?, last_failure_run_id = ? WHERE id = ?",
+                    (dead.error_text[:500], run_id, row["id"]),
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
@@ -1439,6 +1441,10 @@ def _record_task_failure(
                     "last_failure_error = ? WHERE id = ?",
                     (failures, error, task_id),
                 )
+            conn.execute(
+                "UPDATE tasks SET last_failure_run_id = (SELECT max(id) FROM task_runs WHERE task_id=?) WHERE id=?",
+                (task_id, task_id),
+            )
             # Timeout/crash path's caller already emitted its own event.
             if end_run:
                 detail = {"failures": failures, "retry_status": retry_status}
@@ -1456,9 +1462,10 @@ def _record_task_failure(
             "UPDATE tasks SET status = 'blocked', "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                if release_claim else "")
-            + "consecutive_failures = ?, last_failure_error = ? "
+            + "consecutive_failures = ?, last_failure_error = ?, "
+            "last_failure_run_id = (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1) "
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
+            (failures, error, task_id, task_id),
         )
         payload = {
             "failures": failures,
@@ -1548,7 +1555,7 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     with _kb.write_txn(conn):
         conn.execute(
             "UPDATE tasks SET consecutive_failures = 0, "
-            "last_failure_error = NULL WHERE id = ?",
+            "last_failure_error = NULL, last_failure_run_id = NULL WHERE id = ?",
             (task_id,),
         )
 
@@ -1556,26 +1563,14 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
-    """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
+    """Return a guard reason before claiming a ready/review task.
 
-    Called per ready/review row before any claim attempt. Priority order:
-    ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
-    a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    Cooldowns precede blocker_auth because their persisted errors can resemble
+    quota failures. The ready lane also guards recent successes and active PRs;
+    the review lane skips those handoff inputs. Reclaim owns stale claim locks.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, last_failure_run_id FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1590,9 +1585,9 @@ def check_respawn_guard(
     #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
-        "SELECT outcome, ended_at, metadata FROM task_runs "
+        "SELECT id, outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
@@ -1613,13 +1608,18 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.  A plain
-    # crash is different: its persisted error includes the worker's last
+    # A plain crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
     # benign commands such as ``claude auth status`` (#117097).
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+    error_run_id = _kb._row_get(row, "last_failure_run_id")
+    latest_run_id = latest_run["id"] if latest_run is not None else None
+    if (
+        err and error_run_id == latest_run_id
+        and (error_run_id is not None or latest_run is None)
+        and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err)
+    ):
         return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL

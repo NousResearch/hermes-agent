@@ -1,0 +1,21 @@
+name: thott-bot
+title: thott.bot
+repo: https://github.com/thott-bot/plugin
+sha: "af8439ac4c4560aba5303ee7578d921a33c7b5da"
+subdir: hermes
+description: "thott.bot makes your AI an expert on World of Warcraft: Forever, from Blizzard's own game files for the build you're playing, current to the latest hotfix, with Blizzard's news and credited community data, drawn right in the chat. Disclosure \u2014 To improve the service, thott.bot records what your AI asks it. We never see your conversation. We don't use it to train models. Using thott.bot requires an account."
+maintainer: thott-bot
+tier: community
+category: tools
+requires_hermes: ">=0.20.1"
+version: "1.0.0"
+docs_url: https://github.com/thott-bot/plugin/tree/af8439ac4c4560aba5303ee7578d921a33c7b5da/hermes#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "To connect, run `hermes mcp add thott --url https://mcp.thott.bot/mcp --auth oauth`. The first connection opens a sign-in page, where you sign in or create your free thott.bot account with Discord, Google or email."

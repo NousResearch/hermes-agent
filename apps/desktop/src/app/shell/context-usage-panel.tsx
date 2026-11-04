@@ -1,14 +1,15 @@
 import { compactNumber } from '@hermes/shared'
-import { useMemo } from 'react'
+import { useContext, useMemo } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
 import type { CompactConversationAction } from './hooks/use-compact-conversation'
+import { StatusbarMenuCloseContext } from './statusbar-controls'
 
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
@@ -98,6 +99,7 @@ export function ContextUsagePanel({ breakdown, compact, loading, usage }: Contex
 
 function CompactConversationRow({ compact }: { compact: CompactConversationAction }) {
   const { t } = useI18n()
+  const closeMenu = useContext(StatusbarMenuCloseContext)
   const copy = t.shell.statusbar.contextUsagePanel.compact
 
   return (
@@ -113,16 +115,22 @@ function CompactConversationRow({ compact }: { compact: CompactConversationActio
           {copy.working}
         </p>
       ) : (
-        // A menu item, so choosing it closes the dropdown before the shared
-        // confirmation opens instead of leaving the popover under the modal.
-        <DropdownMenuItem
-          className="text-xs"
+        // Close the dropdown first: left open under the shared confirmation, its
+        // modal layer keeps trapping pointer events and the meter cannot reopen.
+        <Button
+          className="w-full justify-start"
           disabled={compact.busy || compact.unavailable}
-          onSelect={compact.onRequest}
+          onClick={() => {
+            closeMenu()
+            compact.onRequest()
+          }}
+          size="xs"
+          type="button"
+          variant="ghost"
         >
           <Codicon name="archive" size="0.75rem" />
           {copy.action}
-        </DropdownMenuItem>
+        </Button>
       )}
     </div>
   )

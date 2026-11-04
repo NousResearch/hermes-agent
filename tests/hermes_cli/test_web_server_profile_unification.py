@@ -151,7 +151,7 @@ class TestProfileScopedMcp:
             "_probe_single_server",
             lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
         )
-        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: False)
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name, url=None: False)
 
         resp = client.post(
             "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
@@ -162,7 +162,7 @@ class TestProfileScopedMcp:
         assert "oauth" in body["error"].lower()
 
         # With a token present, the same probe is genuinely authenticated.
-        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name: True)
+        monkeypatch.setattr(mcp_config, "_oauth_tokens_present", lambda name, url=None: True)
         resp = client.post(
             "/api/mcp/servers/oauth-srv/test", params={"profile": "worker_beta"}
         )

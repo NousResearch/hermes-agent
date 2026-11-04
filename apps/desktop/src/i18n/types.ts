@@ -3005,6 +3005,8 @@ export interface Translations extends NoticeTranslations {
     queuedTerminalSelectionExpiredBody: string
     queueSteerRefusedTitle: string
     queueSteerRefusedBody: string
+    steerQueuedTitle: string
+    steerQueuedBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string

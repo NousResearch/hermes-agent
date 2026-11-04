@@ -3500,6 +3500,8 @@ export const en: Translations = {
     queueSteerRefusedTitle: 'Steer not taken',
     queueSteerRefusedBody:
       'The live turn could not take the redirect. Your message stays queued and is now first in line.',
+    steerQueuedTitle: 'Queued for the next turn',
+    steerQueuedBody: 'The running turn could not take this message, so it was queued to run next.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

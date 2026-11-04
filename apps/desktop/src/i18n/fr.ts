@@ -3939,6 +3939,8 @@ export const frOverrides = {
       "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
     queueSteerRefusedTitle: 'Redirection non prise en compte',
     queueSteerRefusedBody: "Le tour en cours n'a pas pu prendre en compte la redirection. Votre message reste dans la file d'attente et passe désormais en premier.",
+    steerQueuedTitle: "En file d'attente pour le prochain tour",
+    steerQueuedBody: "Le tour en cours n'a pas pu recevoir ce message ; il a été mis en file d'attente pour passer ensuite.",
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",

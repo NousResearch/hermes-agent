@@ -601,7 +601,20 @@ export function useComposerSubmit({
       if (!activeQueueSessionKey) {
         loadIntoComposer(frozen.displayText, [])
         stashAt(submittedScope, frozen.displayText, [])
-      } else if (canonical) {
+
+        return
+      }
+
+      // The words did not join the running turn: say where they went, so a
+      // queued row is never mistaken for a delivered steer (#141973).
+      notify({
+        id: 'composer-steer-queued',
+        kind: 'info',
+        title: translateNow('composer.steerQueuedTitle'),
+        message: translateNow('composer.steerQueuedBody')
+      })
+
+      if (canonical) {
         // `fromQueue` skips the submit-side freeze, so hand it the frozen transport.
         dispatchSubmit(frozen.transportText, [], undefined, {
           ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),

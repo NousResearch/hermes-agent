@@ -98,7 +98,9 @@ const pageReplyRows = (page: ChatMessage[]): Set<number> =>
   new Set(
     page.flatMap(message =>
       message.role === 'assistant'
-        ? message.parts.flatMap(part => (part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []))
+        ? message.parts.flatMap(part =>
+            part.type === 'text' && part.sourceRowId !== undefined ? [part.sourceRowId] : []
+          )
         : []
     )
   )
@@ -208,7 +210,9 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
     indices.forEach(at => dropped.add(at))
 
     for (let at = indices[0] ?? index; at < index; at += 1) {
-      const anchor = isLocalSystemNotice(window[at]) ? nextDroppedRowId(window, indices, at, message.persistedTurn) : undefined
+      const anchor = isLocalSystemNotice(window[at])
+        ? nextDroppedRowId(window, indices, at, message.persistedTurn)
+        : undefined
 
       if (anchor !== undefined) {
         noticeAnchors.set(window[at].id, anchor)

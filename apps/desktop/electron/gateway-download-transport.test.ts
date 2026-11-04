@@ -16,9 +16,12 @@ test('download transport never follows redirects or retries after the save phase
   const server = http.createServer((req, res) => {
     requests++
 
-    if (req.url === '/redirect') { res.writeHead(302, { Location: '/leak' }); res.end();
+    if (req.url === '/redirect') {
+      res.writeHead(302, { Location: '/leak' })
+      res.end()
 
- return }
+      return
+    }
 
     res.end('bytes')
   })
@@ -62,7 +65,9 @@ test('the connect timeout is dropped once headers arrive so a slow body streams 
   const finish = async (res: http.IncomingMessage) => {
     const chunks: Buffer[] = []
 
-    for await (const chunk of res) { chunks.push(Buffer.from(chunk)) }
+    for await (const chunk of res) {
+      chunks.push(Buffer.from(chunk))
+    }
 
     return Buffer.concat(chunks).toString()
   }
@@ -82,9 +87,11 @@ test('a body that stalls mid-stream is destroyed after the idle deadline, but th
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
 
-    if (req.url === '/whole') { res.end('bytes');
+    if (req.url === '/whole') {
+      res.end('bytes')
 
- return }
+      return
+    }
 
     res.write('head-')
   })
@@ -96,14 +103,20 @@ test('a body that stalls mid-stream is destroyed after the idle deadline, but th
     await new Promise(resolve => setTimeout(resolve, 150))
     const chunks: Buffer[] = []
 
-    for await (const chunk of res) { chunks.push(Buffer.from(chunk)) }
+    for await (const chunk of res) {
+      chunks.push(Buffer.from(chunk))
+    }
 
     return Buffer.concat(chunks).toString()
   }
 
   try {
-    await expect(downloadViaTokenToFile(url + '/whole', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })).resolves.toBe('bytes')
-    await expect(downloadViaTokenToFile(url + '/stall', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })).rejects.toThrow('stalled')
+    await expect(
+      downloadViaTokenToFile(url + '/whole', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })
+    ).resolves.toBe('bytes')
+    await expect(
+      downloadViaTokenToFile(url + '/stall', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })
+    ).rejects.toThrow('stalled')
   } finally {
     destroyKeepaliveAgents()
     server.closeAllConnections()
@@ -111,62 +124,91 @@ test('a body that stalls mid-stream is destroyed after the idle deadline, but th
   }
 }, 3_000)
 
-test.skipIf(process.platform === 'win32')('download retries mint a new private grant for every wire attempt and preserve remote auth', async () => {
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'download-auth-')))
-  const grants: string[] = []
-  const wire: http.IncomingHttpHeaders[] = []
-  const controls: any[] = []
+test.skipIf(process.platform === 'win32')(
+  'download retries mint a new private grant for every wire attempt and preserve remote auth',
+  async () => {
+    const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'download-auth-')))
+    const grants: string[] = []
+    const wire: http.IncomingHttpHeaders[] = []
+    const controls: any[] = []
 
-  const control = net.createServer(socket => socket.once('data', chunk => {
-    controls.push(JSON.parse(chunk.toString()).params)
-    const ticket = `private-${controls.length}`
-    grants.push(ticket)
-    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket } }) + '\n')
-  }))
+    const control = net.createServer(socket =>
+      socket.once('data', chunk => {
+        controls.push(JSON.parse(chunk.toString()).params)
+        const ticket = `private-${controls.length}`
+        grants.push(ticket)
+        socket.end(
+          JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket } }) +
+            '\n'
+        )
+      })
+    )
 
-  await new Promise<void>(resolve => control.listen(path.join(home, 'gateway.sock'), resolve))
-  await fs.chmod(path.join(home, 'gateway.sock'), 0o600)
+    await new Promise<void>(resolve => control.listen(path.join(home, 'gateway.sock'), resolve))
+    await fs.chmod(path.join(home, 'gateway.sock'), 0o600)
 
-  const server = http.createServer((req, res) => {
-    wire.push(req.headers)
+    const server = http.createServer((req, res) => {
+      wire.push(req.headers)
 
-    if (wire.length === 1) { req.socket.destroy();
+      if (wire.length === 1) {
+        req.socket.destroy()
 
- return }
+        return
+      }
 
-    res.end(Buffer.from([0, 255, 1, 2, 128]))
-  })
+      res.end(Buffer.from([0, 255, 1, 2, 128]))
+    })
 
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const baseUrl = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`
-  const gatewayEndpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: baseUrl, capabilities: ['session-authority-v1'], supervisor: 'none' }
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const baseUrl = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`
+    const gatewayEndpoint = {
+      profile_id: home,
+      instance_id: 'owner',
+      authority_epoch: 1,
+      runtime_protocol: 1,
+      api_origin: baseUrl,
+      capabilities: ['session-authority-v1'],
+      supervisor: 'none'
+    }
 
-  const finish = async (res: http.IncomingMessage) => {
-    const chunks: Buffer[] = []
+    const finish = async (res: http.IncomingMessage) => {
+      const chunks: Buffer[] = []
 
-    for await (const chunk of res) { chunks.push(Buffer.from(chunk)) }
+      for await (const chunk of res) {
+        chunks.push(Buffer.from(chunk))
+      }
 
-    return Buffer.concat(chunks)
+      return Buffer.concat(chunks)
+    }
+
+    try {
+      const bytes = await downloadViaTokenToFile(baseUrl + '/api/fs/download', '', {}, finish, {
+        gatewayDescriptor: { baseUrl, gatewayEndpoint }
+      })
+      expect(bytes).toEqual(Buffer.from([0, 255, 1, 2, 128]))
+      expect(wire.map(h => h['x-hermes-gateway-ticket'])).toEqual(grants)
+      expect(new Set(grants).size).toBe(2)
+      expect(controls).toEqual(grants.map(() => ({ profile_id: home, instance_id: 'owner', purpose: 'native-http' })))
+      expect(wire.every(h => !h.origin && !h['x-hermes-session-token'] && !h.authorization)).toBe(true)
+      await expect(
+        downloadViaTokenToFile(baseUrl + '/api/fs/download', '', {}, finish, {
+          gatewayDescriptor: { baseUrl: baseUrl + '/wrong', gatewayEndpoint }
+        })
+      ).rejects.toThrow('origin')
+      expect(wire).toHaveLength(2)
+      await downloadViaTokenToFile(baseUrl, 'remote-static', {}, finish)
+      await downloadViaTokenToFile(baseUrl, null, {}, finish, { bearer: 'remote-bearer' })
+      expect(wire[2]['x-hermes-session-token']).toBe('remote-static')
+      expect(wire[3].authorization).toBe('Bearer remote-bearer')
+      expect(wire.slice(2).every(h => !h['x-hermes-gateway-ticket'])).toBe(true)
+      expect(grants).toHaveLength(2)
+    } finally {
+      destroyKeepaliveAgents()
+      await Promise.all([
+        new Promise<void>(resolve => server.close(() => resolve())),
+        new Promise<void>(resolve => control.close(() => resolve()))
+      ])
+      await fs.rm(home, { recursive: true, force: true })
+    }
   }
-
-  try {
-    const bytes = await downloadViaTokenToFile(baseUrl + '/api/fs/download', '', {}, finish, { gatewayDescriptor: { baseUrl, gatewayEndpoint } })
-    expect(bytes).toEqual(Buffer.from([0, 255, 1, 2, 128]))
-    expect(wire.map(h => h['x-hermes-gateway-ticket'])).toEqual(grants)
-    expect(new Set(grants).size).toBe(2)
-    expect(controls).toEqual(grants.map(() => ({ profile_id: home, instance_id: 'owner', purpose: 'native-http' })))
-    expect(wire.every(h => !h.origin && !h['x-hermes-session-token'] && !h.authorization)).toBe(true)
-    await expect(downloadViaTokenToFile(baseUrl + '/api/fs/download', '', {}, finish, { gatewayDescriptor: { baseUrl: baseUrl + '/wrong', gatewayEndpoint } })).rejects.toThrow('origin')
-    expect(wire).toHaveLength(2)
-    await downloadViaTokenToFile(baseUrl, 'remote-static', {}, finish)
-    await downloadViaTokenToFile(baseUrl, null, {}, finish, { bearer: 'remote-bearer' })
-    expect(wire[2]['x-hermes-session-token']).toBe('remote-static')
-    expect(wire[3].authorization).toBe('Bearer remote-bearer')
-    expect(wire.slice(2).every(h => !h['x-hermes-gateway-ticket'])).toBe(true)
-    expect(grants).toHaveLength(2)
-  } finally {
-    destroyKeepaliveAgents()
-    await Promise.all([new Promise<void>(resolve => server.close(() => resolve())), new Promise<void>(resolve => control.close(() => resolve()))])
-    await fs.rm(home, { recursive: true, force: true })
-  }
-})
+)

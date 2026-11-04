@@ -607,7 +607,8 @@ class GatewayChatView:
             from hermes_cli.cli_vim_enter import vim_composer_session_kwargs
             from hermes_cli.config import load_config_readonly
             # display.vim_mode: Vim INSERT Enter inserts a newline, Esc then Enter submits.
-            vim_kw = vim_composer_session_kwargs(load_config_readonly(),
+            vim_config = await asyncio.to_thread(load_config_readonly)
+            vim_kw = vim_composer_session_kwargs(vim_config,
                                                  composer_active=lambda: not self._confirming)
             prompt = PromptSession(erase_when_done=True, **vim_kw,
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")

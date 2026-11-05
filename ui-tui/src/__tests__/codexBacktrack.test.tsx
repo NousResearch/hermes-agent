@@ -525,6 +525,48 @@ describe('Enter on an image prompt', () => {
     expect(composer.setInput).toHaveBeenCalledWith('What two colors?')
     expect(composer.attachImagePath).toHaveBeenCalledWith('/cache/native-inputs/a.png')
   })
+
+  it('attaches every image of a two-image prompt, each after the previous one landed', async () => {
+    const note = (name: string) =>
+      `[The user sent an image~ Here's what I can see:\n${name}.]\n` +
+      `[If you need a closer look, use vision_analyze with image_url: /cache/native-inputs/${name}.png ~]\n\n`
+
+    const both = note('a') + note('b') + 'Which is green?'
+
+    const stored = [
+      { role: 'user', content: both, text: both, row_id: 21 },
+      { role: 'assistant', content: 'b', text: 'b', row_id: 22 }
+    ]
+
+    const { composer, slash } = slashHarness(stored)
+    const landed: string[] = []
+
+    let release: () => void = () => {}
+
+    composer.attachImagePath.mockImplementation(
+      (path: string) =>
+        new Promise<void>(done => {
+          release = () => {
+            landed.push(path)
+            done()
+          }
+        })
+    )
+
+    slash('/rewind')
+    await flush()
+    const browse = $overlayState.get().rewind!
+
+    browse.onEdit(browse.targets[0]!)
+    await flush()
+    expect(composer.attachImagePath).toHaveBeenCalledTimes(1)
+    release()
+    await flush()
+    expect(composer.attachImagePath).toHaveBeenCalledTimes(2)
+    release()
+    await flush()
+    expect(landed).toEqual(['/cache/native-inputs/a.png', '/cache/native-inputs/b.png'])
+  })
 })
 
 describe('native pager paging', () => {

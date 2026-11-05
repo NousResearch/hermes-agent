@@ -165,12 +165,16 @@ async def _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, *
     return await getattr(bot, f"send_{kind}")(chat_id=chat_id, **{kind: f}, **kwargs)
 
 
-async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
+async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs, reply_markup=None):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
     ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
-    -> plain text."""
+    -> plain text. ``reply_markup`` (an ``InlineKeyboardMarkup``) rides only on this call —
+    callers attach it to the LAST chunk only, never repeated across a multi-chunk send."""
+    markup_kwargs = {"reply_markup": reply_markup} if reply_markup is not None else {}
+
     async def send(text, mode):
-        return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
+        return await _send_telegram_message_with_retry(
+            bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs, **markup_kwargs)
     try:
         return await send(chunk, parse_mode)
     except Exception as md_error:
@@ -256,8 +260,32 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+def _telegram_inline_keyboard(buttons):
+    """Build an ``InlineKeyboardMarkup`` from ``buttons`` — a list of rows, each row a list of
+    ``(label, callback_data)`` pairs — or ``None`` when ``buttons`` is falsy. Telegram caps
+    ``callback_data`` at 64 bytes; callers are responsible for keeping their payloads short
+    (see the ``cr:<decision>:<request_id>`` convention used by consent-request buttons)."""
+    if not buttons:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    first = buttons[0]
+    is_multi_row = isinstance(first, (list, tuple)) and first and isinstance(first[0], (list, tuple))
+    rows = buttons if is_multi_row else [buttons]
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=data) for label, data in row] for row in rows])
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                          force_document=False, buttons=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``buttons``: optional list of ``(label, callback_data)`` pairs (one row) or a list of rows
+    (list of lists of pairs) rendered as a real Telegram inline keyboard on the message. Only
+    meaningful for a text-only send — attached to the LAST text chunk; dropped (with a warning)
+    when the send also carries media, since a caption-bubble reply_markup is a rarer, unsupported
+    shape here. The receiving gateway's ``TelegramAdapter._handle_callback_query`` must already
+    recognize whatever ``callback_data`` prefix the caller uses, or the tap is silently ignored.
+    """
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -271,14 +299,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None
+        reply_markup = _telegram_inline_keyboard(buttons)
+        if reply_markup is not None and media_files:
+            warnings.append("buttons were requested but dropped: not supported alongside MEDIA attachments")
+            logger.warning(warnings[-1])
+            reply_markup = None
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+        chunks = list(BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)) if formatted.strip() else []
+        for idx, chunk in enumerate(chunks):
+            is_last_text_chunk = idx == len(chunks) - 1
+            last_msg = await _telegram_send_text_chunk(
+                bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs,
+                reply_markup=reply_markup if (is_last_text_chunk and not media_files) else None)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")

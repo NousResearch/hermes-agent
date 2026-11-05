@@ -82,10 +82,15 @@ class TestPipeRemoteToShellPattern:
             assert not self._hits(command), f"false positive: {command!r}"
 
     def test_wrapper_chain_does_not_backtrack(self):
-        command = "curl x | " + "sudo -E env A=1 nice " * 40 + "less"
-        start = time.perf_counter()
-        assert not self._hits(command)
-        assert time.perf_counter() - start < 5
+        # `-u a=1` parses as a valued flag or as a bare flag plus an assignment, so without the
+        # atomic/possessive groups the second chain backtracks exponentially (~50 s here).
+        for command in (
+            "curl x | " + "sudo -E env A=1 nice " * 40 + "less",
+            "curl x | env " + "-u a=1 " * 24 + "cat",
+        ):
+            start = time.perf_counter()
+            assert not self._hits(command)
+            assert time.perf_counter() - start < 3, command[:40]
 
     def test_many_fetch_pipes_scan_in_linear_time(self):
         # A leading `.*` after curl rescanned the tail from every fetch word (quadratic: ~5 s here).

@@ -28,13 +28,13 @@ from agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
 from agent.error_classifier import (
     _BILLING_PATTERNS,
-    _OVERLOADED_PATTERNS,
     UNSUPPORTED_PARAM_MARKERS,
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_error_shapes import (
-    _botocore_error, _exc_http_status, _is_invalid_aux_response_error, _is_statusless_structured_provider_error,
+    _botocore_error, _exc_http_status, _is_invalid_aux_response_error, _is_overloaded_error,
+    _is_server_error, _is_statusless_structured_provider_error,
 )
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
@@ -3222,12 +3222,6 @@ _RATE_LIMIT_BILLING_KEYWORDS = (
     "out of funds", "run out of funds", "balance_depleted", "no usable credits",
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
 )
-
-
-def _is_overloaded_error(exc: Exception) -> bool:
-    """Server busy, credential fine ("at capacity upstream … not your API key's rate limit"): back off,
-    never bench the credential (#108349). Same phrase table as the main classifier."""
-    return _contains_any(str(exc).lower(), _OVERLOADED_PATTERNS)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -7432,6 +7426,10 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),
+    # A persistent 5xx (a 503 overloaded_error, a bare 500) is the provider failing, not the request:
+    # without this rung no fallback is attempted at all — the same-provider transient retry above is
+    # the only recourse, and it re-raises the original error once exhausted.
+    (_is_server_error, "server error"),
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
     (_is_timeout_error, "request timed out"), (_is_connection_error, "connection error"),

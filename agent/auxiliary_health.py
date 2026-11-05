@@ -64,6 +64,9 @@ _CANDIDATE_QUARANTINE_TTL: dict[str, Optional[float]] = {
     "rate limit": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "connection error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "invalid provider response": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
+    # A 5xx is usually a blip or one overloaded upstream, not an account-level refusal: hold the
+    # candidate briefly. The long default TTL would hide a healthy fallback for hours.
+    "server error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
 }
 
 

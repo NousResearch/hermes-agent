@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.error_classifier import _OVERLOADED_PATTERNS
+
 
 def _botocore_error(exc: Exception) -> tuple[Any, Any]:
     """``(HTTP status, error code)`` of a botocore ``ClientError``, whose ``response`` is the parsed
@@ -52,3 +54,22 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
     if isinstance(err, str):
         return bool(err.strip())
     return isinstance(err, dict) and any(err.get(k) for k in ("type", "code", "message"))
+
+
+def _is_server_error(exc: Exception) -> bool:
+    """Upstream 5xx (500/502/503/504/529): the provider cannot serve the request right now.
+
+    A capacity/fault problem, not a request defect — so a pinned auxiliary route may move to the
+    next candidate instead of failing the whole auxiliary call. Without this rung a 503
+    ``overloaded_error`` (or a bare 500) matches no ``_FALLBACK_REASONS`` entry, so
+    ``_ladder_provider_fallback`` returns early on ``reason is None`` and *no* fallback (task
+    chain, main-agent chain, discovery) is ever attempted.
+    """
+    status = _exc_http_status(exc)
+    return isinstance(status, int) and 500 <= status < 600
+
+
+def _is_overloaded_error(exc: Exception) -> bool:
+    """Server busy, credential fine ("at capacity upstream … not your API key's rate limit"): back off,
+    never bench the credential (#108349). Same phrase table as the main classifier."""
+    return any(kw in str(exc).lower() for kw in _OVERLOADED_PATTERNS)

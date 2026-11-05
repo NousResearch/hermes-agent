@@ -1,15 +1,15 @@
 name: voice-gate
 title: "Voice Gate"
 repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
-sha: 6d5d8f494714d8da833310137d78fa5b3693ab75
+sha: f13ead2f01eb90fa97f99f78cc11aff397f40cf4
 subdir: public/voice-gate
-description: "Reviews changed prose with 75 mechanical rule families and optional contextual review against the complete humanizer skill and its references. Settings keep everyday controls visible and collapse Vale, bots, and individual rules. Slow inventory requests allow up to two minutes and offer retry; the page includes five-row exceptions and Vale installation guidance. Hermes Desktop 0.22.8+ shows the custom settings page without a duplicate Agent settings form. Revision requests allow at most two opportunities and compare protected spans and quantities. Prose em dashes are flagged while bullet label separators and empty table values remain allowed. Reads the changed prose paths reported by Hermes; manual tools can check supplied text. Model review is off by default and sends reviewed documents to the configured Hermes provider when enabled. It provides editorial judgments, not authorship proof. Vale is optional; status, checks, and pinned installation request approval before starting a program. No project-file writes or core overrides. Simple PDF text extraction has no OCR."
+description: "Reviews changed prose with 75 mechanical rule families and optional contextual review against the complete humanizer skill and its references. Settings keep everyday controls visible and collapse Vale, bots, and individual rules. Slow inventory requests allow up to two minutes and offer retry; the page includes five-row exceptions and Vale installation guidance. Revision requests allow at most two opportunities and compare protected spans and quantities. Prose em dashes are flagged while bullet label separators and empty table values remain allowed. Reads the changed prose paths reported by Hermes; manual tools can check supplied text. Model review is off by default and sends reviewed documents to the configured Hermes provider when enabled. It provides editorial judgments, not authorship proof. Vale is optional; status, check, and install request approval before starting a program, turn-time findings use only a binary approved that way, and Vale runs with a short environment rather than the host's. No project-file writes or core overrides. Simple PDF text extraction has no OCR."
 maintainer: apoapostolov
 tier: community
 category: tools
 docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/voice-gate
-version: "1.4.2"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/6d5d8f494714d8da833310137d78fa5b3693ab75/public/voice-gate/docs/hero.png
+version: "1.4.4"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/f13ead2f01eb90fa97f99f78cc11aff397f40cf4/public/voice-gate/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: [voice_gate_check, voice_gate_vale, voice_gate_review]

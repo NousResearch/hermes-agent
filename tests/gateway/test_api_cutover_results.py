@@ -3,11 +3,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.session_authority import admission_row
+from gateway.session_persistence import authority_persistence
+
 
 @pytest.mark.asyncio
 async def test_runs_explicit_history_takes_precedence(api, owner, monkeypatch):
     from gateway.platforms import api_server_runs
-    from hermes_state_runtime import list_session_admissions
     async def no_execution(*args, **kwargs):
         pass
     monkeypatch.setattr(api_server_runs, '_execute_run', no_execution)
@@ -18,9 +20,9 @@ async def test_runs_explicit_history_takes_precedence(api, owner, monkeypatch):
         response = await client.post('/v1/runs', json={
             'session_id': 'history', 'input': 'FOLLOW', 'conversation_history': history})
         assert response.status == 202, await response.text()
-    row, = list_session_admissions(owner.db, session_id='history')
-    assert row['payload']['api_turn_v1']['history'] == history
-    assert row['payload']['api_turn_v1']['settings']['session_history_delivery'] == ''
+    row, = owner.persistence.admissions.list(session_id='history')
+    assert row.payload['api_turn_v1']['history'] == history
+    assert row.payload['api_turn_v1']['settings']['session_history_delivery'] == ''
 
 
 @pytest.mark.parametrize('outcome,result,expected', [
@@ -32,13 +34,12 @@ def test_terminal_failure_and_cancel_match_result_and_polling(api, owner, outcom
     from gateway.session_api_turn import admit_api_turn
     from gateway.session_results import finish_result, admission_result
     from gateway.platforms.api_server_authority_runs import run_projection
-    from hermes_state_runtime import claim_session_input
     _, ref, row = admit_api_turn(api, session_id='result', active_run_id='run',
                                 user_message='x', conversation_history=[])
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
-    settled, _ = finish_result(owner.db, epoch=owner.epoch, row=row, outcome=outcome,
+    row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id))
+    settled, _ = finish_result(authority_persistence(owner), epoch=owner.epoch, row=row, outcome=outcome,
         response='diagnostic', result={'result': result, 'usage': {}} if result else None)
-    saved = admission_result(owner.db, row['admission_id'])['result']
+    saved = admission_result(authority_persistence(owner), row['admission_id'])['result']
     assert saved.get('failed' if expected == 'failed' else 'interrupted') is True
     assert settled['outcome'] == ('interrupted' if expected == 'cancelled' else expected)
     assert run_projection(api, 'run')['status'] == expected
@@ -55,13 +56,12 @@ def test_polling_and_run_sse_share_one_terminal_mapping(api, owner, result):
     from gateway.platforms.api_server_runs import terminal_run_status
     from gateway.session_api_turn import admit_api_turn
     from gateway.session_results import admission_result, finish_result
-    from hermes_state_runtime import claim_session_input
     _, ref, _ = admit_api_turn(api, session_id='unfinished', active_run_id='run_unfinished',
                                user_message='x', conversation_history=[])
-    row = claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id)
-    settled, _ = finish_result(owner.db, epoch=owner.epoch, row=row, outcome='completed',
+    row = admission_row(owner.persistence.admissions.claim(epoch=owner.epoch, session_id=ref.session_id))
+    settled, _ = finish_result(authority_persistence(owner), epoch=owner.epoch, row=row, outcome='completed',
                                response=result['final_response'], result={'result': dict(result), 'usage': {}})
     assert settled['outcome'] == 'completed'
-    sse_status = terminal_run_status(admission_result(owner.db, row['admission_id'])['result'])[0]
+    sse_status = terminal_run_status(admission_result(authority_persistence(owner), row['admission_id'])['result'])[0]
     assert sse_status == 'failed'
     assert run_projection(api, 'run_unfinished')['status'] == sse_status

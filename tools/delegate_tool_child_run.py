@@ -989,7 +989,7 @@ class _ChildRun:
         timeout_cause = stale_after if stale_after is not None else child_timeout
         duration = self.elapsed()
         logger.warning("Subagent %d %s after %.1fs", task_index, "timed out" if is_timeout else f"raised {type(exc).__name__}",
-                       duration, exc_info=not is_timeout)
+                       duration, exc_info=exc if not is_timeout else False)  # outside ``except``: pass it
         child_api_calls = 0
         with _quiet(None):
             child_api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)

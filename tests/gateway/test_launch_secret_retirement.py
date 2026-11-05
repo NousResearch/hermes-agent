@@ -2,6 +2,8 @@
 from types import SimpleNamespace
 
 import pytest
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row
 
 
 @pytest.mark.asyncio
@@ -16,7 +18,7 @@ async def test_delete_prunes_launch_and_config_secrets(tmp_path, monkeypatch):
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None,
                              _evict_cached_agent=lambda route: None)
     owner = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
@@ -31,14 +33,14 @@ async def test_delete_prunes_launch_and_config_secrets(tmp_path, monkeypatch):
         await session_mutations.mutate_session(owner, connection.actor, doomed, dict(
             session_id=doomed.session_id, request_id='delete', operation='delete', payload={},
             expected_revision=handle.revision, expected_generation=handle.execution_generation))
-        assert owner.db.get_session(doomed.session_id) is None
+        assert session_row(owner.persistence, doomed.session_id) is None
         assert 'launch-doomed' not in owner._local_launch_keys.values()
         assert list(owner._local_launch_keys.values()) == ['launch-kept']
         assert len(owner._local_config_secrets) == 1
         assert all(kept.session_id in ref for ref in owner._local_config_secrets)
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 async def _branching_owner(tmp_path, monkeypatch):
@@ -53,7 +55,7 @@ async def _branching_owner(tmp_path, monkeypatch):
         'provider': 'custom', 'api_key': 'config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None,
                              _set_session_reasoning_override=lambda route, value: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -101,7 +103,7 @@ async def test_branches_keep_the_secrets_their_parent_bound_until_the_last_delet
         assert all(parent.session_id in ref for ref in left) and bool(left) == (first == 'parent')
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -130,7 +132,7 @@ async def test_a_branch_rebinds_after_its_parent_is_deleted(tmp_path, monkeypatc
         assert all(child.session_id not in ref for ref in (*owner._local_launch_keys, *owner._local_config_secrets))
     finally:
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -142,7 +144,8 @@ async def test_an_unpublished_edit_keeps_the_secret_it_reuses(tmp_path, monkeypa
     import asyncio
     import copy
     import threading
-    from gateway import run, session_mutations
+    from gateway import run
+    from gateway.session_persistence import authority_persistence
     from gateway.session_contract import SessionRef
     from gateway.session_policy import policy_for_source
     owner, connection, mutate, _ = await _branching_owner(tmp_path, monkeypatch)
@@ -164,14 +167,15 @@ async def test_an_unpublished_edit_keeps_the_secret_it_reuses(tmp_path, monkeypa
         rotated = copy.deepcopy(run._load_gateway_config())
         rotated['model']['api_key'] = 'rotated-config-secret'  # only the frozen copy still answers
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: rotated)
-        commit = session_mutations.mutate_runtime_session
+        runtime = authority_persistence(owner).runtime
+        commit = runtime.mutate
 
         def held_commit(*args, **kwargs):
-            if kwargs['request_id'] == 'reasoning-again' and not kwargs.get('_prepare_only'):
+            if kwargs['request_id'] == 'reasoning-again':
                 entered.set()  # prepared and bound, not yet committed or published
                 assert release.wait(10)
             return commit(*args, **kwargs)
-        monkeypatch.setattr(session_mutations, 'mutate_runtime_session', held_commit)
+        monkeypatch.setattr(runtime, 'mutate', held_commit)
         pending = asyncio.create_task(mutate(parent, 'reasoning', {'effort': 'high'}, request_id='reasoning-again'))
         assert await asyncio.to_thread(entered.wait, 10)
         await mutate(grandchild, operation, {'effort': 'medium'} if operation == 'reasoning' else None)
@@ -184,7 +188,7 @@ async def test_an_unpublished_edit_keeps_the_secret_it_reuses(tmp_path, monkeypa
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -195,7 +199,8 @@ async def test_a_prune_keeps_the_parents_secret_for_a_branch_not_yet_published(t
     import asyncio
     import copy
     import threading
-    from gateway import run, session_mutations
+    from gateway import run
+    from gateway.session_persistence import authority_persistence
     from gateway.session_contract import SessionRef
     from gateway.session_policy import policy_for_source, rebind_launch_key
     from gateway.session_prune import _apply
@@ -207,19 +212,20 @@ async def test_a_prune_keeps_the_parents_secret_for_a_branch_not_yet_published(t
         await mutate(parent, 'delete')
         if api_key:
             rebind_launch_key(owner, child, api_key)  # the resume re-supply, which main also honours
-        owner.db.end_session(child.session_id, 'tui_shutdown')
+        owner.persistence.sessions.end(child.session_id, 'tui_shutdown')
         rotated = copy.deepcopy(run._load_gateway_config())
         rotated['model']['api_key'] = 'rotated-config-secret'  # only the frozen copy still answers
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: rotated)
-        commit = session_mutations.mutate_runtime_session
+        runtime = authority_persistence(owner).runtime
+        commit = runtime.mutate
 
         def held_publication(*args, **kwargs):
             result = commit(*args, **kwargs)
-            if kwargs['request_id'] == 'held-branch' and not kwargs.get('_prepare_only'):
+            if kwargs['request_id'] == 'held-branch':
                 committed.set()  # committed, not yet restored into the owner
                 assert release.wait(10)
             return result
-        monkeypatch.setattr(session_mutations, 'mutate_runtime_session', held_publication)
+        monkeypatch.setattr(runtime, 'mutate', held_publication)
         pending = asyncio.create_task(mutate(child, 'branch', request_id='held-branch'))
         assert await asyncio.to_thread(committed.wait, 10)
         assert (await _apply(owner, {'older_than_days': None, 'chat_id': child.session_id}, None))['deleted'] == 1
@@ -235,4 +241,4 @@ async def test_a_prune_keeps_the_parents_secret_for_a_branch_not_yet_published(t
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)

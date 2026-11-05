@@ -4,6 +4,7 @@ import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 from tests.gateway.test_hosted_room_discussion import (
     GATEWAY_ID,
     LOCAL_PROFILES,
@@ -19,9 +20,10 @@ from tests.gateway.test_hosted_room_discussion import (
 
 @pytest.fixture
 def room_db(tmp_path):
-    db = tmp_path / "state.db"
+    db = storage_handle(tmp_path)
     room = hosted_rooms.create_room(
         db,
+        placement="profile",
         room_id=ROOM_ID,
         name="Release",
         members=MEMBERS,

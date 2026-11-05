@@ -20,7 +20,8 @@ def _stub_refine(monkeypatch, refine, live, sid, review):
     from agent import background_review
     from run_agent import AIAgent
     authority = SimpleNamespace(profile_id='p', sessions={sid: live},
-        db=SimpleNamespace(get_messages_as_conversation=lambda *a, **k: [{'role': 'user', 'content': 'h'}]))
+        persistence=SimpleNamespace(messages=SimpleNamespace(
+            read_conversation=lambda *a, **k: [SimpleNamespace(as_openai_message=lambda: {'role': 'user', 'content': 'h'})])))
     monkeypatch.setattr(refine, '_local_session', lambda r, s: (authority, live))
     monkeypatch.setattr(session_policy, 'policy_for_source', lambda r, s: object())
     monkeypatch.setattr(session_local_recovery, 'transcript_target', lambda a, r: sid)

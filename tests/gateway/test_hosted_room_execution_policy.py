@@ -181,7 +181,7 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
         lambda *_: {"terminal", "file", "web"},
     )
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
 
     adapter._create_agent(
         session_id="room-session",

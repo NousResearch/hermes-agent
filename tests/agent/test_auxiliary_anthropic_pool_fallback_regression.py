@@ -67,7 +67,7 @@ class TestAnthropicPoolExhaustedFallsBackToEnv:
         monkeypatch.setenv("ANTHROPIC_TOKEN", "«redacted:sk-…»-oauth-token")
         captured = {}
 
-        def _fake_build(token, base_url):
+        def _fake_build(token, base_url, **_kwargs):
             captured["base_url"] = base_url
             return MagicMock()
 

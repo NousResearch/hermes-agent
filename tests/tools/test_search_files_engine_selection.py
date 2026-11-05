@@ -405,7 +405,7 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
 def test_every_windows_drive_root_is_broad_even_when_home_is_on_another_drive(
     tmp_path, monkeypatch
 ):
-    import tools.file_operations as file_operations
+    from tools import file_operations
 
     monkeypatch.setattr(file_operations, "_HOME", "C:/Users/alice")
     ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))

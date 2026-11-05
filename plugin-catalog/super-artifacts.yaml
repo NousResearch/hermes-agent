@@ -1,0 +1,28 @@
+name: super-artifacts
+title: Super Artifacts
+repo: https://github.com/Super-Artifacts/plugins
+sha: "dce02981a179a09dad6509fe58a3a7b8cf020735"
+subdir: hermes
+description: "Publish pages, forms, trackers and proofs as live URLs that open on a phone, and read back what visitors submit, through the hosted Super Artifacts MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the super-artifacts workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no code. Disclosure — hosted-only connector: every tool call goes to superartifacts.app/mcp; published artifacts and what visitors submit to them are stored on Super Artifacts' servers. Artifacts are private by default, and the skill tells the model to publish private and never widen who can open one unless the person asked; Hermes does not prompt before these tools run unless you set `trust: untrusted` on the server. No telemetry. OAuth must be enabled with `hermes mcp add super-artifacts --url https://superartifacts.app/mcp --auth oauth --connect-timeout 300`; the bundled mcp.json alone yields 401."
+maintainer: Super-Artifacts
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.141.0"
+docs_url: https://github.com/Super-Artifacts/plugins/tree/dce02981a179a09dad6509fe58a3a7b8cf020735/hermes#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Sign-in needs one extra command after install, because a portable mcp.json cannot declare OAuth: hermes mcp add super-artifacts --url https://superartifacts.app/mcp --auth oauth --connect-timeout 300"
+image: https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/social/hero-1280x640.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/07-hello-from-hermes.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/02-artifact-on-phone.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/03-data-read-back.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/05-gallery.png
+  - https://raw.githubusercontent.com/Super-Artifacts/plugins/dce02981a179a09dad6509fe58a3a7b8cf020735/assets/screenshots/06-artifact-versions.png

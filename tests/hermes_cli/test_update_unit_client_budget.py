@@ -1,9 +1,11 @@
 """Update clients cover unit transactions without hiding manager failures."""
 import subprocess
+import types
 
 import pytest
 
 from hermes_cli import update_cmd_fleet as fleet
+from hermes_cli import update_cmd_fleet_unit_budget as budget
 
 
 @pytest.fixture(autouse=True)
@@ -101,8 +103,14 @@ def test_budget_fallback_keeps_real_errors(monkeypatch, limits, outcome):
 
     monkeypatch.setattr(fleet, "_systemctl", systemctl)
     if outcome == "timeout":
-        with pytest.raises(subprocess.TimeoutExpired):
-            fleet._systemctl_reset_and_restart(["systemctl"], "hermes-serve-test")
+        # A client timeout is unknown, not failed: the unit's state never settles here, so the
+        # bounded wait for systemd's job ends in a non-zero result, never a raise or a hang.
+        clock = [0.0]
+        monkeypatch.setattr(budget, "time", types.SimpleNamespace(
+            monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s)))
+        result = fleet._systemctl_reset_and_restart(["systemctl"], "hermes-serve-test")
+        assert result.returncode == budget.UNIT_JOB_STILL_RUNNING
+        assert clock[0] <= budget._UNIT_JOB_HARD_CAP_S
     else:
         result = fleet._systemctl_reset_and_restart(["systemctl"], "hermes-serve-test")
         assert result.returncode == outcome

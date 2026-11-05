@@ -9,7 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from run_agent import AIAgent
 

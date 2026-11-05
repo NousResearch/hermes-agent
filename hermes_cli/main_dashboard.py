@@ -87,7 +87,7 @@ _SYSTEMCTL_ERRORS = (FileNotFoundError, subprocess.TimeoutExpired, OSError)
 def _run_probe(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess:
     """Captured, text-decoded ``subprocess.run`` for short local probes (systemctl, ps)."""
     return subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
 
 def _restart_managed_dashboard_service(reason: str, unit: str = _DASHBOARD_SYSTEMD_UNIT) -> bool:
@@ -231,6 +231,27 @@ def _get_pid_cgroup_path(pid: int) -> str | None:
     return next(_pid_unified_cgroup_entries(pid), None)
 
 
+def _systemd_owner_for_pid(pid: int) -> tuple[str, str | None] | None:
+    """``(unit, scope)`` of the systemd unit whose live ``MainPID`` is *pid*; ``None`` when no unit
+    provably owns it (see :func:`_get_systemd_service_for_pid`). Scope is ``user``/``system`` or
+    ``None`` when the cgroup path does not say."""
+    unit = _get_systemd_service_for_pid(pid)
+    if unit is None:
+        return None
+    return unit, _extract_scope_from_cgroup(_get_pid_cgroup_path(pid) or "")
+
+
+def _systemd_restart_commands(unit: str, scope: str | None) -> list[str]:
+    """The command(s) that restart *unit* in its scope; both forms when the scope is unknown."""
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    return {"user": [user_cmd], "system": [system_cmd]}.get(scope or "", [user_cmd, system_cmd])
+
+
+def _format_restart_commands(commands: list[str]) -> str:
+    """Join restart commands as a user-facing hint: each backticked, separated by " or "."""
+    return " or ".join(f"`{c}`" for c in commands)
+
+
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 
@@ -315,7 +336,7 @@ def _loaded_launchd_backend_jobs(
 
 def _launchd_job_owning_backend(
     pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
-    ancestors: "list[int] | tuple[int, ...]" = (),
+    ancestors: list[int] | tuple[int, ...] = (),
 ) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
     (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
@@ -406,7 +427,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
-    spawned: list[tuple[list[str], list[str], "subprocess.Popen"]] = []
+    spawned: list[tuple[list[str], list[str], subprocess.Popen]] = []
     failed: list[tuple[list[str], list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
@@ -422,6 +443,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
             with open(log_path, "ab") as log_f:
                 proc = subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    # detached-spawn: ok — dashboard service launch, meant to outlive the CLI that starts it
                     start_new_session=True, close_fds=True)
             spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:
@@ -515,10 +537,11 @@ def _install_hangup_protection(gateway_mode: bool = False):
 
     # Any failure here is non-fatal; we just skip the wrap.
     try:
-        # Late-bound import so tests can monkeypatch
-        # hermes_cli.config.get_hermes_home to simulate setup failure.
-        from hermes_cli.config import get_hermes_home as _get_hermes_home
-        logs_dir = _get_hermes_home() / "logs"
+        # Late-bound import so tests can monkeypatch it to simulate setup failure. The ROOT
+        # home, never a sticky profile's: the update mutates the shared checkout, and the
+        # Desktop and the hand-off scripts read <root>/logs/update.log.
+        from hermes_constants import get_default_hermes_root as _get_root_home
+        logs_dir = _get_root_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
 
@@ -926,7 +949,9 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+    from hermes_cli.url_utils import format_url_host
+
+    url = f"http://{format_url_host(hr.dial_host(record))}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
@@ -1004,6 +1029,9 @@ def _route_named_profile_dashboard(
         proc = subprocess.Popen(reexec_argv, env=env)
         sys.exit(proc.wait())
     else:
+        from hermes_cli.cpu_profile import write_cpu_profile
+
+        write_cpu_profile()  # exec skips atexit
         os.execvpe(sys.executable, reexec_argv, env)
 
 
@@ -1069,3 +1097,30 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
         # validated "~/dist" would otherwise pass here and still 404 there.
         os.environ["HERMES_WEB_DIST"] = str(_dist_root)
         print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
+
+
+def _dashboard_validate_serve_args(args, headless_backend, token_file):
+    """Headless-serve argument checks -> ssh_owner_nonce (or None)."""
+    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
+    # config.yaml instead of silently starting on defaults where provider
+    # auto-detection can adopt unnamed .env credentials (issue #81952).
+    # Same policy + escape hatch as _guard_noninteractive_user_config.
+    if headless_backend:
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config(
+                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
+            )
+        except InvalidUserConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+    ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
+    if ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", ssh_owner_nonce):
+        raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
+    if token_file and not headless_backend:
+        raise SystemExit("--ssh-session-token-file is only valid with hermes serve")
+    return ssh_owner_nonce

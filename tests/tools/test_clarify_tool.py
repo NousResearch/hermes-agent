@@ -245,6 +245,34 @@ class TestClarifyBatchValidation:
         result = _ask(lambda questions: _reply({}), [{"question": "Real?"}, {"question": "   "}])
         assert "error" in result
 
+    def test_all_blank_choices_are_an_error_not_open_ended(self):
+        """#73152: a choices list whose entries are all blank must not quietly become a free-text card."""
+        asked = []
+        result = _ask(lambda questions: asked.append(questions) or _reply({}),
+                      [{"question": "Pick one?", "choices": ["", "   "]}])
+        assert "error" in result and "blank" in result["error"]
+        assert asked == []
+
+    def test_empty_choices_list_stays_open_ended(self):
+        seen = {}
+        _ask(lambda questions: seen.setdefault("q", questions) and _reply({"q0": "free text"}),
+             [{"question": "Anything?", "choices": []}])
+        assert seen["q"][0]["choices"] is None
+
+    def test_over_limit_choice_is_rejected_at_the_source(self):
+        """#124127: a choice longer than a surface renders is refused, not silently dropped downstream."""
+        from tools.clarify_tool import MAX_CHOICE_CHARS
+        long_choice = "x" * (MAX_CHOICE_CHARS + 1)
+        result = _ask(lambda questions: _reply({}), [{"question": "Pick?", "choices": ["short", long_choice]}])
+        assert "error" in result and str(MAX_CHOICE_CHARS) in result["error"]
+
+    def test_long_multi_line_choice_within_limit_is_kept(self):
+        seen = {}
+        choice = "Option A\n" + "detail " * 60
+        _ask(lambda questions: seen.setdefault("q", questions) and _reply({"q0": "Option A"}),
+             [{"question": "Pick?", "choices": [choice, "B"]}])
+        assert seen["q"][0]["choices_offered"][0] == choice.strip()
+
     def test_batch_rejects_non_list(self):
         result = _ask(lambda questions: _reply({}), {"question": "Q?"})
         assert "error" in result

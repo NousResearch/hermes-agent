@@ -49,7 +49,7 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
-def _channel_event(text: str, ts: str, thread_ts: str = None) -> dict:
+def _channel_event(text: str, ts: str, thread_ts: str | None = None) -> dict:
     """Build a minimal ``message`` event for the Slack Events API
     resembling what ``handle_message_event`` would pass through."""
     event = {

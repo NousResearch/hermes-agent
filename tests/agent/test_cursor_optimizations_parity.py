@@ -69,7 +69,7 @@ from agent.agent_runtime_helpers import sanitize_tool_call_arguments
 
 def simulate_compression(msgs):
     """Rewrite the middle of the history with fresh dict copies + a summary."""
-    head, mid, tail = msgs[:2], msgs[2:-6], msgs[-6:]
+    head, tail = msgs[:2], msgs[-6:]
     summary = {"role": "user", "content": "SUMMARY OF DROPPED CONTEXT " + UNI}
     new = [dict(m) if isinstance(m, dict) else m for m in head]
     new.append(summary)

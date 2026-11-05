@@ -29,9 +29,8 @@
   --catalog-follow: calc(var(--catalog-near) * var(--catalog-near));
   --catalog-rest-x: 0%;
   --catalog-rest-y: 100%;
-  --catalog-tint: 10%;
-  --catalog-edge: 20%;
-  border-color: color-mix(in srgb, var(--catalog-accent) var(--catalog-edge), var(--ui-stroke-tertiary));
+  --catalog-tint: 6%;
+  border-color: transparent;
   background:
     radial-gradient(
       140% 100% at calc(var(--catalog-rest-x) + (var(--catalog-x) - var(--catalog-rest-x)) * var(--catalog-follow))
@@ -50,18 +49,50 @@
     --catalog-near 5s ease;
 }
 
+/* Hover paints instantly; only the return eases (DESIGN.md → Motion). That
+   covers the hovered card and the siblings it dims; the pointer-follow lean
+   keeps its glide. The arc below is the one exception and fades both ways. */
+[data-catalog-card]:is(:hover, :focus-within),
+[data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card] {
+  transition:
+    --catalog-x 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-y 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-near 5s ease;
+}
+
 :root.dark [data-catalog-card] {
   --catalog-rest-x: 0%;
   --catalog-rest-y: 0%;
-  --catalog-tint: 18%;
-  --catalog-edge: 24%;
+  --catalog-tint: 11%;
 }
 
-[data-catalog-card]:hover {
-  /* Matches the selected-option treatment (`border-primary ring-2 ring-primary/20`). */
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent);
+[data-catalog-card]:is(:hover, :focus-within) {
+  border-color: transparent;
+  box-shadow: none;
 }
+
+/* The arc lives on every card and only its visibility changes: it fades in on
+   hover. Its rotation is driven by `syncCatalogArcs` on the document timeline,
+   so every card shares one sweep and hovering the next card continues it. */
+[data-catalog-card]::after {
+  background: conic-gradient(from var(--catalog-arc), transparent 0deg, var(--color-primary) 60deg, transparent 130deg);
+  border-radius: inherit;
+  content: '';
+  inset: 0;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  padding: 1.5px;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 0.35s ease;
+}
+
+[data-catalog-card]:is(:hover, :focus-within)::after {
+  opacity: 1;
+}
+
+@property --catalog-arc { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 
 /* Uniform alternative to Masonry: same column tracks, cards in a row share one
    height. Rows start at a complete text card (4-line description, two chip
@@ -83,5 +114,10 @@
 @media (prefers-reduced-motion: reduce) {
   [data-catalog-card] {
     transition: border-color 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease, filter 0.15s ease;
+  }
+
+  [data-catalog-card]:is(:hover, :focus-within),
+  [data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card] {
+    transition: none;
   }
 }

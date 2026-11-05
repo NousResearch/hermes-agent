@@ -20,8 +20,8 @@ from agent.context_compressor import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
-import agent.skill_commands as skill_commands
-import tools.skills_tool as skills_tool
+from agent import skill_commands
+from tools import skills_tool
 from hermes_state import SessionDB
 
 SKILL_BODY = (
@@ -45,8 +45,7 @@ def _install_skill(tmp_path, monkeypatch, name="work", body=SKILL_BODY):
         f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
     )
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     skill_commands.scan_skill_commands()
     return skills_dir
 

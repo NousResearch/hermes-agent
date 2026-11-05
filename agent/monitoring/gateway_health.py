@@ -24,13 +24,13 @@ logger = logging.getLogger(__name__)
 class GatewayMetric:
     name: str
     value: int | float
-    attributes: Dict[str, str]
+    attributes: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
 class GatewayHealthSnapshot:
-    metrics: List[GatewayMetric]
-    events: List[GatewayHealthEvent | GatewayDiagnosticEvent]
+    metrics: list[GatewayMetric]
+    events: list[GatewayHealthEvent | GatewayDiagnosticEvent]
 
 
 _RUNNING_PLATFORM_STATES = {"running", "connected", "ok", "ready"}
@@ -131,7 +131,7 @@ def _coerce_pid(raw: Any) -> Optional[int]:
 def _gateway_status(name: str, fallback: Callable[[], Any], /, **kwargs: Any) -> Any:
     """Prefer ``gateway.status.<name>`` (the runtime-status contract); fall back to the local approximation."""
     try:
-        import gateway.status as status
+        from gateway import status
         return getattr(status, name)(**kwargs)
     except Exception:
         return fallback()
@@ -179,7 +179,7 @@ def build_gateway_health_snapshot(
         "hermes.supervision_mode": mode if mode in _SUPERVISION_MODES else "unknown",
     }
 
-    def metric(name: str, value: int | float, **extra: str) -> GatewayMetric:
+    def metric(name: str, value: float, **extra: str) -> GatewayMetric:
         attrs = dict(base)
         for key, val in extra.items():
             if val is not None:
@@ -326,6 +326,10 @@ class GatewayDiagnosticLogHandler(logging.Handler):
 
 
 __all__ = [
-    "GatewayMetric", "GatewayHealthSnapshot", "GatewayDiagnosticLogHandler",
-    "build_gateway_health_snapshot", "classify_gateway_error", "source_logger_for_export",
+    "GatewayDiagnosticLogHandler",
+    "GatewayHealthSnapshot",
+    "GatewayMetric",
+    "build_gateway_health_snapshot",
+    "classify_gateway_error",
+    "source_logger_for_export",
 ]

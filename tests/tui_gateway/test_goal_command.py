@@ -135,7 +135,7 @@ def turn_env(server, monkeypatch, tmp_path):
         server, "_sync_session_key_after_compress", lambda *a, **k: None
     )
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     return emitted
 
 

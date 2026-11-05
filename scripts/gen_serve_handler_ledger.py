@@ -4,7 +4,8 @@
 One row per handler ``hermes serve`` exposes: every HTTP/WebSocket route of the shared FastAPI app
 (``hermes_cli.web_server.app``, imported the way ``serve`` imports it, ``HERMES_SERVE_HEADLESS=1``)
 and every JSON-RPC method a ``/api/ws`` client can call (the legacy ``tui_gateway.server._methods``
-table plus the verbs the session authority serves). Dashboard-plugin API routes depend on which
+table plus the verbs the session authority serves). ``gateway.ping``, the ``/api/ws`` heartbeat, is
+answered by the transport before dispatch and has no row. Dashboard-plugin API routes depend on which
 plugins are installed and enabled, so they are one row: the ``/api/plugins/{name}/{path}`` mount.
 
 Columns are derived from code, never judged:

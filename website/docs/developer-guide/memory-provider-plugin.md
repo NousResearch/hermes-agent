@@ -272,8 +272,8 @@ the `codex_app_server` API mode is refused at agent init — the codex agent
 compacts its own thread with no truthful pre-compaction boundary, so a
 required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
 compressor stays the only lossy authority on every path the host can intercept
-or prove safe by hook inference; an engine with its own scheduler and a false
-declaration remain trust boundaries.
+or prove safe by hook inference; an engine that rewrites the transcript from
+its own scheduler and a false declaration remain trust boundaries.
 
 ### Forks under an armed gate
 

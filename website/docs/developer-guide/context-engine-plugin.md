@@ -287,17 +287,24 @@ refused with that reason.
   attributes an engine can grow after init, so the verdict is re-resolved
   every turn.
 - **Pure observers declare `compacts_outside_compress = False`** and keep
-  receiving the hook.
+  receiving the hook. An engine that overrides `on_turn_complete()` only to
+  feed its own store — the LCM example above, if it ingests finished turns
+  into its DAG — is such an observer: without the declaration it is refused
+  at init, because the host cannot tell that override from one that compacts.
 
 ### The declaration is a contract, not a proof
 
 The declaration takes precedence over the inference, so an engine that declares
 `False` and compacts from `on_turn_complete()` anyway is let through — a false
-statement visible in source rather than a silent hole. An engine with its own
-scheduler, or one that compacts from `update_from_response()`, touches no host
-call path and is invisible to inference: declare `True`. `select_context()`
-stays ungated because it is request-only — do not use it to write durable
-state on the side.
+statement visible in source rather than a silent hole. The question the
+declaration answers is whether the engine **rewrites or removes messages in
+the host transcript outside `compress()`** — from `update_from_response()`,
+from `on_turn_complete()`, or from a scheduler of its own. Those paths are
+invisible to inference, so an engine that does any of that declares `True`.
+Background maintenance of the engine's own store (indexes, a DAG, a
+database) is not compaction in this sense and does not need `True`.
+`select_context()` stays ungated because it is request-only — do not use it
+to write durable state on the side.
 
 ### What the gate suppresses, and what that costs
 
@@ -394,7 +401,7 @@ def clone_for_agent(self):
 
 `on_session_reset()` is called on `/new` or `/reset` to clear per-session state without a full shutdown.
 
-Those six steps describe the `compress()` path — the one compaction verb the host can checkpoint. An engine that reclaims durable context anywhere else (from `on_turn_complete()`, from `update_from_response()`, or from its own scheduler) must say so with `compacts_outside_compress = True`; see "Compaction authority and `compression.checkpoint_required`" above.
+Those six steps describe the `compress()` path — the one compaction verb the host can checkpoint. An engine that rewrites or removes messages in the host transcript anywhere else (from `on_turn_complete()`, from `update_from_response()`, or from its own scheduler) must say so with `compacts_outside_compress = True`; maintenance of the engine's own store is not that. See "Compaction authority and `compression.checkpoint_required`" above.
 
 Manual `/compress` on every surface (classic CLI, TUI, Desktop, messaging, ACP) calls your
 engine's `compress()` with `force=True` and the optional focus topic, never the built-in

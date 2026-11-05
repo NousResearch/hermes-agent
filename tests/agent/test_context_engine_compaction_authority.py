@@ -235,7 +235,9 @@ def test_init_refuses_an_uninterceptable_engine_before_the_slot_is_assigned():
 
 
 def test_compress_only_engine_still_initializes_with_gate_armed():
-    """The compress()-only third-party shape (lcm) keeps initializing under the gate."""
+    """The compress()-only third-party shape keeps initializing under the gate. An engine that also
+    takes ``on_turn_complete()`` for its own store (LCM-X, for one) is refused until it declares
+    ``compacts_outside_compress = False``; see test_declared_observer_engine_still_receives_on_turn_complete."""
     compress_only, _turn_complete = _engine_stubs()
     engine = compress_only()
     agent = _init_agent_with_engine(engine, checkpoint_required=True)

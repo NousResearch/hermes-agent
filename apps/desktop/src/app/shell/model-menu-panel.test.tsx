@@ -95,7 +95,12 @@ describe('ModelMenuPanel MoA presets', () => {
     // #54670: must route through the persistent model-switch path
     // i.e. onSelectModel with provider 'moa' (which session-scopes live-session
     // switches), NOT a one-shot command.dispatch that reverts after a turn.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+    expect(onSelectModel).toHaveBeenCalledWith({
+      model: 'BeastMode',
+      provider: 'moa',
+      awaitConfirmation: true,
+      sessionId: 'runtime-1'
+    })
   })
 
   it('shows the check on the preset that matches the current moa selection', async () => {
@@ -134,7 +139,12 @@ describe('ModelMenuPanel MoA presets', () => {
 
     // Pre-session picks are UI state shipped on the next session.create — the
     // row must not be disabled and must still route through onSelectModel.
-    expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: null })
+    expect(onSelectModel).toHaveBeenCalledWith({
+      model: 'BeastMode',
+      provider: 'moa',
+      awaitConfirmation: true,
+      sessionId: null
+    })
   })
 })
 
@@ -208,6 +218,7 @@ describe('ModelMenuPanel search', () => {
       expect(onSelectModel).toHaveBeenCalledWith({
         model: 'gemini-3.1-pro',
         provider: 'google',
+        awaitConfirmation: true,
         sessionId: 'runtime-1'
       })
     })
@@ -233,6 +244,7 @@ describe('ModelMenuPanel search', () => {
       expect(onSelectModel).toHaveBeenCalledWith({
         model: 'zzz-no-such-model',
         provider: 'deepseek',
+        awaitConfirmation: true,
         sessionId: 'runtime-1'
       })
     })
@@ -272,6 +284,7 @@ describe('ModelMenuPanel search', () => {
       expect(onSelectModel).toHaveBeenCalledWith({
         model: 'gemini-2.5-flash',
         provider: 'google',
+        awaitConfirmation: true,
         sessionId: 'runtime-1'
       })
     })
@@ -294,6 +307,7 @@ describe('ModelMenuPanel search', () => {
       expect(onSelectModel).toHaveBeenCalledWith({
         model: 'gemini-3.1-pro',
         provider: 'google',
+        awaitConfirmation: true,
         sessionId: 'runtime-1'
       })
     })
@@ -325,6 +339,7 @@ describe('ModelMenuPanel search', () => {
       expect(onSelectModel).toHaveBeenCalledWith({
         model: 'gemini-2.5-flash',
         provider: 'google',
+        awaitConfirmation: true,
         sessionId: 'runtime-1'
       })
     })
@@ -360,7 +375,12 @@ describe('ModelMenuPanel search', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     await vi.waitFor(() => {
-      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'BeastMode',
+        provider: 'moa',
+        awaitConfirmation: true,
+        sessionId: 'runtime-1'
+      })
     })
   })
 })

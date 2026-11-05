@@ -260,14 +260,16 @@ export function useModelControls({
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
 
       const readSnapshot = (): ModelPickSnapshot => {
-        const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
+        const state = liveSessionId ? $sessionStates.get()[liveSessionId] : undefined
 
         return {
-          model: touchesPrimary ? $currentModel.get() : (tileState?.model ?? ''),
-          provider: touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? ''),
-          reasoningEffortWire: touchesPrimary
-            ? $currentReasoningEffortWire.get()
-            : (tileState?.reasoningEffortWire ?? ''),
+          model: state?.model ?? (touchesPrimary ? $currentModel.get() : ''),
+          provider: state?.provider ?? (touchesPrimary ? $currentProvider.get() : ''),
+          reasoningEffortWire: state
+            ? (state.reasoningEffortWire ?? '')
+            : touchesPrimary
+              ? $currentReasoningEffortWire.get()
+              : '',
           source: getCurrentModelSource()
         }
       }
@@ -280,9 +282,11 @@ export function useModelControls({
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
-        } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
+        }
+
+        if (liveSessionId) {
+          // The owning view reads this slice, including the primary. Publish the next-message
+          // choice before applying its options; session.info may arrive after the switch RPC.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
@@ -303,7 +307,9 @@ export function useModelControls({
           // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
           setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
           setCurrentModelSource(snapshot.source)
-        } else if (liveSessionId) {
+        }
+
+        if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: snapshot.model,
@@ -397,12 +403,13 @@ export function useModelControls({
 
           restoreSnapshot(restored)
           let retryToken: null | number = null
+
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
-          // Not awaited: `selectModel` answers "was the switch applied NOW",
-          // and that answer only exists once the user answers the dialog.
-          void surfaceModelSwitchConfirm({
+          // Compound menu choices wait to apply their options; other callers retain the
+          // immediate false result while the existing confirmation flow runs.
+          const confirmation = surfaceModelSwitchConfirm({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
             // Staleness guard — the session or model can move on while the
@@ -444,7 +451,7 @@ export function useModelControls({
             }
           })
 
-          return false
+          return selection.awaitConfirmation ? confirmation : false
         }
 
         settleModelPick(liveSessionId, pickToken, true)

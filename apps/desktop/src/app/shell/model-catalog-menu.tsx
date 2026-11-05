@@ -60,6 +60,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import type { ModelPreset } from '@/store/model-presets'
 import { $showModelPricing } from '@/store/model-pricing'
 import {
   $visibleModels,
@@ -79,9 +80,8 @@ import { type DaybreakControl, type FastControl, ModelEditSubmenu, resolveFastCo
 import { ModelMenuRowIcon, useModelMenuRowDecoration } from './model-menu-row-decorations'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
-// a way to dismiss itself so clicking a model row commits + closes, while the
-// hover-revealed edit submenu (reasoning/fast) stays open to play with (its
-// items preventDefault on select).
+// a way to dismiss itself after a model selection. Edits to the active model
+// can keep the submenu open; choosing options on another model can commit it.
 export const ModelMenuCloseContext = createContext<() => void>(() => {})
 
 /** Compact per-row price: `$in/$out` per Mtok (cached read appended when the
@@ -159,6 +159,10 @@ export interface ModelMenuController {
   /** OpenAI Daybreak, one profile-wide switch. Absent on surfaces that can't write it; shown only on
    *  rows whose `capabilities.daybreak` says this account's catalog lists the model. */
   daybreak?: DaybreakControl
+  /** An option edit on another row selects that model with the edited options. The menu remembers
+   *  the edit through `setOptions`, then selects and applies the preset before closing. Hosts whose
+   *  `setOptions` already selects the row should leave this off. */
+  optionPickSelects?: boolean
   /** Restore a model's remembered settings after it is selected. Separate from
    *  `setOptions` because it is one atomic "apply this model's preset" write,
    *  not a user editing one control — surfaces that write through to a session
@@ -432,9 +436,23 @@ export function ModelCatalogMenu({
     [customSlug, pickerProviders, current.provider]
   )
 
-  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider): Promise<boolean> => {
+  const selectFamily = async (
+    family: ModelFamily,
+    provider: ModelOptionProvider,
+    options?: ModelPreset
+  ): Promise<boolean> => {
     const caps = provider.capabilities?.[family.id]
-    const preset = controller.presetFor(provider.slug, family.id)
+
+    const optionTier =
+      options?.serviceTier ?? (options?.fast === undefined ? undefined : options.fast ? 'priority' : 'normal')
+
+    // The controller's rendered preset predates this edit; normalize speed so
+    // an explicit Fast off also overrides a remembered service tier.
+    const preset = {
+      ...controller.presetFor(provider.slug, family.id),
+      ...options,
+      ...(optionTier !== undefined ? { fast: optionTier !== 'normal', serviceTier: optionTier } : {})
+    }
 
     // Variant-fast models (no speed param) express "fast" as a separate `-fast`
     // id, so honor the remembered preset by selecting that sibling. Param-fast
@@ -1003,8 +1021,12 @@ interface ModelFamilyRowProps {
    *  the provider groups share ONE flat selection order. */
   kbProps: KbRowProps
   loadingModels: Record<string, LocalModelLoadProgress>
-  /** Commit this family — what a click means belongs to the host that owns it. */
-  onSelect: (family: ModelFamily, provider: ModelOptionProvider) => Promise<boolean | void> | void
+  /** Commit this family, with any options picked in its submenu overriding the remembered preset. */
+  onSelect: (
+    family: ModelFamily,
+    provider: ModelOptionProvider,
+    options?: ModelPreset
+  ) => Promise<boolean | void> | void
   /** Keyboard-focus round trip for the sub this row opens (#86966). */
   onSubOpenChange?: (open: boolean, key: string) => void
   provider: ModelOptionProvider
@@ -1074,7 +1096,12 @@ function ModelFamilyRow({
   const fastControl: FastControl =
     controller.allowSpeed === false
       ? { kind: 'none' }
-      : resolveFastControl(activeId ?? family.id, provider.models ?? [], caps?.fast ?? false, effFast)
+      : resolveFastControl(
+          activeId ?? (effFast && family.fastId ? family.fastId : family.id),
+          provider.models ?? [],
+          caps?.fast ?? false,
+          effFast
+        )
 
   const daybreak = caps?.daybreak ? controller.daybreak : undefined
 
@@ -1097,11 +1124,9 @@ function ModelFamilyRow({
       : null
   ].filter((setting): setting is string => Boolean(setting))
 
-  // Clicking the row commits the model and closes; the edit submenu
-  // (reasoning/fast) is reached by HOVER, so you can tweak those without
-  // the click dismissing everything. The trailing caret is what advertises
-  // that submenu — without it the row's effort badge reads as a fixed
-  // model+effort combo rather than an editable setting (#86966).
+  // Clicking the row commits the model. Hover reveals its options without
+  // selecting it; the host decides whether an option edit also commits it.
+  // The caret distinguishes editable settings from a fixed combo (#86966).
   const activate = () => {
     if (!isCurrent) {
       void onSelect(family, provider)
@@ -1209,9 +1234,14 @@ function ModelFamilyRow({
         isActive={isCurrent}
         model={family.id}
         onSelectModel={nextModel => controller.select(nextModel, provider.slug)}
-        onSetOptions={patch =>
+        onSetOptions={patch => {
           controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
-        }
+
+          // A pick that selects the model closes the menu like a row click, so the list cannot reflow under the pointer.
+          if (!isCurrent && controller.optionPickSelects) {
+            void Promise.resolve(onSelect(family, provider, patch)).then(ok => ok !== false && closeMenu())
+          }
+        }}
         provider={provider.slug}
         reasoning={caps?.reasoning ?? true}
         serviceTier={effTier}

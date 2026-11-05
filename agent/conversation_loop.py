@@ -1343,7 +1343,8 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
         return False
     try:
         from agent.context_engine import ContextEngine as _CE
-        return getattr(hook, "__func__", None) is not getattr(_CE, name)
+        from hermes_cli.plugin_host import runs_base_default
+        return not runs_base_default(engine, _CE, name)
     except Exception:
         return True
 

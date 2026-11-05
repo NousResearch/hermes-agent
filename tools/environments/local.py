@@ -1138,11 +1138,12 @@ class LocalEnvironment(BaseEnvironment):
         # Login invocations (init_session's env snapshot) source the user's rc /
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot; then the
         # spawn env's dirs a resetting profile dropped are re-appended (#56634). A zsh
-        # user's login PATH goes first, after the init files and path_helper ran (#129103).
+        # user's login PATH goes first, after path_helper and before the init files,
+        # so dirs those files add still win (#129103).
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
-            cmd_string = prepend_login_shell_path(cmd_string, login_shell_path(run_env))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
+            cmd_string = prepend_login_shell_path(cmd_string, login_shell_path())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands

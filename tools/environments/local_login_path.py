@@ -4,14 +4,20 @@ The snapshot runs ``bash -l``, which never reads ``~/.zprofile``. On macOS zsh i
 the default login shell and Homebrew, pyenv and conda put their PATH entries
 there, so without this the snapshot's ``python3`` is ``/usr/bin/python3``.
 
-The PATH is captured once per process from ``$SHELL -lc``: login but not
-interactive, so ``~/.zshrc`` prompt plugins (Powerlevel10k's gitstatusd, #107109)
-never start. The probe has a timeout, closed stdin and a process-group kill, and
-any failure leaves the snapshot exactly as it was before this module existed.
+The PATH is captured from ``$SHELL -lc``: login but not interactive, so
+``~/.zshrc`` prompt plugins (Powerlevel10k's gitstatusd, #107109) never start.
+The probe gets a fixed environment (the process's HOME, user and ZDOTDIR and a
+system PATH), never a session's: one gateway serves many sessions, and a
+session's client toolchain (``agent/session_client_env``) must not reach
+another session through the cache. It runs once per shell, HOME and ZDOTDIR per
+process, with a timeout, closed stdin and a process-group kill; any failure
+leaves the snapshot as it was before this module existed and is logged once.
 
-The captured entries are put in front inside the snapshot command, after the
-init files ran: macOS's ``/etc/profile`` runs ``path_helper``, which moves the
-spawn PATH behind the system dirs, so changing the spawn env would not survive.
+The captured entries are put in front at the start of the snapshot command:
+after ``/etc/profile``'s ``path_helper`` (which moves the spawn PATH behind the
+system dirs, so changing the spawn env would not survive) and before the
+configured init files, so directories those files add (nvm from a listed
+``~/.zshrc``) still come first, as they do in the user's own terminal.
 """
 
 import contextlib
@@ -22,7 +28,6 @@ import shlex
 import signal
 import subprocess
 import threading
-from collections.abc import Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -42,9 +47,15 @@ _PROBE_COMMAND = "printf '%s' \"" + _PATH_START + "${PATH}" + _PATH_END + '"'
 _PROBE_TIMEOUT_SECONDS = 5.0
 _PIPE_DRAIN_SECONDS = 1.0
 
-# shell path -> captured PATH, or None when the probe failed. One probe per shell
-# per process, so a slow or broken profile costs at most one timeout.
-_probe_results: dict[str, str | None] = {}
+# The probe's starting PATH: only system dirs, so the captured value holds what
+# the login files add and nothing inherited from this process or a session.
+_PROBE_BASE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+# Process variables the login files may read; everything else is left out.
+_PROBE_ENV_KEYS = ("HOME", "USER", "LOGNAME", "ZDOTDIR", "LANG", "LC_ALL", "TMPDIR")
+
+# (shell, HOME, ZDOTDIR) -> captured PATH, or None when the probe failed. A slow
+# or broken profile costs at most one timeout per process.
+_probe_results: dict[tuple[str, str, str], str | None] = {}
 _probe_lock = threading.Lock()
 
 
@@ -55,6 +66,13 @@ def _probe_shell() -> str | None:
             and os.path.isfile(shell) and os.access(shell, os.X_OK)):
         return shell
     return None
+
+
+def _probe_env(shell: str) -> dict[str, str]:
+    """The fixed probe environment: no session or inherited PATH entries."""
+    env = {k: os.environ[k] for k in _PROBE_ENV_KEYS if os.environ.get(k)}
+    env.update(SHELL=shell, PATH=_PROBE_BASE_PATH)
+    return env
 
 
 def _extract_path(output: str) -> str | None:
@@ -70,11 +88,11 @@ def _extract_path(output: str) -> str | None:
     return value or None
 
 
-def _run_probe(shell: str, env: Mapping[str, str]) -> str | None:
+def _run_probe(shell: str, env: dict[str, str]) -> str | None:
     """Run ``shell -lc <probe>`` and return the PATH it printed, or None."""
     try:
         proc = subprocess.Popen(
-            [shell, "-lc", _PROBE_COMMAND], env=dict(env), text=True,
+            [shell, "-lc", _PROBE_COMMAND], env=env, text=True,
             encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             # detached-spawn: ok - short-lived probe, its group is killed below on timeout
@@ -103,18 +121,27 @@ def _run_probe(shell: str, env: Mapping[str, str]) -> str | None:
     return value
 
 
-def login_shell_path(env: Mapping[str, str]) -> str | None:
-    """The PATH the user's zsh login shell sets up, probed with *env*; None when
-    ``$SHELL`` is not zsh, on Windows, or when the probe failed."""
+def login_shell_path() -> str | None:
+    """The PATH the user's zsh login files set up; None when ``$SHELL`` is not
+    zsh, on Windows, or when the probe failed (logged once at warning level)."""
     if _IS_WINDOWS:
         return None
     shell = _probe_shell()
     if shell is None:
         return None
+    env = _probe_env(shell)
+    key = (shell, env.get("HOME", ""), env.get("ZDOTDIR", ""))
     with _probe_lock:
-        if shell not in _probe_results:
-            _probe_results[shell] = _run_probe(shell, env)
-        return _probe_results[shell]
+        if key not in _probe_results:
+            value = _run_probe(shell, env)
+            _probe_results[key] = value
+            if value is None:
+                logger.warning(
+                    "Could not read the PATH from the zsh login shell %s; terminal "
+                    "commands use the bash login PATH until Hermes restarts. Keep "
+                    "~/.zprofile fast and quiet, or list PATH files in "
+                    "terminal.shell_init_files.", shell)
+        return _probe_results[key]
 
 
 def prepend_login_shell_path(cmd_string: str, login_path: str | None) -> str:

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,12 @@ def compress_request(payload):
         request = CompressRequest(preview=payload.get('preview', False), partial=payload.get('partial', False),
                                   keep_last=payload.get('keep_last', 2), focus_topic=payload.get('focus'))
     if request.aggressive:
-        raise RuntimeStoreError('unsupported_compress_options')
+        raise AuthorityRefusal('unsupported_compress_options')
     return request
 
 
 async def prepare_compress(authority, live, payload, prepared):
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy, policy_scope
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _parse_config_int
@@ -43,11 +44,12 @@ async def prepare_compress(authority, live, payload, prepared):
     config = policy.config(authority)
     options = config.get('compression') or {}
     if options.get('checkpoint_required'):
-        raise RuntimeStoreError('compression_checkpoint_required')
+        raise AuthorityRefusal('compression_checkpoint_required')
     model, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
     if runtime.get('api_mode') == 'codex_app_server':
-        raise RuntimeStoreError('runtime_coordination_required')
-    history = authority.db.get_messages_as_conversation(snapshot['target'])
+        raise AuthorityRefusal('runtime_coordination_required')
+    store = authority_persistence(authority)
+    history = [m.as_openai_message() for m in store.messages.read_conversation(snapshot['target'])]
     messages = [m for m in history if m.get('role') in {'user', 'assistant', 'tool'}]
     head, tail = messages, []
     if request.partial:
@@ -65,18 +67,21 @@ async def prepare_compress(authority, live, payload, prepared):
     # (cold session, or a managed worker that runs out of process) means no provider to call.
     cached_agent = getattr(authority.runner, '_cached_agent_for', None)
     resident = cached_agent(live.route) if callable(cached_agent) else None
+    # The compressing engine's agent-shaped owner: the post-commit notification reads it, and a one-off
+    # engine's SessionDB lives on it until ``_end_engine``.
+    owner = SimpleNamespace(context_compressor=None, platform=_platform(live.source), _gateway_session_key=live.route)
 
     def summarize():
         with policy_scope(policy, authority=authority):
             from agent.conversation_compression import _pre_compress_memory_context
             memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
-            engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'])
+            engine = _plugin_engine(authority, policy, config, model, runtime, resident, snapshot['target'], owner)
             if engine is not None:
                 try:
                     return _engine_compress(engine, head, tail, messages, request, memory_context), engine
                 except BaseException:
                     if resident is None:
-                        _end_engine(engine, snapshot['target'], messages)
+                        _end_engine(owner, snapshot['target'], messages)
                     raise
             compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
                 api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
@@ -90,14 +95,17 @@ async def prepare_compress(authority, live, payload, prepared):
                 return None, compressor
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
+    owner.context_compressor = compressor
+    owner.owned = resident is None and not isinstance(compressor, ContextCompressor)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
     if compressed is None:
-        if resident is None and not isinstance(compressor, ContextCompressor):
-            await asyncio.to_thread(_end_engine, compressor, snapshot['target'], messages)
+        if owner.owned:
+            await asyncio.to_thread(_end_engine, owner, snapshot['target'], messages)
         # Nothing removable (a short session keeps every message): main's read-only
         # "No changes from compression" report, estimated like main's (system prompt + tools).
-        row = None if resident is not None else authority.db.get_session(snapshot['target'])  # resident: row unused
+        record = None if resident is not None else store.sessions.get(snapshot['target'])  # resident: row unused
+        row = None if record is None else {'system_prompt': record.system_prompt, 'tool_names': json.dumps(record.tool_pin)}
         tokens = _request_tokens(resident, messages, row)
         return {'status': 'noop', 'summary': summarize_manual_compression(
             messages, messages, tokens, tokens, compression_state=compressor)}
@@ -109,10 +117,7 @@ async def prepare_compress(authority, live, payload, prepared):
         'after_tokens': estimate_messages_tokens_rough(compressed), 'messages_removed': len(messages) - len(compressed)}
     # The committed boundary is announced to the engine that compressed (``on_session_start``
     # with boundary_reason="compression"), as the agent path does after its own commit.
-    engine_owner = SimpleNamespace(context_compressor=compressor, platform=_platform(live.source),
-                                   _gateway_session_key=live.route,
-                                   owned=resident is None and not isinstance(compressor, ContextCompressor))
-    return dict(prepared, messages=compressed, summary=summary, post_compaction=hook, engine_owner=engine_owner,
+    return dict(prepared, messages=compressed, summary=summary, post_compaction=hook, engine_owner=owner,
                 in_place=is_truthy_value(options.get('in_place'), default=True))
 
 
@@ -135,11 +140,14 @@ def _engine_compress(engine, head, tail, messages, request, memory_context):
     return compressed
 
 
-def _end_engine(engine, session_id, messages):
+def _end_engine(owner, session_id, messages):
+    """End a one-off engine's session, then close the SessionDB it was bound with."""
+    from agent.conversation_compression import close_context_engine_session_db
     try:
-        engine.on_session_end(session_id, messages)
+        owner.context_compressor.on_session_end(session_id, messages)
     except Exception:  # health: allow BLE001 -- releasing a one-off engine must not fail /compress
         logger.warning('context engine on_session_end failed', exc_info=True)
+    close_context_engine_session_db(owner)
 
 
 def _configured_context_length(config, model, provider, base_url, custom_providers):
@@ -162,12 +170,13 @@ def _configured_context_length(config, model, provider, base_url, custom_provide
     return int(configured) if configured else None
 
 
-def _plugin_engine(authority, policy, config, model, runtime, resident, target):
+def _plugin_engine(authority, policy, config, model, runtime, resident, target, owner):
     """The session's configured plugin context engine, or None for the built-in compressor.
 
     A resident agent's engine is the one bound to this session. A cold or managed-worker session
     gets the engine its frozen policy names, selected and bound the way agent init does, so a
-    plugin engine compresses its own history instead of having it rewritten underneath it."""
+    plugin engine compresses its own history instead of having it rewritten underneath it. That
+    engine becomes ``owner``'s, which holds the plugin's SessionDB until ``_end_engine``."""
     from agent.context_compressor import ContextCompressor
     if resident is not None:
         engine = getattr(resident, 'context_compressor', None)
@@ -191,9 +200,16 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target):
         config_context_length=_configured_context_length(config, model, provider, base_url, providers))
     engine.update_model(model=model, context_length=context_length, base_url=base_url, api_key=api_key,
                         provider=provider, api_mode=runtime.get('api_mode') or '')
+    owner.context_compressor = engine
     bind = getattr(engine, 'bind_session_state', None)
     if callable(bind):
-        bind(session_db=authority.db, session_id=target)
+        from agent.context_compressor import ContextCompressor
+        from agent.conversation_compression import context_engine_session_db
+        from gateway.session_persistence import authority_persistence
+        store = authority_persistence(authority)
+        # The built-in compressor also takes the store's interface handle; a plugin engine binds a SessionDB.
+        handle = {'persistence': store} if isinstance(engine, ContextCompressor) else {}
+        bind(session_db=context_engine_session_db(owner, store), session_id=target, **handle)
     return engine
 
 
@@ -220,7 +236,7 @@ async def finish_compress_engine(authority, prepared, result):
                                                         old_session_id=result['previous_target_session_id'])
         if owner.owned:
             target = result['target_session_id'] if result is not None else prepared['snapshot']['target']
-            _end_engine(owner.context_compressor, target, prepared['messages'])
+            _end_engine(owner, target, prepared['messages'])
     try:
         async with _async_profile_runtime_scope(Path(authority.profile_id)):
             await asyncio.to_thread(notify)

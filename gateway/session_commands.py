@@ -11,7 +11,7 @@ from pathlib import Path
 import shlex
 
 from gateway.session_cron_commands import cron_read
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def _split(arg):
     try:
         return shlex.split(arg) if arg.strip() else []
     except ValueError as exc:
-        raise RuntimeStoreError('invalid_params', field='arg', detail=str(exc)) from None
+        raise AuthorityRefusal('invalid_params', field='arg', detail=str(exc)) from None
 
 
 def _first_token(arg):
@@ -148,11 +148,11 @@ def command_verdict(name, arg=''):
 def _parse(params, dispatch):
     allowed = {'session_id', 'profile', 'name', 'arg'} if dispatch else {'session_id', 'profile', 'command'}
     if (set(params) - allowed or any(not isinstance(v, str) for v in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     text = params.get('name', '') if dispatch else params.get('command', '')
     parts = text.strip().lstrip('/').split(None, 1)
     if not parts or (dispatch and len(parts) != 1):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return parts[0], params.get('arg', '') if dispatch else (parts[1] if len(parts) > 1 else '')
 
 
@@ -163,16 +163,16 @@ def _resolve_alias(name, arg):
     seen = set()
     while resolve_command(name) is None and name in quick:
         if name in seen:
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         seen.add(name)
         entry = quick[name]
         if not isinstance(entry, dict) or entry.get('type') not in {'alias', 'exec'}:
-            raise RuntimeStoreError('unsupported_command')
+            raise AuthorityRefusal('unsupported_command')
         if entry['type'] == 'exec':
             return name, arg
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         parts = target.strip().lstrip('/').split(None, 1)
         name = parts[0]
         arg = ' '.join(p for p in (*parts[1:], arg) if p)
@@ -209,7 +209,7 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
         cwd = getattr(policy, 'cwd', None) or None
         if cwd is None or not await asyncio.to_thread(os.path.isdir, cwd):
             # Never fall back to the gateway's own folder: a relative command would act there.
-            raise RuntimeStoreError('cwd_unavailable')
+            raise AuthorityRefusal('cwd_unavailable')
         return await runner._hm_run_exec_quick_command(name, shell, cwd=cwd)
     # Plugin-only: the runner's quick commands are the launch profile's under multiplex, and this
     # session's own were already resolved above in its profile (``_resolve_alias``/``_runner_command``),
@@ -217,7 +217,7 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     from hermes_cli.plugins import get_plugin_command_handler
     handler = get_plugin_command_handler(shell)
     if handler is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     event = MessageEvent(text='/' + name + (' ' + arg if arg else ''), source=live.source)
     # The session's own entry, so HERMES_SESSION_ID is bound as on its turns: a background job
     # the handler starts records this session as its parent.
@@ -242,12 +242,12 @@ def _skill_directive(name, arg, route):
     skills = get_interactive_skill_commands()
     key = resolve_slash_key(name, skills)
     if key is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     extra, instruction = split_stacked_skill_commands(arg, interactive=True)
     stacked = build_stacked_skill_invocation_message([key, *extra], instruction, task_id=route) if extra else None
     message = stacked[0] if stacked else build_skill_invocation_message(key, arg, task_id=route)
     if not message:
-        raise RuntimeStoreError('command_unavailable')
+        raise AuthorityRefusal('command_unavailable')
     missing = stacked[2] if stacked else []
     return {'type': 'skill', 'name': ', '.join(stacked[1]) if stacked else skills[key]['name'], 'message': message,
             'display': describe_skill_invocation(message, separator=' '),
@@ -376,10 +376,10 @@ async def observe_command(connection, ref, params):
     authority.authorize(actor, ref, 'session:read')
     name, arg = _parse(params, True)
     if params.get('profile') and not profile_matches_home(params['profile'], Path(authority.profile_id)):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     definition = resolve_command(name)
     if definition is None:
-        raise RuntimeStoreError('unsupported_command')
+        raise AuthorityRefusal('unsupported_command')
     return {'queued': _pre_command(authority, ref, definition.name, name.lower(), arg) is not None}
 
 
@@ -424,7 +424,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     from hermes_cli.profiles import profile_matches_home
     home = Path(authority.profile_id)
     if params.get('profile') and not profile_matches_home(params['profile'], home):
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
 
     from gateway.run import _profile_runtime_scope
     def resolve():
@@ -456,13 +456,13 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     live = authority.sessions[ref.session_id]
     if verdict == 'refused' or (verdict == 'control' and canonical in _OWNER_COMMANDS
                                 and ref.session_id in connection.subscriptions):
-        raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
+        raise AuthorityRefusal('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
     from gateway.session_history_mount import is_history_mount, read_only
     if is_history_mount(live):
         raise read_only()  # no policy or agent to run even a read command against
     from gateway.session_local import authorize_local_source
     if authorize_local_source(authority.runner, live.source) is not True:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     if capability != 'session:read':
         authority._require_admission_open()
     if definition is not None and (canonical in _INFO_READS or canonical in _OWNER_COMMANDS

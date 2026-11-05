@@ -58,12 +58,12 @@ def may_settle(authority, actor, session_id, events) -> bool:
     profiles and ``_open`` is process-wide), *actor* holds ``session:respond`` there, and *actor* is
     attached to that session, the same set of connections the request frame was written to."""
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if not owned_by(authority, session_id, events):
         return False
     try:
         authority.authorize(actor, SessionRef(authority.profile_id, session_id), "session:respond")
-    except RuntimeStoreError:
+    except AuthorityRefusal:
         return False
     live = authority.sessions.get(session_id)
     return live is not None and actor in live.subscribers.values()

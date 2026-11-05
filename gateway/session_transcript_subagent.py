@@ -10,8 +10,10 @@ through delegate-child or compression-continuation hops. Anything else is ``avai
 """
 import asyncio
 
+from persistence.core.errors import AuthorityRefusal
+
 from gateway.session_busy_controls import authorize
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
 
 
 def unavailable(session_id, subagent_id, running):
@@ -23,7 +25,7 @@ async def subagent_transcript(connection, ref, params, binding, held, limit, inl
     authority = connection.authority
     # Cold adoption belongs to session.resume, never a child poll.
     if ref.session_id not in authority.sessions:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     authorize(connection, ref, params, 'session:read')
     return await asyncio.to_thread(_read, authority, authority.sessions[ref.session_id], ref, binding, held,
                                    limit, inline_images)
@@ -45,7 +47,8 @@ def _child(authority, live, ref, subagent_id):
     child = getattr(record.get('agent'), 'session_id', None) if record else None
     if isinstance(child, str) and child:
         return child, True
-    return stored_child_session(authority.db, subagent_id, _compression_lineage(authority.db, target)), record is not None
+    store = authority_persistence(authority)
+    return stored_child_session(store, subagent_id, _compression_lineage(store, target)), record is not None
 
 
 def _read(authority, live, ref, binding, held, limit, inline_images):
@@ -57,8 +60,8 @@ def _read(authority, live, ref, binding, held, limit, inline_images):
         child, running = _child(authority, live, ref, subagent_id)
         if child is None:
             return unavailable(ref.session_id, subagent_id, running)
-        db = authority.db
-        page = read_transcript(db, child, db.transcript_lineage_ids(child), binding, held, limit,
+        store = authority_persistence(authority)
+        page = read_transcript(store, child, store.lineage.delegated_child_lineage_ids(child), binding, held, limit,
                                profile_home=authority.profile_id, inline_images=inline_images)
     return {'session_id': ref.session_id, **page, 'subagent_id': subagent_id, 'available': True,
             'running': running, 'child_session_id': child}

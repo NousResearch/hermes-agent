@@ -9,7 +9,7 @@ was admitted, and bound to that admission's own event, never to a later turn on 
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 HIDDEN = 'hidden'
 _TITLE_PREVIEW_LIMIT = 1000
@@ -30,9 +30,9 @@ def admit_display(params):
     so a typo can never turn machine text into a visible user row."""
     kind, preview = params.get('display_kind'), params.get('title_preview')
     if kind is not None and kind != HIDDEN:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if preview is not None and not isinstance(preview, str):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     committed = {}
     if kind:
         committed['kind'] = HIDDEN
@@ -45,10 +45,10 @@ def restore_display(committed):
     """A committed ``display_v1`` arriving across a process boundary (managed worker), re-checked by the
     admission validator: only an object admission itself could have committed is accepted."""
     if not isinstance(committed, dict) or not committed or set(committed) - {'kind', 'title_preview'}:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     wire = {'display_kind': committed.get('kind'), 'title_preview': committed.get('title_preview')}
     if admit_display(wire).get('display_v1') != committed:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return committed
 
 

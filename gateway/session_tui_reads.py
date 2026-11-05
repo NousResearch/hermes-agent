@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 from collections import Counter
 from pathlib import Path
+
+from gateway.session_persistence import authority_persistence
+from persistence.conversation.messages import ConversationRequest
 
 # The TUI surfaces whose /status and /context read as main's TUI sidecar did.
 _TUI_SOURCES = frozenset({'tui'})
@@ -32,22 +34,20 @@ def tui_read(policy, name: str, arg: str):
 
 def _stored_id(authority, ref) -> str:
     with contextlib.suppress(Exception):
-        from hermes_state_local import local_receipt
-        return local_receipt(authority.db, ref.session_id)['entry']['session_id'] or ref.session_id
+        return authority_persistence(authority).bindings.receipt(ref.session_id).entry['session_id'] or ref.session_id
     return ref.session_id
 
 
 def _context_id(authority, ref) -> str:
     """The compression tip the session's model context lives in; the runtime id may still name a parent."""
-    stored = _stored_id(authority, ref)
-    return authority.db.get_compression_tip(stored) or stored
+    return authority_persistence(authority).lineage.tip(_stored_id(authority, ref))
 
 
-def _model_history(db, tip) -> list:
+def _model_history(store, tip) -> list:
     """The tip's working context: its active rows as live replay loads them, minus the ``session_meta``
     bookkeeping the gateway strips before the model sees history. Superseded segments are not read."""
-    return [m for m in db.get_messages_as_conversation(tip, repair_alternation=True, include_row_ids=True)
-            if m['role'] != 'session_meta']
+    return [m.as_openai_message() for m in store.messages.read_conversation(
+        tip, ConversationRequest(repair_alternation=True, include_row_ids=True)) if m.role != 'session_meta']
 
 
 def _status(authority, ref, live, policy, agent, arg) -> str:
@@ -57,7 +57,8 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
     stored = _stored_id(authority, ref)
     row = {}
     with contextlib.suppress(Exception):
-        row = authority.db.get_session(stored) or {}
+        if (record := authority_persistence(authority).sessions.get(stored)) is not None:
+            row = {'started_at': record.started_at, 'last_activity_at': record.last_activity_at, 'title': record.title}
     running = authority._handle(ref).execution_state != 'idle'
     fields = build_status_fields(
         stored, agent, row, model=policy.current_model(authority) if agent is None else None,
@@ -83,7 +84,8 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
     stored = _context_id(authority, ref)
     rows = []
     with contextlib.suppress(Exception):
-        rows = authority.db.get_messages_as_conversation(stored, include_ancestors=True, include_row_ids=True)
+        rows = [m.as_openai_message() for m in authority_persistence(authority).messages.read_conversation(
+            stored, ConversationRequest(include_lineage=True, include_row_ids=True))]
     from gateway.session_controls import display_projection
     messages = display_projection(rows, authority.profile_id) if rows else []
     breakdown: list[str] = []
@@ -91,7 +93,7 @@ def _context(authority, ref, live, policy, agent, arg) -> str:
         with contextlib.suppress(Exception):
             from agent.context_breakdown import (
                 compute_context_details, compute_session_context_breakdown, render_context_breakdown_lines)
-            payload = compute_session_context_breakdown(agent, _model_history(authority.db, stored))
+            payload = compute_session_context_breakdown(agent, _model_history(authority_persistence(authority), stored))
             details = None
             if arg.strip().lower() in {'all', 'full', 'details'}:
                 with contextlib.suppress(Exception):
@@ -137,14 +139,14 @@ async def context_breakdown(connection, ref, params) -> dict:
     started, or reaped): the same categories from what the session froze (``_stored_breakdown``) beside
     its stored usage."""
     from gateway.session_busy_controls import authorize
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     authorize(connection, ref, params, 'session:read')
     authority = connection.authority
     live = authority.sessions.get(ref.session_id)
     if live is None:
-        raise RuntimeStoreError('not_found')
+        raise AuthorityRefusal('not_found')
     agent = authority.agent(ref)
     usage = None
     if agent is None:
@@ -157,19 +159,20 @@ async def context_breakdown(connection, ref, params) -> dict:
     def build():
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
+        store = authority_persistence(authority)
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
             tip = _context_id(authority, ref)
             # Agentless, the categories come from the frozen prompt and tools pin, which a compute worker
             # can rewrite (session.prompt / session.tools) without moving the transcript.
-            row = {} if agent is not None else authority.db.get_session(tip) or {}
+            row = None if agent is not None else store.sessions.get(tip)
             # A revision probe is two indexed reads; the rebuild walks the whole transcript and the
             # system prompt. Reuse the payload while neither the transcript nor the agent moved.
-            key = (id(agent), _agent_context_marks(agent), authority.db.conversation_revision(tip),
-                   row.get('system_prompt'), row.get('tool_names'))
+            key = (id(agent), _agent_context_marks(agent), store.messages.conversation_revision(tip),
+                   *((row.system_prompt, row.tool_pin) if row is not None else (None, None)))
             cached = live.context_breakdown
             if cached is not None and cached[0] == key:
                 return dict(cached[1])
-            conversation = _model_history(authority.db, tip)
+            conversation = _model_history(store, tip)
             if agent is None:
                 payload = _stored_breakdown(row, conversation, usage)
             else:
@@ -181,18 +184,15 @@ async def context_breakdown(connection, ref, params) -> dict:
 
 
 def _stored_breakdown(row, conversation, usage) -> dict:
-    """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
-    stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
+    """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin (*row*, a
+    ``SessionRecord`` or None), beside its stored usage. Tools are measured as the next agent restores them
+    (``pinned_tool_defs``); a pin hash whose row was swept reads as no pin."""
     from agent.context_breakdown import stored_context_breakdown
     from tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
-    if prompt := row.get('system_prompt'):
-        try:
-            pin = json.loads(row.get('tool_names') or 'null')
-        except (TypeError, ValueError):
-            pin = None  # a pin hash whose row was swept resolves to itself
-        breakdown = stored_context_breakdown(prompt, pinned_tool_defs(pin), conversation)
+    if prompt := (row.system_prompt if row is not None else None):
+        breakdown = stored_context_breakdown(prompt, pinned_tool_defs(row.tool_pin), conversation)
     return {**breakdown, 'context_max': int(usage.get('context_max') or 0),
             'context_percent': int(usage.get('context_percent') or 0), 'context_used': int(usage.get('context_used') or 0),
             'context_estimated': bool(usage.get('context_estimated', False)),

@@ -507,6 +507,35 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
 # without this, ``pm`` is unimportable and the launch silently skips PM adoption.
 harden_import_path(str(_root))
 
+#: pytest itself and the suite's own isolation marker (``tests/conftest.py``): this process tree
+#: is a test run, whose ``HERMES_HOME`` is an isolation sandbox rather than a user's data root.
+_TEST_PROCESS_ENV = ("PYTEST_CURRENT_TEST", "PYTEST_VERSION", "HERMES_TEST_ISOLATION")
+
+#: Opt-in for a test that genuinely needs the live install's launch prologue.
+_ALLOW_LIVE_INSTALL_ENV = "HERMES_TEST_ALLOW_LIVE_INSTALL"
+
+#: True when this import skipped the launch prologue because the process is a test run.
+_prologue_skipped_for_test = False
+
+
+def _launch_prologue_enabled() -> bool:
+    """The import-time launch prologue runs for product launches, not for a test run.
+
+    Every entry point imports this module before its dependency graph, and the prologue below
+    acts on the tree it runs from: ``_settle_interrupted_update`` restores (and re-execs) a
+    killed update, ``prepare_launch`` syncs dependencies and can relaunch, and
+    ``activate_dependencies`` selects the install's committed generation. Run from a checkout
+    that a real data root installed, each of those reads or writes the operator's live install —
+    the exact thing a hermetic test must not touch, and the reason a suite run from a deployed
+    tree booted PM against the real home (PER-590).
+
+    A test of the launch behaviour calls those functions directly; one that needs this
+    module's own prologue opts in with ``HERMES_TEST_ALLOW_LIVE_INSTALL=1``.
+    """
+    if not any(os.environ.get(name) for name in _TEST_PROCESS_ENV):
+        return True
+    return os.environ.get(_ALLOW_LIVE_INSTALL_ENV, "").strip().lower() in ("1", "true", "yes")
+
 
 def _settle_interrupted_update() -> None:
     """Put back the tree a killed ``hermes update`` left half-moved, before PM, launch preparation or
@@ -541,7 +570,11 @@ def _settle_interrupted_update() -> None:
         recovery.relaunch_after_restore()
 
 
-_settle_interrupted_update()
+_prologue_enabled = _launch_prologue_enabled()
+if _prologue_enabled:
+    _settle_interrupted_update()
+else:
+    _prologue_skipped_for_test = True
 
 
 def _pin_launcher_home() -> None:
@@ -581,7 +614,7 @@ from hermes_cli._parser import command_argv
 
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
-if not _pm_repair:
+if not _pm_repair and _prologue_enabled:
     from hermes_cli.venv_sync import prepare_launch, relaunch_command
 
     try:

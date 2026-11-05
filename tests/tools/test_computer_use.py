@@ -1515,16 +1515,27 @@ class TestCuaEnvironmentScrubbing:
                         await asyncio.sleep(0.005)
 
                 signal_task = asyncio.create_task(_signal_shutdown_when_ready())
+                lifecycle_error: BaseException | None = None
                 try:
                     await session._lifecycle_coro()
-                except BaseException:
-                    pass  # mocks may raise; the env capture still landed
+                except BaseException as exc:  # mocks may raise after the env capture
+                    lifecycle_error = exc
                 finally:
                     signal_task.cancel()
                     try:
                         await signal_task
-                    except (asyncio.CancelledError, BaseException):
+                    except asyncio.CancelledError:
                         pass
+
+                # The env capture is this test's contract. When it never landed the
+                # lifecycle failed before it got to the scrub, and swallowing that
+                # turns the real cause -- e.g. the home-I/O guard refusing PM's
+                # `<checkout>/../manifest.json` probe on a default install -- into
+                # the misleading PATH assert below. Fail on the cause instead.
+                if not captured_env:
+                    raise AssertionError(
+                        "_lifecycle_coro() failed before the env capture landed"
+                    ) from lifecycle_error
 
         asyncio.run(drive_lifecycle())
 

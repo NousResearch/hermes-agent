@@ -229,7 +229,14 @@ def test_served_profile_mirrors_the_default_relay(served_root, monkeypatch, rela
     assert payload["error_code"] is None, payload
 
 
-def test_served_profile_reads_a_dead_default_relay_as_its_own_failure(served_root, monkeypatch):
+@pytest.mark.parametrize(("alpha_yaml", "expected_state", "expected_error"), [
+    ("", "fatal", "relay_auth_failed"),
+    # A profile that switched Relay off shows Disabled, without the default's failure banner.
+    ("platforms:\n  relay:\n    enabled: false\n", "disabled", None),
+])
+def test_served_profile_reads_a_dead_default_relay_as_its_own_failure(
+    served_root, monkeypatch, alpha_yaml, expected_state, expected_error,
+):
     """The default's Relay adapter serves every profile, so when it is fatal the served profile's
     Relay is too: show that failure, not "Restart needed" (a restart of the profile changes nothing)."""
     from hermes_cli.web_routers import messaging
@@ -238,10 +245,11 @@ def test_served_profile_reads_a_dead_default_relay_as_its_own_failure(served_roo
     record["platforms"]["relay"] = {"state": "fatal", "error_code": "relay_auth_failed",
                                     "error_message": "connector refused the gateway"}
     (served_root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
-    (served_root / "profiles" / "alpha" / "config.yaml").write_text("", encoding="utf-8")
+    (served_root / "profiles" / "alpha" / "config.yaml").write_text(alpha_yaml, encoding="utf-8")
     entry = {"id": "relay", "name": "Relay", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
     with messaging._profile_scope("alpha") as scoped_dir:
         [payload] = messaging._platform_payloads(scoped_dir, [entry])
-    assert payload["state"] == "fatal", payload
-    assert payload["error_code"] == "relay_auth_failed", payload
+    assert payload["state"] == expected_state, payload
+    assert payload["error_code"] == expected_error, payload
+    assert (payload["error_message"] is None) is (expected_error is None), payload

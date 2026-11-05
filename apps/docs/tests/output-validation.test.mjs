@@ -58,7 +58,7 @@ function zhHref(route) {
 function expectedRoutes() {
   const en = EN_DOCS.map((doc) => "/" + doc.replace(/\.mdx?$/, "").replace(/(?:^|\/)index$/, ""));
   const zh = [...en.map(zhHref), ...ZH_ONLY_DOCS.map((doc) => zhHref("/" + doc.replace(/\.mdx?$/, "")))];
-  const hubs = ["/skills", "/plugins", "/search", zhHref("/skills"), zhHref("/plugins"), zhHref("/search")];
+  const hubs = ["/search", zhHref("/search")];
   const catalog = PLUGINS.flatMap((plugin) => [
     `/plugins/${plugin.name}`, `/plugins/by/${plugin.maintainerSlug}`,
     zhHref(`/plugins/${plugin.name}`), zhHref(`/plugins/by/${plugin.maintainerSlug}`),
@@ -363,9 +363,10 @@ test("rejects a source document missing from the export", (t) => {
   assert.ok(result.stderr.includes("/getting-started/new-page"), result.stderr);
 });
 
-test("rejects a missing catalog hub page in either locale", (t) => {
+test("rejects a revived catalog hub page, which the marketplace now owns", (t) => {
   const { appDir } = buildExport(t);
-  dropRoute(appDir, "/zh-Hans/plugins");
+  const file = path.join(appDir, "out", "zh-Hans", "plugins", "index.html");
+  writeFileSync(file, PAGE_HTML);
   const result = runValidator(appDir);
   assert.notEqual(result.status, 0);
   assert.ok(result.stderr.includes("/zh-Hans/plugins"), result.stderr);

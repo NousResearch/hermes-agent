@@ -1,6 +1,12 @@
 export const SITE_URL = 'https://hermes-agent.nousresearch.com';
 export const DOCS_BASE_PATH = '/docs';
 export const LOCALES = ['en', 'zh-Hans'] as const;
+
+/** The skills and plugins catalogs moved off /docs; the edge 308s the old hubs here. */
+export const MARKETPLACE_URL = {
+  skills: `${SITE_URL}/marketplace?kind=skills`,
+  plugins: `${SITE_URL}/marketplace?kind=plugins`,
+} as const;
 export type Locale = (typeof LOCALES)[number];
 
 function isOutsidePath(href: string): boolean {

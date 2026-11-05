@@ -18,7 +18,10 @@ export function buildNavigationTree(items: NavigationItem[], pages: NavigationPa
   function node(item: NavigationItem): Node {
     if (typeof item === 'string') return document(item);
     if (item.type === 'doc') return document(item.id, item.label);
-    if (item.type === 'link') return { type: 'page', name: item.label, url: localizedHref(item.href, locale) };
+    if (item.type === 'link') {
+      const external = /^https?:/.test(item.href);
+      return { type: 'page', name: item.label, url: external ? item.href : localizedHref(item.href, locale), external };
+    }
     return {
       type: 'folder',
       name: item.label,

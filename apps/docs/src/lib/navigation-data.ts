@@ -3,8 +3,8 @@ import type { NavigationConfig } from './navigation-types';
 const navigation: NavigationConfig = {
   docs: [
     'user-stories',
-    // The Marketplace lives in the navbar. On mobile Docusaurus opens the drawer on the doc sidebar,
-    // with the navbar a "Back to main menu" tap away, so without this link it is undiscoverable on a phone.
+    // The Skills and Plugins catalogs live on the marketplace (MARKETPLACE_URL in urls.ts). The
+    // navbar links there too, but a phone opens the doc sidebar first, so the sidebar repeats it.
     {type: 'link', label: 'Browse the Marketplace', href: 'https://hermes-agent.nousresearch.com/marketplace'},
     {
       type: 'category',

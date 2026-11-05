@@ -1,7 +1,6 @@
-// Shared catalog vocabulary for the Plugins grid (src/components/PluginsGrid), the
-// per-plugin pages and the author pages (src/app/*/catalog route adapters generate their
-// routes from src/lib/plugin-pages.ts). One definition of the entry shape, the tier/category
-// taxonomy and the link builders keeps the three surfaces from drifting.
+// Shared catalog vocabulary for the per-plugin pages and the author pages (src/app/*/catalog
+// route adapters generate their routes from src/lib/plugin-pages.ts). One definition of the
+// entry shape, the tier/category taxonomy and the link builders keeps them from drifting.
 
 export interface PluginCapabilities {
   providesTools?: string[];

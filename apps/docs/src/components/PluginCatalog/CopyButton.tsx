@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useCallback, useState } from "react";
-import styles from "../PluginsGrid/styles.module.css";
+import styles from "./CopyButton.module.css";
 
-/** Copies an install command; shared by the catalog cards and the plugin pages. */
+/** Copies an install command on the plugin pages. */
 export default function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = useCallback(

@@ -67,7 +67,7 @@ async function checkBrowser() {
       return;
     }
     ok(`browser: search modal lists ${await page.locator('.DocSearch-Hit').count()} results for "${QUERIES[0]}"`);
-    for (const [locale, prefix, query] of [['en', '', 'skills hub'], ['zh-Hans', '/zh-Hans', '安装']]) {
+    for (const [locale, prefix, query] of [['en', '', 'install'], ['zh-Hans', '/zh-Hans', '安装']]) {
       const response = await page.goto(`${DOCS_URL}${prefix}/search/?q=${encodeURIComponent(query)}`, {
         waitUntil: 'domcontentloaded', timeout: 30_000,
       });
@@ -81,10 +81,6 @@ async function checkBrowser() {
         const results = page.locator('form[role="search"]').locator('..').locator('ul > li > a');
         await results.first().waitFor({ timeout: 15_000 });
         if (await input.inputValue() !== query) throw new Error('the URL query did not reach the input');
-        if (locale === 'en') {
-          const skills = new URL(`${DOCS_URL}/skills/`).pathname;
-          await results.locator(`xpath=self::a[@href="${skills}" or @href="${skills.slice(0, -1)}"]`).first().waitFor({ timeout: 10_000 });
-        }
         ok(`browser: ${locale} full search lists ${await results.count()} results for "${query}"`);
       } catch (error) {
         fail(`full search page ${locale} failed: ${error.message.split('\n')[0]}`);

@@ -9,11 +9,13 @@ const pages = [
 
 test('curated virtual groups retain order, labels, index and stable keys', () => {
   const tree = buildNavigationTree([
-    { type: 'link', label: 'Browse Skills', href: '/skills' },
+    { type: 'link', label: 'Browse Skills', href: 'https://hermes-agent.nousresearch.com/marketplace?kind=skills' },
     { type: 'category', label: 'Start here', key: 'start', collapsed: false, items: ['getting-started/quickstart'] },
     { type: 'category', label: 'Extensions', items: [], link: { type: 'doc', id: 'developer-guide/plugins/index' } },
   ], pages, 'zh-Hans');
-  assert.equal(tree.children[0].url, '/zh-Hans/skills');
+  // Off-site links are not localized and open as external links.
+  assert.equal(tree.children[0].url, 'https://hermes-agent.nousresearch.com/marketplace?kind=skills');
+  assert.equal(tree.children[0].external, true);
   assert.equal(tree.children[1].name, 'Start here');
   assert.equal(tree.children[1].$id, 'start');
   assert.equal(tree.children[1].defaultOpen, true);

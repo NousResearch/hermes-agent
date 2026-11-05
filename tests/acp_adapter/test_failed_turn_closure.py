@@ -255,6 +255,31 @@ def test_acp_exception_shaped_refusal_is_also_erased(acp):
     assert _REFUSED not in {m.get("content") for m in sent}
 
 
+def test_acp_refused_turn_stays_in_the_display_tagged_content_refused(acp):
+    """The refused ask leaves the MODEL transcript (active-only) but is RETAINED in the durable
+    DISPLAY read, tagged content_refused — so a fresh ACP session load (reopen/restart) still shows
+    the greyed "you asked X → refused" block even though the model never sees it again."""
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+
+    provider, prompt, conversation_rows, db, sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    # MODEL read (active-only): the refused ask is gone.
+    assert _REFUSED not in {content for _role, content in conversation_rows()}
+
+    # DISPLAY read (include_compacted): the refused ask is kept, tagged, with the stored notice.
+    display = [m for m in db.get_messages_as_conversation(sid, include_compacted=True)
+               if m["role"] != "session_meta"]
+    refused_row = display[-1]
+    assert refused_row["content"] == _REFUSED
+    assert refused_row["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+    assert CONTENT_REFUSED_METADATA_KEY in (refused_row.get("display_metadata") or {})
+
+
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):
     """Keyed on ``SessionDB.latest_conversation_role``: a redelivery of an already-closed turn
     writes no second row, an assistant tail is left alone, and the context-overflow class

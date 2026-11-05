@@ -348,3 +348,63 @@ def test_content_policy_refusal_drops_the_turn_and_evicts_the_cached_agent(tmp_p
         db.close()
 
     asyncio.run(check())
+
+
+def test_content_policy_refused_turn_stays_in_the_display_tagged_content_refused(tmp_path):
+    """The refused ask leaves the MODEL read (active-only) but is RETAINED in the display read,
+    tagged content_refused, so a Desktop/CLI reopen still shows the greyed "you asked X → refused"
+    block. Model-exclusion (the stuck-session fix) and display-retention are the two invariants."""
+    import asyncio
+
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        runner._evict_cached_agent = lambda session_key, **kw: None
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="refused2", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        db.append_message(sid, "user", "the request the filter blocked", platform_message_id="m-9")
+        refused = {"failed": True, "failure_reason": "content_policy_blocked", "failure_retryable": False,
+                   "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                   "messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi there"}],
+                   "history_offset": 0, "last_prompt_tokens": 0}
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="the request the filter blocked", source=source, message_id="m-9"),
+            source=source, session_entry=entry, session_key=entry.session_key, agent_result=refused,
+            agent_messages=refused["messages"],
+            prepared=runner._PreparedTurn([], "", "the request the filter blocked", None, None, None, sid, "o"),
+            response="⚠️ safety refusal", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+
+        # MODEL read (active-only): the refused ask is gone.
+        model = [m["content"] for m in db.get_messages(sid) if m["role"] == "user"]
+        assert model == ["hello"]
+
+        # DISPLAY read (include_compacted): the refused ask is kept, tagged, with the stored notice.
+        display = [m for m in db.get_messages(sid, include_compacted=True) if m["role"] != "session_meta"]
+        refused_row = display[-1]
+        assert refused_row["content"] == "the request the filter blocked"
+        assert refused_row["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+        assert CONTENT_REFUSED_METADATA_KEY in (refused_row.get("display_metadata") or {})
+        db.close()
+
+    asyncio.run(check())

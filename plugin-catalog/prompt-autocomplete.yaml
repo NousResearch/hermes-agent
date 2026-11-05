@@ -1,6 +1,6 @@
 name: prompt-autocomplete
 repo: https://github.com/bystac/hermes-prompt-autocomplete
-sha: 635fb802ef1cb40adb37eee5ce005d8c333c2787
+sha: ca3cd877d60b83e3ad519a30d2089c4b614bfb74
 title: Fast Prompt Autocomplete (Implied LTR/RTL)
 description: 'Inline sentence autocomplete for the Hermes Desktop prompt composer: a suggestion bar above the input,
   accepted with the arrow that matches the language you are already typing (English ArrowRight, Hebrew/Arabic
@@ -19,7 +19,7 @@ category: desktop
 requires_hermes: ">=0.21.0"
 version: "2.0.1"
 docs_url: https://github.com/bystac/hermes-prompt-autocomplete#readme
-image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/635fb802ef1cb40adb37eee5ce005d8c333c2787/docs/banner.png
+image: https://raw.githubusercontent.com/bystac/hermes-prompt-autocomplete/ca3cd877d60b83e3ad519a30d2089c4b614bfb74/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

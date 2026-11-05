@@ -1141,6 +1141,28 @@ describe('createSlashHandler', () => {
     }
   )
 
+  it.each(['', 'JSON', 'snapshot'])(
+    '/save %s on a gateway without session.export still saves raw JSON on its host and says so',
+    async arg => {
+      patchUiState({ sid: 'sid-abc' })
+
+      const file = '/gateway/host/hermes_conversation.json'
+      const rpc = vi.fn(() => Promise.resolve({ file }))
+
+      const ctx = buildCtx({
+        gateway: { ...buildGateway(), rpc },
+        local: { ...buildLocal(), getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }]) }
+      })
+
+      createSlashHandler(ctx)(`/save ${arg}`.trim())
+
+      expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+      await vi.waitFor(() => {
+        expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.save.savedOnHost', file))
+      })
+    }
+  )
+
   it('/save reports empty state without calling the RPC or slash worker', () => {
     const rpc = vi.fn(() => Promise.resolve({}))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })

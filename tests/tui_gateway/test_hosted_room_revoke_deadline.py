@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from tests.fixtures.storage_holder import raw_holder
 from tests.gateway.test_session_group_peers import gateway as gateway_fixture
 from tui_gateway.hosted_room_driver import HostedRoomBinding
 
@@ -100,7 +101,7 @@ def test_revoke_transport_without_optional_http_packages(gateway, monkeypatch, r
                                      target_url=f'http://127.0.0.1:{peer.server_port}')
             assert service.retry_owed_revokes() == int(response == 'settles')
             assert seen == ['HermesRoom opaque-grant']
-            remaining = hosted_rooms.due_room_grant_revokes(service.db_path, limit=10, now=service.runtime.clock() + 10)
+            remaining = hosted_rooms.due_room_grant_revokes(service.store, placement=service.placement, limit=10, now=service.runtime.clock() + 10)
             assert len(remaining) == int(response != 'settles')
         finally:
             peer.shutdown()
@@ -108,7 +109,6 @@ def test_revoke_transport_without_optional_http_packages(gateway, monkeypatch, r
 
 
 def test_unexpected_transport_error_keeps_debt_on_backoff(gateway, monkeypatch):
-    import sqlite3
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
     def failed_transport(*args, **kwargs):
@@ -119,14 +119,13 @@ def test_unexpected_transport_error_keeps_debt_on_backoff(gateway, monkeypatch):
     service.owe_grant_revoke(room_id='ended', member_id='peer', grant='opaque-grant',
                              target_url='http://127.0.0.1:9')
     assert service.retry_owed_revokes() == 0
-    with sqlite3.connect(service.db_path) as conn:
+    with raw_holder(service.store)._read_ctx() as conn:
         attempts, retry_at = conn.execute('SELECT attempts, next_attempt_at FROM hosted_room_owed_revokes').fetchone()
     assert attempts == 1 and retry_at > service.runtime.clock()
 
 
 @pytest.mark.parametrize('targets, limit', [(list(range(6)), 4), ([0] * 6, 1)])
 def test_blocked_resolvers_bound_outstanding_attempts_and_drain(gateway, monkeypatch, targets, limit):
-    import sqlite3
     from tui_gateway import hosted_room_service
 
     service, release, workers, destinations = gateway.service, threading.Event(), [], []
@@ -154,7 +153,7 @@ def test_blocked_resolvers_bound_outstanding_attempts_and_drain(gateway, monkeyp
             assert all(worker.is_alive() for worker in workers)
             if cycle:
                 assert time.monotonic() - started < 2  # Saturation refuses without another deadline wait.
-            with sqlite3.connect(service.db_path) as conn:
+            with raw_holder(service.store)._read_ctx() as conn:
                 rows = conn.execute('SELECT attempts, next_attempt_at FROM hosted_room_owed_revokes').fetchall()
             assert len(rows) == len(targets)
             assert all(attempts == cycle + 1 and retry_at > now[0] for attempts, retry_at in rows)

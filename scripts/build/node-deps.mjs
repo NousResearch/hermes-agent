@@ -18,7 +18,16 @@ export function npmCommand({ env = process.env } = {}) {
     for (const name of names) {
       const bin = join(dir, name)
       if (!existsSync(bin)) continue
-      const prefix = dirname(realpathSync(bin))
+      // A PATH entry can stop resolving between the probe and the resolve: a dangling
+      // symlink, a lazily materialized FUSE shim, or a package manager's GC mid-scan.
+      // Skip that entry and keep scanning instead of aborting the whole run (#147216).
+      let resolved
+      try {
+        resolved = realpathSync(bin)
+      } catch {
+        continue
+      }
+      const prefix = dirname(resolved)
       const lib = join(prefix, '../lib')
       candidates.push(
         join(prefix, 'node_modules/npm/bin/npm-cli.js'),
@@ -27,7 +36,7 @@ export function npmCommand({ env = process.env } = {}) {
         // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
         ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
           .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
-        realpathSync(bin),
+        resolved,
       )
     }
   }

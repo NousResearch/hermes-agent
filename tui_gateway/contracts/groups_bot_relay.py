@@ -13,7 +13,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
-from .registry import method
+from .registry import canonical_method, method
 from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
@@ -96,6 +96,42 @@ class RoomParams(ProfileParams):
     """Any method addressed at one hosted room."""
 
     room_id: str
+
+
+class GroupsPreviewParams(RoomParams):
+    text: str
+    #: The thread the composer will send into; absent is the new thread a fresh send mints.
+    thread_id: str | None = None
+    #: The room log tail the composer observed; a mismatch is ``stale_preview`` (the log is the fence,
+    #: because room ``revision`` does not move for message or settings events).
+    latest_seq: int
+
+
+class PreviewMember(Result):
+    member_id: str
+    handle: str
+    display_name: str | None = None
+
+
+class GroupsPreviewResult(Result):
+    room_id: str
+    authority_gateway_id: str
+    authority_epoch: int
+    revision: int
+    latest_seq: int
+    #: ``members``: the first round is known. ``lead``: a lead-routing room's unaddressed new thread,
+    #: where the lead's routing turn decides the actual recipients, so ``members`` is empty and
+    #: ``lead`` names who decides. The preview never runs that turn or writes an assignment.
+    mode: Literal["members", "lead"]
+    members: list[PreviewMember]
+    lead: PreviewMember | None = None
+
+
+method("groups.preview", params=GroupsPreviewParams, result=GroupsPreviewResult,
+       doc="Preview first-round selection without admitting a message.")
+# Canonical dispatch must reject unknown keys before session recovery can write.
+canonical_method("groups.preview", params=GroupsPreviewParams, result=GroupsPreviewResult,
+                 doc="Preview first-round selection without admitting a message.")
 
 
 # ── RoomLink catalog ──────────────────────────────────────────────────────────────────────────

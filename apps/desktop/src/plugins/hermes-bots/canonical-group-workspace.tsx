@@ -8,6 +8,7 @@ import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { CanonicalGroupPreview } from './canonical-group-preview'
 import { forgetCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
@@ -269,6 +270,10 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
       </div>
       {restoredPending && <p className="px-4 pb-1 text-[0.6875rem] text-(--ui-text-tertiary)" role="status">{labels.restoredPendingSend}</p>}
       <div className="px-4">
+      <div className="mx-auto w-full max-w-3xl">
+        <CanonicalGroupPreview binding={binding} context={state?.context} draft={draft} latestSeq={events.at(-1)?.seq ?? 0}
+          pendingIntent={!!pending} room={state?.room} thread={reply?.thread} visible={visible} />
+      </div>
       <RoomComposer
         above={reply && <RoomReplyChip cancelLabel={labels.cancelReply} label={fill(labels.replyingTo, { name: reply.name })}
           onCancel={() => setReply(null)} quote={reply.quote} />}

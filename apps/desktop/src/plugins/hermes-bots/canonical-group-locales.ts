@@ -75,7 +75,10 @@ export interface CanonicalGroupMessages {
   routingLeadHint: string
   leadBadge: string
   assignment: string
-  assignmentFallback: string
+  assignmentFallback: string,
+  firstRound: string
+  firstRoundLead: string
+  firstRoundCaveat: string
 }
 
 export const CANONICAL_GROUP_LOCALES = {
@@ -156,7 +159,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'The lead picks who takes it; @mentions and @everyone still go straight to those members.',
     leadBadge: 'Lead',
     assignment: '{lead} gave this to {names}',
-    assignmentFallback: '{lead} is taking this'
+    assignmentFallback: '{lead} is taking this',
+    firstRound: 'First-round selected:', firstRoundLead: '{lead} decides the first round.',
+    firstRoundCaveat: 'Members may pass or wait.'
   },
   ja: {
     roomStopped: 'グループが停止しました',
@@ -235,7 +240,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'リーダーが担当者を選びます。@メンションと @everyone はそのまま宛先のメンバーに届きます。',
     leadBadge: 'リーダー',
     assignment: '{lead} が {names} に割り当てました',
-    assignmentFallback: '{lead} が担当します'
+    assignmentFallback: '{lead} が担当します',
+    firstRound: '最初のラウンドの対象:', firstRoundLead: '{lead} が最初のラウンドの担当者を決めます。',
+    firstRoundCaveat: 'メンバーはパスまたは待機する場合があります。'
   },
   zh: {
     roomStopped: '群组已停止',
@@ -314,7 +321,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由负责人决定谁来处理；@提及和 @everyone 仍直接发给对应成员。',
     leadBadge: '负责人',
     assignment: '{lead} 把这条交给了 {names}',
-    assignmentFallback: '{lead} 亲自处理'
+    assignmentFallback: '{lead} 亲自处理',
+    firstRound: '首轮选中：', firstRoundLead: '{lead} 决定首轮由谁处理。',
+    firstRoundCaveat: '成员可能跳过或等待。'
   },
   'zh-hant': {
     roomStopped: '群組已停止',
@@ -393,7 +402,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: '由負責人決定誰來處理；@提及和 @everyone 仍直接送給對應成員。',
     leadBadge: '負責人',
     assignment: '{lead} 把這則交給了 {names}',
-    assignmentFallback: '{lead} 親自處理'
+    assignmentFallback: '{lead} 親自處理',
+    firstRound: '首輪選中：', firstRoundLead: '{lead} 決定首輪由誰處理。',
+    firstRoundCaveat: '成員可能跳過或等待。'
   },
   ar: {
     roomStopped: 'أُوقفت المجموعة',
@@ -472,7 +483,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'يختار القائد من يتولاها؛ الإشارات @ و@everyone تصل مباشرة إلى أصحابها.',
     leadBadge: 'القائد',
     assignment: 'أسند {lead} هذه الرسالة إلى {names}',
-    assignmentFallback: 'يتولى {lead} هذه الرسالة'
+    assignmentFallback: 'يتولى {lead} هذه الرسالة',
+    firstRound: 'المختارون للجولة الأولى:', firstRoundLead: '{lead} يختار من يتولى الجولة الأولى.',
+    firstRoundCaveat: 'قد يتخطى الأعضاء أو ينتظرون.'
   },
   ru: {
     roomStopped: 'Группа остановлена',
@@ -554,7 +567,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Ведущий выбирает, кому передать сообщение; @упоминания и @everyone по-прежнему идут прямо адресатам.',
     leadBadge: 'Ведущий',
     assignment: '{lead} передал(а) это: {names}',
-    assignmentFallback: '{lead} берёт это на себя'
+    assignmentFallback: '{lead} берёт это на себя',
+    firstRound: 'Выбраны для первого раунда:', firstRoundLead: '{lead} выбирает участников первого раунда.',
+    firstRoundCaveat: 'Участники могут пропустить ход или ждать.'
   },
   fr: {
     roomStopped: 'Groupe arrêté',
@@ -635,7 +650,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Le responsable choisit qui s\'en charge ; les @mentions et @everyone vont toujours directement aux membres visés.',
     leadBadge: 'Responsable',
     assignment: '{lead} a confié ceci à {names}',
-    assignmentFallback: '{lead} s\'en charge'
+    assignmentFallback: '{lead} s\'en charge',
+    firstRound: 'Sélection au premier tour :', firstRoundLead: '{lead} décide qui prend le premier tour.',
+    firstRoundCaveat: 'Les membres peuvent passer ou attendre.'
   },
   de: {
     roomStopped: 'Gruppe angehalten',
@@ -717,7 +734,9 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'Die Leitung wählt, wer übernimmt; @Erwähnungen und @everyone gehen weiterhin direkt an diese Mitglieder.',
     leadBadge: 'Leitung',
     assignment: '{lead} hat das an {names} gegeben',
-    assignmentFallback: '{lead} übernimmt das'
+    assignmentFallback: '{lead} übernimmt das',
+    firstRound: 'Für die erste Runde ausgewählt:', firstRoundLead: '{lead} entscheidet, wer die erste Runde übernimmt.',
+    firstRoundCaveat: 'Mitglieder können passen oder warten.'
   },
   es: {
     roomStopped: 'Grupo detenido',
@@ -798,6 +817,8 @@ export const CANONICAL_GROUP_LOCALES = {
     routingLeadHint: 'El líder elige quién se encarga; las @menciones y @everyone siguen yendo directamente a esos miembros.',
     leadBadge: 'Líder',
     assignment: '{lead} se lo dio a {names}',
-    assignmentFallback: '{lead} se encarga'
+    assignmentFallback: '{lead} se encarga',
+    firstRound: 'Seleccionados para la primera ronda:', firstRoundLead: '{lead} decide quién toma la primera ronda.',
+    firstRoundCaveat: 'Los miembros pueden pasar o esperar.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

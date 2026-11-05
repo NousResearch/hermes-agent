@@ -45,20 +45,34 @@ def lead_member(room: DiscussionRoom, context: Mapping[str, str]) -> DiscussionM
     return next((member for member in room.members if member.member_id == context.get("lead_member_id")), None)
 
 
+def lead_routes_message(*, text: str, room: DiscussionRoom, thread_exists: bool) -> bool:
+    """A message that opens a new thread and addresses nobody goes to the lead first.
+
+    The one predicate the planner and the advisory preview (``gateway.session_group_preview``) share:
+    the preview never replays a message, so it passes the thread's existence it read from the room log
+    instead of the planner's earlier-event scan. ``@all``/``@everyone`` and any seated handle are
+    explicit addresses and bypass the lead, exactly as ``resolve_mentions`` sees them.
+    """
+    from gateway.hosted_room_discussion import _MENTION_RE
+
+    handles = {member.handle.casefold() for member in room.members} | {"all", "everyone"}
+    if any(match.group(1).casefold() in handles for match in _MENTION_RE.finditer(str(text))):
+        return False
+    return not thread_exists
+
+
 def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, events: Sequence[_ValidatedEvent]) -> bool:
     """A human message that opens a new thread and addresses nobody goes to the lead first."""
     from gateway.hosted_room_context import scheduled_post_kind
-    from gateway.hosted_room_discussion import _MENTION_RE
 
     if scheduled_post_kind(discussion.actor) is not None:
         return False
-    handles = {member.handle.casefold() for member in room.members} | {"all", "everyone"}
-    if any(match.group(1).casefold() in handles for match in _MENTION_RE.finditer(str(discussion.payload["text"]))):
-        return False
     thread_id = discussion.payload["thread_id"]
-    return not any(
-        event.seq < discussion.seq and event.kind in {"message.user", "message.member"}
-        and event.payload.get("thread_id") == thread_id for event in events)
+    return lead_routes_message(
+        text=str(discussion.payload["text"]), room=room,
+        thread_exists=any(
+            event.seq < discussion.seq and event.kind in {"message.user", "message.member"}
+            and event.payload.get("thread_id") == thread_id for event in events))
 
 
 def is_routing_task(task: DiscussionTaskPlan) -> bool:

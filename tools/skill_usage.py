@@ -263,6 +263,11 @@ def is_agent_created(skill_name: str) -> bool:
         _find_skill_dir(skill_name) is not None or _find_external_skill_dir(skill_name) is None)
 
 
+def skill_exists(skill_name: str) -> bool:
+    """Return whether *skill_name* resolves to a local or configured external skill."""
+    return _find_skill_dir(skill_name) is not None or _find_external_skill_dir(skill_name) is not None
+
+
 def is_hub_installed(skill_name: str) -> bool:
     return skill_name in _read_hub_installed_names()
 
@@ -569,11 +574,13 @@ def set_state(skill_name: str, state: str) -> None:
 
 
 def set_pinned(skill_name: str, pinned: bool) -> bool:
-    """False when the write did not land (not curation-eligible).
+    """False when the write did not land (not an existing local skill or not curation-eligible).
 
     (skill not curation-eligible), True on success — so callers can report failure instead of a false
     success (issue #92993).
     """
+    if _find_skill_dir(skill_name) is None:
+        return False
     return _set_field(skill_name, "pinned", bool(pinned))
 
 

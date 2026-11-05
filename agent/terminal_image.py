@@ -408,7 +408,7 @@ def _image_id(path: Path, cols: int, rows: int) -> int:
     holds one virtual placement per id)."""
     st = path.stat()
     key = f"{path.resolve()}:{st.st_mtime_ns}:{st.st_size}:{cols}x{rows}"
-    return _IMAGE_ID_BASE + zlib.crc32(key.encode()) % _IMAGE_ID_SPAN
+    return _IMAGE_ID_BASE + zlib.crc32(key.encode("utf-8", "surrogateescape")) % _IMAGE_ID_SPAN
 
 
 def _grid_for(width: int, height: int, *, max_cols: int, max_rows: int) -> tuple[int, int]:

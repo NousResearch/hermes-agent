@@ -36,7 +36,7 @@ import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState, $sessions } from '@/store/session'
+import { $gatewayState, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
@@ -470,10 +470,27 @@ export function ChatBar({
   // a transcript the sidebar is already the place you find old work. The pool is
   // one longer than the chip row so the placeholder can offer a DIFFERENT line
   // instead of repeating the first chip.
+  //
+  // "Empty" is the transcript's own answer, not "no session id": a fresh chat
+  // already carries a runtime id, so keying off that hid the row everywhere. The
+  // stored row is consulted too, because a resumed session renders an empty
+  // message list for a frame while it loads and must not flash the chips.
   const sessions = useStore($sessions)
-  const starterPrompts = useMemo(
-    () => (sessionId ? [] : promptSuggestions(sessions, { limit: STARTER_PROMPT_POOL })),
+  const threadEmpty = useStoreSelector(scope.$messages, messages => messages.length === 0)
+
+  const resumedHasTranscript = useMemo(
+    () =>
+      Boolean(sessionId) &&
+      sessions.some(row => sessionMatchesStoredId(row, sessionId!) && (row.message_count ?? 0) > 0),
     [sessionId, sessions]
+  )
+
+  const starterPrompts = useMemo(
+    () =>
+      threadEmpty && !resumedHasTranscript
+        ? promptSuggestions(sessions, { excludeSessionId: sessionId, limit: STARTER_PROMPT_POOL })
+        : [],
+    [resumedHasTranscript, sessionId, sessions, threadEmpty]
   )
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real

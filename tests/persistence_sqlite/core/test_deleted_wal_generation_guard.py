@@ -17,14 +17,14 @@ from pathlib import Path
 import pytest
 
 from persistence.sqlite._holder import StoreHolder
-import hermes_state_dbfile as state_dbfile
-import hermes_state_readpool as state_readpool
-import hermes_state_wal as state_wal
-from hermes_state_errors import DeletedWalGenerationError, StateDbReplacedError, classify_persistence_error
+from persistence.sqlite._state import dbfile as state_dbfile
+from persistence.sqlite._state import readpool as state_readpool
+import sqlite_support
+from persistence.sqlite._state.errors import DeletedWalGenerationError, StateDbReplacedError, classify_persistence_error
 from persistence.sqlite.conversation._store.messages import append_message, get_messages
-from hermes_state_dbfile import refuse_deleted_wal_generation
+from persistence.sqlite._state.dbfile import refuse_deleted_wal_generation
 from persistence.sqlite._holder import _close_time_checkpoint_configurable
-from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
+from persistence.sqlite._state.dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 from tests.persistence_sqlite.core._wal_generation_harness import (
     gateway_writer, integrity_ok_path, lose_sidecars, make_db, message_count, pin_wal, require_wal,
     write_second_generation,
@@ -66,9 +66,9 @@ def test_clean_open_and_second_open_still_work(tmp_path, force_wal):
 
 
 def test_delete_journal_two_writers_still_work(tmp_path, monkeypatch):
-    monkeypatch.setattr(state_wal, "resolve_journal_mode", lambda: "delete")
+    monkeypatch.setattr(sqlite_support, "resolve_journal_mode", lambda: "delete")
     monkeypatch.setattr(
-        state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        sqlite_support, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
     path = tmp_path / "state.db"
     a = make_db(path, "s", "from-a")

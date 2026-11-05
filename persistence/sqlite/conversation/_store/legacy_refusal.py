@@ -161,7 +161,7 @@ def _locked_tail(rows) -> Optional[list[tuple[Optional[int], list[int]]]]:
 def _repair_session(holder, conn, session_id: str, notice: str) -> str:
     """``"repaired"`` / ``"skipped"`` / ``"deferred"`` (live lease or compression lock) for one session,
     inside the caller's write transaction."""
-    from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+    from persistence.sqlite._state.errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
     from persistence.sqlite.conversation._store.messages import (
         _active_transcript_counts, _check_transcript_write_guards, _decode_display_metadata, _encode_display_metadata,
     )

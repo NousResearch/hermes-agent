@@ -3,16 +3,10 @@
 
 import json
 import logging
-import os
 import re
 import sqlite3
 from typing import Any
 from persistence.sqlite.conversation._store.sql_common import escape_like as _escape_like, _placeholders
-from hermes_state_pidns import holder_pid_checkable
-try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
-    import psutil
-except ImportError:  # pragma: no cover - stripped/scaffold installs only
-    psutil = None  # type: ignore[assignment]
 from persistence.sqlite._holder import StoreHolder
 
 
@@ -45,36 +39,6 @@ class SessionExportTooLargeError(ValueError):
             "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
             "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
         )
-
-
-def _compression_lock_holder_process_is_dead(holder: str) -> bool:
-    """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
-    Reclaim on kernel proof only: unstructured/same-process holders (another
-    thread's live lease) and any probe doubt keep the lease until TTL expiry
-    (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
-    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
-    match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
-    pid = int(match.group(1)) if match else 0
-    if pid <= 0 or pid == os.getpid():
-        return False
-    if not holder_pid_checkable(holder):
-        return False  # foreign / unknown namespace: defer to TTL
-    if psutil is not None:
-        try:
-            return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
-        except Exception:  # health: allow BLE001 -- a pid psutil cannot probe reads as alive
-            return False
-    # psutil-less fallback is POSIX-only: on Windows os.kill(pid, 0) maps sig=0 to
-    # CTRL_C_EVENT and can kill the target's console group.
-    if os.name == "nt":
-        return False
-    try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
-    except ProcessLookupError:
-        return True
-    except (OSError, OverflowError):  # PermissionError is an OSError: alive but foreign
-        return False
-    return False
 
 
 _REVIEW_HARNESS_PREFIXES = (

@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from hermes_state_errors import SessionActiveWriteGuardError
+from persistence.sqlite._state.errors import SessionActiveWriteGuardError
 from persistence.sqlite.conversation._store.sessions import (
     create_session, delete_session, delete_session_if_empty, delete_sessions, end_session, get_session,
 )

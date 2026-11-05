@@ -9,14 +9,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_routers import _common, analytics
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_seed import seed_session
 
 
 def _malformed_state_db(home: Path) -> Path:
     db_path = home / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.create_session("s1", source="cli", model="m")
-    db.close()
+    with open_persistence(profile_scope(home=home)) as db:
+        seed_session(db, "s1", "cli", model="m")
     for side in ("-wal", "-shm"):
         Path(str(db_path) + side).unlink(missing_ok=True)
     with open(db_path, "r+b") as f:
@@ -29,9 +29,7 @@ def _malformed_state_db(home: Path) -> Path:
 
 def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state
     db_path = _malformed_state_db(tmp_path)
-    monkeypatch.setattr(hermes_state, "_default_db_path", lambda: db_path)
     monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
     app = FastAPI()
     app.include_router(analytics.router)
@@ -44,7 +42,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     for resp in (first, second, third):
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "state_db_corrupt"
-    # Only the dashboard's own warning counts: hermes_state logs an unrelated
+    # Only the dashboard's own warning counts: the store logs an unrelated
     # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
     warnings = [
         r for r in caplog.records
@@ -72,6 +70,7 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     from types import SimpleNamespace
 
     from fastapi import HTTPException
+    from persistence.sqlite._state.errors import _DELETED_WAL_GENERATION_MSG, DeletedWalGenerationError
     from persistence.core.errors import DeletedWalGeneration, StoreReplaced
     from persistence_assembly import profile_scope
 
@@ -99,7 +98,7 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
     from hermes_cli.web_routers import sessions
 
     def _retired_listing(*_args, **_kwargs):
-        raise DeletedWalGeneration("retired WAL held by pid 4242")
+        raise DeletedWalGeneration(_DELETED_WAL_GENERATION_MSG)
 
     def _retired_lookup(session_id):
         raise DeletedWalGeneration("retired WAL held by pid 4242")

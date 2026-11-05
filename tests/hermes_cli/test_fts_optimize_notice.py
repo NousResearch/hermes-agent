@@ -10,7 +10,6 @@ def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatc
     """A deployed v1 trigram projection still receives the opt-in notice."""
     from hermes_cli import update_cmd
     import hermes_constants
-    import hermes_state
 
     db_path = tmp_path / "state.db"
     db_path.touch()
@@ -23,20 +22,7 @@ def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatc
         """
     )
 
-    class FakeSessionDB:
-        def __init__(self, **_kwargs):
-            self._conn = conn
-
-        def close(self):
-            pass
-
-        _db_needs_fts_storage_upgrade = staticmethod(
-            hermes_state.SessionDB._db_needs_fts_storage_upgrade
-        )
-        _db_has_legacy_inline_fts = staticmethod(hermes_state.SessionDB._db_has_legacy_inline_fts)
-
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
     # Report a large state.db without patching Path.stat globally: a
     # 1-arg lambda on the class breaks pathlib.exists(follow_symlinks=...)
     # for every caller in the process (pytest's own teardown included).
@@ -64,9 +50,8 @@ def test_doctor_collects_structural_fts_upgrade_status(
 ):
     """Real read-only collection must ignore forged or lagging version markers."""
     from hermes_cli import doctor_state
-    from hermes_state_dbfile import collect_state_db_stats
-    from hermes_state_fts import _expected_vtable_sql
-    from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
+    from persistence.sqlite._state.dbfile import collect_state_db_stats
+    from tests.fixtures.storage_holder import fts_vtable_sql
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
@@ -78,11 +63,11 @@ def test_doctor_collects_structural_fts_upgrade_status(
         if base_layout == "legacy":
             conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(content)")
         elif base_layout == "current":
-            conn.execute(_expected_vtable_sql(FTS_SQL, "messages_fts"))
+            conn.execute(fts_vtable_sql("messages_fts"))
         if trigram_layout == "legacy":
             conn.execute("CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tool_name, tool_calls, tokenize='trigram')")
         elif trigram_layout == "current":
-            conn.execute(_expected_vtable_sql(FTS_TRIGRAM_SQL, "messages_fts_trigram"))
+            conn.execute(fts_vtable_sql("messages_fts_trigram"))
         if marker is not None:
             conn.execute("INSERT INTO state_meta VALUES ('fts_storage_version', ?)", (str(marker),))
 
@@ -104,16 +89,15 @@ def test_doctor_collects_structural_fts_upgrade_status(
 @pytest.mark.parametrize("progress, pending", [(0, True), (10, False)])
 def test_doctor_collects_pending_rebuild_with_settled_layout(tmp_path, monkeypatch, progress, pending):
     from hermes_cli import doctor_state
-    from hermes_state_dbfile import collect_state_db_stats
-    from hermes_state_fts import _expected_vtable_sql
-    from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
+    from persistence.sqlite._state.dbfile import collect_state_db_stats
+    from tests.fixtures.storage_holder import fts_vtable_sql
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             "CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);"
-            f"{_expected_vtable_sql(FTS_SQL, 'messages_fts')};"
-            f"{_expected_vtable_sql(FTS_TRIGRAM_SQL, 'messages_fts_trigram')};"
+            f"{fts_vtable_sql('messages_fts')};"
+            f"{fts_vtable_sql('messages_fts_trigram')};"
             "INSERT INTO state_meta VALUES ('fts_rebuild_high_water', '10');"
         )
         conn.execute("INSERT INTO state_meta VALUES ('fts_rebuild_progress', ?)", (str(progress),))

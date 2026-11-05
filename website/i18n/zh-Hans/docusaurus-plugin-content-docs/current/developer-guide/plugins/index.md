@@ -37,10 +37,11 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 
 ## `hermes_state` 已弃用：改用存储接口
 
-会话存储位于存储接口之后：`persistence/` 中的类型化契约，以及唯一入口 `persistence_assembly`。Hermes 自身的代码不再调用 `SessionDB` 类和 `hermes_state_*` 模块。它们按英文版插件指南中的弃用政策（Deprecation policy）为外部插件保留：在被移除之前，`SessionDB` 和 `hermes_state_*` 模块仍打开同一存储，并对其执行自己的 SQL。下表列出插件可能使用的每个 `hermes_state` 名称在存储接口中的替代方案。
+会话存储位于存储接口之后：`persistence/` 中的类型化契约，以及唯一入口 `persistence_assembly`。`SessionDB` 类和 `hermes_state_*` 模块已移除。为外部插件保留的 `hermes_state` 是一个临时兼容模块，遵循英文版插件指南中的弃用政策（Deprecation policy）。它把下表中的名称转发到存储接口，自身不含 SQL，也不持有数据库连接。
 
+- 每个进程第一次使用 `hermes_state` 中的名称时发出一次警告，说明替代方案和移除版本。
 - 该模块在 v0.24、v0.25 和 v0.26 中继续受支持，最早在 v0.27.0 移除。
-- 表中未列出的名称是旧存储的内部辅助函数；插件不应使用它们。
+- 表中未列出的名称不再提供；它们是旧存储的内部辅助函数。
 
 | `hermes_state` 名称 | 替代方案 |
 |---|---|

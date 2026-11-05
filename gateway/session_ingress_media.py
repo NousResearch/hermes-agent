@@ -36,9 +36,9 @@ _SHA256_NAME = re.compile(r'[0-9a-f]{64}')
 _leases = Counter()
 _lease_lock = threading.Lock()
 _lease_scope = ContextVar('native_media_lease_scope', default=None)
-# One set per release running through a storage interface handle: the paths a capture published,
-# reused or ended a lease on since that release began. Its held set is read in a write that ends
-# before its unlinks, so an admission committed in between is only seen through its lease.
+# One set per running release: the paths a capture published, reused or ended a lease on since that
+# release began. Its held set is read in a write that ends before its unlinks, so an admission
+# committed in between is only seen through its lease.
 _releases = {}
 
 
@@ -395,28 +395,6 @@ def admission_media_references(payload):
         payload.get('native_text_v1', {}).get('media', ()))
 
 
-def _held_media_paths(conn):
-    # Project only references, not potentially large inline-image/history payloads; a live hosted
-    # row's prompt is projected too, because its documents are held by text, not by a reference.
-    rows = conn.execute("""SELECT status, request_id, json_extract(payload_json,
-            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media'),
-            CASE WHEN status!='terminal' AND request_id LIKE 'hosted:%'
-                 THEN json_extract(payload_json, '$.text') END
-            FROM session_admissions WHERE status!='terminal'
-            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL""").fetchall()
-    held = set()
-    for status, request_id, encoded, text in rows:
-        attachments, native, api = json.loads(encoded)
-        # API images remain canonical history context after the turn completes.
-        references = list(api or ())
-        if status != 'terminal':
-            references.extend(attachments or ())
-            references.extend(native or ())
-            references.extend(hosted_document_references(request_id, {'text': text}))
-        held.update(reference['path'] for reference in references)
-    return held
-
-
 def _file_identity(path):
     saved = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(saved.st_mode) or not saved.st_ino:
@@ -494,31 +472,25 @@ def sweep_settled_media(store, *, now=None):
     return release_unheld_media(store, list(stale.values()), retain_history=False) if stale else 0
 
 
-def collect_unheld_api_images(db, *, persistence=None):
+def collect_unheld_api_images(store):
     """Collect retained API images no admission holds any more: deleting a chat retires its
     admissions and erases their references, so those bytes have no owner left. Only the exact
     name ``commit_api_images`` gives (``api_<sha256[:32]><ext>`` under its own digest) is a
     candidate; retained hosted documents are held by prompt text, never by a media reference.
 
     Candidates are enumerated from the ACTIVE home's media root while ownership is decided by
-    ``db``: a sweep whose database belongs to another profile would see every image here as
-    unowned, so it collects nothing. *db* is a SessionDB or a storage interface handle (*persistence*,
-    when given, is used instead)."""
+    *store*, a storage interface handle: a sweep whose store belongs to another profile would see
+    every image here as unowned, so it collects nothing."""
     from hermes_constants import get_hermes_home
     from persistence.core.errors import STORE_FAILURES
-    store = persistence if persistence is not None else (db if hasattr(db, 'admissions') else None)
-    if store is not None:
-        from persistence_assembly import store_location
-        home, label = store.scope.profile_dir, store_location(store.scope)
-    else:
-        home, label = Path(db.db_path).resolve().parent, db.db_path
-    if home != get_hermes_home().resolve():
+    from persistence_assembly import store_location
+    if store.scope.profile_dir != get_hermes_home().resolve():
         logger.warning(
-            'Skipped retained API image collection: %s is not the active profile store', label)
+            'Skipped retained API image collection: %s is not the active profile store', store_location(store.scope))
         return 0
     root = _media_root()
     try:
-        return release_unheld_media(store if store is not None else db, [
+        return release_unheld_media(store, [
             {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
             if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
     except (sqlite3.DatabaseError, *STORE_FAILURES):
@@ -528,36 +500,12 @@ def collect_unheld_api_images(db, *, persistence=None):
         return 0
 
 
-def _history_mentions(conn, references, after_id=0):
-    """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
-    messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
-    directory, so only rows that could name a candidate reach Python's exact substring test."""
-    # Matched by the content-addressed tail ``<sha256>/<name>`` with either separator, so every
-    # spelling a note can carry (the host path, a sandbox backend's ``to_agent_visible_cache_path``)
-    # counts as a mention.
-    needles = {}
-    for reference in references:
-        raw = reference['path']
-        for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
-            needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
-    prefixes = sorted({reference['sha256'] for reference in references})
-    # The digests are ONE bound JSON array, never one ``instr`` term each: the statement's size
-    # must not grow with the candidate count (SQLite's expression-depth limit fails at ~1000 terms).
-    query = ('WITH digests(value) AS MATERIALIZED (SELECT value FROM json_each(?)) SELECT content FROM messages '
-             'WHERE EXISTS (SELECT 1 FROM digests WHERE instr(content, digests.value))' + (' AND id>?' if after_id else ''))
-    mentioned = set()
-    for (content,) in conn.execute(query, (json.dumps(prefixes), *((after_id,) if after_id else ()))):
-        text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
-        mentioned.update(raw for needle, raw in needles.items() if needle in text)
-    return mentioned
-
-
 def _collectable(references, root):
     return [reference for reference in references if Path(reference['path']).parent.parent == root
             and Path(reference['path']).parent.name == reference['sha256'] and Path(reference['path']).exists()]
 
 
-def _unlink_unheld(references, held, identities, touched=()):
+def _unlink_unheld(references, held, identities, touched):
     """Unlink each reference outside *held* that no capture lease, *touched* path or held file
     identity keeps; the count."""
     released = 0
@@ -579,62 +527,37 @@ def _unlink_unheld(references, held, identities, touched=()):
     return released
 
 
-def release_unheld_media(db, references, *, retain_history=True, persistence=None):
+def release_unheld_media(store, references, *, retain_history=True):
     """Delete unowned references, preserving accepted admission and retained transcript owners.
 
     The history owner check is one read-snapshot pass over messages, outside the write lock; under
     the lock only rows inserted after that snapshot (an indexed id range) are re-checked. A new
     transcript mention of a retained image comes from an admission holding it (re-checked under the
-    lock) or from a copied row (branch/compress insert, caught by the range). *db* is a SessionDB or a
-    storage interface handle (*persistence*, when given, is used instead); through a handle the held set
-    is computed under the writer and the unlinks follow its commit, skipping every path a capture
-    published, reused or ended a lease on since the release began: an admission that committed after
-    the held set was read held such a lease until its commit."""
+    lock) or from a copied row (branch/compress insert, caught by the range). *store* is a storage
+    interface handle: the held set is computed under its writer and the unlinks follow its commit,
+    skipping every path a capture published, reused or ended a lease on since the release began: an
+    admission that committed after the held set was read held such a lease until its commit."""
     root = _media_root()
     references = _collectable(references or (), root)
     if not references:
         return 0
-    store = persistence if persistence is not None else (db if hasattr(db, 'admissions') else None)
-    if store is not None:
-        touched = set()
-        with _lease_lock:
-            _releases[id(touched)] = touched
-        try:
-            last_id = 0
-            if retain_history:
-                last_id, seen = store.admissions.history_mentions(references)
-                references = [reference for reference in references if reference['path'] not in seen]
-                if not references:
-                    return 0
-            found = store.admissions.unheld_media(references, after_id=last_id, retain_history=retain_history,
-                                                  media_root=str(root))
-            identities = _held_file_identities(found.held, root)
-            return 0 if identities is None else _unlink_unheld(found.candidates, found.held, identities, touched)
-        finally:
-            with _lease_lock:
-                del _releases[id(touched)]
-    seen, last_id = set(), 0
-    if retain_history:
-        with db._read_ctx() as conn:
-            conn.execute('BEGIN')  # one snapshot: the id watermark and the scan agree
-            try:
-                last_id = conn.execute('SELECT coalesce(max(id), 0) FROM messages').fetchone()[0]
-                seen = _history_mentions(conn, references)
-            finally:
-                if conn.in_transaction:
-                    conn.execute('ROLLBACK')
-        references = [reference for reference in references if reference['path'] not in seen]
-        if not references:
-            return 0
-    def collect(conn):
-        held = _held_media_paths(conn)
-        identities = _held_file_identities(held, root)
-        if identities is None:
-            return 0
+    touched = set()
+    with _lease_lock:
+        _releases[id(touched)] = touched
+    try:
+        last_id = 0
         if retain_history:
-            held |= _history_mentions(conn, references, after_id=last_id)
-        return _unlink_unheld(references, held, identities)
-    return db._execute_write(collect)
+            last_id, seen = store.admissions.history_mentions(references)
+            references = [reference for reference in references if reference['path'] not in seen]
+            if not references:
+                return 0
+        found = store.admissions.unheld_media(references, after_id=last_id, retain_history=retain_history,
+                                              media_root=str(root))
+        identities = _held_file_identities(found.held, root)
+        return 0 if identities is None else _unlink_unheld(found.candidates, found.held, identities, touched)
+    finally:
+        with _lease_lock:
+            del _releases[id(touched)]
 
 
 def restore_native_media(references):

@@ -304,7 +304,7 @@ def test_repair_connections_are_tracked_for_byte_probe_safety(tmp_path, clean_re
     the repair still believed it owned.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state_repair import _connect_repair_durable, _repair_conn
+    from persistence.sqlite._state.repair import _connect_repair_durable, _repair_conn
 
     db_path = tmp_path / "state.db"
     seed = StoreHolder(db_path)
@@ -335,7 +335,7 @@ def test_byte_probe_never_cancels_the_repair_exclusion(tmp_path, clean_registry)
     the exclusion keeps holding; if the probe were allowed through, its ``close()``
     would cancel the lock and the intruder would commit into the file mid-repair.
     """
-    import hermes_state_repair as repair
+    from persistence.sqlite._state import repair
 
     db_path = tmp_path / "state.db"
     _make_db(db_path, "DELETE")

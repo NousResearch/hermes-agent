@@ -1,6 +1,7 @@
 """The gateway binds a plugin context engine as main did: ``session_db`` is the deprecated ``hermes_state.SessionDB``
-on the session's profile store and no other keyword, on a cold ``/compress`` and on session hygiene's rebind; the
-``SessionDB`` closes when the compress ends or the hygiene agent closes."""
+on the session's profile store, on a cold ``/compress`` and on session hygiene's rebind, plus the store itself as
+``persistence`` when the engine's bind names that keyword; the ``SessionDB`` closes when the compress ends or the
+hygiene agent closes."""
 
 import asyncio
 from contextlib import nullcontext
@@ -45,8 +46,26 @@ class _PluginEngine(ContextEngine):
         self.ended.append(session_id)
 
 
+class _StorePluginEngine(_PluginEngine):
+    """A plugin engine whose bind also names ``persistence``."""
+
+    def __init__(self):
+        super().__init__()
+        self.stores = []
+
+    def bind_session_state(self, session_db, session_id, persistence=None):
+        super().bind_session_state(session_db, session_id)
+        self.stores.append(persistence)
+
+
+@pytest.fixture(params=[_PluginEngine, _StorePluginEngine], ids=["two-argument bind", "bind naming persistence"])
+def engine(request):
+    return request.param()
+
+
 @pytest.fixture
-def store():
+def store(monkeypatch):
+    monkeypatch.setattr(hermes_state, "_warned", True)
     handle = open_persistence(profile_scope(), eager=True)
     seed_session(handle, "s1", "cli", model="m1", title="alpha plan")
     seed_messages(handle, "s1", *({"role": role, "content": f"{role} turn {i} " + "x" * 200}
@@ -63,9 +82,8 @@ def closes(monkeypatch):
     return calls
 
 
-def test_a_cold_compress_binds_a_plugin_engine_to_a_session_db_closed_when_it_ends(monkeypatch, store, closes):
+def test_a_cold_compress_binds_a_plugin_engine_to_a_session_db_closed_when_it_ends(monkeypatch, store, closes, engine):
     from gateway import session_mutation_compress as compress
-    engine = _PluginEngine()
     monkeypatch.setattr("agent.agent_init._select_context_engine", lambda _config: engine)
     monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *_a, **_k: 1_000_000)
     monkeypatch.setattr("gateway.session_policy.restore_policy",
@@ -89,10 +107,11 @@ def test_a_cold_compress_binds_a_plugin_engine_to_a_session_db_closed_when_it_en
     assert prepared["messages"][-1]["content"] == "ENGINE_SUMMARY"
     assert engine.ended == ["s1"]
     assert closes == [session_db]
+    if isinstance(engine, _StorePluginEngine):
+        assert engine.stores == [store]
 
 
-def test_session_hygiene_rebinds_a_plugin_engine_to_the_agents_session_db(store, closes):
-    engine = _PluginEngine()
+def test_session_hygiene_rebinds_a_plugin_engine_to_the_agents_session_db(store, closes, engine):
     with patch("agent.agent_init._select_context_engine", return_value=engine):
         agent = AIAgent(api_key="test-key", base_url="http://127.0.0.1:9/v1", model="test/model", quiet_mode=True,
                         skip_context_files=True, skip_memory=True, skip_background_review=True,
@@ -127,3 +146,5 @@ def test_session_hygiene_rebinds_a_plugin_engine_to_the_agents_session_db(store,
     assert engine.bound[-1][0] is session_db
     assert engine.bound[-1][1] == store.sessions.get("s1").as_session_row()
     assert closes == [session_db]
+    if isinstance(engine, _StorePluginEngine):
+        assert engine.stores == [store, store]

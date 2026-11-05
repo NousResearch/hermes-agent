@@ -131,3 +131,11 @@ def test_blank_line_hunk_after_anchor_returns_result_without_exception():
     result, files = apply(source, '@@\n anchor\n@@\n-\n+replacement')
     assert result is not None
     assert files.source in (source, 'anchor\nreplacement\nend\n')
+
+
+def test_multiline_consumed_hunk_with_same_replacement_is_not_dropped():
+    source = 'foo = 1\nbar = 2\n'
+    body = '@@\n-foo = 1\n+keep = hostish_d\n@@\n-foo = 1\n-bar = 2\n+keep = hostish_d'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes

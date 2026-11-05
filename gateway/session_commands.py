@@ -235,9 +235,10 @@ def _skill_directive(name, arg, route):
     stacked ``/skill-a /skill-b do X`` too: built here, so no client loads plugins to resolve one."""
     from agent.i18n import t
     from agent.skill_commands import (
-        build_skill_invocation_message, build_stacked_skill_invocation_message, describe_skill_invocation,
+        build_skill_invocation_message, build_stacked_skill_invocation_message,
         get_interactive_skill_commands, resolve_slash_key, split_stacked_skill_commands,
     )
+    from session_rules.turns import describe_skill_invocation
     skills = get_interactive_skill_commands()
     key = resolve_slash_key(name, skills)
     if key is None:

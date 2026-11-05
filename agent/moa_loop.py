@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.auxiliary_client import call_llm
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 from agent.message_metadata import DATA_USE
 from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport

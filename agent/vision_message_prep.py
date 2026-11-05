@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
-from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.

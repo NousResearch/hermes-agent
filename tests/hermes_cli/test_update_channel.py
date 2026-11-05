@@ -385,7 +385,7 @@ def test_doctor_channel_records_are_read_only(tmp_path, monkeypatch, kind, expec
     if kind == 'healthy':
         state = home / 'installs' / key
         state.mkdir(parents=True)
-        (state / 'install.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
+        (state / 'facts.json').write_text(json.dumps({'root': str(root)}), encoding='utf-8')
     before = deepcopy(config)
     assert [(key, reason) for key, _, reason in stale_channel_records(config)] == (
         [(key, expected)] if expected else [])

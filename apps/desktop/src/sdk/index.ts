@@ -110,6 +110,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
+import { $pluginPinnedSessionIds, $pluginSessionLayout, layoutHost, type PluginSessionLayout } from './layout'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
 import {
@@ -125,9 +126,9 @@ import { $viewport, type ViewportRect } from './viewport'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export * from './areas'
+export type { PluginLayoutNode, PluginSessionLayout } from './layout'
 /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
 export type * from './plugin-contract'
-export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -309,6 +310,13 @@ export interface PluginOpenSessionOptions {
    *  itself because only this SDK layer sees $resumeExhaustedSessionId. */
   retryHydrationTimeoutOnce?: boolean
   tabTitle?: string
+  /** Where a NEW session tile lands (intent `tab`, or `stack` when main is
+   *  occupied): split `pane` on `pos`, or stack into it with `center`. Pane
+   *  ids: `workspace` (main), `session-tile:<storedId>`, or any pane id.
+   *  Ignored when the session is already on screen (it is focused instead)
+   *  and for `in-place` / `main` / `window`. Feature-detect with
+   *  `host.state.sessionLayout`. */
+  dock?: { pane?: string; pos: 'bottom' | 'center' | 'left' | 'right' | 'top' }
 }
 
 export interface PluginNewChatOptions {
@@ -594,6 +602,13 @@ export const host = {
      *  The UsageStats-optional fields (context_*, cost_usd) arrive as the
      *  backend reports them, so read them with a fallback. */
     focusedUsage: readonlyAtom<null | UsageStats>($focusedUsage),
+    /** Durable ids of the sidebar's Pinned section, in order. */
+    pinnedSessionIds: readonlyAtom<readonly string[]>($pluginPinnedSessionIds),
+    /** The pane tree (splits with weights, groups of stacked panes) plus the
+     *  focused zone and main's stored session id — read-only. Chat panes are
+     *  `workspace` and `session-tile:<storedId>`. Pair with `host.layout` and
+     *  `host.openSession(id, { intent: 'tab', dock })` to tile sessions. */
+    sessionLayout: readonlyAtom<PluginSessionLayout>($pluginSessionLayout),
     /** Gateway socket state: 'idle' | 'connecting' | 'open' | …. Not turn-busy. */
     gateway: readonlyAtom<string>($gatewayState),
     /** Current main model slug. */
@@ -809,6 +824,9 @@ export const host = {
 
   /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
   sessions: sessionsHost,
+
+  /** Session tiling verbs (resize, re-orient, swap, close) — see `./layout`. */
+  layout: layoutHost,
 
   /** Typed capabilities bridge — see `./bridge.ts`. `pluginDecisions` is
    *  read-only: plugin toggling stays in the app's Plugins tab. */
@@ -1028,12 +1046,20 @@ export const host = {
           }
 
           if (options.workspaceMode === 'bots') {
-            openSession(storedSessionId, navigate, intent, {
+            const botScope = {
               ownerRoute: ownerRoute ?? undefined,
-              workspaceMode: 'bots',
+              workspaceMode: 'bots' as const,
               workspaceOwnerKey: options.workspaceOwnerKey,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
-            })
+            }
+
+            if (options.dock) {
+              openSession(storedSessionId, navigate, intent, botScope, options.dock)
+            } else {
+              openSession(storedSessionId, navigate, intent, botScope)
+            }
+          } else if (options.dock) {
+            openSession(storedSessionId, navigate, intent, undefined, options.dock)
           } else {
             openSession(storedSessionId, navigate, intent)
           }
@@ -1537,6 +1563,7 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- ui: the design language --------------------------------------------------

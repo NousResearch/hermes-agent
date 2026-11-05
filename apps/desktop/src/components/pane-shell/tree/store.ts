@@ -36,13 +36,16 @@ import {
   movePane as movePaneOp,
   movePanes as movePanesOp,
   normalize,
+  type Orientation,
   removePane,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
   setGroupMinimized,
   setGroupTabStrip as setGroupTabStripOp,
+  setSplitOrientation as setSplitOrientationOp,
   setSplitWeights as setSplitWeightsOp,
   type SplitNode,
+  swapPanes as swapPanesOp,
   type TabStripMode
 } from './model'
 import { isTreePaneParked } from './parked-panes'
@@ -2188,6 +2191,38 @@ export function setTreeSplitWeights(splitId: string, weights: number[]) {
     // Weight drags are high-frequency: update live, persist on the trailing edge.
     $layoutTree.set(setSplitWeightsOp(tree, splitId, weights))
   }
+}
+
+/** One-shot (non-drag) weight change: update and persist together. */
+export function commitTreeSplitWeights(splitId: string, weights: number[]) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(setSplitWeightsOp(tree, splitId, weights))
+  }
+}
+
+export function setTreeSplitOrientation(splitId: string, orientation: Orientation) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(setSplitOrientationOp(tree, splitId, orientation))
+  }
+}
+
+export function swapTreePanes(a: string, b: string) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(swapPanesOp(tree, a, b))
+  }
+}
+
+/** Child count of split `splitId`, or null when the tree has no such split. */
+export function treeSplitArity(splitId: string): null | number {
+  const tree = $layoutTree.get()
+
+  return tree ? (findSplitWeights(tree, splitId)?.length ?? null) : null
 }
 
 function findSplitWeights(node: LayoutNode, splitId: string): number[] | null {

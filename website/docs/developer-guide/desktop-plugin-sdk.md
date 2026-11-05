@@ -1396,6 +1396,8 @@ host.state.gateway          // ReadableAtom<string>  socket state ('idle' | 'con
 host.state.model            // ReadableAtom<string>
 host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
+host.state.sessionLayout    // ReadableAtom<{ root, focusedGroupId, mainStoredSessionId }>  pane tree, read-only
+host.state.pinnedSessionIds // ReadableAtom<readonly string[]>  ids in the sidebar's Pinned section, in order
 ```
 
 `gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.
@@ -1431,6 +1433,7 @@ host.navigate('/route')                    // hash-route navigation
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+                                           //   dock: { pane?, pos } where a NEW tile lands (see Tiling session panes)
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
@@ -1452,6 +1455,10 @@ host.sessions.pin(storedSessionId, pinned?, index?)  // pin/unpin (default pinne
 host.sessions.reorder(ids)                 // replace the manual Recents order (what a drag persists); [] resets
 host.sessions.reorderPinned(ids)           // permute the Pinned section (the pinned drag path)
 host.sessions.setColor(storedSessionId, color | null)  // per-session colour override; null clears
+host.layout.setSplitWeights(splitId, weights) // resize a split: one weight > 0 per child → boolean
+host.layout.setSplitOrientation(splitId, o)   // 'row' (side by side) | 'column' (stacked) → boolean
+host.layout.swapPanes(paneA, paneB)        // chat panes only (workspace, session-tile:*) → boolean
+host.layout.closePane(paneId)              // chat panes only; like the tab's ✕, the sibling takes the space → boolean
 host.skills.list(profile?)                 // every skill for the scope (Capabilities endpoints)
 host.skills.setEnabled(name, on, profile?)  // enable/disable a skill — the Capabilities toggle
 host.toolsets.list(profile?)               // toolsets + enabled state
@@ -1609,6 +1616,45 @@ happens on user click — never from a background event alone.
 The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
+
+### Tiling session panes — `host.state.sessionLayout` / `host.layout` {#tiling-session-panes}
+
+Session tiles live in the same pane tree as every other zone. A plugin reads it
+through `host.state.sessionLayout` and arranges chats with `host.layout`:
+
+- `root` is the tree. A `split` has an `orientation` (`row` = side by side,
+  `column` = stacked), one `weight` per child, and `children`. A `group` is a
+  zone of stacked `panes` with one `active`.
+- Chat panes are `workspace` (main; its chat is `mainStoredSessionId`, null on a
+  blank draft) and `session-tile:<storedSessionId>`. Other ids are core or
+  plugin panes; the `host.layout` pane verbs refuse them.
+- `host.openSession(id, { intent: 'tab', dock: { pane, pos } })` lands a NEW
+  tile on `pos` (`left` / `right` / `top` / `bottom`, or `center` to stack) of
+  `pane`. A session already on screen is focused instead, so a dock never
+  duplicates or moves it.
+
+```js
+import { host } from '@hermes/plugin-sdk'
+
+// Open a session to the right of the focused chat (older Hermes: as a tab).
+export function openBeside(storedSessionId) {
+  const layout = host.state.sessionLayout?.get()
+  const focused = host.state.focusedStoredSessionId.get()
+  const pane = !focused
+    ? undefined
+    : focused === layout?.mainStoredSessionId
+      ? 'workspace'
+      : `session-tile:${focused}`
+
+  return host.openSession(storedSessionId, {
+    intent: 'tab',
+    dock: layout && pane ? { pane, pos: 'right' } : undefined
+  })
+}
+```
+
+Feature-detect with `host.state.sessionLayout` before relying on any of it:
+older Desktop builds ignore `dock` and open a stacked tab.
 
 ### Files — `ctx.files` {#plugin-files}
 

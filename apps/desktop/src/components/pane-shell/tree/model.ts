@@ -599,6 +599,32 @@ export function setSplitWeights(root: LayoutNode, splitId: string, weights: numb
   return root
 }
 
+/** Re-orient one split. Normalizes, so a split that now runs the same way as
+ *  its parent flattens into it (weights distributed proportionally). */
+export function setSplitOrientation(root: LayoutNode, splitId: string, orientation: Orientation): LayoutNode {
+  const walk = (n: LayoutNode): LayoutNode =>
+    n.type === 'split' ? (n.id === splitId ? { ...n, orientation } : { ...n, children: n.children.map(walk) }) : n
+
+  return normalize(walk(root)) ?? root
+}
+
+/** Exchange two panes wherever they live, keeping each group's active slot on
+ *  the pane that now fills it. A missing pane returns `root` unchanged. */
+export function swapPanes(root: LayoutNode, a: string, b: string): LayoutNode {
+  if (a === b || !findGroupOfPane(root, a) || !findGroupOfPane(root, b)) {
+    return root
+  }
+
+  const swapId = (id: string) => (id === a ? b : id === b ? a : id)
+
+  const walk = (n: LayoutNode): LayoutNode =>
+    n.type === 'group'
+      ? { ...n, panes: n.panes.map(swapId), active: swapId(n.active) }
+      : { ...n, children: n.children.map(walk) }
+
+  return walk(root)
+}
+
 // ---------------------------------------------------------------------------
 // Validation (persisted trees are untrusted)
 // ---------------------------------------------------------------------------

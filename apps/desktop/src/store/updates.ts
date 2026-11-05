@@ -84,9 +84,15 @@ export const resetUpdateApplyState = (target?: UpdateTarget) => {
   if (target !== 'client') {
     $backendUpdateApply.set(IDLE)
   }
+}
 
-  // The client's view has ended: a backend outcome that waited behind it shows now.
-  if (target === 'client' && backendOutcomeWaiting()) {
+/** The client's update view ends (it finished in place, or the person closed its outcome): close it
+ *  and reset only the client, then show a backend outcome that waited behind it. */
+export function endClientView(): void {
+  setUpdateOverlayOpen(false)
+  resetUpdateApplyState('client')
+
+  if (backendNeedsPerson()) {
     showBackendProgress()
   }
 }
@@ -110,7 +116,7 @@ function showBackendProgress(): void {
   $updateOverlayOpen.set(true)
 }
 
-function backendOutcomeWaiting(): boolean {
+function backendNeedsPerson(): boolean {
   const backend = $backendUpdateApply.get()
 
   return !backend.applying && (backend.stage === 'error' || backend.stage === 'manual')
@@ -829,12 +835,11 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
     if (!result?.handedOff) {
       if (result?.ok) {
-        // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
-        // the overlay and let the user know the new version loads next launch
-        // rather than stranding them on an un-closeable spinner. Only the
-        // client's state resets: a hidden backend update keeps running under it.
-        setUpdateOverlayOpen(false)
-        resetUpdateApplyState('client')
+        // Updated, but couldn't relaunch in place (AppImage / dev run). End the
+        // client's view and let the user know the new version loads next launch
+        // rather than stranding them on an un-closeable spinner. A hidden backend
+        // update keeps running under it; a backend outcome that waited shows now.
+        endClientView()
 
         if (result.updateAvailable === false) {
           return result
@@ -926,8 +931,9 @@ function finishBackendApply(
   if (returned) {
     $backendUpdateApply.set(IDLE)
 
-    // A client update holding the overlay keeps it; only the backend's own progress closes.
-    if (!clientHoldsOverlay()) {
+    // Only the backend's own progress closes: a client view (an update holding it, or one the
+    // person opened to read) stays.
+    if ($updateOverlayTarget.get() === 'backend') {
       setUpdateOverlayOpen(false)
     }
 

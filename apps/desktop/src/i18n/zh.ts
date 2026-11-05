@@ -3642,7 +3642,7 @@ export const zhOverrides = {
       'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
-    applyingStayBackend: '你可以隐藏此窗口并继续使用聊天。如果更新失败，它会再次显示。',
+    applyingStayBackend: '你可以隐藏此进度并继续使用聊天。如果更新失败，它会再次显示。',
     applyingBodyAppInstaller: 'Hermes 会关闭，Windows 会完成更新，然后 Hermes 自动重新打开——无需任何操作。',
     applyingCloseAppInstaller: '此窗口会关闭，Windows 完成更新后 Hermes 自动重新打开。',
     checkUnknownTitleAppInstaller: '无法检查更新',

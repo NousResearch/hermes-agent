@@ -320,9 +320,17 @@ def _owner_alive(record: dict[str, Any]) -> bool:
 def effective_outcome(record: dict[str, Any]) -> Any:
     """The record's outcome, with a ``running`` run whose processes are gone read as ``interrupted``:
     the rule reconcile_interrupted_runs persists at the next update, answered now, so a client
-    following that run sees it failed instead of waiting out its deadline."""
+    following that run sees it failed instead of waiting out its deadline.
+
+    The recorded processes are the parent; its detached completion child is not in the record until
+    its first write, and outlives a parent that dies first. The child holds the checkout lock, so
+    a held lock means the update is still running."""
     outcome = record.get("outcome")
-    return "interrupted" if outcome == "running" and not _owner_alive(record) else outcome
+    if outcome != "running" or _owner_alive(record):
+        return outcome
+    from hermes_cli.update_lock import checkout_lock_held
+
+    return outcome if checkout_lock_held() else "interrupted"
 
 
 def reconcile_interrupted_runs() -> list[dict[str, Any]]:

@@ -108,3 +108,23 @@ it('dismissing a failed backend update clears only the backend state', async ():
   expect($backendUpdateApply.get().stage).toBe('idle')
   expect($updateApply.get()).toEqual(clientError)
 })
+
+// A client's own outcome holds the overlay; a backend failure that arrived meanwhile waits behind it
+// and shows when the person closes the client's view.
+it.each([
+  ['error', { stage: 'error' as const, message: 'client failed' }],
+  ['manual', { stage: 'manual' as const, message: 'run this', command: 'run this' }]
+])('closing a client %s shows a backend failure that waited behind it', async (_l, client) => {
+  $updateApply.set({ ...applying, applying: false, ...client })
+  $backendUpdateApply.set({ ...applying, applying: false, stage: 'error', message: 'backend failed' })
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  await renderOverlay()
+
+  await act(async (): Promise<void> => screen.getAllByRole('button', { name: /close/i })[0].click())
+
+  expect($updateApply.get().stage).toBe('idle')
+  expect($updateOverlayTarget.get()).toBe('backend')
+  expect($updateOverlayOpen.get()).toBe(true)
+  expect($backendUpdateApply.get().stage).toBe('error')
+})

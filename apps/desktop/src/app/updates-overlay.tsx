@@ -49,6 +49,7 @@ import {
   checkBackendUpdates,
   checkUpdates,
   dismissDiscontinuedNotice,
+  endClientView,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   sourceUpdateChannel,
@@ -233,10 +234,19 @@ export function UpdatesOverlay() {
       return
     }
 
-    setUpdateOverlayOpen(next)
+    if (next || !dismissResetsApply(apply)) {
+      setUpdateOverlayOpen(next)
 
-    if (!next && dismissResetsApply(apply)) {
-      resetUpdateApplyState(target)
+      return
+    }
+
+    // Closing a finished view clears its state; closing a client's hands the overlay to a backend
+    // outcome that waited behind it.
+    if (isBackend) {
+      setUpdateOverlayOpen(false)
+      resetUpdateApplyState('backend')
+    } else {
+      endClientView()
     }
   }
 

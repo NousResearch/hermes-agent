@@ -174,6 +174,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
+import { mainComposerRecoveryIntent, recoverMainComposerSession } from './recover-main-composer-session'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
@@ -438,8 +439,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [dispatchSessionRpc]
   )
 
-  const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
-    useSessionListActions({ profileScope })
+  const {
+    loadMoreMessagingForPlatform,
+    loadMoreSessions,
+    onSessionsRefreshed,
+    refreshCronJobs,
+    refreshMessagingSessions,
+    refreshSessions
+  } = useSessionListActions({ profileScope })
 
   const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionIdRef,
@@ -575,7 +582,27 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   useFreshSessionRequest(startFreshSessionDraft)
-  useGatewayScopeRefresh(activeConnectionId, activeGatewayProfile, refreshCurrentModel, refreshHermesConfig)
+
+  const restoreMostRecentSession = useCallback(
+    (isCurrent: () => boolean) =>
+      recoverMainComposerSession({
+        isCurrent,
+        onResume: session => void resumeSession(session.id, false, sessionOwnerRouteFromRow(session)),
+        scope: { connectionId: activeConnectionId, profile: activeGatewayProfile }
+      }),
+    [activeConnectionId, activeGatewayProfile, resumeSession]
+  )
+
+  useGatewayScopeRefresh(
+    activeConnectionId,
+    activeGatewayProfile,
+    refreshCurrentModel,
+    refreshHermesConfig,
+    refreshSessions,
+    restoreMostRecentSession,
+    onSessionsRefreshed,
+    () => mainComposerRecoveryIntent(routeTokenRef.current)
+  )
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that

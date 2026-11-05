@@ -425,7 +425,8 @@ export function useComposerDraft({
           // belongs elsewhere.
           return ids.length ? ids : [freshDraftScope()]
         },
-        isActive: () => getActiveComposer() === target
+        isActive: () => getActiveComposer() === target,
+        target
       },
       {
         read: () => {

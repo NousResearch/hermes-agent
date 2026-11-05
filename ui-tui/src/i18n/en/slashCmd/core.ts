@@ -152,6 +152,12 @@ export const slashCmdCoreEn = {
     retry: {
       nothing: 'nothing to retry'
     },
+    rewind: {
+      nothing: 'nothing to rewind to',
+      unsupported: '/rewind needs the shared gateway (hermes serve)',
+      done: (turn: string, count: string) => `rewound to prompt ${turn} (${count} messages removed)`,
+      forked: (turn: string) => `forked from before prompt ${turn} — edit the prompt and press Enter to send`
+    },
     // A refused /undo or /retry: main's busy text (tui_gateway/user_messages.py::busy_message).
     busy: {
       replying: (command: string) =>

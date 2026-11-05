@@ -1480,6 +1480,8 @@ platform:
     prompt_other: "✏️ Eigene Antwort"
     prompt_expired: ⌛ Diese Abfrage wartet nicht mehr auf eine Antwort. Senden Sie Ihre Antwort als normale Nachricht.
 slash:
+  rewind:
+    description: "Zu einem früheren Prompt zurückspulen, um ihn zu bearbeiten & erneut zu senden, oder von dort abzweigen (Esc Esc)"
   approve:
     description: "Einen ausstehenden gefährlichen Befehl genehmigen"
   bg:
@@ -1707,6 +1709,20 @@ slash:
   quit:
     description: "CLI beenden (--delete entfernt zusätzlich den Sitzungsverlauf)"
 cli:
+  backtrack:
+    title: "↺ Zurückspulen — einen früheren Prompt wählen"
+    keys_hint: "↑/↓ wählen · Enter bearbeiten & erneut senden · f von hier abzweigen · Esc schließen"
+    preview_label: "Prompt {number} von {total}:"
+    more_lines: "… ({count} weitere Zeilen)"
+    editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
+    edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
+    rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."
+    forked: "⑂ Vor Prompt {number} abgezweigt; die ursprüngliche Sitzung {parent} bleibt unverändert. Bearbeite den Prompt unten und drücke Enter zum Senden."
+    nothing: "(._.) Keine früheren Prompts zum Zurückspulen."
+    target_changed: "(x_x) Die Sitzung hat sich geändert, seit du Prompt {number} gewählt hast; nichts wurde entfernt. Deine Bearbeitung ist wieder im Eingabefeld."
+    invalid: "(._.) Kein Prompt {value} — wähle 1 bis {total}."
+    usage: "Verwendung: /rewind [N | fork N]"
+    rewind_failed: "(x_x) Zurückspulen fehlgeschlagen; Verlauf wurde nicht geändert: {error}"
   modern:
     thought_for: "Nachgedacht für {seconds}s"
     thought: "Nachgedacht"

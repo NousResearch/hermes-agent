@@ -555,7 +555,7 @@ class SessionMaintenanceMixin:
                 from hermes_state_holders import (
                     foreign_state_db_holders, in_process_state_db_holders)
                 holders = (foreign_state_db_holders(self.db_path)
-                           + in_process_state_db_holders(self.db_path, exclude=self))
+                           + in_process_state_db_holders(self.db_path, exclude=self._holder))
                 if holders:
                     result["vacuum_skipped_holders"] = len(holders)
                     logger.debug(

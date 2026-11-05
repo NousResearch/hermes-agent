@@ -567,14 +567,14 @@ def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
 def in_process_state_db_holders(
     db_path: Path, *, exclude=None
 ) -> list[tuple[int, str]]:
-    """Return holders of ``db_path`` inside THIS process, other than *exclude*.
+    """Return holders of ``db_path`` inside THIS process, other than the store holder *exclude*.
 
     :func:`foreign_state_db_holders` skips ``os.getpid()`` by design, so it answers a
     cross-PROCESS question only. Consumers that read "no holders" as "the store is quiet"
     (auto-VACUUM admission) need this arm too: a VACUUM plus its TRUNCATE checkpoint retires
     the generation a sibling SessionDB in this very process still holds.
     """
-    from hermes_state_registry import other_generations_for_path
+    from persistence.sqlite._registry import other_generations_for_path
 
     return [
         (os.getpid(), description)

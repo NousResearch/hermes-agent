@@ -18,11 +18,11 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
 )
+from persistence.sqlite import _holder
 from tests.hermes_state._wal_generation_harness import (
     gateway_writer, integrity_ok_conn, lose_sidecars, make_db, pin_wal, require_wal, write_second_generation,
 )
@@ -148,7 +148,7 @@ def test_close_refuses_to_settle_without_a_capture(tmp_path, force_wal, monkeypa
     def refuse(*args, **kwargs):
         raise RetiredGenerationCaptureError("no space left on device")
 
-    monkeypatch.setattr(hermes_state, "capture_retired_wal_generation", refuse)
+    monkeypatch.setattr(_holder, "capture_retired_wal_generation", refuse)
     with pytest.raises(RetiredGenerationCaptureError, match="no space left"):
         db.close()
     assert db._conn is not None, "shutdown must not settle while the retired generation is uncaptured"
@@ -184,7 +184,7 @@ def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(
     def refuse(*args, **kwargs):
         raise RetiredGenerationCaptureError("no space left on device")
 
-    monkeypatch.setattr(hermes_state, "capture_retired_wal_generation", refuse)
+    monkeypatch.setattr(_holder, "capture_retired_wal_generation", refuse)
     with caplog.at_level("ERROR"):
         release_or_close(db)  # must not raise
     assert db._conn is not None

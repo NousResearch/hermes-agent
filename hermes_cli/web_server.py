@@ -554,7 +554,8 @@ async def _dashboard_health_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        DASHBOARD_HEALTH.record_error(type(exc).__name__, request.url.path)
+        from storage_user_copy import error_type_name
+        DASHBOARD_HEALTH.record_error(error_type_name(exc), request.url.path)
         raise
     if response.status_code >= 500:
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)

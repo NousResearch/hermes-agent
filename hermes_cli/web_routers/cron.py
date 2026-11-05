@@ -26,7 +26,8 @@ from hermes_cli.web_server_cron import (
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
-from hermes_state_keys import legacy_cron_run_job
+from persistence.authority.bindings import legacy_cron_run_job
+from persistence.conversation.sessions import SessionWindow
 from hermes_constants import (
     get_hermes_home as _get_hermes_home,
     reset_hermes_home_override as _reset_hermes_home_override,
@@ -518,11 +519,12 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         limit_n = 20
 
     with _owner_home_scope(selected):
-        db = _open_session_db_for_profile(selected, read_only=True)
+        store = _open_session_db_for_profile(selected, read_only=True)
         try:
-            session_runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+            session_runs = [run.as_cron_row() for run in
+                            store.sessions.list_cron_job_runs(canonical, SessionWindow(limit=limit_n))]
         finally:
-            db.close()
+            store.close()
 
         now = time.time()
         inflight = _live_inflight_execution(canonical)

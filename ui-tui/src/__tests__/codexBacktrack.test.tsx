@@ -378,6 +378,40 @@ describe('RewindBrowse keys', () => {
     expect(next).not.toMatch(inverse('GAMMA please'))
     instance.unmount()
   })
+
+  it('↑/↓ and j/k scroll the native pager; the selection stays on its prompt', async () => {
+    const many = Array.from({ length: 12 }, (_, i) => [
+      { role: 'user' as const, text: `PROMPT ${i + 1}` },
+      { role: 'assistant' as const, text: `reply ${i + 1}` }
+    ]).flat()
+
+    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onType: vi.fn() }
+    const manyTargets = Array.from({ length: 12 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })
+    let screen = ''
+    stdout.on('data', chunk => (screen += chunk.toString()))
+
+    const instance = renderSync(
+      <RewindBrowse cols={100} native {...handlers} req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }} t={DEFAULT_THEME} />,
+      { patchConsole: false, stdin: stdin as any, stdout: stdout as any }
+    )
+
+    await settle()
+    const oldest = /› PROMPT 1(?!\d)/
+
+    expect(stripAnsi(screen)).toMatch(/› PROMPT 12/)
+    expect(stripAnsi(screen)).not.toMatch(oldest)
+
+    for (let i = 0; i < 40; i++) {
+      stdin.send(i % 2 ? 'k' : '\x1b[A')
+    }
+
+    await settle(80)
+    expect(stripAnsi(screen)).toMatch(oldest)
+    expect($rewindFocus.get()?.turn).toBe(12)
+    instance.unmount()
+  })
 })
 
 describe('browse footer at narrow widths (Codex drops hints, never cuts one)', () => {

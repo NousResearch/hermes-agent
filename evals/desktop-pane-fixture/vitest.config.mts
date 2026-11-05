@@ -1,4 +1,4 @@
-// From apps/desktop: npx vitest run --config ../../evals/desktop-pane-fixture/vitest.config.mts
+// From apps/desktop: pnpm exec vitest run --config ../../evals/desktop-pane-fixture/vitest.config.mts
 // Replay a slow module evaluation without changing any pane behavior or deadlines.
 import { defineConfig, mergeConfig } from 'vitest/config'
 

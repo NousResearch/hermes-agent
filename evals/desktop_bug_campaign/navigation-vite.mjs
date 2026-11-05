@@ -7,6 +7,9 @@ const { createServer } = await import(pathToFileURL(createRequire(new URL('../..
 const root = path.resolve(import.meta.dirname, '../../apps/desktop')
 const artifactDir = process.env.NAVIGATION_ARTIFACT_DIR ?? '/home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown'
 const fixture = path.join(import.meta.dirname, 'navigation-markdown-probe.tsx')
+// The desktop config's Babel preset resolves its plugins from the working directory,
+// and pnpm installs them only in the desktop workspace.
+process.chdir(root)
 const server = await createServer({
   root,
   configFile: path.join(root, 'vite.config.ts'),

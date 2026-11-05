@@ -293,7 +293,7 @@ jobs:
 
   # Every cheap repository guard (infographics, profile archives, case collisions, large blobs,
   # lazy_deps imports, stale icons, unrelated histories, contributor attribution, uv.lock,
-  # prompt-surface and package-lock diffs, supply-chain scan, Docker lint) as steps of ONE job.
+  # prompt-surface and JS lockfile diffs, supply-chain scan, Docker lint) as steps of ONE job.
   # Each used to be its own job on the same runner: a full billed minute for 0-13s of work.
   # Each step keeps its own lane gate, so the detect outputs it needs are passed down.
   repo-guards:

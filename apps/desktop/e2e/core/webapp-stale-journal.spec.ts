@@ -10,7 +10,7 @@
  *    the only copy of the streamed reply, and the reopened chat shows it.
  *
  * Real gateway, real Webapp renderer, real browser storage; only the model is scripted. Linux, like
- * the other Webapp journeys; needs `npm run build:webapp` and a Chromium Playwright can launch.
+ * the other Webapp journeys; needs `pnpm run build:webapp` and a Chromium Playwright can launch.
  */
 
 import * as fs from 'node:fs'
@@ -226,7 +226,7 @@ async function withWebapp(
   test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
   expect(
     fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
-    'the Webapp renderer is built (npm run build:webapp)'
+    'the Webapp renderer is built (pnpm run build:webapp)'
   ).toBe(true)
 
   const provider = await startScriptedProvider()

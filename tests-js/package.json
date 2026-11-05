@@ -5,10 +5,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run lint",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "fix": "npm run lint:fix"
+    "fix": "pnpm run lint:fix"
   },
   "devDependencies": {
     "@types/js-yaml": "4.0.9",

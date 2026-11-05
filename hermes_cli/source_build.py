@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
 def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
+    from pm.packages import pnpm_env
     from pm.paths import repo_root
     from hermes_constants import get_hermes_home
 
@@ -49,11 +51,40 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     npmrc = get_hermes_home() / "npmrc"
     if npmrc.is_file():
         env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
-    return ensure("npm", base_env=env, explicit=explicit, verify=verify).env
+        # pnpm reads that file only for its registry and auth. npm also handed every
+        # other key to dependency install scripts as npm_config_<key>, which is how
+        # node-pre-gyp finds a binary mirror (node_get_windows_binary_host_mirror).
+        inherited = {name.upper() for name in env}
+        for key, value in _npmrc_script_settings(npmrc, env):
+            name = f"npm_config_{key.replace('-', '_')}"
+            if name.upper() not in inherited:  # an explicit setting wins, in any case
+                env[name] = value
+    return ensure("pnpm", base_env=pnpm_env(env), explicit=explicit, verify=verify).env
+
+
+_NPMRC_SETTING = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_NPMRC_ENV_REF = re.compile(r"\$\{([^}]+)\}")
+
+
+def _npmrc_script_settings(npmrc: Path, env: dict) -> list[tuple[str, str]]:
+    """``key=value`` lines of an npmrc that name a plain setting, with npm's ``${VAR}``
+    references expanded from ``env``. Skipped: comments, credentials (``//host/:_authToken``,
+    ``_auth``), scoped registries (``@scope:registry``), array keys (``key[]``) and lines
+    referring to an unset variable."""
+    settings = []
+    for line in npmrc.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")) or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not _NPMRC_SETTING.fullmatch(key) or not all(ref in env for ref in _NPMRC_ENV_REF.findall(value)):
+            continue
+        settings.append((key, _NPMRC_ENV_REF.sub(lambda ref: env[ref.group(1)], value)))
+    return settings
 
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
-    """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
+    """``pm.progress.run_contained`` for a build command that writes the checkout (node, pnpm):
     it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
     caller's process group, and every descendant killed when it exits; Windows: the owner's
     kill-on-close job), so the checkout is never handed to a contender while one of them still
@@ -67,10 +98,7 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
-    # npm's deprecation warnings are the loudest lines and never actionable
-    # here; they still land in the failure tail.
-    run_in_custody(project_root, command, label, hide=lambda line: line.lower().startswith("npm warn"),
-                   indent="  ", cwd=project_root, env=env)
+    run_in_custody(project_root, command, label, indent="  ", cwd=project_root, env=env)
 
 
 def _install_args(explicit: bool) -> tuple[str, ...]:
@@ -179,8 +207,8 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         publish_stage("Updating Node dependencies")
 
         def node_dependencies(selected: tuple[str, ...]) -> None:
-            # Acquiring npm is part of this step: its failure must be reported like the install's.
-            # A recorded install is trusted as at startup (re-hashing node+npm costs ~2 s per
+            # Acquiring pnpm is part of this step: its failure must be reported like the install's.
+            # A recorded install is trusted as at startup (re-hashing the toolchain costs seconds per
             # tail); a missing one is still installed explicitly.
             env.update(source_build_env(explicit=True, verify=False))
             prepare_source_dependencies(project_root, selected, env=env, explicit=True)
@@ -297,7 +325,7 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         try:
             build_prepared_desktop(
                 desktop_dir, source_mode=False,
-                npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
+                pnpm=shutil.which("pnpm", path=env["PATH"]), env=env, icons=project_root,
             )
         finally:
             build_lock.release()

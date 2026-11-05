@@ -173,7 +173,7 @@ def mount_spa(application: FastAPI):
             # Webapp's bundle is built by `hermes webapp`, not by the dashboard's web project.
             webapp = getattr(application.state, "ui_surface", "dashboard") == "webapp"
             missing = ("The Webapp is not built. Run: hermes webapp" if webapp
-                       else "Frontend not built. Run: cd web && npm run build")
+                       else "Frontend not built. Run: pnpm --dir web run build")
             return JSONResponse({"error": missing}, status_code=404)
         if getattr(application.state, "ui_surface", "dashboard") == "webapp":
             # A bundle `hermes update` could not rebuild was built for the code before the update:

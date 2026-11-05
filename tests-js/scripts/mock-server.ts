@@ -16,7 +16,7 @@
  *
  * Import the module to get the server as a library (the Playwright E2E
  * suite). Run the file directly to also write an isolated mock config and
- * launch the built Electron app against it (`npm run dev:mock`).
+ * launch the built Electron app against it (`pnpm run dev:mock`).
  */
 
 import { spawn } from 'node:child_process'
@@ -1466,7 +1466,7 @@ function assertDistBuilt(desktopRoot: string): void {
 
   if (!fs.existsSync(electronMain) || !fs.existsSync(indexHtml)) {
     throw new Error(
-      `Desktop dist not built. Run 'cd apps/desktop && npm run build' first.\n` +
+      `Desktop dist not built. Run 'cd apps/desktop && pnpm run build' first.\n` +
         `Missing: ${electronMain}`,
     )
   }

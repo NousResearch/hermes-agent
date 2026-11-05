@@ -49,11 +49,12 @@ def restart_wait_open(runner) -> bool:
 
 # The requests a client needs during that wait to find, open and answer the conversation parked on
 # approval/clarify: the GET reads below (Desktop's session picker, the session detail and its
-# transcript pages, the health probes, and the update action's status: `hermes update` drains
-# through this same wait, and the window that started it follows the update by polling it) and one write, a Webapp tab's mint of the one-use ticket
-# its /api/ws dial-back needs (restart_wait_socket_ticket). Both only pass the drain's refusal; the
-# listener's auth gate still runs on them. Every other write and route keeps that refusal. The
-# prompt itself (approval.pending / *.respond) rides the WebSocket.
+# transcript pages, the health probes, and the update action's status) and one write, a Webapp
+# tab's mint of the one-use ticket its /api/ws dial-back needs (restart_wait_socket_ticket). Both
+# only pass the drain's refusal; the listener's auth gate still runs on them. Every other write and
+# route keeps that refusal. The prompt itself (approval.pending / *.respond) rides the WebSocket.
+# The update status is here because `hermes update` drains through this same wait, and the
+# windows following that update poll it.
 _RESTART_WAIT_READS = re.compile(
     r"/api/(?:health|status|actions/hermes-update/status|profiles/sessions(?:/sidebar)?"
     r"|sessions/[^/]+(?:/messages(?:/around)?|/timeline)?)")

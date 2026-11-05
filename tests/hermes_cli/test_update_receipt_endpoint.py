@@ -143,6 +143,22 @@ class TestUpdateStatusReadsReceipt:
 
         assert resp.json()["exit_code"] is None
 
+    @pytest.mark.parametrize("alive,shown", [(True, "running"), (False, "interrupted")])
+    def test_a_running_receipt_whose_process_is_gone_reads_interrupted(self, client, tmp_path, monkeypatch,
+                                                                       alive, shown):
+        """A killed update leaves its receipt ``running`` until the next run reconciles it. A client
+        that rejoins a running update on connect must not follow that dead one as live."""
+        import hermes_cli.update_receipt as ur
+
+        _write_receipt(tmp_path, monkeypatch, outcome="running")
+        self._clear_registries(monkeypatch, tmp_path)
+        monkeypatch.setattr(ur, "_owner_alive", lambda record: alive)
+
+        data = client.get("/api/actions/hermes-update/status").json()
+
+        assert data["receipt"]["outcome"] == shown
+        assert data["exit_code"] is None  # the outcome is still unproven: clients keep polling
+
     def test_non_update_actions_untouched(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)
         self._clear_registries(monkeypatch, tmp_path)

@@ -4246,7 +4246,7 @@ export const esOverrides = {
     applyingBodyBackend:
       'El backend remoto está aplicando la actualización y se reiniciará. Hermes se reconectará automáticamente cuando vuelva a estar disponible.',
     applyingClose: 'Hermes se cerrará para aplicar la actualización.',
-    applyingStayBackend: 'Mantén esta ventana abierta. Hermes se reconecta solo cuando el backend vuelva.',
+    applyingStayBackend: 'Puedes ocultar esto y seguir usando tus chats. Vuelve a aparecer si la actualización falla.',
     errorTitle: 'La actualización no terminó',
     errorBody: 'No pasa nada: no se perdió nada. Puedes intentarlo de nuevo ahora.',
     blockerTitle: '¿Cerrar las vistas previas locales para actualizar Hermes?',

@@ -168,6 +168,13 @@ function UpdateChangeList({
   )
 }
 
+// A client apply restarts this app, so its progress stays up. A backend apply runs on another
+// machine and this window stays: hiding the progress keeps the chats underneath reachable (the
+// update's drain waits on their approvals and questions), and a failure shows it again.
+function overlayDismissible(phase: ReturnType<typeof overlayPhase>, isBackend: boolean): boolean {
+  return phase !== 'applying' || isBackend
+}
+
 function overlayPhase(apply: UpdateApplyState): 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' {
   if (apply.stage === 'manual' || apply.stage === 'guiSkew') {
     return apply.stage
@@ -210,8 +217,10 @@ export function UpdatesOverlay() {
 
   const phase = overlayPhase(apply)
 
+  const dismissible = overlayDismissible(phase, isBackend)
+
   const handleClose = (next: boolean) => {
-    if (phase === 'applying') {
+    if (!dismissible) {
       return
     }
 
@@ -239,7 +248,7 @@ export function UpdatesOverlay() {
         bodyClassName={cn('p-0 gap-0', phase !== 'error' && 'overflow-hidden')}
         className="max-w-sm"
         onOpenAutoFocus={preventCloseButtonAutoFocus}
-        showCloseButton={phase !== 'applying'}
+        showCloseButton={dismissible}
       >
         {phase === 'applying' && (
           <ApplyingView apply={apply} isBackend={isBackend} statusMechanism={status?.mechanism} />
@@ -654,9 +663,7 @@ function ApplyingView({
         </div>
       ) : null}
 
-      <p className="text-center text-xs text-muted-foreground">
-        {isWindowsPackage ? u.applyingCloseAppInstaller : isBackend ? u.applyingStayBackend : u.applyingClose}
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{isBackend ? u.applyingStayBackend : u.applyingClose}</p>
     </div>
   )
 }

@@ -51,6 +51,27 @@ it('tells a window updating its backend to stay open, never that it will close',
   expect(screen.queryByText(en.updates.applyingClose)).toBeNull()
 })
 
+// The update's drain waits on approvals and questions in the chats under this overlay: a window
+// updating its backend may hide the progress, a self-updating app (which restarts) may not.
+it('lets a window updating its backend hide the progress, but not a self-updating app', async (): Promise<void> => {
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  $backendUpdateApply.set(applying)
+  await renderOverlay()
+
+  const close = screen.getByRole('button', { name: /close/i })
+  await act(async (): Promise<void> => close.click())
+  expect($updateOverlayOpen.get()).toBe(false)
+  expect($backendUpdateApply.get().applying).toBe(true)
+
+  cleanup()
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  $updateApply.set(applying)
+  await renderOverlay()
+  expect(screen.queryByRole('button', { name: /close/i })).toBeNull()
+})
+
 it('still tells a self-updating app that its window will close', async (): Promise<void> => {
   $updateOverlayTarget.set('client')
   $updateOverlayOpen.set(true)

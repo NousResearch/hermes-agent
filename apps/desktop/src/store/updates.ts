@@ -877,6 +877,9 @@ function failBackendApply(
     error: 'apply-failed',
     message
   })
+  // The progress view may have been hidden while the backend updated: a failure shows it again.
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
 
   return { ok: false, error: 'apply-failed', message: owed ? message : fallback.result }
 }
@@ -1005,7 +1008,7 @@ interface JoinedBackendUpdate {
   startedAtMs: number
 }
 
-type BackendUpdateStart = Awaited<ReturnType<typeof updateHermes>> & { startedAtMs: number }
+type BackendUpdateStart = Omit<Awaited<ReturnType<typeof updateHermes>>, 'pid'> & { startedAtMs: number }
 
 /** Start a new `hermes update` on the backend: what an Update press runs. */
 async function startBackendUpdate(): Promise<BackendUpdateStart> {
@@ -1147,7 +1150,7 @@ export function applyBackendUpdate(joined?: JoinedBackendUpdate): Promise<Deskto
   }
 
   // A joined update is already running: follow it instead of starting another.
-  const start = joined ? async () => ({ ok: true, pid: 0, ...joined }) : startBackendUpdate
+  const start = joined ? async () => ({ ok: true, ...joined }) : startBackendUpdate
   backendUpdateInFlight = runBackendUpdate(start).finally(() => {
     backendUpdateInFlight = null
   })
@@ -1176,21 +1179,31 @@ function runningBackendUpdate(status: Awaited<ReturnType<typeof getActionStatus>
     return { name: status.name, action_id: receipt.action_id!, startedAtMs: receiptStartedMs }
   }
 
+  // Join time, not start time: with no action id, only the version check can certify this run.
   return status.running ? { name: status.name, startedAtMs: Date.now() } : null
 }
 
+async function readUpdateActionStatus(): Promise<Awaited<ReturnType<typeof getActionStatus>> | null> {
+  try {
+    return await getActionStatus('hermes-update', 1)
+  } catch {
+    return null
+  }
+}
+
 /** A window that connects while its backend is updating joins that update: the progress overlay
- *  opens and follows the running action to its outcome, as if this window had pressed Update.
- *  Before, a reload mid-update showed a normal app with no hint the backend was about to restart. */
+ *  opens and follows the running action to its outcome, as if this window had pressed Update. */
 export async function joinRunningBackendUpdate(): Promise<void> {
   if (backendUpdateInFlight) {
     return
   }
 
-  const status = await getActionStatus('hermes-update', 1).catch((): null => null)
+  const askedFor = connectionKey($connection.get())
+  const status = await readUpdateActionStatus()
   const running = status ? runningBackendUpdate(status) : null
 
-  if (!running || backendUpdateInFlight) {
+  // The answer belongs to the backend that was asked: drop it after a switch to another one.
+  if (!running || backendUpdateInFlight || connectionKey($connection.get()) !== askedFor) {
     return
   }
 

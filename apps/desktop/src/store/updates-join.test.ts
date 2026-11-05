@@ -67,10 +67,7 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-// A successful backend apply must nudge the gateway reconnect handler — the
-// update restarted the gateway process, and over tunnels the old socket dies
-// without a close event (users force-quit to recover). Mock the tiny registry
-// module so the assertion is direct.
+// Stub: the real reconnect module's graph is not needed here.
 const reconnectGatewaySpy = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@/store/gateway-reconnect', () => ({
@@ -141,6 +138,17 @@ describe('startUpdatePoller rejoins a running backend update', () => {
 })
 
 describe('joinRunningBackendUpdate', () => {
+  const remote = {
+    baseUrl: 'http://join:9119',
+    isFullscreen: false,
+    mode: 'remote' as const,
+    nativeOverlayWidth: 0,
+    token: 't',
+    wsUrl: 'ws://join:9119',
+    logs: [],
+    windowButtonPosition: null
+  }
+
   const idle = {
     applying: false,
     stage: 'idle' as const,
@@ -266,6 +274,47 @@ describe('joinRunningBackendUpdate', () => {
 
     expect($updateOverlayOpen.get()).toBe(false)
     expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('stays idle when the status read throws before it returns a promise', async () => {
+    getActionStatusSpy.mockImplementation(() => {
+      throw new TypeError('window.hermesDesktop.api is not a function')
+    })
+
+    await expect(joinRunningBackendUpdate()).resolves.toBeUndefined()
+    expect($updateOverlayOpen.get()).toBe(false)
+  })
+
+  it('drops an answer that arrives after the window switched to another backend', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    getActionStatusSpy.mockReturnValue(new Promise(resolve => (answer = resolve)))
+    setConnection({ ...remote, baseUrl: 'http://a:9119', wsUrl: 'ws://a:9119' })
+
+    const joining = joinRunningBackendUpdate()
+    setConnection({ ...remote, baseUrl: 'http://b:9119', wsUrl: 'ws://b:9119' })
+    answer({ exit_code: null, lines: [], name: 'hermes-update', pid: 4, running: true })
+    await joining
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($backendUpdateApply.get().applying).toBe(false)
+  })
+
+  it('shows the progress again when a joined update that the person hid fails', async () => {
+    getActionStatusSpy.mockResolvedValueOnce({
+      exit_code: null,
+      lines: [],
+      name: 'hermes-update',
+      pid: 4,
+      running: true
+    })
+    await joinRunningBackendUpdate()
+    $updateOverlayOpen.set(false) // hidden to answer a chat's approval while the update drains
+
+    getActionStatusSpy.mockResolvedValue({ exit_code: 1, lines: [], name: 'hermes-update', pid: 4, running: false })
+    await vi.advanceTimersByTimeAsync(1500)
+
+    expect($backendUpdateApply.get().stage).toBe('error')
+    expect($updateOverlayOpen.get()).toBe(true)
   })
 
   it('stays idle when the status read fails', async () => {

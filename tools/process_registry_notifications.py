@@ -150,6 +150,41 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
+# A stop the parent or user asked for is not a failure the parent has to recover from.
+_STOPPED = frozenset({"interrupted", "cancelled"})
+
+
+def delegation_wakes_parent(evt: dict) -> bool:
+    """True for an async delegation's FINAL result with a failed child (any status other than done or a
+    requested stop). Its unviewed local parent runs it as a turn rather than a note
+    (gateway/session_completion_notes.py), so the parent can re-dispatch or report. The early per-task
+    notice is a diagnostic: the final result that follows it is the one that wakes."""
+    if evt.get("type") != "async_delegation" or evt.get("task_failure_notice"):
+        return False
+    if evt.get("_sibling_failed"):
+        return True
+    raw = evt.get("results")
+    results = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    if not results and not isinstance(raw, list):
+        results = [evt]
+    return any(
+        (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *_STOPPED)
+        for r in results)
+
+
+_CONTENT_POLICY_RECOVERY = (
+    "This model's provider refused the task (content_policy_blocked). The refusal is deterministic for "
+    "that model, so do not re-dispatch it unchanged: re-dispatch it with delegate_task on a different "
+    "model (another option/model), or tell the user it was refused.")
+
+
+def _failure_recovery_lines(r: dict) -> list[str]:
+    """What the parent should do about a failed child, when its classified reason names a remedy."""
+    if r.get("failure_reason") == "content_policy_blocked":
+        return [_CONTENT_POLICY_RECOVERY]
+    return []
+
+
 def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
@@ -252,6 +287,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines += ["Partial output:", r_summary]
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
+        if r_status not in _DONE:
+            lines += _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)
@@ -311,6 +348,7 @@ def _format_async_delegation(evt: dict) -> str:
         else:  # error / timeout / failed / unknown (owner died)
             lines.append(
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
+            lines += _failure_recovery_lines(evt)
             lines += _recovery_lines(evt)
         if summary:
             lines += ["Partial output:", summary]

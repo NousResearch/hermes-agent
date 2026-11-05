@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import sqlite3
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -38,8 +37,9 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         # writers. ``closing`` is required — sqlite3's context manager only commits/rolls
         # back, never closes, so a bare ``with connect()`` leaks a connection per poll.
         from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+        from hermes_state_holders import read_only_db_uri
 
-        with closing(connect_tracked(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=1.0,
+        with closing(connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0,
                                      tracking_path=path)) as conn:
             # A readiness probe must never compete with normal state writers. See #69567, #69678.
             conn.execute("PRAGMA query_only = ON")

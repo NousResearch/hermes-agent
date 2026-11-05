@@ -54,6 +54,30 @@ def test_readiness_probe_is_tracked(state_db, tracked):
     assert _key(state_db) in tracked
 
 
+def test_readiness_probe_opens_the_tracked_file_with_reserved_home_characters(
+    state_db, tmp_path, monkeypatch, tracked,
+):
+    """URI parsing must not redirect a tracked readiness open to a different file."""
+    from gateway.readiness import _probe_state_db
+
+    home = tmp_path / "profile #? with spaces"
+    state_db.parent.rename(home)
+    db_path = home / "state.db"
+    opened_paths: list[str] = []
+    real_connect = safe_read.connect_tracked
+
+    def _observe_open(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        row = conn.execute("PRAGMA database_list").fetchone()
+        opened_paths.append(_key(Path(row[2])))
+        return conn
+
+    monkeypatch.setattr(safe_read, "connect_tracked", _observe_open)
+    assert _probe_state_db(home)["status"] == "ok"
+    assert opened_paths == [_key(db_path)]
+    assert _key(db_path) in tracked
+
+
 def test_integrity_check_and_journal_mode_are_tracked(state_db, tracked):
     from gateway.lifecycle_ledger import _state_db_journal_mode, check_state_db_integrity
     check_state_db_integrity(state_db.parent)

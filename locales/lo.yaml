@@ -1,0 +1,438 @@
+# Hermes static-message catalog -- Lao (lo)
+
+approval:
+  dangerous_header: "⚠️  ຄຳສັ່ງອັນຕະລາຍ: {description}"
+  choose_long:     "      [o] ຄັ້ງດຽວ  |  [s] ເຊດຊັນ  |  [a] ຕະຫຼອດໄປ  |  [d] ປະຕິເສດ"
+  choose_short:    "      [o] ຄັ້ງດຽວ  |  [s] ເຊດຊັນ  |  [d] ປະຕິເສດ"
+  prompt_long:     "      ເລືອກ [o/s/a/D]: "
+  prompt_short:    "      ເລືອກ [o/s/D]: "
+  choose_smart_deny: "      [o] ຄັ້ງດຽວ  |  [d] ປະຕິເສດ"
+  prompt_smart_deny: "      ເລືອກ [o/D]: "
+  smart_deny_once_inputs: "o,once,ຄັ້ງດຽວ"
+  smart_deny_deny_inputs: "d,deny,ປະຕິເສດ"
+  timeout:         "      ⏱ ໝົດເວລາ - ປະຕິເສດຄຳສັ່ງ"
+  allowed_once:    "      ✓ ອະນຸຍາດຄັ້ງດຽວ"
+  allowed_session: "      ✓ ອະນຸຍາດສຳລັບເຊດຊັນນີ້"
+  allowed_always:  "      ✓ ເພີ່ມເຂົ້າໃນລາຍການອະນຸຍາດຖາວອນແລ້ວ"
+  denied:          "      ✗ ປະຕິເສດແລ້ວ"
+  cancelled:       "      ✗ ຍົກເລີກແລ້ວ"
+  blocklist_message: "ຄຳສັ່ງນີ້ຢູ່ໃນລາຍການບລັອກທີ່ບໍ່ມີເງື່ອນໄຂ ແລະ ບໍ່ສາມາດອະນຸມັດໄດ້."
+
+gateway:
+  approval_expired: "⚠️ ການອະນຸມັດໝົດອາຍຸ (ເອເຈນບໍ່ໄດ້ລໍຖ້າແລ້ວ). ກະລຸນາບອກໃຫ້ເອເຈນລອງໃໝ່."
+  draining:         "⏳ ກຳລັງເຄລຍ {count} ເອເຈນທີ່ກຳລັງເຮັດວຽກກ່ອນຈະເລີ່ມລະບົບໃໝ່..."
+  goal_cleared:     "✓ ລຶບເປົ້າໝາຍແລ້ວ."
+  no_active_goal:   "ບໍ່ມີເປົ້າໝາຍທີ່ກຳລັງເຮັດວຽກ."
+  config_read_failed: "⚠️ ບໍ່ສາມາດອ່ານ config.yaml: {error}"
+  config_save_failed: "⚠️ ບໍ່ສາມາດບັນທຶກ config: {error}"
+
+  model:
+    error_prefix:           "ຂໍ້ຜິດພາດ: {error}"
+    switched:               "ປ່ຽນໂມເດວເປັນ `{model}` ແລ້ວ"
+    provider_label:         "ຜູ້ໃຫ້ບໍລິການ: {provider}"
+    context_label:          "ບໍລິບົດ (Context): {tokens} ໂທເຄັນ"
+    max_output_label:       "ຜົນຜະລິດສູງສຸດ (%{tokens} ໂທເຄັນ)"
+    cost_label:             "ຄ່າໃຊ້ຈ່າຍ: {cost}"
+    capabilities_label:     "ຄວາມສາມາດ: {capabilities}"
+    prompt_caching_enabled: "ການແຄຊຄຳສັ່ງ (Prompt caching): ເປີດໃຊ້ແລ້ວ"
+    warning_prefix:         "ຄຳເຕືອນ: {warning}"
+    saved_global:           "ບັນທຶກລົງໃນ config.yaml ແລ້ວ (`--global`)"
+    session_only_hint:      "_(ສະເພາະເຊດຊັນນີ້ — ໃຊ້ `--global` ເພື່ອບັນທຶກຖາວອນ)_"
+    current_label:          "ປະຈຸບັນ: `{model}` ໃນ {provider}"
+    current_tag:            " (ປະຈຸບັນ)"
+    more_models_suffix:     " (+ ອີກ {count} ອັນ)"
+    usage_switch_model:     "`/model <ຊື່>` — ປ່ຽນໂມເດວ"
+    usage_switch_provider:  "`/model <ຊື່> --provider <slug>` — ປ່ຽນຜູ້ໃຫ້ບໍລິການ"
+    usage_persist:          "`/model <ຊື່> --global` — ບັນທຶກຖາວອນ"
+
+  agents:
+    header:                "🤖 **ເອເຈນ & ໜ້າວຽກທີ່ກຳລັງເຮັດວຽກ**"
+    active_agents:         "**ເອເຈນທີ່ເຮັດວຽກຢູ່:** {count}"
+    this_chat:             " · ແຊັດນີ້"
+    more:                  "... ແລະ ອີກ {count} ອັນ"
+    running_processes:     "**ໂປຣເຊສເບື້ອງຫຼັງທີ່ເຮັດວຽກຢູ່:** {count}"
+    async_jobs:            "**ວຽກ Gateway async:** {count}"
+    background_delegations: "**ການມອບໝາຍວຽກເບື້ອງຫຼັງ:** {count}"
+    none:                  "ບໍ່ມີເອເຈນ ຫຼື ໜ້າວຽກທີ່ກຳລັງເຮັດວຽກຢູ່."
+    state_starting:        "ກຳລັງເລີ່ມ"
+    state_running:         "ກຳລັງເຮັດວຽກ"
+
+  approve:
+    no_pending:            "ບໍ່ມີຄຳສັ່ງທີ່ລໍຖ້າການອະນຸມັດ."
+    once_singular:         "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ. ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+    once_plural:           "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ ({count} ຄຳສັ່ງ). ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+    session_singular:      "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ (ອະນຸມັດຮູບແບບນີ້ສຳລັບເຊດຊັນນີ້). ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+    session_plural:        "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ (ອະນຸມັດຮູບແບບນີ້ສຳລັບເຊດຊັນນີ້) ({count} ຄຳສັ່ງ). ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+    always_singular:       "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ (ອະນຸມັດຮູບແບບນີ້ຖາວອນ). ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+    always_plural:         "✅ ອະນຸມັດຄຳສັ່ງແລ້ວ (ອະນຸມັດຮູບແບບນີ້ຖາວອນ) ({count} ຄຳສັ່ງ). ເອເຈນກຳລັງເຮັດວຽກຕໍ່..."
+
+  background:
+    usage:                 "ວິທີໃຊ້: /background <ຄຳສັ່ງ>\nຕົວຢ່າງ: /background ສະຫຼຸບຂ່າວເດັ່ນຈາກ HN ມື້ນີ້\n\nລະບົບຈະລັນຄຳສັ່ງໃນເຊດຊັນແຍກຕ່າງຫາກ. ເຈົ້າສາມາດແຊັດຕໍ່ໄດ້ — ຜົນລັບຈະສະແດງຢູ່ນີ້ເມື່ອສຳເລັດ."
+    started:               "🔄 ເລີ່ມໜ້າວຽກເບື້ອງຫຼັງແລ້ວ: \"{preview}\"\nTask ID: {task_id}\nເຈົ້າສາມາດແຊັດຕໍ່ໄດ້ — ຜົນລັບຈະສະແດງເມື່ອສຳເລັດ."
+
+  branch:
+    db_unavailable:        "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ."
+    no_conversation:       "ບໍ່ມີການສົນທະນາທີ່ຈະແຍກສາຂາ (Branch) — ກະລຸນາສົ່ງຂໍ້ຄວາມກ່ອນ."
+    create_failed:         "ສ້າງສາຂາບໍ່ສຳເລັດ: {error}"
+    switch_failed:         "ສ້າງສາຂາແລ້ວ ແຕ່ປ່ຽນໄປໃຊ້ບໍ່ສຳເລັດ."
+    branched_one:          "⑂ ແຍກສາຂາໄປທີ່ **{title}** (ຄັດລອກ {count} ຂໍ້ຄວາມ)\nຕົ້ນສະບັບ: `{parent}`\nສາຂາໃໝ່: `{new}`\nໃຊ້ `/resume` ເພື່ອກັບຄືນໄປຫາຕົ້ນສະບັບ."
+    branched_many:         "⑂ ແຍກສາຂາໄປທີ່ **{title}** (ຄັດລອກ {count} ຂໍ້ຄວາມ)\nຕົ້ນສະບັບ: `{parent}`\nສາຂາໃໝ່: `{new}`\nໃຊ້ `/resume` ເພື່ອກັບຄືນໄປຫາຕົ້ນສະບັບ."
+
+  commands:
+    usage:                 "ວິທີໃຊ້: `/commands [ເລກໜ້າ]`"
+    skill_header:          "⚡ **ຄຳສັ່ງຄວາມສາມາດ (Skill Commands)**:"
+    default_desc:          "ຄຳສັ່ງຄວາມສາມາດ"
+    none:                  "ບໍ່ມີຄຳສັ່ງທີ່ພ້ອມໃຊ້ງານ."
+    header:                "📚 **ຄຳສັ່ງທັງໝົດ** (ທັງໝົດ {total}, ໜ້າ {page}/{total_pages})"
+    nav_prev:              "`/commands {page}` ← ກ່ອນໜ້າ"
+    nav_next:              "ຖັດໄປ → `/commands {page}`"
+    out_of_range:          "_(ໜ້າທີ່ຮ້ອງຂໍ {requested} ບໍ່ມີ, ກຳລັງສະແດງໜ້າ {page}.)_"
+
+  compress:
+    not_enough:            "ການສົນທະນາຍັງບໍ່ພໍທີ່ຈະບີບອັດ (ຕ້ອງມີຢ່າງໜ້ອຍ 4 ຂໍ້ຄວາມ)."
+    no_provider:           "ບໍ່ໄດ້ຕັ້ງຄ່າຜູ້ໃຫ້ບໍລິການ -- ບໍ່ສາມາດບີບອັດໄດ້."
+    nothing_to_do:         "ຍັງບໍ່ມີຫຍັງໃຫ້ບີບອັດ (ເນື້ອຫາຍັງຢູ່ໃນສ່ວນທີ່ຖືກປ້ອງກັນທັງໝົດ)."
+    aggressive_unsupported: "--aggressive ບໍ່ຮອງຮັບ; ໃຊ້ '/compress here [N]' ເພື່ອເກັບສະເພາະການໂຕ້ຕອບຫຼ້າສຸດ ຫຼື /undo ເພື່ອຍ້ອນກັບ."
+    focus_line:            "ຈຸດສຸມ: \"{topic}\""
+    summary_failed:        "⚠️ ການສ້າງບົດສະຫຼຸບບໍ່ສຳເລັດ ({error}). ຂໍ້ຄວາມປະຫວັດ {count} ລາຍການຖືກລຶບອອກ ແລະ ແທນທີ່ດ້ວຍຕົວສຳຮອງ; ບໍລິບົດກ່ອນໜ້ານີ້ບໍ່ສາມາດກູ້ຄືນໄດ້. ກະລຸນາກວດສອບການຕັ້ງຄ່າໂມເດວ auxiliary.compression ຂອງທ່ານ."
+    aborted:               "⚠️ ການບີບອັດຖືກຍົກເລີກ ({error}). ບໍ່ມີຂໍ້ຄວາມໃດຖືກລຶບ — ການສົນທະນາຍັງຄືເກົ່າ. ໃຊ້ /compress ເພື່ອລອງໃໝ່, /reset ເພື່ອເລີ່ມເຊດຊັນໃໝ່ ຫຼື ກວດສອບການຕັ້ງຄ່າໂມເດວ auxiliary.compression ຂອງທ່ານ."
+    aux_failed:            "ℹ️ ໂມເດວບີບອັດ `{model}` ທີ່ຕັ້ງໄວ້ເຮັດວຽກຜິດພາດ ({error}). ກູ້ຄືນໂດຍໃຊ້ໂມເດວຫຼັກຂອງທ່ານ — ບໍລິບົດຍັງຄົບຖ້ວນ — ແຕ່ທ່ານອາດຈະຕ້ອງການກວດສອບ `auxiliary.compression.model` ໃນ config.yaml."
+    failed:                "ການບີບອັດລົ້ມເຫຼວ: {error}"
+
+  debug:
+    upload_failed:         "✗ ອັບໂຫລດລາຍງານ debug ບໍ່ສຳເລັດ: {error}"
+    header:                "**ອັບໂຫລດລາຍງານ debug ແລ້ວ:**"
+    auto_delete:           "⏱ ຂໍ້ມູນຈະຖືກລຶບອັດໂຕນໂນມັດໃນ 6 ຊົ່ວໂມງ."
+    full_logs_hint:        "ສຳລັບການອັບໂຫລດ log ທັງໝົດ, ໃຫ້ໃຊ້ `hermes debug share` ຈາກ CLI."
+    share_hint:            "ແບ່ງປັນລິ້ງເຫຼົ່ານີ້ໃຫ້ກັບທີມ Hermes ເພື່ອຂໍຄວາມຊ່ວຍເຫຼືອ."
+
+  deny:
+    stale:                 "❌ ປະຕິເສດຄຳສັ່ງ (ການອະນຸມັດໝົດອາຍຸ)."
+    no_pending:            "ບໍ່ມີຄຳສັ່ງທີ່ລໍຖ້າການປະຕິເສດ."
+    denied_singular:       "❌ ປະຕິເສດຄຳສັ່ງແລ້ວ."
+    denied_plural:         "❌ ປະຕິເສດຄຳສັ່ງແລ້ວ ({count} ຄຳສັ່ງ)."
+    denied_reason_singular: "❌ ປະຕິເສດຄຳສັ່ງແລ້ວ. ເຫດຜົນທີ່ແຈ້ງໃຫ້ເອເຈນຊາບ: \"{reason}\""
+    denied_reason_plural:  "❌ ປະຕິເສດຄຳສັ່ງແລ້ວ ({count} ຄຳສັ່ງ). ເຫດຜົນທີ່ແຈ້ງໃຫ້ເອເຈນຊາບ: \"{reason}\""
+
+  fast:
+    not_supported:         "⚡ /fast ໃຊ້ໄດ້ສະເພາະກັບໂມເດວ OpenAI ທີ່ຮອງຮັບ Priority Processing ເທົ່ານັ້ນ."
+    status:                "⚡ Priority Processing\n\nໂໝດປະຈຸບັນ: `{mode}`\n\n_ວິທີໃຊ້:_ `/fast <normal|fast|status>`"
+    unknown_arg:           "⚠️ ບໍ່ຮູ້ຈັກອາຄິວເມນ: `{arg}`\n\n**ຕົວເລືອກທີ່ໃຊ້ໄດ້:** normal, fast, status"
+    saved:                 "⚡ ✓ Priority Processing: **{label}** (ບັນທຶກລົງ config ແລ້ວ)\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    session_only:          "⚡ ✓ Priority Processing: **{label}** (ສະເພາະເຊດຊັນນີ້)"
+    label_fast:            "ໄວ (FAST)"
+    label_normal:          "ປົກກະຕິ (NORMAL)"
+    status_fast:           "fast"
+    status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\n\nໂໝດປະຈຸບັນ: `{mode}`\n\nເລືອກຕົວເລືອກ:"
+    choice_fast:           "fast — ເປີດໃຊ້ Priority Processing"
+    choice_normal:         "normal — ການປະມວນຜົນແບບມາດຕະຖານ"
+
+  footer:
+    status:                "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
+    usage:                 "ວິທີໃຊ້: `/footer [on|off|status]`"
+    saved:                 "📎 Runtime footer: **{state}**{example}\n_(ບັນທຶກແບບທົ່ວໄປ — ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    example_line:          "\nຕົວຢ່າງ: `{preview}`"
+    state_on:              "ເປີດ (ON)"
+    state_off:             "ປິດ (OFF)"
+
+  goal:
+    unavailable:           "ເປົ້າໝາຍບໍ່ພ້ອມໃຊ້ງານໃນເຊດຊັນນີ້."
+    no_goal_set:           "ບໍ່ໄດ້ຕັ້ງເປົ້າໝາຍໄວ້."
+    paused:                "⏸ ພັກເປົ້າໝາຍ: {goal}"
+    no_resume:             "ບໍ່ມີເປົ້າໝາຍທີ່ຈະເຮັດຕໍ່."
+    resumed:               "▶ ເຮັດເປົ້າໝາຍຕໍ່: {goal}\nສົ່ງຂໍ້ຄວາມເພື່ອດຳເນີນການຕໍ່ ຫຼື ລໍຖ້າ — ຂ້ອຍຈະເລີ່ມຂັ້ນຕອນຖັດໄປເອງ."
+    invalid:               "ເປົ້າໝາຍບໍ່ຖືກຕ້ອງ: {error}"
+    set:                   "⊙ ຕັ້ງເປົ້າໝາຍແລ້ວ (ງົບປະມານ {budget} ຮອບ): {goal}\nຂ້ອຍຈະເຮັດວຽກຈົນກວ່າຈະສຳເລັດ, ເຈົ້າສັ່ງພັກ/ລຶບ ຫຼື ງົບປະມານໝົດ.\nການຄວບຄຸມ: /goal status · /goal pause · /goal resume · /goal clear"
+
+  help:
+    header:                "📖 **ຄຳສັ່ງ Hermes**\n"
+    skill_header:          "\n⚡ **ຄຳສັ່ງຄວາມສາມາດ (Skill Commands)** ({count} ທີ່ໃຊ້ງານຢູ່):"
+    more_use_commands:     "\n... ແລະ ອີກ {count} ອັນ. ໃຊ້ `/commands` ເພື່ອເບິ່ງລາຍການທັງໝົດ."
+
+  insights:
+    invalid_days:          "ຄ່າ --days ບໍ່ຖືກຕ້ອງ: {value}"
+    error:                 "ເກີດຂໍ້ຜິດພາດໃນການສ້າງ insights: {error}"
+
+  kanban:
+    error_prefix:          "⚠ ຂໍ້ຜິດພາດ kanban: {error}"
+    subscribed_suffix:     "(ຕິດຕາມແລ້ວ — ເຈົ້າຈະໄດ້ຮັບການແຈ້ງເຕືອນເມື່ອ {task_id} ສຳເລັດ ຫຼື ຖືກບລັອກ)"
+    truncated_suffix:      "… (ເນື້ອຫາຖືກຕັດ; ໃຊ້ `hermes kanban …` ໃນເທີມິນໍຂອງທ່ານເພື່ອເບິ່ງທັງໝົດ)"
+    no_output:             "(ບໍ່ມີເອົາພຸດ)"
+    wake:
+      completed:           "ສຳເລັດແລ້ວ"
+      gave_up:             "ຍົກເລີກ (ລອງໃໝ່ຈົນຄົບແລ້ວ)"
+      crashed:             "ລະບົບຄ້າງ (worker ອອກຈາກການເຮັດວຽກ); ລະບົບຈະລອງໃໝ່"
+      timed_out:           "ໝົດເວລາ; ລະບົບຈະລອງໃໝ່"
+      blocked:             "ຖືກບລັອກ; ຕ້ອງການການກວດສອບ"
+      status_default:      "ສະຖານະປ່ຽນແປງ"
+      status_joiner:       ", "
+      message:             "[kanban] ໜ້າວຽກ {task_id} {status}.\nຫົວຂໍ້: {title}\nຜູ້ຮັບຜິດຊອບ: @{assignee}\nບອດ: {board}\n\nກວດສອບຜົນລັບ ຫຼື ຕັດສິນໃຈຂັ້ນຕອນຖັດໄປ."
+
+  personality:
+    none_configured:       "ບໍ່ມີບຸກຄະລິກ (Personality) ທີ່ຕັ້ງຄ່າໄວ້ໃນ `{path}/config.yaml`"
+    header:                "🎭 **ບຸກຄະລິກທີ່ມີໃຫ້ເລືອກ**\n"
+    none_option:           "• `none` — (ບໍ່ໃຊ້ບຸກຄະລິກເສີມ)"
+    item:                  "• `{name}` — {preview}"
+    usage:                 "\nວິທີໃຊ້: `/personality <ຊື່>`"
+    save_failed:           "⚠️ ບັນທຶກການປ່ຽນແປງບຸກຄະລິກບໍ່ສຳເລັດ: {error}"
+    cleared:               "🎭 ລ້າງບຸກຄະລິກແລ້ວ — ໃຊ້ພຶດຕິກຳເອເຈນພື້ນຖານ.\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    set_to:                "🎭 ຕັ້ງບຸກຄະລິກເປັນ **{name}** ແລ້ວ\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    unknown:               "ບໍ່ຮູ້ຈັກບຸກຄະລິກ: `{name}`\n\nທີ່ມີໃຫ້ເລືອກ: {available}"
+
+  profile:
+    header:                "👤 **ໂປຣໄຟລ໌:** `{profile}`"
+    home:                  "📂 **Home:** `{home}`"
+
+  reasoning:
+    level_default:             "medium (ມາດຕະຖານ)"
+    level_disabled:            "none (ປິດໃຊ້ງານ)"
+    scope_session:             "ແຊກແຊງສະເພາະເຊດຊັນ"
+    scope_global:              "ຄ່າຕັ້ງຄ່າທົ່ວໄປ"
+    status:                    "🧠 **ການຕັ້ງຄ່າການໃຫ້ເຫດຜົນ (Reasoning)**\n\n**ລະດັບຄວາມພະຍາຍາມ:** `{level}`\n**ຂອບເຂດ:** {scope}\n**ການສະແດງຜົນ:** {display}\n\n_ວິທີໃຊ້:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
+    display_on:                "ເປີດ ✓"
+    display_off:               "ປິດ"
+    display_set_on:            "🧠 ✓ ການສະແດງການໃຫ້ເຫດຜົນ: **ເປີດ**\nການຄິດຂອງໂມເດວຈະສະແດງກ່ອນທຸກການຕອບໂຕ້ໃນ **{platform}**."
+    display_set_off:           "🧠 ✓ ການສະແດງການໃຫ້ເຫດຜົນ: **ປິດ** ສຳລັບ **{platform}**"
+    reset_global_unsupported:  "⚠️ `/reasoning reset --global` ບໍ່ຮອງຮັບ. ໃຊ້ `/reasoning <level> --global` ເພື່ອປ່ຽນຄ່າເລີ່ມຕົ້ນທົ່ວໄປ."
+    reset_done:                "🧠 ✓ ລ້າງການຕັ້ງຄ່າການໃຫ້ເຫດຜົນໃນເຊດຊັນແລ້ວ; ກັບໄປໃຊ້ຄ່າຕັ້ງຄ່າທົ່ວໄປ."
+    unknown_arg:               "⚠️ ບໍ່ຮູ້ຈັກອາຄິວເມນ: `{arg}`\n\n**ລະດັບທີ່ໃຊ້ໄດ້:** none, minimal, low, medium, high, xhigh, max, ultra\n**ການສະແດງຜົນ:** show, hide\n**ການບັນທຶກ:** ຕື່ມ `--global` ເພື່ອບັນທຶກຖາວອນ"
+    picker_title:              "🧠 **ການຕັ້ງຄ່າການໃຫ້ເຫດຜົນ**\n\n**ລະດັບຄວາມພະຍາຍາມ:** `{level}`\n**ຂອບເຂດ:** {scope}\n**ການສະແດງຜົນ:** {display}\n\nເລືອກຕົວເລືອກ:"
+    choice_none:               "none — ປິດການໃຫ້ເຫດຜົນ"
+    choice_reset:              "reset — ລ້າງຄ່າແຊກແຊງໃນເຊດຊັນ"
+    choice_show:               "show — ສະແດງການໃຫ້ເຫດຜົນໃນການຕອບ"
+    choice_hide:               "hide — ເຊື່ອງການໃຫ້ເຫດຜົນໃນການຕອບ"
+    set_global:                "🧠 ✓ ຕັ້ງລະດັບຄວາມພະຍາຍາມເປັນ `{effort}` (ບັນທຶກລົງ config ແລ້ວ)\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    set_global_save_failed:    "🧠 ✓ ຕັ້ງລະດັບຄວາມພະຍາຍາມເປັນ `{effort}` (ສະເພາະເຊດຊັນນີ້ — ບັນທຶກ config ບໍ່ສຳເລັດ)\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    set_session:               "🧠 ✓ ຕັ້ງລະດັບຄວາມພະຍາຍາມເປັນ `{effort}` (ສະເພາະເຊດຊັນນີ້ — ໃຊ້ `--global` ເພື່ອບັນທຶກຖາວອນ)\n_(ຈະມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+
+  reload_mcp:
+    cancelled:             "🟡 /reload-mcp ຖືກຍົກເລີກ. ເຄື່ອງມື MCP ບໍ່ມີການປ່ຽນແປງ."
+    always_followup:       "ℹ️ ການຮຽກໃຊ້ `/reload-mcp` ໃນອະນາຄົດຈະເຮັດວຽກໂດຍບໍ່ຕ້ອງຢືນຢັນ. ສາມາດເປີດການຢືນຢັນຄືນໄດ້ຜ່ານ `approvals.mcp_reload_confirm: true` ໃນ config.yaml."
+    confirm_prompt:        "⚠️ **ຢືນຢັນ /reload-mcp**\n\nການໂຫລດເຊີເວີ MCP ໃໝ່ຈະສ້າງຊຸດເຄື່ອງມືໃໝ່ສຳລັບເຊດຊັນນີ້ ແລະ **ເຮັດໃຫ້ແຄຊຄຳສັ່ງຂອງຜູ້ໃຫ້ບໍລິການໃຊ້ບໍ່ໄດ້** — ຂໍ້ຄວາມຖັດໄປຈະສົ່ງ tokens ທັງໝົດໃໝ່. ໃນໂມເດວທີ່ມີບໍລິບົດຍາວ ຫຼື ໃຊ້ການໃຫ້ເຫດຜົນສູງ ອາດຈະມີຄ່າໃຊ້ຈ່າຍສູງ.\n\nເລືອກ:\n• **Approve Once** — ໂຫລດໃໝ່ດຽວນີ້\n• **Always Approve** — ໂຫລດໃໝ່ດຽວນີ້ ແລະ ປິດການຖາມຖາວອນ\n• **Cancel** — ຍົກເລີກ\n\n_ຕອບກັບດ້ວຍ: `/approve`, `/always`, ຫຼື `/cancel`._"
+    header:                "🔄 **ໂຫລດເຊີເວີ MCP ໃໝ່ແລ້ວ**\n"
+    reconnected:           "♻️ ເຊື່ອມຕໍ່ຄືນໃໝ່: {names}"
+    added:                 "➕ ເພີ່ມແລ້ວ: {names}"
+    removed:               "➖ ລຶບອອກແລ້ວ: {names}"
+    none_connected:        "ບໍ່ມີເຊີເວີ MCP ທີ່ເຊື່ອມຕໍ່ຢູ່."
+    tools_available:       "\n🔧 ມີ {tools} ເຄື່ອງມື ຈາກ {servers} ເຊີເວີ"
+    failed:                "❌ ການໂຫລດ MCP ໃໝ່ລົ້ມເຫຼວ: {error}"
+
+  reload_skills:
+    header:                "🔄 **ໂຫລດຄວາມສາມາດ (Skills) ໃໝ່ແລ້ວ**\n"
+    no_new:                "ບໍ່ພົບຄວາມສາມາດໃໝ່."
+    total:                 "\n📚 ມີ {count} ຄວາມສາມາດ ພ້ອມໃຊ້ງານ"
+    added_header:          "➕ **ຄວາມສາມາດທີ່ເພີ່ມໃໝ່:**"
+    removed_header:        "➖ **ຄວາມສາມາດທີ່ລຶບອອກ:**"
+    item_with_desc:        "    - {name}: {desc}"
+    item_no_desc:          "    - {name}"
+    failed:                "❌ ການໂຫລດຄວາມສາມາດໃໝ່ລົ້ມເຫຼວ: {error}"
+
+  reset:
+    header_default:        "✨ ລ້າງເຊດຊັນແລ້ວ! ເລີ່ມຕົ້ນໃໝ່."
+    header_new:            "✨ ເລີ່ມເຊດຊັນໃໝ່ແລ້ວ!"
+    header_titled:         "✨ ເລີ່ມເຊດຊັນໃໝ່: {title}"
+    title_rejected:        "\n⚠️ ຫົວຂໍ້ຖືກປະຕິເສດ: {error}"
+    title_error_untitled:  "\n⚠️ {error} — ເລີ່ມເຊດຊັນແບບບໍ່ມີຫົວຂໍ້."
+    title_empty_untitled:  "\n⚠️ ຫົວຂໍ້ວ່າງເປົ່າຫຼັງຈາກການເຄລຍ — ເລີ່ມເຊດຊັນແບບບໍ່ມີຫົວຂໍ້."
+    tip:                   "\n✦ ຄຳແນະນຳ: {tip}"
+
+  restart:
+    in_progress:           "⏳ ກຳລັງເລີ່ມ Gateway ໃໝ່ຢູ່ແລ້ວ..."
+    restarting:            "♻ ກຳລັງເລີ່ມ Gateway ໃໝ່. ຖ້າບໍ່ໄດ້ຮັບການແຈ້ງເຕືອນໃນ 60 ວິນາທີ, ໃຫ້ເລີ່ມໃໝ່ຈາກຄອນໂຊນດ້ວຍ `hermes gateway restart`."
+
+  resume:
+    db_unavailable:        "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ."
+    parse_error:           "⚠️ ບໍ່ສາມາດອ່ານອາຄິວເມນ `/resume`: {error}.\nໃຫ້ໃຊ້ເຄື່ອງໝາຍຄຳເວົ້າອ້ອມຫົວຂໍ້ທີ່ມີຍະຫວ່າງ, ຕົວຢ່າງ: `/resume \"ແຜນງານ Project A\"`."
+    matrix_no_named_sessions: "ບໍ່ພົບເຊດຊັນທີ່ມີຊື່ສຳລັບຫ້ອງ Matrix ນີ້.\nໃຊ້ `/title ຊື່ເຊດຊັນ` ເພື່ອຕັ້ງຊື່, `/resume --all` ເພື່ອເບິ່ງທັງໝົດ, ຫຼື `/resume --cross-room <ຊື່ເຊດຊັນ>` ເພື່ອຂ້າມຫ້ອງ."
+    matrix_blocked_no_origin: "⚠️ ຖືກບລັອກ: ເຊດຊັນນີ້ບໍ່ມີບັນທຶກຫ້ອງຕົ້ນກຳເນີດ. ໃຊ້ `/resume --cross-room {name}` ຖ້າຕ້ອງການຂ້າມຫ້ອງໂດຍເຈດຕະນາ."
+    matrix_blocked_other_room: "⚠️ ຖືກບລັອກ: ເຊດຊັນນັ້ນເປັນຂອງຫ້ອງ Matrix ອື່ນ ({room}). ໃຊ້ `/resume --cross-room {name}` ຖ້າຕ້ອງການຂ້າມຫ້ອງ."
+    matrix_cross_room_success: "⚠️ ການກັບຄືນຂ້າມຫ້ອງ: ກັບຄືນໄປຫາ **{title}** ໃນຫ້ອງ **{room}**.\nຂໍ້ຄວາມໃນຫ້ອງນີ້ຈະໃຊ້ບໍລິບົດນັ້ນຈົນກວ່າຈະ `/reset` ຫຼື `/resume` ອື່ນ.{msg_part}"
+    blocked_not_owner:     "⚠️ ຖືກບລັອກ: '**{name}**' ເປັນຂອງຜູ້ໃຊ້ອື່ນ ຫຼື ແຊັດອື່ນ. ເຈົ້າສາມາດກັບຄືນໄດ້ສະເພາະເຊດຊັນຈາກແຊັດນີ້ເທົ່ານັ້ນ."
+    no_named_sessions:     "ບໍ່ພົບເຊດຊັນທີ່ມີຊື່.\nໃຊ້ `/title ຊື່ເຊດຊັນ` ເພື່ອຕັ້ງຊື່, ແລ້ວໃຊ້ `/resume ຊື່ເຊດຊັນ` ເພື່ອກັບມາພາຍຫຼັງ."
+    list_header:           "📋 **ເຊດຊັນທີ່ມີຊື່**\n"
+    list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
+    list_preview_suffix:   " — _{preview}_"
+    list_footer:           "\nວິທີໃຊ້: `/resume <ຊື່ເຊດຊັນ>`"
+    list_footer_numbered:  "\nວິທີໃຊ້: `/resume <ຊື່ເຊດຊັນ>` ຫຼື `/resume <ເລກ>` (ຕົວຢ່າງ `/resume 1` ສຳລັບອັນຫຼ້າສຸດ)"
+    list_failed:           "ບໍ່ສາມາດສະແດງລາຍການເຊດຊັນ: {error}"
+    out_of_range:          "ເລກລຳດັບ {index} ບໍ່ມີໃນລາຍການ.\nໃຊ້ `/resume` ໂດຍບໍ່ມີອາຄິວເມນເພື່ອເບິ່ງເຊດຊັນທີ່ມີ."
+    not_found:             "ບໍ່ພົບເຊດຊັນທີ່ກົງກັບ '**{name}**'.\nໃຊ້ `/resume` ໂດຍບໍ່ມີອາຄິວເມນເພື່ອເບິ່ງເຊດຊັນທີ່ມີ."
+    already_on:            "📌 ຢູ່ໃນເຊດຊັນ **{name}** ຢູ່ແລ້ວ."
+    switch_failed:         "ປ່ຽນເຊດຊັນບໍ່ສຳເລັດ."
+    resumed_one:           "↻ ກັບຄືນສູ່ເຊດຊັນ **{title}** ({count} ຂໍ້ຄວາມ). ກູ້ຄືນການສົນທະນາແລ້ວ."
+    resumed_many:          "↻ ກັບຄືນສູ່ເຊດຊັນ **{title}** ({count} ຂໍ້ຄວາມ). ກູ້ຄືນການສົນທະນາແລ້ວ."
+    resumed_no_count:      "↻ ກັບຄືນສູ່ເຊດຊັນ **{title}**. ກູ້ຄືນການສົນທະນາແລ້ວ."
+
+  retry:
+    no_previous:           "ບໍ່ມີຂໍ້ຄວາມກ່ອນໜ້າໃຫ້ລອງໃໝ່."
+
+  rollback:
+    not_enabled:           "ບໍ່ໄດ້ເປີດໃຊ້ງານ Checkpoints.\nເປີດໃຊ້ໃນ config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found:            "ບໍ່ພົບ checkpoint ສຳລັບ {cwd}"
+    invalid_number:        "ເລກ checkpoint ບໍ່ຖືກຕ້ອງ. ໃຊ້ 1-{max}."
+    restored:              "✅ ກູ້ຄືນໄປຫາ checkpoint {hash} ແລ້ວ: {reason}\nລະບົບບັນທຶກ snapshot ກ່ອນການຍ້ອນກັບໂດຍອັດໂຕນົມັດ."
+    restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "ບໍ່ໄດ້ເປີດໃຊ້ງານ Checkpoints, ຈຶ່ງບໍ່ມີຖານຂໍ້ມູນອ້າງອີງ.\nເປີດໃຊ້ໃນ config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nການໃຊ້ /diff ທຳມະດາຍັງເຮັດວຽກໄດ້ — ມັນຈະໃຊ້ git ໂດຍກົງ."
+    no_changes:            "ບໍ່ມີການປ່ຽນແປງ."
+    failed:                "{error}"
+
+  set_home:
+    save_failed:           "ບັນທຶກຊ່ອງ Home ບໍ່ສຳເລັດ: {error}"
+    success:               "✅ ຕັ້ງຊ່ອງ Home ເປັນ **{name}** (ID: {chat_id}) ແລ້ວ.\nວຽກ Cron ແລະ ຂໍ້ຄວາມຂ້າມແພລັດຟອມຈະຖືກສົ່ງມາທີ່ນີ້."
+
+  context:
+    header:                "🧠 **ໜ້າຕ່າງບໍລິບົດ (Context Window)**"
+    model:                 "ໂມເດວ: `{model}`"
+    window:                "ໜ້າຕ່າງ: {total} ໂທເຄັນ"
+    in_use:                "ກຳລັງໃຊ້: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "ພື້ນທີ່ວ່າງທີ່ເຫຼືອ: {headroom} ໂທເຄັນ"
+    threshold:             "ຈະບີບອັດອັດໂຕນົມັດທີ່: {threshold} ({threshold_pct}%) — ເຫຼືອອີກ {to_go}"
+    over_threshold:        "⚠️ **ເກີນຂີດຈຳກັດການບີບອັດອັດໂຕນົມັດ ({threshold}, {threshold_pct}%)**"
+    compressions:          "ການບີບອັດໃນເຊດຊັນນີ້: {count} ຄັ້ງ"
+    last_savings:          "ການບີບອັດຫຼ້າສຸດຄືນພື້ນທີ່ໄດ້: {savings}% ຂອງບໍລິບົດ"
+    totals_header:         "ລວມທັງໝົດໃນເຊດຊັນ (ສະສົມຈາກ {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "ຍອດລວມທີ່ຄິດເງິນ: {total}"
+    throughput_note:       "_ນີ້ຄືປະລິມານການຮັບສົ່ງ, ບໍ່ແມ່ນຂະໜາດບໍລິບົດ — ແຕ່ລະ call ຈະສົ່ງໜ້າຕ່າງຂ້າງເທິງຄືນໃໝ່._"
+    estimated:             "ບໍລິບົດໂດຍປະມານ: ~{count} ໂທເຄັນ ຈາກ {messages} ຂໍ້ຄວາມ"
+    detail_after_first:    "_(ສະຖິຕິການບີບອັດ ແລະ ປະລິມານການຮັບສົ່ງຈະສະແດງຫຼັງຈາກເອເຈນຕອບໂຕ້ຄັ້ງທຳອິດ)_"
+    no_data:               "ຍັງບໍ່ມີຂໍ້ມູນບໍລິບົດ. ສົ່ງຂໍ້ຄວາມເພື່ອເລີ່ມເຊດຊັນ."
+
+  status:
+    header:                "📊 **ສະຖານະ Hermes Gateway**"
+    matrix_scope_header:   "**ຂອບເຂດ Matrix:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
+    session_id:            "**Session ID:** `{session_id}`"
+    title:                 "**ຫົວຂໍ້:** {title}"
+    created:               "**ສ້າງເມື່ອ:** {timestamp}"
+    last_activity:         "**ເຄື່ອນໄຫວຫຼ້າສຸດ:** {timestamp}"
+    model:                 "**ໂມເດວ:** `{model}`"
+    model_provider:        "**ໂມເດວ:** `{model}` ({provider})"
+    context:               "**ບໍລິບົດ:** {used} / {total} ({pct}%)"
+    context_used:          "**ບໍລິບົດ:** ~{used} ໂທເຄັນ"
+    tokens:                "**ໂທເຄັນທັງໝົດທີ່ຄິດເງິນ:** {tokens} _(ບໍ່ແມ່ນຂະໜາດບໍລິບົດປະຈຸບັນ; ໃຊ້ `/context`)_"
+    agent_running:         "**ເອເຈນກຳລັງເຮັດວຽກ:** {state}"
+    state_yes:             "ແມ່ນ ⚡"
+    state_no:              "ບໍ່"
+    queued:                "**Follow-ups ທີ່ລໍຖ້າ:** {count}"
+    platforms:             "**ແພລັດຟອມທີ່ເຊື່ອມຕໍ່:** {platforms}"
+
+  stop:
+    stopped_pending:       "⚡ ຢຸດແລ້ວ. ເອເຈນຍັງບໍ່ທັນເລີ່ມ — ເຈົ້າສາມາດດຳເນີນການເຊດຊັນນີ້ຕໍ່ໄດ້."
+    stopped:               "⚡ ຢຸດແລ້ວ. ເຈົ້າສາມາດດຳເນີນການເຊດຊັນນີ້ຕໍ່ໄດ້."
+    no_active:             "ບໍ່ມີໜ້າວຽກທີ່ກຳລັງເຮັດວຽກ."
+
+  title:
+    db_unavailable:        "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ."
+    warn_prefix:           "⚠️ {error}"
+    empty_after_clean:     "⚠️ ຫົວຂໍ້ວ່າງເປົ່າຫຼັງຈາກການເຄລຍ. ກະລຸນາໃຊ້ຕົວອັກສອນທີ່ສະແດງຜົນໄດ້."
+    set_to:                "✏️ ຕັ້ງຫົວຂໍ້ເຊດຊັນແລ້ວ: **{title}**"
+    not_found:             "ບໍ່ພົບເຊດຊັນໃນຖານຂໍ້ມູນ."
+    current_with_title:    "📌 ເຊດຊັນ: `{session_id}`\nຫົວຂໍ້: **{title}**"
+    current_no_title:      "📌 ເຊດຊັນ: `{session_id}`\nຍັງບໍ່ໄດ້ຕັ້ງຫົວຂໍ້. ວິທີໃຊ້: `/title ຊື່ເຊດຊັນຂອງຂ້ອຍ`"
+
+  topic:
+    not_telegram_dm:         "ຄຳສັ່ງ /topic ໃຊ້ໄດ້ສະເພາະໃນແຊັດສ່ວນຕົວຂອງ Telegram ເທົ່ານັ້ນ."
+    no_session_db:           "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ."
+    unauthorized:            "ເຈົ້າບໍ່ມີສິດໃຊ້ /topic ໃນບັອດນີ້."
+    restore_needs_topic:     "ໃນການກູ້ຄືນເຊດຊັນ, ໃຫ້ສ້າງ ຫຼື ເປີດ Telegram topic ກ່ອນ, ແລ້ວສົ່ງ /topic <session-id> ພາຍໃນ topic ນັ້ນ. ເພື່ອສ້າງ topic ໃໝ່, ໃຫ້ເປີດ All Messages ແລ້ວສົ່ງຂໍ້ຄວາມໃດໜຶ່ງທີ່ນັ້ນ."
+    topics_disabled:         "Telegram topics ຍັງບໍ່ໄດ້ຖືກເປີດໃຊ້ງານສຳລັບບັອດນີ້.\n\nວິທີເປີດ:\n1. ເປີດ @BotFather.\n2. ເລືອກບັອດຂອງທ່ານ.\n3. ເປີດ Bot Settings → Threads Settings.\n4. ເປີດ Threaded Mode.\n\nແລ້ວສົ່ງ /topic ອີກຄັ້ງ."
+    topics_user_disallowed:  "ເປີດ Telegram topics ແລ້ວ, ແຕ່ຜູ້ໃຊ້ບໍ່ໄດ້ຮັບອະນຸຍາດໃຫ້ສ້າງ.\n\nເປີດ @BotFather → ເລືອກບັອດ → Bot Settings → Threads Settings, ແລ້ວປິດ 'Disallow users to create new threads'.\n\nແລ້ວສົ່ງ /topic ອີກຄັ້ງ."
+    enable_failed:           "ເປີດໂໝດ Telegram topic ບໍ່ສຳເລັດ: {error}"
+    bound_status:            "Topic ນີ້ເຊື່ອມຕໍ່ກັບ:\nເຊດຊັນ: {label}\nID: {session_id}\n\nໃຊ້ /new ເພື່ອແທນທີ່ topic ນີ້ດ້ວຍເຊດຊັນໃໝ່."
+    thread_ready:            "ເປີດໃຊ້ Telegram multi-session topics ແລ້ວ.\n\nTopic ນີ້ຈະຖືກໃຊ້ເປັນເຊດຊັນ Hermes ທີ່ແຍກເປັນເອກະລາດ. ໃຊ້ /new ເພື່ອເລີ່ມເຊດຊັນໃໝ່ໃນ topic ນີ້."
+    untitled_session:        "ເຊດຊັນທີ່ບໍ່ມີຫົວຂໍ້"
+
+  undo:
+    nothing:               "ບໍ່ມີຫຍັງໃຫ້ຍ້ອນກັບ."
+    removed:               "↩️ ຍ້ອນກັບ {turns} ຮອບ ({count} ຂໍ້ຄວາມ).\nສຳຮອງໄວ້ທີ່: \"{preview}\"\nຄັດລອກ/ແກ້ໄຂຂໍ້ຄວາມຂ້າງເທິງແລ້ວສົ່ງເພື່ອເລີ່ມໃໝ່ຈາກຈຸດນີ້."
+    invalid_count:         "ຈຳນວນ \"{arg}\" ບໍ່ຖືກຕ້ອງ — ໃຫ້ໃຊ້ /undo ຫຼື /undo N."
+
+  update:
+    platform_not_messaging:  "✗ /update ສາມາດໃຊ້ໄດ້ຈາກແພລັດຟອມສົ່ງຂໍ້ຄວາມເທົ່ານັ້ນ. ໃຫ້ລັນ `hermes update` ຈາກເທີມິນໍ."
+    not_git_repo:            "✗ ບໍ່ແມ່ນ git repository — ບໍ່ສາມາດອັບເດດໄດ້."
+    hermes_cmd_not_found:    "✗ ບໍ່ພົບຄຳສັ່ງ `hermes`. ລອງລັນ `hermes update` ດ້ວຍຕົນເອງໃນເທີມິນໍ."
+    start_failed:            "✗ ເລີ່ມການອັບເດດບໍ່ສຳເລັດ: {error}"
+    starting:                "⚕ ກຳລັງເລີ່ມອັບເດດ Hermes… ຈະລາຍງານຄວາມຄືບໜ້າຢູ່ນີ້."
+
+  usage:
+    rate_limits:              "⏱️ **ຂີດຈຳກັດ (Rate Limits):** {state}"
+    header_session:           "📊 **ການໃຊ້ໂທເຄັນໃນເຊດຊັນ**"
+    label_model:              "ໂມເດວ: `{model}`"
+    label_input_tokens:       "Input tokens: {count}"
+    label_cache_read:         "Cache read tokens: {count}"
+    label_cache_write:        "Cache write tokens: {count}"
+    label_output_tokens:      "Output tokens: {count}"
+    label_total:              "ລວມ: {count}"
+    label_api_calls:          "API calls: {count}"
+    label_cost:               "ຄ່າໃຊ້ຈ່າຍ: {prefix}${amount}"
+    label_cost_included:      "ຄ່າໃຊ້ຈ່າຍ: ລວມຢູ່ແລ້ວ"
+    label_context:            "ບໍລິບົດ: {used} / {total} ({pct}%)"
+    label_compressions:       "ການບີບອັດ: {count}"
+    breakdown_header:         "🧩 **ລາຍລະອຽດບໍລິບົດ** _(ໂດຍປະມານ)_"
+    breakdown_line:           "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt:        "System prompt"
+    breakdown_cat_tool_definitions:     "ການກຳນົດເຄື່ອງມື"
+    breakdown_cat_rules:                "ກົດລະບຽບ"
+    breakdown_cat_skills:               "ຄວາມສາມາດ (Skills)"
+    breakdown_cat_mcp:                  "MCP"
+    breakdown_cat_subagent_definitions: "ການກຳນົດເອເຈນຍ່ອຍ"
+    breakdown_cat_memory:               "ຄວາມຈຳ"
+    breakdown_cat_conversation:         "ການສົນທະນາ"
+    header_session_info:      "📊 **ຂໍ້ມູນເຊດຊັນ**"
+    label_messages:           "ຂໍ້ຄວາມ: {count}"
+    label_estimated_context:  "ບໍລິບົດໂດຍປະມານ: ~{count} ໂທເຄັນ"
+    detailed_after_first:     "_(ລາຍລະອຽດການໃຊ້ງານຈະສະແດງຫຼັງຈາກເອເຈນຕອບໂຕ້ຄັ້ງທຳອິດ)_"
+    no_data:                  "ຍັງບໍ່ມີຂໍ້ມູນການໃຊ້ງານສຳລັບເຊດຊັນນີ້."
+    unknown_subcommand:       "ບໍ່ຮູ້ຈັກຄຳສັ່ງຍ່ອຍ /usage: `{args}`. ລອງ `/usage` ຫຼື `/usage reset [--force]`."
+    reset_wrong_provider:     "ການລ້າງຂໍ້ມູນການໃຊ້ງານໃຊ້ໄດ້ສະເພາະກັບຜູ້ໃຫ້ບໍລິການ openai-codex ເທົ່ານັ້ນ."
+
+  credits:
+    not_logged_in:            "ຍັງບໍ່ໄດ້ເຂົ້າສູ່ລະບົບ Nous Portal. ກະລຸນາເຂົ້າສູ່ລະບົບເພື່ອເບິ່ງຍອດເງິນ ແລະ ເຕີມເງິນ."
+
+  verbose:
+    not_enabled:           "ຄຳສັ່ງ `/verbose` ບໍ່ໄດ້ຖືກເປີດໃຊ້ງານສຳລັບແພລັດຟອມສົ່ງຂໍ້ຄວາມ.\n\nເປີດໃຊ້ໃນ `config.yaml`."
+    mode_off:              "⚙️ ຄວາມຄືບໜ້າເຄື່ອງມື: **ປິດ** — ບໍ່ສະແດງການເຮັດວຽກຂອງເຄື່ອງມື."
+    mode_new:              "⚙️ ຄວາມຄືບໜ້າເຄື່ອງມື: **ໃໝ່** — ສະແດງເມື່ອເຄື່ອງມືປ່ຽນແປງ."
+    mode_all:              "⚙️ ຄວາມຄືບໜ້າເຄື່ອງມື: **ທັງໝົດ** — ສະແດງທຸກການຮຽກໃຊ້ເຄື່ອງມື."
+    mode_verbose:          "⚙️ ຄວາມຄືບໜ້າເຄື່ອງມື: **ລະອຽດ** — ສະແດງທຸກການຮຽກໃຊ້ພ້ອມອາຄິວເມນທັງໝົດ."
+    mode_log:              "⚙️ ຄວາມຄືບໜ້າເຄື່ອງມື: **LOG** — ບັນທຶກລົງໄຟລ໌ log ເທົ່ານັ້ນ."
+    saved_suffix:          "_(ບັນທຶກສຳລັບ **{platform}** — ມີຜົນໃນຂໍ້ຄວາມຖັດໄປ)_"
+    save_failed:           "_(ບໍ່ສາມາດບັນທຶກລົງ config: {error})_"
+
+  voice:
+    enabled_voice_only:    "ເປີດໃຊ້ໂໝດສຽງແລ້ວ. ຂ້ອຍຈະຕອບເປັນສຽງເມື່ອເຈົ້າສົ່ງຂໍ້ຄວາມສຽງມາ."
+    disabled_text:         "ປິດໂໝດສຽງແລ້ວ. ຕອບເປັນຂໍ້ຄວາມເທົ່ານັ້ນ."
+    tts_enabled:           "ເປີດໃຊ້ Auto-TTS ແລ້ວ. ທຸກການຕອບໂຕ້ຈະມີຂໍ້ຄວາມສຽງ."
+    status_mode:           "ໂໝດສຽງ: {label}"
+    status_channel:        "ຊ່ອງສຽງ: #{channel}"
+    status_participants:   "ຜູ້ເຂົ້າຮ່ວມ: {count}"
+    status_member:         "  - {name}{status}"
+    speaking:              " (ກຳລັງເວົ້າ)"
+    enabled_short:         "ເປີດໃຊ້ໂໝດສຽງ."
+    disabled_short:        "ປິດໃຊ້ໂໝດສຽງ."
+    label_off:             "ປິດ (ຂໍ້ຄວາມເທົ່ານັ້ນ)"
+    label_voice_only:      "ເປີດ (ຕອບເປັນສຽງຕໍ່ຂໍ້ຄວາມສຽງ)"
+    label_all:             "TTS (ຕອບເປັນສຽງຕໍ່ທຸກຂໍ້ຄວາມ)"
+    help:                  "{toggle}\n\n**ວິທີໃຊ້ /voice**\n• `/voice on` — ຕອບເປັນສຽງເມື່ອເຈົ້າສົ່ງສຽງມາ\n• `/voice tts` — ຕອບເປັນສຽງໃຫ້ *ທຸກ* ຂໍ້ຄວາມ\n• `/voice off` — ກັບໄປໃຊ້ຂໍ້ຄວາມເທົ່ານັ້ນ\n• `/voice status` — ສະແດງໂໝດປະຈຸບັນ\n• `/voice` (ບໍ່ມີອາຄິວເມນ) — ສະຫຼັບເປີດ/ປິດ ຢ່າງໄວ{channels}"
+    help_channels:         "\n\n**Live voice channels (Discord)**\n• ເຂົ້າຮ່ວມຊ່ອງສຽງກ່ອນ, ແລ້ວໃຊ້ `/voice channel` — ຂ້ອຍຈະເຂົ້າໄປຟັງ ແລະ ເວົ້າຕອບ\n• `/voice leave` — ອອກຈາກຊ່ອງສຽງ"
+
+  yolo:
+    disabled:                   "⚠️ ໂໝດ YOLO **ປິດ** ສຳລັບເຊດຊັນນີ້ — ຄຳສັ່ງທີ່ອັນຕະລາຍຕ້ອງໄດ້ຮັບການອະນຸມັດ."
+    enabled:                    "⚡ ໂໝດ YOLO **ເປີດ** ສຳລັບເຊດຊັນນີ້ — ທຸກຄຳສັ່ງຈະຖືກອະນຸມັດອັດໂຕນົມັດ. ຄວນໃຊ້ດ້ວຍຄວາມລະມັດລະວັງ."
+
+  shared:
+    session_db_unavailable:      "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ."
+    session_db_unavailable_prefix: "ຖານຂໍ້ມູນເຊດຊັນບໍ່ພ້ອມໃຊ້ງານ"
+    session_not_found:           "ບໍ່ພົບເຊດຊັນໃນຖານຂໍ້ມູນ."
+    warn_passthrough:            "⚠️ {error}"
+    

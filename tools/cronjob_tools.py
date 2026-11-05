@@ -1142,7 +1142,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt, work only (timing goes in 'schedule'; paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+                "description": "For create/update: the full self-contained prompt (when it runs goes in 'schedule'; data windows like 'since yesterday' stay here; paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
             },
             "schedule": {
                 "type": "string",

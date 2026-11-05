@@ -3985,6 +3985,6 @@ shared:
   # /undo's pointer at the /rollback command that restores the undone turns' files
   # (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Chun iad a athchóiriú: /rollback {number}"
+    restore: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Chun iad a athchóiriú: /rollback {ref}"
     list: "↶ Comhaid a athraíodh sna seal a cealaíodh: {files}. Rith /rollback chun seicphointí a liostú agus ceann a athchóiriú."
     more: "+{count} eile"

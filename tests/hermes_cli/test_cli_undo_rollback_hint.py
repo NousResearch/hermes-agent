@@ -1,5 +1,6 @@
 """/undo with checkpoints on names the /rollback that restores the undone turns' files; off, it prints main's output."""
 
+import re
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -9,6 +10,8 @@ import pytest
 from hermes_state import SessionDB
 from tests.hermes_cli.test_cli_init import _make_cli
 from tools.checkpoint_manager import CheckpointManager
+
+_PRINTED = re.compile(r"To restore them: (/rollback [0-9a-f]{8,40})\b")
 
 
 @pytest.fixture
@@ -29,41 +32,56 @@ def setup(tmp_path, monkeypatch):
     db.close()
 
 
-def _run_two_writing_turns(cli, db, project, *, enabled):
-    """An earlier turn (kept), then two turns that each took a checkpoint before writing a file."""
+def _turn(cli, db, mgr, project, text, write=None):
+    """One chat turn: the user row, the checkpoint attempt before the turn's first write, the write."""
+    db.append_message(cli.session_id, "user", text, timestamp=time.time())
+    mgr.new_turn()
+    mgr.ensure_checkpoint(str(project), f"before {text}")
+    if write:
+        (project / write[0]).write_text(write[1])
+    db.append_message(cli.session_id, "assistant", f"did {text}", timestamp=time.time())
+
+
+def _session(cli, db, project, *, enabled):
+    """A kept turn whose checkpoint saw the original tree but wrote nothing, then two undone turns: the
+    first one's checkpoint attempt finds nothing changed and REUSES that snapshot, the second takes a new one."""
     mgr = CheckpointManager(enabled=enabled)
     cli.agent = SimpleNamespace(_checkpoint_mgr=mgr)
-    start = time.time() - 60
-    db.append_message(cli.session_id, "user", "read only", timestamp=start)
-    db.append_message(cli.session_id, "assistant", "done", timestamp=start + 1)
-    for n, name in ((1, "app.js"), (2, "notes.md")):
-        db.append_message(cli.session_id, "user", f"edit {n}", timestamp=start + 10 * n)
-        mgr.new_turn()
-        mgr.ensure_checkpoint(str(project), f"before write {n}")
-        (project / name).write_text(f"turn {n}\n")
-        db.append_message(cli.session_id, "assistant", f"edited {n}", timestamp=start + 10 * n + 1)
+    _turn(cli, db, mgr, project, "kept: run the tests")
+    _turn(cli, db, mgr, project, "edit 1", ("app.js", "turn 1\n"))
+    _turn(cli, db, mgr, project, "edit 2", ("notes.md", "turn 2\n"))
     cli.conversation_history = db.get_messages_as_conversation(cli.session_id)
     return mgr
 
 
-def test_undo_names_the_rollback_number_of_the_oldest_undone_checkpoint(setup, capsys):
+def test_undo_hint_round_trip_restores_the_first_undone_turns_files_and_keeps_the_kept_turn(setup, capsys):
+    """The printed command, run as printed through the real /rollback handler, brings the files back to what
+    the FIRST undone turn found (it reused the kept turn's snapshot), even after another checkpoint was taken
+    in between, and leaves the kept turn in the transcript."""
     cli, db, project = setup
-    mgr = _run_two_writing_turns(cli, db, project, enabled=True)
+    mgr = _session(cli, db, project, enabled=True)
+    assert len(mgr.list_checkpoints(str(project))) == 2  # the reused attempt made no commit
 
     cli._cmd_undo("/undo 2")
-
     out = capsys.readouterr().out
-    assert "To restore them: /rollback 2" in out
+    command = _PRINTED.search(out)
+    assert command, out
     assert "app.js, notes.md" in out
-    # Pasting it restores the snapshot taken before the first undone turn wrote.
-    target = cli._resolve_checkpoint_ref("2", mgr.list_checkpoints(str(project)))
-    assert mgr.restore(str(project), target, safe=False)["success"]
+    (project / "scratch.txt").write_text("later\n")  # the next checkpoint shifts every list position
+    mgr.new_turn()
+    assert mgr.ensure_checkpoint(str(project), "a later turn")
+
+    cli._handle_rollback_command(command.group(1))
+
     assert (project / "app.js").read_text() == "hello\n"
+    kept = ["kept: run the tests", "did kept: run the tests"]
+    assert [m["content"] for m in cli.conversation_history] == kept
+    assert [m["content"] for m in db.get_messages_as_conversation(cli.session_id)] == kept
 
 
 def test_undo_with_checkpoints_off_prints_no_rollback_line(setup, capsys):
     cli, db, project = setup
-    _run_two_writing_turns(cli, db, project, enabled=False)
+    _session(cli, db, project, enabled=False)
 
     cli._cmd_undo("/undo 2")
 
@@ -72,39 +90,23 @@ def test_undo_with_checkpoints_off_prints_no_rollback_line(setup, capsys):
     assert "/rollback" not in out
 
 
-def _rollback(cli, n):
-    cli._handle_rollback_command(f"/rollback {n}")
-
-
-def test_rollback_after_undo_keeps_the_turns_undo_kept(setup, capsys):
-    """Following /undo's pointer restores the files without also undoing the turn /undo kept."""
-    cli, db, project = setup
-    _run_two_writing_turns(cli, db, project, enabled=True)
-    cli._cmd_undo("/undo 2")
-    capsys.readouterr()
-
-    _rollback(cli, 2)
-
-    out = capsys.readouterr().out
-    assert (project / "app.js").read_text() == "hello\n"
-    assert [m["content"] for m in cli.conversation_history] == ["read only", "done"]
-    assert [m["content"] for m in db.get_messages_as_conversation(cli.session_id)] == ["read only", "done"]
-    assert "chat turn" not in out.lower()
-
-
-def test_undo_gives_no_number_once_pruning_dropped_an_undone_checkpoint(setup, capsys):
-    """The size cap drops the oldest snapshot even below max_snapshots: the span's first checkpoint is gone,
-    so the newest one would restore only part of the undone edits. No number then."""
+def test_undo_gives_no_command_once_the_undone_spans_snapshot_was_pruned(setup, capsys):
+    """The count cap dropped the snapshot the first undone turn found (with the project's metadata unwritable,
+    so nothing could note the drop): the newest one would restore only part of the undone edits."""
     from tools import checkpoint_manager as cm
     from tools.checkpoint_pruning import Pruner
 
     cli, db, project = setup
-    _run_two_writing_turns(cli, db, project, enabled=True)
-    pruner = Pruner(cm._run_git, cm._store_path(), str(project), cm._GIT_TIMEOUT, lambda _p: 2, cm._REFS_PREFIX)
-    assert pruner.drop_one_round(1)
-
-    cli._cmd_undo("/undo 2")
+    _session(cli, db, project, enabled=True)
+    meta = cm._project_meta_path(cm._store_path(), cm._project_hash(str(project)))
+    meta.chmod(0o444)
+    try:
+        Pruner(cm._run_git, cm._store_path(), str(project), cm._GIT_TIMEOUT, cm._dir_size_bytes,
+               cm._REFS_PREFIX).trim(cm._ref_name(cm._project_hash(str(project))), 1)
+        cli._cmd_undo("/undo 2")
+    finally:
+        meta.chmod(0o644)
 
     out = capsys.readouterr().out
-    assert "/rollback" in out and "notes.md" in out
-    assert "/rollback 1" not in out and "/rollback 2" not in out
+    assert "Run /rollback to list checkpoints" in out and "notes.md" in out, out
+    assert "To restore them" not in out, out

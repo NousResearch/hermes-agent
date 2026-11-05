@@ -4002,6 +4002,6 @@ shared:
   # /undo's pointer at the /rollback command that restores the undone turns' files
   # (tools/checkpoint_undo_hint.py).
   undo_rollback:
-    restore: "↶ A visszavont körökben módosított fájlok: {files}. Visszaállításuk: /rollback {number}"
+    restore: "↶ A visszavont körökben módosított fájlok: {files}. Visszaállításuk: /rollback {ref}"
     list: "↶ A visszavont körökben módosított fájlok: {files}. Futtasd a /rollback parancsot az ellenőrzőpontok listázásához és egy visszaállításához."
     more: "+{count} további"

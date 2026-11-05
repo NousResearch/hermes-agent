@@ -42,6 +42,10 @@ def test_undo_hint_keeps_the_rewinds_boundary_after_a_new_turn(tmp_path):
                 await settled(home)
                 listed = (await _git_rpc(ws, 'rollback.list', session_id=sid, undo_since=target['timestamp'],
                                          undo_message_id=target['id']))['result']
-                assert listed.get('undo_hint', {}).get('number') == 1, listed
-                assert listed['undo_hint']['files'] == ['a.txt'], listed
+                hint = listed.get('undo_hint') or {}
+                assert hint.get('files') == ['a.txt'], listed
+                [row] = listed['checkpoints']
+                assert hint.get('ref') and row['hash'].startswith(hint['ref']), listed
+                restored = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=hint['ref']))['result']
+                assert restored['success'] is True and (work / 'a.txt').read_text() == 'original\n', restored
         asyncio.run(probe())

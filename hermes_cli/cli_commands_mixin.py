@@ -474,7 +474,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"\n{diff}")
 
     def _rollback_restore(self, mgr, cwd, target_hash: str, file_path, restore_all: bool) -> None:
-        taken = self._checkpoint_epoch(cwd, target_hash)
+        taken = self._checkpoint_taken_at(cwd, target_hash)
         result = mgr.restore(cwd, target_hash, file_path=file_path,
                              safe=not restore_all and not file_path)
         if not result["success"]:

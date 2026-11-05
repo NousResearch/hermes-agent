@@ -712,9 +712,6 @@ def _register_project(store: Path, working_dir: str) -> None:
     now = time.time()
     meta: dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
-    if not _ref_tip(store, str(_normalize_path(working_dir)), _ref_name(dir_hash)):
-        # A project with no history yet: every drop from its first snapshot on lands in ``pruned_through``.
-        meta["prune_ledger"] = 1
     evidence = _volume_evidence(_normalize_path(working_dir))
     if evidence:
         meta.update(evidence)
@@ -723,8 +720,6 @@ def _register_project(store: Path, working_dir: str) -> None:
             existing = json.loads(meta_path.read_text(encoding="utf-8-sig"))
             if isinstance(existing, dict):
                 meta["created_at"] = existing.get("created_at", now)
-                meta.pop("prune_ledger", None)  # an older build's project: its drops went unrecorded
-                meta.update({k: existing[k] for k in ("prune_ledger", "pruned_through") if k in existing})
                 if not evidence:
                     # Fresh probe failed — keep the previously recorded
                     # parent identity rather than dropping it. Stale evidence
@@ -1075,9 +1070,10 @@ class CheckpointManager:
 
         try:
             from tools.checkpoint_pruning import store_lock
+            from tools.checkpoint_takes import recorded_take
 
             with store_lock(_resolve_checkpoint_base()):
-                return self._take(abs_dir, reason)
+                return recorded_take(self, abs_dir, reason)
         except Exception as e:
             logger.debug("Checkpoint failed (non-fatal): %s", e)
             return False
@@ -1414,7 +1410,8 @@ class CheckpointManager:
                     }
 
         # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})", prune=False)
+        from tools.checkpoint_takes import recorded_take
+        recorded_take(self, abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})", prune=False)
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
@@ -1638,6 +1635,7 @@ class CheckpointManager:
             )
             if ok_diff:
                 logger.debug("Checkpoint skipped: no changes in %s", working_dir)
+                self._take_reused = True  # the tip is the tree right now (tools/checkpoint_takes.py)
                 return False
         else:
             # No ref yet — skip only if the index is empty.

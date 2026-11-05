@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from tools import delegate_tool
 from tools.delegate_tool import _build_children, delegate_task
+from tools.delegate_tool_routes import TaskRoute
 
 GOAL_A = "Refactor the login handler to use the new session helper"
 GOAL_B = "Write regression tests for the session expiry watcher"
@@ -27,6 +28,10 @@ _CREDS = {
     "api_key": "k", "api_mode": "chat_completions", "request_overrides": None,
 }
 
+# Upstream routes each task through a TaskRoute (creds + owning config block); the batch
+# builder consumes ``routes[i]`` per task, so every task under test gets its own route.
+_ROUTE = TaskRoute(creds=_CREDS, routing_cfg={})
+
 
 class TestBuildFailureClosesPartialChildren(unittest.TestCase):
     """``_build_children`` must close the children it already built when a later task fails."""
@@ -35,8 +40,8 @@ class TestBuildFailureClosesPartialChildren(unittest.TestCase):
         built = MagicMock(name="child-0")
         with patch.object(delegate_tool, "_build_child_preserving_parent_tools", side_effect=[built, ValueError("no endpoint")]):
             children, err = _build_children(
-                [{"goal": GOAL_A}, {"goal": GOAL_B}], [], _CREDS, top_role="leaf", max_iterations=10,
-                parent_agent=MagicMock(), routing_cfg={}, live_deleg_id=None, live_writers=[],
+                [{"goal": GOAL_A}, {"goal": GOAL_B}], [], [_ROUTE, _ROUTE], top_role="leaf", max_iterations=10,
+                parent_agent=MagicMock(), live_deleg_id=None, live_writers=[],
             )
         self.assertEqual((children, err), ([], "no endpoint"))
         built.close.assert_called_once()
@@ -44,8 +49,8 @@ class TestBuildFailureClosesPartialChildren(unittest.TestCase):
     def test_no_children_no_close_on_first_task_failure(self):
         with patch.object(delegate_tool, "_build_child_preserving_parent_tools", side_effect=ValueError("boom")):
             children, err = _build_children(
-                [{"goal": GOAL_A}], [], _CREDS, top_role="leaf", max_iterations=10,
-                parent_agent=MagicMock(), routing_cfg={}, live_deleg_id=None, live_writers=[],
+                [{"goal": GOAL_A}], [], [_ROUTE], top_role="leaf", max_iterations=10,
+                parent_agent=MagicMock(), live_deleg_id=None, live_writers=[],
             )
         self.assertEqual((children, err), ([], "boom"))
 
@@ -59,8 +64,8 @@ class TestBuildFailureClosesPartialChildren(unittest.TestCase):
         ):
             with self.assertRaises(KeyboardInterrupt):
                 _build_children(
-                    [{"goal": GOAL_A}, {"goal": GOAL_B}], [], _CREDS, top_role="leaf", max_iterations=10,
-                    parent_agent=MagicMock(), routing_cfg={}, live_deleg_id=None, live_writers=[],
+                    [{"goal": GOAL_A}, {"goal": GOAL_B}], [], [_ROUTE, _ROUTE], top_role="leaf", max_iterations=10,
+                    parent_agent=MagicMock(), live_deleg_id=None, live_writers=[],
                 )
         built.close.assert_called_once()
 

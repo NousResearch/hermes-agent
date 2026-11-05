@@ -33,6 +33,7 @@ def test_skipsetup_still_binds(tmp_path):
          "-File", str(INSTALLER), "-SkipSetup", "-NonInteractive", "-ShowResolvedPaths",
          "-HermesHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, (
         "-SkipSetup failed to bind:\n" + result.stderr + result.stdout)
@@ -54,6 +55,7 @@ def test_skipsetup_alone_skips_needs_input_stage(tmp_path):
          "-File", str(INSTALLER), "-SkipSetup", "-Stage", "setup", "-Json",
          "-HermesHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == 0, (
         "-SkipSetup -Stage setup failed:\n" + result.stderr + result.stdout)

@@ -21,7 +21,7 @@ Agent-native web search, deep research, and enrichment.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Web`, `Search`, `Deep-Research`, `Enrichment`, `CLI` |
-| Related skills | [`duckduckgo-search`](../../optional/research/research-duckduckgo-search.md), [`mcporter`](../../optional/mcp/mcp-mcporter.md) |
+| Related skills | [`mcporter`](../../optional/mcp/mcp-mcporter.md) |
 
 ## Reference: full SKILL.md
 

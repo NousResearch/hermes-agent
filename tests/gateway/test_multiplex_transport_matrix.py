@@ -138,7 +138,7 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
     # team_b's bot failed to connect and is queued for reconnect: it owns a credential, so the
     # route that also names it through the shared bot must not turn it into a satellite.
     r._profile_adapters["team_b"] = {}
-    r._profile_failed_platforms = {"team_b": {Platform.TELEGRAM: {}}}
+    r._profile_bot_platforms = {"team_b": {Platform.TELEGRAM}}
     assert r._delivery_adapter_for(restored("team_b")) is None
     assert r._authorization_home_for_source(restored("team_b")) is None
 
@@ -215,3 +215,88 @@ async def test_detached_voice_resolves_secondary_transport_after_turn(
         assert target.send_voice.await_args.kwargs["chat_id"] == chat_id
         if transport_state == "reconnected":
             mux.team_b.send_voice.assert_not_awaited()
+
+
+def test_inferred_primary_transport_does_not_hide_a_secondary_local_session_policy(mux):
+    """A LOCAL source belongs to its session authority, not the inferred primary transport (#139060)."""
+    from gateway.session_local import LocalSessionAdapter
+    from gateway.session_policy import policy_for_source
+
+    runner = mux.runner
+    primary_authority = SimpleNamespace(sessions={})
+    secondary_authority = SimpleNamespace(sessions={})
+    primary_adapter = LocalSessionAdapter(primary_authority)
+    secondary_adapter = LocalSessionAdapter(secondary_authority)
+    runner.adapters[Platform.LOCAL] = primary_adapter
+    runner._profile_adapters["team_b"][Platform.LOCAL] = secondary_adapter
+
+    source = SessionSource(platform=Platform.LOCAL, chat_id="desktop-secondary", chat_type="dm",
+                           user_id="viewer", profile="team_b")
+    secondary_authority.sessions[source.chat_id] = SimpleNamespace(source=source)
+    secondary_adapter.register_source(source)
+    picked_policy = object()
+    secondary_adapter.policies[source.chat_id] = picked_policy
+
+    identity = resolve_identity(source, runner=runner)
+    assert identity.transport_inferred and identity.transport_profile == "default"
+    assert policy_for_source(runner, source) is picked_policy
+    assert runner._delivery_adapter_for(source) is secondary_adapter
+
+
+def test_restored_completion_injects_through_the_pinned_receiving_bot(mux):
+    """A detached completion (async delegation, watch) for a restored row injects through the bot its
+    routing entry persisted, as ``_delivery_adapter_for`` answers: the inverse row (team_b's bot ->
+    default) never through the default bot, and nothing while team_b's bot is down (#139726)."""
+    from gateway.session_identity import restore_identity
+
+    r = mux.runner
+    restored = SessionSource(platform=Platform.TELEGRAM, chat_id="999", chat_type="dm", user_id="999")
+    restore_identity(restored, runner=r, transport_profile="team_b")
+    assert r._resolve_injection_adapter("telegram", restored) is r._delivery_adapter_for(restored) is mux.team_b
+    r._profile_adapters["team_b"] = {}
+    r._profile_bot_platforms = {"team_b": {Platform.TELEGRAM}}
+    assert r._resolve_injection_adapter("telegram", restored) is None
+
+
+@pytest.mark.asyncio
+async def test_secondary_bot_route_runs_in_the_routed_runtime_scope(mux):
+    """A ``bot_profile`` route's event runs under its runtime profile's scope, as a shared-bot route
+    does: that runtime's authority admits the turn, so a later completion wake finds the committed
+    turn on the same ledger (#139726). The bot's own traffic keeps the bot profile's scope."""
+    from gateway.platforms.event import MessageEvent
+    from hermes_constants import get_hermes_home
+
+    r = mux.runner
+    scopes = []
+
+    async def _handle_message(event):
+        scopes.append(get_hermes_home())
+
+    r._handle_message = _handle_message
+    handler = r._make_profile_message_handler("team_b")
+    for chat in ("999", "1"):
+        await handler(MessageEvent(text="hi", source=mux.team_b.build_source(
+            chat_id=chat, chat_type="dm", user_id=chat)))
+    assert scopes == [mux.home, mux.home / "profiles" / "team_b"]
+
+
+def test_inbound_turn_records_the_receiving_bot_on_a_route_saved_without_one(mux, tmp_path):
+    """A route saved before ``transport_profile`` existed (or carried over by /reset, /new) is NULL, so
+    after a restart its completions have no bot to answer through. The next inbound turn records the
+    bot that received it; an inferred identity (no transport evidence) never fills it with a guess."""
+    from gateway.session import SessionStore
+
+    def store():
+        return SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig(multiplex_profiles=True))
+
+    live, _ = _live(mux, mux.team_b, "999", transport_profile="team_b")
+    legacy = store()
+    legacy.get_or_create_session(live).transport_profile = None
+    legacy._save_entries()
+
+    inferred = SessionSource(platform=Platform.TELEGRAM, chat_id="999", chat_type="dm", user_id="999")
+    assert resolve_identity(inferred, runner=mux.runner).transport_inferred
+    after_restart = store()
+    assert after_restart.get_or_create_session(inferred).transport_profile is None
+    assert after_restart.get_or_create_session(live).transport_profile == "team_b"
+    assert store().get_or_create_session(live, touch_activity=False).transport_profile == "team_b"

@@ -11,6 +11,7 @@ import {
   Tip
 } from '@hermes/plugin-sdk'
 
+import { connectionName, groupSelectionElsewhere, seatableGroupBots, useGroupCapability } from './canonical-group-capabilities'
 import { botSourceStatus } from './data'
 import type { useBots } from './i18n'
 import { setActivityToasts } from './roster-actions'
@@ -18,12 +19,46 @@ import { GatewayKindGlyph } from './roster-sections'
 import type { rosterGatewayOptions } from './roster-sections'
 import type { RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
 
+interface NewGroupChatItemProps {
+  label: string
+  /** The dialog's "these bots all live on <connection>" note. */
+  elsewhereNote: (connection: string) => string
+  onSelect: () => void
+  roster: RosterRow[]
+}
+
+/** Mounted only while the menu is open, so the capability read happens on
+ *  demand. Offered only when the dialog it opens can create a room: two
+ *  seatable bots by the same predicate the dialog's picker uses, and not all of
+ *  them on ONE other connection (every selection there is refused, so the item
+ *  says why instead of opening a dead Create button). */
+function NewGroupChatItem({ elsewhereNote, label, onSelect, roster }: NewGroupChatItemProps) {
+  const { connectionId, mode, seatable } = useGroupCapability(true)
+  const seatableBots = seatableGroupBots(roster, { connectionId, mode, seatable })
+  const elsewhere = mode === 'canonical' && groupSelectionElsewhere(seatableBots, connectionId)
+
+  return (
+    <DropdownMenuItem disabled={seatableBots.length < 2 || elsewhere} onSelect={onSelect}>
+      <Codicon className="mr-1.5" name="organization" />
+      {elsewhere ? (
+        <span className="grid gap-0.5">
+          <span>{label}</span>
+          <span className="text-xs text-(--ui-text-secondary)" role="note">
+            {elsewhereNote(connectionName(seatableBots[0]))}
+          </span>
+        </span>
+      ) : (
+        label
+      )}
+    </DropdownMenuItem>
+  )
+}
+
 interface renderRosterToolbarProps {
   b: ReturnType<typeof useBots>
   activityToasts: boolean
   activeSourceRoster: RosterRow[]
-  /** Full multi-source roster — the New Group Chat gate counts the same
-   *  selectable set the dialog seats (bots from every registered connection). */
+  /** Full roster; New Group Chat seats only `seatableGroupBots` of it. */
   roster: RosterRow[]
   setCreateOpen: (value: boolean) => void
   setGroupCreateOpen: (value: boolean) => void
@@ -104,15 +139,12 @@ export function renderRosterToolbar({
                 <Codicon className="mr-1.5" name="hubot" />
                 {b.bot.newTitle}
               </DropdownMenuItem>
-              {/* Same selectable set as CreateGroupChatDialog: one local bot plus a
-                  remote-connection bot is a valid room (#101543). */}
-              <DropdownMenuItem
-                disabled={roster.filter(bot => !bot?.ghost).length < 2}
+              <NewGroupChatItem
+                elsewhereNote={b.crossGateway.selectionElsewhere}
+                label={b.group.newTitle}
                 onSelect={() => setGroupCreateOpen(true)}
-              >
-                <Codicon className="mr-1.5" name="organization" />
-                {b.group.newTitle}
-              </DropdownMenuItem>
+                roster={roster}
+              />
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>
                 <Codicon className="mr-1.5" name="new-folder" />

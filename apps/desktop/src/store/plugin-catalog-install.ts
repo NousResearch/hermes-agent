@@ -3,7 +3,7 @@ import { lookupPluginCatalogEntry, type PluginCatalogEntry, type PluginCatalogLo
 
 import { $agentPlugins } from './agent-plugins'
 import { notify } from './notifications'
-import { openPluginInstallRequest } from './plugin-install-request'
+import { openPluginInstallRequest, type PluginInstallRequest } from './plugin-install-request'
 
 /**
  * THE way a curated-catalog pick reaches the Install Plugin dialog. The
@@ -12,7 +12,11 @@ import { openPluginInstallRequest } from './plugin-install-request'
  * dialog an in-app pick does: `catalogName` makes the backend resolve the
  * pinned SHA and record provenance; `repo#subdir` is what the dialog inspects.
  */
-export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: null | string): void {
+export function openCatalogPluginInstall(
+  entry: PluginCatalogEntry,
+  profile: null | string,
+  options: Pick<PluginInstallRequest, 'stayAfterInstall' | 'tier' | 'title'> = {}
+): void {
   const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
 
   if (existing && !existing.update_available) {
@@ -25,7 +29,10 @@ export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: nul
     catalogName: entry.name,
     profile,
     repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
-    sha: entry.sha
+    sha: entry.sha,
+    summary: entry.summary,
+    tier: entry.tier,
+    ...options
   })
 }
 

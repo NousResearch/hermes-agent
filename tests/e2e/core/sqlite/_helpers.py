@@ -123,7 +123,7 @@ class Chamber:
             args.setdefault("pace", self.writer_pace)
         payload = {"workdir": str(self.work), "name": name, "db": str(self.db),
                    "stop": str(self.work / f"{name}.stop"), "busy_ok": self.mode == "delete", **args}
-        stderr = open(self.work / f"{name}.stderr", "wb")  # noqa: SIM115 - closed in reap()
+        stderr = open(self.work / f"{name}.stderr", "wb")
         proc = subprocess.Popen(
             [sys.executable, str(ROLES), role, json.dumps(payload)],
             cwd=str(REPO_ROOT), env={**self.env, **(env or {})}, stdin=subprocess.DEVNULL,
@@ -139,11 +139,11 @@ class Chamber:
     def spawn_cli(self, name: str, *argv: str) -> subprocess.Popen:
         """A real `hermes …` CLI subprocess against this HERMES_HOME (``hermes_cli.main`` run as ``__main__``
         by ``_roles.py cli`` so the journal-mode seam applies to it too)."""
-        stderr = open(self.work / f"{name}.stderr", "wb")  # noqa: SIM115 - closed in reap()
+        stderr = open(self.work / f"{name}.stderr", "wb")
         payload = {"workdir": str(self.work), "name": name, "argv": list(argv)}
         proc = subprocess.Popen(
             [sys.executable, str(ROLES), "cli", json.dumps(payload)], cwd=str(REPO_ROOT), env=self.env,
-            stdin=subprocess.DEVNULL, stdout=open(self.work / f"{name}.stdout", "wb"), stderr=stderr,  # noqa: SIM115
+            stdin=subprocess.DEVNULL, stdout=open(self.work / f"{name}.stdout", "wb"), stderr=stderr,
         )
         proc._stderr_file = stderr  # type: ignore[attr-defined]
         with self._lock:
@@ -238,9 +238,25 @@ class Chamber:
                     except OSError:
                         continue
                     if link.endswith(" (deleted)") and link[: -len(" (deleted)")] in targets:
+                        if not self._still_held(fd_dir, fd, link):
+                            continue
                         with self._lock:
                             self.deleted_hits.append((name, proc.pid, link))
             self._monitor_stop.wait(0.02)
+
+    @staticmethod
+    def _still_held(fd_dir: str, fd: str, link: str) -> bool:
+        """A leak holds the unlinked sidecar for good; SQLite's own WAL last-close does not.
+
+        ``unixShmUnmap`` unlinks ``-shm`` and only then ``unixShmPurge`` closes its descriptor, so a
+        healthy close shows a ``(deleted)`` ``-shm`` for microseconds.  The 20ms poll occasionally
+        lands in that window on a short-lived role (the opener) and would report a phantom leak.  A
+        descriptor still pointing at the unlinked inode after a grace period is the real thing."""
+        time.sleep(0.05)
+        try:
+            return os.readlink(f"{fd_dir}/{fd}") == link
+        except OSError:
+            return False
 
     def deleted_hits_mark(self) -> int:
         """Position to pass to :meth:`deleted_hits_snapshot` so an episode sees only its own hits."""

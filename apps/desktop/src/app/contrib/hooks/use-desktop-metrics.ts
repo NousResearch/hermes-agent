@@ -8,10 +8,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
+import { $apiRequestScope } from '@/api/client'
 import { contributedRoutes } from '@/app/routes'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { $commandPaletteOpen } from '@/store/command-palette'
-import { $activeConnectionId } from '@/store/connections'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
@@ -33,7 +33,12 @@ import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
 import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/profile'
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
-import { $sharedMetricsConsent, readSharedMetricsConsent, type SharedMetricsConsent } from '@/store/shared-metrics'
+import {
+  $sharedMetricsConsent,
+  readSharedMetricsConsent,
+  type SharedMetricsConsent,
+  sharedMetricsProfileRequester
+} from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -57,6 +62,7 @@ function observeSlowFrames(): () => void {
   }
 
   const types = PerformanceObserver.supportedEntryTypes ?? []
+
   const type = types.includes('long-animation-frame')
     ? 'long-animation-frame'
     : types.includes('longtask')
@@ -101,14 +107,21 @@ export function useDesktopMetrics({
   pathname: string
   profile: string
 }): void {
-  const connectionId = useStore($activeConnectionId)
-  const profileKey = normalizeProfileKey(profile)
+  // Both halves from the request scope, which publishes them in one frame: the
+  // connection descriptor lags the profile through a switch, and pairing the
+  // two dialed the old gateway for the new profile (a stray remote backend).
+  const scope = useStore($apiRequestScope)
+  const connectionId = scope.connectionId
+  const profileKey = normalizeProfileKey(scope.profile ?? profile)
 
   // Pinned to the focused (connection, profile): never whichever session tile is focused.
   const request = useMemo(
     () =>
-      <T>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+      sharedMetricsProfileRequester(
+        <T>(method: string, params: Record<string, unknown> = {}) =>
+          requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+        profileKey
+      ),
     [connectionId, profileKey]
   )
 

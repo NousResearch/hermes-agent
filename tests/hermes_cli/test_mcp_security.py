@@ -81,7 +81,7 @@ def test_validator_flags_ssh_key_persistence_payload():
 
 
 def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch):
-    import tools.mcp_tool as mcp_tool
+    from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_loop as _mcp_loop
 

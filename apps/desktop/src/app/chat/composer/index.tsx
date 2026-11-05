@@ -46,6 +46,7 @@ import { useTheme } from '@/themes'
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
 import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
+import { CompactingNotice } from './compacting-notice'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -1131,6 +1132,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSubmit={canSubmit}
       cardWaiting={cardWaiting}
+      compacting={compacting}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
@@ -1494,6 +1496,7 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
+                  <CompactingNotice />
                   <RestoredDraftNotice
                     freshDraft={activeQueueSessionKey === null}
                     onUndone={clearDraft}

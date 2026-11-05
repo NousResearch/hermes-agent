@@ -133,7 +133,7 @@ def _honcho_resolvers(name: str):
 
 def _provider_instance(provider: ProviderConfigSchema):
     """The loaded provider behind a ``STORAGE_PROVIDER`` schema (it owns its config layout)."""
-    instance = _load_memory_provider(provider.name, register_skills=False)  # a panel read never registers
+    instance = _load_memory_provider(provider.name, register_skills=False)  # the panel never registers skills
     if instance is None:
         raise _unknown_provider(provider.name)
     return instance

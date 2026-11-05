@@ -1,0 +1,182 @@
+name: Android APK Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version number for the APK (e.g., 1.0.0)
+        required: false
+        type: string
+        default: ''
+      release:
+        description: Build a release APK (signed)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools'
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$(command -v sdkmanager)"
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0" "emulator"
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Set version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="$REQUESTED_VERSION"
+          if [ -z "$VERSION" ]; then
+            # Get version from git tag or use timestamp
+            if [ -n "$GITHUB_REF" ] && echo "$GITHUB_REF" | grep -q "refs/tags/v"; then
+              VERSION=$(echo "$GITHUB_REF" | sed 's/refs\/tags\/v//')
+            else
+              VERSION="1.0.0-$(date +%Y%m%d%H%M)"
+            fi
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; then
+            echo "Invalid version string: $VERSION" >&2
+            exit 2
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Build debug APK
+        env:
+          APK_VERSION: ${{ steps.version.outputs.version }}
+        run: bash scripts/build_android_apk.sh --version "$APK_VERSION" --debug
+
+      - name: Set APK artifact name
+        id: apk
+        env:
+          APK_VERSION: ${{ steps.version.outputs.version }}
+        run: echo "apk_name=Hermes-Agent-${APK_VERSION}-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-apk
+          path: Hermes-Agent-*.apk
+          retention-days: 7
+
+  release:
+    name: Build signed Release APK
+    if: inputs.release == true && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools'
+
+      - name: Install Android SDK packages
+        run: |
+          SDKMANAGER="$(command -v sdkmanager)"
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found at $SDKMANAGER"; exit 1; }
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Prepare signing key
+        env:
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_SIGNING_KEY:-}" ]; then
+            echo "Missing repository secret ANDROID_SIGNING_KEY (base64-encoded keystore)." >&2
+            exit 1
+          fi
+          printf '%s' "$ANDROID_SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/hermes-release.keystore"
+          test -s "$RUNNER_TEMP/hermes-release.keystore" || { echo "Decoded keystore is empty." >&2; exit 1; }
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/hermes-release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          APK_VERSION: ${{ needs.build.outputs.version }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_STORE_PASSWORD" || { echo "Missing ANDROID_STORE_PASSWORD secret." >&2; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "Missing ANDROID_KEY_PASSWORD secret." >&2; exit 1; }
+          bash scripts/build_android_apk.sh --version "$APK_VERSION" --release
+
+      - name: Upload signed release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-agent-release-apk
+          path: Hermes-Agent-*-release.apk
+          if-no-files-found: error
+          retention-days: 30

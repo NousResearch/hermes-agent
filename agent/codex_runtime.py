@@ -988,9 +988,13 @@ class _CodexResponseAssembler:
             pending["arguments"] += _event_field(event, "delta", "") or ""
         elif event_type.endswith("function_call_arguments.done"):
             # Authoritative for the accumulated string; an explicit "" (zero-arg call) counts, only a
-            # missing field keeps the streamed deltas.
+            # missing field keeps the streamed deltas. Some providers truncate the
+            # done.arguments value even though the deltas carried the full JSON, so
+            # keep the longer of the two (#148158).
             if (done_args := _event_field(event, "arguments", None)) is not None:
-                pending["arguments"] = str(done_args)
+                done_str = str(done_args)
+                if len(done_str) >= len(pending["arguments"]):
+                    pending["arguments"] = done_str
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")

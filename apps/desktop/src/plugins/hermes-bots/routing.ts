@@ -457,7 +457,10 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
 type TranscriptEntry = { from?: GroupMessageAuthor } | null | undefined
 
 function speaksAs(from: GroupMessageAuthor, bot: Partial<RosterRow>): boolean {
-  return bot.name === from.name && (from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource)
+  return (
+    bot.name === from.name &&
+    (from.source ? (bot.connectionLabel || bot.connectionId) === from.source : !bot.remoteSource)
+  )
 }
 
 /** The row a transcript line's speaker is named from. Seated members first; a

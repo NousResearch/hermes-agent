@@ -33,8 +33,14 @@ function ridesWithProfile(profile?: null | string): boolean {
   return Boolean(name) && name !== browserLaunchProfileOrDefault()
 }
 
-function connectionFor(bootstrap: BrowserBootstrap, profile: null | string | undefined, servedHere: boolean): HermesConnection {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw webappSignInRequired()}
+function connectionFor(
+  bootstrap: BrowserBootstrap,
+  profile: null | string | undefined,
+  servedHere: boolean
+): HermesConnection {
+  if (!bootstrap.authRequired && !bootstrap.token) {
+    throw webappSignInRequired()
+  }
 
   const baseUrl = `${window.location.origin}${bootstrap.basePath}`
 
@@ -86,7 +92,10 @@ interface BrowserConnectionOptions {
 }
 
 /** Connection, gateway socket, roster and sign-in members, all bound to the serving origin. */
-export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnectionOptions): Pick<
+export function createBrowserConnectionBridge({
+  api,
+  bootstrap
+}: BrowserConnectionOptions): Pick<
   Window['hermesDesktop'],
   | 'getAgentRoster'
   | 'getAudioWsUrl'
@@ -187,12 +196,14 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
           ...(reachesSocket(profile) ? {} : { reachable: false as const })
         })),
         primaryConnectionId: LOCAL_CONNECTION_ID,
-        sources: [{
-          connectionId: LOCAL_CONNECTION_ID,
-          kind: 'local' as const,
-          label: connectionLabel,
-          reachable: true
-        }]
+        sources: [
+          {
+            connectionId: LOCAL_CONNECTION_ID,
+            kind: 'local' as const,
+            label: connectionLabel,
+            reachable: true
+          }
+        ]
       }
     },
     // Each voice stream dial mints its own ticket: the gateway's opens only `/api/ws`.

@@ -4293,6 +4293,8 @@ export const zhOverrides = {
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
+      completedSteps: count => `已完成 ${count} 个步骤`,
+      completedStepsIn: (count, duration) => `已完成 ${count} 个步骤，用时 ${duration}`,
       turnDuration: duration => `本轮耗时 ${duration}`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

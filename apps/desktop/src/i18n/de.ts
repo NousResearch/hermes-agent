@@ -994,6 +994,9 @@ export const deOverrides = {
       hideThreadTimelineDesc: 'Blendet die Navigationsbalken am rechten Rand jeder Unterhaltung aus.',
       reasoningCollapsedTitle: 'Gedanken standardmäßig einklappen',
       reasoningCollapsedDesc: 'Gestreamte Gedankengänge verfügbar halten, ohne sie aufzuklappen, bis Sie sie öffnen.',
+      trajectoryCollapsedTitle: 'Ausführungsverlauf zu einer Zusammenfassung einklappen',
+      trajectoryCollapsedDesc:
+        'Sobald die endgültige Antwort beginnt, abgeschlossene Gedanken und Werkzeugschritte zu einer Zusammenfassung zusammenfassen.',
       uiScaleTitle: 'UI-Skalierung',
       uiScaleDesc: (percent: number) =>
         `Skaliert Text und Bedienelemente in der gesamten App. Cmd/Ctrl mit +, - und 0 funktioniert ebenfalls. Aktuell: ${percent}%.`,
@@ -4878,6 +4881,8 @@ export const deOverrides = {
       thought: 'Gedanke',
       thoughtBriefly: 'Kurz nachgedacht',
       thoughtFor: duration => `${duration} nachgedacht`,
+      completedSteps: count => `${count} Schritte abgeschlossen`,
+      completedStepsIn: (count, duration) => `${count} Schritte in ${duration} abgeschlossen`,
       turnDuration: duration => `Dieser Turn dauerte ${duration}`,
       today: time => `Heute, ${time}`,
       yesterday: time => `Gestern, ${time}`,

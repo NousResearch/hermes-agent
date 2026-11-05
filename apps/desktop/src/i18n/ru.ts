@@ -3556,6 +3556,8 @@ export const ruOverrides = {
       thought: 'Помыслил',
       thoughtBriefly: 'Кратко подумал',
       thoughtFor: duration => `Думал ${duration}`,
+      completedSteps: count => `Выполнено шагов: ${count}`,
+      completedStepsIn: (count, duration) => `Выполнено шагов: ${count} за ${duration}`,
       turnDuration: duration => `Этот ход занял ${duration}`,
       today: time => `Сегодня, ${time}`,
       yesterday: time => `Вчера, ${time}`,

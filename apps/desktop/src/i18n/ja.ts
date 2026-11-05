@@ -3313,6 +3313,8 @@ export const jaOverrides = {
       thought: '思考済み',
       thoughtBriefly: '少し思考',
       thoughtFor: duration => `${duration} 思考`,
+      completedSteps: count => `${count} ステップ完了`,
+      completedStepsIn: (count, duration) => `${count} ステップ完了（${duration}）`,
       turnDuration: duration => `このターンの所要時間: ${duration}`,
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,

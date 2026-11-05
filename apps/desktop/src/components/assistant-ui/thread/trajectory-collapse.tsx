@@ -28,10 +28,13 @@ export function useHideTrajectoryGroups() {
 }
 
 const asTime = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+
 const isVisibleReasoning = (part: TrajectoryPart) =>
   part.type === 'reasoning' && typeof part.text === 'string' && part.text.trim().length > 0
+
 const isVisibleText = (part: TrajectoryPart) =>
   part.type === 'text' && typeof part.text === 'string' && part.text.trim().length > 0
+
 const isToolCall = (part: TrajectoryPart) => part.type === 'tool-call'
 
 function foldTime(part: TrajectoryPart, earliest: number | undefined, latest: number | undefined) {
@@ -41,6 +44,7 @@ function foldTime(part: TrajectoryPart, earliest: number | undefined, latest: nu
       latest = latest === undefined ? value : Math.max(latest, value)
     }
   }
+
   return { earliest, latest }
 }
 
@@ -53,7 +57,8 @@ export function planTrajectoryCollapse(
   parts: readonly TrajectoryPart[],
   options: { fallbackElapsedSeconds?: number; messageComplete: boolean; preferenceOn: boolean }
 ): null | TrajectoryPlan {
-  if (!options.preferenceOn || !options.messageComplete) return null
+  if (!options.preferenceOn || !options.messageComplete) {return null}
+
   if (
     parts.some(part => isToolCall(part) && part.toolName === 'image_generate' && generatedImageFromResult(part.result))
   ) {
@@ -77,8 +82,9 @@ export function planTrajectoryCollapse(
     }
   }
 
-  if (!stepCount || !hasFinalText) return null
+  if (!stepCount || !hasFinalText) {return null}
   const measured = earliest !== undefined && latest !== undefined ? latest - earliest : options.fallbackElapsedSeconds
+
   return {
     elapsedSeconds:
       typeof measured === 'number' && Number.isFinite(measured) ? Math.max(0, Math.round(measured)) : null,
@@ -87,17 +93,20 @@ export function planTrajectoryCollapse(
 }
 
 function fallbackElapsedSeconds(custom: unknown): number | undefined {
-  if (!custom || typeof custom !== 'object') return undefined
+  if (!custom || typeof custom !== 'object') {return undefined}
   const record = custom as { durationS?: unknown; timelineCompletedAt?: unknown; timelineTimestamp?: unknown }
-  if (typeof record.durationS === 'number' && Number.isFinite(record.durationS)) return record.durationS
+
+  if (typeof record.durationS === 'number' && Number.isFinite(record.durationS)) {return record.durationS}
   const started = asTime(record.timelineTimestamp)
   const ended = asTime(record.timelineCompletedAt)
+
   return started !== undefined && ended !== undefined ? ended - started : undefined
 }
 
 function parsePlan(signature: string): null | TrajectoryPlan {
-  if (!signature) return null
+  if (!signature) {return null}
   const [count, elapsed] = signature.split('\u0000')
+
   return { stepCount: Number(count), elapsedSeconds: elapsed === '' ? null : Number(elapsed) }
 }
 
@@ -105,18 +114,23 @@ export const TrajectoryCollapse: FC<{ children: ReactNode }> = ({ children }) =>
   const { t } = useI18n()
   const preferenceOn = useStore($trajectoryCollapsedByDefault)
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+
   const signature = useAuiState(state => {
     const rawParts = state.message.parts
     const parts = (Array.isArray(rawParts) ? rawParts : state.message.content) as readonly TrajectoryPart[]
+
     const plan = planTrajectoryCollapse(parts, {
       fallbackElapsedSeconds: fallbackElapsedSeconds(state.message.metadata?.custom),
       messageComplete: state.message.status?.type === 'complete',
       preferenceOn
     })
+
     return plan ? `${plan.stepCount}\u0000${plan.elapsedSeconds ?? ''}` : ''
   })
+
   const plan = useMemo(() => parsePlan(signature), [signature])
   const open = userOpen ?? false
+
   const label =
     plan &&
     (plan.elapsedSeconds === null

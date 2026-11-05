@@ -997,6 +997,9 @@ export const esOverrides = {
       hideThreadTimelineDesc: 'Oculta las barras de navegación del borde derecho de cada conversación.',
       reasoningCollapsedTitle: 'Contraer el razonamiento por defecto',
       reasoningCollapsedDesc: 'Mantiene disponible el razonamiento transmitido sin expandirlo hasta que lo abras.',
+      trajectoryCollapsedTitle: 'Contraer la trayectoria de ejecución en un resumen',
+      trajectoryCollapsedDesc:
+        'Cuando empieza la respuesta final, agrupa los pensamientos y pasos de herramientas completados en un solo resumen.',
       uiScaleTitle: 'Escala de la interfaz',
       uiScaleDesc: percent =>
         `Escala el texto y los controles de toda la app. También funciona Cmd/Ctrl con +, - y 0. Actual: ${percent}%.`,
@@ -4864,6 +4867,8 @@ export const esOverrides = {
       thought: 'Pensamiento',
       thoughtBriefly: 'Pensó brevemente',
       thoughtFor: duration => `Pensó durante ${duration}`,
+      completedSteps: count => `${count} pasos completados`,
+      completedStepsIn: (count, duration) => `${count} pasos completados en ${duration}`,
       turnDuration: duration => `Este turno tomó ${duration}`,
       today: time => `Hoy, ${time}`,
       yesterday: time => `Ayer, ${time}`,

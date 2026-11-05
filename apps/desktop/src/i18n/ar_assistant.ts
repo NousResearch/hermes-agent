@@ -36,6 +36,8 @@ export const arAssistant = {
       thought: 'فكّر',
       thoughtBriefly: 'فكّر قليلاً',
       thoughtFor: duration => `فكّر لمدة ${duration}`,
+      completedSteps: count => `اكتملت ${count} خطوات`,
+      completedStepsIn: (count, duration) => `اكتملت ${count} خطوات في ${duration}`,
       turnDuration: duration => `استغرقت هذه الجولة ${duration}`,
       today: time => `اليوم ${time}`,
       yesterday: time => `أمس ${time}`,

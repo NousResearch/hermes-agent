@@ -464,6 +464,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 
 const TrajectoryReasoningGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
   const hide = useHideTrajectoryGroups()
+
   return (
     <div data-trajectory-group="reasoning" hidden={hide}>
       <ReasoningAccordionGroup {...props} />
@@ -473,6 +474,7 @@ const TrajectoryReasoningGroup: FC<{ children?: ReactNode; endIndex: number; sta
 
 const TrajectoryToolGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
   const hide = useHideTrajectoryGroups()
+
   return (
     <div data-trajectory-group="tool" hidden={hide}>
       <ToolGroupSlot {...props} />

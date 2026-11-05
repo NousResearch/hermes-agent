@@ -999,6 +999,9 @@ export const frOverrides = {
       reasoningCollapsedTitle: 'Réduire le raisonnement par défaut',
       reasoningCollapsedDesc:
         "Conserver le raisonnement diffusé en continu sans le développer tant que vous ne l'ouvrez pas.",
+      trajectoryCollapsedTitle: 'Replier la trajectoire d’exécution en un résumé',
+      trajectoryCollapsedDesc:
+        'Dès que la réponse finale commence, regroupe les réflexions et étapes d’outils terminées en un seul résumé.',
       uiScaleTitle: "Échelle de l'interface",
       uiScaleDesc: (percent: number) =>
         `Redimensionne le texte et les contrôles dans toute l'application. Cmd/Ctrl avec +, - et 0 fonctionne aussi. Actuel : ${percent}%.`,
@@ -4890,6 +4893,8 @@ export const frOverrides = {
       thought: 'A réfléchi',
       thoughtBriefly: 'A réfléchi brièvement',
       thoughtFor: duration => `A réfléchi pendant ${duration}`,
+      completedSteps: count => `${count} étapes terminées`,
+      completedStepsIn: (count, duration) => `${count} étapes terminées en ${duration}`,
       turnDuration: duration => `Ce tour a duré ${duration}`,
       today: time => `Aujourd'hui, ${time}`,
       yesterday: time => `Hier, ${time}`,

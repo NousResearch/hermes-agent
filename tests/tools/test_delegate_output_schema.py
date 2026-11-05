@@ -281,6 +281,60 @@ class TestRunSingleChildSchemaValidation:
         assert is_delegated_child_context() is False
 
 
+class TestResultCollectedLifecycle:
+    """#113222/#129941 review: ``_delegate_result_collected`` must flip only AFTER the bounded
+    schema-retry turn completes. During that retry the per-chunk ``last_activity_ts`` ticks are
+    the only liveness signal left (``api_call_count`` resets per turn and freezes, ``current_tool``
+    is None during a provider call), so freezing the clock earlier lets the batch stale monitor
+    force-finalize a slow-but-alive retry as stalled."""
+
+    def test_flag_clear_while_retry_turn_in_flight_then_set(self):
+        seen: list = []
+        calls = {"n": 0}
+
+        child = _StubChild([])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+
+        def first_invalid_then_probe(user_message, task_id=None, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:  # the main turn: fails the contract, forces a retry
+                return {"final_response": "not json at all", "completed": True,
+                        "api_calls": 1, "messages": []}
+            # the bounded schema-retry turn, in flight right now
+            seen.append(getattr(child, "_delegate_result_collected", False))
+            return {"final_response": '{"city": "Oslo"}', "completed": True,
+                    "api_calls": 1, "messages": []}
+
+        child.run_conversation = first_invalid_then_probe
+
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["schema_valid"] is True
+        assert calls["n"] == 2  # main turn + exactly one retry
+        # Retry turn in flight: the clock must still count as batch progress...
+        assert seen == [False]
+        # ...and only after validation returns does teardown freeze it.
+        assert child._delegate_result_collected is True
+
+    def test_flag_set_after_schemaless_success(self):
+        child = _StubChild(["plain answer, no schema attached"])
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert child._delegate_result_collected is True
+
+    def test_flag_set_on_child_failure_entry(self):
+        child = _StubChild(["never reached"])
+
+        def boom(user_message, task_id=None, **_kwargs):
+            raise RuntimeError("child died")
+
+        child.run_conversation = boom
+        entry = _run(child)
+        assert entry["status"] == "error"
+        # The error entry is terminal: no retry turn can follow, so the clock freezes here.
+        assert child._delegate_result_collected is True
+
+
 # ---------------------------------------------------------------------------
 # delegate_task dispatch-time schema handling
 # ---------------------------------------------------------------------------

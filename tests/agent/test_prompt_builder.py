@@ -2,6 +2,7 @@
 
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,6 +42,20 @@ def _drain_truncation_warnings():
     drain_truncation_warnings()
     yield
     drain_truncation_warnings()
+
+
+def test_tracked_agents_guides_load_without_truncation_at_context_floor():
+    """Check real root-to-area chains through the prompt builder at the 20k floor."""
+    repo = Path(__file__).resolve().parents[2]
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "AGENTS.md", "*/AGENTS.md"],
+        cwd=repo, capture_output=True, check=True,
+    ).stdout.decode().split("\0")
+    for rel in filter(None, tracked):
+        result = build_context_files_prompt(cwd=str((repo / rel).parent), skip_soul=True,
+                                            context_length=64_000)
+        assert "[...truncated AGENTS.md" not in result, rel
+        assert drain_truncation_warnings() == [], rel
 
 
 # =========================================================================

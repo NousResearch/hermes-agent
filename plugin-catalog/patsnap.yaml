@@ -1,7 +1,7 @@
 name: patsnap
 title: Patsnap
 repo: https://github.com/NousResearch/hermes-labs-plugins
-sha: aaf7fc65884550e9189b2ef881eb7074d05e8c09
+sha: a6c7854f6fbd8ec8109199d5ded0c9c871c069d6
 subdir: patsnap
 version: "0.1.0"
 description: >-

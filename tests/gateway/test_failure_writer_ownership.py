@@ -290,3 +290,61 @@ def test_failed_turn_whose_tail_is_a_tool_row_is_closed(tmp_path):
         db.close()
 
     asyncio.run(check())
+
+
+def test_content_policy_refusal_drops_the_turn_and_evicts_the_cached_agent(tmp_path):
+    """A safety-filter refusal is deterministic for the unchanged conversation, so a persisted
+    refused turn re-trips the filter on every later message and locks the chat (the "stuck session"
+    report). Unlike a transient failure (which persists the user row + a boundary to replay), the
+    gateway drops the refused turn — the user row the agent flushed at turn start is soft-deleted
+    (the rewind /undo uses) and the cached agent is evicted so the next turn rebuilds clean. An
+    earlier accepted exchange survives."""
+    import asyncio
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()  # agent_persisted defaults True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        runner._refresh_agent_cache_message_count = noop
+        evicted = []
+        runner._evict_cached_agent = lambda session_key, **kw: evicted.append(session_key)
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="refused", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        # A prior accepted exchange, then the agent's turn-start flush of the refused user row.
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        db.append_message(sid, "user", "the request the filter blocked", platform_message_id="m-9")
+        refused = {"failed": True, "failure_reason": "content_policy_blocked", "failure_retryable": False,
+                   "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                   "messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi there"}],
+                   "history_offset": 0, "last_prompt_tokens": 0}
+        await runner._hmwa_persist_turn_transcript(
+            event=MessageEvent(text="the request the filter blocked", source=source, message_id="m-9"),
+            source=source, session_entry=entry, session_key=entry.session_key, agent_result=refused,
+            agent_messages=refused["messages"],
+            prepared=runner._PreparedTurn([], "", "the request the filter blocked", None, None, None, sid, "o"),
+            response="⚠️ safety refusal", agent_failed_early=True, hidden_reasoning_incomplete=False,
+            is_context_overflow_failure=False,
+        )
+        rows = [(m["role"], m["content"]) for m in db.get_messages(sid) if m["role"] != "session_meta"]
+        # The refused turn is gone; the prior accepted exchange survives; no failed-turn boundary.
+        assert rows == [("user", "hello"), ("assistant", "hi there")]
+        assert store.transcript_tail_role(sid) == "assistant"
+        # The cached agent is evicted so the next turn rebuilds from the clean transcript.
+        assert evicted == [entry.session_key]
+        db.close()
+
+    asyncio.run(check())

@@ -14,8 +14,10 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from hermes_cli.cli_session_mixin import CLISessionMixin
-from hermes_state import SessionDB
-from hermes_state_keys import local_identity
+from hermes_cli.gateway_session_store import GatewaySessionStore, SurfaceLabelReader
+from persistence_assembly import open_persistence, profile_scope
+from persistence.sqlite._state.keys import local_identity
+from tests.fixtures.storage_seed import seed_session
 
 
 def _status_text(session_db, session_id: str) -> str:
@@ -33,10 +35,11 @@ def _status_text(session_db, session_id: str) -> str:
 def test_status_prints_the_full_canonical_id_that_resume_accepts(tmp_path, monkeypatch):
     sid = local_identity("default", "local-user", "req-t16")
     assert sid.startswith("local-") and len(sid) == len("local-") + 64
-    with SessionDB(db_path=tmp_path / "state.db") as db:
-        db.create_session(sid, "cli", model="loopback-model")
-        db.set_session_title(sid, "T16 canonical id")
-        text = _status_text(db, sid)
+    with open_persistence(profile_scope(home=tmp_path)) as store:
+        seed_session(store, sid, "cli", model="loopback-model", title="T16 canonical id")
+        session_db = GatewaySessionStore(SimpleNamespace(final=False))
+        session_db._reader, session_db.persistence = SurfaceLabelReader(store), store
+        text = _status_text(session_db, sid)
 
     line = next(row for row in text.splitlines() if row.startswith("Session ID:"))
     assert line == f"Session ID: {sid}", text

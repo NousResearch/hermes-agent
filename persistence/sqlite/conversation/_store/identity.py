@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, MutableMapping, Optional
 from session_rules.turns import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UIDS, uid_list, coalesce_tool_call_id
-from hermes_state_common import _json_or
+from persistence.sqlite._state.common import _json_or
 from persistence.sqlite.conversation._store.rules import TOOL_CALL_UID
 
 

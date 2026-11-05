@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Optional
 
-from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
-from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
+from persistence.sqlite._state.holders import foreign_state_db_holders, in_process_state_db_holders
+from persistence.sqlite._state.repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
 
 from .._backend import translated
 from .._holder import StoreHolder

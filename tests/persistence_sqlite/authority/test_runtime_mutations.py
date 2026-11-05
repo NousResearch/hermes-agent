@@ -6,7 +6,7 @@ import pytest
 from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE
 from persistence.core.errors import AuthorityRefusal
 from persistence.sqlite._holder import StoreHolder
-from hermes_state_common import TITLE_SOURCE_USER
+from persistence.sqlite._state.common import TITLE_SOURCE_USER
 from persistence.sqlite.authority import _mutation
 from persistence.sqlite.authority._runtime_ends import begin_runtime_epoch
 from persistence.sqlite.conversation._store.sessions import create_session, end_session, get_session, set_session_hidden

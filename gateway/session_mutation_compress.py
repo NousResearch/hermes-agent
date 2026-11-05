@@ -203,13 +203,11 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target, 
     owner.context_compressor = engine
     bind = getattr(engine, 'bind_session_state', None)
     if callable(bind):
-        from agent.context_compressor import ContextCompressor
-        from agent.conversation_compression import context_engine_session_db
+        from agent.conversation_compression import context_engine_persistence, context_engine_session_db
         from gateway.session_persistence import authority_persistence
         store = authority_persistence(authority)
-        # The built-in compressor also takes the store's interface handle; a plugin engine binds a SessionDB.
-        handle = {'persistence': store} if isinstance(engine, ContextCompressor) else {}
-        bind(session_db=context_engine_session_db(owner, store), session_id=target, **handle)
+        bind(session_db=context_engine_session_db(owner, store), session_id=target,
+             **context_engine_persistence(bind, store))
     return engine
 
 

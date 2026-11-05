@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterable, Mapping
 from typing import Any, Optional
 
-from hermes_state_errors import StateDbReplacedError
+from persistence.sqlite._state.errors import StateDbReplacedError
 from persistence import JsonValue, SessionId, SessionRowMissing
 from persistence.core.artifacts import SessionArtifacts
 from persistence.gateway.routing import (

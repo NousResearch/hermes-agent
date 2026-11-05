@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state_holders as holders_module
+from persistence.sqlite._state import holders as holders_module
 
 
 @pytest.mark.platforms("linux")

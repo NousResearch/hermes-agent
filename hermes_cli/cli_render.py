@@ -1014,10 +1014,17 @@ def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep
     right border."""
     width = max(8, width)
     kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = [row for part in (text.expandtabs(4).splitlines() if keep_ws else [text])
-               for row in ((_wrap_cells(part, width, subsequent_indent, keep_ws) if _cells(part) != len(part)
-                            else textwrap.wrap(part, width=width, subsequent_indent=subsequent_indent, **kw)) or [""])]
-    return wrapped or [""]
+    rows = []
+    for part in (text.expandtabs(4).splitlines() if keep_ws else [text]):
+        # Only wide visible characters take the cell path: get_cwidth counts \n and \t as 0, which
+        # would send plain ASCII there and keep a raw newline inside the row.
+        if any(_cells(ch) != 1 for ch in part if not ch.isspace()):
+            if not keep_ws:
+                part = " ".join(part.split())  # textwrap's whitespace collapse
+            rows.extend(_wrap_cells(part, width, subsequent_indent, keep_ws) or [""])
+        else:
+            rows.extend(textwrap.wrap(part, width=width, subsequent_indent=subsequent_indent, **kw) or [""])
+    return rows or [""]
 
 
 _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)

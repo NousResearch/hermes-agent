@@ -192,6 +192,14 @@ def test_the_picker_fits_80x24_in_terminal_cells_with_a_cjk_ui_and_chinese_promp
     assert any("❯" in line and "9. P8" in line for line in lines)
 
 
+@pytest.mark.parametrize("text", ["Which option?\n1) keep\n2) drop", "选哪个?\n1) 保留\n2) 删除"])
+def test_panel_wrap_never_keeps_a_newline_inside_a_row(text):
+    """Shared by clarify/approval/palette panels: a raw newline in a row breaks the right border."""
+    from hermes_cli.cli_render import _wrap_panel_text
+    rows = _wrap_panel_text(text, 60)
+    assert rows and not any("\n" in row or "\t" in row for row in rows)
+
+
 def test_the_first_page_shows_the_reply_even_when_the_prompt_fills_the_window(cli, monkeypatch):
     _terminal(monkeypatch, 80, 24)
     long = " ".join(f"word{i}" for i in range(120))  # about six panel rows of prompt

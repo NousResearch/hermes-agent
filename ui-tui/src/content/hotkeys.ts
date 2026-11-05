@@ -39,6 +39,7 @@ export function hotkeys(): [string, string][] {
     [action + '+Z / ' + action + '+Y', h.undoRedo],
     [action + '+W', h.deleteWord],
     [action + '+U/K', h.killLine],
+    ['Alt+Y', h.yank],
     [action + '+←/→', h.jumpWord],
     ['Home/End', h.lineStartEnd],
     ['Shift+Enter / Alt+Enter', h.newline],

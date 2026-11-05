@@ -92,3 +92,42 @@ def test_partial_hint_with_footer_keeps_the_hinted_site():
     result, files = apply(source, body)
     assert result.success, result.error
     assert files.source == source.replace('prefix SECRET_A_EDIT', 'prefixZSECRET_A_EDIT').replace('footer = old', 'footer = new')
+
+
+def test_ambiguous_partial_search_does_not_gain_order_from_footer():
+    source = 'prefix AAA\nprefix BBB\nfooter = old\n'
+    body = '@@\n-prefix \n+prefixZ\n@@\n-footer = old\n+footer = new'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_later_nonadjacent_search_does_not_override_ambiguous_hint():
+    source = '# marker\nprefix old\nprefix old\nfooter = old\n'
+    body = '@@ marker @@\n-prefix \n+prefixZ\n@@\n-footer = old\n+footer = new\n@@\n-prefix \n+prefixQ'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_hint_with_two_sites_does_not_silently_target_after_anchor():
+    source = '# SECRET\nvalue = old\n# anchor\nvalue = old\n'
+    body = '@@\n # anchor\n@@ SECRET @@\n-value = old\n+value = new'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_consumed_part_of_multiline_hunk_not_hidden_by_replacement():
+    source = 'keep = hostish_d\nhost = "a"\nhost = "b"\n'
+    body = '@@\n-host = "a"\n+host = "c"\n@@\n-host = "a"\n-host = "b"\n+keep = hostish_d'
+    result, files = apply(source, body)
+    assert not result.success
+    assert files.source == source and not files.writes
+
+
+def test_blank_line_hunk_after_anchor_returns_result_without_exception():
+    source = 'anchor\n\nend\n'
+    result, files = apply(source, '@@\n anchor\n@@\n-\n+replacement')
+    assert result is not None
+    assert files.source in (source, 'anchor\nreplacement\nend\n')

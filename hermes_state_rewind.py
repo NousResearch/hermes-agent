@@ -14,16 +14,17 @@ _HISTORY_CHANGED = "session history changed before the rewind could be persisted
 logger = logging.getLogger("hermes")
 
 
-def erase_refused_turn_from_transcript(session_db: Any, session_id: Any) -> bool:
-    """Owner-side durable erase of a just-safety-refused turn, for surfaces that own a direct
+def retain_refused_turn_for_display(session_db: Any, session_id: Any, *, notice: str) -> bool:
+    """Owner-side durable retention of a just-safety-refused turn, for surfaces that own a direct
     ``SessionDB`` (CLI, ACP). The agent flushed the turn-start user row before the refusal was known,
     so a clean in-memory history alone would still let a ``/resume`` or a fresh session load re-send
-    the blocked content and re-lock the chat. Rewind that whole turn — the user row, any tool rounds
-    that ran, and the refusal — the same rewind ``/undo`` uses, so the chat is not locked even after a
-    reload (the user keeps SEEING the message; only the model-facing conversation loses it). The
-    managed-worker (Bot Chat) path erases owner-side through its async store instead. Best-effort: a
-    refusal must never crash turn teardown, and if the erase fails the user still has the refusal
-    notice. Returns True when a turn was erased.
+    the blocked content and re-lock the chat. Take that whole turn (the user row, any tool rounds that
+    ran, and the refusal) out of the MODEL context — exactly as ``/undo`` does — while KEEPING the
+    user's own message visible in the chat SURFACES: it is retained in the display projection and
+    tagged as a refused notice (``SessionDB.retain_refused_turn_for_display``). The managed-worker
+    (Bot Chat) path retains owner-side through its async store instead. Best-effort: a refusal must
+    never crash turn teardown, and if retention fails the user still has the live refusal notice.
+    Returns True when a turn was retained.
 
     This lives OUTSIDE the agent core on purpose: it is an OWNER-side operation (the owner holds a
     direct, mutable transcript), never a call the worker agent makes on its ``RuntimeSessionStore``.
@@ -31,12 +32,11 @@ def erase_refused_turn_from_transcript(session_db: Any, session_id: Any) -> bool
     if session_db is None or not session_id:
         return False
     try:
-        session_db.rewind_user_turn(session_id, -1)
+        return bool(session_db.retain_refused_turn_for_display(session_id, notice=notice))
     except Exception:  # best-effort; a refusal must never crash turn teardown
         logger.warning(
-            "content-policy refusal: could not erase the refused turn for %s", session_id, exc_info=True)
+            "content-policy refusal: could not retain the refused turn for %s", session_id, exc_info=True)
         return False
-    return True
 
 
 class RewindTargetUnavailableError(ValueError):
@@ -83,6 +83,53 @@ def _comparison_content(message: dict[str, Any]) -> Any:
 
 class SessionRewindMixin:
     """``SessionDB`` mixin: soft-delete from one user turn onward, validated against the warm history."""
+
+    def retain_refused_turn_for_display(self, session_id: str, *, notice: str) -> bool:
+        """Retain the newest user turn (a just-safety-refused turn) for DISPLAY only, excluded from
+        the MODEL. The whole turn leaves the active model context exactly as ``/undo``'s soft-delete
+        does — so the deterministic safety filter can't re-trip and lock the chat — but the user's
+        own message stays visible: its row is kept in the display projection (``compacted = 1``, the
+        same way compaction-archived rows remain visible) and tagged ``content_refused`` with
+        *notice*, while any tool rounds + the refusal collapse out of display (they stay soft-deleted
+        / removed). The user keeps SEEING "you asked X → refused, try a different query"; the model
+        sees none of it (``active = 0``). Returns True when a turn was retained, False when there was
+        no user turn to retain.
+
+        OWNER-side only (CLI/ACP direct store, and the gateway's async store); never a worker call.
+        """
+        from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+        try:
+            plan = self.plan_user_turn_rewind(session_id, -1)
+        except RewindTargetUnavailableError:
+            return False
+        target_row_id = plan.target_row_id
+        # Model side: soft-delete the whole turn (preserving a compaction handoff as the new active
+        # head when the refused turn head is a composite carrier), identical to a ``/undo`` of it.
+        self.rewind_to_message(
+            session_id, target_row_id, preserve_compaction_handoff=plan.scaffold is not None,
+            expected_active_ids=plan.expected_active_ids,
+            expected_target_content=plan.expected_target_content)
+
+        # Display side: re-surface ONLY the user's ask, tagged as the refused notice. The soft-delete
+        # left it ``active = 0, compacted = 0`` (removed, dropped from the display projection);
+        # ``compacted = 1`` keeps it in that projection the way compaction-archived rows stay shown,
+        # and ``active`` stays 0 so the model never sees it again.
+        def _do(conn) -> bool:
+            row = conn.execute(
+                "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?",
+                (target_row_id, session_id)).fetchone()
+            if row is None:
+                return False
+            meta = self._decode_display_metadata(row["display_metadata"]) or {}
+            meta[CONTENT_REFUSED_METADATA_KEY] = {"notice": notice}
+            conn.execute(
+                "UPDATE messages SET compacted = 1, display_kind = ?, display_metadata = ? "
+                "WHERE id = ? AND session_id = ?",
+                (CONTENT_REFUSED_DISPLAY_KIND, self._encode_display_metadata(meta),
+                 target_row_id, session_id))
+            return True
+
+        return bool(self._execute_write(_do))
 
     def rewind_user_turn(
         self, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,

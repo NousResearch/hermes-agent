@@ -1,0 +1,7 @@
+name: tiled-sessions
+repo: https://github.com/strnadchristopher/tiled-sessions
+sha: f3559985dca00ba827f869caf74cbd722b72289b
+description: "Hyprland-style tiling: clicking a session opens it in a new tile, splitting the largest or focused tile."
+maintainer: strnadchristopher
+tier: community
+category: desktop

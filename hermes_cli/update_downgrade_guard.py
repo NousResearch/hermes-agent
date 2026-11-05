@@ -10,17 +10,15 @@ reason to refuse, and a target that descends from the running commit is a forwar
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable, Iterable
-from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
-# The runtime ledger DDL: a target whose state-store modules lack it predates the cutover.
+# The runtime ledger DDL: a target whose schema sources lack it predates the cutover.
 _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
 STATE_MODULES = "hermes_state*.py"  # git pathspec and fnmatch pattern alike (``*`` crosses ``/`` in both)
-_LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
-                 "OR EXISTS(SELECT 1 FROM worker_executions)")
+BACKEND_SCHEMA = "persistence/sqlite/_schema_ddl.py"
+SCHEMA_SOURCES = (STATE_MODULES, BACKEND_SCHEMA)  # the state-store modules and the SQLite backend's schema
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
 
 
@@ -38,7 +36,7 @@ def _updater_git(git_cmd, root: Path) -> Callable[..., int]:
 
 
 def defines_runtime(sources: Iterable[str]) -> bool:
-    """Whether any of a tree's ``STATE_MODULES`` sources defines the runtime ledger. Lazy: stops at
+    """Whether any of a tree's ``SCHEMA_SOURCES`` files defines the runtime ledger. Lazy: stops at
     the first match, so a caller reading sources over the network fetches no more than it needs."""
     return any(_RUNTIME_SCHEMA_MARKER in source for source in sources)
 
@@ -46,8 +44,8 @@ def defines_runtime(sources: Iterable[str]) -> bool:
 def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
                             git: Optional[Callable[..., int]] = None,
                             remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
-    """True when ``target_ref`` does not descend from HEAD and none of its ``hermes_state*.py`` files
-    defines the runtime ledger. The pathspec keeps a blobless partial clone from fetching the whole
+    """True when ``target_ref`` does not descend from HEAD and none of its ``SCHEMA_SOURCES`` files
+    defines the runtime ledger. The pathspecs keep a blobless partial clone from fetching the whole
     tree. Any git failure proves nothing (False). ``git`` runs one git command and returns its exit
     code; the update check passes its own read-only probe.
 
@@ -58,38 +56,41 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
     # grep can return 1 for unreadable blobs too: establish completeness before trusting no match.
-    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", STATE_MODULES) != 0:
+    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", *SCHEMA_SOURCES) != 0:
         return remote is not None and remote(target_ref) is True
     # Exit 1 = no match in a complete local schema; 0 = found; anything else is a git error.
-    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES)
+    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", *SCHEMA_SOURCES)
     return result == 1 if result in (0, 1) else remote is not None and remote(target_ref) is True
 
 
 def _has_ledger_rows(db_path: Path) -> bool:
     if not db_path.is_file():
         return False
-    from hermes_state_holders import read_only_db_uri
-    try:
-        with closing(sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)) as conn:
-            return bool(conn.execute(_LEDGER_PROBE).fetchone()[0])
-    except sqlite3.Error:
-        return False  # no ledger tables yet, or unreadable: nothing an older release would trip on
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin
+    admin = open_store_admin(db_path)
+    # No ledger tables yet, unreadable, or no admin to read them: nothing an older release would trip on.
+    return not isinstance(admin, AdminUnsupported) and admin.has_runtime_ledger_rows(db_path)
 
 
 def _pre_runtime_snapshot(home: Path) -> str | None:
     """Newest quick snapshot of ``home`` holding a state.db from before the runtime ledger."""
     from hermes_cli.backup import _quick_snapshot_root
-    from hermes_state_holders import read_only_db_uri
+    from persistence import STORE_FAILURES
+    from persistence.core.admin import AdminUnsupported
+    from persistence_assembly import open_store_admin
     root = _quick_snapshot_root(home)
     for snap in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
         db = snap / "state.db"
         if snap.name.startswith(".") or not db.is_file():
             continue
+        admin = open_store_admin(db)
+        if isinstance(admin, AdminUnsupported):
+            continue
         try:
-            with closing(sqlite3.connect(read_only_db_uri(db), uri=True)) as conn:
-                if conn.execute("SELECT 1 FROM sqlite_master WHERE name='session_admissions'").fetchone() is None:
-                    return snap.name
-        except sqlite3.Error:
+            if not admin.has_runtime_ledger_table(db):
+                return snap.name
+        except STORE_FAILURES:
             continue
     return None
 
@@ -107,10 +108,12 @@ def _named_profile(home: Path) -> str:
 def _ledgered_profiles(home: Path | None) -> list[tuple[str, Path]]:
     from hermes_cli.backup import _sibling_profile_homes
     from hermes_constants import get_hermes_home
+    from persistence_assembly import profile_scope, store_location
 
     home = Path(home or get_hermes_home())
     profiles = [(_named_profile(home), home), *_sibling_profile_homes(home)]
-    return [(name, h) for name, h in profiles if _has_ledger_rows(h / "state.db")]
+    stores = [(name, h, store_location(profile_scope(home=h))) for name, h in profiles]
+    return [(name, h) for name, h, db in stores if db is not None and _has_ledger_rows(db)]
 
 
 def would_refuse(root: Path, target_ref: str, home: Path | None = None, *, git: Callable[..., int],

@@ -120,11 +120,13 @@ def _print_fts_optimize_available_notice() -> None:
 
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
+        from persistence.core.admin import AdminUnsupported
+        from persistence_assembly import open_store_admin, profile_scope, store_location
     except Exception:
         return
-    db_path = get_hermes_home() / "state.db"
-    if not db_path.exists():
+    scope = profile_scope(home=get_hermes_home())
+    db_path = store_location(scope)
+    if db_path is None or not db_path.exists():
         return
     try:
         size_gb = db_path.stat().st_size / (1024 ** 3)
@@ -133,37 +135,16 @@ def _print_fts_optimize_available_notice() -> None:
     # Small DBs: the win isn't worth the nag.
     if size_gb < 0.5:
         return
-    db = None
-    legacy_inline = False
-    drift: list[str] = []
     try:
-        db = SessionDB(db_path=db_path, read_only=True)
-        # read_only opens skip schema init; probe the stored layout directly.
-        from hermes_state_fts import fts_layout_drift
-        drift = fts_layout_drift(db._conn)
-        legacy_inline = db._db_has_legacy_inline_fts(db._conn)
-        # Interrupted optimize-storage: v23 table shape but backfill markers / trash
-        # tables remain. Re-running resumes it, so offer the command again.
-        interrupted = bool(
-            db._conn.execute(
-                "SELECT 1 FROM state_meta "
-                "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
-            ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                "AND name LIKE 'fts\\_v22\\_trash\\_%' ESCAPE '\\' LIMIT 1"
-            ).fetchone()
-            or db._conn.execute(
-                "SELECT 1 FROM state_meta WHERE key IN "
-                "('fts_cjk_rebuild_high_water', 'fts_cjk_stale') LIMIT 1"
-            ).fetchone()
-        )
+        admin = open_store_admin(scope)
+        if isinstance(admin, AdminUnsupported):
+            return
+        # One read-only probe of the stored layout; an interrupted optimize-storage (v23 table shape but
+        # backfill markers / trash tables remain) resumes on a re-run, so the command is offered again.
+        notice = admin.fts_storage_notice()
     except Exception:
         return
-    finally:
-        if db is not None:
-            with suppress(Exception):
-                db.close()
+    drift, legacy_inline, interrupted = notice["drift"], notice["legacy_inline"], notice["interrupted"]
     if not drift and not interrupted:
         return  # current layout already present (fresh/optimized)
 
@@ -441,8 +422,9 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
     Never raises: a guard that crashes the update tail is worse than what it detects."""
     try:
         from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
-        state_path = home / "state.db"
-        if not state_path.exists():
+        from persistence_assembly import profile_scope, store_location
+        state_path = store_location(profile_scope(home=home))
+        if state_path is None or not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
         if ok.get("valid"):
@@ -649,8 +631,9 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
     from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
-    _src_path = get_hermes_home() / "state.db"
-    if not _src_path.exists():
+    from persistence_assembly import profile_scope, store_location
+    _src_path = store_location(profile_scope(home=get_hermes_home()))
+    if _src_path is None or not _src_path.exists():
         return
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,

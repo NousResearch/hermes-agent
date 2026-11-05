@@ -43,19 +43,28 @@ _AUX_COUNTERS = (
 )
 
 
-def _auxiliary_usage(session_db, session_id: Optional[str]) -> dict[str, dict]:
-    """Per-task aux usage recorded for *session_id*'s lineage (``{}`` without a store / session)."""
-    if session_db is None or not session_id:
+def _auxiliary_usage(session_db, session_id: Optional[str], *, persistence=None) -> dict[str, dict]:
+    """Per-task aux usage recorded for *session_id*'s lineage, read through *persistence* (``{}`` without a
+    handle / session)."""
+    if persistence is None or not session_id:
         return {}
     try:
-        return session_db.auxiliary_usage_by_task(session_id)
+        return {
+            task: {
+                "api_calls": usage.api_call_count, "input_tokens": usage.tokens.input_tokens,
+                "output_tokens": usage.tokens.output_tokens, "cache_read_tokens": usage.tokens.cache_read_tokens,
+                "cache_write_tokens": usage.tokens.cache_write_tokens,
+                "reasoning_tokens": usage.tokens.reasoning_tokens, "estimated_cost_usd": usage.estimated_cost_usd,
+            }
+            for task, usage in persistence.usage.auxiliary_usage_by_task(session_id).items()
+        }
     except Exception:
         logging.debug("oneshot: auxiliary usage read failed", exc_info=True)
         return {}
 
 
 def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
-                            fallback_session_id: Optional[str] = None) -> None:
+                            fallback_session_id: Optional[str] = None, *, persistence=None) -> None:
     """Store this run's auxiliary usage on *result* as the delta against the pre-turn snapshot
     (a resumed session already carries earlier runs' aux rows). Waits (bounded) for the auto-title
     thread first: it bills from a daemon thread and can still be in flight when the turn returns.
@@ -63,7 +72,7 @@ def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
     from agent.title_generator import wait_for_title_upgrades
 
     wait_for_title_upgrades()
-    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id)
+    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id, persistence=persistence)
     by_task: dict[str, dict] = {}
     for task, counters in after.items():
         prior = before.get(task, {})
@@ -343,14 +352,15 @@ def run_oneshot(
 
 
 def _create_session_db_for_oneshot():
-    """Best-effort SessionDB — oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the
-    SQLite store itself or ``session_search`` is advertised but always unavailable. The registry
-    handle is the one in-process tools (delegation, goals) acquire during the run, so the process
-    holds one writer; ``_close_agent``'s ``close()`` releases the refcount."""
+    """Best-effort session store handle: oneshot bypasses ``HermesCLI._init_agent()``, so it must wire
+    the store itself or ``session_search`` is advertised but always unavailable. The handle shares the
+    process's one writer with the in-process tools (delegation, goals) that open the store during the
+    run; the agent holds it as both its store and its storage interface, and ``_close_agent``'s
+    ``close()`` releases it. It opens the store here, so an unopenable store answers None."""
     try:
-        from hermes_state_registry import acquire
+        from persistence_assembly import open_persistence, profile_scope
 
-        return acquire()
+        return open_persistence(profile_scope(), eager=True)
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)
         return None
@@ -434,11 +444,11 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     return choice
 
 
-def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str], list, Optional[dict]]:
+def _load_resume_target(persistence, resume: Optional[str]) -> tuple[Optional[str], list, Optional[dict]]:
     """Resolve ``resume`` to ``(session_id, conversation_history, session_meta)`` for a oneshot turn.
 
     Follows the same contract as the interactive CLI resume: compression-chain redirect via
-    ``resolve_resume_session_id``, safe-resume guard, model-projection history with
+    ``lineage.resolve_resume_target``, safe-resume guard, model-projection history with
     ``session_meta`` rows dropped. An unknown session raises (the user passed an explicit id;
     silently starting a fresh session is the resume-dropped failure mode this exists to fix —
     see #105892). An empty stored transcript still returns the resolved id: the turn replays
@@ -450,26 +460,32 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     the existing-row upsert never clears the end fields, and ``end_session()`` only writes
     rows whose ``ended_at`` is null — so without this step the resumed turn would be recorded
     under a session that stays closed and its new lifecycle boundary would be lost (same
-    reason the interactive resume calls ``reopen_session()`` before continuing).
+    reason the interactive resume calls ``sessions.reopen`` before continuing).
+
+    ``session_meta`` carries the row's ``id`` and the route columns ``stored_session_route`` reads.
     """
     if not resume:
         return None, [], None
-    if session_db is None:
+    if persistence is None:
         raise RuntimeError(f"cannot resume session {resume}: session store unavailable")
-    resolved = session_db.resolve_resume_session_id(resume) or resume
-    session_meta = session_db.get_session(resolved)
-    if not session_meta:
+    from storage_limits import resolved_max_resume_messages
+
+    resolved = persistence.lineage.resolve_resume_target(resume) or resume
+    record = persistence.sessions.get(resolved)
+    if not record:
         raise RuntimeError(f"session not found: {resume}")
+    session_meta = {"id": record.session_id, "model": record.model, "model_config": dict(record.model_config),
+                    "billing_provider": record.billing_provider, "billing_base_url": record.billing_base_url}
     # A Kanban worker transcript resumes only through a dispatcher-owned run (#68779): a
     # quiet one-shot resume would be a write-capable process the board cannot observe.
     from hermes_cli.kanban_resume_guard import kanban_resume_refusal
-    if (kanban_refusal := kanban_resume_refusal(session_db, resolved)) is not None:
+    if (kanban_refusal := kanban_resume_refusal(None, resolved, persistence=persistence)) is not None:
         raise RuntimeError(f"cannot resume session {resume}: {kanban_refusal}")
-    session_db.assert_resume_safe(resolved, tip_only=True)
-    restored, _display = session_db.get_resume_conversations(resolved)
-    history = [m for m in restored if m.get("role") != "session_meta"]
+    persistence.messages.assert_resume_safe(resolved, max_messages=resolved_max_resume_messages(), tip_only=True)
+    restored = persistence.messages.read_resume_conversations(resolved).model
+    history = [m.as_openai_message() for m in restored if m.role != "session_meta"]
     try:
-        session_db.reopen_session(resolved)
+        persistence.sessions.reopen(resolved)
     except Exception:
         logging.debug("reopen_session failed for resumed one-shot session %s", resolved, exc_info=True)
     return resolved, history, session_meta
@@ -584,7 +600,7 @@ def _run_agent(
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
-            session_db=session_db,
+            session_db=session_db, persistence=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
@@ -602,14 +618,14 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
+        aux_before = _auxiliary_usage(session_db, resume_sid, persistence=session_db) if ledger else {}
         # Relay keys the root conversation to the id at turn entry; compression may rotate
         # agent.session_id mid-turn without opening a second root, so keep the entry id.
         relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
-                                    fallback_session_id=agent.session_id or resume_sid)
+                                    fallback_session_id=agent.session_id or resume_sid, persistence=session_db)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db, relay_session_id)

@@ -442,6 +442,7 @@ def _profiles(authority, actor, home, params, siblings=()):
         meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
             entry['display_name'] = str(meta.get('display_name') or configured)
+            entry['description'] = str(meta.get('description') or '').strip()
             if isinstance(meta.get('ui_meta'), dict):
                 entry['ui_meta'] = meta['ui_meta']
         profiles.append(entry)

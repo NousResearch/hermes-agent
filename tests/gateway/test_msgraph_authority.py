@@ -15,6 +15,7 @@ def test_graph_boundary_commits_only_valid_notifications(tmp_path):
 
 
 async def probe(peer):
+    from tests.fixtures.storage_holder import raw_holder
     import aiohttp
     import ipaddress
     from gateway.config import Platform, PlatformConfig
@@ -22,7 +23,6 @@ async def probe(peer):
     from gateway.run import GatewayRunner
     from gateway.session_authority import initialize_session_authority
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
     from tests.waiting import async_wait_until
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='graph-test')
@@ -37,8 +37,8 @@ async def probe(peer):
     notification = {'id': 'graph-1', 'subscriptionId': 'owned-sub',
                     'resource': 'users/owned/messages/one', 'clientState': 'owned-state'}
     def rows():
-        return [r for sid in authority.sessions for r in list_session_admissions(
-            authority.db, session_id=sid, pending_only=False)]
+        return [r for sid in authority.sessions for r in authority.persistence.admissions.list(
+            session_id=sid, pending_only=False)]
     try:
         async with aiohttp.ClientSession() as client:
             for change, status in [({'clientState': 'wrong'}, 403), ({'resource': 'users/foreign'}, 400)]:
@@ -48,20 +48,20 @@ async def probe(peer):
             denied = await client.post(url, json={'value': [notification]})
             assert denied.status == 403 and not rows()
             adapter._allowed_source_networks = []
-            authority.db._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_graph BEFORE INSERT ON session_admissions BEGIN SELECT RAISE(ABORT, 'owned storage failure'); END"))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute("CREATE TRIGGER fail_graph BEFORE INSERT ON session_admissions BEGIN SELECT RAISE(ABORT, 'owned storage failure'); END"))
             response = await client.post(url, json={'value': [notification]})
             assert response.status == 503, response.status
             assert not rows() and not peer.requests
-            authority.db._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_graph'))
+            raw_holder(authority.persistence)._execute_write(lambda conn: conn.execute('DROP TRIGGER fail_graph'))
             response = await client.post(url, json={'value': [notification]})
             assert response.status == 202 and len(rows()) == 1
-            assert restore_native(rows()[0]['payload'], runner).internal is True
+            assert restore_native(rows()[0].payload, runner).internal is True
             assert await asyncio.to_thread(peer.blocked.wait, 10)
             adapter._seen_receipts.clear()
             duplicate = await client.post(url, json={'value': [notification]})
             assert duplicate.status == 202 and len(rows()) == 1
             peer.release.set()
-            await async_wait_until(lambda: rows()[0]['status'] == 'terminal', timeout=25,
+            await async_wait_until(lambda: rows()[0].status == 'terminal', timeout=25,
                                    what='the Graph notification turn to settle')
             assert len(peer.requests) == 1
             # A plugin scheduler owns this route exclusively; do not also infer.

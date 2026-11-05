@@ -13,9 +13,9 @@ import pytest
 from gateway import run_runtime
 from gateway.session_authority import LiveSession, SessionAuthority
 from gateway.session_contract import SessionActor, SessionRef, Submission
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, list_session_admissions
+from tests.fixtures.storage_seed import seed_session
 from tests.waiting import async_wait_until
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 ACTOR = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
 REF = SessionRef('owned', 's')
@@ -43,12 +43,13 @@ class _Agent:
 
 
 def _authority(tmp_path, agent):
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_session('s', source='test')
-    epoch = begin_runtime_epoch(db, instance_id='owner')
+    db = storage_handle(tmp_path)
+    seed_session(db, 's', 'test')
+    epoch = db.runtime.begin_epoch(instance_id='owner')
     runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
                              _adapter_for_source=lambda source: None, _running_agents={})
-    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', epoch=epoch,
+                                 persistence=db)
     authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
     returned = threading.Event()
 
@@ -86,9 +87,9 @@ async def test_unserve_stops_and_joins_the_running_turn_before_release(tmp_path,
             if honours_stop:
                 assert returned.is_set() and agent.stopped.is_set(), 'turn thread outlived retirement'
                 assert retired is True
-                rows = {r['request_id']: r for r in list_session_admissions(db, session_id='s', pending_only=False)}
-                assert rows['running']['status'] == 'terminal' and rows['running']['outcome'] == 'interrupted'
-                assert rows['follower']['status'] == 'queued', rows  # no successor claimed after Stop
+                rows = {r.request_id: r for r in db.admissions.list(session_id='s', pending_only=False)}
+                assert rows['running'].status == 'terminal' and rows['running'].outcome == 'interrupted'
+                assert rows['follower'].status == 'queued', rows  # no successor claimed after Stop
             else:
                 # The thread is still in its call: the caller must keep gateway.lock and the store.
                 assert retired is False and not returned.is_set()

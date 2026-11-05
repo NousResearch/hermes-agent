@@ -28,9 +28,8 @@ def _publish(runner, manager) -> None:
 
 
 def _plugin_rows(authority, session_id, text):
-    from hermes_state_runtime import list_session_admissions
-    return [row for row in list_session_admissions(authority.db, session_id=session_id, pending_only=False)
-            if row["payload"].get("text") == text]
+    return [row for row in authority.persistence.admissions.list(session_id=session_id, pending_only=False)
+            if row.payload.get("text") == text]
 
 
 @pytest.mark.asyncio

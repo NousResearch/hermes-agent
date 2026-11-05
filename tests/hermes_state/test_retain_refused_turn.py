@@ -94,3 +94,143 @@ def test_retain_reports_false_without_a_user_turn(tmp_path):
         assert retain_refused_turn_for_display(db, "s", notice=_NOTICE) is False
     finally:
         db.close()
+
+
+def test_retention_targets_the_boundary_not_the_newest_turn(tmp_path):
+    """746: a mid-turn redirect persists a SECOND user row inside the refused run. The newest user
+    turn (the default ``-1`` guess) is the redirect, so retaining it would leave the ORIGINAL ask +
+    its tool rounds live in the model and the deterministic filter re-trips forever. Passing the
+    refused run's original durable boundary drops the WHOLE run; the original ask is the retained
+    display row."""
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello")
+        db.append_message("s", "assistant", "hi there")
+        boundary = db.append_message("s", "user", "the request the filter blocked")
+        db.append_message("s", "assistant", "", tool_calls=[{"id": "t1", "type": "function",
+                          "function": {"name": "shell", "arguments": "{}"}}])
+        db.append_message("s", "tool", "ran", tool_call_id="t1")
+        # A mid-turn redirect, persisted as its own user row within the still-unfinished turn.
+        db.append_message("s", "user", "actually, do this instead")
+
+        assert retain_refused_turn_for_display(db, "s", notice=_NOTICE, boundary_row_id=boundary) is True
+
+        # The WHOLE refused run (original ask + tool round + redirect) left the model read.
+        assert _model(db, "s") == [("user", "hello"), ("assistant", "hi there")]
+        # The ORIGINAL ask is the retained, tagged display row — not the redirect.
+        assert _display(db, "s") == [
+            ("user", "hello", None),
+            ("assistant", "hi there", None),
+            ("user", "the request the filter blocked", CONTENT_REFUSED_DISPLAY_KIND),
+        ]
+    finally:
+        db.close()
+
+
+def test_without_the_boundary_the_newest_turn_guess_leaves_the_run_live(tmp_path):
+    """746 control: the pre-fix behaviour (no boundary handed in) rewinds only the newest user turn,
+    so a mid-turn redirect leaves the original refused ask ACTIVE in the model — exactly the bug the
+    boundary fix removes."""
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello")
+        db.append_message("s", "assistant", "hi there")
+        db.append_message("s", "user", "the request the filter blocked")
+        # A tool round runs, THEN the mid-turn redirect lands — so the two user rows are separate
+        # turns (not merged by consecutive-user repair), reproducing the real steer-mid-turn shape.
+        db.append_message("s", "assistant", "", tool_calls=[{"id": "t1", "type": "function",
+                          "function": {"name": "shell", "arguments": "{}"}}])
+        db.append_message("s", "tool", "ran", tool_call_id="t1")
+        db.append_message("s", "user", "actually, do this instead")
+
+        assert retain_refused_turn_for_display(db, "s", notice=_NOTICE) is True
+        # Without the boundary, the original refused ask is still in the model read (the stuck bug).
+        assert ("user", "the request the filter blocked") in _model(db, "s")
+    finally:
+        db.close()
+
+
+def test_a_bad_boundary_falls_back_to_the_newest_turn(tmp_path):
+    """A boundary that no longer resolves (already rewound / not a user row) must not fail the
+    retention — it falls back to the newest user turn best-effort."""
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello")
+        db.append_message("s", "assistant", "hi there")
+        db.append_message("s", "user", "the request the filter blocked")
+        assert retain_refused_turn_for_display(db, "s", notice=_NOTICE, boundary_row_id=999999) is True
+        assert _display(db, "s")[-1] == (
+            "user", "the request the filter blocked", CONTENT_REFUSED_DISPLAY_KIND)
+    finally:
+        db.close()
+
+
+def test_retention_of_a_carrier_keeps_the_refused_label_on_reload(tmp_path):
+    """788: when the refused ask is embedded in a composite compaction carrier, the display
+    projection unwraps the carrier to the live ask — but must KEEP the content_refused tag so a
+    reopened chat still renders the greyed refused block instead of an ordinary user bubble."""
+    from agent.compaction_display import project_compaction_message_for_display
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER)
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    carrier = (f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+               f"{_SUMMARY_END_MARKER}\n\nthe refused ask")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "older ask")
+        db.append_message("s", "assistant", "", tool_calls=[{"id": "c1", "type": "function",
+                          "function": {"name": "shell", "arguments": "{}"}}])
+        db.append_message("s", "tool", "ok", tool_call_id="c1")
+        boundary = db.append_message("s", "user", carrier)  # composite carrier head of the refused turn
+        db.append_message("s", "assistant", "failed")
+        assert retain_refused_turn_for_display(db, "s", notice=_NOTICE, boundary_row_id=boundary) is True
+    finally:
+        db.close()
+
+    reopened = SessionDB(db_path)
+    try:
+        rows = reopened.get_messages_as_conversation("s", include_compacted=True)
+        refused_rows = [m for m in rows if m.get("display_kind") == CONTENT_REFUSED_DISPLAY_KIND]
+        # Exactly one row carries the refused tag: the archived carrier (the handoff scaffold that
+        # rewind inserted as the new active head is a separate, hidden row).
+        assert len(refused_rows) == 1
+        refused_row = refused_rows[0]
+        projected = project_compaction_message_for_display(refused_row)
+        # The unwrap keeps the refused tag (so the greyed block renders), not a plain user bubble.
+        assert projected is not None
+        assert projected.get("display_kind") == CONTENT_REFUSED_DISPLAY_KIND
+    finally:
+        reopened.close()
+
+
+def test_retention_applies_both_halves_in_one_write(tmp_path):
+    """713: the model-side soft-delete and the display re-surface land in ONE write transaction, so a
+    reopen can never see the user's message removed from BOTH views (half-applied retention). A
+    successful retain always leaves the row EXCLUDED from the model AND tagged in the display."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "user", "hello")
+        db.append_message("s", "assistant", "hi there")
+        boundary = db.append_message("s", "user", "the request the filter blocked")
+        assert retain_refused_turn_for_display(db, "s", notice=_NOTICE, boundary_row_id=boundary) is True
+        # rewind_count incremented exactly once (a single committed rewind), not zero or twice.
+        count = db._conn.execute("SELECT rewind_count FROM sessions WHERE id = ?", ("s",)).fetchone()[0]
+        assert count == 1
+    finally:
+        db.close()
+
+    reopened = SessionDB(db_path)
+    try:
+        # Both halves are durable together: gone from the model, present+tagged in the display.
+        assert _model(reopened, "s") == [("user", "hello"), ("assistant", "hi there")]
+        assert _display(reopened, "s")[-1] == (
+            "user", "the request the filter blocked", CONTENT_REFUSED_DISPLAY_KIND)
+    finally:
+        reopened.close()

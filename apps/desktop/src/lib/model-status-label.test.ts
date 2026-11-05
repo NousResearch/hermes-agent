@@ -107,6 +107,24 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('deepseek-v4.1')).toBe('DeepSeek V4.1')
   })
 
+  it('strips the Bedrock deployment scope and endpoint tail so scoped ids render like their unscoped spelling (#135855)', () => {
+    // Cross-region inference profiles: the scope+vendor prefix (`eu.anthropic.`)
+    // and the `-v1`/`:0` endpoint tail are routing, not the name.
+    expect(displayModelName('eu.anthropic.claude-opus-5-5')).toBe('Opus 5.5')
+    expect(displayModelName('global.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe('Haiku 4.5')
+    expect(displayModelName('eu.anthropic.claude-opus-4-6-v1')).toBe('Opus 4.6')
+    expect(displayModelName('global.amazon.nova-2-lite-v1:0')).toBe('Nova 2 Lite')
+    expect(displayModelName('us.anthropic.claude-opus-4-5')).toBe('Opus 4.5')
+    // Adding a scope or an endpoint tail must not change the label: the scoped
+    // spelling renders exactly what the unscoped one already renders.
+    expect(displayModelName('eu.anthropic.claude-opus-5-5')).toBe(displayModelName('claude-opus-5-5'))
+    expect(displayModelName('eu.anthropic.claude-3-sonnet-20240229-v1:0')).toBe(
+      displayModelName('claude-3-sonnet-20240229')
+    )
+    // The composer pill rides the same stripped name.
+    expect(formatModelPillLabel('global.anthropic.claude-haiku-4-5-20251001-v1:0')).toBe('Haiku 4.5')
+  })
+
   it('agrees with the catalog rows on the variant for local ids that carry both a variant and a quant', () => {
     // A local GGUF id can carry the variant and the quant in either order —
     // `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model. The row

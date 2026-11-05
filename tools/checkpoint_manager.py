@@ -55,6 +55,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
@@ -354,6 +355,101 @@ def _git_env(
     return env
 
 
+# A lock younger than this may belong to a git that has not flushed yet.
+# Older locks are removed only when no live process still has the file open.
+_STALE_LOCK_SECONDS = 60.0
+
+
+def _index_lock_path(store: Path, index_file: Optional[Path]) -> Path:
+    """Lock path for this git call: ``$GIT_INDEX_FILE.lock`` or ``$GIT_DIR/index.lock``."""
+    if index_file is not None:
+        return Path(str(index_file) + ".lock")
+    return store / "index.lock"
+
+
+def _lock_open_by_live_process(lock_path: Path) -> Optional[bool]:
+    """Whether a live process has ``lock_path`` open.
+
+    ``False`` means no open fd was found. ``True`` means one was. ``None``
+    means this platform cannot prove it, so the caller must not unlink.
+    """
+    if sys.platform == "win32":
+        # Windows refuses to unlink a file another process has open.
+        return None
+    proc_fd = Path("/proc") / "self" / "fd"
+    if proc_fd.is_dir():
+        target = os.path.realpath(lock_path)
+        for pid_dir in Path("/proc").glob("[0-9]*"):
+            try:
+                fd_dir = pid_dir / "fd"
+                if any(os.readlink(entry.path) == target for entry in os.scandir(fd_dir)):
+                    return True
+            except OSError:
+                continue
+        return False
+    lsof = shutil.which("lsof") or next(
+        (p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.path.isfile(p)),
+        None,
+    )
+    if lsof is None:
+        return None
+    try:
+        found = subprocess.run(
+            [lsof, "-F", "p", "--", str(lock_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if any(line.startswith("p") and line[1:].strip() for line in found.stdout.splitlines()):
+        return True
+    if found.returncode not in (0, 1):
+        return None
+    return False
+
+
+def _clear_stale_index_lock(store: Path, index_file: Optional[Path] = None) -> None:
+    """Drop an ``index.lock`` left by a crashed git. Never drop one still held.
+
+    Checkpoint git calls are serial per session, but a slow ``git add`` can
+    hold its lock longer than ``_STALE_LOCK_SECONDS``. Age alone is not proof
+    the writer is gone: a live fd (or an inconclusive probe) keeps the lock.
+    """
+    lock_path = _index_lock_path(store, index_file)
+    try:
+        mtime = lock_path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+    age = time.time() - mtime
+    if age < _STALE_LOCK_SECONDS:
+        return
+    held = _lock_open_by_live_process(lock_path)
+    if held is True or (held is None and sys.platform != "win32"):
+        logger.warning(
+            "Leaving index.lock at %s (age=%.0fs); a live process may still hold it",
+            lock_path,
+            age,
+        )
+        return
+    try:
+        if lock_path.stat().st_mtime != mtime:
+            return
+        lock_path.unlink()
+        logger.warning("Removed stale index.lock (age=%.0fs) at %s", age, lock_path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("Failed to remove stale index.lock at %s: %s", lock_path, exc)
+
+
 def _run_git(
     args: list[str],
     store: Path,
@@ -387,6 +483,9 @@ def _run_git(
         return False, "", "git is not installed or not on PATH"
     cmd = [git, *args]
     allowed_returncodes = allowed_returncodes or set()
+    # A crashed git leaves index.lock behind and every later checkpoint op
+    # fails with "File exists". Only a lock no live process still holds is removed.
+    _clear_stale_index_lock(store, index_file)
 
     try:
         # NUL-delimited git output contains literal filenames, not text lines.

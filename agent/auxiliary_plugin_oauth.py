@@ -46,56 +46,31 @@ def attribute_failure(client: Any):
     try:
         yield
     except Exception as exc:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(AttributeError, TypeError):  # a slotted exception type keeps its error
             exc.hermes_aux_api_key = getattr(client, "api_key", None)
         raise
 
 
-def bench_pooled_row(provider: str, exc: Exception) -> None:
-    """Bench the plugin OAuth row whose freshly refreshed token was rejected too. Without this the row stays
-    "ok" and every later auxiliary call spends another refresh on it, against the broker's per-user refresh
-    limit. Only the row still holding the exact rejected bearer is benched: a different row the retry did not
-    use, or a newer token another process has since minted, stays available."""
-    from agent import auxiliary_client as aux
-
-    key = getattr(exc, "hermes_aux_api_key", None)
-    if not isinstance(key, str) or not key or not is_plugin_oauth_pool(provider) or not aux._is_auth_error(exc):
-        return
-    from hermes_cli.auth import _auth_store_lock
-
-    status = getattr(exc, "status_code", None)
-    # Check and write under the auth-store lock, which a peer's refresh also holds: otherwise a token a peer
-    # persists between our read and our write inherits this stale bearer's cooldown on disk.
-    with contextlib.suppress(TimeoutError), _auth_store_lock():
-        pool = aux._load_pool_with_credentials(provider, " (bench after refresh)")
-        if pool is not None and pool.entry_id_for_api_key(key):
-            pool.mark_exhausted_and_rotate(status_code=status if isinstance(status, int) else 401,
-                                           error_context={"message": str(exc)}, api_key_hint=key)
+def sent_api_key(exc: Exception, client: Any = None) -> str:
+    """The bearer ``exc``'s request sent (stamped by :func:`attribute_failure`), else ``client``'s key."""
+    for key in (getattr(exc, "hermes_aux_api_key", None), getattr(client, "api_key", None)):
+        if isinstance(key, str) and key:
+            return key
+    return ""
 
 
-def pool_superseded_key(provider: str, api_key: Any) -> bool:
-    """True when a plugin OAuth pool no longer vouches for the session's ``api_key``: the row that held
-    it has since been refreshed to a new token, or its stored expiry has passed. Pinning that key would
-    send a bearer the pool already knows is dead; leasing from the pool refreshes it first."""
-    if not isinstance(api_key, str) or not api_key or not is_plugin_oauth_pool(provider):
-        return False
-    from agent import auxiliary_client as aux
-    from agent.credential_pool_plugin import plugin_row_is_expiring
-
-    pool = aux._load_pool_with_credentials(provider, " (session key check)")
-    if pool is None:
-        return False
-    entry_id = pool.entry_id_for_api_key(api_key)
-    entry = next((e for e in pool.entries() if e.id == entry_id), None) if entry_id else None
-    return entry is None or plugin_row_is_expiring(entry)
+def shared_host_pool(resolved_provider: Any, refresh_provider: str) -> Any:
+    """The plugin OAuth pool an ``"auto"`` route's client tag names when no host table can: its host is
+    shared with an API-key sibling (generativelanguage serves Solstice and Gemini), so only the tag knows."""
+    route = str(resolved_provider or "auto").strip().lower()
+    return refresh_provider if route == "auto" and refresh_provider and is_plugin_oauth_pool(refresh_provider) else None
 
 
 def _row_expired(provider: str, entry: Any) -> bool:
-    if entry is None or getattr(entry, "expires_at_ms", None) is None:
-        return False
     from agent.credential_pool_plugin import plugin_row_is_expiring
 
-    return plugin_row_is_expiring(entry) and is_plugin_oauth_pool(provider)
+    return (getattr(entry, "expires_at_ms", None) is not None and is_plugin_oauth_pool(provider)
+            and plugin_row_is_expiring(entry))
 
 
 def expired_cache_hint(provider: str, entry: Any) -> str:
@@ -107,8 +82,11 @@ def expired_cache_hint(provider: str, entry: Any) -> str:
 
 def fresh_entry(provider: str, pool: Any, entry: Any) -> Any:
     """``entry``, refreshed first when it is a plugin OAuth row past its stored expiry: sending its token
-    is a certain 401. A failed refresh returns the row unchanged for the 401 recovery to handle."""
-    if not _row_expired(provider, entry):
+    is a certain 401. A failed refresh returns the row unchanged for the 401 recovery to handle. An
+    availability probe never refreshes: answering "resolvable?" must not spend a refresh token."""
+    from agent import auxiliary_client as aux
+
+    if aux._aux_probe_active() or not _row_expired(provider, entry):
         return entry
     return pool.try_refresh_matching(credential_id=entry.id) or entry
 

@@ -66,7 +66,7 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     ``None`` when the pool is empty or a credential is
     usable (the caller keeps the missing-credential diagnostic).
     """
-    from agent.credential_pool import STATUS_DEAD, PooledCredential, _exhausted_until
+    from agent.credential_pool import FAILURE_REASON_BILLING, STATUS_DEAD, PooledCredential, _exhausted_until
     from hermes_cli.auth import read_credential_pool
 
     entries = []
@@ -85,8 +85,8 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
     when = safe_strftime(datetime.fromtimestamp(min(resets)).astimezone(), "%Y-%m-%d %H:%M %Z")
     which = ("its only credential is" if len(live) == 1
              else f"all {len(live)} credentials are")
-    codes = {e.last_error_code for e in live}
-    cause, remedy = _bench_cause(sorted(c for c in codes if c), None in codes or 0 in codes, provider_id)
+    codes = {402 if e.failure_reason == FAILURE_REASON_BILLING else e.last_error_code for e in live}
+    cause, remedy = _bench_cause(sorted(c for c in codes if c), None in codes, provider_id)
     return (f"Provider '{provider_id}' is set in config.yaml but {which} cooling down after "
             f"{cause}; the next one resets at {when}. {remedy}, or switch to a different provider "
             "with `hermes model`.")

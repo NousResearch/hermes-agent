@@ -430,6 +430,7 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    completion_contract: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -805,8 +806,11 @@ def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query
         raise HTTPException(status_code=400, detail="body is required")
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
-        kanban_db.add_comment(conn, task_id, author=payload.author or "dashboard", body=payload.body)
-        return {"ok": True}
+        comment_id = kanban_db.add_comment(
+            conn, task_id, author=payload.author or "dashboard", body=payload.body,
+        )
+        comment = kanban_db.list_comments_after(conn, task_id, after_id=comment_id - 1)[0]
+        return {"ok": True, "comment": asdict(comment)}
 
 
 class LinkBody(BaseModel):

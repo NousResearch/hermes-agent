@@ -22,8 +22,8 @@ async def probe(peer, creator):
     from gateway.runtime_ownership import process_ownership
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import register_provider, clear_providers
-    from hermes_state_local import local_receipt
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authority import admission_row
+    from tests.fixtures.storage_read import conversation
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
     from tests.gateway.test_normal_runtime_boot import control
 
@@ -99,7 +99,7 @@ async def probe(peer, creator):
                                 cwd=str(home), toolsets=[])
             sid = created['session_id']
             assert created['stored_session_id'] == sid
-            original_owner = local_receipt(authority.db, sid)['principal_id']
+            original_owner = authority.persistence.bindings.receipt(sid).principal_id
             initial = await rpc(owner, 'session.resume', session_id=sid)
             # Bounded, benign invalid requests: restricted bootstrap purpose is not an operator.
             restricted = await native('worker-adoption')
@@ -133,7 +133,7 @@ async def probe(peer, creator):
             accepted = await rpc(viewer, 'prompt.submit', **followup)
             assert accepted['status'] == 'queued', accepted
             assert await rpc(viewer, 'prompt.submit', **followup) == accepted
-            rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
             assert len(rows) == 2, rows
             # Hermes is single-user: the dashboard login is the machine owner, so both surfaces'
             # admissions carry the owner's own OS subject and neither is an operator hand-off.
@@ -150,12 +150,12 @@ async def probe(peer, creator):
             assert await rpc(viewer, 'prompt.submit', **followup) == accepted
             peer.release.set()
             def settled():
-                rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+                rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
                 return rows if len(rows) == 2 and all(row['status'] == 'terminal' for row in rows) else None
             rows = await async_wait_until(settled, timeout=45, what='both admissions terminal')
             assert [row['principal_id'] for row in rows] == attribution
-            assert local_receipt(authority.db, sid)['principal_id'] == original_owner
-            messages = authority.db.get_messages_as_conversation(sid)
+            assert authority.persistence.bindings.receipt(sid).principal_id == original_owner
+            messages = conversation(authority.persistence, sid)
             user_text = [m['content'] for m in messages if m['role'] == 'user']
             assert user_text == ['BLOCK_FIFO WS_SHARED', 'WS_SHARED followup'], messages
             assert len(peer.requests) == 2, peer.requests

@@ -3,14 +3,13 @@ import os
 import runpy
 import signal
 
-from gateway.session_authority import SessionAuthority
-from hermes_state_runtime import list_session_admissions
+from gateway.session_authority import SessionAuthority, admission_row
 
 schedule = SessionAuthority._schedule
 
 
 def crash_barrier(self, ref):
-    pending = list_session_admissions(self.db, session_id=ref.session_id)
+    pending = [admission_row(record) for record in self.persistence.admissions.list(session_id=ref.session_id)]
     text = pending[-1]['payload'].get('text') if pending else None
     if text in {'TAMPERED_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE'}:
         return

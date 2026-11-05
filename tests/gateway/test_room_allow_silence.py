@@ -10,7 +10,7 @@ import pytest
 from gateway.config import GatewayConfig
 from gateway.session_identity import RoutingIdentity
 from tests.gateway.test_gateway_silence_tokens import _event, _runner, _source
-from tests.gateway.test_active_turn_recovery import _close_store_db, _db_runner, _entry_for
+from tests.gateway.test_active_turn_recovery import _close_store_handles, _db_runner, _entry_for
 
 
 def _configure(runner, tmp_path, *, setting=True, other_profile=False):
@@ -101,13 +101,13 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
             # Finish the real normal turn, then crash before the adapter sends or clears its token.
             await runner._handle_message_with_agent(event, source, store._generate_session_key(source), 1)
             # Re-open the routing index and DB: the verdict must survive a process restart.
-            _close_store_db(store)
+            _close_store_handles(store)
             recovered, store = _db_runner(tmp_path)
             assert await recovered._recover_unclean_sessions() == (0, 0 if silent else 1)
             assert bool(sweep_recoverable(deliverable_platforms={"telegram"})) is not silent
             assert _entry_for(store, source).active_turn_token is None
         finally:
-            _close_store_db(store)
+            _close_store_handles(store)
 
 
 @pytest.mark.asyncio
@@ -152,7 +152,7 @@ async def test_opt_in_does_not_hide_unhealthy_or_empty_results(monkeypatch, tmp_
             if result["final_response"]:
                 assert sweep_recoverable(deliverable_platforms={"telegram"})
         finally:
-            _close_store_db(store)
+            _close_store_handles(store)
 
 
 @pytest.mark.asyncio
@@ -200,13 +200,13 @@ async def test_agent_persisted_final_survives_trailing_session_metadata(monkeypa
         assert await runner._handle_message_with_agent(event, source, store._generate_session_key(source), 1) == ""
         entry = _entry_for(store, source)
         assert store.load_transcript(entry.session_id)[-1]["role"] == "session_meta"
-        _close_store_db(store)
+        _close_store_handles(store)
         recovered, store = _db_runner(tmp_path)
         assert await recovered._recover_unclean_sessions() == (0, 0)
         assert not sweep_recoverable(deliverable_platforms={"telegram"})
         assert _entry_for(store, source).active_turn_token is None
     finally:
-        _close_store_db(store)
+        _close_store_handles(store)
 
 
 @pytest.mark.asyncio
@@ -230,7 +230,7 @@ async def test_recovery_keeps_guard_without_exact_completed_decision(tmp_path, m
         assert await runner._recover_unclean_sessions() == (0, 1)
         assert sweep_recoverable(deliverable_platforms={"telegram"})
     finally:
-        _close_store_db(store)
+        _close_store_handles(store)
 
 
 @pytest.mark.parametrize("raw,expected", [

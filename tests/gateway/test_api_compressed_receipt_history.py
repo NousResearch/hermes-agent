@@ -3,6 +3,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.session_ingress_media import native_inputs_root
+from gateway.session_persistence import authority_persistence
+from session_retention import after_sessions_removed
+from tests.fixtures.storage_holder import raw_holder
+
 
 @pytest.mark.asyncio
 async def test_compressed_receipt_chains_its_snapshot_then_retires_history(api, owner):
@@ -40,12 +45,16 @@ async def test_compressed_receipt_chains_its_snapshot_then_retires_history(api, 
         assert second.status == 200
     assert seen[1] == compressed
     assert 'old-uncompressed-history' not in str(seen[1])
-    rows = owner.db._read_all('SELECT admission_id,target_session_id FROM session_admissions ORDER BY seq')
-    assert admission_result(owner.db, rows[0]['admission_id'])['result']['messages'] == compressed
-    assert admission_result(owner.db, rows[1]['admission_id'])['result']['messages'] == [
+    rows = raw_holder(owner.persistence)._read_all('SELECT admission_id,target_session_id FROM session_admissions ORDER BY seq')
+    assert admission_result(authority_persistence(owner), rows[0]['admission_id'])['result']['messages'] == compressed
+    assert admission_result(authority_persistence(owner), rows[1]['admission_id'])['result']['messages'] == [
         {'role': 'assistant', 'content': 'next answer'}]
-    assert owner.db.delete_session(rows[0]['target_session_id'])
+    sid = rows[0]['target_session_id']
+    removed = owner.persistence.sessions.delete(sid, media_root=str(native_inputs_root()))
+    after_sessions_removed(owner.persistence, owner.persistence.scope.profile_dir, removed, reason='delete',
+                           primary=sid)
+    assert removed
     for row in rows:
-        saved = admission_result(owner.db, row['admission_id'])
+        saved = admission_result(authority_persistence(owner), row['admission_id'])
         assert saved['result']['messages'] == []
         assert 'compressed-summary-sentinel' not in str(saved)

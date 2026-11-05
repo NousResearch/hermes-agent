@@ -5,16 +5,24 @@ split across pages are each sent once.
 """
 import pytest
 
-from tests.gateway.test_session_stored_reads import _call, _legacy_owner, _native
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages
+from tests.gateway.test_session_stored_reads import _append, _call, _compact, _legacy_owner, _native
 from tests.gateway.test_session_stored_reads_bounds import _session
-from tests.gateway.test_session_transcript_poll import Reader, _shape
+from tests.gateway.test_session_transcript_poll import Reader, _rotate, _shape
 
 
 def _read_path(monkeypatch, db, mode):
     """``pooled``: the WAL read pool (one pinned read transaction). ``fallback``: no pooled reader (a
     DELETE-journal or read-only store, a reader that failed to open, the pool's ceiling)."""
     if mode == 'fallback':
-        monkeypatch.setattr(db, '_checkout_read_conn', lambda: None)
+        monkeypatch.setattr(raw_holder(db), '_checkout_read_conn', lambda: None)
+
+
+def _row_id(db, session_id, role, content):
+    [row_id] = seed_messages(db, session_id, {'role': role, 'content': content})
+    return row_id
 
 
 @pytest.mark.asyncio
@@ -40,14 +48,14 @@ async def test_rows_appended_and_deleted_during_a_page_read_reset_the_next_poll(
             if not armed[0]:
                 return original(*args, **kwargs)
             armed[0] = False
-            db.append_message(target, 'user', 'transient')
+            _append(db, target, 'user', 'transient')
             result = original(*args, **kwargs)
-            db.clear_messages(target)
+            db.messages.clear_transcript(target)
             return result
         monkeypatch.setattr(session_stored_reads, 'read_page', racing)
         await reader.poll()
         assert _shape(reader.rows) == await reader.fresh() == []
-        db.append_message(target, 'user', 'after')
+        _append(db, target, 'user', 'after')
         await reader.poll()
         assert [row.get('text') for row in reader.rows] == ['after']
     finally:
@@ -62,7 +70,7 @@ async def test_a_held_row_deleted_while_its_page_is_read_is_not_kept(tmp_path, m
     from gateway import session_stored_reads
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
-            db.append_message(target, 'user', 'held')
+            _append(db, target, 'user', 'held')
             _read_path(monkeypatch, db, mode)
             original, armed = session_stored_reads.read_page, [True]
 
@@ -70,7 +78,7 @@ async def test_a_held_row_deleted_while_its_page_is_read_is_not_kept(tmp_path, m
                 result = original(*args, **kwargs)
                 if armed[0]:
                     armed[0] = False
-                    db.clear_messages(target)
+                    db.messages.clear_transcript(target)
                 return result
             monkeypatch.setattr(session_stored_reads, 'read_page', racing)
             reader = Reader(owner, ref.session_id)
@@ -90,7 +98,7 @@ async def test_a_fallback_read_that_never_settles_resets_from_the_first_page_unt
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
             for n in range(3):
-                db.append_message(target, 'user', f'message {n}')
+                _append(db, target, 'user', f'message {n}')
             reader = Reader(owner, ref.session_id, limit=2)
             await reader.poll()
             _read_path(monkeypatch, db, 'fallback')
@@ -100,10 +108,10 @@ async def test_a_fallback_read_that_never_settles_resets_from_the_first_page_unt
                 result = original(*args, **kwargs)
                 if writes[0]:
                     writes[0] -= 1
-                    db.set_message_reaction(target, result[0][0]['row_id'], '\U0001f44d')
+                    db.messages.set_reaction(target, result[0][0]['row_id'], '\U0001f44d', author='user')
                 return result
             monkeypatch.setattr(session_stored_reads, 'read_page', busy)
-            db.append_message(target, 'user', 'message 3')
+            _append(db, target, 'user', 'message 3')
             first = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
                                  cursor=reader.cursor))['result']
             assert first['reset'] is True and [row.get('text') for row in first['rows']] == ['message 0', 'message 1']
@@ -128,7 +136,7 @@ async def test_deleting_an_earlier_segments_rows_resets_the_poller(tmp_path, mon
         reader = Reader(native, 'old-tui')
         await reader.poll()
         assert 'before compression' in [row.get('text') for row in reader.rows]
-        db.clear_messages('old-tui')
+        db.messages.clear_transcript('old-tui')
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
@@ -149,7 +157,7 @@ async def test_a_reaction_on_an_earlier_segments_row_resets_the_poller(tmp_path,
         reader = Reader(native, 'old-tui')
         await reader.poll()
         held = next(row['row_id'] for row in reader.rows if row.get('text') == 'old answer')
-        db.set_message_reaction('old-tui', held, '\U0001f44d')
+        db.messages.set_reaction('old-tui', held, '\U0001f44d', author='user')
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
@@ -163,14 +171,14 @@ async def test_a_reaction_on_an_earlier_segments_row_resets_the_poller(tmp_path,
 async def test_a_reaction_resets_the_poller_after_an_older_build_opened_the_store(tmp_path, monkeypatch):
     """An older Hermes sharing the profile opens state.db writable between two polls (its DDL path runs over
     the revision trigger), then the held row gets a reaction: the next poll still resets onto it."""
-    from tests.hermes_state.test_transcript_revision_trigger_skew import open_as_older_build
+    from tests.persistence_sqlite.core.test_transcript_revision_trigger_skew import open_as_older_build
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
-        db.append_message(target, 'user', 'question 1')
-        held = db.append_message(target, 'assistant', 'answer 1')
+        _append(db, target, 'user', 'question 1')
+        held = _row_id(db, target, 'assistant', 'answer 1')
         reader = Reader(owner, ref.session_id)
         await reader.poll()
         open_as_older_build(db)
-        db.set_message_reaction(target, held, '\U0001f44d', author='user')
+        db.messages.set_reaction(target, held, '\U0001f44d', author='user')
         reader.resets.clear()
         await reader.poll()
         assert reader.resets[0] is True, reader.resets
@@ -181,10 +189,10 @@ async def test_a_reaction_resets_the_poller_after_an_older_build_opened_the_stor
 def _two_handoffs_on_one_carrier(db, target):
     """question 1, answer 1, then question 2 wrapped by two compactions in turn (the second re-wraps the
     first's carrier), then answer 2: the carrier shows two handoffs before it."""
-    db.append_message(target, 'user', 'question 1')
-    db.append_message(target, 'assistant', 'answer 1')
-    db.append_message(target, 'user', 'question 2', message_uid='q2')
-    db.append_message(target, 'assistant', 'answer 2')
+    _append(db, target, 'user', 'question 1')
+    _append(db, target, 'assistant', 'answer 1')
+    _append(db, target, 'user', 'question 2', message_uid='q2')
+    _append(db, target, 'assistant', 'answer 2')
     for goal in ('first', 'second'):
         _rewrap(db, target, goal)
 
@@ -194,13 +202,12 @@ def _rewrap(db, target, goal):
     from agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
-    held = db.get_messages_as_conversation(target)
+    held = conversation(db, target)
     carrier = next(row for row in held if row.get('message_uid') == 'q2')
     carrier = {**carrier, '_compressed_summary': True, 'content': (
         f'{_MERGED_PRIOR_CONTEXT_HEADER}\nquestion 2\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n'
         f'## Goal\n{goal}\n{_SUMMARY_END_MARKER}')}
-    db.archive_and_compact(target, [carrier, held[-1]], watermark=db.get_active_message_watermark(target),
-                           tail_count=2)
+    _compact(db, target, [carrier, held[-1]], 2)
 
 
 async def _every_page(owner, session_id, limit, order):
@@ -269,10 +276,10 @@ async def test_a_rewrite_between_the_backfill_and_the_snapshot_still_reaches_the
     _read_path(monkeypatch, db, mode)
     try:
         target = transcript_target(authority, ref)
-        db.append_message(target, 'user', 'question 1')
-        db.append_message(target, 'assistant', 'answer 1')
-        queued = db.append_message(target, 'user', 'raw @file prompt')
-        db.append_message(target, 'assistant', 'in-flight reply')
+        _append(db, target, 'user', 'question 1')
+        _append(db, target, 'assistant', 'answer 1')
+        queued = _row_id(db, target, 'user', 'raw @file prompt')
+        _append(db, target, 'assistant', 'in-flight reply')
         reader = Reader(owner, ref.session_id, limit=500)
         await reader.poll()
         original, fired = session_stored_reads._whole_lineage, []
@@ -280,7 +287,7 @@ async def test_a_rewrite_between_the_backfill_and_the_snapshot_still_reaches_the
         def rewrite_after_the_backfill(*args):
             whole = original(*args)
             if not fired:
-                fired.append(db.set_user_message_content(target, queued, 'expanded prompt'))
+                fired.append(db.messages.set_user_message_content(target, queued, 'expanded prompt'))
             return whole
         monkeypatch.setattr(session_stored_reads, '_whole_lineage', rewrite_after_the_backfill)
         await reader.poll()
@@ -300,15 +307,15 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
     """With the guard at the lineage's size plus one, two appends take the rotated lineage past
     ``sessions.max_resume_messages`` and a fresh read shows the tip segment only. A poller caught up on
     the whole lineage (or one page into it) must end up holding what a fresh read shows."""
-    import hermes_state
+    import storage_limits
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     native = _native(authority, tmp_path, 'native')
     try:
-        count = db.assert_resume_safe('tui-tip', max_messages=10 ** 6)
-        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: count + 1)
+        count = db.messages.assert_resume_safe('tui-tip', max_messages=10 ** 6)
+        monkeypatch.setattr(storage_limits, 'resolved_max_resume_messages', lambda: count + 1)
         reader = Reader(native, 'old-tui', limit=2 if partway else 500)
         if partway:
             page = (await _call(native, 'session.transcript', session_id='old-tui', limit=2))['result']
@@ -316,7 +323,7 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
         else:
             await reader.poll()
         for text in ['late question', 'late answer'][:appends]:
-            db.append_message('tui-tip', 'user' if text == 'late question' else 'assistant', text)
+            _append(db, 'tui-tip', 'user' if text == 'late question' else 'assistant', text)
         await reader.poll()
         assert _shape(reader.rows) == await reader.fresh()
     finally:
@@ -328,18 +335,18 @@ async def test_an_append_past_the_resume_guard_leaves_the_poller_on_a_fresh_read
 async def test_a_newest_first_walk_restarts_when_the_lineage_crosses_the_resume_guard(tmp_path, monkeypatch):
     """A newest-first cursor names a slot of the read it came from: once two appends take the rotated
     lineage past the guard, the next page starts again from the newest (``reset``), as a fresh read does."""
-    import hermes_state
+    import storage_limits
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     native = _native(authority, tmp_path, 'native')
     try:
-        count = db.assert_resume_safe('tui-tip', max_messages=10 ** 6)
-        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: count + 1)
+        count = db.messages.assert_resume_safe('tui-tip', max_messages=10 ** 6)
+        monkeypatch.setattr(storage_limits, 'resolved_max_resume_messages', lambda: count + 1)
         newest = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest'))['result']
-        db.append_message('tui-tip', 'user', 'late question')
-        db.append_message('tui-tip', 'assistant', 'late answer')
+        _append(db, 'tui-tip', 'user', 'late question')
+        _append(db, 'tui-tip', 'assistant', 'late answer')
         page = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest',
                             cursor=newest['next_cursor']))['result']
         fresh = (await _call(native, 'session.transcript', session_id='old-tui', limit=1, order='latest'))['result']
@@ -357,7 +364,7 @@ async def test_a_cursor_from_before_the_scope_was_bound_resets_the_poller(tmp_pa
     import json
     with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
         try:
-            db.append_message(target, 'user', 'question 1')
+            _append(db, target, 'user', 'question 1')
             reader = Reader(owner, ref.session_id, limit=500)
             await reader.poll()
             payload = json.loads(base64.urlsafe_b64decode(reader.cursor + '=' * (-len(reader.cursor) % 4)))
@@ -372,14 +379,16 @@ async def test_a_cursor_from_before_the_scope_was_bound_resets_the_poller(tmp_pa
 async def test_a_display_index_that_never_stays_whole_resets_the_poller(tmp_path, monkeypatch):
     """Every read finds a displayed row without a slot (a rewrite lands after each backfill): no page is
     proven, so the reply is ``reset`` with the first page, and the next poll resets again."""
-    with _session(tmp_path, monkeypatch) as (db, _authority, owner, ref, target):
+    from gateway.session_persistence import authority_persistence
+    with _session(tmp_path, monkeypatch) as (db, authority, owner, ref, target):
         try:
             for n in range(3):
-                db.append_message(target, 'user', f'message {n}')
+                _append(db, target, 'user', f'message {n}')
             reader = Reader(owner, ref.session_id, limit=2)
             await reader.poll()
-            complete, broken = db.transcript_display_index_complete, [True]
-            monkeypatch.setattr(db, 'transcript_display_index_complete',
+            messages = authority_persistence(authority).messages  # the handle the read goes through
+            complete, broken = messages.display_index_complete, [True]
+            monkeypatch.setattr(messages, 'display_index_complete',
                                 lambda segment: not broken[0] and complete(segment))
             first = (await _call(owner, 'session.transcript', session_id=ref.session_id, limit=2,
                                  cursor=reader.cursor))['result']
@@ -402,7 +411,7 @@ async def test_a_newest_first_walk_of_a_tip_restarts_when_a_compaction_rotates_i
     segment: once a compaction rotates the tip to a new segment, the next page starts again from the
     newest (``reset``) and the walk ends holding what a fresh walk holds. Without a rotation the walk
     pages on (control)."""
-    import hermes_state
+    import storage_limits
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
@@ -410,19 +419,13 @@ async def test_a_newest_first_walk_of_a_tip_restarts_when_a_compaction_rotates_i
     native = _native(authority, tmp_path, 'native')
     try:
         for n in range(3):
-            db.append_message('tui-tip', 'user', f'tip question {n}')
-            db.append_message('tui-tip', 'assistant', f'tip answer {n}')
-        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: 1)
+            _append(db, 'tui-tip', 'user', f'tip question {n}')
+            _append(db, 'tui-tip', 'assistant', f'tip answer {n}')
+        monkeypatch.setattr(storage_limits, 'resolved_max_resume_messages', lambda: 1)
         reply = (await _call(native, 'session.transcript', session_id='old-tui', limit=2, order='latest'))['result']
         rows, resets = reply['rows'], []
         if rotate:
-            assert db.try_acquire_compression_lock('tui-tip', 'fixture')
-            try:
-                db.publish_compression_child(parent_session_id='tui-tip', child_session_id='tui-tip-2', source='tui',
-                    model='m', messages=[{'role': 'user', 'content': f'rotated question {n}'}
-                                         for n in range(3)], compression_lock_holder='fixture')
-            finally:
-                db.release_compression_lock('tui-tip', 'fixture')
+            _rotate(db, 'tui-tip', 'tui-tip-2', *({'role': 'user', 'content': f'rotated question {n}'} for n in range(3)))
         while reply['next_cursor'] and len(resets) < 20:
             reply = (await _call(native, 'session.transcript', session_id='old-tui', limit=2, order='latest',
                                  cursor=reply['next_cursor']))['result']

@@ -6,8 +6,11 @@ from pathlib import Path
 from gateway.platforms.api_server_response_admissions import admitted_context
 from gateway.session_contract import SessionRef
 from gateway.session_api_turn import admit_api_turn, recover_api_turns
-from gateway.session_ingress_media import release_admission_media
-from hermes_state_runtime import claim_session_input, get_session_admission, settle_session_input
+from gateway.session_authority import admission_row
+from gateway.session_ingress_media import native_inputs_root, release_admission_media
+from gateway.session_persistence import authority_persistence
+from session_retention import after_sessions_removed
+from tests.fixtures.storage_holder import raw_holder
 
 IMAGE = b'\x89PNG\r\n\x1a\n' + os.urandom(64 * 1024)
 
@@ -18,15 +21,15 @@ def _content():
 
 
 def _settle(owner, row, *, release=True):
-    started = claim_session_input(owner.db, epoch=owner.epoch, session_id=row['target_session_id'])
-    settle_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
-                         generation=started['generation'], outcome='completed')
+    started = owner.persistence.admissions.claim(epoch=owner.epoch, session_id=row['target_session_id'])
+    owner.persistence.admissions.settle(epoch=owner.epoch, admission_id=row['admission_id'],
+                                        generation=started.generation, outcome='completed')
     if release:
-        release_admission_media(owner.db, row['admission_id'])  # the drain's terminal media pass
+        release_admission_media(authority_persistence(owner), row['admission_id'])  # the drain's terminal media pass
 
 
 def _stored(owner):
-    with owner.db._read_ctx() as conn:
+    with raw_holder(owner.persistence)._read_ctx() as conn:
         return dict(conn.execute('SELECT request_id, payload_json FROM session_admissions').fetchall())
 
 
@@ -48,12 +51,14 @@ def test_settled_rows_drop_inline_base64_but_retry_replay_restart_and_cleanup_ho
                            conversation_history=[])[2]
     assert retry['admission_id'] == rows[0]['admission_id'] and retry['status'] == 'terminal'
     # A terminal Responses replay still projects the original request content.
-    terminal = get_session_admission(owner.db, admission_id=rows[0]['admission_id'])
+    terminal = admission_row(owner.persistence.admissions.get(admission_id=rows[0]['admission_id']))
     context = admitted_context((owner, SessionRef(owner.profile_id, 'chat-0'), terminal), replay=True)
     assert context['user_message'] == _content()
     # The committed bytes stay as history context, and are collected once every chat is gone.
     path = Path(rows[0]['payload']['api_turn_v1']['media'][0]['path'])
     assert path.read_bytes() == IMAGE
     for n in range(4):
-        owner.db.delete_session(f'chat-{n}')
+        removed = owner.persistence.sessions.delete(f'chat-{n}', media_root=str(native_inputs_root()))
+        after_sessions_removed(owner.persistence, owner.persistence.scope.profile_dir, removed, reason='delete',
+                               primary=f'chat-{n}')
     assert not path.exists()

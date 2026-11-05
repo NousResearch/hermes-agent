@@ -14,7 +14,7 @@ from fastapi import HTTPException
 
 def _standalone_request(monkeypatch, tmp_path):
     """An authenticated principal on a standalone dashboard (no composed gateway)."""
-    monkeypatch.setattr('hermes_state._default_db_path', lambda: str(tmp_path / 'state.db'))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     return SimpleNamespace(
         state=SimpleNamespace(native_http_principal=None,
                               session=SimpleNamespace(user_id='user-a', provider='oidc',

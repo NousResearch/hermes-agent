@@ -12,18 +12,16 @@ from pathlib import Path
 
 from hermes_cli.session_recovery import recover_session_database
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _damaged_source(path: Path) -> list[float]:
-    db = SessionDB(db_path=path)
-    try:
-        db.create_session("s", "cli")
-        for text in ("one", "two", "three"):
-            db.append_message("s", "user", text)
-        stamps = [row["timestamp"] for row in db.get_messages("s")]
-    finally:
-        db.close()
+    with open_persistence(profile_scope(home=path.parent)) as store:
+        seed_session(store, "s", "cli")
+        seed_messages(store, "s", *({"role": "user", "content": text} for text in ("one", "two", "three")))
+        stamps = [row["timestamp"] for row in transcript_rows(store, "s")]
     raw = sqlite3.connect(str(path))
     try:
         middle = raw.execute("SELECT id FROM messages WHERE session_id = 's' ORDER BY id LIMIT 1 OFFSET 1").fetchone()[0]

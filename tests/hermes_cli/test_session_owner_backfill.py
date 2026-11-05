@@ -21,11 +21,7 @@ def client(monkeypatch, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    import hermes_state
-    from hermes_constants import get_hermes_home
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
-
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -34,27 +30,22 @@ def client(monkeypatch, _isolate_hermes_home):
 
 def _seed(db_path, rows):
     """Insert bare session rows the way a pre-ownership install left them."""
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=db_path)
-    try:
+    with open_persistence(profile_scope(home=db_path.parent)) as store:
         for session_id, profile_name in rows:
-            db.create_session(session_id, source="cli", profile_name=profile_name)
-            db.append_message(
-                session_id, role="user", content=f"hello from {session_id}"
+            seed_session(store, session_id, "cli", profile_name=profile_name)
+            seed_messages(
+                store, session_id, {"role": "user", "content": f"hello from {session_id}"}
             )
-        # create_session backfills nothing here, but be explicit: force the
-        # legacy shape at the SQL level so the fixture cannot silently depend
-        # on create_session's own COALESCE behavior.
-        for session_id, profile_name in rows:
-            if profile_name is None:
-                db._conn.execute(
-                    "UPDATE sessions SET profile_name = NULL WHERE id = ?",
-                    (session_id,),
-                )
-        db._conn.commit()
-    finally:
-        db.close()
+        # Creating a row with no owner stamps the store's own profile: force the
+        # legacy NULL shape at the SQL level.
+        raw_holder(store)._execute_write(lambda conn: conn.executemany(
+            "UPDATE sessions SET profile_name = NULL WHERE id = ?",
+            [(session_id,) for session_id, profile_name in rows if profile_name is None],
+        ))
 
 
 def _profiles(db_path):

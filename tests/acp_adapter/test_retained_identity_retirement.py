@@ -13,8 +13,8 @@ import pytest
 import pytest_asyncio
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
+from tests.fixtures.storage_read import session_row
 
 LOST = 'Gateway disconnected; turn outcome is unknown.'
 
@@ -68,7 +68,7 @@ async def owner(tmp_path, monkeypatch):
         execution_result.get()['result'] = {'final_response': 'ACK_' + event.text, 'completed': True, 'messages': []}
         return 'ACK_' + event.text
 
-    runner = SimpleNamespace(_session_db=store._db, session_store=store, _draining=False, adapters={},
+    runner = SimpleNamespace(_session_db=store.persistence, session_store=store, _draining=False, adapters={},
                              _handle_message=answer,
                              _cached_agent_for=lambda route: None, _evict_cached_agent=lambda route: None,
                              _resolve_session_agent_runtime=lambda **kwargs: ('frozen', {}))
@@ -95,8 +95,8 @@ async def _acp(owner):
 
 
 async def _settled(owner, count):
-    await async_wait_until(lambda: sum(row['status'] == 'terminal' for row in list_session_admissions(
-        owner.authority.db, session_id=owner.sid, pending_only=False)) >= count,
+    await async_wait_until(lambda: sum(row.status == 'terminal' for row in owner.authority.persistence.admissions.list(
+        session_id=owner.sid, pending_only=False)) >= count,
         timeout=5, what=f'{count} terminal admissions')
 
 
@@ -147,11 +147,11 @@ async def test_a_repeated_control_after_other_work_is_new_work(owner, surface, b
             await control(handle, 'model-a')
         if between == 'other-control':
             await control(handle, 'model-b')
-            assert owner.authority.db.get_session(owner.sid)['model'] == 'model-b'
+            assert session_row(owner.authority.persistence, owner.sid)['model'] == 'model-b'
         else:
             await prompt(handle, 'between')
         await control(handle, 'model-a')
-        assert owner.authority.db.get_session(owner.sid)['model'] == 'model-a'
+        assert session_row(owner.authority.persistence, owner.sid)['model'] == 'model-a'
     finally:
         if surface.startswith('acp'):
             handle._event_task.cancel()
@@ -174,6 +174,6 @@ async def test_a_repeated_prompt_after_a_control_is_new_work(owner, tmp_path, be
         response = await asyncio.wait_for(agent.prompt([acp.text_block('yes')], owner.sid), 5)
         assert response.stop_reason == 'end_turn'
         assert owner.executed == ['yes', 'yes']
-        assert len(list_session_admissions(owner.authority.db, session_id=owner.sid, pending_only=False)) == 2
+        assert len(owner.authority.persistence.admissions.list(session_id=owner.sid, pending_only=False)) == 2
     finally:
         agent._event_task.cancel()

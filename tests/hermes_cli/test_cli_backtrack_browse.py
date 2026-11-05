@@ -218,3 +218,15 @@ def test_footer_sheds_whole_hints_at_narrow_widths(cli, monkeypatch, cols, foote
     assert cli._open_backtrack_picker()
     hint_rows = [text.strip("│ ").rstrip() for text, _rev in _rows(cli) if "Browsing" in text]
     assert hint_rows == [footer]  # one row, never wrapped mid-hint
+
+
+def test_a_long_url_hard_wraps_inside_the_pager(cli, monkeypatch):
+    _terminal(monkeypatch, 40, 30)
+    db, sid = cli._session_db, cli.session_id
+    db.append_message(sid, "user", "see https://example.com/" + "a" * 120)
+    cli.conversation_history = db.get_messages_as_conversation(sid)
+    assert cli._open_backtrack_picker()
+    rendered = [text for text, _rev in _rows(cli)]
+    assert rendered and {get_cwidth(text) for text in rendered} == {get_cwidth(rendered[0])}
+    assert get_cwidth(rendered[0]) <= 40
+

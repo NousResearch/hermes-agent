@@ -28,3 +28,9 @@ def test_plain_ascii_wraps_exactly_like_textwrap():
     import textwrap
     text = " ".join(f"word{i}" for i in range(40))
     assert _wrap_panel_text(text, 30) == textwrap.wrap(text, 30, break_long_words=False, break_on_hyphens=False)
+
+
+def test_other_panels_keep_long_words_whole():
+    """Only the backtrack pager hard-splits: approval/clarify panels keep main's textwrap output."""
+    url = "https://example.com/" + "a" * 120
+    assert _wrap_panel_text("see " + url, 40) == ["see", url]

@@ -1,6 +1,6 @@
 name: prompt-enhancer
 repo: https://github.com/Heybinshao/prompt-enhancer
-sha: ecd040a8f503996415a1f4545c75ec780816b60f
+sha: a2e421cde945b3329614b33124ffa7f2978d8a94
 description: "A composer button for Hermes Desktop that first repairs dictation typos in the draft, then rewrites it into a structured prompt (task / scope / constraints / output shape); one click back restores the original typing, and ⌥-click repairs without enhancing. ⌘-click picks the model both steps use (written to auxiliary.prompt_* in config.yaml). Reads the session's own history (local, read-only) to build a proper-noun list for the repair step, and adds the previous turn only on ⇧-click. Preserves @file and /command chips plus inline /skill references verbatim; per-session state. Multi-composer isolation: parallel sessions enhance independently and each result writes back to its own composer in real time; a result from a switched-away session applies automatically on return (never overwrites manual edits). UI in EN / 简中 / 繁體."
 maintainer: Heybinshao
 tier: community
@@ -8,7 +8,7 @@ category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Heybinshao/prompt-enhancer#readme
 version: "2.3.0"
-image: https://raw.githubusercontent.com/Heybinshao/prompt-enhancer/ecd040a8f503996415a1f4545c75ec780816b60f/assets/banner.png
+image: https://raw.githubusercontent.com/Heybinshao/prompt-enhancer/a2e421cde945b3329614b33124ffa7f2978d8a94/assets/banner.png
 capabilities:
   provides_tools: []
   provides_hooks: []

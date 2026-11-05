@@ -12,6 +12,7 @@ import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { ConnectorsOverlay } from './connectorsOverlay.js'
+import { HistorySearch } from './historySearch.js'
 import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -233,6 +234,7 @@ export function FloatingOverlays({
   nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
+  onHistoryAccept,
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -245,6 +247,7 @@ export function FloatingOverlays({
   | 'completions'
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
+  | 'onHistoryAccept'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -312,6 +315,28 @@ export function FloatingOverlays({
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
+            t={theme}
+          />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.historySearch) {
+    const { query } = overlay.historySearch
+
+    widgets.push({
+      id: 'history-search',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <HistorySearch
+            initialQuery={query}
+            maxWidth={width}
+            onAccept={entry => {
+              patchOverlayState({ historySearch: null })
+              onHistoryAccept(entry)
+            }}
+            onClose={() => patchOverlayState({ historySearch: null })}
             t={theme}
           />
         </FloatBox>

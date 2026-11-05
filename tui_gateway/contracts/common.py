@@ -47,6 +47,9 @@ class Usage(OpenModel):
     cache_write: int | None = None
     avg_latency_s: float | None = None
     avg_tps: float | None = None
+    # Decode-only rate of the latest call (first streamed chunk → stream end, TTFT/prefill
+    # excluded): ``agent/turn_usage.py::_decode_window_tps``. Absent when it did not stream.
+    decode_tps: float | None = None
     active_subagents: int | None = None
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None

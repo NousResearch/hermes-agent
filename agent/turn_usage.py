@@ -45,6 +45,30 @@ def _loop_mod():
     return _cl
 
 
+# A "decode window" shorter than this is one buffered chunk, not a measurable stream.
+_MIN_DECODE_WINDOW_S = 0.05
+
+
+def _decode_window_tps(first_chunk_at, stream_end_at, output_tokens):
+    """Output tokens ÷ (first streamed chunk → end of that stream).
+
+    ``avg_tps`` divides by the whole call, so the wait for the first token and the prefill of
+    a 100k-token prompt read as "slow decoding" while the model is decoding fast. This is the
+    decode-only figure the status bar shows as ``decode_tps``; ``None`` — never a fabricated
+    rate — when the call did not stream or produced a single buffered chunk.
+    """
+    if not isinstance(first_chunk_at, (int, float)) or not isinstance(stream_end_at, (int, float)):
+        return None
+    window = float(stream_end_at) - float(first_chunk_at)
+    if window < _MIN_DECODE_WINDOW_S:
+        return None
+    tokens = output_tokens if isinstance(output_tokens, (int, float)) else 0
+    if tokens <= 0:
+        return None
+    rate = float(tokens) / window
+    return round(rate, 1) if 0 < rate < 1e6 else None
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -194,6 +218,15 @@ def record_response_usage(
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))
+    # Decode-only throughput for the status bar (``decode_tps``): the window from the first
+    # streamed chunk to the end of that stream, so TTFT and prefill are excluded. Read off the
+    # per-attempt stamps (``agent/chat_completion_helpers.py`` sets the first-chunk one,
+    # ``agent/turn_response_check.py`` the stream-end one) rather than the call's wall clock.
+    agent._last_api_decode_tps = _decode_window_tps(
+        getattr(agent, "_last_api_first_chunk_at", None),
+        getattr(agent, "_last_api_stream_end_at", None),
+        canonical_usage.output_tokens,
+    )
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:
@@ -209,11 +242,13 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    _decode = getattr(agent, "_last_api_decode_tps", None)
+    _decode_txt = f" decode={_decode:.1f}tps" if isinstance(_decode, (int, float)) else ""
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
+        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s%s",
         agent.session_api_calls, agent.model, agent.provider or "unknown",
         prompt_tokens, completion_tokens, total_tokens,
-        api_duration, _cache_pct, _ident,
+        api_duration, _cache_pct, _ident, _decode_txt,
     )
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":

@@ -117,6 +117,10 @@ def check_api_response(
         )
 
     api_duration = time.time() - api_start_time
+    # End of this attempt's stream, paired with the first-chunk stamp the streaming path set
+    # (``agent/turn_usage.py::_decode_window_tps`` turns the pair into the status bar's decode-only
+    # rate). Every api_mode funnels through here, so one stamp covers chat/bedrock/codex alike.
+    agent._last_api_stream_end_at = api_start_time + api_duration
 
     # Silent stop: the response box / tool messages that follow are more informative.
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)

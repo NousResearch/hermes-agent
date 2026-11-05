@@ -925,6 +925,10 @@ export interface SessionRuntimeInfo {
 export interface UsageStats {
   /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
   avg_tps?: number
+  /** Decode-only rate of the LATEST call — output tokens ÷ (first streamed chunk → stream end),
+   *  TTFT and prefill excluded (`agent/turn_usage.py::_decode_window_tps`). Omitted, not 0, when
+   *  that call did not stream. Rendered by the `decode-tps` status-bar plugin. */
+  decode_tps?: number
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number

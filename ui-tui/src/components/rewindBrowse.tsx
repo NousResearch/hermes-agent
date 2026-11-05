@@ -2,7 +2,7 @@ import { Box, type Key, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { RewindOverlay } from '../app/interfaces.js'
-import { $rewindFocus, $rewindScrollRestore } from '../app/rewindFocusStore.js'
+import { $rewindFocus, $rewindScrollRestore, rewindFocusIndex } from '../app/rewindFocusStore.js'
 import { useT } from '../i18n/useT.js'
 import { clampOffset, ensureVisible, fitBrowseHint, messageRange, pagerLines, pagerMessages } from '../lib/transcriptPager.js'
 import type { Theme } from '../theme.js'
@@ -39,7 +39,7 @@ export function RewindBrowse({
   const target = req.targets[idx]
 
   useEffect(() => {
-    $rewindFocus.set(target ? { text: target.text, turn: target.turn } : null)
+    $rewindFocus.set(target ? { rowId: target.rowId, text: target.text, turn: target.turn } : null)
   }, [target])
 
   useEffect(() => () => $rewindFocus.set(null), [])
@@ -48,15 +48,11 @@ export function RewindBrowse({
   const messages = useMemo(() => pagerMessages(req.messages ?? []), [req.messages])
   const lines = useMemo(() => (native ? pagerLines(messages, Math.max(20, cols - 4)) : []), [cols, messages, native])
 
-  // The selected prompt is the `turn`-th user message of the pager (same rule as the transcript focus).
-  const selectedMsg = useMemo(() => {
-    const users = messages.flatMap((msg, i) => (msg.role === 'user' ? [i] : []))
-    const byTurn = target ? users[target.turn - 1] : undefined
-
-    return byTurn !== undefined && messages[byTurn]!.text.trim() === target?.text.trim()
-      ? byTurn
-      : (users.findLast(i => messages[i]!.text.trim() === target?.text.trim()) ?? -1)
-  }, [messages, target])
+  // The selected prompt's pager message: the same rule as the transcript focus.
+  const selectedMsg = useMemo(
+    () => rewindFocusIndex(messages, target ? { rowId: target.rowId, text: target.text, turn: target.turn } : null),
+    [messages, target]
+  )
 
   const [offset, setOffset] = useState(Number.MAX_SAFE_INTEGER)
 

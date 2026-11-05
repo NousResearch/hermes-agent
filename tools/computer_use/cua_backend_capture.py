@@ -60,6 +60,16 @@ def _is_cua_driver_self_window(w: dict[str, Any]) -> bool:
     app_name = str(w.get("app_name", "")).strip().lower()
     return re.sub(r"[\s_-]+", "", app_name) == "cuadriver"
 
+# Windows accessibility/IME helper surfaces that sit always-on-top with a high z_index but are not the
+# app the caller means to drive. Voice Access in particular (a full-width top strip) is the frontmost
+# window on many machines and its UIA provider wedges `get_window_state` in a 4 s timeout, so every
+# untargeted capture would die on it. Skipped on *implicit* captures only, exactly like the self-windows.
+_OVERLAY_WINDOW_TITLES = ("voice access", "narrator", "textinputhost", "windows insider", "microsoft text input")
+
+def _is_accessibility_overlay_window(w: dict[str, Any]) -> bool:
+    hay = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+    return any(t in hay for t in _OVERLAY_WINDOW_TITLES)
+
 
 def _select_capture_target(windows: list[dict[str, Any]], *, app_requested: bool,
                            exact_target: bool = False) -> dict[str, Any]:
@@ -80,6 +90,11 @@ def _select_capture_target(windows: list[dict[str, Any]], *, app_requested: bool
         external = [w for w in pool if not _is_cua_driver_self_window(w)]
         if external:
             pool = external
+        # Implicit captures also skip always-on-top accessibility overlays (Voice Access): they are not
+        # the app the caller means to drive and their UIA provider wedges the capture.
+        below = [w for w in pool if not _is_accessibility_overlay_window(w)]
+        if below:
+            pool = below
     if not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):
@@ -249,12 +264,21 @@ class _CaptureMixin:
         walking a 1,444-node Electron tree — or Finder's, whose AX surface is pathologically slow — buys
         latency and nothing else. The bounded tree is a prefix of the unbounded one, so the elements the
         model sees are unchanged. ``computer_use.ax_max_elements`` tunes it; 0 disables.
+        A caller-supplied ``max_elements``/``max_depth`` (the capture action's walk limits — e.g. to get
+        under a slow UIA provider's timeout) overrides the configured bound for this capture only.
         """
         args: dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
-        if capped := _cb._cua_configured_ax_max_elements():
-            args["max_elements"] = capped
+        overrides = getattr(self, "_capture_walk_overrides", None) or {}
+        live_schema = lambda prop: (getattr(self, "_session", None) is None
+                                    or self._session.supports_input_property("get_window_state", prop))
+        if capped := overrides.get("max_elements", _cb._cua_configured_ax_max_elements()):
+            if live_schema("max_elements"):
+                args["max_elements"] = capped
+        if (depth := overrides.get("max_depth")) is not None:
+            if live_schema("max_depth"):
+                args["max_depth"] = depth
         return args
 
     def _capture_vision(self) -> tuple[Optional[str], Optional[str], list[UIElement], str]:
@@ -263,9 +287,18 @@ class _CaptureMixin:
         (tree DISCARDED here). Before discovery ran we still try ``screenshot`` first and fall back, so the path
         self-heals on any driver version."""
         png_b64, image_mime_type, window_title = None, None, ""
+        # Pixels-only capture must never advertise or reuse element handles from an older AX snapshot.
+        self._snapshot_tokens, self._snapshot_id = {}, None
         if self._session._has_tool("screenshot") or not self._session.capabilities_discovered:
-            png_b64, image_mime_type = _image_from_tool_result(self._call_capture_tool("screenshot", {
-                "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id}))
+            # Screenshot is an optional path. A refusal must NOT disarm the selected target: the fallback
+            # get_window_state needs the same pid/window_id. That fallback still disarms on failure.
+            try:
+                out = self._session.call_tool("screenshot", {
+                    "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id})
+                if not out.get("isError"):
+                    png_b64, image_mime_type = _image_from_tool_result(out)
+            except Exception as exc:
+                logger.debug("cua-driver screenshot tool unavailable (%s); using get_window_state for vision capture", exc)
         if not png_b64:
             # "Unknown tool: screenshot" or an empty image part -> get_window_state. The title is cheap
             # and useful; `elements` stays empty by contract.
@@ -300,13 +333,20 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        # The snapshot these tokens belong to (driver `structuredContent.snapshot_id`, e.g. "s00000001").
+        # Element actions carry it as the stale-detection fallback when the driver accepts no element_token.
+        sid = (gws_out.get("structuredContent") or {}).get("snapshot_id") if isinstance(gws_out.get("structuredContent"), dict) else None
+        self._snapshot_id = sid if isinstance(sid, str) and sid else None
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
-                window_id: Optional[int] = None) -> CaptureResult:
+                window_id: Optional[int] = None, max_elements: Optional[int] = None,
+                max_depth: Optional[int] = None) -> CaptureResult:
         """Capture the frontmost on-screen window or an exact known target: `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision). Only the structured
-        ``structuredContent.windows`` shape is supported."""
+        ``structuredContent.windows`` shape is supported. ``max_elements``/``max_depth`` bound the
+        driver's UIA walk for this capture (the escape hatch when a provider is slow); when the live
+        schema lacks them the capture still runs unbounded, and an unsupported limit never fails it."""
         # Schema-filler ids (models zero-fill optional properties) must not read as a targeting request.
         pid, window_id = [None if _is_placeholder_id(v) else v for v in (pid, window_id)]
         exact_target = pid is not None or window_id is not None
@@ -314,21 +354,33 @@ class _CaptureMixin:
         # enumeration hangs). app='desktop' deliberately does NOT take it: desktop icons stay clickable.
         if not exact_target and app and app.strip().lower() in _FULL_SCREEN_SENTINELS:
             return self._capture_full_screen(mode)
-        windows = self._resolve_capture_windows(mode, app, pid, window_id)
-        if isinstance(windows, CaptureResult):
-            return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
-        app_name = target["app_name"]
-        # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
-        # to the frontmost window.
-        if app or not self._last_app:
-            self._last_app = app_name or app or ""
-        png_b64, image_mime_type, elements, window_title = (
-            self._capture_vision() if mode == "vision" else self._capture_window_state())
-        png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
-        return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
-                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
-                             ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0))
+        self._capture_walk_overrides = {k: v for k, v in (("max_elements", max_elements), ("max_depth", max_depth))
+                                       if v is not None}
+        try:
+            windows = self._resolve_capture_windows(mode, app, pid, window_id)
+            if isinstance(windows, CaptureResult):
+                return windows
+            prev_pid = self._active_pid
+            self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+            app_name = target["app_name"]
+            # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling
+            # back to the frontmost window. Aliases let the input guard accept either name of one target.
+            if app or not self._last_app:
+                self._last_app = app_name or app or ""
+            aliases = {a for a in (self._last_app, app_name, app) if a}
+            prev_aliases = getattr(self, "_last_app_aliases", None) or set()
+            self._last_app_aliases = (prev_aliases if prev_pid == target.get("pid") else set()) | aliases
+            png_b64, image_mime_type, elements, window_title = (
+                self._capture_vision() if mode == "vision" else self._capture_window_state())
+            png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
+            self._last_capture_size = (width, height) if png_b64 else None
+            return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
+                                 window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
+                                 window_frame=getattr(self, "_active_frame", None),
+                                 snapshot_id=getattr(self, "_snapshot_id", None),
+                                 ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0))
+        finally:
+            self._capture_walk_overrides = {}
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).
@@ -393,8 +445,10 @@ class _CaptureMixin:
         if not matched:
             self._clear_active_target()
             return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app '{app}'.")
+        prev_pid, prev = self._active_pid, getattr(self, "_last_app_aliases", None)
         self._set_active_target(target := matched[0])
         self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
+        self._last_app_aliases = ((prev or set()) if prev_pid == target.get("pid") else set()) | {a for a in (app, target["app_name"]) if a}
         if not raise_window:
             return ActionResult(ok=True, action="focus_app", message=f"Targeted {target['app_name']} (pid "
                                 f"{self._active_pid}, window {self._active_window_id}) without raising window.")

@@ -8,6 +8,9 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_seed import seed_messages
 
 
 class _Bridge:
@@ -45,22 +48,23 @@ async def test_compressed_acp_chat_lists_and_reopens_under_its_logical_id(tmp_pa
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'acp': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='owner')
-    db = authority.db
+    db = authority.persistence
     try:
         connection = AuthorityConnection(authority, object(), {'user_id': 'human', 'profile_id': 'fixture'})
         ref = create_local_session(authority, connection.actor, {
             'request_id': 'editor', 'source': 'acp', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
-        db.append_message(ref.session_id, 'user', 'before compression')
-        assert db.try_acquire_compression_lock(ref.session_id, 'fixture')
-        db.publish_compression_child(
-            parent_session_id=ref.session_id, child_session_id='compressed-tip', source='acp',
-            messages=[{'role': 'user', 'content': 'summary'}, {'role': 'assistant', 'content': 'retained'}],
+        seed_messages(db, ref.session_id, {'role': 'user', 'content': 'before compression'})
+        assert db.coordination.try_acquire_compression_lock(session_id=ref.session_id, holder='fixture')
+        db.lineage.publish_compression_child(
+            ref.session_id, CompressionChild(session_id='compressed-tip', source='acp'),
+            [NewMessage.from_live({'role': 'user', 'content': 'summary'}),
+             NewMessage.from_live({'role': 'assistant', 'content': 'retained'})],
             compression_lock_holder='fixture')
-        db.release_compression_lock(ref.session_id, 'fixture')
+        db.coordination.release_compression_lock(session_id=ref.session_id, holder='fixture')
 
         agent = GatewayACPAgent()
         agent._home = tmp_path

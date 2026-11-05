@@ -8,8 +8,8 @@ import asyncio
 
 from cron import executions, jobs, scheduler
 from gateway import session_cron
-from hermes_state_runtime import claim_session_input, settle_session_input
 from tests.cron.test_cron_recovery import _owner
+from tests.fixtures.storage_seed import settle_claim
 
 
 def test_submit_error_after_commit_observes_the_admitted_run(tmp_path, monkeypatch):
@@ -24,10 +24,9 @@ def test_submit_error_after_commit_observes_the_admitted_run(tmp_path, monkeypat
             if name != 'submit':
                 return answer
             # The owner admitted (and here, ran) the fire; the firer never sees the receipt.
-            row = claim_session_input(db, epoch=authority.epoch, session_id=answer['session_id'])
-            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'],
-                                 generation=row['generation'], outcome='completed',
-                                 result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
+            claimed = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=answer['session_id'])
+            settle_claim(authority.persistence, claimed,
+                         result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
             raise RuntimeError('owner answer lost after commit')
 
         monkeypatch.setattr(session_cron, 'operation', lossy)

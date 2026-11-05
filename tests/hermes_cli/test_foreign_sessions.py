@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from tests.fixtures.storage_read import session_row, transcript_rows
 
 from hermes_cli.foreign_sessions import (
     _list_sessions,
@@ -101,14 +103,14 @@ def _write_codex_fixture(tmp_path, extra_lines=None):
 def _route_store(monkeypatch, mutate):
     """Answer the importer's gateway calls with *mutate* (``session.mutate`` params -> receipt)."""
     from hermes_cli.gateway_client import GatewayClientError
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
     calls = []
 
     def call(method, **params):
         calls.append((method, params["operation"]))
         try:
             return mutate(params)
-        except (RuntimeStoreError, ValueError) as exc:  # a refusal crosses the wire as a bounded code
+        except (AuthorityRefusal, ValueError) as exc:  # a refusal crosses the wire as a bounded code
             raise GatewayClientError(getattr(exc, "reason", "invalid_params")) from exc
 
     monkeypatch.setattr("hermes_cli.gateway_session_store.session_store", lambda: SimpleNamespace(call=call))
@@ -121,17 +123,13 @@ def gateway(tmp_path, monkeypatch):
     from gateway.session_authority import SessionAuthority
     from gateway.session_contract import SessionActor, SessionRef
     from gateway.session_mutations import mutate_session
-    from hermes_state import SessionDB
-    from hermes_state_runtime import begin_runtime_epoch
-
-    db = SessionDB(db_path=tmp_path / "state.db")
+    persistence = storage_handle(tmp_path)
     authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
-                                 db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
+                                 epoch=persistence.runtime.begin_epoch(instance_id="owner"), persistence=persistence)
     actor = SessionActor("owner", "p", frozenset({"session:read", "session:control", "session:create"}), "cli")
     calls = _route_store(monkeypatch, lambda params: asyncio.run(
         mutate_session(authority, actor, SessionRef("p", params["session_id"]), params)))
-    yield SimpleNamespace(db=db, calls=calls)
-    db.close()
+    yield SimpleNamespace(store=persistence, calls=calls)
 
 
 def _assert_alternating(messages):
@@ -252,36 +250,36 @@ def test_blank_env_overrides_fall_back_to_home(tmp_path, monkeypatch):
 def test_import_claude_session(tmp_path, gateway):
     f = _write_claude_fixture(tmp_path)
     session_id = import_foreign_session("claude", f)
-    row = gateway.db.get_session(session_id)
+    row = session_row(gateway.store, session_id)
     assert row is not None
     assert row["source"] == "cli"
     assert row["origin_json"] is None
     assert row["cwd"] is None  # /home/user/proj is not a folder here, and resume would refuse it
     assert row["message_count"] == 4
-    title = gateway.db.get_session_title(session_id)
+    title = gateway.store.sessions.get_title(session_id)
     assert title.startswith("Imported from Claude Code: ")
     assert "Please fix the flaky test" in title
-    messages = gateway.db.get_messages(session_id)
+    messages = transcript_rows(gateway.store, session_id)
     assert len(messages) == 4
     _assert_alternating(messages)
     # A re-import keeps its conversation; only the taken (UNIQUE) title is dropped.
     again = import_foreign_session("claude", f)
-    assert gateway.db.get_session(again)["message_count"] == 4
-    assert gateway.db.get_session_title(again) is None
+    assert session_row(gateway.store, again)["message_count"] == 4
+    assert gateway.store.sessions.get_title(again) is None
 
 
 def test_import_codex_session(tmp_path, gateway):
     f = _write_codex_fixture(tmp_path)
     f.write_text(f.read_text(encoding="utf-8").replace("/home/user/repo", str(tmp_path)), encoding="utf-8")
     session_id = import_foreign_session("@codex", f)
-    row = gateway.db.get_session(session_id)
+    row = session_row(gateway.store, session_id)
     assert row is not None
     assert row["source"] == "cli"
     assert row["cwd"] == str(tmp_path)
     assert row["message_count"] == 4
-    title = gateway.db.get_session_title(session_id)
+    title = gateway.store.sessions.get_title(session_id)
     assert title.startswith("Imported from Codex CLI: ")
-    messages = gateway.db.get_messages(session_id)
+    messages = transcript_rows(gateway.store, session_id)
     _assert_alternating(messages)
 
 
@@ -299,19 +297,18 @@ def test_import_rejects_bad_input(tmp_path, gateway):
 
 def test_import_is_written_by_the_gateway_not_this_process(tmp_path, gateway, monkeypatch):
     """The gateway is the only state.db writer (#106742): the importer only sends ``session.mutate``."""
-    from hermes_state import SessionDB
-    from hermes_state_mutation_binding import history_binding
+    from tests.fixtures.storage_holder import history_binding_key
 
     def refused(*_a, **_k):
         raise AssertionError("the importer wrote state.db itself")
-    monkeypatch.setattr(SessionDB, "create_session", refused)
-    monkeypatch.setattr(SessionDB, "append_message", refused)
+    monkeypatch.setattr(type(gateway.store.sessions), "create", refused)
+    monkeypatch.setattr(type(gateway.store.messages), "append", refused)
 
     session_id = import_foreign_session("claude", _write_claude_fixture(tmp_path))
 
     assert gateway.calls == [("session.mutate", "import"), ("session.mutate", "rename")]
-    with gateway.db._read_ctx() as conn:  # the import receipt bound the row to its importer
-        assert history_binding(conn, session_id) == json.dumps(["p", "owner"], separators=(",", ":"))
+    # the import receipt bound the row to its importer
+    assert gateway.store.state_meta.get(history_binding_key(session_id)) == json.dumps(["p", "owner"], separators=(",", ":"))
 
 
 @pytest.mark.asyncio
@@ -325,7 +322,7 @@ async def test_imported_chat_resumes_writable_as_cli(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
     monkeypatch.setattr(run, "_load_gateway_config", lambda: {"model": {"default": "m1", "provider": "openrouter"}})
     store = SessionStore(tmp_path / "sessions", GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _adapter_for_source=lambda source: None, _cached_agent_for=lambda route: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id="i")
     conn = AuthorityConnection(authority, object(), {

@@ -7,6 +7,7 @@ import threading
 import time
 
 import pytest
+from persistence_assembly import close_stores_under, store_location
 
 
 async def _msgraph(tmp_path):
@@ -34,7 +35,7 @@ async def test_ingress_admission_never_blocks_the_owner_loop_on_a_held_writer(tm
     held, release = threading.Event(), threading.Event()
 
     def hold_writer():
-        conn = sqlite3.connect(authority.db.db_path, timeout=30)
+        conn = sqlite3.connect(store_location(authority.persistence.scope), timeout=30)
         conn.execute('BEGIN IMMEDIATE')
         held.set()
         release.wait(30)
@@ -59,4 +60,4 @@ async def test_ingress_admission_never_blocks_the_owner_loop_on_a_held_writer(tm
     receipt = await asyncio.wait_for(task, 30)
     assert receipt.status == 'queued'  # committed before the ACK, as before
     await asyncio.to_thread(holder.join, 10)
-    await asyncio.to_thread(authority.db.close)
+    await asyncio.to_thread(close_stores_under, authority.persistence.scope.profile_dir)

@@ -11,21 +11,32 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from persistence_assembly import open_persistence, profile_scope
 from tests.waiting import wait_until
 
 
+@pytest.fixture(name="store")
+def store_fixture(tmp_path):
+    """A store handle on the test home, closed at teardown."""
+    handle = open_persistence(profile_scope(home=tmp_path))
+    yield handle
+    handle.close()
+
+
 def test_member_info_reports_the_running_executions_tool_and_last_frame(hosted_owner):
-    from gateway.hosted_room_driver import TaskIdentity
+    from gateway.session_authority import admission_row
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
-    from hermes_state_runtime import claim_session_input
+    from persistence.gateway.hosted_rooms import HostedTaskIdentity
     authority, loop, principal, _agent = hosted_owner
     rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='scout', profile='default',
                                  principal=principal, authorize=lambda *args: True)
     coords = dict(profile='default', source='bot_room')
     sid = rpc.create(**coords, title='Group: room')['session_id']
-    rpc.submit(**coords, session_id=sid, prompt='check the logs', task=TaskIdentity('room', 'task', 'thread', 'turn'),
+    rpc.submit(**coords, session_id=sid, prompt='check the logs', task=HostedTaskIdentity('room', 'task', 'thread', 'turn'),
                execution_generation=1, on_terminal=lambda receipt: None)
-    row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    row = admission_row(authority.persistence.admissions.claim(epoch=authority.epoch, session_id=sid))
     authority.executing[sid] = row['generation']  # what the canonical claim stamps before running
     assert 'tool' not in rpc.info(**coords, session_id=sid)
 
@@ -78,10 +89,10 @@ class _ToolRPC:
                 "tool": "terminal", "progress_at": 1234.5}
 
 
-def test_groups_state_names_the_tool_a_member_transport_reports(tmp_path: Path):
+def test_groups_state_names_the_tool_a_member_transport_reports(tmp_path: Path, store):
     from tui_gateway.hosted_room_service import HostedRoomService
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
-    service = HostedRoomService(server, db_path=tmp_path / "state.db")
+    service = HostedRoomService(server, store=store, placement="profile")
     service.rpc = service.runtime.rpc = _ToolRPC()
     service.local_profiles = lambda: ("default", "scout")
     service.create_room(room_id="room-1", name="Release room", members=[

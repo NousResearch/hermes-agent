@@ -9,6 +9,8 @@ import pytest
 from gateway import hosted_room_context as context
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_rooms
+from persistence.sqlite.gateway import hosted_rooms as backend_rooms
+from persistence_assembly import open_persistence, profile_scope
 
 ROOM_ID = "room-lead"
 PROFILES = ("ada", "linus", "grace")
@@ -16,48 +18,49 @@ MEMBERS = [{"member_id": f"member-{p}", "profile": p, "handle": p} for p in PROF
 
 
 @pytest.fixture
-def room_db(tmp_path: Path) -> Path:
-    db = tmp_path / "state.db"
-    hosted_rooms.create_room(db, room_id=ROOM_ID, name="Kernel", members=MEMBERS, authority_gateway_id=hosted_rooms.local_authority_gateway_id(), now=1)
-    return db
+def room_db(tmp_path: Path):
+    db = open_persistence(profile_scope(home=tmp_path))
+    hosted_rooms.create_room(db, placement="profile", room_id=ROOM_ID, name="Kernel", members=MEMBERS, authority_gateway_id=hosted_rooms.local_authority_gateway_id(), now=1)
+    yield db
+    db.close()
 
 
-def _room(db: Path) -> dict:
-    room = hosted_rooms.room_state(db, room_id=ROOM_ID)
+def _room(db) -> dict:
+    room = hosted_rooms.room_state(db, placement="profile", room_id=ROOM_ID)
     room["members"] = MEMBERS
     return room
 
 
-def _events(db: Path) -> list[dict]:
-    return hosted_rooms.read_events(db, room_id=ROOM_ID, limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
+def _events(db) -> list[dict]:
+    return hosted_rooms.read_events(db, placement="profile", room_id=ROOM_ID, limit=hosted_rooms.MAX_LOG_LIMIT)["events"]
 
 
-def _plan(db: Path, source_seq: int) -> discussion.DiscussionDecision:
+def _plan(db, source_seq: int) -> discussion.DiscussionDecision:
     return discussion.plan_next_task(
         _room(db), _events(db), local_profiles=PROFILES,
-        room_context=context.room_context(db, room_id=ROOM_ID, before_seq=source_seq))
+        room_context=context.room_context(db, placement="profile", room_id=ROOM_ID, before_seq=source_seq))
 
 
-def _say(db: Path, text: str, *, event_id: str = "u1", thread_id: str = "t1") -> int:
+def _say(db, text: str, *, event_id: str = "u1", thread_id: str = "t1") -> int:
     return hosted_rooms.append_event(
-        db, room_id=ROOM_ID, event_id=event_id, kind="message.user", actor={"kind": "user", "id": "desktop"},
+        db, placement="profile", room_id=ROOM_ID, event_id=event_id, kind="message.user", actor={"kind": "user", "id": "desktop"},
         payload={"text": text, "thread_id": thread_id}, authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)["seq"]
 
 
-def _finish(db: Path, decision: discussion.DiscussionDecision, text: str, status: str = "settled") -> list[dict]:
+def _finish(db, decision: discussion.DiscussionDecision, text: str, status: str = "settled") -> list[dict]:
     result = {"text": text} if status == "settled" else {"error": text}
     plan = discussion.plan_publication(
         _room(db), _events(db), decision.task, status=status, result=result, local_profiles=PROFILES)
-    return [hosted_rooms.append_event(db, **event.append_kwargs(ROOM_ID)) for event in plan.events]
+    return [hosted_rooms.append_event(db, placement="profile", **event.append_kwargs(ROOM_ID)) for event in plan.events]
 
 
-def _lead_room(db: Path) -> None:
+def _lead_room(db) -> None:
     context.set_room_context(
-        db, room_id=ROOM_ID, event_id="ctx", purpose="Kernel work", notes="linus: scheduler; grace: compiler",
+        db, placement="profile", room_id=ROOM_ID, event_id="ctx", purpose="Kernel work", notes="linus: scheduler; grace: compiler",
         routing="lead", lead_member_id="member-ada")
 
 
-def test_unaddressed_message_wakes_only_who_the_lead_picks(room_db: Path):
+def test_unaddressed_message_wakes_only_who_the_lead_picks(room_db):
     _lead_room(room_db)
     seq = _say(room_db, "The build is slow, can someone look?")
 
@@ -85,7 +88,7 @@ def test_unaddressed_message_wakes_only_who_the_lead_picks(room_db: Path):
 
 
 @pytest.mark.parametrize("answer", ["Linus should take it", '{"assign": ["@all"]}', '{"assign": []}', "(pass)"])
-def test_a_routing_answer_naming_no_member_wakes_the_lead_alone_never_everyone(room_db: Path, answer: str):
+def test_a_routing_answer_naming_no_member_wakes_the_lead_alone_never_everyone(room_db, answer: str):
     _lead_room(room_db)
     seq = _say(room_db, "Anyone?")
 
@@ -98,7 +101,7 @@ def test_a_routing_answer_naming_no_member_wakes_the_lead_alone_never_everyone(r
     assert _plan(room_db, seq).status == "settled"
 
 
-def test_a_failed_routing_turn_falls_back_to_the_lead(room_db: Path):
+def test_a_failed_routing_turn_falls_back_to_the_lead(room_db):
     _lead_room(room_db)
     seq = _say(room_db, "Anyone?")
 
@@ -111,7 +114,7 @@ def test_a_failed_routing_turn_falls_back_to_the_lead(room_db: Path):
     'Pick: {"assign": ["linus"]} (scheduler work, see {notes})',
     'Thinking {not json} then {"assign": ["@linus"]}',
     '{"reason": "x"} {"assign": ["linus"]}'])
-def test_a_routing_answer_wrapped_in_prose_with_braces_still_assigns(room_db: Path, answer: str):
+def test_a_routing_answer_wrapped_in_prose_with_braces_still_assigns(room_db, answer: str):
     _lead_room(room_db)
     seq = _say(room_db, "The build is slow")
 
@@ -119,7 +122,7 @@ def test_a_routing_answer_wrapped_in_prose_with_braces_still_assigns(room_db: Pa
     assert assignment["payload"]["member_ids"] == ["member-linus"] and assignment["payload"]["fallback"] is False
 
 
-def test_a_discarded_routing_turn_records_no_assignment_and_the_lead_still_answers(room_db: Path):
+def test_a_discarded_routing_turn_records_no_assignment_and_the_lead_still_answers(room_db):
     _lead_room(room_db)
     seq = _say(room_db, "Anyone?")
 
@@ -132,11 +135,11 @@ def test_a_discarded_routing_turn_records_no_assignment_and_the_lead_still_answe
     assert _plan(room_db, seq).status == "settled"
 
 
-def test_a_purpose_only_save_racing_a_routing_change_never_restores_the_old_routing(room_db: Path, monkeypatch):
+def test_a_purpose_only_save_racing_a_routing_change_never_restores_the_old_routing(room_db, monkeypatch):
     import threading
 
     _lead_room(room_db)
-    real_validate = context.validate_context
+    real_validate = backend_rooms.validate_context
     first_read, routing_saved = threading.Event(), threading.Event()
 
     def validate(*args, **kwargs):
@@ -147,21 +150,21 @@ def test_a_purpose_only_save_racing_a_routing_change_never_restores_the_old_rout
             routing_saved.wait(timeout=1.0)
         return real_validate(*args, **kwargs)
 
-    monkeypatch.setattr(context, "validate_context", validate)
+    monkeypatch.setattr(backend_rooms, "validate_context", validate)
     older = threading.Thread(name="older-client", target=lambda: context.set_room_context(
-        room_db, room_id=ROOM_ID, event_id="c-older", purpose="Older client purpose", notes=""))
+        room_db, placement="profile", room_id=ROOM_ID, event_id="c-older", purpose="Older client purpose", notes=""))
     older.start()
     assert first_read.wait(timeout=5)
-    context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-routing", purpose="Kernel work", notes="",
+    context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-routing", purpose="Kernel work", notes="",
                              routing="everyone")
     routing_saved.set()
     older.join(timeout=10)
 
-    assert context.room_context(room_db, room_id=ROOM_ID)["routing"] == "everyone"
+    assert context.room_context(room_db, placement="profile", room_id=ROOM_ID)["routing"] == "everyone"
 
 
 @pytest.mark.parametrize(("text", "first"), [("@grace what broke?", "grace"), ("@everyone status", "ada")])
-def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: str):
+def test_mentions_and_everyone_bypass_the_lead(room_db, text: str, first: str):
     _lead_room(room_db)
     seq = _say(room_db, text)
 
@@ -170,14 +173,14 @@ def test_mentions_and_everyone_bypass_the_lead(room_db: Path, text: str, first: 
     assert decision.task.seen_through_seq >= seq
 
 
-def test_scheduled_posts_and_thread_replies_keep_their_resolution(room_db: Path):
+def test_scheduled_posts_and_thread_replies_keep_their_resolution(room_db):
     _lead_room(room_db)
     post = context.post_scheduled_message(
-        room_db, room_id=ROOM_ID, job_id="job1", job_name="Nightly", run_key="r1", text="all green")
+        room_db, placement="profile", room_id=ROOM_ID, job_id="job1", job_name="Nightly", run_key="r1", text="all green")
     settled = _plan(room_db, post["seq"])
     assert settled.status == "settled"
     hosted_rooms.append_event(  # what the room service records for a settled discussion
-        room_db, room_id=ROOM_ID, event_id="activity-1", kind="room.activity",
+        room_db, placement="profile", room_id=ROOM_ID, event_id="activity-1", kind="room.activity",
         actor={"kind": "gateway", "id": hosted_rooms.local_authority_gateway_id()},
         payload={"status": "settled", "reason_code": settled.reason, "thread_id": settled.thread_id,
                  "discussion_event_id": settled.discussion_event_id},
@@ -192,7 +195,7 @@ def test_scheduled_posts_and_thread_replies_keep_their_resolution(room_db: Path)
     assert decision.task.seen_through_seq >= reply
 
 
-def test_everyone_routing_plans_exactly_as_a_room_without_settings(room_db: Path):
+def test_everyone_routing_plans_exactly_as_a_room_without_settings(room_db):
     _say(room_db, "hello")
     plans = [discussion.plan_next_task(_room(room_db), _events(room_db), local_profiles=PROFILES, room_context=value)
              for value in (None, {"purpose": "", "notes": "", "routing": "everyone", "lead_member_id": ""})]
@@ -200,17 +203,17 @@ def test_everyone_routing_plans_exactly_as_a_room_without_settings(room_db: Path
     assert plans[0].task.identity == plans[1].task.identity and plans[0].task.member.handle == "ada"
 
 
-def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db: Path):
+def test_room_settings_validate_the_lead_and_keep_routing_a_client_omits(room_db):
     with pytest.raises(hosted_rooms.HostedRoomError):
-        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead",
+        context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead",
                                  lead_member_id="member-nobody")
     with pytest.raises(hosted_rooms.HostedRoomError):
-        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead")
+        context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c1", purpose="", notes="", routing="lead")
     _lead_room(room_db)
 
     # An older Desktop saves purpose/notes only: the room stays a lead room.
-    context.set_room_context(room_db, room_id=ROOM_ID, event_id="c2", purpose="New purpose", notes="")
-    assert context.room_context(room_db, room_id=ROOM_ID) == {
+    context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c2", purpose="New purpose", notes="")
+    assert context.room_context(room_db, placement="profile", room_id=ROOM_ID) == {
         "purpose": "New purpose", "notes": "", "routing": "lead", "lead_member_id": "member-ada"}
 
 
@@ -230,41 +233,41 @@ def test_attachment_only_message_tells_the_lead_what_arrived():
     assert "crash.log (file, text/plain)" in prompt and "trace.png (image, image/png)" in prompt
 
 
-def test_retried_settings_save_returns_its_first_event_after_a_routing_edit(room_db: Path):
-    first = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
+def test_retried_settings_save_returns_its_first_event_after_a_routing_edit(room_db):
+    first = context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
     _lead_room(room_db)  # another client turns on a lead meanwhile
 
-    retry = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
+    retry = context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-notes", purpose="Notes only", notes="")
 
     assert retry["event"]["idempotent"] and retry["event"]["seq"] == first["event"]["seq"]
-    assert context.room_context(room_db, room_id=ROOM_ID)["routing"] == "lead"
+    assert context.room_context(room_db, placement="profile", room_id=ROOM_ID)["routing"] == "lead"
     with pytest.raises(hosted_rooms.EventConflictError):  # a different save under the same id still conflicts
-        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-notes", purpose="Other", notes="")
+        context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-notes", purpose="Other", notes="")
 
 
 
-def test_a_settings_retry_of_an_event_saved_before_routing_existed_returns_it(room_db: Path):
+def test_a_settings_retry_of_an_event_saved_before_routing_existed_returns_it(room_db):
     """A ``room.context_set`` written before lead routing carries only purpose and notes."""
     first = hosted_rooms.append_event(
-        room_db, room_id=ROOM_ID, event_id="c-old", kind=context.CONTEXT_EVENT_KIND,
+        room_db, placement="profile", room_id=ROOM_ID, event_id="c-old", kind=context.CONTEXT_EVENT_KIND,
         actor={"kind": "system", "id": "room-control"}, payload={"purpose": "Old", "notes": ""},
         authority_gateway_id=hosted_rooms.local_authority_gateway_id(), authority_epoch=1)
 
-    retry = context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="")
+    retry = context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="")
 
     assert retry["event"]["idempotent"] and retry["event"]["seq"] == first["seq"]
     with pytest.raises(hosted_rooms.EventConflictError):  # asking for a lead under that id is a different save
-        context.set_room_context(room_db, room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="",
+        context.set_room_context(room_db, placement="profile", room_id=ROOM_ID, event_id="c-old", purpose="Old", notes="",
                                  routing="lead", lead_member_id="member-ada")
 
 
 @pytest.mark.parametrize(("answer", "status"), [('{"assign": ["ada"]}', "settled"), ("discarded", "cancelled")])
-def test_a_rename_after_routing_never_consumes_the_leads_answer(room_db: Path, answer: str, status: str):
+def test_a_rename_after_routing_never_consumes_the_leads_answer(room_db, answer: str, status: str):
     """The routing receipt is matched by its durable identity, not by a prompt that names the room."""
     _lead_room(room_db)
     seq = _say(room_db, "Anyone?")
     _finish(room_db, _plan(room_db, seq), answer, status=status)
-    hosted_rooms.rename_room(room_db, room_id=ROOM_ID, event_id="rename", name="Renamed")
+    hosted_rooms.rename_room(room_db, placement="profile", room_id=ROOM_ID, event_id="rename", name="Renamed")
 
     turn = _plan(room_db, seq)
     assert (turn.status, turn.reason, turn.task.member.handle) == ("task", "member_turn", "ada")

@@ -27,6 +27,10 @@
 .PARAMETER Store
   Build the Store package instead of the sideload package.
 
+.PARAMETER Variant
+  Desktop artifact variant: bundled (default), store, or light (remote-only:
+  no runtime packaged, Windows builds the portable win-unpacked directory).
+
 .PARAMETER Python
   Python 3.11+ to run the driver. Default: the first suitable python on PATH.
 
@@ -36,6 +40,8 @@
 [CmdletBinding()]
 param(
   [switch]$Store,
+  [ValidateSet('', 'bundled', 'store', 'light')]
+  [string]$Variant = '',
   [string]$Python = '',
   [string]$Remote = 'origin'
 )
@@ -148,8 +154,9 @@ try {
     & $py scripts/bundles/desktop.py --prepared (Join-Path $work 'prepared.json') --variant store
     if ($LASTEXITCODE) { Fail "Store packaging failed (exit $LASTEXITCODE)" }
   } else {
-    Write-Host "build-bundle: building $sha (sideload)"
-    & $py scripts/bundles/desktop.py --commit $sha --variant bundled --clean
+    $variant = if ($Variant) { $Variant } else { 'bundled' }
+    Write-Host "build-bundle: building $sha (variant $variant)"
+    & $py scripts/bundles/desktop.py --commit $sha --variant $variant --clean
     if ($LASTEXITCODE) { Fail "build failed (exit $LASTEXITCODE)" }
   }
 } finally {

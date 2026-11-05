@@ -1,6 +1,6 @@
 name: lemma
 repo: https://github.com/udirobert/lemma
-sha: e3a4f28ce844286f0120ae913b22621c328741b3
+sha: bacb0ef4047e155a6a941b2c97ab7137af054320
 subdir: hermes-plugin
 title: Lemma — Audit What Agents Read
 description: 'An AI-scientist plugin that audits what your agent reads. Paste or mention a paper link and the ambient

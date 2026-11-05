@@ -1,0 +1,19 @@
+name: simular-box
+title: box by Simular
+repo: https://github.com/simular-ai/box-plugin
+sha: a171f08e9d55b7a8765457deb9d27fa014890965
+subdir: hermes
+version: "0.1.1"
+description: "Give Hermes a computer of its own: box is a cloud Linux desktop with Chrome and a shell that the agent drives over MCP, around the clock, while your own machine stays free. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only, no code: one remote MCP server (https://mcp.box.simular.ai/mcp, streamable HTTP) and one skill. Needs a box personal key from box.simular.ai/keys, set in Settings > Plugins or as MCP_BOX_API_KEY in the profile .env. Disclosure — every tool call and the MCP_BOX_API_KEY go to mcp.box.simular.ai (Simular); the agent can run shell commands, read, write and delete files, browse sites, and hibernate, save, upgrade or delete the user's box on Simular's cloud computer without a Hermes prompt; box use counts against the account's box plan; the user can watch and take over the box at box.simular.ai/box. Nothing runs or is stored on the local machine."
+maintainer: Simular
+tier: community
+category: tools
+docs_url: https://github.com/simular-ai/box-plugin/tree/main/hermes#readme
+requires_hermes: ">=0.22.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [MCP_BOX_API_KEY]

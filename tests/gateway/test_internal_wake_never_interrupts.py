@@ -23,7 +23,6 @@ async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(m
     from gateway.session_authority import initialize_session_authority
     from gateway.session_results import execution_result
     from gateway.wake import deliver_wake
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -70,11 +69,11 @@ async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(m
     owner = runner.session_store.peek_session_id(key)
 
     def rows():
-        return list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal', 'terminal'],
+        return authority.persistence.admissions.list(session_id=owner, pending_only=False)
+    await async_wait_until(lambda: [r.status for r in rows()] == ['terminal', 'terminal'],
                            what='both admissions to settle')
     # The wake ran as its own FIFO turn after the user's, never inside or instead of it.
-    assert [(r['principal_id'].split(':')[0], r['outcome']) for r in rows()] == [
+    assert [(r.principal_id.split(':')[0], r.outcome) for r in rows()] == [
         ('messaging', 'completed'), ('automation', 'completed')]
     assert executed == ['A', wake]
 
@@ -93,7 +92,6 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     from gateway.session_ingress import executing_admission
     from gateway.session_results import execution_result
     from hermes_cli import loops
-    from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
@@ -123,8 +121,8 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
 
     def rows():
         owner = runner.session_store.peek_session_id(key)
-        return list_session_admissions(authority.db, session_id=owner, pending_only=False) if owner else []
-    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal'] and not runner._is_session_running(key),
+        return authority.persistence.admissions.list(session_id=owner, pending_only=False) if owner else []
+    await async_wait_until(lambda: [r.status for r in rows()] == ['terminal'] and not runner._is_session_running(key),
                            what='the first turn to settle and release the session')
     owner = runner.session_store.peek_session_id(key)
 
@@ -149,5 +147,5 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
                                        1e12, set())
     await async_wait_until(lambda: len(started) >= 2, what='the loop tick turn to start')
     assert started == [('hello', True), ('loop tick prompt', True)], 'the tick ran outside the FIFO'
-    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal', 'terminal'],
+    await async_wait_until(lambda: [r.status for r in rows()] == ['terminal', 'terminal'],
                            what='both admissions to settle')

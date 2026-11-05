@@ -1,11 +1,12 @@
 """Expired staged bytes cannot be revived by a delayed share."""
 import pytest
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, AttachmentNotFoundError, UNCOMMITTED_TTL_SECONDS
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 def test_expired_upload_cannot_be_committed_without_pruning(tmp_path):
     now = [100.0]
-    store = HostedRoomAttachmentStore(tmp_path / 'state.db', clock=lambda: now[0])
+    store = HostedRoomAttachmentStore(storage_handle(tmp_path), clock=lambda: now[0])
     uploaded = store.put(room_id='room', upload_id='upload', kind='file', name='a.txt', mime='text/plain', data=b'bytes')
     manifest = [{key: uploaded[key] for key in ('attachment_id', 'kind', 'name', 'size', 'mime')}]
     now[0] += UNCOMMITTED_TTL_SECONDS

@@ -9,13 +9,17 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_session
 
 
 def _runner(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     return runner
@@ -23,12 +27,13 @@ def _runner(tmp_path):
 
 def _compress(db, parent, child, source):
     history = [{'role': 'user', 'content': 'retained'}, {'role': 'assistant', 'content': 'history'}]
-    assert db.try_acquire_compression_lock(parent, 'fixture')
+    assert db.coordination.try_acquire_compression_lock(session_id=parent, holder='fixture')
     try:
-        db.publish_compression_child(parent_session_id=parent, child_session_id=child,
-                                     source=source, messages=history, compression_lock_holder='fixture')
+        db.lineage.publish_compression_child(parent, CompressionChild(session_id=child, source=source),
+                                             [NewMessage.from_live(m) for m in history],
+                                             compression_lock_holder='fixture')
     finally:
-        db.release_compression_lock(parent, 'fixture')
+        db.coordination.release_compression_lock(session_id=parent, holder='fixture')
 
 
 async def _resume(authority, user_id, sid):
@@ -58,9 +63,9 @@ async def _compressed(tmp_path, monkeypatch):
         # the compression split publishes the child, and the split sync re-stamps the child
         # (run_turn_runner), which stores the canonical row as ``source='local'``.
         store._record_gateway_session_peer(parent, live.route, live.source)
-        _compress(authority.db, parent, child, authority.db.get_session(parent)['source'])
+        _compress(authority.persistence, parent, child, session_row(authority.persistence, parent)['source'])
         store._record_gateway_session_peer(child, live.route, live.source)
-    source = authority.db.get_session('child-2')['source']
+    source = session_row(authority.persistence, 'child-2')['source']
     return SimpleNamespace(tmp_path=tmp_path, owner=ref.session_id, source=source, warm=authority)
 
 
@@ -96,10 +101,10 @@ async def test_a_fork_that_copied_the_owner_chat_id_is_no_alias(tmp_path, monkey
     compressed = await _compressed(tmp_path, monkeypatch)
     """A row outside the owner's receipt lineage that copied its ``chat_id`` is refused by name."""
     authority = await _cold(compressed)
-    tip = authority.db.get_session('child-2')
-    authority.db.create_session('stray', source='local', parent_session_id='child-2',
-                                model_config={'_branched_from': 'child-2'}, chat_id=tip['chat_id'],
-                                user_id=tip['user_id'], session_key=tip['session_key'])
+    tip = session_row(authority.persistence, 'child-2')
+    seed_session(authority.persistence, 'stray', 'local', parent_session_id='child-2',
+                 model_config={'_branched_from': 'child-2'}, chat_id=tip['chat_id'],
+                 user_id=tip['user_id'], session_key=tip['session_key'])
     reply = await _resume(authority, 'owner', 'stray')
     assert reply['error']['message'] == 'storage_unavailable', reply
     assert json.dumps(reply)  # a named refusal, never an internal error

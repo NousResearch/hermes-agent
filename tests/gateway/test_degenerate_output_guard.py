@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.delivery import DeliveryRouter, DeliveryTarget, guard_degenerate_output
+from gateway.delivery import MAX_PLATFORM_OUTPUT, DeliveryRouter, DeliveryTarget, guard_degenerate_output
 from gateway.degenerate_output import (
     COLLAPSE_MARKER,
     DEFAULT_MAX_DELIVERY_CHARS,
@@ -228,6 +228,75 @@ class TestCollapse:
         guarded, audit_path = guard_degenerate_output(collapsed, "job1", _no_save)
         assert guarded == collapsed
         assert audit_path is None, "an already-collapsed payload was re-saved for audit"
+
+
+class TestNonChunkingAdapterCap:
+    """A plain (non-chunking) adapter must receive at most MAX_PLATFORM_OUTPUT chars.
+
+    Regression for PR 148960 review finding 4: once ``cron.max_delivery_chars`` (20000) truncated
+    a payload, the per-message ``MAX_PLATFORM_OUTPUT`` cap was skipped, so a non-chunking adapter
+    was handed 20000 chars where it used to get 4000. Those adapters cut the tail themselves
+    (Google Chat at 4000, ntfy at 4096, IRC at 450) and dropped the audit pointer with it — the
+    reader saw a silently cut message with no path to the full output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_plain_adapter_is_capped_after_the_universal_cap(self, tmp_path, monkeypatch):
+        adapter = _PlainAdapter()
+        router = _router(tmp_path, monkeypatch, adapter)
+        target = DeliveryTarget.parse("discord:123")
+
+        # Above the 20000-char universal cap, and comfortably above the 4000-char per-message cap.
+        payload = "\n".join(f"status line {i}: board report" for i in range(2000))
+        await router._deliver_to_platform(target, payload, metadata={"job_id": "job1"})
+
+        delivered = adapter.calls[0]["content"]
+        assert len(delivered) <= MAX_PLATFORM_OUTPUT
+        # The pointer must ride the same single message the adapter can actually show.
+        saved = list((tmp_path / "cron" / "output").glob("job1_*.txt"))
+        assert len(saved) == 1
+        assert str(saved[0]) in delivered
+        assert saved[0].read_text(encoding="utf-8") == payload
+
+    @pytest.mark.asyncio
+    async def test_plain_adapter_is_capped_even_when_the_cap_is_unlimited(self, tmp_path, monkeypatch):
+        """``max_delivery_chars=0`` removes the universal cap, not the per-message adapter cap."""
+        adapter = _PlainAdapter()
+        router = _router(tmp_path, monkeypatch, adapter,
+                         config=GatewayConfig(max_delivery_chars=0))
+        target = DeliveryTarget.parse("discord:123")
+
+        payload = "y" * 9_000
+        await router._deliver_to_platform(target, payload, metadata={"job_id": "job1"})
+
+        delivered = adapter.calls[0]["content"]
+        assert len(delivered) <= MAX_PLATFORM_OUTPUT
+        assert "full output saved to" in delivered
+
+    @pytest.mark.asyncio
+    async def test_chunking_adapter_keeps_the_universal_cap_only(self, tmp_path, monkeypatch):
+        """The converse: a splitting adapter is bounded by the universal cap, not by 4000."""
+        adapter = _ChunkingAdapter()
+        router = _router(tmp_path, monkeypatch, adapter)
+        target = DeliveryTarget.parse("discord:123")
+
+        payload = "y" * 9_000  # above MAX_PLATFORM_OUTPUT, below DEFAULT_MAX_DELIVERY_CHARS
+        await router._deliver_to_platform(target, payload, metadata={"job_id": "job1"})
+
+        assert len(adapter.calls[0]["content"]) == 9_000
+
+    @pytest.mark.asyncio
+    async def test_collapsed_payload_also_keeps_the_plain_cap(self, tmp_path, monkeypatch):
+        """A degenerate collapse is not an exemption: the plain adapter still gets <=4000 chars."""
+        adapter = _PlainAdapter()
+        router = _router(tmp_path, monkeypatch, adapter)
+        target = DeliveryTarget.parse("discord:123")
+
+        await router._deliver_to_platform(target, _NOW_FIN, metadata={"job_id": "job1"})
+
+        delivered = adapter.calls[0]["content"]
+        assert len(delivered) <= MAX_PLATFORM_OUTPUT
+        assert "NOW FIN" not in delivered
 
 
 class TestTruncateForDelivery:

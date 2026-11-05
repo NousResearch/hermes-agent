@@ -133,12 +133,12 @@ def guard_degenerate_output(
 def guard_outbound_content(
     content: str, job_id: str, *, limit: int, save_full_output: Callable[[str, str], Path],
     chunking_adapter: bool = False,
-) -> tuple[str, Optional[Path], bool]:
+) -> tuple[str, Optional[Path]]:
     """The outbound guard chain every delivery lane must run: collapse, then the universal cap.
 
-    Returns ``(content, audit_path, capped)``. ``capped`` reports that the size cap shortened the
-    payload, so a caller that also has an adapter-specific ``MAX_PLATFORM_OUTPUT`` tail skips it (a
-    capped payload must not be saved or truncated twice).
+    Returns ``(content, audit_path)``. The caller's adapter-specific ``MAX_PLATFORM_OUTPUT`` cap
+    then runs unconditionally: the two caps answer different questions (flood vs per-message) and a
+    caller must never be able to skip the second one (PR 148960 review finding 4).
 
     ``chunking_adapter`` asks for the audit pointer at the HEAD of the capped body as well as the
     tail, because a ``splits_long_messages`` adapter re-splits what it is handed into messages
@@ -172,8 +172,7 @@ def guard_outbound_content(
         content = truncate_for_delivery(
             content, limit=limit, saved_path=str(audit_path) if audit_path else None,
             pointer_at_start=chunking_adapter)
-        return content, audit_path, True
-    return content, audit_path, False
+    return content, audit_path
 
 
 class PartialDeliveryError(RuntimeError):
@@ -372,19 +371,30 @@ class DeliveryRouter:
         """Hard cap on the characters of a single outbound delivery (``cron.max_delivery_chars``)."""
         return resolve_max_delivery_chars(self.config)
 
-    def _cap_oversized_output(self, adapter: Any, content: str, job_id: str) -> str:
+    def _cap_oversized_output(self, adapter: Any, content: str, job_id: str,
+                              saved_path: Optional[Path] = None) -> str:
         """Audit-save oversized cron output; truncate it for non-chunking adapters. Above MAX_PLATFORM_OUTPUT
         the full output is always written to disk as an audit trail, best-effort — a failed save (full disk,
         permissions) never blocks delivery. Non-chunking adapters then get the content truncated with a
-        footer pointing to the saved file; ``splits_long_messages`` adapters receive the full payload."""
+        footer pointing to the saved file; ``splits_long_messages`` adapters receive the full payload.
+
+        ``saved_path`` is an audit copy the caller already wrote (the universal cap saves the ORIGINAL
+        before shortening it), passed in so the same payload is never saved twice.
+
+        This cap is per-MESSAGE, not the flood guard: an adapter that cannot split a long message
+        enforces its own limit downstream and drops the tail (Google Chat cuts at 4000, ntfy at 4096,
+        IRC at 450), so that reader must receive the head *and* the pointer inside the one message it
+        can show. It therefore still applies when ``cron.max_delivery_chars`` already shortened the
+        payload — the two caps answer different questions (PR 148960 review finding 4).
+        """
         if len(content) <= MAX_PLATFORM_OUTPUT:
             return content
-        saved_path: Optional[Path] = None
-        try:
-            saved_path = self._save_full_output(content, job_id)
-        except OSError as exc:
-            logger.warning("Audit save failed for cron output (%d chars, job=%s): %s — "
-                           "delivery proceeds without audit copy", len(content), job_id, exc)
+        if saved_path is None:
+            try:
+                saved_path = self._save_full_output(content, job_id)
+            except OSError as exc:
+                logger.warning("Audit save failed for cron output (%d chars, job=%s): %s — "
+                               "delivery proceeds without audit copy", len(content), job_id, exc)
         if getattr(adapter, "splits_long_messages", False):
             if saved_path:
                 logger.info("Cron output preserved for chunking adapter (%d chars) — "
@@ -421,13 +431,14 @@ class DeliveryRouter:
         # Steps 0-1 — degeneracy collapse and then the universal size cap, on the ORIGINAL payload
         # before any adapter-specific handling (including native chunking). The detector must see the
         # full response; truncating a preamble-plus-loop response first would hide the looping tail.
-        content, audit_path, capped = guard_outbound_content(
+        # The per-MESSAGE adapter cap follows unconditionally: an adapter that cannot split a long
+        # message cuts the tail itself and would drop the audit pointer with it.
+        content, audit_path = guard_outbound_content(
             content, job_id, limit=self._max_delivery_chars(), save_full_output=self._save_full_output,
             chunking_adapter=bool(getattr(adapter, "splits_long_messages", False)))
-        if not capped and audit_path is None:
-            # Not over the universal cap and not a degenerate collapse: fall through to the historical
-            # MAX_PLATFORM_OUTPUT handling for non-chunking adapters.
-            content = self._cap_oversized_output(adapter, content, job_id)
+        # ``audit_path`` (when present) holds the ORIGINAL payload — saved by the universal cap or by
+        # the degeneracy collapse — so the adapter cap reuses it instead of writing a second copy.
+        content = self._cap_oversized_output(adapter, content, job_id, saved_path=audit_path)
 
         # Substrate-level anti-loop guard: drop hallucinated "silence narration" (*(silent)*, 🔇, a bare ".")
         # before it reaches any adapter — in bot-to-bot channels these mirror back and forth until a model

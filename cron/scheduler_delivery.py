@@ -1614,7 +1614,7 @@ def _guard_standalone_content(t: _TargetDelivery, content: str) -> str:
     on the routing object.
     """
     from gateway.delivery import guard_outbound_content, resolve_max_delivery_chars, save_full_output_copy
-    content, _, _ = guard_outbound_content(
+    content, _ = guard_outbound_content(
         content, t.job["id"], limit=resolve_max_delivery_chars(t.config),
         save_full_output=save_full_output_copy)
     return content

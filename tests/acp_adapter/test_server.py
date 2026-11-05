@@ -374,6 +374,52 @@ class TestListAndFork:
 class TestSessionConfiguration:
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("command,provider,accepted,busy,changed", [
+        ("/model openai-codex:gpt-5.4-mini", "openai-codex", True, False, True),
+        ("/model openrouter:gpt-5.4", "openrouter", True, False, True),
+        ("/model", "openai-codex", True, False, False),
+        ("/model rejected", "openai-codex", False, False, False),
+        ("/model openai-codex:gpt-5.4-mini", "openai-codex", True, True, False),
+    ])
+    async def test_model_prompt_updates_selectors_only_after_a_route_change(
+        self, monkeypatch, tmp_path, command, provider, accepted, busy, changed,
+    ):
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        new_model = command.rsplit(":", 1)[-1] if changed else "gpt-5.4"
+        agents = iter([
+            SimpleNamespace(model="gpt-5.4", provider="openai-codex"),
+            SimpleNamespace(model=new_model, provider=provider),
+        ])
+        manager = SessionManager(agent_factory=lambda: next(agents))
+        agent = HermesACPAgent(session_manager=manager)
+        state = manager.create_session(cwd=str(tmp_path))
+        await agent.set_session_mode("accept_edits", state.session_id)
+        state.is_running = busy
+        conn = MagicMock(spec=acp.Client)
+        conn.session_update = AsyncMock()
+        agent.on_connect(conn)
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: ModelSwitchResult(
+            success=accepted, new_model=new_model, target_provider=provider, error_message="Rejected model"))
+        monkeypatch.setattr("acp_adapter.server.build_model_state", lambda *args: None)
+
+        response = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text=command)], session_id=state.session_id,
+        )
+        updates = [call.args[1] for call in conn.session_update.await_args_list]
+        configs = [update.model_dump(by_alias=True) for update in updates
+                   if update.session_update == "config_option_update"]
+        assert response.stop_reason == "end_turn"
+        assert len(configs) == int(changed)
+        if changed:
+            model, approval = configs[0]["configOptions"]
+            assert model["id"] == "model" and model["currentValue"] == f"{provider}:{new_model}"
+            assert approval["id"] == "edit_approval_policy" and approval["currentValue"] == "workspace_session"
+            assert state.model == state.agent.model == new_model
+        else:
+            assert state.model == "gpt-5.4" and state.agent.provider == "openai-codex"
+
+    @pytest.mark.asyncio
     async def test_router_accepts_stable_session_config_methods(self, agent):
         new_resp = await agent.new_session(cwd="/tmp")
         router = build_agent_router(agent)

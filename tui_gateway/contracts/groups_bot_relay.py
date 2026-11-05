@@ -256,6 +256,10 @@ class RoomDriverStatus(Result):
     member_activity: list[RoomMemberActivity] = Field(default_factory=list)
     last_error: str | None = None
     max_rounds: int | None = None
+    #: How many times one discussion paused at its cap may Continue (absent from older gateways).
+    max_continues: int | None = None
+    #: Room routing modes this gateway accepts (absent from older gateways: everyone and lead).
+    routing_modes: list[str] | None = None
     peer_routes: list[PeerRouteStatus]
 
 
@@ -265,8 +269,9 @@ class RoomContext(Result):
 
     purpose: str
     notes: str
-    #: ``everyone`` (every member answers an unaddressed message) or ``lead`` (the lead assigns it).
-    routing: Literal["everyone", "lead"] = "everyone"
+    #: ``everyone`` (every member answers an unaddressed message), ``lead`` (the lead assigns it) or ``auto``
+    #: (one ``auxiliary.group_router`` call picks who answers; recorded as ``room.routed``).
+    routing: Literal["everyone", "lead", "auto"] = "everyone"
     lead_member_id: str = ""
 
 
@@ -317,7 +322,7 @@ class GroupsContextParams(RoomParams):
     purpose: str
     notes: str
     #: Omitted routing fields keep the room's current routing.
-    routing: Literal["everyone", "lead"] | None = None
+    routing: Literal["everyone", "lead", "auto"] | None = None
     lead_member_id: str | None = None
 
 
@@ -383,6 +388,19 @@ class GroupsStopResult(Result):
 
 method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,
        doc="Durably cancel queued or running work for one hosted room.")
+
+
+class GroupsContinueParams(RoomParams):
+    discussion_event_id: str
+
+
+class GroupsContinueResult(Result):
+    continued: bool = True
+    event: RoomEvent
+
+
+method("groups.continue", params=GroupsContinueParams, result=GroupsContinueResult,
+       doc="Grant a discussion paused at its cap (room.activity bounded) one more budget; writes room.continued.")
 
 
 class GroupsApproveParams(RoomParams):

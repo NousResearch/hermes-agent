@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import run_runtime, session_bot, session_cron
-from gateway.session_contract import Principal, Submission
+from gateway.session_contract import SessionActor, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_profile_retire_stops_turns import REF, _Agent, _authority
 
-CRON = Principal('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')
+CRON = SessionActor('cron-owner', 'owned', frozenset({'session:submit', 'session:control'}), 'cron-ticker')
 
 
 async def _cron_cancel(authority, receipt):

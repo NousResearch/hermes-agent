@@ -79,7 +79,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
 
   try {
     const feed = { desktop_feed_base_url: 'http://127.0.0.1:8123/feed' }
-    fs.writeFileSync(path.join(home, 'config.yaml'), yaml.dump({ updates: feed, plugins: { witness: true }, model: { temperature: 0.7 } }))
+    fs.writeFileSync(path.join(home, 'config.yaml'), yaml.dump({ updates: feed, plugins: { witness: true }, model: { temperature: 0.7 }, stt: { provider: 'local' } }))
     fs.writeFileSync(path.join(home, 'state.db'), 'history witness')
     fs.writeFileSync(path.join(home, '.env'), 'OTHER_TEST_VALUE=kept\nMOCK_API_KEY=old\n')
     writeMockProviderConfig(home, 'http://127.0.0.1:9000')
@@ -96,6 +96,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
       custom_providers: [{ name: 'Mock', base_url: 'http://127.0.0.1:9001/v1', key_env: 'OPENAI_API_KEY' }],
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
       onboarding: { run: false },
+      stt: { provider: 'local', enabled: false },
     })
     expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('OTHER_TEST_VALUE=kept\nMOCK_API_KEY=e2e-mock-key\n')
     expect(fs.readFileSync(path.join(home, 'state.db'), 'utf8')).toBe('history witness')

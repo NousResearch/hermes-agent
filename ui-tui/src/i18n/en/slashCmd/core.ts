@@ -29,6 +29,7 @@ export const slashCmdCoreEn = {
       switchSessions: 'switch sessions',
       forgingSession: 'forging session…',
       newSessionStarted: 'new session started',
+      previousKeptRunning: 'new session started · the previous one keeps running in the background (Ctrl+X to switch)',
       cancelLabel: 'No, keep going',
       confirmNew: 'Yes, start a new session',
       confirmClear: 'Yes, clear the session',

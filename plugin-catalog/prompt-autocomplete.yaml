@@ -2,16 +2,14 @@ name: prompt-autocomplete
 repo: https://github.com/bystac/hermes-prompt-autocomplete
 sha: 7b0ffb16ccbf4466ba5b7ab176c77ba33d2db7ad
 title: Inline Prompt Autocomplete
-description: 'Inline sentence completion for the Hermes Desktop prompt composer: the bar above the input finishes the sentence
-  you are already typing, and the key that accepts it is the arrow for your language — ArrowRight in English, ArrowLeft in
-  Hebrew/Arabic, Ctrl+Arrow for one word, Tab for the whole line, no toggle to flip. Builtin English and Hebrew phrases match
-  on the main thread in under a millisecond, a WebWorker trie refines the match from your own prompt history, and a novel
-  prefix falls back to a small model through agent.plugin_llm.PluginLlm (max_tokens=10). The editor DOM is never mutated:
-  the bar renders in COMPOSER_AREAS.top and acceptance commits through host.composer.setDraft. Disclosure: reads up to 400
-  recent prompt phrases from the active profile''s state.db via hermes_state.SessionDB for local matching only, and sends the
-  last 180 characters of the current draft line to your configured LLM provider when no local match is found; no telemetry,
-  no self-updater, never reads .env or credentials. Desktop-only, plugin SDK surface only (COMPOSER_AREAS.top,
-  STATUSBAR_AREAS.right, host.composer.setDraft, ctx.rest, ctx.storage), no tools, hooks, middleware or env vars.'
+description: 'Inline sentence completion for the Hermes Desktop prompt composer: the bar above the input finishes the
+  sentence you are already typing, and the key that accepts it is the arrow for your language — ArrowRight in English,
+  ArrowLeft in Hebrew/Arabic, Ctrl+Arrow for one word, Tab for the whole line, no toggle to flip. Builtin bilingual phrases
+  match locally in under a millisecond, a worker trie refines from your own prompt history, and a novel prefix falls back to
+  a small model via agent.plugin_llm.PluginLlm (max_tokens=10). The editor DOM is never mutated — the bar renders in
+  COMPOSER_AREAS.top and acceptance commits through host.composer.setDraft. Disclosure: reads up to 400 recent prompt phrases
+  from the profile''s state.db via hermes_state.SessionDB for local matching only, and sends the last 180 characters of the
+  draft line to your configured LLM provider when no local match is found; no telemetry, never reads .env or credentials.'
 maintainer: bystac
 tier: community
 category: desktop

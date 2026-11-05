@@ -14,6 +14,9 @@ from tools.approval_detection import detect_dangerous_command
     # A quoted value may hold spaces (the profile scanner strips them).
     'hermes gateway -p " work " setup telegram --quick', 'hermes -p " work " gateway setup',
     "hermes gateway '--profile=work' setup",
+    # argparse's `--` may sit between the path words, and quotes may sit inside the profile flag's name.
+    "hermes gateway -- setup telegram", 'hermes gateway -"p" work setup telegram --quick',
+    'hermes gateway --"profile"=work setup', 'hermes gateway "--profile"=work setup',
 ])
 def test_setup_requires_approval(command):
     dangerous, description, _ = detect_dangerous_command(command)
@@ -25,7 +28,7 @@ def test_setup_requires_approval(command):
     "hermes gateway status", "hermes gateway list", "hermes gateway setup-help", "hermes gateway setup_extra",
     "hermes gateway -p work status",
     # After the group only the profile flag takes a value, so the next word is the verb.
-    "hermes gateway --profile=work status setup",
+    "hermes gateway --profile=work status setup", "hermes gateway -- status",
 ])
 def test_other_gateway_commands_are_unchanged(command):
     assert detect_dangerous_command(command)[0] is False

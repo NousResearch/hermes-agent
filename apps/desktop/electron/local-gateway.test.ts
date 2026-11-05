@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import { expect, test, vi } from 'vitest'
 
-import { createLocalGatewayDials, ensureLocalGateway, nativeGrantRoute, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { assertLocalRuntimeAvailable, createLocalGatewayDials, ensureLocalGateway, nativeGrantRoute, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
@@ -658,4 +658,61 @@ test('an update-paused ensure refusal points to the restart that completes its t
   await expect(ensureLocalGateway(async () => ({
     code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null })
   }))).rejects.toThrow('Gateway draining (update_paused). Use hermes gateway restart for recovery.')
+})
+
+test('remote-only: the guard refuses a light artifact and accepts every other shape', () => {
+  const artifact = (payload: 'light' | 'bundled' | 'bootstrap') =>
+    ({
+      schemaVersion: 2,
+      commit: null,
+      commitDate: null,
+      branch: null,
+      builtAt: null,
+      dirty: false,
+      source: 'build' as const,
+      distribution: 'desktop-app',
+      updateMechanism: 'self' as const,
+      baseVersion: null,
+      displayVersion: null,
+      distance: null,
+      payload,
+      tag: null
+    })
+
+  expect(() => assertLocalRuntimeAvailable(artifact('light'))).toThrow(/remote-only/)
+  expect(() => assertLocalRuntimeAvailable(artifact('bundled'))).not.toThrow()
+  expect(() => assertLocalRuntimeAvailable(artifact('bootstrap'))).not.toThrow()
+  expect(() => assertLocalRuntimeAvailable(null)).not.toThrow()
+})
+
+test('remote-only: every local-gateway entry point fails before spawning or touching the filesystem', async () => {
+  vi.resetModules()
+  vi.doMock('./install-stamp', () => ({ INSTALL_STAMP: { payload: 'light' }, installShape: () => 'light' }))
+
+  try {
+    const mod = await import('./local-gateway')
+    const endpoint = {
+      profile_id: '/h',
+      instance_id: 'i',
+      authority_epoch: 1,
+      runtime_protocol: 1,
+      api_origin: 'http://127.0.0.1:1',
+      capabilities: ['session-authority-v1'],
+      supervisor: 'service'
+    }
+
+    expect(() => mod.assertLocalRuntimeAvailable()).toThrow(/remote-only/)
+    expect(() => mod.runGatewayEnsure({ command: 'hermes', args: ['gateway', 'ensure'] }, '.', '/h')).toThrow(/remote-only/)
+    expect(() => mod.createLocalGatewayDials()).toThrow(/remote-only/)
+    await expect(mod.ensureLocalGateway(async () => ({ code: 0, stdout: '{}' }))).rejects.toThrow(/remote-only/)
+    await expect(
+      mod.redialLocalGateway({ ensure: async () => ({}), forget: () => {}, use: async () => 1 })
+    ).rejects.toThrow(/remote-only/)
+    expect(() => mod.localGatewayDial({ ensure: async () => ({ baseUrl: '' }), forget: () => {}, launchHome: '/h', prepare: (url) => url, profile: 'default' })).toThrow(/remote-only/)
+    await expect(mod.mintLocalGatewayTicket(endpoint)).rejects.toThrow(/remote-only/)
+    await expect(mod.runGatewayOwnerRestart(async () => ({ code: 0, stdout: '', stderr: '' }), 'default')).rejects.toThrow(/remote-only/)
+  } finally {
+    vi.doUnmock('./install-stamp')
+    vi.resetModules()
+  }
 })

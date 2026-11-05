@@ -1,8 +1,21 @@
 import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 
+import { INSTALL_STAMP, type InstallStamp } from './install-stamp'
 import { profileCollectionRoute, profileRouteSuffix } from './profile-routes'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
+
+/**
+ * A light (remote-only) artifact ships no runtime, so there is no local
+ * gateway to ensure, restart or mint against. Every entry point below that
+ * could spawn `hermes gateway ...` or touch a local control socket calls this
+ * first: an unexpected path must fail loudly instead of starting a backend.
+ */
+export function assertLocalRuntimeAvailable(stamp: Readonly<InstallStamp> | null = INSTALL_STAMP): void {
+  if (stamp?.payload === 'light') {
+    throw new Error('This is a remote-only Hermes Desktop build: it has no local gateway.')
+  }
+}
 
 // `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
 // its own startup deadline: `--timeout` defaults to 60 s (hermes_cli/gateway_runtime.py
@@ -16,6 +29,8 @@ export function runGatewayEnsure(
   backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
   { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  assertLocalRuntimeAvailable()
+
   return new Promise((resolve, reject) => {
     // The gateway this starts outlives a dev session and Desktop reaches it without an Origin
     // (main-process HTTP, Origin-stripped socket dials): it never trusts the dev renderer.
@@ -97,6 +112,8 @@ export async function runGatewayOwnerRestart(
   run: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>,
   ownerProfile: string
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  assertLocalRuntimeAvailable()
+
   const args = ['--profile', ownerProfile, 'gateway', 'restart']
   const result = await run([...args, '--detach'])
 
@@ -221,6 +238,8 @@ export async function ensureLocalGateway(
   beforeEnsure?: () => Promise<void>,
   restartStale?: StaleGatewayRestart
 ) {
+  assertLocalRuntimeAvailable()
+
   await beforeEnsure?.()
   let result = await run()
   let payload = parseGatewayEnsureOutput(result)
@@ -275,6 +294,8 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   forget: () => Promise<void> | void
   use: (endpoint: TEndpoint) => Promise<TResult>
 }): Promise<TResult> {
+  assertLocalRuntimeAvailable()
+
   const first = await deps.ensure()
 
   try {
@@ -298,6 +319,8 @@ export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: 
   profile: string
   purpose?: 'interactive' | 'native-http'
 }): Promise<string> {
+  assertLocalRuntimeAvailable()
+
   const { mint = mintLocalGatewayTicket, purpose = 'interactive' } = opts
 
   return redialLocalGateway({
@@ -333,6 +356,8 @@ const VOICE_DIAL_PATHS = new Set(['/api/audio/speak-stream', '/api/audio/transcr
 // A plugin socket's native-http grant never enters a URL at all: main attaches
 // it as the header its REST twin sends, to that one dial only.
 export function createLocalGatewayDials() {
+  assertLocalRuntimeAvailable()
+
   const pending = new Map<string, { ticket: string; webContentsId: number; expires: number; origin: string; pathname: string; header: boolean }>()
 
   const reserve = (url: URL, ticket: string, webContentsId: number, header: boolean) => {
@@ -623,6 +648,8 @@ export function ticketScope(purpose: GatewayTicketPurpose): { scope?: 'host' } {
 }
 
 export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: GatewayTicketPurpose = 'interactive'): Promise<string> {
+  assertLocalRuntimeAvailable()
+
   if (process.platform === 'win32') {
     if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
 

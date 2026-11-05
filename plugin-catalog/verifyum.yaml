@@ -1,0 +1,36 @@
+name: verifyum
+title: Verifyum
+repo: https://github.com/aisenseapi/verifyum-agent-plugin
+sha: 3a88032dcf3b38a298fc76a235daec75ac9a17c8
+description: >-
+  Privacy-preserving file proofs on Solana Mainnet through Verifyum (no account, no key): the agent
+  hashes a file on the user's machine, anchors only a domain-separated commitment, follows the proof
+  until it is finalized, and verifies public proofs, with one skill bundled. Portable Agent Plugins
+  v1 package (plugin.json + mcp.json + skills/). Disclosure: the package contains no code and
+  declares two MCP servers. verifyum is Verifyum's hosted server at api.verifyum.com (Streamable
+  HTTP). verifyum-local runs npx -y verifyum-mcp@0.1.1, which downloads that exact npm release (MIT,
+  JavaScript source, published by aisenseapi) on first start and needs Node.js 20 or later.
+  verifyum_anchor_commitment and verifyum_create_proof_from_file write a real, public and permanent
+  Solana Mainnet transaction, so plugin.json marks both servers untrusted and Hermes asks first.
+  The file tool reads only regular files inside the directories listed in VERIFYUM_MCP_ALLOWED_DIRS,
+  which the package does not set, so it refuses every path until the user sets it. It writes a
+  private draft the user must keep. Verifyum receives only the commitment, the idempotency key and
+  proof IDs, never the file, filename, raw hash, nonce or private manifest. Tool arguments, local
+  paths included, still reach the user's model provider through the session. Verification also
+  reads from a public Solana RPC endpoint. At most ten new anchors per IP address per rolling hour.
+  The tool lists come from the servers at run time, so the pinned commit doesn't cover them.
+maintainer: aisenseapi
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/aisenseapi/verifyum-agent-plugin/blob/3a88032dcf3b38a298fc76a235daec75ac9a17c8/README.md
+version: "0.1.0"
+platforms: []
+known_issues:
+  - "The file tool stays off until VERIFYUM_MCP_ALLOWED_DIRS is set for the verifyum-local server."
+  - "verifyum-local needs Node.js 20 or later with npx available."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

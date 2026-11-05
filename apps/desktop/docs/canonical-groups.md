@@ -38,6 +38,20 @@ The gateway owns the log and the work. Desktop polls `groups.state` and `groups.
 - **Attachments** upload with `groups.attachment.upload` and download with `groups.attachment.download`.
 - **Rename** (`groups.rename`) sends the trimmed new name from the group chat header. **Disband** (`groups.disband`) asks through a confirmation dialog, which stays open with the error when the gateway refuses; once the gateway confirms, Desktop leaves the group chat, drops it from the sidebar and its bindings, and says it was disbanded.
 
+For a deferred peer turn, Discard uses the member's non-admitting close operation
+when the home has no run receipt; an older or unreachable member keeps the turn.
+A closed key survives restart for the issuer's maximum status lifetime after
+closing. Retry after a lost close reply confirms the closure and cancels the same
+attempt. After the closed key expires, an explicit Retry under newly granted
+access can start a turn still deferred at home. With a run receipt, Discard waits
+for confirmed Stop as before.
+
+Disband retains scoped grants handed in during deletion as durable holds and
+revokes them before committing the tombstone. A late grant triggers another pass,
+up to three passes before a retryable refusal. An unreachable member keeps the
+group chat and its unrevoked holds. Grants received after the tombstone become
+ordinary owed revokes. Capacity failures preserve earlier holds.
+
 History shows messages and notices for failed, cancelled and deferred turns (a deferred turn names its reason, such as `member_unavailable`), a stop, the work limit (`room.activity` with status `bounded`), the group chat's end and lost ownership; Other events feed the member chips, handoffs and round strip without adding raw transport rows. Your own messages read as **You**. Group chat text may come from another machine: its `MEDIA:` paths, Markdown images, file links and directive cards stay inert, rich code fences (`listing`, `mermaid`, `svg`) show their source, and an explicit web link to a public host (not loopback, link-local or a private network) opens only on a click.
 
 Errors stay visible, and no failed gateway group chat action falls back to Desktop-run execution. Membership editing is not offered.

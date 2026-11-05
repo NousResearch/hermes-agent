@@ -1,13 +1,14 @@
 """Behaviour of the machine-level install probe (``hermes_cli.install_state``)."""
 
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import install_state
 from hermes_cli.install_state import Evidence, Places
+from persistence_assembly import open_persistence, open_store_admin, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 @pytest.fixture
@@ -26,12 +27,12 @@ def machine(tmp_path, monkeypatch):
     install_state.probe.cache_clear()
 
 
-def _messages_db(path: Path) -> None:
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
-        conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, content TEXT)")
-        conn.execute("INSERT INTO messages (session_id, content) VALUES ('s', 'hi')")
-    conn.close()
+def _state_db(home: Path, *messages: dict) -> None:
+    """A state.db in *home*; with *messages*, one session holding them."""
+    with open_persistence(profile_scope(home=home), eager=True) as store:
+        if messages:
+            seed_session(store, "s", "cli")
+            seed_messages(store, "s", *messages)
 
 
 USE = {
@@ -42,7 +43,7 @@ USE = {
     Evidence.PROVIDER_KEY: lambda r: (r / ".env").write_text("OPENROUTER_API_KEY=sk-test\n", encoding="utf-8"),
     Evidence.PROVIDER_LOGIN: lambda r: (r / "auth.json").write_text(json.dumps(
         {"providers": {"nous": {"auth_method": "anonymous", "anon_token": "anon_x"}}}), encoding="utf-8"),
-    Evidence.MESSAGES: lambda r: _messages_db(r / "state.db"),
+    Evidence.MESSAGES: lambda r: _state_db(r, {"role": "user", "content": "hi"}),
 }
 
 
@@ -54,7 +55,7 @@ def test_a_machine_with_only_install_time_files_is_fresh(machine):
     (other / ".env").write_text('TERMINAL_ENV=local\n# OPENROUTER_API_KEY=\nOPENROUTER_API_KEY="" # optional\n',
                                 encoding="utf-8")
     (other / "auth.json").write_text(json.dumps({"credential_pool": {"openrouter": [{"source": "env:OPENROUTER_API_KEY"}]}}), encoding="utf-8")
-    sqlite3.connect(other / "state.db").execute("CREATE TABLE messages (id INTEGER)").connection.close()
+    _state_db(other)
     (other / "installs" / "k" / "bootstrap").mkdir(parents=True)
     (other / "installs" / "k" / "bootstrap" / "default.json").write_text("{}", encoding="utf-8")
 
@@ -109,7 +110,7 @@ def test_a_file_linked_into_a_protected_folder_is_existing_without_being_opened(
     if name == "profiles":
         target.mkdir()
     elif name == "state.db":
-        sqlite3.connect(target).execute("CREATE TABLE messages (id INTEGER)").connection.close()
+        _state_db(target.parent)
     else:
         target.write_text("{}\n", encoding="utf-8")
     (other / name).symlink_to(target)
@@ -217,15 +218,8 @@ def test_a_gateway_service_counts_only_for_the_account_it_runs_as(tmp_path, monk
 
 def test_a_state_db_another_process_holds_locked_is_not_use(machine, monkeypatch):
     other, _places = machine
-    db = other / "state.db"
-    sqlite3.connect(db).execute("CREATE TABLE messages (id INTEGER)").connection.close()
-    monkeypatch.setattr(install_state, "_DB_BUSY_SECONDS", 0.05, raising=False)
+    _state_db(other)
+    monkeypatch.setattr(install_state, "_DB_BUSY_SECONDS", 0.05)
     # A first boot creating or healing this state.db holds a write lock while the probe runs.
-    holder = sqlite3.connect(db, isolation_level=None)
-    holder.execute("PRAGMA journal_mode=DELETE")
-    holder.execute("BEGIN EXCLUSIVE")
-    try:
+    with open_store_admin(other / "state.db", read_only=False).exclusive_repair_guard():
         assert install_state.probe().fresh
-    finally:
-        holder.execute("ROLLBACK")
-        holder.close()

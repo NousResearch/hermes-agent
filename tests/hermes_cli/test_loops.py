@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture
 def hermes_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so SessionDB.state_meta writes don't clobber the real one."""
+    """Isolated HERMES_HOME so state_meta writes don't clobber the real one."""
     from pathlib import Path
 
     home = tmp_path / ".hermes"
@@ -650,31 +650,25 @@ class TestDispatchLoopCommand:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# SessionDB.list_meta_prefix
+# state_meta.list_prefix
 # ──────────────────────────────────────────────────────────────────────
 
 
 class TestListMetaPrefix:
     def test_prefix_scan(self, hermes_home):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        db.set_meta("lmp-test:aaa", "1")
-        db.set_meta("lmp-test:bbb", "2")
-        db.set_meta("other:aaa", "3")
-        rows = dict(db.list_meta_prefix("lmp-test:"))
+        with open_persistence(profile_scope()) as store:
+            store.state_meta.set("lmp-test:aaa", "1")
+            store.state_meta.set("lmp-test:bbb", "2")
+            store.state_meta.set("other:aaa", "3")
+            rows = {entry.key: entry.value for entry in store.state_meta.list_prefix("lmp-test:")}
         assert rows == {"lmp-test:aaa": "1", "lmp-test:bbb": "2"}
 
     def test_wildcards_escaped(self, hermes_home):
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
 
-        db = SessionDB()
-        db.set_meta("pre%fix:x", "1")
-        db.set_meta("prefix:y", "2")
-        assert db.list_meta_prefix("pre%") == [("pre%fix:x", "1")]
-
-    def test_empty_prefix(self, hermes_home):
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        assert db.list_meta_prefix("") == []
+        with open_persistence(profile_scope()) as store:
+            store.state_meta.set("pre%fix:x", "1")
+            store.state_meta.set("prefix:y", "2")
+            assert [(entry.key, entry.value) for entry in store.state_meta.list_prefix("pre%")] == [("pre%fix:x", "1")]

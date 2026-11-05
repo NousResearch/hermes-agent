@@ -61,12 +61,12 @@ def test_cli_completion_ownership_accepts_compression_lineage():
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"
 
-    class FakeSessionDB:
+    class FakeSessionStore:
         def resolve_resume_session_id(self, session_id):
             assert session_id == "pre-compression-session"
             return "visible-session"
 
-    cli._session_db = FakeSessionDB()
+    cli._session_db = FakeSessionStore()
 
     assert cli._owns_process_notification(
         {

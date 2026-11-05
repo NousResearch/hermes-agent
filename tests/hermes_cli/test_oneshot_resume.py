@@ -14,31 +14,35 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, profile_scope
 from hermes_cli.oneshot import (
     _apply_stored_session_runtime,
     _load_resume_target,
     _ModelChoice,
     run_oneshot,
 )
+from tests.fixtures.storage_read import session_row
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
-def _db_with_session(tmp_path, sid, *, messages=()):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id=sid, source="cli")
-    for role, content in messages:
-        db.append_message(sid, role, content=content)
-    return db
+def _seed_with_session(store, sid, *, messages=()):
+    seed_session(store, sid, "cli")
+    seed_messages(store, sid, *({"role": role, "content": content} for role, content in messages))
+
+
+@pytest.fixture
+def handle(tmp_path):
+    """The storage interface handle on the store the test seeds at ``tmp_path``."""
+    persistence = open_persistence(profile_scope(home=tmp_path))
+    yield persistence
+    persistence.close()
 
 
 class TestLoadResumeTarget:
-    def test_no_resume_is_a_noop(self, tmp_path):
-        db = _db_with_session(tmp_path, "s1")
-        try:
-            assert _load_resume_target(db, None) == (None, [], None)
-            assert _load_resume_target(db, "") == (None, [], None)
-        finally:
-            db.close()
+    def test_no_resume_is_a_noop(self, handle):
+        _seed_with_session(handle, "s1")
+        assert _load_resume_target(handle, None) == (None, [], None)
+        assert _load_resume_target(handle, "") == (None, [], None)
 
     def test_missing_store_raises_rather_than_silent_fresh(self):
         # An explicit --resume with no session store must fail loudly; starting a
@@ -46,73 +50,57 @@ class TestLoadResumeTarget:
         with pytest.raises(RuntimeError, match="session store unavailable"):
             _load_resume_target(None, "s1")
 
-    def test_unknown_session_raises(self, tmp_path):
-        db = _db_with_session(tmp_path, "s1")
-        try:
-            with pytest.raises(RuntimeError, match="session not found: missing-sid"):
-                _load_resume_target(db, "missing-sid")
-        finally:
-            db.close()
+    def test_unknown_session_raises(self, handle):
+        _seed_with_session(handle, "s1")
+        with pytest.raises(RuntimeError, match="session not found: missing-sid"):
+            _load_resume_target(handle, "missing-sid")
 
-    def test_returns_history_for_stored_session(self, tmp_path):
-        db = _db_with_session(
-            tmp_path, "s1",
+    def test_returns_history_for_stored_session(self, handle):
+        _seed_with_session(
+            handle, "s1",
             messages=[("user", "Remember the secret word ZEBRA42"),
                       ("assistant", "I've noted the secret word: ZEBRA42.")],
         )
-        try:
-            sid, history, meta = _load_resume_target(db, "s1")
-            assert sid == "s1"
-            assert [m["role"] for m in history] == ["user", "assistant"]
-            assert history[0]["content"] == "Remember the secret word ZEBRA42"
-            assert meta["id"] == "s1"
-        finally:
-            db.close()
+        sid, history, meta = _load_resume_target(handle, "s1")
+        assert sid == "s1"
+        assert [m["role"] for m in history] == ["user", "assistant"]
+        assert history[0]["content"] == "Remember the secret word ZEBRA42"
+        assert meta["id"] == "s1"
 
-    def test_empty_session_keeps_resolved_id(self, tmp_path):
+    def test_empty_session_keeps_resolved_id(self, handle):
         # Chat's contract: a resumed session with no messages starts fresh (no rows to
         # replay) but the turn is recorded under the SELECTED id. Dropping the id here
         # re-minted a session for `hermes -z "hello" -c <title> --create-if-missing`,
         # leaving the freshly created titled session empty (review on #105957).
-        db = _db_with_session(tmp_path, "s1")
-        try:
-            sid, history, meta = _load_resume_target(db, "s1")
-            assert sid == "s1"
-            assert history == []
-            assert meta["id"] == "s1"
-        finally:
-            db.close()
+        _seed_with_session(handle, "s1")
+        sid, history, meta = _load_resume_target(handle, "s1")
+        assert sid == "s1"
+        assert history == []
+        assert meta["id"] == "s1"
 
-    def test_compression_chain_redirects_to_child_with_messages(self, tmp_path):
+    def test_compression_chain_redirects_to_child_with_messages(self, handle):
         # Compression ends a session and forks a child that holds the rows; the loader
         # must land on the child, not the empty parent (resolve_resume_session_id).
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="parent", source="cli")
-        db.create_session(session_id="child", source="cli", parent_session_id="parent")
-        db.append_message("child", "user", content="hi")
-        try:
-            sid, history, _meta = _load_resume_target(db, "parent")
-            assert sid == "child"
-            assert [m["role"] for m in history] == ["user"]
-        finally:
-            db.close()
+        seed_session(handle, "parent", "cli")
+        seed_session(handle, "child", "cli", parent_session_id="parent")
+        seed_messages(handle, "child", {"role": "user", "content": "hi"})
+        sid, history, _meta = _load_resume_target(handle, "parent")
+        assert sid == "child"
+        assert [m["role"] for m in history] == ["user"]
 
-    def test_resume_reopens_ended_session_row(self, tmp_path):
+    def test_resume_reopens_ended_session_row(self, handle):
         # The previous run stamped ended_at; without reopen_session() the resumed turn is
         # recorded under a row that stays closed and end_session() cannot stamp the new
         # boundary (it only writes rows whose ended_at is null) — review on #105957.
-        db = _db_with_session(tmp_path, "s1", messages=[("user", "hi")])
-        db.end_session("s1", "agent_close")
-        row = db.get_session("s1")
+        _seed_with_session(handle, "s1", messages=[("user", "hi")])
+        handle.sessions.end("s1", "agent_close")
+        row = session_row(handle, "s1")
         assert row["ended_at"] is not None and row["end_reason"] == "agent_close"
-        try:
-            sid, _history, _meta = _load_resume_target(db, "s1")
-            assert sid == "s1"
-            reopened = db.get_session("s1")
-            assert reopened["ended_at"] is None
-            assert reopened["end_reason"] is None
-        finally:
-            db.close()
+        sid, _history, _meta = _load_resume_target(handle, "s1")
+        assert sid == "s1"
+        reopened = session_row(handle, "s1")
+        assert reopened["ended_at"] is None
+        assert reopened["end_reason"] is None
 
 class TestApplyStoredSessionRuntime:
     """A resumed one-shot must run on the session's stored runtime, not the ambient
@@ -124,17 +112,15 @@ class TestApplyStoredSessionRuntime:
 
     @staticmethod
     def _stored_db(tmp_path, *, model="stored-model", route=None):
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="s1", source="cli")
-        if model:
-            db.update_session_model("s1", model)
-        if route is not None:
-            # Same two shapes _persist_model_switch_to_session writes (nested gateway_runtime
-            # for CLI resume, top-level keys for TUI).
-            db.patch_session_model_config("s1", {"gateway_runtime": route, **route})
-        meta = db.get_session("s1")
-        db.close()
-        return meta
+        with open_persistence(profile_scope(home=tmp_path)) as store:
+            seed_session(store, "s1", "cli")
+            if model:
+                store.sessions.update_model("s1", model)
+            if route is not None:
+                # Same two shapes _persist_model_switch_to_session writes (nested gateway_runtime
+                # for CLI resume, top-level keys for TUI).
+                store.sessions.patch_model_config("s1", {"gateway_runtime": route, **route})
+            return session_row(store, "s1")
 
     def test_stored_runtime_replaces_ambient_choice(self, tmp_path):
         meta = self._stored_db(tmp_path, route={"provider": "custom:stored", "base_url": "http://stored:9", "api_mode": "responses"})
@@ -180,17 +166,16 @@ class TestRunAgentResumeRuntime:
     """End-to-end wiring: ``_run_agent`` must hand AIAgent the session's stored runtime
     and a reopened session row (both regressions from the review on #105957)."""
 
-    def test_run_agent_uses_stored_runtime_and_reopens_row(self, tmp_path, monkeypatch):
+    def test_run_agent_uses_stored_runtime_and_reopens_row(self, tmp_path, monkeypatch, handle):
         import hermes_cli.oneshot as oneshot_mod
 
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", "user", content="hi")
-        db.update_session_model("s1", "stored-model")
-        db.patch_session_model_config(
+        seed_session(handle, "s1", "cli")
+        seed_messages(handle, "s1", {"role": "user", "content": "hi"})
+        handle.sessions.update_model("s1", "stored-model")
+        handle.sessions.patch_model_config(
             "s1", {"gateway_runtime": {"provider": "custom:stored", "base_url": "http://stored:9"},
                    "provider": "custom:stored", "base_url": "http://stored:9"})
-        db.end_session("s1", "agent_close")
+        handle.sessions.end("s1", "agent_close")
 
         captured = {}
 
@@ -205,7 +190,8 @@ class TestRunAgentResumeRuntime:
             def close(self):
                 pass
 
-        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: handle)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "ambient-model", "provider": "openrouter"}})
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -215,24 +201,21 @@ class TestRunAgentResumeRuntime:
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
         monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
 
-        try:
-            text, result = oneshot_mod._run_agent("hello", resume="s1")
-            assert text == "ok" and result["final_response"] == "ok"
-            assert captured["model"] == "stored-model"
-            assert captured["provider"] == "custom:stored"
-            assert captured["session_id"] == "s1"
-            assert captured["history"][0]["role"] == "user"
-            row = db.get_session("s1")
-            assert row["ended_at"] is None and row["end_reason"] is None
-        finally:
-            db.close()
+        text, result = oneshot_mod._run_agent("hello", resume="s1")
+        assert text == "ok" and result["final_response"] == "ok"
+        assert captured["model"] == "stored-model"
+        assert captured["provider"] == "custom:stored"
+        assert captured["session_id"] == "s1"
+        assert captured["history"][0]["role"] == "user"
+        with open_persistence(profile_scope(home=tmp_path)) as store:
+            row = session_row(store, "s1")
+        assert row["ended_at"] is None and row["end_reason"] is None
 
-    def test_run_agent_explicit_model_beats_stored_runtime(self, tmp_path, monkeypatch):
+    def test_run_agent_explicit_model_beats_stored_runtime(self, tmp_path, monkeypatch, handle):
         import hermes_cli.oneshot as oneshot_mod
 
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session(session_id="s1", source="cli")
-        db.update_session_model("s1", "stored-model")
+        seed_session(handle, "s1", "cli")
+        handle.sessions.update_model("s1", "stored-model")
 
         captured = {}
 
@@ -246,7 +229,8 @@ class TestRunAgentResumeRuntime:
             def close(self):
                 pass
 
-        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: handle)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {"default": "ambient-model", "provider": "openrouter"}})
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -256,12 +240,9 @@ class TestRunAgentResumeRuntime:
         monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
         monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
 
-        try:
-            oneshot_mod._run_agent("hello", model="explicit-model", provider="openrouter", resume="s1")
-            assert captured["model"] == "explicit-model"
-            assert captured["provider"] == "openrouter"
-        finally:
-            db.close()
+        oneshot_mod._run_agent("hello", model="explicit-model", provider="openrouter", resume="s1")
+        assert captured["model"] == "explicit-model"
+        assert captured["provider"] == "openrouter"
 
 
 class TestRunOneshotForwardsResume:

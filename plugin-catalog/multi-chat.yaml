@@ -1,0 +1,28 @@
+name: multi-chat
+title: Multi Chat
+repo: https://github.com/BColsey/hermes-multi-chat
+sha: cdd71b8811bfd6b35ddc00492c7801377f719c39
+subdir: catalog
+description: "Experimental 1–16 real-TUI panes for the Web Dashboard; default profile only, with disclosed read-only private PTY metadata access."
+maintainer: BColsey
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6,<0.22.7"
+version: "0.2.0"
+docs_url: https://github.com/BColsey/hermes-multi-chat/tree/cdd71b8811bfd6b35ddc00492c7801377f719c39/catalog#readme
+readme: true
+platforms: [linux]
+screenshots:
+  - https://raw.githubusercontent.com/BColsey/hermes-multi-chat/cdd71b8811bfd6b35ddc00492c7801377f719c39/docs/media/five-panes.png
+  - https://raw.githubusercontent.com/BColsey/hermes-multi-chat/cdd71b8811bfd6b35ddc00492c7801377f719c39/docs/media/two-panes.png
+known_issues:
+  - "Only Hermes 0.22.6 at f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab, default-profile dashboard and existing plugins.isolation: in_process are supported. Other builds/profiles are refused at runtime; installing files is not proof of compatibility."
+  - "Reads undocumented core PTY registries and active-session markers without mutation. Runs with dashboard-process authority, not a sandbox. A static host-ready audit does not establish plugin-host support; a public retention/identity API may be required for admission."
+  - "Retention inspection and WebSocket upgrade are not atomic: a child exit can create an idle replacement. No prompt/input is replayed."
+  - "Hidden connected panes continue working and count against the existing shared 16-PTY cap. Closing, disabling or uninstalling this view is not cancellation."
+  - "Model inference/tools/approvals, sixteen active model sessions, sustained load, Firefox/Safari and real mobile IME/clipboard behavior remain unverified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

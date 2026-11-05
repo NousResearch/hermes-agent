@@ -200,6 +200,7 @@
     "assistant.themePicker.themeAccent",
     "assistant.thread.attachingFile",
     "assistant.thread.branchNewChat",
+    "assistant.thread.contentRefusedNotice",
     "assistant.thread.copy",
     "assistant.thread.copyFullResponse",
     "assistant.thread.dismissError",

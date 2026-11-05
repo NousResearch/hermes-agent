@@ -79,7 +79,7 @@ hermes-agent/
 ├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
 ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
-├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
+├── persistence/          # storage contracts + sqlite/ backend; persistence_assembly.py opens a store
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
 └── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
@@ -91,7 +91,7 @@ all profile-aware via `get_hermes_home()`.
 ### Facade + siblings layout
 
 Every former god file is a **facade** (public entry points + the names other packages import) plus
-**siblings** `<stem>_<topic>.py`, each owning one topic (`hermes_state.py`, `gateway/run.py`,
+**siblings** `<stem>_<topic>.py`, each owning one topic (`gateway/run.py`,
 `tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`, `cli.py` →
 `hermes_cli/cli_*_mixin.py`, `run_agent.py` → `agent/turn_*.py`).
 

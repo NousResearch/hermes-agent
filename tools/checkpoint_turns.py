@@ -35,7 +35,7 @@ def _marks_path(store: Path, dir_hash: str) -> Path:
 
 def _load_marks(store: Path, dir_hash: str) -> list[dict]:
     try:
-        data = json.loads(_marks_path(store, dir_hash).read_text(encoding="utf-8"))
+        data = json.loads(_marks_path(store, dir_hash).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return []
     return [m for m in data if isinstance(m, dict)] if isinstance(data, list) else []

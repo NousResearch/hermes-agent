@@ -31,9 +31,17 @@ export const isUserTurn = (row: Record<string, unknown>) =>
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */
 export function lastTurnRewind(snapshot: MutationSnapshot): null | { target_message_id: number } {
-  const target = (snapshot.stored_messages ?? snapshot.messages ?? []).findLast(isUserTurn)
+  return turnsBackRewind(1)(snapshot)
+}
 
-  return target ? { target_message_id: target.row_id as number } : null
+/** `/undo N`: the Nth-newest user turn (clamped to the oldest, as main's `/undo N` clamps). */
+export function turnsBackRewind(turns: number) {
+  return (snapshot: MutationSnapshot): null | { target_message_id: number } => {
+    const userTurns = (snapshot.stored_messages ?? snapshot.messages ?? []).filter(isUserTurn)
+    const target = userTurns[Math.max(userTurns.length - turns, 0)]
+
+    return target ? { target_message_id: target.row_id as number } : null
+  }
 }
 
 const TEXT_PARTS = new Set(['input_text', 'output_text', 'text'])
@@ -147,10 +155,11 @@ export function canonicalReasoning(payload: { scope?: string; value: string }, c
 }
 
 /** `/undo` and `/retry`: rewind to before the newest user turn; `/retry` then resubmits its text. */
-export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
+export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx, turns = 1) {
   const sid = ctx.sid!
+  const payload = intent === 'retry' ? retryTurnRewind : turns > 1 ? turnsBackRewind(turns) : lastTurnRewind
 
-  void mutateCanonical(ctx.gateway.gw, sid, 'rewind', intent === 'retry' ? retryTurnRewind : lastTurnRewind, ctx.stale)
+  void mutateCanonical(ctx.gateway.gw, sid, 'rewind', payload, ctx.stale)
     .then(mutation => {
       if (!mutation || ctx.stale()) {
         return
@@ -163,7 +172,12 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
         return ctx.transcript.sys(t(intent === 'retry' ? 'slashCmd.core.retry.nothing' : 'slashCmd.core.undo.nothing'))
       }
 
-      ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
+      ctx.transcript.setHistoryItems(prev =>
+        Array.from({ length: intent === 'retry' ? 1 : turns }).reduce<typeof prev>(
+          items => ctx.transcript.trimLastExchange(items),
+          prev
+        )
+      )
 
       if (intent === 'undo') {
         ctx.transcript.sys(

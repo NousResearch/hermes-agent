@@ -640,7 +640,7 @@ def _write_default_excludes(store: Path) -> None:
     exclude = store / "info" / "exclude"
     text = "\n".join(DEFAULT_EXCLUDES) + "\n"
     try:
-        if exclude.is_file() and exclude.read_text(encoding="utf-8") == text:
+        if exclude.is_file() and exclude.read_text(encoding="utf-8-sig") == text:
             return
         exclude.parent.mkdir(exist_ok=True)
         exclude.write_text(text, encoding="utf-8")

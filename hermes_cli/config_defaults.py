@@ -480,12 +480,9 @@ DEFAULT_CONFIG = {
         "max_total_gb": 0,
         "install_state_retention_days": 14,  # installs/<key> of a missing checkout, unused this long, goes; 0 = never
     },
-    # Filesystem checkpoints: snapshot the working directory once per turn (on the first
-    # write_file/patch call); /undo reverts the undone turn's file writes, /rollback restores any
-    # checkpoint. On by default (config v53). Never snapshots /, $HOME or its parents, trees over
-    # 50k entries, excluded dirs (node_modules, .venv, browser profiles) or the store itself.
-    # Measured: first snapshot of a 23.5k-file repo ~5 s / ~165 MB store, later turns <1 s.
-    # Turn off: `hermes config set checkpoints.enabled false`. Single shared store, real pruning.
+    # Filesystem checkpoints (on since v53; off: `hermes config set checkpoints.enabled false`): /undo reverts
+    # the undone turns' file writes, /rollback restores. Skips /, $HOME + parents, >50k entries, excluded dirs.
+    # Measured: 23.5k-file repo first snapshot 4 s / +108 MB store, unchanged turn 1 s; $HOME skipped (0 B).
     "checkpoints": {
         "enabled": True,
         # Max checkpoints per working directory; enforced by ref rewrite + GC of older commits.

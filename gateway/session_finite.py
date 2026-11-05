@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 _finite_turn = ContextVar('finite_turn', default=None)
 _unattended_turn = ContextVar('unattended_turn', default=False)
@@ -46,13 +46,13 @@ def admit_finite(params, *, submitter=None):
     ask for an unattended (auto-approving) turn only as the local CLI principal on its own CLI session."""
     if 'unattended' in params and (type(params['unattended']) is not bool
                                    or (params['unattended'] and params.get('finite') is not True)):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if params.get('unattended') and submitter is not None and not _may_run_unattended(*submitter):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if 'finite' not in params:
         return {}
     if type(params['finite']) is not bool:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     return {'finite': params['finite'], **({'unattended': True} if params.get('unattended') else {})}
 
 

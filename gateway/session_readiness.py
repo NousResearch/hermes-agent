@@ -3,27 +3,27 @@ import asyncio
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
 
 async def readiness(authority, actor, params, *, runtime):
     if 'session:create' not in actor.capabilities or actor.profile_id != authority.profile_id:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     allowed = {'profile', 'provider'} if runtime else {'profile'}
     if (not isinstance(params, dict) or set(params) - allowed
             or any(not isinstance(value, str) for value in params.values())):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     if params.get('profile'):
         from fastapi import HTTPException
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         try:
             home = _resolve_profile_dir(params['profile']).resolve()
         except HTTPException:
-            raise RuntimeStoreError('profile_mismatch') from None
+            raise AuthorityRefusal('profile_mismatch') from None
         if home != Path(authority.profile_id):
-            raise RuntimeStoreError('profile_mismatch')
+            raise AuthorityRefusal('profile_mismatch')
 
     def probe():
         from gateway.run import _profile_runtime_scope

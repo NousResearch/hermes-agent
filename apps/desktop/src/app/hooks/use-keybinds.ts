@@ -128,6 +128,8 @@ export interface KeybindRuntimeDeps {
   toggleSelectedPin: () => void
   /** Archive the active session. */
   archiveSelectedSession: () => void
+  /** Interrupt the active session's running turn (Ctrl+C stop). */
+  interruptActiveSession: () => void
 }
 
 /** A handler returns `false` to decline the chord (see `passthrough`); any other
@@ -332,6 +334,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     ...tabSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
+    'session.stop': deps.interruptActiveSession,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,
     'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),

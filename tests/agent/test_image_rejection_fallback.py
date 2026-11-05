@@ -410,8 +410,9 @@ class TestRejectionNeverReachesPersistedHistory:
 
         agent = self._agent()
         text_only = [{"role": "user", "content": "I read llama-3 is not a multimodal model."}]
+        # History keeps images the per-call request no longer carries: the guard must read what was sent.
         retry, _ = recover_before_classification(
-            agent, _EchoErr(), messages=text_only, api_messages=list(text_only),
+            agent, _EchoErr(), messages=self._history() + text_only, api_messages=list(text_only),
             api_kwargs={}, active_system_prompt="sys",
         )
 

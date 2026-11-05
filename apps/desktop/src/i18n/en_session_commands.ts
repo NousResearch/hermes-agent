@@ -6,6 +6,7 @@ export const enSessionCommands: SessionCommandNotices = {
   undoNothing: 'nothing to undo',
   undidOne: (count: string) => `undid ${count} message — the removed message is in the composer`,
   undidOther: (count: string) => `undid ${count} messages — the removed message is in the composer`,
+  undoFilesFailed: (error: string) => `files not reverted: ${error} — /rollback can restore them`,
   retryNothing: 'nothing to retry',
   retryUnsupported: '/retry: retry does not support media or unknown content parts',
   busy: (command: string) =>

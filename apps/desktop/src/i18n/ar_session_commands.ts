@@ -4,6 +4,7 @@ export const arSessionCommands = {
   undoNothing: 'لا يوجد ما يمكن التراجع عنه',
   undidOne: (count: string) => `تم التراجع عن ${count} رسالة — الرسالة المحذوفة موجودة في مربع الكتابة`,
   undidOther: (count: string) => `تم التراجع عن ${count} رسائل — الرسالة المحذوفة موجودة في مربع الكتابة`,
+  undoFilesFailed: (error: string) => `لم تتم إعادة الملفات: ${error} — يمكن لـ /rollback استعادتها`,
   retryNothing: 'لا يوجد ما يمكن إعادة محاولته',
   retryUnsupported: '/retry: لا يمكن إعادة محاولة الوسائط أو أجزاء المحتوى غير المعروفة',
   busy: (command: string) =>

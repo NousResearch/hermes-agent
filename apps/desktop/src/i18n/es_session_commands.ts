@@ -4,6 +4,7 @@ export const esSessionCommands = {
   undoNothing: 'nada que deshacer',
   undidOne: (count: string) => `se deshizo ${count} mensaje — el mensaje eliminado está en el compositor`,
   undidOther: (count: string) => `se deshicieron ${count} mensajes — el mensaje eliminado está en el compositor`,
+  undoFilesFailed: (error: string) => `archivos sin revertir: ${error} — /rollback puede restaurarlos`,
   retryNothing: 'nada que reintentar',
   retryUnsupported: '/retry: no se pueden reintentar contenidos multimedia o partes desconocidas',
   busy: (command: string) =>

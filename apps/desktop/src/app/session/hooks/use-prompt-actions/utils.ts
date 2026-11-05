@@ -293,6 +293,11 @@ export function isDeepTruncateRefusal(error: unknown): boolean {
   return error instanceof JsonRpcGatewayError && error.code === GATEWAY_DEEP_TRUNCATE_REFUSED_CODE
 }
 
+/** JSON-RPC method-not-found (-32601): an owner that predates the method. */
+export function isMethodNotFoundError(error: unknown): boolean {
+  return error instanceof JsonRpcGatewayError && error.code === -32601
+}
+
 export function isSessionBusyError(error: unknown): boolean {
   // The shared owner answers its typed reason (`session_busy`), the legacy sidecar prose.
   return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))

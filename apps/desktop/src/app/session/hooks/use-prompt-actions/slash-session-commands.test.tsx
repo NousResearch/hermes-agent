@@ -203,6 +203,29 @@ describe('/undo on a canonical session', () => {
     expect($composerDraft.get()).toBe('second question')
   })
 
+  it('says the files were not reverted when the owner refuses the file half after the rewind', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.resume') {
+        return SNAPSHOT
+      }
+
+      if (method === 'session.rewind') {
+        return { rewound_count: 2, target_message: { content: 'second question', id: 14 } }
+      }
+
+      if (method === 'rollback.undo_files') {
+        throw new JsonRpcGatewayError('session_busy', { code: 4009, data: { reason: 'session_busy' } })
+      }
+    })
+
+    const handle = await mount(requestGateway)
+    await handle.submitText('/undo')
+
+    expect(renderedText(handle)).toContain(copy.undidOther('2'))
+    expect(renderedText(handle)).toContain(copy.undoFilesFailed('session_busy'))
+    expect($composerDraft.get()).toBe('second question')
+  })
+
   it('/undo N targets the Nth newest user turn, skipping compaction carriers', async () => {
     const requestGateway = gateway(method => {
       if (method === 'session.resume') {

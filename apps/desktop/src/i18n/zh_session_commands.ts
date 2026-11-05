@@ -4,6 +4,7 @@ export const zhSessionCommands = {
   undoNothing: '没有可撤销的内容',
   undidOne: (count: string) => `已撤销 ${count} 条消息 — 被移除的消息已放回输入框`,
   undidOther: (count: string) => `已撤销 ${count} 条消息 — 被移除的消息已放回输入框`,
+  undoFilesFailed: (error: string) => `文件未还原：${error} — 可用 /rollback 还原`,
   retryNothing: '没有可重试的内容',
   retryUnsupported: '/retry：无法重试包含媒体或未知内容的消息',
   busy: (command: string) =>

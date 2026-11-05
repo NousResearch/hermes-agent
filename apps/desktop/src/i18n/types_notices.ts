@@ -43,6 +43,8 @@ export interface SessionCommandNotices {
   undoNothing: string
   undidOne: (count: string) => string
   undidOther: (count: string) => string
+  /** /undo's file half refused or failed after the conversation rewind committed. */
+  undoFilesFailed: (error: string) => string
   retryNothing: string
   retryUnsupported: string
   /** A rewind refused while a reply is running: main's stop-first guidance (tui_gateway busy_message). */

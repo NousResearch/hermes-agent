@@ -4,6 +4,7 @@ export const frSessionCommands = {
   undoNothing: 'rien à annuler',
   undidOne: (count: string) => `${count} message annulé — le message retiré est dans la zone de saisie`,
   undidOther: (count: string) => `${count} messages annulés — le message retiré est dans la zone de saisie`,
+  undoFilesFailed: (error: string) => `fichiers non restaurés : ${error} — /rollback peut les restaurer`,
   retryNothing: 'rien à réessayer',
   retryUnsupported: '/retry : impossible de réessayer un contenu multimédia ou des parties inconnues',
   busy: (command: string) =>

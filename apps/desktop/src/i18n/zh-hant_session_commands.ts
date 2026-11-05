@@ -4,6 +4,7 @@ export const zhHantSessionCommands = {
   undoNothing: '沒有可復原的內容',
   undidOne: (count: string) => `已復原 ${count} 則訊息 — 被移除的訊息已放回輸入框`,
   undidOther: (count: string) => `已復原 ${count} 則訊息 — 被移除的訊息已放回輸入框`,
+  undoFilesFailed: (error: string) => `檔案未還原：${error} — 可用 /rollback 還原`,
   retryNothing: '沒有可重試的內容',
   retryUnsupported: '/retry：無法重試包含媒體或未知內容的訊息',
   busy: (command: string) =>

@@ -2665,6 +2665,7 @@
     "promptNotices.sessionCommands.steerUsage",
     "promptNotices.sessionCommands.undidOne",
     "promptNotices.sessionCommands.undidOther",
+    "promptNotices.sessionCommands.undoFilesFailed",
     "promptNotices.sessionCommands.undoNothing",
     "promptNotices.sessionCommands.undoUsage",
     "promptNotices.staleTurnUnavailable",

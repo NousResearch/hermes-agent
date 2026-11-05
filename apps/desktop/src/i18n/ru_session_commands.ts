@@ -4,6 +4,7 @@ export const ruSessionCommands = {
   undoNothing: 'нечего отменять',
   undidOne: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в поле ввода`,
   undidOther: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в поле ввода`,
+  undoFilesFailed: (error: string) => `файлы не возвращены: ${error} — /rollback может их восстановить`,
   retryNothing: 'нечего повторять',
   retryUnsupported: '/retry: нельзя повторить медиа или неизвестные части содержимого',
   busy: (command: string) =>

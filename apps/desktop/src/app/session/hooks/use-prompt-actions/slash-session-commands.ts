@@ -14,6 +14,7 @@ import type { SubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
   isCompressionBusyError,
+  isMethodNotFoundError,
   isSessionBusyError,
   isTargetSessionBusy,
   type SubmitTextOptions
@@ -224,8 +225,10 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       })
 
       return Array.isArray(result?.lines) ? result.lines.filter((line): line is string => typeof line === 'string') : []
-    } catch {
-      return [] // the conversation undo already committed; an older owner has no file half
+    } catch (err) {
+      // The conversation undo already committed. Only an older owner without the verb is silent;
+      // a refusal (session_busy) or failure means the files were NOT put back, so say so.
+      return isMethodNotFoundError(err) ? [] : [copy().undoFilesFailed(err instanceof Error ? err.message : String(err))]
     }
   }
 

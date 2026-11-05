@@ -5,6 +5,7 @@ export const deSessionCommands = {
   undidOne: (count: string) => `${count} Nachricht rückgängig gemacht — die entfernte Nachricht steht im Eingabefeld`,
   undidOther: (count: string) =>
     `${count} Nachrichten rückgängig gemacht — die entfernte Nachricht steht im Eingabefeld`,
+  undoFilesFailed: (error: string) => `Dateien nicht zurückgesetzt: ${error} — /rollback kann sie wiederherstellen`,
   retryNothing: 'nichts zum Wiederholen',
   retryUnsupported: '/retry: Medien oder unbekannte Inhaltsteile können nicht wiederholt werden',
   busy: (command: string) =>

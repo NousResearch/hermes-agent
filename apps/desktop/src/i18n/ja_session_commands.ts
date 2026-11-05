@@ -4,6 +4,7 @@ export const jaSessionCommands = {
   undoNothing: '元に戻すものはありません',
   undidOne: (count: string) => `${count} 件のメッセージを元に戻しました — 削除したメッセージは入力欄にあります`,
   undidOther: (count: string) => `${count} 件のメッセージを元に戻しました — 削除したメッセージは入力欄にあります`,
+  undoFilesFailed: (error: string) => `ファイルは元に戻していません: ${error} — /rollback で復元できます`,
   retryNothing: '再試行するものはありません',
   retryUnsupported: '/retry: メディアや不明なコンテンツを含むターンは再試行できません',
   busy: (command: string) =>

@@ -542,7 +542,7 @@ tts:
     device: cpu
 ```
 
-Blank provider language settings inherit the global `stt.language` value (default `"en"`) before consulting the environment. See [STT language resolution](../configuration.md#speech-to-text-stt) for the auto-detection conditions and command-backend limits.
+Blank provider language settings inherit the global `stt.language` value (default `"en"`) before consulting the environment. See [STT language resolution](../configuration.mdx#speech-to-text-stt) for the auto-detection conditions and command-backend limits.
 
 ### Environment Variables
 

@@ -526,7 +526,7 @@ stt:
     language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
 ```
 
-Blank provider language settings in this example inherit the global `"en"`; they do not select auto-detection. See [STT language resolution](../configuration.md#speech-to-text-stt) for precedence, an auto-detection example, and command-backend limits.
+Blank provider language settings in this example inherit the global `"en"`; they do not select auto-detection. See [STT language resolution](../configuration.mdx#speech-to-text-stt) for precedence, an auto-detection example, and command-backend limits.
 
 ### Provider Details
 
@@ -662,7 +662,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 |-----------------|---------|------------------------------------------------------------------------------------------------------|
 | `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
 | `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`; follows [STT language resolution](../configuration.md#speech-to-text-stt), with a final `en` fallback. |
+| `language`      | `en`    | Forwarded to `{language}`; follows [STT language resolution](../configuration.mdx#speech-to-text-stt), with a final `en` fallback. |
 | `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
 | `normalize`     | `false` | Transcode the input to 16 kHz mono m4a (ffmpeg) before the command runs; `{input_path}` then points at the normalized file. |
 
@@ -696,7 +696,7 @@ For STT engines that aren't built-in AND can't be expressed as a shell command (
 2. **`stt.provider` matches `stt.providers.<name>` with `command:` set** → command-provider runner (see [STT custom command providers](#stt-custom-command-providers)). Wins over a same-name plugin.
 3. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
    - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
-   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and the resolved `language` hint (see [STT language resolution](../configuration.md#speech-to-text-stt)).
+   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and the resolved `language` hint (see [STT language resolution](../configuration.mdx#speech-to-text-stt)).
 4. **No match** → "No STT provider available" error.
 
 #### Per-provider config namespace

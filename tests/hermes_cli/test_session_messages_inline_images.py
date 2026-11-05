@@ -23,23 +23,21 @@ IMAGE_CONTENT = [
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
 
-    db = SessionDB(home / "state.db")
-    try:
-        db.create_session(session_id="img-chat", source="desktop")
-        db.append_messages_batch("img-chat", [
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, "img-chat", "desktop")
+        store.messages.append_batch("img-chat", [NewMessage.from_live(message) for message in (
             {"role": "user", "content": IMAGE_CONTENT},
             {"role": "assistant", "content": "a chart"},
-        ])
-    finally:
-        db.close()
+        )])
 
     from hermes_cli.web_routers.sessions import manage_router
 

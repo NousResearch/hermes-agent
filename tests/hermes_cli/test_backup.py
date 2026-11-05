@@ -1482,7 +1482,7 @@ class TestSafeCopyDb:
             connect_calls.append((args, kwargs))
             return next(connections)
 
-        monkeypatch.setattr(backup_mod.sqlite3, "connect", fake_connect)
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
         monkeypatch.setattr(backup_mod.time, "monotonic", lambda: next(clock))
         monkeypatch.setattr(Path, "unlink", assert_closed_before_unlink)
 
@@ -1544,11 +1544,10 @@ class TestQuickSnapshot:
     def test_failed_state_db_copy_is_loud(self, hermes_home, monkeypatch, capsys):
         """#68474: unreadable state.db must not look like a silent success."""
         from hermes_cli import backup as backup_mod
+        from tests.fixtures.storage_holder import store_copy_seam
 
-        def boom(src, dst):
-            return False
-
-        monkeypatch.setattr(backup_mod, "_safe_copy_db", boom)
+        for copy in ((backup_mod, "_safe_copy_db"), store_copy_seam()):
+            monkeypatch.setattr(*copy, lambda *_args, **_kwargs: False)
         snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
         # Other small files still snapshot; the failed DB is recorded, not silently dropped.
         assert snap_id

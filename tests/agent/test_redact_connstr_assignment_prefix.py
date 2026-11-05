@@ -84,7 +84,31 @@ class TestAssignedConnectionStrings:
         "env X=host=db PWD=/home/app/project OPTIONS=';sslmode=require' myapp",
         # Same, with the ``;``-carrying value before PWD.
         "env X=host=db OPTIONS=';sslmode=require' PWD=/home/app/project myapp",
+        # Semicolon-prefixed prose next to an assigned companion: the space after ``=`` still
+        # says "field", not "empty value followed by the secret".
+        "X=host=db; password= field",
+        "the conn string X=host=db; pwd= flag",
     ])
     def test_assigned_forms_do_not_widen_prose(self, text):
         assert redact_sensitive_text(text, force=True) == text
         assert redact_terminal_output(text, command="env") == text
+
+    @pytest.mark.parametrize("text", [
+        # A ``;`` inside another variable's quoted value is not this connection string's field
+        # separator, however the quote is spelled.
+        'env X=host=db NOTE=";password=off"',
+        "env X=host=db NOTE=';password=off'",
+        'env X=host=db NOTE=";Password=open";other',
+    ])
+    def test_assigned_forms_do_not_cross_quoting_contexts(self, text):
+        assert redact_sensitive_text(text, force=True) == text
+        assert redact_terminal_output(text, command="env") == text
+
+    @pytest.mark.parametrize("text", [
+        # The whole conninfo is quoted, so companion and password share one quoting context.
+        f"export CONN='Host=db;Password={PW};'",
+        f'export CONN="Host=db;Password={PW};"',
+        f"export CONN='Server=db;User Id=app;Password={PW}'",
+    ])
+    def test_quoted_assignment_is_still_masked(self, text):
+        _assert_masked(text)

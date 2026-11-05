@@ -118,25 +118,42 @@ def _redact_kv_connection_line(line: str, code_file: bool) -> str:
     if not _KV_CONNSTR_GATE_RE.search(line):
         return line
     semicolon = _KV_SEMICOLON_FIELD_RE.search(line) is not None
-    plain_companion = _KV_CONNSTR_COMPANION_RE.search(line) is not None
-    if not plain_companion and not _KV_CONNSTR_ASSIGNED_COMPANION_RE.search(line):
-        return line
+    companion = _KV_CONNSTR_COMPANION_RE.search(line)
+    assigned = companion is None
+    if assigned:
+        companion = _KV_CONNSTR_ASSIGNED_COMPANION_RE.search(line)
+        if companion is None:
+            return line
     # Assigned companions only license semicolon-prefixed passwords, not a neighbouring PWD
     # environment variable. A single scan avoids rescanning overlapping runs for every key.
-    pw_re = _KV_CONNSTR_PW_RE if plain_companion else _KV_ASSIGNED_PW_RE
+    pw_re = _KV_ASSIGNED_PW_RE if assigned else _KV_CONNSTR_PW_RE
+    # An assigned companion and a ``;``-prefixed password can still sit in different shell
+    # assignments (``env X=host=db NOTE=";password=off"``), so the password must share the
+    # companion's quoting context. Parity is carried forward: one pass, no per-match rescan.
+    companion_dq = line.count('"', 0, companion.start()) % 2 == 1
+    companion_sq = line.count("'", 0, companion.start()) % 2 == 1
+    inside_dq, inside_sq, quote_at = companion_dq, companion_sq, companion.start()
     out, pos = [], 0
     for m in pw_re.finditer(line):
+        if assigned:
+            inside_dq ^= line.count('"', quote_at, m.start()) % 2 == 1
+            inside_sq ^= line.count("'", quote_at, m.start()) % 2 == 1
+            quote_at = m.start()
         if m.start() < pos:  # inside a value already masked
             continue
+        if assigned and (inside_dq, inside_sq) != (companion_dq, companion_sq):
+            continue
         # A semicolon-prefixed assigned field uses the ADO.NET/ODBC grammar, not libpq.
-        field_semicolon = semicolon or not plain_companion
+        field_semicolon = semicolon or assigned
         vstart = m.end()
         vend = _kv_value_end(line, vstart, field_semicolon)
         value = line[vstart:vend]
         # ``the pwd= flag``: space after ``=`` but not before it is prose, not an empty value followed
-        # by the next word. Padding on both sides (``password = x``) is still a conninfo field.
+        # by the next word. Padding on both sides (``password = x``) is still a conninfo field. The
+        # guard is skipped only where a ``;`` already establishes the grammar on a plain line;
+        # ``X=host=db; password= field`` is prose, not an assigned connection string.
         eq = line.rindex("=", m.start(), m.end())
-        if not value or (not field_semicolon and line[m.end() - 1] in " \t"
+        if not value or ((assigned or not semicolon) and line[m.end() - 1] in " \t"
                          and line[eq - 1] not in " \t"):
             continue
         bare = value.strip("\"'")

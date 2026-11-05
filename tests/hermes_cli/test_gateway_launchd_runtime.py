@@ -61,3 +61,27 @@ def test_gateway_job_is_a_launchd_osascript_child_that_reads_as_unsupervised(tmp
         release.write_text("", encoding="utf-8")
     assert wait_until(lambda: job.poll() is not None, timeout=30)
     assert job.poll() == 0
+
+
+@pytest.mark.platforms("macos")
+def test_gateway_job_handles_control_characters_in_environment(tmp_path):
+    report = tmp_path / "report.json"
+    release = tmp_path / "release"
+    child = (
+        "import json, os, pathlib, time; "
+        f"pathlib.Path({str(report)!r}).write_text(json.dumps({{'ppid': os.getppid(), "
+        "'color': os.environ.get('TIDE_COLOR')})); "
+        f"[time.sleep(0.1) for _ in range(300) if not pathlib.Path({str(release)!r}).exists()]"
+    )
+    job = start_gateway_job([sys.executable, "-c", child],
+                            env={**os.environ, "TIDE_COLOR": "\x1b[38;2;148;148;148m"},
+                            cwd=tmp_path, log_path=tmp_path / "gateway-stdio.log")
+    assert job is not None
+    try:
+        assert wait_until(lambda: report.exists() or job.poll() is not None, timeout=30)
+        seen = json.loads(report.read_text(encoding="utf-8-sig"))
+        assert seen["color"] == "\x1b[38;2;148;148;148m"
+    finally:
+        release.write_text("", encoding="utf-8")
+    assert wait_until(lambda: job.poll() is not None, timeout=30)
+    assert job.poll() == 0

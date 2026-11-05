@@ -107,18 +107,23 @@ def start_gateway_job(command: list[str], *, env: dict[str, str], cwd: str | Pat
     # unsupervised process it is, or /restart would exit for a respawn no KeepAlive provides.
     wrapped = ["/usr/bin/env", "XPC_SERVICE_NAME=0", *command]
     plist = log_path.parent / f".{label}.plist"
-    fd = os.open(plist, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # holds the launch env
+    try:
+        fd = os.open(plist, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # holds the launch env
+    except OSError:
+        return None
     try:
         with os.fdopen(fd, "wb") as handle:
             plistlib.dump({
                 "Label": label,
                 "ProgramArguments": launchd_program_arguments(wrapped, log_path, log_path),
-                "EnvironmentVariables": dict(env),
+                "EnvironmentVariables": {str(k): str(v) for k, v in env.items()},
                 "WorkingDirectory": str(cwd),
                 "RunAtLoad": True,
-            }, handle)
+            }, handle, fmt=plistlib.FMT_BINARY)
         done = _launchctl("bootstrap", f"gui/{os.getuid()}", str(plist),  # windows-footgun: ok — macOS-only
                           timeout=_budget(deadline, 10))
+    except (OSError, ValueError):
+        return None
     finally:
         plist.unlink(missing_ok=True)
     return GatewayJob(target, deadline) if done is not None and done.returncode == 0 else None

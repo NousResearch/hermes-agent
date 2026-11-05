@@ -120,6 +120,8 @@ def test_room_link_is_enabled_only_when_this_gateway_can_host_a_member(gateway, 
 
     capabilities = asyncio.run(call(gateway.owner, 'groups.capabilities'))
     assert capabilities['room_link'] == link
+    # Reading capabilities never mints the gateway's RoomLink secret; issuing a grant does.
+    assert not (gateway.home / '.room-link-grant-secret').exists()
     assert {'groups.peer.register', 'groups.peer.invite', 'groups.peer.revoke'} <= set(capabilities['methods'])
     contract.GroupsCapabilitiesResult.model_validate(capabilities)
     monkeypatch.delenv('HERMES_ROOM_LINK_URL')

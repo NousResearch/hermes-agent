@@ -248,5 +248,6 @@ class MemoryProvider(ABC):
     def write_config_fields(self, values: dict[str, Any], hermes_home: str) -> None:
         """Persist the submitted fields (only those present): natives already coerced, ``None`` clears a
         key, non-blank secrets included (core saves each to ``.env`` under its ``env_key`` once this
-        returns). Raise ``ValueError`` to refuse the save (the dashboard shows it as a 400)."""
+        returns). Raise ``ValueError`` (a subclass such as ``json.JSONDecodeError`` counts, also under
+        ``plugins.isolation: host``) to refuse the save (the dashboard shows it as a 400)."""
         raise NotImplementedError(f"memory provider {self.name} declares storage=provider but cannot write it")

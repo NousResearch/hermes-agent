@@ -139,17 +139,19 @@ def _provider_instance(provider: ProviderConfigSchema):
     return instance
 
 
+def _submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
+    """The ``(field, submitted)`` pairs of each non-blank secret submission."""
+    pairs = ((field, (values.get(field.key) or "").strip()) for field in provider.fields if field.is_secret)
+    return [(field, submitted) for field, submitted in pairs if submitted]
+
+
 def _save_submitted_secrets(provider: ProviderConfigSchema, values: dict[str, str]) -> list:
     """Persist each non-blank secret submission to the env store (when the field has an
     ``env_key``); return the ``(field, submitted)`` pairs for backend-specific handling."""
-    saved = []
-    for field in provider.fields:
-        submitted = (values.get(field.key) or "").strip() if field.is_secret else ""
-        if not submitted:
-            continue
+    saved = _submitted_secrets(provider, values)
+    for field, submitted in saved:
         if field.env_key:
             save_env_value(field.env_key, submitted)
-        saved.append((field, submitted))
     return saved
 
 
@@ -190,8 +192,7 @@ def _submitted_natives(provider: ProviderConfigSchema, values: dict[str, str]) -
 def _write_provider_own(provider: ProviderConfigSchema, values: dict[str, str]) -> None:
     """Hand the submitted fields to the provider's ``write_config_fields`` (natives, ``None`` = clear,
     non-blank secrets included); secrets reach ``.env`` only once the provider accepted the write."""
-    secrets = {field.key: (values.get(field.key) or "").strip() for field in provider.fields if field.is_secret}
-    fields = {k: v for k, v in secrets.items() if v}
+    fields: dict[str, Any] = {field.key: submitted for field, submitted in _submitted_secrets(provider, values)}
     fields.update({k: None if v is _UNSET else v for k, v in _submitted_natives(provider, values).items()})
     _provider_instance(provider).write_config_fields(fields, str(get_hermes_home()))
     _save_submitted_secrets(provider, values)
@@ -279,7 +280,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]
     placeholders: dict[str, Any] = {}
     if own:
         stored = _provider_instance(provider).read_config_fields(str(get_hermes_home())) or {}
-        host, data = "", dict(stored.get("values") or {})
+        data = dict(stored.get("values") or {})
         placeholders = dict(stored.get("placeholders") or {})
 
         def sources_for(field: ProviderField) -> tuple:
@@ -287,13 +288,15 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]
     elif is_honcho:
         resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers(provider.name)
         host = resolve_active_host()
+        # Blank fields surface the resolved host Honcho will actually use.
+        placeholders = {"workspace": host, "aiPeer": host}
         raw = _read_json_dict(resolve_config_path(), "Honcho config")
         host_block = host_block_of(raw, host)
 
         def sources_for(field: ProviderField) -> tuple:
             return (host_block, raw) if field.scope == "host" else (raw,)
     else:
-        host, data = "", _read_flat_json(provider)
+        data = _read_flat_json(provider)
 
         def sources_for(field: ProviderField) -> tuple:
             return (data,)
@@ -311,9 +314,6 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> dict[str, Any]
             fields.append(entry)
             continue
         native = _read_field(field, sources, env)
-        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
-            # Blank fields surface the resolved host Honcho will actually use.
-            entry["placeholder"] = host
         value = _serialize_field_value(field, native)
         if field.kind == "select" and value not in field.allowed_values():
             value = field.default
@@ -561,7 +561,8 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
         return _memory_provider_payload(name, provider)
 
-    return await scoped_to_thread(profile, _run)
+    with _value_errors_as_http("GET /api/memory/providers/%s/config failed", name):
+        return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/providers/{name}/setup")

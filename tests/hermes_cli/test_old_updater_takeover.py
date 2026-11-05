@@ -360,6 +360,47 @@ def test_serve_resume_child_reuses_respawn_without_updater_or_supervisors(tmp_pa
     assert ("probe spawn failed" in result.stdout) is spawn_fails
 
 
+def test_serve_resume_child_discharges_marker_of_failed_respawn(tmp_path):
+    """A respawn booked failed in the resume child clears its durable reminder; a token
+    entry without a pid (defaults to 0) must not match any reminder (#134995)."""
+    root = Path(__file__).resolve().parents[2]
+    context, result_path = tmp_path / "request.json", tmp_path / "result.json"
+    home = tmp_path / "home"
+    home.mkdir()
+    pending = home / "serve_restart_pending"
+    pending.mkdir()
+    owed = pending / "7001-0x1.f4p+9.json"
+    owed.write_text(json.dumps({"kind": "serve", "profile": "default", "pid": 7001, "create_time": 1000.0}),
+                    encoding="utf-8")
+    unrelated = pending / "7999-0x1.f4p+9.json"
+    unrelated.write_text(json.dumps({"kind": "serve", "profile": "default", "pid": 7999, "create_time": 1000.0}),
+                         encoding="utf-8")
+    entries = [
+        {"purpose": "serve", "profile": "default", "host": "127.0.0.1", "port": 8119, "pid": 7001},
+        {"purpose": "serve", "profile": "ghost", "host": "127.0.0.1", "port": 8120},
+    ]
+    context.write_text(json.dumps({"root": str(root), "home": str(home),
+                                   "stopped_serves": {"pending": True, "entries": entries}}))
+    program = tmp_path / "probe.py"
+    program.write_text(
+        "import runpy, subprocess, sys\n"
+        "def spawn(command, **kwargs):\n    raise OSError('probe spawn failed')\n"
+        "subprocess.Popen = spawn\n"
+        f"sys.argv = [{str(root / 'hermes_cli/update_serve_resume.py')!r}, {str(context)!r}, {str(result_path)!r}]\n"
+        "runpy.run_path(sys.argv[0], run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("HERMES_", "PYTHON", "UV_"))}
+    env.update(HOME=str(home), HERMES_HOME=str(home))
+    result = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(program)],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result_path.read_text()) == {"serves_handled": True}
+    assert not owed.exists()
+    assert unrelated.exists()
+
+
 def test_serve_resume_child_leaves_token_unhandled_when_imports_fail(tmp_path):
     root = Path(__file__).resolve().parents[2]
     context, result_path = tmp_path / "request.json", tmp_path / "result.json"

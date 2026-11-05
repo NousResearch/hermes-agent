@@ -6,7 +6,7 @@
 # the pin agree wherever it is run.
 name: peripheral
 repo: https://github.com/okyssta/hermes-peripheral
-sha: 7cf0f49f5b86b7234449ae6b5a2f0067c3dcde49
+sha: 107445dbab1d09189a9a99612a3caa4a2827b3af
 description: >-
   A memory of what the user has seen on screen. Peripheral captures the display
   itself on request, optionally on change in the background, and indexes the
@@ -44,7 +44,7 @@ maintainer: okyssta
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-version: "2.1.1"
+version: "2.1.2"
 docs_url: https://github.com/okyssta/hermes-peripheral#readme
 platforms: []
 capabilities:

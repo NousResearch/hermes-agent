@@ -91,6 +91,24 @@ describe('contributed @ completion sources', () => {
     expect(rows.some(label => label.includes('researcher.md'))).toBe(true)
   })
 
+  it.each(['', 'dev'])('keeps an unrenamed bot claiming its own handle for query %j', async query => {
+    vi.useFakeTimers()
+    addSource('bots', () => [{ insert: '@devops', meta: 'Bot · DevOps', handles: ['@devops'] }])
+
+    const gateway = gatewayStub([
+      { text: '@devops', display: '@devops', meta: 'agent profile' },
+      { text: '@file:devops.md', display: 'devops.md', meta: 'file' }
+    ])
+
+    const { result } = renderHook(() =>
+      useAtCompletions({ gateway: gateway as never, sessionId: 'devops-regression', cwd: '/repo' })
+    )
+
+    const rows = await searchAndRead(result, query)
+    expect(rows.filter(label => label === '@devops')).toEqual(['@devops'])
+    expect(rows).toContain('devops.md')
+  })
+
   it('drops the gateway twin of a row the source claims under another handle', async () => {
     vi.useFakeTimers()
     // A bot tagged by its title slug (`@john`) is the same routable identity

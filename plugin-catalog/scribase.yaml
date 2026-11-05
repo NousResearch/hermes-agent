@@ -1,18 +1,19 @@
 name: scribase
 repo: https://github.com/caelum0x/scribase-hermes-plugin
-sha: c68e4761b77933f7e364ebc8f27c7a47550e8c27
-description: "Provision a hosted Postgres backend project on Scribase (api.scribase.com), lint a SQL migration against real migration-safety rules before running it, and run read-only queries against the project's database. Disclosure — scribase_create_project creates billable Scribase resources (a project and a Postgres environment) in the user's organization without a confirmation prompt, and returns the new environment's Postgres connection URI and anon/service-role/secret API keys into the conversation, where they reach the configured model provider and the session history; scribase_lint_migration always sends apply=false and never opens a database session; scribase_query only ever runs inside a server-enforced Postgres READ ONLY transaction and cannot write. Network only to api.scribase.com or the user-configured api_base_url, authenticated with SCRIBASE_API_KEY."
+sha: 37c5cde3f1f4c9cea3df593044d5b27ad0144795
+description: "Provision a hosted Postgres backend project on Scribase (api.scribase.com), lint a SQL migration against real migration-safety rules before running it, run read-only queries against the project's database, and create/promote/discard a real copy-on-write Postgres branch for one agent task. Disclosure — scribase_create_project creates billable Scribase resources (a project and a Postgres environment) in the user's organization without a confirmation prompt, and returns the new environment's Postgres connection URI and anon/service-role/secret API keys into the conversation, where they reach the configured model provider and the session history; scribase_lint_migration always sends apply=false and never opens a database session; scribase_query only ever runs inside a server-enforced Postgres READ ONLY transaction and cannot write; scribase_branch_task's create action creates another billable environment with the same connection/API-key disclosure as scribase_create_project, its promote action is the only action in this plugin that can change an existing environment (applies a real schema merge, but only when the control plane's own merge plan is conflict-free, or when force=true and the organization has no MFA factor — the server itself rejects a forced merge on an MFA-protected organization), and its discard action permanently deletes the branch and its data. Network only to api.scribase.com or the user-configured api_base_url, authenticated with SCRIBASE_API_KEY."
 maintainer: caelum0x
 tier: community
 category: tools
 requires_hermes: ">=0.20.1"
 docs_url: "https://docs.scribase.com"
-version: "1.1.0"
+version: "1.2.0"
 capabilities:
   provides_tools:
     - scribase_create_project
     - scribase_lint_migration
     - scribase_query
+    - scribase_branch_task
   provides_hooks: []
   provides_middleware: []
   requires_env:

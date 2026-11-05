@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import itertools
 import json
 import logging
 import threading
 import time
+import weakref
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -45,6 +47,22 @@ def _tuple_agent(entry: Any) -> Any:
     """Agent of a ``(agent, sig, ...)`` cache tuple; None for any other entry shape."""
     return entry[0] if isinstance(entry, tuple) and entry else None
 
+
+# One serial per live schema-override callable: an id can be reused once its object is collected.
+_OVERRIDE_SERIALS: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+_OVERRIDE_SERIAL_COUNTER = itertools.count(1)
+
+
+def _override_serial(callback: Any, generation: int) -> Any:
+    """Identity of a tool's dynamic schema override; the registry generation when it cannot be weakly keyed."""
+    if callback is None:
+        return None
+    try:
+        if callback not in _OVERRIDE_SERIALS:
+            _OVERRIDE_SERIALS[callback] = next(_OVERRIDE_SERIAL_COUNTER)
+        return _OVERRIDE_SERIALS[callback]
+    except TypeError:
+        return f"generation:{generation}"
 
 def _agent_config_signature_parts(model, runtime, enabled_toolsets, ephemeral_prompt,
                                   cache_keys=None, user_id=None, user_id_alt=None, skip_context_files=False):
@@ -120,7 +138,7 @@ class GatewayAgentCacheMixin:
                 surface = [
                     (e.name, e.toolset, json.dumps(e.schema, sort_keys=True, default=str), e.description,
                      e.requires_env, e.is_async, e.emoji, e.max_result_size_chars, e.execution_timeout,
-                     e.dynamic_schema_overrides is not None)
+                     _override_serial(e.dynamic_schema_overrides, registry._generation))
                     for e in sorted(registry.get_all_entries(), key=lambda e: e.name)
                 ]
                 blob = json.dumps([surface, sorted(registry.get_registered_toolset_aliases().items())],

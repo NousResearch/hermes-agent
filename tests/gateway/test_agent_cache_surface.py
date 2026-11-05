@@ -77,6 +77,31 @@ def test_metadata_changes_surface(registry, change):
     assert _surface() == original
 
 
+def test_swapping_one_schema_override_for_another_changes_surface(registry):
+    def first():
+        return {"description": "First"}
+
+    def second():
+        return {"description": "Second"}
+
+    class Unweakable:
+        __slots__ = ()
+
+        def __call__(self):
+            return {}
+
+    _register(registry, dynamic_schema_overrides=first)
+    original = _surface()
+    _register(registry, dynamic_schema_overrides=second)
+    assert _surface() != original
+    _register(registry, dynamic_schema_overrides=first)
+    assert _surface() == original
+    # A callable that cannot be weakly keyed falls back to the registry generation: every change rebuilds.
+    _register(registry, dynamic_schema_overrides=Unweakable())
+    fallback = _surface()
+    _register(registry, dynamic_schema_overrides=Unweakable())
+    assert _surface() not in (original, fallback)
+
 def test_handler_and_availability_callables_do_not_change_surface(registry):
     _register(registry)
     original = _surface()

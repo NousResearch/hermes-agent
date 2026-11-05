@@ -130,6 +130,20 @@ class TestAssignedConnectionStrings:
 
 class TestAssignmentBlockingRegressions:
     @pytest.mark.parametrize("text", [
+        "env X=host=db; NOTE=foo;password=off",
+        "env X=host=db;\tNOTE=foo;;password=off",
+    ])
+    @pytest.mark.parametrize("entry", ["forced", "secret_file", "terminal"])
+    def test_terminated_field_does_not_cross_assignments(self, text, entry):
+        if entry == "terminal":
+            output = redact_terminal_output(text, command="env")
+        else:
+            output = redact_sensitive_text(
+                text, force=True, file_read=entry == "secret_file",
+                secret_file=entry == "secret_file")
+        assert output == text
+
+    @pytest.mark.parametrize("text", [
         "env X=host=db NOTE=foo;password=off",
         "env X=host=db NOTE=foo;;password=off",
         "env X=host=db NOTE=foo;Option=bar;password=off",

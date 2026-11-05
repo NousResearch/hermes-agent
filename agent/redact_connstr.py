@@ -141,7 +141,9 @@ def _quote_states(line: str, indexes: list[int]) -> list[tuple[bool, bool, bool,
                         continue
                     in_brace = False
             else:
-                if (ch in " \t" and in_value and line[pos - 1] not in " \t"
+                if (ch in " \t" and line[pos - 1] not in " \t"
+                        and (in_value or (line[pos - 1] == ";"
+                             and not _KV_SEMICOLON_FIELD_RE.match(line, pos - 1)))
                         and _NEXT_ASSIGNMENT_RE.match(line, pos)):
                     assignment += 1
                     in_value = False

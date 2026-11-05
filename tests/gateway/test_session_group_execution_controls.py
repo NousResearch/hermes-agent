@@ -1,7 +1,6 @@
 """Native room controls retain the service protocol and authenticated ownership."""
 import asyncio
 import json
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -9,18 +8,13 @@ import pytest
 from gateway.session_controls import AuthorityConnection
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
-from tui_gateway.hosted_room_service import HostedRoomService
 
 
 class RoomService:
-    disbanding = HostedRoomService.disbanding
-
     def __init__(self, path, owner):
         self.db_path = path
         self.owner = owner
         self.calls = []
-        self.peer_route_lock = threading.Lock()
-        self._disbanding_rooms = set()
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
     def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):

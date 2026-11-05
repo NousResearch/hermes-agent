@@ -228,35 +228,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id,
                 admit=admit)}
 
-    attached = getattr(authority, 'hosted_room_service', None)
-
     def disband():
-        from contextlib import nullcontext
-        room_id = params.get('room_id')
-        with attached.disbanding(room_id) if attached is not None else nullcontext():
-            state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
-            if service is not None and state.get('disbanded_at') is None:
-                service.stop_room(room_id, cancel_id=params.get('cancel_id') or 'room-disbanded',
-                                  require_acknowledged=True)
-            with attached.peer_route_lock if attached is not None else nullcontext():
-                return finish_disband()
-
-    def finish_disband():
-        from gateway.hosted_room_driver import list_tasks
-        room_id = params.get('room_id')
-        state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
-        # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=room_id, status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
-            raise RuntimeStoreError('runtime_coordination_required')
-        if state.get('disbanded_at') is None:
-            if attached is not None:
-                attached.revoke_room_routes(room_id)
-            else:
-                from gateway.hosted_room_peer import room_grant_hard_expiry
-                rooms.retire_room_link_records(db_path, room_id=room_id, expiry=room_grant_hard_expiry)
-        return {'tombstone': rooms.disband_room(db_path, room_id=room_id,
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+        return _disband(getattr(authority, 'hosted_room_service', None), service, db_path, gateway_id, params)
 
     def state():
         room = rooms.room_state(db_path, **params)
@@ -278,6 +251,43 @@ def _group(authority, actor, method, params, *, host_scope=False):
         'groups.disband': disband,
     }
     return handlers[method]()
+
+
+def _disband(attached, service, db_path, gateway_id, params):
+    """Stop the room's work (waiting for every member's acknowledged Stop), revoke each peer
+    route at its member gateway, then tombstone; any refusal leaves the room for a retry."""
+    from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_driver import list_tasks
+    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    room_id = params.get('room_id')
+    with disband_fence(attached, room_id):
+        state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+        if service is not None and state.get('disbanded_at') is None:
+            service.stop_room(room_id, cancel_id=params.get('cancel_id') or 'room-disbanded',
+                              require_acknowledged=True)
+        with route_publication_lock(attached):
+            state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
+            # Metadata control must not destroy an active execution or bypass Stop.
+            if service is None and any(list_tasks(db_path, room_id=room_id, status=status)
+                   for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+                raise RuntimeStoreError('runtime_coordination_required')
+            if state.get('disbanded_at') is None:
+                if attached is not None:
+                    _revoke_routes_first(attached, room_id)
+                else:
+                    from gateway.hosted_room_peer import room_grant_hard_expiry
+                    rooms.retire_room_link_records(db_path, room_id=room_id, expiry=room_grant_hard_expiry)
+            return {'tombstone': rooms.disband_room(db_path, room_id=room_id,
+                    expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+
+
+def _revoke_routes_first(service, room_id):
+    """Revoke each peer route at its member gateway; one that cannot be reached keeps the room."""
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    try:
+        service.revoke_room_routes(room_id)
+    except PeerRunsHTTPError as exc:
+        raise RuntimeStoreError('peer_unreachable') from exc
 
 
 def _execution_control(service, method, params):

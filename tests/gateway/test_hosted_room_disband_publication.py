@@ -109,13 +109,19 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
     driver.start_task(service.db_path, task['identity'], lease, expected_cancel_generation=0, clock=service.runtime.clock)
     monkeypatch.setattr(service, 'peer_route_lock', BoundedLock())
     monkeypatch.setattr(PeerRunsHTTPClient, 'refresh_grant', refresh_without_policy_lock)
-    result = await request(f'groups.{operation}', room_id='linked')
+    try:
+        result = await request(f'groups.{operation}', room_id='linked')
+    except RuntimeError as exc:  # the canonical surface raises Stop's refusal to its transport
+        result = {'message': str(exc)}
     assert not blocked, blocked
-    assert isinstance(result, dict) and 'code' not in result, result
     if operation == 'disband':
-        assert 'tombstone' in result
-        assert ('linked', 'reviewer') not in service.peer_routes
-        assert hosted_room_links.load_room_links(service.db_path) == ()
+        # Disband waits for the member gateway's Stop: this attempt never reached it, so its Stop
+        # cannot be confirmed and the room and its route stay for a retry.
+        assert 'still stopping' in str(result), result
+        assert ('linked', 'reviewer') in service.peer_routes
+        assert len(hosted_room_links.load_room_links(service.db_path)) == 1
+    else:
+        assert isinstance(result, dict) and 'code' not in result, result
     assert (await _seat(gateway, other, url, catalog))[1]['registered']
     assert (await call(gateway.owner, 'groups.send', room_id='other', event_id='next',
                        payload={'text': '@reviewer next', 'thread_id': 'next'}))['accepted']
@@ -222,10 +228,9 @@ async def test_registration_during_disband_preserves_surviving_grants(gateway, m
         else:
             assert 'tombstone' in result
             assert service.peer_routes == {} and hosted_room_links.load_room_links(service.db_path) == ()
-            assert _owed(service.db_path) == ([] if not routes else [('linked', 'reviewer', 0)])
-            assert await asyncio.to_thread(service.retry_owed_revokes) == int(bool(routes))
-            if not routes:
-                assert await _grant_error(url, grant) is None
+            # Disband revoked any surviving route at its member gateway first: nothing stays owed.
+            assert _owed(service.db_path) == []
+            assert await _grant_error(url, grant) == ('room_reauthorization_required' if routes else None)
     finally:
         release.set()
         publish.set()

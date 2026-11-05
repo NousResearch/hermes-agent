@@ -16,10 +16,25 @@ from tests.tui_gateway.test_hosted_room_driver_runtime import (
     _identity,
     _runtime,
 )
-from tests.tui_gateway.test_hosted_room_service import (
-    _FakePeerClient,
-    _peer_service,
-)
+from gateway import hosted_rooms
+from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
+from tests.tui_gateway.test_hosted_room_service import _FakePeerClient, _server
+from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+
+
+def _peer_service(db: Path, peer: _FakePeerClient, *, grant="signed.room.grant") -> HostedRoomService:
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True))
+    route = PeerMemberRoute(
+        home_install_id=hosted_rooms.local_authority_gateway_id(), member_id="member-peer",
+        target_install_id="install-peer", target_profile="reviewer", capability_digest=catalog.catalog_digest,
+        execution_policy_digest=catalog.execution_policy.policy_digest,
+        cancellation_scope_id="cancel-room-1", trace_id="trace-room-1", grant=grant)
+    service = HostedRoomService(_server(), db_path=db)
+    service.register_peer_route(
+        room_id="room-1", member_id="member-peer", route=route, client=peer,
+        target_url="https://peer.example.test", catalog=catalog)
+    return service
 
 
 db = db_fixture
@@ -195,12 +210,14 @@ def _deferred_peer_turn(tmp_path: Path, peer: _FakePeerClient):
 def test_stop_of_a_deferred_peer_turn_whose_gateway_is_down_frees_the_room(tmp_path: Path):
     """Deferral already let the room move on. Stopping that turn while its member stays
     unreachable reports nothing stopped (the run may still be going there), never replays its
-    admission, and holds neither the next message nor ending the room."""
+    admission, and does not hold the next message. Disband waits for that member's Stop."""
     peer = _UnreachablePeerClient()
     service, db, identity = _deferred_peer_turn(tmp_path, peer)
     peer.reachable, replays = True, len(peer.recoveries)
 
-    assert service.stop_room("room-1", cancel_id="stop-deferred", require_acknowledged=True) == 0
+    assert service.stop_room("room-1", cancel_id="stop-deferred") == 0
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.stop_room("room-1", cancel_id="room-disbanded", require_acknowledged=True)
     assert driver.get_task(db, identity)["status"] == "deferred"
     assert len(peer.recoveries) == replays and peer.dispatches == []
     service.send(room_id="room-1", event_id="user-2",
@@ -230,13 +247,14 @@ def test_stop_of_a_deferred_peer_turn_is_reported_once_its_gateway_confirms(tmp_
 
 def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tmp_path: Path):
     """Stop of an uncertain peer turn waits for its gateway's acknowledgement, but a gateway that
-    stays unreachable holds the room only for the deferral window, and Disband not at all. The turn
-    is then deferred, never reported cancelled."""
+    stays unreachable holds the room only for the deferral window. The turn is then deferred, never
+    reported cancelled, and Disband keeps waiting for that member's Stop."""
     turn = _crashed_turn(tmp_path, _UnreachablePeerClient())
     service, db, task, binding, lease, now = turn.service, turn.db, turn.task, turn.binding, turn.lease, turn.now
 
-    # Disband's own wait covers this gateway's work only: the peer turn is fenced, not waited on.
-    assert service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True) == 1
+    # Disband waits for the member gateway's Stop, as for this gateway's own work.
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.stop_room("room-1", cancel_id="stop-uncertain", require_acknowledged=True)
     assert driver.get_task(db, task["identity"])["status"] == "stopping"
     assert service.runtime._retry_stopping_tasks(binding, lease) is True
 
@@ -245,7 +263,8 @@ def test_an_unconfirmed_peer_stop_holds_the_room_only_for_the_deferral_window(tm
     released = driver.get_task(db, task["identity"])
     assert (released["status"], released["execution_generation"]) == ("deferred", 1)
     assert released["result"] == {"reason": "member_unavailable", "retryable": True}
-    assert service.stop_room("room-1", cancel_id="room-disbanded", require_acknowledged=True) == 0
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.stop_room("room-1", cancel_id="room-disbanded", require_acknowledged=True)
 
 @pytest.mark.parametrize("elapsed", [5, 61], ids=["before-deadline", "after-deadline"])
 def test_peer_completion_is_observed_after_the_first_recovery_probe(tmp_path, monkeypatch, elapsed):

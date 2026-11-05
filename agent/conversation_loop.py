@@ -1919,16 +1919,19 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
-    #1630 growth loop; their repair is rotation or a retry. Idempotence is keyed on the DURABLE
-    tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail already closed by
-    another writer is a no-op, and the gateway's own closer then no-ops in turn.
+    #1630 growth loop; their repair is rotation or a retry. ``content_policy_blocked`` too: that turn
+    is dropped whole (the gateway soft-deletes it owner-side; in-memory surfaces return the
+    pre-refusal history), so a closing boundary would only be written to be rewound, and a refused
+    turn ran no tool, so it has no side effect for the #107070 open-tail replay to carry. Idempotence
+    is keyed on the DURABLE tail (``SessionDB.latest_conversation_role``), so a redelivery or a tail
+    already closed by another writer is a no-op, and the gateway's own closer then no-ops in turn.
     """
     try:
         if not isinstance(result, dict) or result.get("completed") is True:
             return
         if (
             result.get("compression_exhausted") or result.get("compression_deferred")
-            or result.get("failure_reason") == "context_overflow"
+            or result.get("failure_reason") in ("context_overflow", "content_policy_blocked")
         ):
             return
         messages = result.get("messages")

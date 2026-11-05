@@ -49,6 +49,7 @@ from typing import Any
 
 from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
+from registry_freeze import refuse_if_frozen
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ def register_provider(profile: ProviderProfile) -> None:
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
+    refuse_if_frozen("provider registry")
     collect = _COLLECT.get()
     if collect is not None:
         collect.append(profile)

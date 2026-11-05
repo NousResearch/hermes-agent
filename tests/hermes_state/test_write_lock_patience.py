@@ -25,6 +25,8 @@ import time
 import pytest
 
 from hermes_state import SessionDB
+from persistence.sqlite import _holder, _schema
+from persistence.sqlite._holder import StoreHolder
 
 
 def _hold_write_lock(db_path, hold_s, started_evt):
@@ -84,7 +86,7 @@ class TestTranscriptWritePatience:
     def test_exhausted_patience_names_the_real_cause(self, db, monkeypatch):
         """When patience genuinely runs out, the error must say the lock was
         held by another process — not read like disk/permission damage."""
-        monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
+        monkeypatch.setattr(StoreHolder, "_WRITE_PATIENCE_S", 0.2)
 
         started = threading.Event()
         holder = threading.Thread(
@@ -184,7 +186,7 @@ def test_open_waits_out_lock_lost_inside_fts_constructor(tmp_path, monkeypatch, 
 
     started = threading.Event()
     holder = threading.Thread(target=_hold_exclusive, args=(db_path, 2.5, started))
-    real_probe = SessionDB._fts_table_probe
+    real_probe = _schema._fts_table_probe
 
     def probe_after_sibling_takes_lock(self, cursor, table_name):
         if table_name == "messages_fts" and not holder.is_alive() and not started.is_set():
@@ -193,7 +195,9 @@ def test_open_waits_out_lock_lost_inside_fts_constructor(tmp_path, monkeypatch, 
             assert started.wait(5.0)
         return real_probe(self, cursor, table_name)
 
-    monkeypatch.setattr(SessionDB, "_fts_table_probe", probe_after_sibling_takes_lock)
+    # The writer's schema step and the read-only open each probe through their own binding.
+    monkeypatch.setattr(_schema, "_fts_table_probe", probe_after_sibling_takes_lock)
+    monkeypatch.setattr(_holder, "_fts_table_probe", probe_after_sibling_takes_lock)
     try:
         db = SessionDB(db_path=db_path, read_only=read_only)
     finally:

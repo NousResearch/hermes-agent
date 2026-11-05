@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
+import storage_user_copy
 from hermes_state import SessionDB, preflight_db_writability
 
 pytestmark = [
@@ -227,7 +227,7 @@ class TestSessionDBIntegration:
         first = SessionDB(db_path)
         first.close()
         os.chmod(db_path, 0o444)
-        hermes_state._set_last_init_error(None)
+        storage_user_copy.set_last_init_error(None)
         try:
             with pytest.raises(sqlite3.OperationalError) as exc_info:
                 SessionDB(db_path)
@@ -235,4 +235,4 @@ class TestSessionDBIntegration:
             assert str(db_path) in msg
         finally:
             os.chmod(db_path, 0o644)
-            hermes_state._set_last_init_error(None)
+            storage_user_copy.set_last_init_error(None)

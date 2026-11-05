@@ -26,6 +26,7 @@ import hermes_state
 import hermes_state_repair
 import hermes_state_wal
 from hermes_state import SessionDB, is_malformed_db_error
+from persistence.sqlite import _holder
 from hermes_state_repair import repair_state_db_schema
 
 
@@ -79,9 +80,9 @@ def test_generic_malformed_open_does_not_attempt_schema_surgery(
     def _generic_corruption(*_args, **_kwargs):
         raise sqlite3.DatabaseError("database disk image is malformed")
 
-    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _generic_corruption)  # SessionDB open path
+    monkeypatch.setattr(_holder, "apply_wal_with_fallback", _generic_corruption)  # SessionDB open path
     monkeypatch.setattr(
-        hermes_state, "repair_state_db_schema",
+        _holder, "repair_state_db_schema",
         lambda *args, **kwargs: repair_calls.append((args, kwargs)),
     )
 
@@ -120,14 +121,14 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
 
     calls = {"n": 0}
-    real_repair = hermes_state.repair_state_db_schema
+    real_repair = _holder.repair_state_db_schema
 
     def fake_repair(path, **kw):
         calls["n"] += 1
         # Pretend repair failed so the guard's one-shot behavior is exercised.
         return {"repaired": False, "strategy": None, "backup_path": None, "error": "x"}
 
-    monkeypatch.setattr(hermes_state, "repair_state_db_schema", fake_repair)
+    monkeypatch.setattr(_holder, "repair_state_db_schema", fake_repair)
 
     with pytest.raises(sqlite3.DatabaseError):
         SessionDB(db_path=db_path)
@@ -135,7 +136,7 @@ def test_auto_heal_attempted_once_per_process(tmp_path, monkeypatch):
         SessionDB(db_path=db_path)
     assert calls["n"] == 1  # repair attempted only once across both opens
 
-    monkeypatch.setattr(hermes_state, "repair_state_db_schema", real_repair)
+    monkeypatch.setattr(_holder, "repair_state_db_schema", real_repair)
 
 
 

@@ -1,6 +1,6 @@
 name: elevenlabs-convai
 repo: https://github.com/c6zks4gssn-droid/hermes-elevenlabs-convai
-sha: e27779556bef21b2aad79362b64681b4c351ce7c
+sha: 9a34782a216bbf36e942ae51729202418501d652
 title: ElevenLabs ConvAI Ops
 description: "Operate ElevenLabs ConvAI voice agents from the agent: inspect which LLM is the brain, which TTS model and voice it speaks with, and whether the prompt is date-grounded; change llm / tts / voice with a dry-run diff, a written backup and a one-call rollback; add date-grounding and brevity rules to a prompt (idempotent, restorable); run a real conversation over the ConvAI WebSocket and measure time-to-first-audio per turn with optional WAV/MP3; and pull the authoritative transcript with tool calls and credit cost. Disclosure — every call goes to api.elevenlabs.io with the account's own key (ELEVENLABS_API_KEY): reads are free of side effects, writes happen only with apply=true and are backed up under $HERMES_HOME first, a conversation test spends real ElevenLabs credits on that account, and the WebSocket test needs the optional 'websockets' package (the other five tools work without it). Backups and opt-in audio are the only local files written; no telemetry, no self-update."
 maintainer: c6zks4gssn-droid

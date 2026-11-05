@@ -1,0 +1,19 @@
+name: delx-recovery
+title: Delx Recovery
+repo: https://github.com/davidmosiah/delx-plugins
+sha: "c1d4be02df59f05fe65a27000d0b06b28c9733c2"
+subdir: delx-recovery
+description: "Free recovery and continuity for agents through the hosted Delx Protocol MCP server (Streamable HTTP, no API key, no OAuth, no payment), with the delx-recovery-first-hour workflow skill bundled: triage an error loop or lost context, resume a prior session, capture state and context memory, seal a Continuity Capsule (goal/done/next/blockers/refuted) before compaction so the next session resumes warm, and turn failures into a recovery plan. Portable Agent Plugins v1 package (mcp.json + skills/); Hermes runs no code from it. Disclosure — hosted-only connector: every tool call goes to the remote server at api.delx.ai. Public triage needs no credential; private continuity uses a free agent credential returned at registration and passed as a tool argument. What the agent chooses to store (state, memory, capsules) is retained by Delx under its privacy policy, so do not send secrets. Requests carry ?src=plugin for channel attribution. The tool set is served by the remote server at runtime and is not covered by the pinned sha. The hooks/ shell scripts in the directory are opt-in Claude Code hooks that Hermes does not load."
+maintainer: davidmosiah
+tier: community
+category: memory
+version: "1.2.0"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/davidmosiah/delx-plugins/blob/c1d4be02df59f05fe65a27000d0b06b28c9733c2/delx-recovery/README.md
+image: https://raw.githubusercontent.com/davidmosiah/delx-plugins/c1d4be02df59f05fe65a27000d0b06b28c9733c2/assets/icon-light-256.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

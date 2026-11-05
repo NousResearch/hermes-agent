@@ -235,8 +235,9 @@ def scenario(tmp_path_factory: pytest.TempPathFactory):
         created = _rpc(sws, 1, "session.create", {})
         stored = created.get("stored_session_id") or created["session_id"]
         model.hold.set()
+        seen = len(model.callers)  # the control may have retried: wait for a NEW call, not a fixed ordinal
         _rpc(sws, 2, "prompt.submit", {"session_id": created["session_id"], "text": "serve turn"})
-        facts["serve"] = {"sid": stored, "caller": model.wait_calls(2, "serve turn reached the model"),
+        facts["serve"] = {"sid": stored, "caller": model.wait_calls(seen + 1, "serve turn reached the model"),
                           "admissions": _admissions(db, stored)}
         serve.send_signal(signal.SIGTERM)
         facts["serve"]["rc"] = serve.wait(timeout=60)

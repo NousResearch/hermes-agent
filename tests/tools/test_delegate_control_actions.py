@@ -156,6 +156,156 @@ def test_steer_foreign_child_is_refused():
 
 
 
+# ---------------------------------------------------------------------------
+# display_name — presentation identity (#118081); subagent_id stays the routing key
+# ---------------------------------------------------------------------------
+
+
+def test_list_entry_carries_display_name():
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-1", child, display_name="Hypatia")
+    try:
+        entry = json.loads(_handle_control_action("list", None, None, parent))["subagents"][0]
+        assert entry["subagent_id"] == "sid-dn-1"
+        assert entry["display_name"] == "Hypatia"
+    finally:
+        _unregister_subagent("sid-dn-1")
+
+
+def test_steer_success_response_carries_display_name():
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-2", child, display_name="Turing")
+    try:
+        out = json.loads(
+            _handle_control_action("steer", "sid-dn-2", "tighten scope", parent)
+        )
+        assert out["status"] == "queued"
+        assert out["subagent_id"] == "sid-dn-2"
+        assert out["display_name"] == "Turing"
+    finally:
+        _unregister_subagent("sid-dn-2")
+
+
+def test_display_name_lookup_live_and_recent(monkeypatch):
+    from tools.delegate_tool_registry import get_subagent_display_name
+    parent = _StubParent()
+    child = _StubChild(parent)
+    _register("sid-dn-3", child, display_name="Noether")
+    try:
+        assert get_subagent_display_name("sid-dn-3") == "Noether"
+        assert get_subagent_display_name("sid-unknown") is None
+        assert get_subagent_display_name(None) is None
+    finally:
+        _unregister_subagent("sid-dn-3")
+    # After unregister the bounded recent stub still answers (post-completion replay)
+    assert get_subagent_display_name("sid-dn-3") == "Noether"
+
+
+# ---------------------------------------------------------------------------
+# display-name reservation — allocation and registration run on different
+# threads; the reservation closes the TOCTOU window between them (review of #118104)
+# ---------------------------------------------------------------------------
+
+
+def test_reserve_is_unique_and_converts_on_register():
+    """Behavioral assertions only (immune to suite-order reserved/active state):
+    sequential reserves differ, both hold reservations, and registering a record
+    under a reserved name converts exactly that reservation (review of #118104)."""
+    from tools.delegate_tool_registry import (
+        _active_subagents_lock, _reserved_display_names, _register_subagent as reg,
+        release_display_name, reserve_display_name,
+    )
+    grabbed: list = []
+    try:
+        first, second = reserve_display_name(), reserve_display_name()
+        assert first != second
+        with _active_subagents_lock:
+            assert first in _reserved_display_names and second in _reserved_display_names
+        reg({"subagent_id": "sid-res-conv", "display_name": first, "agent": _StubChild(), "goal": "g"})
+        with _active_subagents_lock:
+            assert first not in _reserved_display_names   # converted by registration
+            assert second in _reserved_display_names      # untouched
+        grabbed = [second]
+    finally:
+        for n in grabbed:
+            release_display_name(n)
+        _unregister_subagent("sid-res-conv")
+
+
+def test_concurrent_reserves_never_collide():
+    """Two spawns building children between snapshot and registration must still
+    get distinct names — the exact interleave the review flagged."""
+    import concurrent.futures
+    from tools.delegate_names import _FRIENDLY_NAMES
+    from tools.delegate_tool_registry import release_display_name, reserve_display_name
+    n_threads = min(16, len(_FRIENDLY_NAMES))
+    names: list = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as pool:
+            names = list(pool.map(lambda _: reserve_display_name(), range(n_threads * 4)))
+        assert len(set(names)) == len(names), f"duplicate display names: {sorted(names)}"
+    finally:
+        for n in names:
+            release_display_name(n)
+
+
+def test_build_failure_releases_display_name(monkeypatch):
+    """A child that fails to construct must give its reserved name back to the pool:
+    the release was imported next to reserve_display_name but never wired into the
+    BaseException path (nit in review of #118104). Asserted as a pool diff so the
+    test stays immune to suite-order residue in the shared reservation set."""
+    import run_agent
+    from unittest.mock import MagicMock
+
+    from tools import delegate_tool
+    from tools.delegate_tool_registry import _active_subagents_lock, _reserved_display_names
+
+    def _boom(*args, **kwargs):
+        raise ValueError("construct failed")
+
+    monkeypatch.setattr(run_agent, "AIAgent", _boom)
+    parent = MagicMock()
+    parent._delegate_depth = 0
+
+    with _active_subagents_lock:
+        before = set(_reserved_display_names)
+    with pytest.raises(ValueError, match="construct failed"):
+        delegate_tool._build_child_agent(
+            0, "goal", "context", None, "test/model", 10, 1, parent,
+        )
+    with _active_subagents_lock:
+        after = set(_reserved_display_names)
+    assert after <= before, f"display-name reservation leaked on build failure: {sorted(after - before)}"
+
+
+def test_post_reserve_failure_releases_display_name(monkeypatch):
+    """A failure between reserve and AIAgent construction — config/runtime
+    resolution, not just child construction — must also give the reserved name
+    back (non-blocking finding ① in review of #118104)."""
+    from unittest.mock import MagicMock
+
+    from tools import delegate_tool
+    from tools.delegate_tool_registry import _active_subagents_lock, _reserved_display_names
+
+    def _boom(*args, **kwargs):
+        raise ValueError("child toolset resolution failed")
+
+    # First call AFTER the reservation but (pre-fix) OUTSIDE the release guard.
+    monkeypatch.setattr(delegate_tool, "_resolve_child_toolsets", _boom)
+    parent = MagicMock()
+    parent._delegate_depth = 0
+
+    with _active_subagents_lock:
+        before = set(_reserved_display_names)
+    with pytest.raises(ValueError, match="child toolset resolution failed"):
+        delegate_tool._build_child_agent(
+            0, "goal", "context", None, "test/model", 10, 1, parent,
+        )
+    with _active_subagents_lock:
+        after = set(_reserved_display_names)
+    assert after <= before, f"display-name reservation leaked on post-reserve failure: {sorted(after - before)}"
 
 
 def test_steer_closed_acceptance_is_refused():

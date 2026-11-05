@@ -2,6 +2,7 @@
 
 import sys
 import threading
+from pathlib import Path
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -32,6 +33,8 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from hermes_cli.config import atomic_config_write
+from utils import fast_safe_load
 
 
 class _CapturingAgent:
@@ -141,3 +144,27 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
     assert retried_event.channel_prompt == "Channel prompt"
 
 
+
+
+def test_yaml_aliases_resolve_and_survive_config_round_trip(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "discord:\n"
+        "  channel_prompts:\n"
+        "    \"100\": &research |\n"
+        "      Shared research prompt.\n"
+        "    \"200\": *research\n"
+    )
+
+    with config_path.open() as stream:
+        loaded = fast_safe_load(stream)
+    prompts = loaded["discord"]["channel_prompts"]
+    assert prompts["100"] == prompts["200"]
+
+    atomic_config_write(config_path, loaded)
+
+    written = config_path.read_text()
+    assert "&research" in written
+    assert "*research" in written
+    with config_path.open() as stream:
+        assert fast_safe_load(stream)["discord"]["channel_prompts"] == prompts

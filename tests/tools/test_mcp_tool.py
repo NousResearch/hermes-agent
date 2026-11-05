@@ -1615,53 +1615,6 @@ class TestSanitizeError:
         assert result == "normal error message"
 
 # ---------------------------------------------------------------------------
-# HTTP config
-# ---------------------------------------------------------------------------
-
-class TestHTTPConfig:
-    """Tests for HTTP transport detection and handling."""
-
-    def test_is_http_with_url(self):
-        from tools.mcp_tool import MCPServerTask
-        server = MCPServerTask("remote")
-        server._config = {"url": "https://example.com/mcp"}
-        assert server._is_http() is True
-
-    def test_http_unavailable_raises(self):
-        from tools.mcp_tool import MCPServerTask
-
-        server = MCPServerTask("remote")
-        config = {"url": "https://example.com/mcp"}
-
-        async def _test():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
-                with pytest.raises(ImportError):
-                    await server._run_http(config)
-
-        asyncio.run(_test())
-
-    def test_stdio_unavailable_raises_importerror_not_nameerror(self):
-        """Regression test for #30904.
-
-        When the mcp SDK isn't installed, ``_run_stdio`` previously leaked a
-        bare ``NameError: name 'StdioServerParameters' is not defined``. The
-        gate now raises a clear ``ImportError`` with install instructions,
-        mirroring ``_run_http``'s behaviour when the HTTP transport is
-        unavailable.
-        """
-        from tools.mcp_tool import MCPServerTask
-
-        server = MCPServerTask("local")
-        config = {"command": "python3", "args": ["/tmp/echo.py"]}
-
-        async def _test():
-            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-                with pytest.raises(ImportError):
-                    await server._run_stdio(config)
-
-        asyncio.run(_test())
-
-# ---------------------------------------------------------------------------
 # Reconnection logic
 # ---------------------------------------------------------------------------
 

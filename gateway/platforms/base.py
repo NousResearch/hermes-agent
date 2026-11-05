@@ -3284,33 +3284,17 @@ class BasePlatformAdapter(ABC):
 
     async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None,
                            stop_event: asyncio.Event | None = None) -> None:
-        """Refresh the typing indicator every ``interval`` seconds until cancelled (platform typing
-        state expires after ~5s). Chats in ``_typing_paused`` are skipped (approval waits — Slack's
-        setStatus disables the compose box). Each ``send_typing`` is bounded by a sub-interval
-        timeout so one slow round-trip is abandoned before the next tick, not the bubble lapsing."""
+        """Refresh typing indicator every ``interval``s until cancelled or ``config.max_typing_seconds``."""
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
-        # Safety ceiling for the typing indicator refresh loop. Under normal operation the
-        # loop is cancelled as soon as the turn finishes. If a turn stalls indefinitely without
-        # settling, stop refreshing after config.max_typing_seconds (default 300s = 5 min; 0
-        # disables the cap) so the platform's typing bubble expires naturally ~5s later.
-        try:
-            _raw_max_typing = getattr(getattr(self, "config", None), "max_typing_seconds", 300.0)
-            _max_typing_seconds = 300.0 if _raw_max_typing is None else float(_raw_max_typing)
-        except (TypeError, ValueError):
-            _max_typing_seconds = 300.0
+        _raw_max = getattr(getattr(self, "config", None), "max_typing_seconds", 300.0)
+        _max_typing_seconds = 300.0 if _raw_max is None or not isinstance(_raw_max, (int, float)) else float(_raw_max)
         _typing_started_at = asyncio.get_running_loop().time()
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
-                if _max_typing_seconds > 0 and (
-                    asyncio.get_running_loop().time() - _typing_started_at
-                ) > _max_typing_seconds:
-                    logger.info(
-                        "[%s] typing safety cap hit (%.0fs) for chat=%s — stopping refresh "
-                        "(turn likely stalled; bubble will expire)",
-                        self.name, _max_typing_seconds, chat_id,
-                    )
+                if _max_typing_seconds > 0 and (asyncio.get_running_loop().time() - _typing_started_at) > _max_typing_seconds:
+                    logger.info("[%s] typing safety cap hit (%.0fs) for chat=%s — stopping refresh", self.name, _max_typing_seconds, chat_id)
                     return
                 if chat_id not in self._typing_paused:
                     try:
@@ -3329,16 +3313,13 @@ class BasePlatformAdapter(ABC):
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
-                    # Poll, not wait_for(stop_event.wait()): cancelling that wedges
-                    # 3.11/pytest-asyncio.
+                    # Poll, not wait_for(stop_event.wait()): cancelling that wedges 3.11/pytest-asyncio.
                     await asyncio.sleep(min(0.25, remaining))
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
-            # A send_typing after an outer stop_typing() may have recreated the platform loop.
             await self._stop_typing_quietly(chat_id, metadata)
             self._typing_paused.discard(chat_id)
-            # getattr-guard: tests build adapters via object.__new__ without _status_text.
             getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
     async def _stop_typing_refresh(

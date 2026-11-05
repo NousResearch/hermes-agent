@@ -260,7 +260,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
-    parent.ephemeral_system_prompt = (
+    parent.preloaded_skills_prompt = (
         '[IMPORTANT: The user launched this CLI session with the '
         '"hermes-agent-dev" skill preloaded. Treat its instructions as '
         'active guidance for the duration of this session unless the user '
@@ -290,7 +290,7 @@ def test_collect_skills_empty_when_none_loaded():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
-    parent.ephemeral_system_prompt = None
+    parent.preloaded_skills_prompt = None
     assert collect_parent_loaded_skills(parent, [
         {"role": "user", "content": "hi"},
     ]) == []
@@ -299,7 +299,7 @@ def test_collect_skills_caps_at_limit():
     from agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
-    parent.ephemeral_system_prompt = ""
+    parent.preloaded_skills_prompt = ""
     msgs = [
         {"role": "assistant", "content": "", "tool_calls": [
             {"function": {"name": "skill_view",
@@ -345,7 +345,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
 
     parent = _fake_parent()
-    parent.ephemeral_system_prompt = (
+    parent.preloaded_skills_prompt = (
         'session with the "hermes-agent-dev" skill preloaded.'
     )
     msgs = [

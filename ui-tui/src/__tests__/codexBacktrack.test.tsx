@@ -180,7 +180,7 @@ describe('composer hint', () => {
 
 function slashHarness(messages: unknown[] = rows) {
   const gw = gateway(messages)
-  const composer = { enqueue: vi.fn(), setInput: vi.fn() }
+  const composer = { attachImagePath: vi.fn(), enqueue: vi.fn(), setInput: vi.fn() }
   const send = vi.fn()
   const sys = vi.fn()
 
@@ -498,6 +498,32 @@ describe('default browse finds paste and image prompts', () => {
     const resumed = [{ role: 'user', rowId: 11, text: 'shown differently' }, { role: 'user', rowId: 15, text: 'x' }]
 
     expect(rewindFocusIndex(resumed, { rowId: 15, text: 'stored text', turn: 1 })).toBe(1)
+  })
+})
+
+describe('Enter on an image prompt', () => {
+  it('prefills what the user typed and attaches the image again', async () => {
+    const vision =
+      "[The user sent an image~ Here's what I can see:\nA blue square on red.]\n" +
+      '[If you need a closer look, use vision_analyze with image_url: /cache/native-inputs/a.png ~]\n\n' +
+      'What two colors?'
+
+    const stored = [
+      { role: 'user', content: 'ALPHA please', text: 'ALPHA please', row_id: 11 },
+      { role: 'assistant', content: 'ALPHA', text: 'ALPHA', row_id: 12 },
+      { role: 'user', content: vision, text: vision, row_id: 13 },
+      { role: 'assistant', content: 'Blue and red.', text: 'Blue and red.', row_id: 14 }
+    ]
+
+    const { composer, slash } = slashHarness(stored)
+
+    slash('/rewind')
+    await flush()
+    const browse = $overlayState.get().rewind!
+
+    browse.onEdit(browse.targets[1]!)
+    expect(composer.setInput).toHaveBeenCalledWith('What two colors?')
+    expect(composer.attachImagePath).toHaveBeenCalledWith('/cache/native-inputs/a.png')
   })
 })
 

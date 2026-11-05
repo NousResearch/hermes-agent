@@ -383,23 +383,23 @@ access again: its next turn fails, and `groups.state` reports its route as
 `needs_reauthorization` under `driver_status.peer_routes`. To renew access, invite
 again and register the new grant: the route keeps its identity, so work already accepted stays the same run on the member gateway. The
 earlier grant stays valid until it expires. `groups.peer.revoke` with a grant, on
-the member gateway, revokes that group chat member's access. Disbanding the group chat
-(`groups.disband`) ends it on the home even while a member gateway is down: the
-group chat's routes are dropped at once, and nothing more is sent under them. The home
-then owes each member gateway a revoke for every grant registered for the group chat
-(including a longer-lived one that a later grant replaced), and for a grant whose
-registration lost the race with Disband or arrived after it. It keeps that debt
-through a restart and its group chat driver retries it, with backoff up to an hour apart,
-until the member gateway answers that the grant is revoked or unknown there, or the
-grant expires on its own; a member gateway that answers with a fault of its own is
-asked again. A grant that was invited but never registered is the member gateway's
-to revoke.
+the member gateway, revokes that group chat member's access. Disband also revokes
+retained grants, including a longer-lived grant whose replacement has expired.
+A scoped grant handed in during Disband is held durably and revoked before
+deletion commits. A late grant triggers another revoke pass; after three passes,
+Disband asks you to retry. An unreachable member keeps the group chat and its
+unrevoked holds. A grant arriving after deletion remains owed through a restart.
+The home retries that revoke with backoff until the member confirms it or the grant
+expires. If there is no space to hold another grant during Disband, registration
+reports the failure and keeps earlier holds. A grant that was invited but never
+registered is the member gateway's to revoke.
 
 **A lost reply never runs a turn twice.** The home sends each turn under the
 idempotency key `room:<task>:<generation>`. If the member gateway's answer is lost,
 or its replay cannot connect, the turn stays uncertain on that same key until the
-home can read it back, rather than starting it again. A turn whose member gateway
-stays unreachable is deferred after a minute, which frees the group chat for the next
+home can read it back, rather than starting it again. If its status reads keep failing for 30 seconds, the home treats the turn as
+uncertain, then waits up to another minute for that member gateway before deferring
+the turn, which frees the group chat for the next
 message. **Retry** on that turn asks the member gateway for the same attempt: it
 posts the reply if the run finished (unless a newer message in that thread has
 superseded it, as for any late reply), follows the run if it is still going, and
@@ -413,6 +413,11 @@ unreachable, or too old to answer that question, the turn is kept. A turn still 
 be on the home. This holds while the member gateway still keeps the run's record: it
 forgets a finished run once the grant's status lifetime has passed, so a replay
 after that (a Retry under a new grant much later) can start the turn again.
+A closed unused key survives member restarts for 30 days after closing, the issuer's
+maximum status lifetime, covering every grant alive then. If the close reply was
+lost, Retry confirms that the key is closed and cancels the same attempt. After
+the closed key expires, a turn still deferred at home can start under newly granted
+access if you explicitly choose Retry.
 
 **Stop never claims more than the member gateway confirmed.** A turn is recorded as
 cancelled only once its gateway confirms the run ended. Stop of a deferred turn asks

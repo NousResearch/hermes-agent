@@ -295,7 +295,27 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         SKILLS_GUIDANCE if "skill_manage" in names else None,
         _kanban_guidance,
     ]
-    return " ".join(g for g in tool_guidance if g) or None
+    return _join_guidance(g for g in tool_guidance if g) or None
+
+
+# A Markdown ATX heading: one to six ``#`` then whitespace, at the start of a line.
+_HEADING_START = re.compile(r"#{1,6}\s")
+
+
+def _join_guidance(parts: Any) -> str:
+    """Space-join prose guidance parts, but start a part whose first line is a heading on its
+    own paragraph: a space join glued ``# Kanban task execution protocol`` mid-line (#133698).
+    Only each part's first line is read, so a ``#`` inside a paragraph never splits it, and an
+    existing blank line is reused rather than doubled."""
+    joined = ""
+    for part in parts:
+        if not joined:
+            joined = part
+        elif _HEADING_START.match(part.lstrip("\n")):
+            joined = joined.rstrip("\n") + "\n\n" + part.lstrip("\n")
+        else:
+            joined = f"{joined} {part}"
+    return joined
 
 
 def _skills_prompt(agent: Any) -> str:

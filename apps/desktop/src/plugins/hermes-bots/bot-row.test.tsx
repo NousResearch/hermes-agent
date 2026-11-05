@@ -173,7 +173,7 @@ describe('the menu opens the same forever-chat a row click does', () => {
     const bot = { name: 'alpha' } as RosterRow
 
     fireEvent.contextMenu(renderRow(bot))
-    fireEvent.click(await screen.findByText('Open Bot Chat'))
+    fireEvent.click(await screen.findByText('Open bot chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
   })
@@ -182,7 +182,7 @@ describe('the menu opens the same forever-chat a row click does', () => {
     const bot = { name: 'alpha' } as RosterRow
 
     fireEvent.contextMenu(renderRow(bot))
-    fireEvent.click(await screen.findByText('Open Bot Chat in new tab'))
+    fireEvent.click(await screen.findByText('Open bot chat in new tab'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot, { intent: 'tab' }]])
   })

@@ -37,7 +37,7 @@ const avatarName = (member: CanonicalRoomMember) => member.profile || member.han
 export function useNowSeconds(live: boolean): number {
   const [now, setNow] = useState(() => Date.now() / 1000)
 
-   
+
   useEffect(() => {
     setNow(Date.now() / 1000)
 

@@ -58,7 +58,7 @@ export interface CanonicalPendingAction {
 
 function requireRoute(route: CanonicalGroupRoute): void {
   if (!route.connectionId?.trim() || !route.profile?.trim()) {
-    throw new Error('Canonical groups require an explicit connection and profile')
+    throw new Error('Opening this group chat requires its connection and profile')
   }
 }
 
@@ -70,7 +70,7 @@ export async function canonicalGroupRequest<T>(
   requireRoute(route)
 
   if (params.profile !== undefined && params.profile !== route.profile) {
-    throw new Error('Canonical group profile does not match its authority')
+    throw new Error('This group chat belongs to a different profile')
   }
 
   // The descriptor overload never falls back to the foreground gateway.
@@ -132,7 +132,7 @@ export async function listCanonicalRooms(route: CanonicalGroupRoute): Promise<Ca
     if (page.next_offset === null) {break}
 
     if (!Number.isSafeInteger(page.next_offset) || page.next_offset <= offset) {
-      throw new Error('Invalid canonical group pagination cursor')
+      throw new Error('Could not load the next group chats')
     }
 
     offset = page.next_offset
@@ -277,11 +277,11 @@ export async function createCanonicalGroup(
   const checked = canonicalGroupRoster(route, members)
 
   if (!name.trim()) {
-    throw new Error('A canonical group needs a name')
+    throw new Error('A group chat needs a name')
   }
 
   if ('problem' in checked) {
-    throw Object.assign(new Error('A canonical group needs two to six unique members on its authority connection'),
+    throw Object.assign(new Error('A group chat hosted on this gateway needs two to six different bots on this connection'),
       { canonicalGroupProblem: checked.problem })
   }
 
@@ -337,7 +337,7 @@ export async function actCanonicalGroup(
 
   if (!method || !binding.roomId || !action.member_id || !action.task_id ||
     !Number.isSafeInteger(action.execution_generation) || action.execution_generation < 1) {
-    throw new Error('Invalid canonical group pending action')
+    throw new Error('This group chat action is no longer available')
   }
 
   const params: Record<string, unknown> = {

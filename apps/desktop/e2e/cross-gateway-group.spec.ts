@@ -217,7 +217,7 @@ test.describe('cross-gateway group chat', () => {
     expect(handles.every(Boolean)).toBe(true)
     await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
     await shot(page, '2-mixed-selection')
-    await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+    await dialog.getByRole('button', { name: 'Create group (2)' }).click()
     await expect(dialog).toBeHidden({ timeout: 20_000 })
 
     const composer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
@@ -298,7 +298,7 @@ test.describe('cross-gateway group chat', () => {
 
     await expect(dialog.locator('[data-group-engine]')).toHaveCount(0)
     await dialog.getByRole('textbox', { name: 'Group name' }).fill('This device only')
-    await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+    await dialog.getByRole('button', { name: 'Create group (2)' }).click()
     await expect(dialog).toBeHidden({ timeout: 20_000 })
     // The gateway-owned workspace's composer, not the Desktop-driven one.
     await expect(page.getByRole('textbox', { name: 'Group message' }).filter({ visible: true })).toBeVisible({ timeout: 30_000 })

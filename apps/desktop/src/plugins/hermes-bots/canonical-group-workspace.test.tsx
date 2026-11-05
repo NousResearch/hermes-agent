@@ -589,7 +589,7 @@ it('says what the room waits on beside the live work, never instead of it', asyn
   // A gateway whose driver is down sends no driver status.
   driver = undefined
   render(<CanonicalGroupWorkspace binding={{ connectionId: 'local', profile: 'team', roomId: 'stopped' }} />)
-  await screen.findByText('Group driver unavailable. Update or reconnect the owning gateway.')
+  await screen.findByText('This group chat isn’t available. Update or reconnect the gateway that hosts it.')
 })
 
 it.each(['none', 'send', 'retry'] as const)('scopes a failed Stop intent across %s', async (next) => {

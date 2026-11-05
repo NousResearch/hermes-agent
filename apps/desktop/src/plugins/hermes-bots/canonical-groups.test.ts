@@ -49,7 +49,7 @@ it('pins discovery and every subsequent request to its captured authority, inclu
   await expect(canonicalGroupRequest({ ...route, connectionId: '' }, 'groups.list', {})).rejects.toThrow()
   await expect(canonicalGroupRequest(route, 'groups.list', { profile: 'other' })).rejects.toThrow()
   host.requestProfile.mockResolvedValueOnce({ driver: true }).mockResolvedValueOnce({ rooms: [], next_offset: 0 })
-  await expect(discoverCanonicalGroups(route)).rejects.toThrow('pagination')
+  await expect(discoverCanonicalGroups(route)).rejects.toThrow('Could not load the next group chats')
   expect(host.request).not.toHaveBeenCalled()
 })
 

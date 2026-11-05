@@ -153,6 +153,38 @@ def undo_rollback_hint(mgr, cwd: str, since, *, task_id: Optional[str] = "defaul
                             more=max(0, len(files) - _MAX_NAMED_FILES))
 
 
+def checkpoint_epoch(cwd: str, commit: str) -> Optional[float]:
+    """When checkpoint ``commit`` of ``cwd``'s project was taken (epoch seconds), None when unreadable."""
+    from tools import checkpoint_manager as cm
+
+    store = cm._store_path()
+    if not commit or not (store / "HEAD").exists():
+        return None
+    try:
+        ok, out, _ = cm._run_git(["log", "-1", "--format=%at", commit], store, str(cm._normalize_path(cwd)),
+                                 allowed_returncodes={128})
+        return float(out) if ok and out.strip() else None
+    except (OSError, ValueError):
+        return None
+
+
+def rollback_rewinds_newest_turn(history: list, user_indices: list[int], taken: Optional[float]) -> bool:
+    """Whether a whole-tree ``/rollback`` to a checkpoint taken at ``taken`` (``checkpoint_epoch``) also undoes
+    the newest kept user turn (main's "so the agent's context matches the restored files"): only when that
+    turn made the checkpoint or came after it, i.e. one of its rows is no older than the checkpoint's second.
+    After ``/undo`` already removed the turn that made it, the newest kept turn ended before the checkpoint
+    and stays. Unknown times keep main's behaviour."""
+    from agent.context_compressor import is_compaction_summary_message
+
+    if not user_indices or taken is None:
+        return bool(user_indices)
+    stamps = [_epoch(m.get("timestamp")) for m in history[user_indices[-1]:]
+              if isinstance(m, dict) and not is_compaction_summary_message(m)]
+    if not stamps or None in stamps:
+        return True
+    return max(stamps) >= math.floor(taken)
+
+
 def undo_hint_payload(mgr, cwd: str, target_timestamp, kept_history=(), *,
                       task_id: Optional[str] = "default") -> Optional[dict]:
     """``undo_rollback_hint`` over a rewind's target stamp and kept prefix, as the wire dict (None: no line)."""

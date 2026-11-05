@@ -72,6 +72,26 @@ def test_undo_with_checkpoints_off_prints_no_rollback_line(setup, capsys):
     assert "/rollback" not in out
 
 
+def _rollback(cli, n):
+    cli._handle_rollback_command(f"/rollback {n}")
+
+
+def test_rollback_after_undo_keeps_the_turns_undo_kept(setup, capsys):
+    """Following /undo's pointer restores the files without also undoing the turn /undo kept."""
+    cli, db, project = setup
+    _run_two_writing_turns(cli, db, project, enabled=True)
+    cli._cmd_undo("/undo 2")
+    capsys.readouterr()
+
+    _rollback(cli, 2)
+
+    out = capsys.readouterr().out
+    assert (project / "app.js").read_text() == "hello\n"
+    assert [m["content"] for m in cli.conversation_history] == ["read only", "done"]
+    assert [m["content"] for m in db.get_messages_as_conversation(cli.session_id)] == ["read only", "done"]
+    assert "chat turn" not in out.lower()
+
+
 def test_undo_gives_no_number_once_pruning_dropped_an_undone_checkpoint(setup, capsys):
     """The size cap drops the oldest snapshot even below max_snapshots: the span's first checkpoint is gone,
     so the newest one would restore only part of the undone edits. No number then."""

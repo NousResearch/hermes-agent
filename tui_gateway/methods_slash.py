@@ -100,11 +100,11 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     transcript_ref = str(session.get("session_key") or "")
     if transcript_ref:
         try:
-            with _session_db(session) as db:
-                if db is not None:
-                    snapshot = db.get_messages_as_conversation(
-                        transcript_ref, include_ancestors=True
-                    )
+            from persistence.conversation.messages import ConversationRequest
+            with _session_db(session) as db, _persistence_for(db) as persistence:
+                if persistence is not None:
+                    snapshot = [message.as_openai_message() for message in persistence.messages.read_conversation(
+                        transcript_ref, ConversationRequest(include_lineage=True))]
         except Exception:
             logger.debug("failed to load persisted /refine transcript", exc_info=True)
     if not snapshot:
@@ -192,11 +192,12 @@ def _live_session_messages(session: dict) -> Optional[list]:
     """Session-scoped transcript read; None when no db/key or the read fails. Uses
     ``_session_db`` (not ``_get_db()``): a profile session's rows live in its own
     profile's state.db, and through the launch handle this read comes back empty."""
-    with _session_db(session) as db:
-        if db is not None and session.get("session_key"):
+    from persistence.conversation.messages import ConversationRequest
+    with _session_db(session) as db, _persistence_for(db) as persistence:
+        if persistence is not None and session.get("session_key"):
             with contextlib.suppress(Exception):
-                return db.get_messages_as_conversation(
-                    session["session_key"], include_ancestors=True, include_row_ids=True)
+                return [message.as_openai_message() for message in persistence.messages.read_conversation(
+                    session["session_key"], ConversationRequest(include_lineage=True, include_row_ids=True))]
     return None
 
 

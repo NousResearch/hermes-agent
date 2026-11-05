@@ -81,16 +81,28 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
-    with kbc.connect_closing() as conn:
-        res = kbd.dispatch_once(
-            conn,
-            dry_run=args.dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
+    db_path = kb.kanban_db_path()
+    with kbc.connect_closing(db_path=db_path) as conn:
+        from agent.delegation_context import kanban_path_is_fenced
+
+        if args.dry_run and kanban_path_is_fenced(db_path):
+            res = kbd.dispatch_read_only_preview(
+                conn,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+        else:
+            res = kbd.dispatch_once(
+                conn,
+                dry_run=args.dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)

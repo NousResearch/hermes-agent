@@ -301,3 +301,38 @@ def test_rate_limit_reset_rides_the_surface():
 
     bare = _rate_limit({}, {"error": {"message": "Rate limit exceeded"}})
     assert "resets_at" not in build_error_surface_from_exception(bare, provider="openai", model="gpt-5")
+
+
+# ── stream-drop marker boundary (#bare-"sse" false positive) ───────────────
+#
+# "sse" used to sit in the fragment list as a plain substring, so it matched
+# INSIDE unrelated words. Every provider error that happened to spell those three
+# letters was surfaced to the user as a dropped connection — blaming their
+# network for a server-side 500. The legitimate SSE wording must still match.
+
+
+@pytest.mark.parametrize("error", [
+    "Error code: 500 - The assessment round failed",
+    "The message was not processed by the server",
+    "Tool session dismissed by user",
+    "passes the rate limit assessment",
+    "asset assessment complete, resuming",
+])
+def test_stream_drop_ignores_sse_inside_ordinary_words(error):
+    """Regression: these all spell "sse" mid-word and are NOT dropped streams."""
+    assert build_error_surface_from_result(_failed_result(error=error))["code"] != "stream_drop"
+    assert build_error_surface_from_result(_failed_result(error=error))["layer"] == LAYER_PROVIDER
+
+
+@pytest.mark.parametrize("error", [
+    "class SSEParserError: unexpected EOF while parsing the event stream",
+    "sse_error: upstream closed the event stream",
+    "sse stream ended prematurely",
+    "httpx.RemoteProtocolError: peer closed connection without sending a response",
+    "incomplete chunked read",
+    "connection lost mid-stream",
+])
+def test_stream_drop_still_matches_real_sse_wording(error):
+    """The guard keeps its job — real stream-drop wording still classifies."""
+    assert build_error_surface_from_result(_failed_result(error=error))["code"] == "stream_drop"
+    assert build_error_surface_from_result(_failed_result(error=error))["layer"] == LAYER_STREAMING

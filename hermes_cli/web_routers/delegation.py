@@ -150,12 +150,13 @@ def _check_default(default: Optional[str], names: list[str], what: str) -> Optio
     return value or None
 
 
-def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dict[str, Any]:
+def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
+                        declared: tuple[str, ...] = ()) -> dict[str, Any]:
     from agent.delegation_provider import ROUTE_KEYS
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier
     from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
 
-    row = {key: _text(entry, key) for key in _OPTION_TEXT_KEYS if _text(entry, key)}
+    row: dict[str, Any] = {key: _text(entry, key) for key in _OPTION_TEXT_KEYS if _text(entry, key)}
     label = f"Route {index + 1}"
     if not row.get("name"):
         raise _bad_request(f"{label} needs a name.")
@@ -188,11 +189,22 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict]) -> dic
     for field in sorted(ROUTE_KEYS - validated):
         if entry.get(field) not in (None, "", [], {}):
             row[field] = entry[field]
+    # The backend's own keys (DelegationProvider.route_keys, e.g. a ``daybreak`` opt-in) are kept as sent; the
+    # backend validates them. Absent = the editor turned it off.
+    for field in declared:
+        if field not in row and field not in ROUTE_KEYS and entry.get(field) is not None:
+            row[field] = entry[field]
+    # A route the renderer came from (a rename names it in original_name; once that save landed, it is stored
+    # under its new name).
+    source = stored.get(_text(entry, "original_name")) or stored.get(row["name"]) or {}
+    # Any other key the stored route carries (hand-written, or declared by a backend that is not loaded now)
+    # survives an untouched round-trip, so a save never silently drops a setting; a key nobody stored is dropped.
+    for field, value in source.items():
+        if field not in row and field not in ROUTE_KEYS and field != "api_key" and entry.get(field) == value:
+            row[field] = value
     key = entry.get("api_key")
     if is_redacted_credential_preview(key):
-        # The renderer only ever saw a preview: keep the stored key of the route it came from (a rename names
-        # it in original_name; once that save landed, the route is stored under its new name).
-        source = stored.get(_text(entry, "original_name")) or stored.get(row["name"]) or {}
+        # The renderer only ever saw a preview: keep the stored key of the route it came from.
         key = source.get("api_key")
     if isinstance(key, str) and key.strip():
         row["api_key"] = key.strip()
@@ -217,7 +229,8 @@ async def save_model_routes(body: DelegationModelMapUpdate, profile: Optional[st
     """Replace ``delegation.backends.model_map`` (``options`` + ``default``) after validating every route."""
     def _build(current: dict) -> dict:
         stored = {_text(o, "name"): o for o in current.get("options") or [] if isinstance(o, dict)}
-        options = [_clean_model_option(i, dict(o), stored) for i, o in enumerate(body.options)]
+        declared = next((tuple(b.get("route_keys") or ()) for b in _registered_backends() if b["name"] == MODEL_MAP), ())
+        options = [_clean_model_option(i, dict(o), stored, declared) for i, o in enumerate(body.options)]
         names = [o["name"] for o in options]
         duplicate = next((n for n in names if names.count(n) > 1), None)
         if duplicate:

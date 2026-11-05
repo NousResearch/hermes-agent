@@ -1,6 +1,7 @@
 import sys
 
-from hermes_state import SessionDB
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys):
@@ -8,12 +9,10 @@ def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys)
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "state.db"
-    db = SessionDB(db_path=path)
     sid = "20260706_123456_abcd1234"
-    db.create_session(sid, "cli")
-    db.set_session_title(sid, "Export CLI Test")
-    db.append_message(sid, "user", "hello")
-    db.close()
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, sid, "cli", title="Export CLI Test")
+        seed_messages(db, sid, {"role": "user", "content": "hello"})
     before = path.read_bytes()
     monkeypatch.setattr(sys, "argv", [
         "hermes", "sessions", "export", "--format", "md",
@@ -36,16 +35,17 @@ def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys)
 
 def test_sessions_export_verified_delete_keeps_file(monkeypatch, tmp_path, capsys):
     import hermes_cli.main as main_mod
+    from hermes_cli.session_export import to_legacy_export_dict
     from hermes_cli.session_export_md import verify_export_file
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     path = tmp_path / "state.db"
-    db = SessionDB(db_path=path)
-    db.create_session("delete-me", "cli")
-    db.append_message("delete-me", "user", "retain this exported payload")
-    original = db.export_session("delete-me")
-    assert original is not None
-    db.close()
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "delete-me", "cli")
+        seed_messages(db, "delete-me", {"role": "user", "content": "retain this exported payload"})
+        export = db.maintenance.export_session("delete-me")
+        assert export is not None
+        original = to_legacy_export_dict(export)
     monkeypatch.setattr(sys, "argv", [
         "hermes", "sessions", "export", "--format", "md",
         "--session-id", "delete-me", "--delete-after-verified", "--yes",
@@ -57,11 +57,8 @@ def test_sessions_export_verified_delete_keeps_file(monkeypatch, tmp_path, capsy
     files = list((tmp_path / "exports").glob("*.md"))
     assert len(files) == 1
     assert verify_export_file(files[0], original)[0]
-    db = SessionDB(db_path=path, read_only=True)
-    try:
-        assert db.get_session("delete-me") is None
-    finally:
-        db.close()
+    with open_persistence_reader(path) as db:
+        assert db.sessions.get("delete-me") is None
     assert "Deleted exported session" in capsys.readouterr().out
 
 
@@ -72,10 +69,9 @@ def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     secret = "sk-proj-Zz12345678901234567890123456789012345678"
     path = tmp_path / "state.db"
-    db = SessionDB(db_path=path)
-    db.create_session("s1", "cli")
-    db.append_message("s1", "tool", f"api key: {secret}", tool_name="terminal")
-    db.close()
+    with open_persistence(profile_scope(home=tmp_path)) as db:
+        seed_session(db, "s1", "cli")
+        seed_messages(db, "s1", {"role": "tool", "content": f"api key: {secret}", "tool_name": "terminal"})
     before = path.read_bytes()
     monkeypatch.setattr(sys, "argv", [
         "hermes", "sessions", "export", "--format", "md",

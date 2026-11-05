@@ -125,11 +125,11 @@ def test_corrupt_breadcrumb_returns_none(hermes_home, monkeypatch, no_terminal_e
 # ------------------------------------------------------------- resolution
 
 def _make_session(home: Path, session_id: str):
-    from hermes_state import SessionDB
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_session
 
-    db = SessionDB(db_path=home / "state.db")
-    db.create_session(session_id, "cli")
-    db.close()
+    with open_persistence(profile_scope(home=home)) as store:
+        seed_session(store, session_id, "cli")
 
 def test_resolve_picks_this_terminals_session(hermes_home, monkeypatch, no_terminal_env):
     _fake_tty(monkeypatch, "/dev/pts/5")
@@ -149,11 +149,11 @@ def test_resolve_projects_through_compression_chain(hermes_home, monkeypatch, no
     _make_session(hermes_home, "20260815_100000_parent")
     tb.write_breadcrumb("20260815_100000_parent")
 
-    from hermes_state import SessionDB
+    from persistence.sqlite.conversation.lineage import SQLiteLineageRepository
 
     monkeypatch.setattr(
-        SessionDB,
-        "get_compression_tip",
+        SQLiteLineageRepository,
+        "tip",
         lambda self, sid: "20260815_110000_child",
     )
     assert tb.resolve_breadcrumb_session() == "20260815_110000_child"

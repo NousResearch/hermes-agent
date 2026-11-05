@@ -10,7 +10,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session_authority import SessionAuthority, initialize_session_authority
 from gateway.session_envelope import restore_native
-from hermes_state_runtime import get_session_admission
+from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
 
 CHAT = '15551234567@s.whatsapp.net'
@@ -65,7 +65,7 @@ async def test_cancelled_native_capture_releases_unadmitted_bytes(tmp_path, monk
         assert not captured.exists()
     finally:
         release.set()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_native_capture_error_releases_published_bytes(tmp_path, monkeypat
         assert not target.exists()
         assert str(target) not in media._leases
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -125,12 +125,12 @@ async def test_native_media_capture_runs_off_loop_and_commits_owned_bytes(tmp_pa
         receipt = await authority.admit_native(event)
         assert captured == [(False, True)], captured  # worker thread, lease carried by the context
         attachment.write_bytes(b'changed')
-        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
-        restored = restore_native(row['payload'], runner)
+        row = authority.persistence.admissions.get(admission_id=receipt.admission_id)
+        restored = restore_native(row.payload, runner)
         from pathlib import Path
         assert Path(restored.media_urls[0]).read_bytes() == b'video-bytes' * 1000
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -162,4 +162,4 @@ async def test_native_admission_does_not_rehash_captured_media_on_the_loop(tmp_p
         assert receipt.admission_id
         assert True not in on_loop, f'{on_loop.count(True)} captured-media re-hash(es) on the owner loop'
     finally:
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)

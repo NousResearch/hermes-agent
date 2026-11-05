@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli.gateway_client import GatewayClientError
+from tests.fixtures.storage_read import session_row
 
 
 class _Owner:
@@ -22,7 +23,6 @@ class _Owner:
         from gateway.session_controls import AuthorityConnection
         from gateway.session_local import create_local_session
         from hermes_cli import model_cost_guard, model_switch
-        import hermes_state_runtime as rt
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
         monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
             success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
@@ -30,13 +30,13 @@ class _Owner:
             model_cost_guard.ExpensiveModelWarning(model, 'custom', None, None, 'test', f'{model} IS EXPENSIVE')
             if model.startswith('pricey') else None))
         self.store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-        self.db = self.store._db
+        self.db = self.store.persistence
         runner = SimpleNamespace(session_store=self.store, _session_db=self.db, adapters={}, _draining=False,
                                  _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
                                  _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
         runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
-        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=self.db,
-                                     epoch=rt.begin_runtime_epoch(self.db, instance_id='owner'))
+        authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', persistence=self.db,
+                                     epoch=self.db.runtime.begin_epoch(instance_id='owner'))
         self.connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
         self.sid = create_local_session(authority, self.connection.actor, dict(
             request_id='m', source='cli', cwd=str(tmp_path), model='frozen', toolsets=[])).session_id
@@ -51,7 +51,7 @@ class _Owner:
         return response['result']
 
     def state(self):
-        row = self.db.get_session(self.sid)
+        row = session_row(self.db, self.sid)
         return row['model'], row['runtime_revision'], row['runtime_generation']
 
     async def close(self):

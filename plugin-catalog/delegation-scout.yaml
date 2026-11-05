@@ -1,0 +1,14 @@
+name: delegation-scout
+repo: https://github.com/vdimarco/hermes-delegation-scout
+sha: f33b8c87b5ade8a4e0f212239eb6467daa579681
+description: Delegation backend that routes each subagent by task shape and learns from recorded per-route outcomes — a delegation backend `scout` with auto/quick/deep task params, a post_tool_call outcome observer, and a scout_stats tool.
+maintainer: vdimarco
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+version: "1.0.0"
+capabilities:
+  provides_tools: [scout_stats]
+  provides_hooks: [post_tool_call]
+  provides_middleware: []
+  requires_env: []

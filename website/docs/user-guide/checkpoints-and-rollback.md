@@ -34,8 +34,9 @@ With checkpoints on, `/undo [N]` rewinds the last N user turns **and** restores 
 - Files Hermes **created** in the undone turns are deleted; files it **edited** get their earlier content back.
 - A file you edited by hand after Hermes wrote it is **kept** (`↷ Kept your hand edits: …`); `/rollback` can still restore it.
 - Another conversation's writes are never touched, and a turn that wrote nothing changes no file. A file another conversation (or a later turn) also wrote is left as it is and listed (`↷ Not reverted (another conversation or a later turn also wrote it)`).
-- `/undo` only deletes a file Hermes recorded as new when it wrote it, and only restores one from the undone turn's own checkpoint. Anything it cannot prove is left alone and listed as not reverted; `/rollback` can still restore it.
-- A pre-undo snapshot is taken first, so `/rollback` can undo the undo.
+- Ownership is recorded **when Hermes writes**: each `write_file`/`patch` adds a ledger record naming the turn (its message id, never a timestamp), the file's bytes before the write and the exact bytes the tool wrote. `/undo` reverts a file only when every write since the first undone one belongs to the undone turns, the file still holds what the last of them wrote, and the earlier bytes are in a checkpoint. Anything it cannot prove is left alone and listed as not reverted; `/rollback` can still restore it.
+- A file a patch **moved** is put back whole (source restored, destination removed) or not at all (`↷ Not reverted (a moved file's two halves must be reverted together, …)`); a file a patch **deleted** comes back.
+- A pre-undo snapshot is taken first, so `/rollback` can undo the undo. Each file is checked again right before it is written, so an edit you make while the undo runs is kept.
 - `/retry` never touches files. With checkpoints off, `/undo` rewinds the conversation only, as before.
 - `/undo` reverts what Hermes' file tools (`write_file`, `patch`) wrote. A file changed only by a terminal command (`sed -i`, `>`) is not tracked per turn; `/rollback` restores those from the checkpoint taken before the command.
 

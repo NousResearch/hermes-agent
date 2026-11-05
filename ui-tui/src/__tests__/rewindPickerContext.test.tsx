@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream'
 
 import { renderSync } from '@hermes/ink'
 import React from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { rewindTargets, withReplies } from '../app/slash/canonicalRewindPicker.js'
 import { RewindPicker } from '../components/rewindPicker.js'
@@ -76,7 +76,19 @@ describe('rewind targets carry the reply that followed', () => {
   })
 })
 
+// Components read the terminal height from `process.stdout` (useStdout), so the test sizes that.
+const realRows = Object.getOwnPropertyDescriptor(process.stdout, 'rows')
+
+afterEach(() => {
+  if (realRows) {
+    Object.defineProperty(process.stdout, 'rows', realRows)
+  } else {
+    delete (process.stdout as { rows?: number }).rows
+  }
+})
+
 function mount(contextView: boolean) {
+  Object.defineProperty(process.stdout, 'rows', { configurable: true, value: 30 })
   const lines = Array.from({ length: 30 }, (_, i) => `reply line ${i + 1}`).join('\n')
 
   const req = {
@@ -89,7 +101,7 @@ function mount(contextView: boolean) {
   }
 
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: vi.fn(), ref: vi.fn(), unref: vi.fn() })
-  const stdout = Object.assign(new PassThrough(), { columns: 100, rows: 40, isTTY: false })
+  const stdout = Object.assign(new PassThrough(), { columns: 100, rows: 30, isTTY: false })
   const out = { text: '' }
 
   stdout.on('data', chunk => {
@@ -115,10 +127,11 @@ function mount(contextView: boolean) {
     patchConsole: false
   })
 
+  // Each key is sent ONCE; only the wait retries, so a dropped key fails instead of being re-sent.
   const press = async (seq: string, expectText: string) => {
+    out.text = ''
+    stdin.write(seq)
     await vi.waitFor(() => {
-      out.text = ''
-      stdin.write(seq)
       instance.rerender(React.cloneElement(element))
       expect(out.text).toContain(expectText)
     })
@@ -139,8 +152,12 @@ describe('native-scrollback rewind picker context view', () => {
       expect(out.text).toContain('older prompt')
       expect(out.text).not.toContain('reply line 30')
 
-      await press('\u001B[6~', 'reply line 30')
-      await press('\u001B[5~', 'reply line 1 ')
+      // 30 rows leave a 12-row context window: the 34-row exchange takes two pages to reach its end.
+      await press('\u001B[6~', 'lines 12–23 of 34')
+      expect(out.text).not.toContain('reply line 30')
+      await press('\u001B[6~', 'lines 23–34 of 34')
+      expect(out.text).toContain('reply line 30')
+      await press('\u001B[5~', 'lines 12–23 of 34')
 
       // Enter still opens the edit, not a send; nothing is cut by moving or scrolling.
       expect(req.onSubmit).not.toHaveBeenCalled()

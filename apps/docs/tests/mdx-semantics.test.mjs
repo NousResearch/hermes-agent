@@ -7,6 +7,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as runtime from 'react/jsx-runtime';
 import config from '../source.config.ts';
+import { calloutLabel } from '../src/remark/admonition-labels.mjs';
 
 const options = await applyMdxPreset(config.mdxOptions)('runtime');
 const components = {
@@ -14,10 +15,13 @@ const components = {
   CalloutTitle: ({ children }) => createElement('strong', null, children),
   CalloutDescription: ({ children }) => createElement('section', null, children),
   Mermaid: ({ chart }) => createElement('div', { 'data-mermaid': chart }),
+  DefaultCalloutLabel: ({ type }) => calloutLabel(type, 'en'),
 };
-async function render(value, filePath) {
+/** The page binds callout labels to the locale it is rendered in, not to the source file. */
+const zhComponents = { ...components, DefaultCalloutLabel: ({ type }) => calloutLabel(type, 'zh-Hans') };
+async function render(value, filePath, viewing = components) {
   const module = await evaluate(filePath ? { path: filePath, value } : value, { ...options, ...runtime, format: 'md' });
-  return renderToStaticMarkup(createElement(module.default, { components }));
+  return renderToStaticMarkup(createElement(module.default, { components: viewing }));
 }
 async function renderMdx(value) {
   const module = await evaluate(value, { ...options, ...runtime, format: 'mdx' });
@@ -135,12 +139,19 @@ test('zh-Hans unlabeled admonitions show translated default labels', async () =>
     danger: '危险',
   };
   for (const [name, label] of Object.entries(labels)) {
-    const html = await render(`:::${name}\n\n内容。\n\n:::`, 'content/zh-Hans/user-guide/features/cron.md');
+    const html = await render(`:::${name}\n\n内容。\n\n:::`, 'content/zh-Hans/user-guide/features/cron.md', zhComponents);
     assert.match(html, new RegExp(`<strong>${label}</strong>`), name);
   }
   // Docusaurus kept the legacy aliases untranslated in every locale.
-  const important = await render(':::important\n\n内容。\n\n:::', 'content/zh-Hans/user-guide/features/cron.md');
+  const important = await render(':::important\n\n内容。\n\n:::', 'content/zh-Hans/user-guide/features/cron.md', zhComponents);
   assert.match(important, /<strong>important<\/strong>/);
+});
+
+test('a Chinese route with no zh-Hans source shows the translated label for its English callouts', async () => {
+  // Fallback pages compile once from content/en and render on both routes.
+  const english = 'content/en/developer-guide/browser-provider-plugin.md';
+  assert.match(await render(':::tip\n\nBody.\n\n:::', english, zhComponents), /<strong>提示<\/strong>/);
+  assert.match(await render(':::tip\n\nBody.\n\n:::', english), /<strong>tip<\/strong>/);
 });
 
 test('titled admonitions keep their authored title and gain no default label', async () => {

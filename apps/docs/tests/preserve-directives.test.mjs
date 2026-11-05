@@ -12,6 +12,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as runtime from 'react/jsx-runtime';
 import config from '../source.config.ts';
+import { calloutLabel } from '../src/remark/admonition-labels.mjs';
 
 const docsDir = fileURLToPath(new URL('..', import.meta.url));
 const contentDir = path.join(docsDir, 'content');
@@ -22,6 +23,7 @@ const components = {
   CalloutTitle: ({ children }) => createElement('strong', null, children),
   CalloutDescription: ({ children }) => createElement('section', null, children),
   Mermaid: ({ chart }) => createElement('div', { 'data-mermaid': chart }),
+  DefaultCalloutLabel: ({ type }) => calloutLabel(type, 'en'),
 };
 async function render(value) {
   const module = await evaluate(value, { ...options, ...runtime, format: 'md' });

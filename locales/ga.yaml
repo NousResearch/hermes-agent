@@ -1710,10 +1710,10 @@ slash:
     description: "Scoir den CLI (úsáid --delete chun stair an tseisiúin a bhaint freisin)"
 cli:
   backtrack:
-    title: "↺ Athchas — roghnaigh leid níos luaithe"
-    keys_hint: "↑/↓ roghnaigh · Enter cuir in eagar & athsheol · f gabhlaigh ón áit seo · Esc dún"
-    preview_label: "Leid {number} as {total}:"
-    more_lines: "… ({count} líne eile)"
+    title: "↺ Tras-scríbhinn — roghnaigh leid le cur in eagar"
+    keys_hint: "Ag brabhsáil na tras-scríbhinne · ↑↓/jk scrollaigh · ←→/hl leideanna · ↵ cuir in eagar · f gabhlaigh · esc siar"
+    prime_hint: "esc arís chun an teachtaireacht roimhe seo a chur in eagar"
+    no_previous: "Níl aon teachtaireacht roimhe seo le cur in eagar."
     editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
     edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
     rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."

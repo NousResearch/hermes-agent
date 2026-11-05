@@ -1710,10 +1710,10 @@ slash:
     description: "CLI'dan çık (oturum geçmişini de silmek için --delete kullanın)"
 cli:
   backtrack:
-    title: "↺ Geri sar — önceki bir istemi seç"
-    keys_hint: "↑/↓ seç · Enter düzenle ve yeniden gönder · f buradan çatalla · Esc kapat"
-    preview_label: "İstem {number} / {total}:"
-    more_lines: "… ({count} satır daha)"
+    title: "↺ Döküm — düzenlemek için bir istem seç"
+    keys_hint: "Döküme göz atılıyor · ↑↓/jk kaydır · ←→/hl istemler · ↵ düzenle · f çatalla · esc geri"
+    prime_hint: "önceki mesajı düzenlemek için tekrar esc"
+    no_previous: "Düzenlenecek önceki mesaj yok."
     editing_hint: "↺ İstem {number} düzenleniyor — Enter buraya geri sarar ve gönderir · Esc Esc iptal eder"
     edit_cancelled: "↺ Geri sarma iptal edildi; hiçbir şey kaldırılmadı."
     rewound: "↺ İstem {number}'e geri sarıldı ({count} mesaj arşivlendi); düzenleme gönderiliyor."

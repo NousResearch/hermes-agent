@@ -1,5 +1,9 @@
-"""Codex-style backtrack for the classic CLI: Esc Esc on an idle, empty composer (or ``/rewind``)
-lists earlier prompts newest first; Enter edits & resends one, ``f`` forks a branch before it.
+"""Codex-style backtrack for the classic CLI. On an idle, empty composer the first Esc PRIMES
+(hint ``esc again to edit previous message``; any other key cancels it), the second opens BROWSE
+mode: a transcript pager of the session's prompts and replies with the selected prompt in reverse
+video (``cli_backtrack_browse``). ←/→ pick an older/newer prompt, ↑/↓ PgUp/PgDn scroll, Enter puts
+the prompt back in the composer, ``f`` forks a branch before it, Esc/q close. ``/rewind`` opens
+browse directly; Esc Esc in quick succession goes straight to browse, as before.
 
 Edit & resend cuts NOTHING until the edited text is submitted: the submission travels to the
 process loop as a :class:`BacktrackResend`, which re-validates the picked turn and only then runs
@@ -15,10 +19,6 @@ from __future__ import annotations
 
 from agent.i18n import t
 
-_LABEL_CHARS = 72
-_PREVIEW_LINES = 4
-_PREVIEW_CHARS = 80
-
 
 class BacktrackResend(str):
     """An edited prompt to send after rewinding to the turn it was picked from."""
@@ -31,14 +31,11 @@ class BacktrackResend(str):
         return obj
 
 
-def _one_line(text: str, limit: int) -> str:
-    line = " ".join((text or "").split())
-    return line if len(line) <= limit else line[: limit - 1] + "…"
-
-
 class CLIBacktrackMixin:
-    _backtrack_state = None  # picker: {"entries": [(ordinal, text)], newest first, "selected", "_scroll_offset"}
+    # browse: {"entries": [(ordinal, text)] newest first, "selected", "turns", "_scroll_offset", "_reveal"}
+    _backtrack_state = None
     _backtrack_edit = None  # pending edit & resend: {"ordinal", "expected", "session_id", "number"}
+    _backtrack_primed = None  # None | "hint" | "silent": the first Esc on an idle, empty composer
     _backtrack_widget = None
 
     # ---- model ---------------------------------------------------------------------------
@@ -60,9 +57,52 @@ class CLIBacktrackMixin:
                     or self._sudo_state or self._secret_state or self._connection_state or self._slash_confirm_state
                     or self._model_picker_state or self._command_palette_state)
 
-    # ---- picker --------------------------------------------------------------------------
+    # ---- prime (first Esc) -----------------------------------------------------------------
+    def _backtrack_composer_empty(self, event) -> bool:
+        return not (event.app.current_buffer.text or self._attached_images)
+
+    def _backtrack_handle_escape(self, event) -> None:
+        """A lone Esc (no Alt-sequence followed within the escape timeout). On an idle, empty
+        composer the first one primes and the second acts like Esc Esc; with a draft it does
+        nothing, as before."""
+        if not self._backtrack_composer_empty(event) or self._backtrack_blocked():
+            self._backtrack_unprime()
+            return
+        if self._backtrack_primed:
+            self._backtrack_primed = None
+            self._backtrack_second_escape()
+            return
+        self._backtrack_primed = "hint" if self._backtrack_edit is None and self._backtrack_prompts() else "silent"
+        self._invalidate(min_interval=0.0)
+
+    def _backtrack_second_escape(self) -> None:
+        from cli import _cprint
+        if self._backtrack_edit is not None:
+            self._backtrack_cancel_edit()
+        elif not self._backtrack_blocked():
+            if not self._backtrack_prompts():
+                _cprint(f"  {t('cli.backtrack.no_previous')}")
+            else:
+                self._open_backtrack_picker()
+
+    def _backtrack_unprime(self) -> None:
+        if self._backtrack_primed:
+            self._backtrack_primed = None
+            self._invalidate(min_interval=0.0)
+
+    def _backtrack_after_key_press(self, key_processor) -> None:
+        """Any key other than Esc cancels a prime (that key already acted normally). An Esc still
+        waiting in the key buffer for a possible Alt-sequence keeps it."""
+        from prompt_toolkit.keys import Keys
+        if self._backtrack_primed and not (
+                key_processor.key_buffer and all(k.key == Keys.Escape for k in key_processor.key_buffer)):
+            self._backtrack_unprime()
+
+    # ---- browse --------------------------------------------------------------------------
     def _open_backtrack_picker(self) -> bool:
         from cli import _cprint
+        from hermes_cli.cli_backtrack_browse import transcript_turns
+        self._backtrack_primed = None
         if self._backtrack_state or self._backtrack_blocked():
             return False
         prompts = self._backtrack_prompts()
@@ -70,7 +110,8 @@ class CLIBacktrackMixin:
             _cprint(f"  {t('cli.backtrack.nothing')}")
             return False
         self._backtrack_state = {
-            "entries": list(reversed(list(enumerate(prompts)))), "selected": 0, "_scroll_offset": 0}
+            "entries": list(reversed(list(enumerate(prompts)))), "selected": 0,
+            "turns": transcript_turns(self), "_scroll_offset": 0, "_reveal": True}
         self._invalidate(min_interval=0.0)
         return True
 
@@ -85,29 +126,36 @@ class CLIBacktrackMixin:
         return entries[selected] if 0 <= selected < len(entries) else None
 
     def _get_backtrack_display_fragments(self):
+        from hermes_cli.cli_backtrack_browse import render_pager
+        from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
         state = self._backtrack_state
         if not state:
             return []
-        entries = state["entries"]
-        total = len(entries)
-        picked = self._backtrack_selected()
-        hints = [t("cli.backtrack.keys_hint")]
-        if picked is not None:
-            ordinal, text = picked
-            lines = (text or "").splitlines() or [""]
-            hints += ["", t("cli.backtrack.preview_label", number=ordinal + 1, total=total)]
-            hints += [f"  {_one_line(line, _PREVIEW_CHARS)}" for line in lines[:_PREVIEW_LINES]]
-            if len(lines) > _PREVIEW_LINES:
-                hints.append(f"  {t('cli.backtrack.more_lines', count=len(lines) - _PREVIEW_LINES)}")
-        labels = [f"{ordinal + 1:>3}. {_one_line(text, _LABEL_CHARS)}" for ordinal, text in entries]
-        return self._render_scroll_list_panel(
-            state, t("cli.backtrack.title"), hints, labels, min_width=50, max_width=90, indent="    ")
+        return render_pager(state, state["turns"], t("cli.backtrack.title"), t("cli.backtrack.keys_hint"),
+                             _PANEL_RESERVED_BELOW)
 
-    def _backtrack_move(self, delta: int) -> None:
+    def _backtrack_step(self, older: int) -> None:
+        """←/h (older=1) and →/l (older=-1): pick the neighbouring prompt, clamped, and bring
+        it into view."""
         state = self._backtrack_state
         if state:
-            state["selected"] = max(0, min(len(state["entries"]) - 1, state.get("selected", 0) + delta))
+            state["selected"] = max(0, min(len(state["entries"]) - 1, state.get("selected", 0) + older))
+            state["_reveal"] = True
             self._invalidate(min_interval=0.0)
+
+    def _backtrack_scroll(self, rows: int = 0, *, pages: int = 0) -> None:
+        """↑/↓ scroll a row, PgUp/PgDn a page; the selection stays put (the next ←/→ re-centres)."""
+        state = self._backtrack_state
+        if state:
+            step = rows + pages * max(1, state.get("_page", 10) - 1)
+            state["_scroll_offset"] = max(0, state.get("_scroll_offset", 0) + step)
+            self._invalidate(min_interval=0.0)
+
+    def _backtrack_close_and_replay(self, event) -> None:
+        """Any other key while browsing closes browse and then acts normally (typing lands in the
+        composer), as Codex cancels browsing on other keys."""
+        self._close_backtrack_picker()
+        event.app.key_processor.feed_multiple(list(event.key_sequence), first=True)
 
     def _backtrack_choose_edit(self) -> None:
         picked = self._backtrack_selected()
@@ -193,14 +241,12 @@ class CLIBacktrackMixin:
 
     # ---- TUI hooks (wrap CLITuiMixin / CLITuiRuntimeMixin via super()) --------------------
     def _tui_handle_double_escape(self, event):
-        """Idle + empty composer + no overlay: open the picker. A draft is still discarded (and a
-        pending edit cancelled with it); mid-turn behaviour is unchanged."""
-        buf = event.app.current_buffer
-        if not (buf.text or self._attached_images):
-            if self._backtrack_edit is not None:
-                self._backtrack_cancel_edit()
-            elif not self._backtrack_blocked():
-                self._open_backtrack_picker()
+        """Esc Esc in quick succession. Idle + empty composer + no overlay: open browse (or cancel a
+        pending edit). A draft is still discarded (and a pending edit cancelled with it);
+        mid-turn behaviour is unchanged."""
+        self._backtrack_primed = None
+        if self._backtrack_composer_empty(event):
+            self._backtrack_second_escape()
             return None
         self._backtrack_cancel_edit()
         return super()._tui_handle_double_escape(event)
@@ -226,6 +272,7 @@ class CLIBacktrackMixin:
         return None
 
     def _tui_process_one_input(self, user_input):
+        self._backtrack_unprime()  # a turn starting ends the prime
         if isinstance(user_input, BacktrackResend):
             user_input = self._backtrack_apply_resend(user_input)
             if user_input is None:
@@ -245,12 +292,16 @@ class CLIBacktrackMixin:
 
     def _tui_hint_text(self):
         hint = super()._tui_hint_text()
-        if not hint and self._backtrack_edit is not None and not self._backtrack_state:
+        if hint or self._backtrack_state:
+            return hint
+        if self._backtrack_primed == "hint":
+            return [("class:hint", "  " + t("cli.backtrack.prime_hint"))]
+        if self._backtrack_edit is not None:
             return [("class:hint", "  " + t("cli.backtrack.editing_hint", number=self._backtrack_edit["number"]))]
         return hint
 
     def _tui_hint_height(self):
-        if self._backtrack_edit is not None:
+        if self._backtrack_edit is not None or self._backtrack_primed == "hint":
             return 1
         return super()._tui_hint_height()
 
@@ -262,17 +313,37 @@ class CLIBacktrackMixin:
         self._backtrack_widget = self._tui_overlay_widget(self._get_backtrack_display_fragments, "_backtrack_state")
         return super()._tui_build_layout(kb)
 
+    def _tui_build_application(self, layout, kb, style):
+        app = super()._tui_build_application(layout, kb, style)
+        app.key_processor.after_key_press += self._backtrack_after_key_press
+        return app
+
     def _tui_build_key_bindings(self):
-        """Picker keys, registered after the generic ones so they win while it is open (the
-        last matching binding wins); Keys.Any swallows typing so nothing lands in the composer."""
-        from prompt_toolkit.filters import Condition
+        """Prime + browse keys, registered after the generic ones so they win (the last matching
+        binding wins). The lone-Esc binding is NOT eager: Esc stays the Alt prefix, so Esc+Enter
+        (newline), Esc+V, Esc Esc still match first; it fires only after the escape timeout. It is
+        off in vi insert mode (Esc leaves insert mode there) and whenever a prompt owns the composer."""
+        from prompt_toolkit.filters import Condition, vi_insert_mode
         from prompt_toolkit.keys import Keys
+
+        from hermes_cli.cli_subagent_monitor import modal_prompt_active
         kb = super()._tui_build_key_bindings()
         picker = Condition(lambda: bool(self._backtrack_state))
-        kb.add(Keys.Any, filter=picker)(lambda event: None)
-        kb.add("up", filter=picker)(lambda event: self._backtrack_move(-1))
-        kb.add("down", filter=picker)(lambda event: self._backtrack_move(1))
+        primable = Condition(lambda: not self._backtrack_state and not modal_prompt_active(self)
+                             and not self._prompt_stash.panel_open) & ~vi_insert_mode
+        kb.add("escape", filter=primable)(self._backtrack_handle_escape)
+        kb.add(Keys.Any, filter=picker)(self._backtrack_close_and_replay)
+        for keys, handler in (
+                (("left",), lambda event: self._backtrack_step(1)), (("h",), lambda event: self._backtrack_step(1)),
+                (("right",), lambda event: self._backtrack_step(-1)), (("l",), lambda event: self._backtrack_step(-1)),
+                (("up",), lambda event: self._backtrack_scroll(-1)), (("k",), lambda event: self._backtrack_scroll(-1)),
+                (("down",), lambda event: self._backtrack_scroll(1)), (("j",), lambda event: self._backtrack_scroll(1)),
+                (("pageup",), lambda event: self._backtrack_scroll(pages=-1)),
+                (("pagedown",), lambda event: self._backtrack_scroll(pages=1)),
+                (("f",), lambda event: self._backtrack_choose_fork()),
+                (("q",), lambda event: self._close_backtrack_picker()),
+                (("c-d",), lambda event: self._close_backtrack_picker())):  # never exit from browse
+            kb.add(*keys, filter=picker)(handler)
         kb.add("enter", filter=picker, eager=True)(lambda event: self._backtrack_choose_edit())
-        kb.add("f", filter=picker)(lambda event: self._backtrack_choose_fork())
         kb.add("escape", filter=picker, eager=True)(lambda event: self._close_backtrack_picker())
         return kb

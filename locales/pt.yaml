@@ -1710,10 +1710,10 @@ slash:
     description: "Sair da CLI (use --delete para também remover o histórico da sessão)"
 cli:
   backtrack:
-    title: "↺ Retroceder — escolha um prompt anterior"
-    keys_hint: "↑/↓ escolher · Enter editar e reenviar · f bifurcar daqui · Esc fechar"
-    preview_label: "Prompt {number} de {total}:"
-    more_lines: "… (mais {count} linhas)"
+    title: "↺ Transcrição — escolha um prompt para editar"
+    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · f bifurcar · esc voltar"
+    prime_hint: "esc de novo para editar a mensagem anterior"
+    no_previous: "Nenhuma mensagem anterior para editar."
     editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
     edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
     rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."

@@ -1710,10 +1710,10 @@ slash:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
   backtrack:
-    title: "↺ 回溯 — 選擇先前的提示"
-    keys_hint: "↑/↓ 選擇 · Enter 編輯並重新傳送 · f 從此處分支 · Esc 關閉"
-    preview_label: "提示 {number} / {total}:"
-    more_lines: "…(還有 {count} 行)"
+    title: "↺ 對話紀錄 — 選擇要編輯的提示"
+    keys_hint: "瀏覽對話紀錄 · ↑↓/jk 捲動 · ←→/hl 提示 · ↵ 編輯 · f 分支 · esc 返回"
+    prime_hint: "再按一次 esc 以編輯上一則訊息"
+    no_previous: "沒有可編輯的上一則訊息。"
     editing_hint: "↺ 正在編輯提示 {number} — Enter 回溯至此並傳送 · Esc Esc 取消"
     edit_cancelled: "↺ 已取消回溯;未移除任何內容。"
     rewound: "↺ 已回溯至提示 {number}(已封存 {count} 則訊息);正在傳送編輯內容。"

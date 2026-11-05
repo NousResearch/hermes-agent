@@ -1710,10 +1710,10 @@ slash:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
   backtrack:
-    title: "↺ 巻き戻し — 以前のプロンプトを選択"
-    keys_hint: "↑/↓ 選択 · Enter 編集して再送信 · f ここから分岐 · Esc 閉じる"
-    preview_label: "プロンプト {number} / {total}:"
-    more_lines: "…(さらに {count} 行)"
+    title: "↺ トランスクリプト — 編集するプロンプトを選択"
+    keys_hint: "トランスクリプトを閲覧中 · ↑↓/jk スクロール · ←→/hl プロンプト · ↵ 編集 · f 分岐 · esc 戻る"
+    prime_hint: "もう一度 esc で前のメッセージを編集"
+    no_previous: "編集できる前のメッセージはありません。"
     editing_hint: "↺ プロンプト {number} を編集中 — Enter でここまで巻き戻して送信 · Esc Esc でキャンセル"
     edit_cancelled: "↺ 巻き戻しをキャンセルしました。何も削除されていません。"
     rewound: "↺ プロンプト {number} まで巻き戻しました({count} 件のメッセージをアーカイブ)。編集内容を送信します。"

@@ -633,13 +633,14 @@ export function FileDiffPanel({
     <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
   )
 
-  const compactBody = !canHighlight || !seen ? (
-    <DiffBody lines={lines} />
-  ) : fullText != null ? (
-    <TokenizedDiffBody language={language} lines={lines} />
-  ) : (
-    <SyntaxDiff language={language} lines={lines} />
-  )
+  const compactBody =
+    !canHighlight || !seen ? (
+      <DiffBody lines={lines} />
+    ) : fullText != null ? (
+      <TokenizedDiffBody language={language} lines={lines} />
+    ) : (
+      <SyntaxDiff language={language} lines={lines} />
+    )
 
   if (!windowed) {
     return (

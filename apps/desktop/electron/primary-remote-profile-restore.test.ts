@@ -115,14 +115,20 @@ test('only a successful authoritative roster moves the primary, onto a profile t
           assert.equal(descriptor.baseUrl, 'https://offline.invalid')
           assert.equal(descriptor.connectionId, 'remote')
 
-          if (row.destinationChanged) {allow = false}
+          if (row.destinationChanged) {
+            allow = false
+          }
 
-          if (row.listing instanceof Error) {throw row.listing}
+          if (row.listing instanceof Error) {
+            throw row.listing
+          }
 
           return row.listing ?? { profiles: [{ name: 'default' }] }
         },
         readStatus: async () => {
-          if (row.status instanceof Error) {throw row.status}
+          if (row.status instanceof Error) {
+            throw row.status
+          }
 
           return row.status ?? {}
         },
@@ -172,13 +178,18 @@ test('a superseded or aborted roster probe cannot publish or mutate the primary 
         restoreRememberedProfile: () => true,
         signal: controller.signal,
         assertCurrentAttempt: () => {
-          if (!current) {throw new Error('superseded')}
+          if (!current) {
+            throw new Error('superseded')
+          }
         },
         advanceBootProgress: async () => undefined,
         waitForRemote: async () => undefined,
         readProfiles: async () => {
-          if (cancelledBy === 'signal') {controller.abort(new Error('aborted'))}
-          else {current = false}
+          if (cancelledBy === 'signal') {
+            controller.abort(new Error('aborted'))
+          } else {
+            current = false
+          }
 
           return { profiles: [{ name: 'default' }] }
         },

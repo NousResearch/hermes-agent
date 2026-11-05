@@ -46,9 +46,9 @@ describe('browser image paste size', () => {
   it('stages an image of exactly the limit', async () => {
     seedWebappSession('served-token')
 
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ path: '/srv/hermes/cache/images/upload.png' }), { status: 200 })
-    )
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ path: '/srv/hermes/cache/images/upload.png' }), { status: 200 }))
 
     vi.stubGlobal('fetch', fetchMock)
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -63,7 +63,8 @@ describe('browser image paste size', () => {
 describe('browser file stage size', () => {
   // A picked or dropped file over the upload limit gets the server's 413 "Upload request is too large",
   // which doesn't say what the limit is, and a refused image pick used to show nothing at all.
-  const tooLarge = (name: string, type: string) => new File([new Uint8Array(BROWSER_UPLOAD_MAX_BYTES + 1)], name, { type })
+  const tooLarge = (name: string, type: string) =>
+    new File([new Uint8Array(BROWSER_UPLOAD_MAX_BYTES + 1)], name, { type })
   const limitMessage = 'The file is larger than 16 MiB, the largest file the browser can attach.'
 
   async function installBrowser() {

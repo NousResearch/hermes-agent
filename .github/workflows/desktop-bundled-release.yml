@@ -1791,7 +1791,7 @@ jobs:
         id: pm
         uses: ./.github/actions/setup-pm
         with:
-          toolchain: python
+          toolchain: all
           archive-inputs: true
           cache-python: false
 

@@ -814,6 +814,42 @@ class TestDirFileCount:
         assert mgr.ensure_checkpoint(work_dir, "before_edit") is False
 
 
+class TestSnapshotScopeGuards:
+    def test_home_ancestors_are_never_snapshotted(self, mgr, fake_home, monkeypatch):
+        nested_home = fake_home / "users" / "me"
+        nested_home.mkdir(parents=True)
+        (nested_home / "notes.md").write_text("mine\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: nested_home))
+        for broad in (nested_home.parent, nested_home.parent.parent):
+            assert mgr.ensure_checkpoint(str(broad), "broad") is False
+
+    def test_existing_store_drops_a_browser_profile_it_already_captured(
+        self, mgr, work_dir, monkeypatch,
+    ):
+        import tools.checkpoint_manager as cm
+
+        profile = work_dir / "chrome_cdp_profile" / "Default"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").write_text("locked sqlite")
+        # A build that predates the browser-profile exclude captures the profile...
+        with monkeypatch.context() as old_build:
+            old_build.setattr(cm, "DEFAULT_EXCLUDES",
+                              [p for p in cm.DEFAULT_EXCLUDES if "chrome" not in p])
+            assert mgr.ensure_checkpoint(str(work_dir), "old build") is True
+        # ...and the next snapshot on this build drops it from the same store.
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('again')\n")
+        assert mgr.ensure_checkpoint(str(work_dir), "new build") is True
+
+        tree = subprocess.run(
+            ["git", f"--git-dir={_store_path()}", "ls-tree", "-r", "--name-only",
+             _ref_name(_project_hash(str(work_dir)))],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert "main.py" in tree
+        assert not any(p.startswith("chrome_cdp_profile/") for p in tree)
+
+
 class TestTouchProjectMalformedMeta:
     """_touch_project must not raise when the project metadata file is corrupted.
 

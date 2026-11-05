@@ -79,6 +79,21 @@ test('unknown inline directives keep their label, markup and attributes as text'
   assert.doesNotMatch(html, /<div><\/div>/);
 });
 
+test('unknown directives keep their attribute block exactly as written', async () => {
+  const html = await render(':thing[Label]{#id .class key="hello world" empty=""}');
+  assert.match(html, /:thing\[Label\]\{#id \.class key=&quot;hello world&quot; empty=&quot;&quot;\}/);
+});
+
+test('an empty unknown directive label keeps its brackets', async () => {
+  assert.match(await render('Use :thing[] here.'), /:thing\[\] here/);
+});
+
+test('an unclosed unknown container gains no closing marker', async () => {
+  const html = await render(':::weird\n\nBody.\n');
+  assert.match(html, /<p>:::weird<\/p>/);
+  assert.doesNotMatch(html, /<p>:::<\/p>/);
+});
+
 test('unknown leaf directives render their source text, not an empty box', async () => {
   const html = await render('::youtube\n');
   assert.match(html, /::youtube/);

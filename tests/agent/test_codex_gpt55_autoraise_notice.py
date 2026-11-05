@@ -21,8 +21,8 @@ import io
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
 from run_agent import AIAgent
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 from agent.agent_init_compression_notice import (
     _codex_gpt55_autoraise_notice_marker,
@@ -56,7 +56,7 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
 
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda: _config(show_notice=show_notice))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     stdout = io.StringIO()
 
     with contextlib.redirect_stdout(stdout):
@@ -69,7 +69,7 @@ def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
             disabled_toolsets=[],
             quiet_mode=False,
             skip_memory=True,
-            session_db=db,
+            persistence=db,
             session_id="codex-notice-test",
         )
 

@@ -18,10 +18,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import hermes_logging
-from hermes_state import SessionDB
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
-def _build_agent_with_db(db: SessionDB, session_id: str):
+def _build_agent_with_db(db, session_id: str):
     """Mirror tests/agent/test_compression_concurrent_fork.py's harness."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
         from run_agent import AIAgent
@@ -31,7 +32,7 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
             base_url="https://openrouter.ai/api/v1",
             model="test/model",
             quiet_mode=True,
-            session_db=db,
+            persistence=db,
             session_id=session_id,
             skip_context_files=True,
             skip_memory=True,
@@ -58,9 +59,9 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
 
 
 def test_logging_session_context_follows_compression_rotation(tmp_path: Path) -> None:
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     parent_sid = "PARENT_LOGCTX_SESSION"
-    db.create_session(parent_sid, source="cli")
+    seed_session(db, parent_sid, "cli")
 
     agent = _build_agent_with_db(db, parent_sid)
 

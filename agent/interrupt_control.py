@@ -138,6 +138,17 @@ def _ic_abort_active_request(agent, reason: str, failure_log: str) -> None:
             logger.debug(failure_log, exc_info=True)
 
 
+def _record_user_decision(agent, kind: str, text: str) -> None:
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", "") or ""
+    recorder = getattr(db, "append_decision_ledger_entry", None)
+    if not session_id or not callable(recorder):
+        return
+    try:
+        recorder(session_id, kind, text, turn_id=getattr(agent, "_current_turn_id", "") or "")
+    except Exception:
+        logger.debug("Could not record user decision ledger entry", exc_info=True)
+
+
 def _ic_signal_tool_workers(agent, active: bool, **kw) -> None:
     """Fan the tool interrupt bit out to concurrent-tool worker tids.
 
@@ -338,6 +349,7 @@ class InterruptControlMixin:
                 accepted = bool(_native_steer(cleaned))
                 if accepted:
                     self._turn_user_intervened = True
+                    _record_user_decision(self, "correction", cleaned)
                 return accepted
             except Exception:
                 logger.debug("Codex app-server turn/steer failed", exc_info=True)
@@ -350,6 +362,7 @@ class InterruptControlMixin:
         if getattr(self, "_executing_tools", False):
             accepted = self.steer(cleaned)
             if accepted:
+                _record_user_decision(self, "correction", cleaned)
                 tracker = getattr(self, "_tool_worker_threads", None)
                 tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
                 if tracker is not None and tracker_lock is not None:
@@ -372,6 +385,8 @@ class InterruptControlMixin:
             self._interrupt_requested = True
             self._interrupt_message = None
             self._turn_user_intervened = True
+
+        _record_user_decision(self, "correction", cleaned)
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)

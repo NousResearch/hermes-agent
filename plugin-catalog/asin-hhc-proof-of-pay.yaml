@@ -1,6 +1,6 @@
 name: asin-hhc-proof-of-pay
 repo: https://github.com/dbottrader/asin-hhc-proof-of-pay
-sha: 2bb187e099b13dc7b59db65b01551f896fbc6e91
+sha: 5b0149d56d32daeba4e82ce40f281b9f8f3167c8
 subdir: ""
 description: "ASIN-HHC Proof of Pay: third-party verification for agent work — validate asin-hhc:receipt evidence receipts against the published schema, verify artifacts against a hash-chained public provenance index, and read the live HHC work-market board (open bounties, settlements with splits). Read-only."
 maintainer: dbottrader

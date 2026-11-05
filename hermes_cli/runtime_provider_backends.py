@@ -125,6 +125,7 @@ def _resolve_openrouter_runtime(
     rp = _rp()
     model_cfg = rp._get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
+    cfg_base_url = cfg_base_url or ""
     cfg_provider = (model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else "").strip().lower()
     cfg_api_key = next((v.strip() for v in (model_cfg.get("api_key"), model_cfg.get("api")) if isinstance(v, str) and v.strip()), "")
     requested_norm = (requested_provider or "").strip().lower()
@@ -133,6 +134,24 @@ def _resolve_openrouter_runtime(
         requested_norm = "custom"
     env_openrouter_base_url = get_secret_str("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = get_secret_str("CUSTOM_BASE_URL", "").strip()
+    # openrouter.endpoint picks the in-region host. It overrides model.base_url only when that
+    # URL is itself an official OpenRouter host (global/eu/us), so a custom mirror still wins.
+    # Read the same config object _get_model_config() just loaded — a second load_config() would
+    # miss test patches and a profile scope that was bound only for the first read.
+    from hermes_constants import OPENROUTER_ENDPOINTS, openrouter_endpoint_url
+    if requested_norm == "openrouter" and not explicit_base_url:
+        try:
+            full_cfg = rp.load_config()
+        except Exception:
+            full_cfg = {}
+        or_section = full_cfg.get("openrouter") if isinstance(full_cfg, dict) else None
+        chosen = or_section.get("endpoint") if isinstance(or_section, dict) else None
+        if chosen:
+            official = {url.rstrip("/") for _key, url, _note in OPENROUTER_ENDPOINTS}
+            official.add(OPENROUTER_BASE_URL)
+            current = (cfg_base_url or "").strip().rstrip("/")
+            if current in official or not current:
+                cfg_base_url = openrouter_endpoint_url(str(chosen))
     use_config_base_url = bool(cfg_base_url.strip()) and not explicit_base_url and (
         (requested_norm == "auto" and cfg_provider in ("", "auto"))
         or (requested_norm == "custom" and rp._config_base_url_trustworthy_for_bare_custom(cfg_base_url, cfg_provider))

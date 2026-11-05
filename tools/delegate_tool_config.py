@@ -97,7 +97,7 @@ def _get_prefix_stagger_seconds() -> float:
     its request reads the shared prompt cache (0 = off, the default). See tools/delegate_tool_prefix_gate.py."""
     return _knob(
         "prefix_stagger_seconds", None, lambda v: min(60.0, max(0.0, float(v))), 0.0,
-        "delegation.prefix_stagger_seconds=%r is not a number; the launch stagger is off",
+        "delegation.prefix_stagger_seconds=%r is not a number; the prompt-cache warm-up wait is off",
     )
 
 

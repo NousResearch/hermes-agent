@@ -197,6 +197,10 @@ async def _target(authority, actor):
         tip = authority.db.get_compression_tip(row['id'])
         target = authority.db.get_session(tip)
         if target is None:
+            logger.warning(
+                'Bot Chat target refused pre-admission (not_found): profile=%s title holder %s has '
+                'compression tip %s with no session row; no receipt written', authority.profile_id,
+                (row or {}).get('id'), tip)
             raise RuntimeStoreError('not_found')
         from gateway.session_local_migration import resolve_local_target
         from gateway.session_route_recovery import handed_off_ref
@@ -208,6 +212,13 @@ async def _target(authority, actor):
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
     if (live.source.platform != Platform.LOCAL and lane is None) or entry is None:
+        # Before ``_admit`` writes the pin, so a refusal here leaves no receipt: this line is the only
+        # trace a reader has (#149563). Name the platform/route/entry the branch compared.
+        logger.warning(
+            'Bot Chat target refused pre-admission (admission_conflict): profile=%s session=%s '
+            'platform=%s route=%s runner_entry=%s; no receipt written', authority.profile_id,
+            ref.session_id, getattr(live.source.platform, 'value', live.source.platform), live.route,
+            None if entry is None else entry.session_id)
         raise RuntimeStoreError('admission_conflict')
     return ref, live, entry
 
@@ -870,6 +881,12 @@ async def _deliver(connection, params):
             ref, live, entry = await _target(authority, actor)
             pinned = params.get('session_id', entry.session_id)
             if pinned != entry.session_id and not _moved_aside_by_this_door(authority, holder, pinned):
+                # A no-send refusal (the pin is written by ``_admit``, never reached): name the pair
+                # a reader otherwise reconstructs by hand, the pinned id and the runner's live entry.
+                logger.warning(
+                    'Bot Chat delivery %s refused pre-admission (admission_conflict): pinned session %s '
+                    '!= live runner entry %s (title holder %s); no receipt written', key, pinned,
+                    entry.session_id, None if holder is None else holder['id'])
                 raise RuntimeStoreError('admission_conflict')
             return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
                                 notification_category=category)

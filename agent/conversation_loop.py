@@ -1138,15 +1138,21 @@ def _invalid_tool_name_error_content(name: str, valid_tool_names) -> str:
 
 
 def _content_policy_blocked_result(
-    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str
+    messages: list[dict], api_call_count: int, *, final_response: str, error_detail: str,
+    boundary_row_id: Optional[int] = None,
 ) -> dict[str, Any]:
     """Terminal turn result for a content-policy block (deterministic for the unchanged
-    prompt, so no retry); shared by the HTTP-200 and exception paths."""
-    return {
+    prompt, so no retry); shared by the HTTP-200 and exception paths. ``messages`` is the
+    CLEAN pre-refusal history (the refused turn is dropped from it). ``boundary_row_id`` is
+    the durable row that started the refused run, so the owner drops the exact turn."""
+    result = {
         "final_response": final_response, "messages": messages, "api_calls": api_call_count,
         "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
         "failure_reason": "content_policy_blocked", "failure_retryable": False,
     }
+    if boundary_row_id is not None:
+        result["refused_turn_boundary_row_id"] = boundary_row_id
+    return result
 
 
 def _partial_turn_result(

@@ -563,7 +563,17 @@ def test_unserve_profile_during_a_running_turn_stops_it_before_retiring(mux, pee
     """Retirement Stops the profile's executing turn and joins it before answering ``unserved``:
     the turn ends interrupted while its model call is still blocked, and the host keeps running."""
     import threading
-    peer.blocked, peer.release = threading.Event(), threading.Event()
+
+    class Gate(threading.Event):
+        """``ModelPeer`` fails the blocked call itself once its 15s wait times out; record that."""
+        timed_out = False
+
+        def wait(self, timeout=None):
+            released = super().wait(timeout)
+            self.timed_out |= not released
+            return released
+
+    peer.blocked, peer.release = threading.Event(), Gate()
     root = mux['root']
     proc, desc = start_daemon(mux)
     hot = hot_profile(mux, 'hot')
@@ -571,7 +581,7 @@ def test_unserve_profile_during_a_running_turn_stops_it_before_retiring(mux, pee
     async def unserve_mid_turn():
         assert await asyncio.to_thread(peer.blocked.wait, 10), 'hot turn never reached the model'
         unserved = await asyncio.to_thread(unserve_hot, root, hot)
-        assert unserved.get('unserved') == 'hot' and not peer.release.is_set(), (unserved, tail(mux))
+        assert unserved.get('unserved') == 'hot', (unserved, tail(mux))
 
     try:
         serve_hot(root, hot)
@@ -579,6 +589,8 @@ def test_unserve_profile_during_a_running_turn_stops_it_before_retiring(mux, pee
         _, terminal = asyncio.run(submit_turn(desc, mint(root, hot, desc), during_turn=unserve_mid_turn))
         payload = terminal['params'].get('payload', {})
         assert (payload.get('status'), payload.get('outcome')) == ('interrupted', 'cancelled'), terminal
+        # Ended by the Stop while the model call was still blocked, not after the gate gave up on it.
+        assert not peer.release.timed_out, (terminal, tail(mux))
         assert hot.resolve() not in served_homes(control(root, 'identify'))
         assert proc.poll() is None, tail(mux)
     finally:

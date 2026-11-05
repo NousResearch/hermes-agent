@@ -82,11 +82,20 @@ function absolutize(value, base) {
   }
 }
 
+// The docs Skills and Plugins hubs moved to the marketplace; the edge 308s these
+// URLs there, so a README written against the old hubs links straight to it.
+const RETIRED_HUB = /^https:\/\/hermes-agent\.nousresearch\.com\/docs(?:\/zh-Hans)?\/(skills|plugins)\/?(?=$|[?#])/;
+
+function retargetRetiredHub(href) {
+  const match = RETIRED_HUB.exec(href);
+  return match ? `https://hermes-agent.nousresearch.com/marketplace?kind=${match[1]}` : href;
+}
+
 function rewriteUrls(node, bases) {
   if (node.type === "element") {
     const props = node.properties || {};
     if (node.tagName === "img" && props.src != null) props.src = absolutize(props.src, bases.raw);
-    if (node.tagName === "a" && props.href != null) props.href = absolutize(props.href, bases.blob);
+    if (node.tagName === "a" && props.href != null) props.href = retargetRetiredHub(absolutize(props.href, bases.blob));
     // Prefix ids the pipeline already produced (remark-gfm's footnote section
     // label) with our readme- namespace; applyAnchors below assigns slug ids to
     // the remaining headings, so nothing clashes with the page chrome.

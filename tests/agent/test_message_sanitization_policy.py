@@ -458,21 +458,33 @@ def test_normalize_provider_ids_leaves_single_and_mixed_batches_unchanged():
 
 def test_disambiguate_duplicate_tool_call_ids_across_history():
     from agent.agent_runtime_helpers import _disambiguate_duplicate_tool_call_ids
+    from agent.context_compressor import _DB_PERSISTED_MARKER
 
     messages = [
         {"role": "user", "content": "step 1"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_dup", "call_id": "call_dup", "function": {"name": "a", "arguments": "{}"}}]},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "fc_1", "call_id": "call_dup", "function": {"name": "a", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "call_dup", "content": "res 1"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_dup", "call_id": "call_dup", "function": {"name": "b", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "call_dup", "content": "res 2"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_dup_d1", "call_id": "call_dup_d1", "function": {"name": "mid", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_dup_d1", "content": "res mid"},
+        {
+            "role": "assistant",
+            "content": "",
+            _DB_PERSISTED_MARKER: True,
+            "tool_calls": [{"id": "call_dup|fc_2", "call_id": "call_dup", "function": {"name": "b", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_dup|fc_2", "content": "res 2", _DB_PERSISTED_MARKER: True},
     ]
     out, repairs = _disambiguate_duplicate_tool_call_ids(messages)
     assert repairs == 1
-    assert out[1]["tool_calls"][0]["id"] == "call_dup"
+    assert out[1]["tool_calls"][0]["call_id"] == "call_dup"
     assert out[2]["tool_call_id"] == "call_dup"
     assert out[3]["tool_calls"][0]["id"] == "call_dup_d1"
-    assert out[3]["tool_calls"][0]["call_id"] == "call_dup_d1"
-    assert out[4]["tool_call_id"] == "call_dup_d1"
+    # Colliding third turn skips already-occupied call_dup_d1, preserves composite |fc_2, and clears _DB_PERSISTED_MARKER
+    assert out[5]["tool_calls"][0]["id"] == "call_dup_d2|fc_2"
+    assert out[5]["tool_calls"][0]["call_id"] == "call_dup_d2"
+    assert _DB_PERSISTED_MARKER not in out[5]
+    assert out[6]["tool_call_id"] == "call_dup_d2|fc_2"
+    assert _DB_PERSISTED_MARKER not in out[6]
     # Idempotent on second pass
     _, repairs_again = _disambiguate_duplicate_tool_call_ids(out)
     assert repairs_again == 0

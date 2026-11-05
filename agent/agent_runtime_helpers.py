@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
-    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
+    _FULL_ARGS_LOG_BOUND, _set_provider_tool_id, _tc_field, coalesce_tool_call_id, coerce_tool_name,
+    tool_call_id_variants, tool_result_id_variants,
 )
 from agent.message_metadata import (
     TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
@@ -746,35 +747,74 @@ def _disambiguate_duplicate_tool_call_ids(messages: list[dict]) -> tuple[list[di
     duplicate an id, and strict translation layers (e.g. OpenAI-to-Anthropic Messages API,
     which requires unique tool_use ids) answer HTTP 400 'tool_use ids were found without
     tool_result blocks'. Uses the same ``_d<n>`` suffix convention; idempotent."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     repairs = 0
-    seen_tc_ids: set = set()
-    id_rename_map: dict[str, str] = {}
-    rename_counter = 0
-    for m in messages:
-        if not isinstance(m, dict):
+    reserved_ids: set[str] = {
+        cid
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+        if (cid := coalesce_tool_call_id(tc))
+    }
+    seen_tc_ids: set[str] = set()
+    for i, m in enumerate(messages):
+        if not (isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")):
             continue
-        m_role = m.get("role")
-        if m_role == "assistant" and m.get("tool_calls"):
-            for tc in m.get("tool_calls") or []:
-                if not isinstance(tc, dict):
+        followers: list[dict] = []
+        for follower in messages[i + 1:]:
+            if not (isinstance(follower, dict) and follower.get("role") == "tool"):
+                break
+            followers.append(follower)
+        claimed_followers: set[int] = set()
+        for tc in m.get("tool_calls") or []:
+            cid = coalesce_tool_call_id(tc)
+            if not cid:
+                continue
+            old_variants = tool_call_id_variants(tc)
+            if cid not in seen_tc_ids:
+                seen_tc_ids.add(cid)
+                for f_idx, follower in enumerate(followers):
+                    if f_idx not in claimed_followers and (
+                        tool_result_id_variants(follower.get("tool_call_id")) & old_variants
+                    ):
+                        claimed_followers.add(f_idx)
+                        break
+                continue
+            n = 1
+            while f"{cid}_d{n}" in reserved_ids:
+                n += 1
+            new_id = f"{cid}_d{n}"
+            reserved_ids.add(new_id)
+            seen_tc_ids.add(new_id)
+            old_id = _tc_field(tc, "id")
+            _set_provider_tool_id(
+                tc, "id",
+                f"{new_id}|{old_id.split('|', 1)[1]}" if isinstance(old_id, str) and "|" in old_id else new_id,
+            )
+            old_call_id = _tc_field(tc, "call_id")
+            if old_call_id:
+                _set_provider_tool_id(
+                    tc, "call_id",
+                    f"{new_id}|{old_call_id.split('|', 1)[1]}"
+                    if isinstance(old_call_id, str) and "|" in old_call_id
+                    else new_id,
+                )
+            m.pop(_DB_PERSISTED_MARKER, None)
+            repairs += 1
+            for f_idx, follower in enumerate(followers):
+                if f_idx in claimed_followers:
                     continue
-                orig_id = tc.get("id")
-                if not orig_id:
-                    continue
-                if orig_id in seen_tc_ids:
-                    rename_counter += 1
-                    new_id = f"{orig_id}_d{rename_counter}"
-                    id_rename_map[orig_id] = new_id
-                    tc["id"] = new_id
-                    if "call_id" in tc:
-                        tc["call_id"] = new_id
-                    repairs += 1
-                else:
-                    seen_tc_ids.add(orig_id)
-        elif m_role == "tool":
-            tcid = m.get("tool_call_id")
-            if tcid and tcid in id_rename_map:
-                m["tool_call_id"] = id_rename_map[tcid]
+                if tool_result_id_variants(follower.get("tool_call_id")) & old_variants:
+                    claimed_followers.add(f_idx)
+                    raw_tid = follower.get("tool_call_id")
+                    follower["tool_call_id"] = (
+                        f"{new_id}|{raw_tid.split('|', 1)[1]}"
+                        if isinstance(raw_tid, str) and "|" in raw_tid
+                        else new_id
+                    )
+                    follower.pop(_DB_PERSISTED_MARKER, None)
+                    break
     return messages, repairs
 
 
@@ -782,6 +822,7 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
     _merge_consecutive_users, _disambiguate_duplicate_tool_call_ids,
 )
+
 
 def _normalize_sentinel_encoded_content(messages: list[dict]) -> None:
     """Decode any sentinel-encoded row content in place before the alternation passes run, so an

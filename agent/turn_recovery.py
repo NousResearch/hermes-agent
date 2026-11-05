@@ -800,7 +800,11 @@ def recover_after_classification(
             _vlines(agent, "🔕 OAuth subscription doesn't support the 1M-context beta — disabled for this session and retrying...")
             return True, recovered_with_pool
 
-    if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
+    # A 401 classified server_error is a gateway outage: a forced refresh would redeem the
+    # single-use refresh token for a failure the credential never had.
+    if classified.reason != FailoverReason.server_error and _refresh_credentials_after_401(
+        agent, api_error, _retry, status_code
+    ):
         return True, recovered_with_pool
 
     if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):

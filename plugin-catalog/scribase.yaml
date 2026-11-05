@@ -1,0 +1,17 @@
+name: scribase
+repo: https://github.com/caelum0x/scribase-hermes-plugin
+sha: 77641be477430b83a082406cdf7c6dbb7037e6ca
+description: Provision a hosted Postgres backend project on Scribase (api.scribase.com) and get back its connection string and API keys.
+maintainer: caelum0x
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+docs_url: "https://docs.scribase.com"
+version: "1.0.0"
+capabilities:
+  provides_tools:
+    - scribase_create_project
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SCRIBASE_API_KEY

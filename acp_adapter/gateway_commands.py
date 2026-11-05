@@ -141,7 +141,7 @@ async def _rewind(agent, client, session_id, command, arg):
     agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
-        from agent.context_compressor import retryable_user_text
+        from session_rules.turns import retryable_user_text
         try:
             text = retryable_user_text(content)
         except ValueError as exc:

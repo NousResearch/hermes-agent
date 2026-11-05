@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.message_content import flatten_message_text
+from session_rules.turns import flatten_message_text
 
 __all__ = ["append_streamed_reasoning_detail", "separate_glued_reasoning_blocks"]
 

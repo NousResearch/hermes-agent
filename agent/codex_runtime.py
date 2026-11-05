@@ -133,15 +133,15 @@ def _coerce_usage_int(value: Any) -> int:
 
 
 def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable[[], dict]) -> None:
-    """Enqueue per-call accounting for the SessionDB background writer. ``counts`` is built
+    """Enqueue per-call accounting for the session store's usage writer. ``counts`` is built
     lazily inside the guarded try so a stub agent without a session DB is never touched."""
     if not (agent._session_db and agent.session_id):
         return
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        from agent.turn_usage import _agent_session_source
-        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
+        from agent.turn_usage import _queue_usage
+        _queue_usage(agent, **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
@@ -511,7 +511,10 @@ def _stored_codex_thread_id(agent) -> str | None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return None
-    thread_id = db.get_session_model_config_value(session_id, _CODEX_THREAD_ID_KEY)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    getter = store.sessions.get_model_config_value if store is not None else db.get_session_model_config_value
+    thread_id = getter(session_id, _CODEX_THREAD_ID_KEY)
     return thread_id if isinstance(thread_id, str) and thread_id else None
 
 
@@ -520,7 +523,10 @@ def _store_codex_thread_id(agent, thread_id: str | None) -> None:
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     if db is None or not session_id:
         return
-    _call_guarded(db.patch_session_model_config, "codex thread id could not be stored on the session row",
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
+    patcher = store.sessions.patch_model_config if store is not None else db.patch_session_model_config
+    _call_guarded(patcher, "codex thread id could not be stored on the session row",
                   args=(session_id, {_CODEX_THREAD_ID_KEY: thread_id}))
 
 

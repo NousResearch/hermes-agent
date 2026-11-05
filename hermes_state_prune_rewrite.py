@@ -62,8 +62,8 @@ class SessionPruneRewriteMixin:
         live-replay loaders stamp exactly that pair, and a rewritten-in-place row is as lost a race
         there as a row-addressed one (#124102).
         """
-        from agent.message_metadata import message_uid_or_none
-        from agent.transcript_repair import transcript_row_snapshot
+        from session_rules.turns import message_uid_or_none
+        from hermes_state_transcript_repair import transcript_row_snapshot
 
         def _exact_id(message: dict[str, Any]) -> Optional[int]:
             rid = message.get("_row_id")
@@ -163,7 +163,7 @@ class SessionPruneRewriteMixin:
         """
         from agent.conversation_compression_archive import ABSORBED_ROW_IDS
         from agent.message_metadata import DB_ROW_SNAPSHOT
-        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_state_transcript_repair import transcript_row_snapshot
         from hermes_state_errors import PruneRowStaleError, PruneRowUnresolvedError
 
         def _call_ids(tool_calls: Any) -> list[Any]:

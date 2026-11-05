@@ -21,12 +21,13 @@ _MEMO_ATTR = "_prompt_cache_scope_memo"
 _DECLARED_SCOPE_PREFIX = "gwk_"
 
 
-def _lineage_root(session_id: str, session_db: Any) -> Optional[str]:
+def _lineage_root(session_id: str, session_db: Any, *, persistence: Any = None) -> Optional[str]:
     """Compression-lineage root of *session_id*, or None (tolerates test-double results)."""
     if session_db is None:
         return None
     try:
-        lineage = session_db.get_compression_lineage(session_id)
+        lineage = (persistence.lineage.lineage(session_id) if persistence is not None
+                   else session_db.get_compression_lineage(session_id))
     except Exception:
         logger.debug("prompt-cache scope lineage walk failed", exc_info=True)
         return None
@@ -51,12 +52,15 @@ def conversation_id(agent: Any) -> str:
         return memo[1]
     # A plugin hook can ask first from a tool callback Relay drives on its loop, where WorkerRPC
     # refuses a synchronous read for the rest of the turn (#139029): both walks run off the loop.
+    from agent.agent_init_session import agent_interface
     from agent.runtime_session_store import call_off_event_loop
     db = getattr(agent, "_session_db", None)
-    root = call_off_event_loop(_lineage_root, sid, db) if sid else None
+    store = agent_interface(agent)
+    root = call_off_event_loop(_lineage_root, sid, db, persistence=store) if sid else None
     if root == sid:
         try:
-            root = call_off_event_loop(db.get_tool_rotation_root, sid)
+            root = call_off_event_loop(
+                store.lineage.tool_rotation_root if store is not None else db.get_tool_rotation_root, sid)
         except Exception:
             # Not memoized: the physical id is right for now, and a later call retries the walk.
             logger.debug("tool-source rotation walk failed", exc_info=True)
@@ -67,7 +71,7 @@ def conversation_id(agent: Any) -> str:
 
 
 def _agent_source(
-    agent: Any, session_id: str, session_db: Any, row_source: Optional[str] = None
+    agent: Any, session_id: str, session_db: Any, row_source: Optional[str] = None, *, persistence: Any = None
 ) -> str:
     """The ``sessions.source`` this agent's conversation is recorded under.
 
@@ -78,7 +82,11 @@ def _agent_source(
     """
     if row_source is None and session_id and session_db is not None:
         try:
-            row = session_db.get_session(session_id)
+            if persistence is not None:
+                record = persistence.sessions.get(session_id)
+                row = {"source": record.source} if record is not None else None
+            else:
+                row = session_db.get_session(session_id)
         except Exception:
             logger.debug("declared-scope source lookup failed", exc_info=True)
             row = None
@@ -90,7 +98,7 @@ def _agent_source(
     return str(session_source_for(platform)).strip()
 
 
-def _conversation_generation(session_key: str, source: str, session_db: Any) -> str:
+def _conversation_generation(session_key: str, source: str, session_db: Any, *, persistence: Any = None) -> str:
     """Durable generation for *session_key*'s current conversation (``""`` if none).
 
     The declared key survives ``/new``, so hashing it alone would reuse one scope across
@@ -99,6 +107,10 @@ def _conversation_generation(session_key: str, source: str, session_db: Any) -> 
 
     The declared key names a chat and deliberately survives `/new` and policy resets. See #79017, #86733.
     """
+    if persistence is not None:
+        from persistence.conversation.messages import ConversationPeer
+        generation = persistence.messages.latest_conversation_boundary(ConversationPeer(session_key, source))
+        return "" if generation is None else str(int(generation))
     reader = getattr(session_db, "latest_conversation_boundary", None)
     if not callable(reader):
         return ""
@@ -130,6 +142,8 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
         return None
     sid = str(getattr(agent, "session_id", None) or "")
     db = getattr(agent, "_session_db", None)
+    from agent.agent_init_session import agent_interface
+    store = agent_interface(agent)
     generation = ""
     row_source: Optional[str] = None
     if sid and db is not None:
@@ -140,9 +154,11 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
             # twice per resolution (@teknium1 on #98811). A SessionDB without the combined view keeps the
             # original call, so nothing that predates it — including the doubles that certify the
             # fail-closed contract below — changes behaviour.
-            identity = getattr(db, "declared_scope_identity", None)
-            if callable(identity):
-                is_fork, row_source = identity(sid)
+            if store is not None:
+                declared = store.sessions.declared_scope_identity(sid)
+                is_fork, row_source = declared.is_fork_child, declared.source
+            elif callable(getattr(db, "declared_scope_identity", None)):
+                is_fork, row_source = db.declared_scope_identity(sid)
             else:
                 is_fork = db.is_explicit_fork_child(sid)
             if is_fork:
@@ -150,10 +166,10 @@ def declared_conversation_scope(agent: Any) -> Optional[str]:
         except Exception:
             logger.debug("declared-scope fork check failed", exc_info=True)
             return None
-    source = _agent_source(agent, sid, db, row_source)
+    source = _agent_source(agent, sid, db, row_source, persistence=store)
     if db is not None:
         try:
-            generation = _conversation_generation(key, source, db)
+            generation = _conversation_generation(key, source, db, persistence=store)
         except Exception:
             logger.debug("declared-scope generation read failed", exc_info=True)
             return None
@@ -179,7 +195,8 @@ def resolve_prompt_cache_scope(agent: Any) -> str:
     memo = getattr(agent, _MEMO_ATTR, None)
     if isinstance(memo, tuple) and len(memo) == 2 and memo[0] == key:
         return _apply_fork_tag(agent, memo[1])
-    root = declared_conversation_scope(agent) or _lineage_root(sid, db)
+    from agent.agent_init_session import agent_interface
+    root = declared_conversation_scope(agent) or _lineage_root(sid, db, persistence=agent_interface(agent))
     scope = root or sid
     # Memoize on success, with no DB, or when the agent never persists a row. A failed/empty
     # walk on a persisting agent is NOT memoized: the physical id is right for now (row not

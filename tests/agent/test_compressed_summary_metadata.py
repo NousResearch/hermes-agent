@@ -123,7 +123,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
 
     @staticmethod
     def _assert_agreement(message):
-        from agent.context_compressor import is_compaction_summary_message
+        from session_rules.turns import is_compaction_summary_message
 
         kind = ContextCompressor.classify_summary_content(message.get("content"))
         detected = ContextCompressor._is_context_summary_content(
@@ -163,7 +163,7 @@ class TestClassifyAgreesWithPredicatesOnLiveEmissions:
         assert kind == "standalone"
 
     def test_non_summary_messages_agree_on_none(self):
-        from agent.context_compressor import is_compaction_summary_message
+        from session_rules.turns import is_compaction_summary_message
 
         for msg in (
             {"role": "user", "content": "plain question"},

@@ -7,18 +7,19 @@ Known gap: language write APIs (open(..., 'w'), Path.write_text, shutil.copy*, f
 agent-config files surface only the low *_ref finding — static regexes cannot tie the call to a dynamic
 destination; future coverage belongs as a fourth "mechanical" tier next to agent_config_mod_shell."""
 
+import ast
 import re
 import fnmatch
 import hashlib
 import json
 from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone, UTC
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v10"
+SCANNER_VERSION = "skills-guard-v10-test-data-candidate3"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -694,6 +695,121 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
+def _python_test_literal_spans(lines: list[str], rel_path: str) -> dict[int, tuple[int, int]]:
+    """Locate a narrow class of Python test-data literals, never whole exempt files.
+
+    Only single-line, module-level string constants in root test modules qualify.
+    Unknown consumers, dynamic execution/introspection, reassignment, invalid Python
+    and nested runtime test directories retain the original severity. Recognised
+    data still produces a visible HIGH finding, not a safe verdict or scan skip.
+    This is context classification, not proof that a test module is safe to run.
+    """
+    parts = rel_path.replace("\\", "/").split("/")
+    name = parts[-1]
+    if (len(parts) < 2 or parts[0] not in {"tests", "test"}
+            or not name.endswith(".py")
+            or not (name.startswith("test_") or name.endswith("_test.py"))):
+        return {}
+    try:
+        tree = ast.parse("\n".join(lines))
+    except (SyntaxError, ValueError, RecursionError):
+        return {}
+    nodes = list(ast.walk(tree))
+    parents = {child: parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+    risky_calls = {"eval", "exec", "compile", "globals", "locals", "getattr", "setattr",
+                   "__import__", "__getattribute__", "system", "popen", "run", "Popen",
+                   "urlopen", "post", "send", "sendall", "request", "check_output", "call"}
+    if any(isinstance(node, ast.Call)
+           and (node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute) else "") in risky_calls
+           for node in nodes):
+        return {}
+    # A fixture writer must stay beneath the test's unmodified tmp_path argument.
+    # Only helpers whose single return is the unchanged input path are propagated.
+    helpers = set()
+    for function in tree.body:
+        if (not isinstance(function, ast.FunctionDef) or function.decorator_list
+                or len(function.args.args) != 1 or not function.body
+                or not isinstance(function.body[-1], ast.Return)):
+            continue
+        argument = function.args.args[0].arg
+        returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+        if (len(returns) == 1 and isinstance(returns[0].value, ast.Name)
+                and returns[0].value.id == argument
+                and not any(isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+                            and node.id in {argument, function.name} for node in nodes)):
+            helpers.add(function.name)
+
+    def relative_segment(node):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            return False
+        value = node.value
+        windows = PureWindowsPath(value)
+        return (not PurePosixPath(value).is_absolute() and not windows.drive and not windows.root
+                and ".." not in value.replace("\\", "/").split("/"))
+
+    def beneath_temp(node, scope, seen=frozenset()):
+        scope_nodes = list(ast.walk(scope))
+        if isinstance(node, ast.Name):
+            if node.id in seen:
+                return False
+            stores = [item for item in scope_nodes if isinstance(item, ast.Name)
+                      and item.id == node.id and isinstance(item.ctx, ast.Store)]
+            if node.id == "tmp_path" and any(arg.arg == node.id for arg in scope.args.args):
+                return not stores
+            if len(stores) != 1:
+                return False
+            binding = parents.get(stores[0])
+            if isinstance(binding, (ast.Assign, ast.AnnAssign)):
+                return beneath_temp(binding.value, scope, seen | {node.id})
+            return False
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            return relative_segment(node.right) and beneath_temp(node.left, scope, seen)
+        if isinstance(node, ast.Call) and not node.keywords:
+            if isinstance(node.func, ast.Name) and node.func.id in helpers and len(node.args) == 1:
+                return beneath_temp(node.args[0], scope, seen)
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+                return all(relative_segment(arg) for arg in node.args) and beneath_temp(node.func.value, scope, seen)
+        return False
+
+    spans = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if (not isinstance(target, ast.Name) or not target.id.isupper()
+                or not isinstance(value, ast.Constant) or not isinstance(value.value, str)
+                or value.lineno != value.end_lineno):
+            continue
+        references = [node for node in nodes if isinstance(node, ast.Name) and node.id == target.id]
+        if sum(isinstance(node.ctx, ast.Store) for node in references) != 1:
+            continue
+        def data_use(node):
+            parent = parents.get(node)
+            if not isinstance(parent, ast.Call) or not parent.args or parent.args[0] is not node:
+                return False
+            scope = parent
+            while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope = parents.get(scope)
+            if scope is None or not scope.name.startswith("test_"):
+                return False
+            if isinstance(parent.func, ast.Attribute) and parent.func.attr in {"write_text", "write_bytes"}:
+                return beneath_temp(parent.func.value, scope)
+            return (isinstance(parent.func, ast.Name) and parent.func.id == "isinstance"
+                    and isinstance(parents.get(parent), ast.Assert))
+        if any(isinstance(node.ctx, ast.Load) and not data_use(node) for node in references):
+            continue
+        # AST column offsets count UTF-8 bytes, whereas regex offsets count characters.
+        encoded = lines[value.lineno - 1].encode("utf-8")
+        start = len(encoded[:value.col_offset].decode("utf-8"))
+        end = len(encoded[:value.end_col_offset].decode("utf-8"))
+        spans[value.lineno] = (start, end)
+    return spans
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
@@ -726,6 +842,32 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     return findings
 
 
+def _skill_test_data_context(file_path: Path, rel_path: str, findings: list[Finding]) -> list[Finding]:
+    """Apply skill-only context without changing scan_file's plugin/shared API."""
+    if file_path.suffix.lower() != ".py" or not any(
+            f.pattern_id == "prompt_injection_ignore" and f.severity == "critical" for f in findings):
+        return findings
+    try:
+        lines = file_path.read_text(encoding="utf-8-sig").split("\n")
+    except (UnicodeDecodeError, OSError):
+        return findings
+    spans = _python_test_literal_spans(lines, rel_path)
+    pattern = next(rx for rx, pid, *_ in _COMPILED_THREAT_PATTERNS if pid == "prompt_injection_ignore")
+    out = []
+    for finding in findings:
+        if finding.pattern_id == "prompt_injection_ignore" and finding.line in spans:
+            line = lines[finding.line - 1]
+            text = line.strip()
+            same_text = finding.match == (text if len(text) <= 120 else text[:117] + "...")
+            start, end = spans[finding.line]
+            matches = list(pattern.finditer(line))
+            if same_text and matches and all(start <= m.start() and m.end() <= end for m in matches):
+                finding = replace(finding, severity="high", description=finding.description
+                                  + " (Python test-data literal; review required, not exempt from scanning)")
+        out.append(finding)
+    return out
+
+
 # Findings that only inform on a COMMUNITY skill install, where the matched text cannot act:
 # ``sudo_usage`` / ``bind_all_interfaces`` in Markdown — setup docs (`sudo apt install`,
 # `runserver 0.0.0.0:8000` in a Dockerfile CMD) are not executed by installing; running them goes
@@ -753,7 +895,7 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         findings.extend(_check_structure(skill_path, ignore=ignore))
         for f in skill_path.rglob("*"):
             if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+                findings.extend(_skill_test_data_context(f, rel, scan_file(f, rel)))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name))
     if trust == "community":

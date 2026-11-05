@@ -302,6 +302,7 @@ STRATEGIES: list[tuple[str, Callable[[str, str], list[Span]]]] = [
 SIMILARITY_STRATEGIES = frozenset({"block_anchor", "context_aware"})
 _PRECISE_STRATEGIES = [entry for entry in STRATEGIES if entry[0] not in SIMILARITY_STRATEGIES]
 _SIMILARITY_TIER = [entry for entry in STRATEGIES if entry[0] in SIMILARITY_STRATEGIES]
+_WHOLE_LINE_STRATEGIES = [entry for entry in STRATEGIES if entry[0] == "line_trimmed"]
 
 
 def boundary_note(strategies: Iterable[Optional[str]], target: str = "old_string's",
@@ -394,19 +395,19 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 
     # A raw precise match wins (the file may really hold `N|` text). Otherwise a read_file
-    # gutter paste is stripped BEFORE any similarity strategy sees it: a `41|` prefix barely
-    # moves per-line similarity, so context_aware would accept the raw paste and write the
-    # prefixes into the file.
+    # gutter paste, a single numbered line included, is stripped BEFORE any similarity
+    # strategy sees it: a `41|` prefix barely moves per-line similarity, so context_aware
+    # would accept the raw paste and write the prefixes into the file.
     result = _run_strategy_chain(content, old_string, new_string, replace_all, _PRECISE_STRATEGIES)
-    stripped_old = None if result else _gutter_stripped_old(content, old_string)
-    if result is None and stripped_old is not None:
-        result = _gutter_recovery(content, stripped_old, new_string, replace_all, correction_notes)
+    stripped = None if result else _gutter_stripped_old(content, old_string)
+    if result is None and stripped is not None:
+        result = _gutter_recovery(content, *stripped, new_string, replace_all, correction_notes)
     elif result is None:
         result = _run_strategy_chain(content, old_string, new_string, replace_all, _SIMILARITY_TIER)
     if result is None:
         _note_edit_match(None, "no_match")
         return content, 0, None, "Could not find a match for old_string in the file" + (
-            GUTTER_MISS_SUFFIX if stripped_old is not None else "")
+            GUTTER_MISS_SUFFIX if stripped is not None else "")
     if result[3] is None and correction_note and correction_notes is not None:
         correction_notes.append(correction_note)
     return result
@@ -494,17 +495,24 @@ def _strip_line_number_gutter(text: str, min_numbered: int = 2) -> Optional[str]
     return "\n".join(stripped) if numbered >= min_numbered else None
 
 
-def _gutter_stripped_old(content: str, old_string: str) -> Optional[str]:
-    """old_string minus a read_file gutter; None when it has none or the file itself has
-    gutter-shaped lines (the pipes may be real content there)."""
-    stripped_old = _strip_line_number_gutter(old_string)
+def _gutter_stripped_old(content: str, old_string: str) -> Optional[tuple[str, list]]:
+    """``(old_string minus a read_file gutter, strategies allowed to match it)``; None when
+    it has none, strips to whitespace (an anchor matching every line break), or the file
+    itself has gutter-shaped lines (the pipes may be real content there).
+
+    A single numbered line is only matched as a whole line: a bare `2|4` stripped to `4`
+    must not land inside `a = 4`.
+    """
+    stripped_old = _strip_line_number_gutter(old_string, min_numbered=1)
     if stripped_old is None or not stripped_old.strip() or _GUTTER_LINE.search(content):
         return None
-    return stripped_old
+    if _strip_line_number_gutter(old_string) is None:
+        return stripped_old, _WHOLE_LINE_STRATEGIES
+    return stripped_old, _PRECISE_STRATEGIES
 
 
-def _gutter_recovery(content: str, stripped_old: str, new_string: str, replace_all: bool,
-                     correction_notes: Optional[list[str]]) -> Optional[tuple]:
+def _gutter_recovery(content: str, stripped_old: str, strategies: list, new_string: str,
+                     replace_all: bool, correction_notes: Optional[list[str]]) -> Optional[tuple]:
     """Match a gutter-stripped old_string; None when no precise strategy matches.
 
     Only the exact/normalizing strategies may match the stripped text: a similarity
@@ -520,7 +528,7 @@ def _gutter_recovery(content: str, stripped_old: str, new_string: str, replace_a
         stripped_new = new_string
     if stripped_old == stripped_new:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
-    result = _run_strategy_chain(content, stripped_old, stripped_new, replace_all, _PRECISE_STRATEGIES)
+    result = _run_strategy_chain(content, stripped_old, stripped_new, replace_all, strategies)
     if result and result[3] is None and correction_notes is not None:
         correction_notes.append(GUTTER_STRIPPED_NOTE)
     return result

@@ -33,7 +33,8 @@ from tests.waiting import wait_until
 pytestmark = pytest.mark.platforms("posix")
 
 _BOOT = "test-boot"
-_RESOURCE = "media:studio"
+# Raw SQL in these tests targets the row directly, so it must name the slot canonically; the store's alias maps names, not WHERE clauses.
+_RESOURCE = mr.DEFAULT_RESOURCE
 
 # ---------------------------------------------------------------------------
 # fake backend (written to tmp_path per test; mode/receipt baked in so the

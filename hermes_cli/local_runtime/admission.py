@@ -52,6 +52,23 @@ RESIDENCY_STATES = (*LIVE_RESIDENCY, "released", "quarantined")
 
 _T = TypeVar("_T")
 
+# The heavy engines on a machine — the llama.cpp router and the media sidecar — are one residency slot, not two. They arrived at admission at
+# different times under different names, and simply renaming the media key would let both boot side by side for anyone already holding a lease
+# under the old one. So the names are canonicalised here, at the store's own single point where a resource becomes a row lookup: an existing
+# record is found whichever name it was written under, and nothing has to be migrated.
+SHARED_RESIDENCY_RESOURCE = "gpu:heavy"
+LEGACY_MEDIA_RESIDENCY_RESOURCE = "media:studio"
+_RESOURCE_ALIASES = {LEGACY_MEDIA_RESIDENCY_RESOURCE: SHARED_RESIDENCY_RESOURCE}
+
+
+def canonical_resource(resource: str) -> str:
+    """The name a resource's record lives under. Aliases share a slot; every other name is its own."""
+    if not isinstance(resource, str):
+        raise AdmissionError(f"resource must be a string, got {type(resource).__name__}")
+    return _RESOURCE_ALIASES.get(resource, resource)
+
+
+
 # ``owner_scope`` is stored and echoed back verbatim; this service never
 # parses or interprets it. ``process_start_identity`` and ``boot_id`` are
 # opaque strings supplied by the caller — the store fabricates neither.
@@ -283,6 +300,7 @@ class AdmissionStore:
     # -- status (never creates anything) ---------------------------------------
 
     def status(self, resource: str) -> Record | None:
+        resource = canonical_resource(resource)
         if not self.path.exists():
             return None
         conn = self._connect(create_parent=False, read_only=True)
@@ -328,6 +346,7 @@ class AdmissionStore:
         and stored verbatim; nothing here validates them against the OS.
         """
         _require_text("resource", resource)
+        resource = canonical_resource(resource)
         _require_text("owner_scope", owner_scope)
         _require_text("controller_id", controller_id)
         _require_text("process_start_identity", process_start_identity)
@@ -662,6 +681,8 @@ class AdmissionStore:
                 "verified_exit=True requires expected_epoch: the epoch of the "
                 "grant whose process exit was verified")
 
+        resource = canonical_resource(resource)
+
         def tx(conn: sqlite3.Connection) -> str:
             row = self._fetch_row(conn, resource)
             if row is None:
@@ -726,6 +747,10 @@ def _record_from_row(row: dict,
 
 __all__ = [
     "DEFAULT_LEASE_SECONDS",
+    "LEGACY_MEDIA_RESIDENCY_RESOURCE",
+    "LIVE_RESIDENCY",
+    "RESIDENCY_STATES",
+    "SHARED_RESIDENCY_RESOURCE",
     "AdmissionError",
     "AdmissionStore",
     "FencedError",
@@ -733,5 +758,6 @@ __all__ = [
     "LeaseResult",
     "Record",
     "Refused",
+    "canonical_resource",
     "default_store_path",
 ]

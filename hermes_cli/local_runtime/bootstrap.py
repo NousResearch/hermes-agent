@@ -8,11 +8,14 @@ import-light: callers gate on config before importing so disabled sessions never
 from __future__ import annotations
 
 from contextlib import contextmanager, suppress
+import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
+from hermes_cli.local_runtime import admission as adm
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 
@@ -23,6 +26,103 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 # every profile this process hosts, so another profile's ``local_runtime.backend`` must not resize it.
 _SERVING_ENGINE = None
 _EXIT_HOOKED = False
+
+# Heavy residency arbitration is introduced in stages, and this is the first: `shadow` computes and records the decision admission WOULD have
+# made and boots anyway, so the records can be read against reality before any boot is ever refused. `off` (the default) touches nothing.
+# "enforce" is deliberately NOT a value yet — a setting that is configured but not read is worse than an absent one, so an unimplemented value
+# raises. See docs/next-upgrade/research/llama-admission-entrypoints.md (in the unsloth-studio plugin) for the staged plan.
+RESIDENCY_MODES = ("off", "shadow")
+_RESIDENCY_MODE_DEFAULT = "off"
+_SHADOW_FILE = "residency-shadow.jsonl"
+_SHADOW_APPEND_LOCK = threading.Lock()
+
+
+def residency_mode(config: dict) -> str:
+    """The configured residency mode, ``off`` when unset. An unrecognised value raises rather than quietly booting with no arbitration."""
+    section = (config or {}).get("local_runtime") or {}
+    raw = section.get("residency_mode", _RESIDENCY_MODE_DEFAULT)
+    mode = str(raw or _RESIDENCY_MODE_DEFAULT).strip().lower()
+    if mode not in RESIDENCY_MODES:
+        raise ValueError(f"local_runtime.residency_mode must be one of {', '.join(RESIDENCY_MODES)}, got {raw!r}")
+    return mode
+
+
+def _read_record_incumbent(store, boot_id: str) -> tuple[str, str]:
+    """(controller, engine) of whoever holds the shared slot, for the shadow record. Never raises: it decorates a record, it is not load-bearing."""
+    try:
+        rec = store.status(adm.SHARED_RESIDENCY_RESOURCE)
+        if rec is None or rec.residency not in adm.LIVE_RESIDENCY:
+            return ("", "")
+        # An old-boot record still names who we would have collided with, so it is reported the same way.
+        return (rec.controller_id, rec.engine)
+    except Exception:
+        return ("", "")
+
+
+def _append_shadow_record(record: dict) -> None:
+    """One line per boot attempt. Best-effort by design: the file is read by a human before any refusal is honoured, so losing a line must
+    never cost a session its router."""
+    path = runtimes_root() / _SHADOW_FILE
+    try:
+        line = json.dumps(record, sort_keys=True)
+        with _SHADOW_APPEND_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except Exception:
+        logger.debug("residency shadow record could not be written to %s", _SHADOW_FILE, exc_info=True)
+
+
+def _shadow_boot_id() -> str:
+    """The OS boot identity used for the shadow probe. A seam so a test can pin it: whether two engines collide depends on it."""
+    from hermes_cli.local_runtime.media_runtime import default_boot_id
+
+    return default_boot_id()
+
+
+def _shadow_store() -> adm.AdmissionStore:
+    """The admission store the shadow probe asks. A seam: the real one is machine-scoped (one slot per machine, not per profile), and a test
+    must not be able to write into it."""
+    return adm.AdmissionStore()
+
+
+def _record_shadow_residency(*, engine: str, backend: str, model_count: int, action: str) -> None:
+    """Ask admission, on the shadow slot, what WOULD have happened — then say so and get out of the way.
+
+    Every failure mode here (unimportable core module, unreadable database, disk full) lands in one log line: this runs on a boot path whose
+    contract is that it never raises and never hangs, and a shadow observation is not worth a paused session.
+    """
+    record = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "decision": "error", "reason": "",
+              "incumbent_controller": "", "incumbent_engine": "", "action": action, "engine": engine,
+              "backend": backend, "model_count": model_count, "detail": ""}
+    try:
+        from hermes_cli.local_runtime.media_runtime import default_process_identity
+
+        store = _shadow_store()
+        boot_id = _shadow_boot_id()
+        outcome = store.acquire(
+            adm.SHARED_RESIDENCY_RESOURCE, owner_scope="shadow:llama-boot",
+            controller_id=f"llama-shadow-{os.getpid()}", pid=os.getpid(),
+            process_start_identity=default_process_identity(os.getpid()), engine=engine,
+            model=f"residents={model_count}", boot_id=boot_id)
+        if isinstance(outcome, adm.Grant):
+            record.update(decision="would_grant", reason="", detail="")
+            store.release(outcome)
+        elif isinstance(outcome, adm.Refused):
+            controller, inc_engine = _read_record_incumbent(store, boot_id)
+            record.update(decision="would_refuse", reason=outcome.reason, incumbent_controller=controller,
+                          incumbent_engine=inc_engine)
+        else:  # a store that answers with neither: say so instead of guessing
+            record.update(decision="unknown_outcome", reason=type(outcome).__name__)
+    except Exception as exc:
+        # Deliberately no line for this: the file is an audit of what admission WOULD have decided about real engines, and a line written by a
+        # broken hook is not such an observation. The log is where a broken shadow hook belongs.
+        logger.warning("residency shadow hook failed (%s); booting regardless", exc)
+        return
+    _append_shadow_record(record)
+    logger.info("residency shadow: boot would have seen %s (%s); action=%s",
+                record["decision"], record["reason"] or "no reason", action)
+
 
 
 def _stop_at_exit() -> None:
@@ -412,6 +512,9 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     falls back to configured providers."""
     global _SUPERVISOR, _SERVING_ENGINE
     section = (config or {}).get("local_runtime") or {}
+    # Validated before anything else, including the disabled short-circuit: a mode this build cannot read means the operator thinks residency
+    # is arbitrated when it is not, and that must be said out loud rather than booted past.
+    mode = residency_mode(config)
     if not force and not section.get("enabled"):
         return None
     if _SUPERVISOR is not None:
@@ -443,6 +546,11 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
         if state is not None:
             if not _presets_stale():
                 logger.info("managed llama-server already running (another process)")
+                if mode == "shadow":
+                    # Adopting somebody else's router is exactly the case a real grant would have to argue about, so shadow records it too.
+                    _record_shadow_residency(engine=str((state or {}).get("engine") or ""),
+                                             backend=str((state or {}).get("backend") or ""),
+                                             model_count=0, action="adopt")
                 return None
             logger.info("running server's presets predate the staged models; "
                         "replacing it so every model launches with a policy")
@@ -463,6 +571,9 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine.tag)
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
                                             engine_tag=engine.tag)
+            if mode == "shadow":
+                _record_shadow_residency(engine=engine.tag, backend=engine.backend,
+                                         model_count=models_max, action="boot_anyway")
 
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=models_max,

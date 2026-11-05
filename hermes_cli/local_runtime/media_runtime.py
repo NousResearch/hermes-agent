@@ -55,6 +55,7 @@ import urllib.request
 import uuid
 
 from hermes_cli.local_runtime.admission import (
+    SHARED_RESIDENCY_RESOURCE,
     AdmissionError,
     AdmissionStore,
     FencedError,
@@ -68,7 +69,9 @@ logger = logging.getLogger(__name__)
 SHARED_DEFAULT_PORT = 8888
 LOOPBACK_HOST = "127.0.0.1"
 HEALTH_PATH = "/api/health"
-DEFAULT_RESOURCE = "media:studio"
+# The media sidecar and the llama.cpp router are one heavy-residency slot; the name below is that slot's canonical key (the store still finds
+# a record written under the old "media:studio" name, so nothing has to migrate). See admission.SHARED_RESIDENCY_RESOURCE.
+DEFAULT_RESOURCE = SHARED_RESIDENCY_RESOURCE
 DEFAULT_ENGINE = "unsloth-studio"
 
 #: Names a strict disposable child environment may still inherit: locale/TLS

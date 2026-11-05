@@ -208,9 +208,8 @@ class TestGenerateSummaryTruncationGuard:
         assert c._last_compress_aborted is True
         assert c._previous_summary is None
 
-    @pytest.mark.parametrize("blocked", ["gemini_prompt_block", "content_policy_400"])
-    def test_safety_blocked_summary_request_aborts_and_preserves(self, blocked):
-        """A provider safety block of the summary request is a refusal: abort, never the lossy fallback.
+    def test_gemini_safety_blocked_summary_request_aborts_and_preserves(self):
+        """Gemini's safety block of the summary request is a refusal: abort, never the lossy fallback.
 
         Gemini answers a blocked prompt with HTTP 200 and ``promptFeedback.blockReason``; the native
         adapter raises it as a content-policy error instead of the empty content it used to return."""
@@ -227,8 +226,6 @@ class TestGenerateSummaryTruncationGuard:
         client = GeminiNativeClient(api_key="AQ.test", http_client=httpx.Client(transport=httpx.MockTransport(handle)))
 
         def call_llm(**kwargs):
-            if blocked == "content_policy_400":
-                raise Exception("Error code: 400 - Your request was flagged by our safety system")
             return client.chat.completions.create(model="gemini-2.5-flash", messages=kwargs["messages"])
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -243,7 +240,7 @@ class TestGenerateSummaryTruncationGuard:
 
         assert result == msgs
         assert c._last_compress_aborted is True
-        assert len(sent) == (1 if blocked == "gemini_prompt_block" else 0)
+        assert len(sent) == 1
 
     def test_provider_refusal_field_is_rejected_even_with_summary_shaped_content(self):
         """An explicit ``message.refusal`` wins over plausible-looking content (#118406)."""

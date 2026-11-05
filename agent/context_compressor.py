@@ -730,7 +730,6 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
     # network failures (#29559/#94448).
     stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
-    verdict = classify_api_error(e).reason
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
@@ -742,15 +741,16 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
         streaming_closed=_is_connection_error(e) and not stall,
         # HTTP 200 with empty body from a degraded provider, the sibling "no usable response" shapes from
-        # _validate_llm_response, and a safety block of the summary request (a refusal, like refusal content).
-        empty_content=verdict is FailoverReason.content_policy_blocked or (isinstance(e, RuntimeError) and any(
+        # _validate_llm_response, and Gemini's prompt block of the summary request (once empty content).
+        empty_content=getattr(e, "code", None) == "gemini_prompt_blocked" or (isinstance(e, RuntimeError) and any(
             m in err for m in (
                 "empty content", "refusal content", "llm returned none response", "llm returned invalid response",
             )
         )),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
-        overloaded=verdict is FailoverReason.overloaded or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
+        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
 

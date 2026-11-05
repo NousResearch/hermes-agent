@@ -1,7 +1,7 @@
 ---
 name: accessiblecapture-app-install
 description: Install and verify an exact native iOS build.
-version: 1.3.0
+version: 1.4.0
 author: Peter Beddow, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -28,7 +28,10 @@ for Web Capture, local IPA testing, or unrelated iOS apps.
 - Exact current bundle ID, marketing version, build number, source commit, and signed
   published artifact from the current release.
 - The existing local installer and fresh `devicectl` discovery on WKST-01.
-- The `core-testflight` skill and its existing authenticated Apple-side integration.
+- Core Secrets access through the existing `core-secrets` skill, using the literal
+  `apple/app-store-connect` reference and `WKST-01` principal. The `core-testflight`
+  API verifier is the default Apple-side path; browser authentication is not a
+  credential-recovery fallback.
 - WKST-02 remains owner-authorized only; it is never an automatic fallback.
 
 ## Fixed target
@@ -68,8 +71,10 @@ A failure in operation 3 must not be reported as a failure in operation 1.
    Do not run another `devicectl` command, repair a tunnel, request reconnection, use
    WKST-02, or attempt a direct local install after that decision.
 4. **Verify Apple-side readiness.** Invoke `core-testflight` for the exact published
-   build. It must independently read App Store Connect processing/compliance, exact
-   group assignment, and tester eligibility through the existing authenticated path.
+   build. It must first use the Core Secrets reference `apple/app-store-connect` and
+   the read-only API verifier for processing, compliance, exact group assignment, and
+   tester eligibility. Only an operation unsupported by that API may use browser
+   authentication; an expired browser session must never block these supported checks.
 5. **Report the TestFlight route.** When those Apple-side checks pass, tell Peter that
    the exact build is available for installation directly through TestFlight on PHN-01.
    If no approved phone-control capability exists, report

@@ -1,7 +1,7 @@
 ---
 name: core-testflight
 description: Verify exact TestFlight readiness and device state.
-version: 3.2.0
+version: 3.3.0
 author: Peter Beddow, Hermes Agent
 license: MIT
 platforms: [macos]
@@ -29,9 +29,11 @@ IPA or direct-device install as a substitute for TestFlight.
 
 - Exact bundle ID, marketing version, build number, source commit, GitHub ref, workflow,
   intended beta group, and tester label from the current run.
-- The existing authenticated Core Secrets/App Store Connect client, or the already
-  authenticated App Store Connect browser session. Never create another credential path.
-- The native checkout's current release receipt template and provenance checker.
+- Core Secrets access through the existing `core-secrets` skill, using the literal
+  reference `apple/app-store-connect` and the `WKST-01` principal. Never create or
+  request a second credential path.
+- The read-only verifier at `scripts/app_store_connect.py` and the native checkout's
+  current release receipt template and provenance checker.
 
 ## Operations and evidence
 
@@ -68,6 +70,35 @@ The AccessibleCapture caller selects `TESTFLIGHT` immediately when local discove
 finds PHN-01 unavailable or paired without a usable tunnel. Do not run another
 CoreDevice-dependent TestFlight launch after that decision.
 
+## App Store Connect authentication and read path
+
+For every supported Apple-side check, use the existing Core Secrets integration first.
+Do not open App Store Connect in a browser to recover from an expired browser session.
+Resolve the literal `apple/app-store-connect` reference through the `core-secrets` skill
+with the `WKST-01` principal, keep the fields and short-lived ES256 JWT in memory, and
+never print or persist them.
+
+Run the read-only verifier for the exact target:
+
+```text
+python3 scripts/app_store_connect.py \
+  --bundle-id <bundle-id> \
+  --build <build-number> \
+  --beta-group <exact-group-name>
+```
+
+This API path verifies the exact app, build record, processing state, expiry, export
+compliance, beta state, exact beta-group membership, and eligible tester count. It
+returns a redacted machine-readable result with `verification=API`. The API represents
+the build number as `attributes.version`; do not select a build by position or “latest.”
+
+If Core Secrets cannot resolve the reference, the Apple key is malformed/expired, Apple
+returns an authorization error, or the key lacks a required permission, report that
+exact non-secret problem and stop. Do not immediately request browser login, create a
+new key, or use a different secret store. Browser authentication is allowed only for an
+operation that the existing API cannot perform, and only after identifying that
+operation explicitly.
+
 ## Procedure
 
 1. **Record the exact target.** Capture the current source commit and ref, bundle ID,
@@ -76,7 +107,8 @@ CoreDevice-dependent TestFlight launch after that decision.
 2. **Verify source and distribution.** In the native checkout, check the worktree,
    diff, exact commit, branch, and authoritative ref. Read the exact Xcode Cloud run
    and require matching source commit, successful archive, and requested build.
-3. **Verify Apple-side readiness.** Through the existing authenticated integration:
+3. **Verify Apple-side readiness.** Use the API verifier above through the existing Core
+   Secrets integration for the exact published build:
    - find exactly one app by bundle ID;
    - select the build whose `attributes.version` equals the requested build;
    - read its linked marketing version, processing state, beta state, expiration,

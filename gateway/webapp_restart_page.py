@@ -32,22 +32,17 @@ _NO_STORE = "no-store, no-cache, must-revalidate"  # the Cache-Control value web
 # (``X-Forwarded-Prefix``) plus ``/``. It reloads once the root answers OK, redirects (the app is up but
 # signed out; following the redirect would start a sign-in and replace the callback's PKCE state), or
 # answers another page kind (the restart is over but the bundle is stale: show that page instead).
-# A redirect may also be the proxy's own (``/hermes/`` -> ``/hermes``) while Hermes is still down, so
-# the poll count survives the reload in sessionStorage: a page that comes back refused within 30 s
-# keeps backing off instead of restarting at one second. An older or malformed count is ignored. Where
-# the count cannot be read back or saved (storage blocked), a redirect waits the longest delay first.
+# A redirect may also be the proxy's own (``/hermes/`` -> ``/hermes``) while Hermes is still down, and
+# the reload restarts this script, so a redirect waits the longest poll delay before reloading: at
+# worst one reload per 15 s, with no state carried across the reload.
 # The root and kind come from ``<main>``'s data attributes, so the script and its hash are constant.
 _SCRIPT = (
-    "(function(){var c=document.querySelector('main').dataset,K='hermes-restart-page-tries',tries=0,kept=false;"
-    "function store(f){try{f(window.sessionStorage);return true;}catch(e){return false;}}"
-    "var read=store(function(s){var v=(s.getItem(K)||'').split(':'),n=+v[0],age=Date.now()-v[1];"
-    "if(n>=0&&n<=14&&age>=0&&age<30000)tries=Math.floor(n);});"
+    "(function(){var c=document.querySelector('main').dataset,tries=0;"
     "function later(){setTimeout(poll,Math.min(15000,1000+tries*1000));}"
-    "function poll(){tries++;kept=read&&store(function(s){s.setItem(K,Math.min(tries,14)+':'+Date.now());});"
-    "fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
+    "function poll(){tries++;fetch(c.root,{cache:'no-store',credentials:'same-origin',redirect:'manual',"
     "headers:{accept:'text/html'}}).then(function(r){var k=r.headers.get('" + _KIND_HEADER.lower() + "');"
     "if(r.ok||(k&&k!==c.kind)){location.reload();}"
-    "else if(r.type==='opaqueredirect'){setTimeout(function(){location.reload();},kept?0:15000);}"
+    "else if(r.type==='opaqueredirect'){setTimeout(function(){location.reload();},15000);}"
     "else{later();}},later);}"
     "later();})();"
 )

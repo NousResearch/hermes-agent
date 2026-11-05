@@ -1,6 +1,6 @@
 name: annotate-for-hermes
 repo: https://github.com/LarryLemonBot/annotate-for-hermes
-sha: 340b244423562d52d66de265159fe0f5151b9995
+sha: 1326e5a91410c1fa748519452255ba9201e852da
 title: "Annotate for Hermes"
 description: >-
   Annotate for Hermes adds response annotations: highlight assistant text, add
@@ -17,9 +17,9 @@ version: "1.0.0"
 requires_hermes: ">=0.22.5"
 docs_url: https://github.com/LarryLemonBot/annotate-for-hermes#readme
 platforms: [linux, macos, windows]
-image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/340b244423562d52d66de265159fe0f5151b9995/docs/catalog-banner.png
+image: https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/1326e5a91410c1fa748519452255ba9201e852da/docs/catalog-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/340b244423562d52d66de265159fe0f5151b9995/docs/annotation-preview.png
+  - https://raw.githubusercontent.com/LarryLemonBot/annotate-for-hermes/1326e5a91410c1fa748519452255ba9201e852da/docs/annotation-preview.png
 known_issues:
   - "Development preview: requires the response-annotations v1 Desktop API from PR #146959. Stock Hermes 0.22.5 does not provide it. Do not merge this entry until the API is released and both compatibility floors are updated."
   - "Unsaved popover comments and source highlights do not survive an app reload. Draft attachments do."

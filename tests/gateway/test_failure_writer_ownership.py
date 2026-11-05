@@ -408,3 +408,99 @@ def test_content_policy_refused_turn_stays_in_the_display_tagged_content_refused
         db.close()
 
     asyncio.run(check())
+
+
+def test_managed_worker_refusal_is_cleaned_owner_side_in_the_real_db(tmp_path):
+    """752 (Bot Chat / managed worker): a managed worker runs the turn in a subprocess that flushes
+    to the SHARED transcript, then exits — it CANNOT rewind its own transcript. execute_managed
+    settles the captured result but, before this fix, never dropped the refused rows, so the next
+    worker reloaded the blocked request and the deterministic filter re-refused forever. The owner-
+    side cleanup (``_finalize_managed_refusal`` → ``_hmwa_retain_content_policy_refused_turn``) now
+    runs after the worker exits. Proven against the REAL on-disk state.db: the refused turn leaves the
+    MODEL read and is retained, tagged, in the DISPLAY read; a prior accepted exchange survives; and a
+    mid-turn redirect's boundary targets the whole refused run, not just the redirect."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from gateway.session_managed_worker import _finalize_managed_refusal
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+        runner._evict_cached_agent = lambda *a, **k: None  # managed worker: no cached owner agent
+        authority = SimpleNamespace(runner=runner)
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="managed-refused", user_id="u")
+        entry = store.get_or_create_session(source)
+        sid = entry.session_id
+        db = store._db_for_session_id(sid)
+        # What the managed worker's subprocess flushed to the shared transcript this turn:
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        boundary = db.append_message(sid, "user", "the request the filter blocked")
+        db.append_message(sid, "assistant", "", tool_calls=[{"id": "t1", "type": "function",
+                          "function": {"name": "shell", "arguments": "{}"}}])
+        db.append_message(sid, "tool", "ran", tool_call_id="t1")
+        db.append_message(sid, "user", "actually, do this instead")  # a mid-turn redirect
+
+        accepted = {"failed": True, "failure_reason": "content_policy_blocked",
+                    "final_response": "⚠️ safety refusal", "error": "content_policy_blocked: x",
+                    "refused_turn_boundary_row_id": boundary}
+        await _finalize_managed_refusal(authority, sid, accepted)
+
+        # Read the REAL state.db back: the whole refused run is gone from the model read.
+        model = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                 if m["role"] != "session_meta"]
+        assert model == [("user", "hello"), ("assistant", "hi there")], model
+        # The original refused ask is retained in the display read, tagged content_refused.
+        display = [m for m in db.get_messages_as_conversation(sid, include_compacted=True)
+                   if m["role"] != "session_meta"]
+        refused = display[-1]
+        assert refused["content"] == "the request the filter blocked"
+        assert refused["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+        assert CONTENT_REFUSED_METADATA_KEY in (refused.get("display_metadata") or {})
+        db.close()
+
+    asyncio.run(check())
+
+
+def test_managed_worker_cleanup_is_a_no_op_for_a_non_refusal(tmp_path):
+    """Only a content_policy_blocked managed result triggers the owner-side drop; an ordinary
+    (successful or transient-failure) managed turn leaves the transcript untouched."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+    from gateway.session_managed_worker import _finalize_managed_refusal
+
+    async def check():
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._session_db = object()
+        runner._evict_cached_agent = lambda *a, **k: None
+        authority = SimpleNamespace(runner=runner)
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="managed-ok", user_id="u")
+        sid = store.get_or_create_session(source).session_id
+        db = store._db_for_session_id(sid)
+        db.append_message(sid, "user", "hello")
+        db.append_message(sid, "assistant", "hi there")
+        before = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                  if m["role"] != "session_meta"]
+        await _finalize_managed_refusal(authority, sid, {"completed": True, "final_response": "done"})
+        after = [(m["role"], m["content"]) for m in db.get_messages_as_conversation(sid)
+                 if m["role"] != "session_meta"]
+        assert before == after == [("user", "hello"), ("assistant", "hi there")]
+        db.close()
+
+    asyncio.run(check())

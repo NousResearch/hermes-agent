@@ -1,6 +1,6 @@
 """Exact operator controls for canonical hosted attempts, never legacy replay."""
 from gateway import hosted_room_driver as tasks
-from hermes_state_runtime import RuntimeStoreError
+from persistence.core.errors import AuthorityRefusal
 from tui_gateway.hosted_room_driver import HostedRoomBinding, discarded_receipt
 from tui_gateway.hosted_room_prepare_stall import RETRY_TASK_PREFIX
 from tui_gateway.hosted_room_service import attempt_action, task_member_id
@@ -13,17 +13,17 @@ class HostedControls:
         if (type(execution_generation) is not int or execution_generation < 1
                 or not isinstance(member_id, str) or not member_id
                 or not isinstance(task_id, str) or not task_id):
-            raise RuntimeStoreError('invalid_params')
+            raise AuthorityRefusal('invalid_params')
         gateway, epoch = self._owned_authority(room_id)
-        task = next((t for t in tasks.list_tasks(self.db_path, room_id=room_id)
+        task = next((t for t in tasks.list_tasks(self.store, placement=self.placement, room_id=room_id)
                      if t['identity'].task_id == task_id), None)
         if (task is None or task['execution_generation'] != execution_generation
                 or task_member_id(task) != member_id):
-            raise RuntimeStoreError('stale_generation')
+            raise AuthorityRefusal('stale_generation')
         if not any(m.get('member_id') == member_id
                    and m.get('profile') == task['payload']['target_profile']
                    for m in self._room(room_id)['members']):
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         return task, HostedRoomBinding(room_id, gateway, epoch)
 
     def discard_room_task(self, room_id, *, member_id, task_id, execution_generation):
@@ -39,7 +39,7 @@ class HostedControls:
 
     def _discard_local(self, binding, task, cancel_id):
         if task['status'] != 'indeterminate':
-            raise RuntimeStoreError('stale_generation')
+            raise AuthorityRefusal('stale_generation')
         rpc = self._resolve_member_transport(binding, task)
         # Canonical receipt commits first. If the driver write fails, exact
         # RPC replay must recover it rather than invent another execution.
@@ -67,23 +67,23 @@ class HostedControls:
         answer that question, keeps the turn: nothing here can prove what it did with the admission."""
         from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
         if task['status'] != 'deferred':
-            raise RuntimeStoreError('unsupported_operation')
+            raise AuthorityRefusal('unsupported_operation')
         try:
             closed = self.close_peer_admission(binding, task)
         except PeerRunsHTTPError as exc:
             if exc.error_code in _GRANT_ERRORS:
-                raise RuntimeStoreError(exc.error_code) from exc
+                raise AuthorityRefusal(exc.error_code) from exc
             if exc.status_code in {404, 405}:
-                raise RuntimeStoreError('peer_unreachable', detail=(
+                raise AuthorityRefusal('peer_unreachable', detail=(
                     "the member's gateway is too old to confirm this turn never started; "
                     'update it, then Discard again')) from exc
-            raise RuntimeStoreError('peer_unreachable') from exc
+            raise AuthorityRefusal('peer_unreachable') from exc
         except RuntimeError as exc:  # no live route to the member's gateway
-            raise RuntimeStoreError('peer_unreachable') from exc
+            raise AuthorityRefusal('peer_unreachable') from exc
         if not closed and not self._stop_deferred_peer(binding.room_id, task):
-            raise RuntimeStoreError('session_busy', detail=(
+            raise AuthorityRefusal('session_busy', detail=(
                 "the member's gateway has not confirmed this turn's run stopped; Discard again once it has"))
-        result = tasks.cancel_task(self.db_path, task['identity'], cancel_id=cancel_id,
+        result = tasks.cancel_task(self.store, task['identity'], placement=self.placement, cancel_id=cancel_id,
                                    expected_cancel_generation=task['cancel_generation'],
                                    clock=self.runtime.clock)
         self.runtime.wakeup()
@@ -104,9 +104,9 @@ class HostedControls:
             # Unknown is not non-admission. Never advance its hosted generation
             # while leaving the canonical unknown head behind it.
             if task['status'] == 'indeterminate':
-                raise RuntimeStoreError('unknown_execution')
+                raise AuthorityRefusal('unknown_execution')
             if task['status'] != 'deferred':
-                raise RuntimeStoreError('stale_generation')
+                raise AuthorityRefusal('stale_generation')
             if local:
                 lease = self.runtime._ensure_lease(binding)
                 return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
@@ -122,7 +122,7 @@ class HostedControls:
             return  # refused under the lock
         held = unsettled_legacy_homes(self, room_id, task)
         if held:
-            raise RuntimeStoreError('session_busy', field='home', detail=(
+            raise AuthorityRefusal('session_busy', field='home', detail=(
                 f'an older home of this profile may still run this turn: {held[0]}'))
         if moved_attempt_gone(self, room_id, task):
             return
@@ -134,9 +134,9 @@ class HostedControls:
             return  # that daemon answered: no room session, nothing runs
         info = rpc.info(profile=profile, source='bot_room', session_id=session_id)
         if info.get('status') == 'unknown':
-            raise RuntimeStoreError('unknown_execution')
+            raise AuthorityRefusal('unknown_execution')
         if info.get('active'):
-            raise RuntimeStoreError('session_busy')
+            raise AuthorityRefusal('session_busy')
 
     def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key
@@ -152,13 +152,13 @@ class HostedControls:
                 # key proves cancellation; a conflicting admitted run must keep the turn.
                 if exc.error_code != 'idempotency_key_conflict' or not self.close_peer_admission(binding, task):
                     raise
-                result = tasks.cancel_task(self.db_path, task['identity'],
-                    cancel_id=f"discard:{task['execution_generation']}",
+                result = tasks.cancel_task(self.store, task['identity'],
+                    placement=self.placement, cancel_id=f"discard:{task['execution_generation']}",
                     expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
                 self.runtime.wakeup()
                 return result
         except PeerRunsHTTPError as exc:
-            raise RuntimeStoreError(
+            raise AuthorityRefusal(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc
 
     def _attempt_actions(self, room_id, tasks_shown):

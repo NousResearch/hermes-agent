@@ -110,11 +110,11 @@ class SessionTranscriptMixin:
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
         compressed parent by a restart or failed send)."""
-        db = self._db_for_session_id(session_id) if session_id else None
-        if db is None:
+        store = self._persistence_for_session_id(session_id) if session_id else None
+        if store is None:
             return session_id
         try:
-            return db.get_compression_tip(session_id) or session_id
+            return store.lineage.tip(session_id) or session_id
         except Exception:
             logger.debug("Compression-tip lookup failed for session %s", session_id, exc_info=True)
             return session_id
@@ -218,8 +218,9 @@ class SessionTranscriptMixin:
                     "pending fallback failed for replaced state.db transcript on %s", session_id,
                     exc_info=True)
         try:
-            from hermes_state import divert_session_transcript_jsonl
-            divert_session_transcript_jsonl(session_id, remaining)
+            from hermes_constants import get_hermes_home
+            from session_rescue import divert_session_transcript_jsonl
+            divert_session_transcript_jsonl(session_id, remaining, sessions_dir=get_hermes_home() / "sessions")
         except Exception:
             logger.warning(
                 "JSONL divert failed for replaced state.db transcript on %s", session_id,
@@ -230,11 +231,11 @@ class SessionTranscriptMixin:
         (a depth-1 lookup misses multi-hop lineages). Uses the PARENT's proven owner handle: the
         child's id is unpublished until its write succeeds, so a by-id lookup would hit the ambient
         store."""
-        owner_db = self._db_for_session_id(session_id)
-        tip = owner_db.get_compression_tip(session_id) if owner_db is not None else None
+        owner = self._persistence_for_session_id(session_id)
+        tip = owner.lineage.tip(session_id) if owner is not None else None
         if tip and tip != session_id:
-            tip_row = owner_db.get_session(tip)
-            if tip_row is not None and tip_row.get("ended_at") is None:
+            tip_row = owner.sessions.get(tip)
+            if tip_row is not None and tip_row.ended_at is None:
                 return str(tip)
         return ""
 
@@ -305,12 +306,11 @@ class SessionTranscriptMixin:
                     raise spool_exc
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import StateDbCorruptError, StateDbReplacedError
-                from hermes_state_errors import CompressionSessionClosedError
-                if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
+                from persistence.core.errors import CompressionClosed, StoreQuarantined, StoreReplaced
+                if isinstance(exc, (StoreReplaced, StoreQuarantined)):
                     self._divert_transcript_after_db_replaced(session_id, queue_session_id, exc)
                     return
-                if isinstance(exc, CompressionSessionClosedError):
+                if isinstance(exc, CompressionClosed):
                     # Adopt only a different, still-live compression tip, else fail closed.
                     _owner_key = self._owner_key_for_session_id(session_id)
                     child_id = self._live_compression_child(session_id)
@@ -442,19 +442,22 @@ class SessionTranscriptMixin:
 
     def _append_transcript_message(self, session_id: str, message: dict[str, Any]) -> None:
         """Write one transcript row. Caller handles retry queuing."""
-        _db = self._db_for_session_id(session_id)
-        if _db is None:
+        store = self._persistence_for_session_id(session_id)
+        if store is None:
             # Named profile with no resolvable home yet: defer (caller queues) instead of writing
             # into the ambient store.
             raise RuntimeError(
                 f"no owning session store for {session_id}; deferring transcript write")
-        _db.append_message(**transcript_append_kwargs(session_id, message))
+        from persistence.conversation.messages import NewMessage
+        fields = transcript_append_kwargs(session_id, message)
+        del fields["session_id"]
+        store.messages.append(session_id, NewMessage(**fields))
 
     @staticmethod
     def _is_fts_corruption_error(exc: Exception) -> bool:
         """True only when the failure is provably scoped to the FTS index. A bare SQLITE_CORRUPT
-        can mean structural B-tree damage; only errors naming ``messages_fts`` or carrying FTS
-        provenance (``SessionDB._is_fts_write_corruption_error``) may authorize the one-shot
+        can mean structural B-tree damage; only errors naming ``messages_fts`` or classified as FTS-scoped
+        (``SearchIndexCorrupt``) may authorize the one-shot
         rebuild-and-retry; everything else takes the retry path.
 
         A generic ``database disk image is malformed`` (bare SQLITE_CORRUPT) can mean structural damage to
@@ -463,9 +466,8 @@ class SessionTranscriptMixin:
         """
         if "messages_fts" in str(exc).lower():
             return True
-        import sqlite3
-        from hermes_state import SessionDB
-        return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
+        from persistence.core.errors import SearchIndexCorrupt
+        return isinstance(exc, SearchIndexCorrupt)
 
     def _rebuild_fts_once(self) -> bool:
         """Attempt FTS5 ``rebuild``, at most once per ``_FTS_REBUILD_COOLDOWN_SECONDS`` window;
@@ -481,21 +483,13 @@ class SessionTranscriptMixin:
         last_attempt = self._fts_rebuild_last_attempt_at
         if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
             return False
-        db = self._db
-        if db is None or not hasattr(db, "rebuild_fts"):
+        store = self._scoped_persistence()
+        if store is None or not store.capabilities.full_text_search:
             return False
         self._fts_rebuild_last_attempt_at = now
-        # WAL split-brain guard: skip when a foreign process holds state.db.
-        foreign_holders = None
-        if hasattr(db, "_foreign_state_db_holders"):
-            foreign_holders = db._foreign_state_db_holders()
-        if foreign_holders:
-            logger.warning(
-                "Skipping Session DB FTS rebuild while foreign processes hold the database or "
-                "WAL sidecars (%s); canonical transcript writes remain available.", foreign_holders)
-            return False
+        # WAL split-brain guard: the rebuild answers 0 while a foreign process holds state.db.
         try:
-            rebuilt = db.rebuild_fts()
+            rebuilt = store.search.rebuild_search_index()
         except Exception as exc:
             logger.warning("Session DB FTS rebuild failed: %s", exc)
             return False
@@ -512,14 +506,14 @@ class SessionTranscriptMixin:
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
         """Whether a message with this platform_message_id is persisted (False without a DB).
 
-        Thin wrapper over SessionDB.has_platform_message_id(). Returns False when no DB is available
+        Thin wrapper over ``messages.has_platform_message_id``. Returns False when no DB is available
         (in-memory sessions). Used by the gateway's transient-failure dedupe guard (#47237).
         """
-        db = self._db_for_session_id(session_id)
-        if not db:
+        store = self._persistence_for_session_id(session_id)
+        if not store:
             return False
         try:
-            return db.has_platform_message_id(session_id, platform_message_id)
+            return store.messages.has_platform_message_id(session_id, platform_message_id)
         except Exception:
             logger.debug("has_platform_message_id lookup failed", exc_info=True)
             return False
@@ -528,11 +522,11 @@ class SessionTranscriptMixin:
         """Role of the newest live conversation row on the route ``load_transcript`` reads (``None``
         when empty, no DB, or the read fails — the boundary write would fail the same way)."""
         session_id = self._compression_tip_for_session_id(self._follow_reroutes(session_id))
-        db = self._db_for_session_id(session_id)
-        if not db:
+        store = self._persistence_for_session_id(session_id)
+        if not store:
             return None
         try:
-            return db.latest_conversation_role(session_id)
+            return store.messages.latest_conversation_role(session_id)
         except Exception:
             logger.debug("transcript tail lookup failed for %s", session_id, exc_info=True)
             return None
@@ -546,9 +540,10 @@ class SessionTranscriptMixin:
         or there is no DB, False on failure — callers committing a destructive change on top
         (/compress repointing) must check it. ``reject_active_turn_lease`` is for user-initiated
         rewrites that do not own the cross-process turn lease."""
-        db = self._db_for_session_id(session_id)
-        if not db:
+        store = self._persistence_for_session_id(session_id)
+        if not store:
             return True
+        from persistence.conversation.messages import NewMessage, ReplaceMode
         with self._get_transcript_drain_lock():
             try:
                 # Even when the current agent doesn't "own" persistence, the session on disk may already
@@ -562,12 +557,23 @@ class SessionTranscriptMixin:
                 # into the destructive replace on any DB error and can race a concurrent archive_and_compact
                 # — the same probe failure mode #80216's /retry fix (gateway/slash_commands.py) deliberately
                 # avoids.
-                db.replace_messages(
-                    session_id, messages, active_only=active_only,
+                replaced = store.messages.replace_transcript(
+                    session_id, [NewMessage.from_live(message) for message in messages],
+                    ReplaceMode.PRESERVE_EXISTING_ARCHIVE if active_only else ReplaceMode.DESTRUCTIVE,
                     reject_active_turn_lease=reject_active_turn_lease)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
                 return False
+            # Each written row's identity goes back onto its message dict, as a stored insert stamps it.
+            for message, row in zip(messages, replaced.rows):
+                message["message_uid"] = row.message_uid
+                if row.tool_call_uids:
+                    message["_tool_call_uids"] = dict(row.tool_call_uids)
+                if row.tool_call_uid:
+                    message["_tool_call_uid"] = row.tool_call_uid
+                message["timestamp"], message["_row_id"] = row.timestamp, int(row.id)
+                if row.db_row_snapshot is not None:
+                    message["_db_row_snapshot"] = row.db_row_snapshot
             self._clear_dirty_transcript(session_id)
             return True
 
@@ -584,16 +590,16 @@ class SessionTranscriptMixin:
         if not parent_session_id or not child_session_id:
             return False
         # The child id is not routed yet; the parent is, and it was ended in the same publish transaction.
-        db = self._db_for_session_id(parent_session_id)
-        if db is None:
+        store = self._persistence_for_session_id(parent_session_id)
+        if store is None:
             return False
         try:
-            child = db.get_session(child_session_id)
-            if not child or child.get("parent_session_id") != parent_session_id:
+            child = store.sessions.get(child_session_id)
+            if not child or child.parent_session_id != parent_session_id:
                 return False
-            if not db._is_compression_child_row(child):
+            if not store.lineage.is_compression_child(child):
                 return False
-            return db.get_active_message_watermark(child_session_id) > 0
+            return store.messages.active_watermark(child_session_id).last_active is not None
         except Exception:
             logger.debug("published-compression-child probe failed for %s", child_session_id, exc_info=True)
             return False
@@ -613,17 +619,17 @@ class SessionTranscriptMixin:
         """
         try:
             current = self._follow_reroutes(session_id)
-            db = self._db_for_session_id(current)
-            current = db.get_compression_tip(current) or current
+            store = self._persistence_for_session_id(current)
+            current = store.lineage.tip(current) or current
             seen = set()
             while current and current not in seen:
                 seen.add(current)
-                if db.has_gateway_input_owner(current, owner):
+                if store.messages.has_gateway_input_owner(current, owner):
                     return True
-                row = db.get_session(current)
-                if not row or not db._is_compression_child_row(row):
+                row = store.sessions.get(current)
+                if not row or not store.lineage.is_compression_child(row):
                     break
-                current = row["parent_session_id"]
+                current = row.parent_session_id
             return False
         except Exception as e:
             raise TranscriptReadError(session_id) from e
@@ -632,17 +638,19 @@ class SessionTranscriptMixin:
         """Load all messages from a session's transcript (state.db is canonical). Reads follow the
         same routing writes use — the in-memory reroute map, then the durable compression tip —
         otherwise the transcript "vanishes" while every message sits under the child."""
-        if not self._db_for_session_id(session_id):
+        if not self._persistence_for_session_id(session_id):
             return []
         session_id = self._follow_reroutes(session_id)
         with contextlib.suppress(Exception):
             # Durable successor survives restart; the reroute map doesn't.
-            db = self._db_for_session_id(session_id)
-            session_id = db.get_compression_tip(session_id) or session_id
+            store = self._persistence_for_session_id(session_id)
+            session_id = store.lineage.tip(session_id) or session_id
         try:
+            from persistence.conversation.messages import ConversationRequest
             # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
-            return self._db_for_session_id(session_id).get_messages_as_conversation(
-                session_id, repair_alternation=True)
+            store = self._persistence_for_session_id(session_id)
+            return [m.as_openai_message() for m in store.messages.read_conversation(
+                session_id, ConversationRequest(repair_alternation=True))]
         except Exception as e:
             # Empty history is valid data; a failed canonical read is not — live-replay callers
             # must fail closed, not start from [].
@@ -656,18 +664,18 @@ class SessionTranscriptMixin:
     ) -> Optional[dict[str, Any]]:
         """Take the newest (safety-refused) user turn out of the MODEL context — exactly as
         :meth:`rewind_session` does — while KEEPING the user's message visible in the chat as a
-        greyed refused notice (``SessionDB.retain_refused_turn_for_display``). The owner (gateway /
+        greyed refused notice (``messages.retain_refused_turn_for_display``). The owner (gateway /
         Bot Chat) calls this after the turn lease releases. ``boundary_row_id`` is the refused run's
         original durable boundary (captured by the refusal handler); without it the target is guessed
         from the newest user turn. Returns ``{\"retained\": True}`` on success, or ``None`` (no DB / no
         rewindable turn / persistence failure); best-effort, so a refusal never crashes turn teardown.
         """
-        db = self._db_for_session_id(session_id)
-        if not db:
+        store = self._persistence_for_session_id(session_id)
+        if not store:
             return None
         with self._get_transcript_drain_lock():
             try:
-                retained = db.retain_refused_turn_for_display(
+                retained = store.messages.retain_refused_turn_for_display(
                     session_id, notice=notice, boundary_row_id=boundary_row_id)
             except Exception as e:  # health: allow BLE001 -- best-effort; a refusal must never crash teardown
                 logger.debug("retain_refused_turn_for_display: failed: %s", e)
@@ -686,16 +694,16 @@ class SessionTranscriptMixin:
         is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
         is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
         explain why the carrier is unsafe."""
-        db = self._db_for_session_id(session_id)
-        if not db:
+        store = self._persistence_for_session_id(session_id)
+        if not store:
             return None
-        from hermes_state_rewind import RewindTargetUnavailableError
+        from persistence.conversation.messages import RewindTargetUnavailable
         with self._get_transcript_drain_lock():
             try:
-                outcome = db.rewind_user_turn(
+                outcome = store.messages.rewind_user_turn(
                     session_id, -max(n, 1), require_retryable=require_retryable_composite,
                     require_composite=require_retryable_composite)
-            except RewindTargetUnavailableError as e:
+            except RewindTargetUnavailable as e:
                 logger.debug("rewind_session: %s", e)
                 return None
             except ValueError:

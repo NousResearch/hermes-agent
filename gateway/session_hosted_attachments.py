@@ -1,25 +1,44 @@
 """Owner-authorized room byte RPCs and committed task input materialization."""
 import base64
 import binascii
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import tempfile
 
 from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
 from gateway.session_ingress_media import HOSTED_DOCUMENT_LINE
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 
 def _authorize(service, actor, params, capability):
     if actor.profile_id != service.authority.profile_id:
-        raise RuntimeStoreError('profile_mismatch')
+        raise AuthorityRefusal('profile_mismatch')
     if capability not in actor.capabilities:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     room_id = params.get('room_id')
     service.authorize_room(actor.subject, room_id)
     service._owned_authority(room_id)
     service._room(room_id)
     return room_id
+
+
+@contextmanager
+def _room_attachments(service):
+    """*service*'s attachment store: the canonical service's on its authority's handle, the process
+    service's on a handle opened for the call beside its room file."""
+    authority = getattr(service, 'authority', None)
+    if authority is not None:
+        yield HostedRoomAttachmentStore(authority_persistence(authority))
+        return
+    from persistence_assembly import open_persistence, profile_scope
+    db_path = Path(service.db_path)
+    handle = open_persistence(profile_scope(home=db_path.parent))
+    try:
+        yield HostedRoomAttachmentStore(handle, 'profile' if db_path.name == 'state.db' else 'shared')
+    finally:
+        handle.close()
 
 
 def upload(service, actor, params):
@@ -34,46 +53,49 @@ def store_upload(service, room_id, params):
     """Retain one composer file for a later ``groups.send`` manifest (both routes)."""
     encoded = params.get('data_base64')
     if not isinstance(encoded, str) or len(encoded) > ((MAX_ATTACHMENT_BYTES + 2) // 3) * 4:
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     try:
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
-    return HostedRoomAttachmentStore(service.db_path).put(
-        room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
-        name=params.get('name'), mime=params.get('mime'), data=data)
+        raise AuthorityRefusal('invalid_params') from exc
+    with _room_attachments(service) as store:
+        return store.put(
+            room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
+            name=params.get('name'), mime=params.get('mime'), data=data)
 
 
 def read_download(service, room_id, params):
     """One committed file for a live room viewer (both routes)."""
     if not params.get('event_id'):
-        raise RuntimeStoreError('invalid_params')
+        raise AuthorityRefusal('invalid_params')
     gateway_id, epoch = service._owned_authority(room_id)
-    saved = HostedRoomAttachmentStore(service.db_path).read_viewer(
-        room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
-        authority_gateway_id=gateway_id, authority_epoch=epoch)
+    with _room_attachments(service) as store:
+        saved = store.read_viewer(
+            room_id=room_id, attachment_id=params.get('attachment_id'), event_id=params['event_id'],
+            authority_gateway_id=gateway_id, authority_epoch=epoch)
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
 
 
 def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch):
     from gateway import hosted_rooms
-    store = HostedRoomAttachmentStore(service.db_path)
     manifest = payload.get('attachments', [])
     transitioned = []
-    if manifest:
-        _, transitioned = store.commit_message_with_receipt(
-            room_id=room_id, event_id=event_id, manifest=manifest,
-            recipient_member_ids=[m['member_id'] for m in service._room(room_id)['members']],
-            viewer_access=True, hold_until_event=True)
-    try:
-        return hosted_rooms.append_event(
-            service.db_path, room_id=room_id, event_id=event_id, kind='message.user',
-            actor={'kind': 'user', 'id': 'desktop'}, payload=payload,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
-    except Exception:
-        if transitioned:
-            store.abort_message_commit(room_id=room_id, event_id=event_id, attachment_ids=transitioned)
-        raise
+    with _room_attachments(service) as store:
+        store.prepare()
+        if manifest:
+            _, transitioned = store.commit_message_with_receipt(
+                room_id=room_id, event_id=event_id, manifest=manifest,
+                recipient_member_ids=[m['member_id'] for m in service._room(room_id)['members']],
+                viewer_access=True, hold_until_event=True)
+        try:
+            return hosted_rooms.append_event(
+                service.store, placement=service.placement, room_id=room_id, event_id=event_id, kind='message.user',
+                actor={'kind': 'user', 'id': 'desktop'}, payload=payload,
+                authority_gateway_id=gateway_id, authority_epoch=epoch)
+        except Exception:
+            if transitioned:
+                store.abort_message_commit(room_id=room_id, event_id=event_id, attachment_ids=transitioned)
+            raise
 
 
 # A file the member can never take: over its media cap, not bound to it, expired or corrupt.
@@ -87,12 +109,12 @@ def prepare_before_submit(prepare):
     execution: a refusal no retry can change settles the turn as failed (``refused_before_submit``)
     and anything else is proven not admitted, so the driver requeues it with backoff."""
     from gateway.hosted_room_attachments import AttachmentError
-    from gateway.hosted_room_driver import DriverValidationError
+    from persistence.gateway.hosted_rooms import DriverValidationError
     try:
         return prepare()
     except Exception as exc:
         permanent = isinstance(exc, (AttachmentError, DriverValidationError)) or (
-            isinstance(exc, RuntimeStoreError) and exc.reason in _PERMANENT_FILE_REFUSALS)
+            isinstance(exc, AuthorityRefusal) and exc.reason in _PERMANENT_FILE_REFUSALS)
         if permanent:
             exc.refused_before_submit = True
         else:
@@ -103,13 +125,15 @@ def prepare_before_submit(prepare):
 def submission_payload(rpc, prompt, attachments=None):
     """Resolve only event-bound, member-authorized bytes, never a caller path."""
     return bound_submission_payload(
-        rpc.authority.db.db_path, room_id=rpc.room_id, member_id=rpc.member_id, prompt=prompt,
+        rpc, room_id=rpc.room_id, member_id=rpc.member_id, prompt=prompt,
         attachments=attachments, transferred=getattr(rpc, 'hosted_attachment_data', None))
 
 
-def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments=None, transferred=None):
+def bound_submission_payload(owner, *, room_id, member_id, prompt, attachments=None, transferred=None):
     """``{'text', 'attachments'?}`` for one member turn: documents as prompt path lines, images as
-    owner-local staging paths. Shared by both routes, so a file reaches a member identically."""
+    owner-local staging paths. Shared by both routes, so a file reaches a member identically. *owner*
+    reads the files through ``_room_attachments``: the gateway route's RPC through its authority, the
+    TUI route through its room file."""
     if not attachments:
         return {'text': prompt}
     from gateway.hosted_room_driver import validate_bound_task_manifest
@@ -118,21 +142,21 @@ def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments
     # Each bound file is captured on its own, so the admission-wide cap is enforced here,
     # before any member is materialized.
     validate_media_batch_size(item['size'] for item in manifest)
-    store = HostedRoomAttachmentStore(db_path)
     references = []
     if transferred is not None and [item for item, data in transferred] != manifest:
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     for index, item in enumerate(manifest):
         if transferred is None:
-            saved = store.read(room_id=room_id, attachment_id=item['attachment_id'],
-                               event_id=item['event_id'], recipient_member_id=member_id)
+            with _room_attachments(owner) as store:
+                saved = store.read(room_id=room_id, attachment_id=item['attachment_id'],
+                                   event_id=item['event_id'], recipient_member_id=member_id)
             if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
-                raise RuntimeStoreError('permission_denied')
+                raise AuthorityRefusal('permission_denied')
             data = saved.data
         else:
             data = transferred[index][1]
         if len(data) != item['size']:
-            raise RuntimeStoreError('permission_denied')
+            raise AuthorityRefusal('permission_denied')
         # Retained native-inputs are excluded from age-only document cleanup; a live hosted row
         # holds its documents through the prompt path lines (``hosted_document_references``).
         # The content-addressed destination is stable on retry and refuses corruption.
@@ -160,7 +184,7 @@ def bound_submission_payload(db_path, *, room_id, member_id, prompt, attachments
         target = staging / (hashlib.sha256(data).hexdigest() + Path(item['name']).suffix)
         if target.exists():
             if target.is_symlink() or target.read_bytes() != data:
-                raise RuntimeStoreError('storage_unavailable')
+                raise AuthorityRefusal('storage_unavailable')
         else:
             fd, temporary = tempfile.mkstemp(dir=staging)
             try:
@@ -195,7 +219,7 @@ def _attested_inputs(attachments, digests):
     manifest = validate_bound_task_manifest(attachments)
     if (not isinstance(digests, list) or len(digests) != len(manifest)
             or any(not isinstance(d, str) or _SHA256_RE.fullmatch(d) is None for d in digests)):
-        raise RuntimeStoreError('permission_denied')
+        raise AuthorityRefusal('permission_denied')
     root = _media_root()
     inputs = []
     for item, digest in zip(manifest, digests):

@@ -6,7 +6,7 @@ closes the Relay conversation scope). Under the gateway those clients are viewer
 memory manager and the Relay scope live in the owner, so ``session.detach {end_reason}`` from the
 last viewer is where the owner runs them. A close that lands while a turn is still queued or running
 is remembered and completed when the FIFO goes idle, so exiting mid-turn still ends the row.
-The pending close is also kept in ``state_meta`` (``CLOSE_PREFIX + session_id``): a gateway stop or
+The pending close is also kept in the store (one record per session): a gateway stop or
 restart before the FIFO goes idle would otherwise drop it, and nothing else ends a local row. Boot
 recovery re-arms it (``rearm_persisted_closes``), so the restarted owner's first idle point ends it.
 Each stored close carries its own operation id, and every delete is compare-and-delete on that exact
@@ -20,32 +20,24 @@ import logging
 import time
 import uuid
 from functools import partial
-from pathlib import Path
 
 from gateway.session_history_mount import is_history_mount
-from hermes_state_local import local_receipt
-from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
-from hermes_state_runtime import RuntimeStoreError
+from gateway.session_persistence import authority_persistence
+from persistence.core.errors import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
-CLOSE_PREFIX = VIEWER_CLOSE_PREFIX  # route retirement drops it too
-
-_BUSY_SQL = ("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown') "
-             "UNION ALL SELECT 1 FROM worker_executions WHERE session_id IN (?,?) "
-             "AND status IN ('registered','running','unknown') LIMIT 1")
-
 
 def _physical_target(authority, session_id):
+    store = authority_persistence(authority)
     try:
-        return local_receipt(authority.db, session_id)['entry']['session_id']
-    except (RuntimeStoreError, KeyError, TypeError):
-        return authority.db.get_compression_tip(session_id) or session_id
+        return store.bindings.receipt(session_id).current_target
+    except (AuthorityRefusal, KeyError, TypeError):
+        return store.lineage.tip(session_id)
 
 
 def _busy(authority, session_id, target):
-    with authority.db._read_ctx() as conn:
-        return conn.execute(_BUSY_SQL, (session_id, session_id, target)).fetchone() is not None
+    return authority_persistence(authority).admissions.ledger_busy(session_id, target)
 
 
 # The viewer's /new: the classic CLI's ``new_session``; Ink's ``tui_close`` (/new or a resume switch,
@@ -108,28 +100,17 @@ async def _store_and_settle(authority, session_id, live, close):
 
 
 def _persist_close(authority, session_id, record):
-    from hermes_state_runtime import _epoch
-
-    def write(conn):
-        _epoch(conn, authority.epoch)
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                     (CLOSE_PREFIX + session_id, record))
-    authority.db._execute_write(write)
+    authority_persistence(authority).runtime.store_viewer_close(authority.epoch, session_id=session_id, record=record)
 
 
 def forget_persisted_close(authority, session_id, record):
     """Blocking: drop *session_id*'s stored close only if it is still exactly *record* (that close
     completed or was cancelled), and only while this authority owns the store. Returns whether a
     row went."""
-    from hermes_state_runtime import _epoch
-
-    def write(conn):
-        _epoch(conn, authority.epoch)
-        return conn.execute('DELETE FROM state_meta WHERE key=? AND value=?',
-                            (CLOSE_PREFIX + session_id, record)).rowcount
     try:
-        return bool(authority.db._execute_write(write))
-    except RuntimeStoreError as exc:
+        return authority_persistence(authority).runtime.forget_viewer_close(
+            authority.epoch, session_id=session_id, record=record)
+    except AuthorityRefusal as exc:
         logger.info('Stored close for %s left in place: %s', session_id, exc)
         return False
 
@@ -137,7 +118,7 @@ def forget_persisted_close(authority, session_id, record):
 def cancel_persisted_close(authority, session_id):
     """Blocking, for a viewer attach: drop the stored close unless it is the one now pending in
     memory (a detach that ran after the attach stored it; it is that close's own to settle)."""
-    record = authority.db.get_meta(CLOSE_PREFIX + session_id)
+    record = authority_persistence(authority).runtime.viewer_close(session_id)
     if record is None:
         return
     pending = authority.pending_closes.get(session_id)
@@ -150,11 +131,8 @@ def rearm_persisted_closes(authority):
     """Boot/serve recovery, after the local sessions are restored: every stored close whose session
     is mounted with no viewer goes back to ``pending_closes``. The caller schedules the drain, whose
     idle point (after any queued turn; never past an ``unknown`` one) completes it. Returns the ids."""
-    with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
     armed = []
-    for key, record in stored:
-        session_id = key[len(CLOSE_PREFIX):]
+    for session_id, record in authority_persistence(authority).runtime.viewer_closes():
         live = authority.sessions.get(session_id)
         if live is None or is_history_mount(live):
             continue  # not restored (paused, retired): left stored for a later recovery
@@ -186,7 +164,7 @@ def orphan_close_grace(authority, *, startup=False):
     from gateway.session_local import profile_env_scope
     from utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']
-    home = Path(authority.db.db_path).resolve().parent
+    home = authority_persistence(authority).scope.profile_dir
     # A dropped socket detaches outside the RPC's owner scope: expand ``${VAR}`` against this profile.
     with profile_env_scope(home):
         config = load_user_config_effective(home / 'config.yaml')
@@ -200,12 +178,13 @@ def orphan_close_grace(authority, *, startup=False):
 
 def orphan_candidate(authority, session_id):
     """Blocking: *session_id* is a local session with an open row. ACP ends on its own at detach."""
+    store = authority_persistence(authority)
     try:
-        receipt = local_receipt(authority.db, session_id)
-        row = authority.db.get_session(receipt['entry']['session_id'])
-    except (RuntimeStoreError, KeyError, TypeError):
+        receipt = store.bindings.receipt(session_id)
+        row = store.sessions.get(receipt.current_target)
+    except (AuthorityRefusal, KeyError, TypeError):
         return False  # not a local session
-    return receipt.get('policy', {}).get('source') != 'acp' and row is not None and row['ended_at'] is None
+    return receipt.policy.get('source') != 'acp' and row is not None and row.ended_at is None
 
 
 def _call_later(loop, delay, callback):
@@ -237,16 +216,8 @@ async def arm_detached_orphan_close(authority, session_id):
 
 
 def _idle_s(authority, session_id):
-    from hermes_state_common import _sql_session_last_active
-    # Resolve the target BEFORE opening a read context: ``_physical_target`` reads the receipt, and
-    # a read that lands on the degraded path (non-WAL, or every read permit spent) waits on the
-    # writer's non-reentrant lock. Nested inside this block it would wait on the lock this thread
-    # already holds — a boot-time self-deadlock the watchdog can only answer by killing the gateway.
-    target = _physical_target(authority, session_id)
-    with authority.db._read_ctx() as conn:
-        row = conn.execute(f'SELECT {_sql_session_last_active("s")} FROM sessions s WHERE s.id = ?',
-                           (target,)).fetchone()
-    return time.time() - row[0] if row and row[0] else 0.0
+    last = authority_persistence(authority).sessions.last_active(_physical_target(authority, session_id))
+    return time.time() - last if last else 0.0
 
 
 def arm_startup_orphan_closes(authority, session_ids):
@@ -297,7 +268,7 @@ async def settle_viewer_close(authority, session_id):
     if await asyncio.to_thread(_busy, authority, session_id, target):
         return  # the drain's next idle point completes it
     idle_stamp = live.event_stream.execution  # each claim stamps a new one (``_stamp_claim``)
-    row = await asyncio.to_thread(authority.db.get_session, target)
+    row = await asyncio.to_thread(authority_persistence(authority).sessions.get, target)
     if not _still_pending(authority, session_id, live, close):
         return
     # Claimed with no await since the check: exactly one settler stamps the row and runs the
@@ -313,7 +284,7 @@ async def settle_viewer_close(authority, session_id):
     await asyncio.to_thread(forget_persisted_close, authority, session_id, close.record)
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
-    platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
+    platform = (row.source if row is not None else None) or (live.source.platform.value if live.source else '')
     from gateway.session_vault_prompt import release_unlocks
     release_unlocks(session_id)
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
@@ -330,9 +301,8 @@ async def _resolve_abandoned_unknown(authority, session_id, live, close):
     transcript boundary written) and the drain moves on; a queued successor still runs before the
     close. A viewer back first cancels the close and keeps the decision. Returns whether the
     close may go on to its idle check (no ``unknown`` turn is left)."""
-    from hermes_state_runtime import list_session_admissions
-    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
-    unknown = [row for row in rows if row['status'] == 'unknown']
+    rows = await asyncio.to_thread(authority_persistence(authority).admissions.list, session_id=session_id)
+    unknown = [row for row in rows if row.status == 'unknown']
     if not unknown:
         return True
     if close.reason in ORPHAN_REASONS:
@@ -343,13 +313,13 @@ async def _resolve_abandoned_unknown(authority, session_id, live, close):
         if not _still_pending(authority, session_id, live, close):
             return False
         try:
-            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
-        except RuntimeStoreError as exc:
+            await authority.resolve_unknown_as_owner(ref, row.admission_id, row.generation)
+        except AuthorityRefusal as exc:
             logger.warning('Unknown turn %s on closed session %s left paused: %s',
-                           row['admission_id'], session_id, exc.reason)
+                           row.admission_id, session_id, exc.reason)
             return False
         logger.info('Unknown turn %s resolved interrupted: its session %s was closed by its last viewer',
-                    row['admission_id'], session_id)
+                    row.admission_id, session_id)
     # The resolution also rescheduled the drain; the idle check below and its next idle point
     # are both safe (the close is claimed exactly once).
     return _still_pending(authority, session_id, live, close)

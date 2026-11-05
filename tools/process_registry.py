@@ -586,6 +586,10 @@ class ProcessSession:
     notify_on_complete: bool = False            # Queue agent notification on exit
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: list[str] = field(default_factory=list)
+    completion_work_home: str = ""             # trusted enrollment profile, never from output
+    work_result_error: str = ""                # transport/supervision, never task status
+    _work_buffer: str = field(default="", repr=False)
+    _work_discard: bool = field(default=False, repr=False)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
@@ -659,7 +663,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds", "persist_on_release", "output_log")
+    "heartbeat_seconds", "persist_on_release", "output_log", "completion_work_home", "work_result_error")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1179,7 +1183,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def spawn_local(
         self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False, restore_login_path: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, restore_login_path: bool = False,
+        completion_work: list[dict] | None = None) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends: spawn_via_env()).
         ``use_pty`` asks ptyprocess/pywinpty for a pseudo-terminal; on failure: pipe + ``pty_fallback``.
         ``persist_on_release``: no agent kill sweeps (#41225); ``restore_login_path``: re-add reset PATH dirs (#56634)."""
@@ -1190,9 +1195,13 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
                                     persist_on_release=persist_on_release)
+        if completion_work is not None:
+            from tools.process_work_results import enroll
+            enroll(session, completion_work)
         pty_scope_attempted = False
         # A worker's pipe or PTY dies with the worker (the child's next write is SIGPIPE): write to a log.
-        log = worker_output_log(session.id)
+        log = (worker_output_log(session.id, durable=True) if session.completion_work_home
+               else worker_output_log(session.id))
         if use_pty and log is None:
             try:
                 return self._spawn_local_pty(session, safe_command, env_vars)
@@ -1229,6 +1238,27 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session, spawn_argv, persist_on_release, text=True, cwd=session.cwd, env=spawn_env,
                 encoding="utf-8", errors="replace", stdout=output, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, **_popen_kwargs)
+        except OSError as exc:
+            if session.completion_work_home and getattr(exc, '_hermes_child_not_started', False):
+                from tools.process_work_results import mark_never_started, receipts
+                receipt = dict(session_id=session.id, work_results=[], completion_reason='never_started')
+                exc.process_receipt = receipt  # type: ignore[attr-defined]
+                session.mark_exited(None, reason='never_started', source='os_spawn')
+                session.output_log = str(log or '')
+                with self._lock:
+                    self._finished[session.id] = session
+                try:
+                    mark_never_started(session)
+                    save_completed_result(session)
+                    receipt['work_results'] = receipts(session)
+                except Exception:
+                    # Best-effort persistence must never mask the original OS
+                    # rejection or remove the identity needed to investigate it.
+                    logger.warning('Could not persist spawn receipt for %s', session.id, exc_info=True)
+                    session.work_result_error = 'spawn_receipt_storage_unresolved'
+                if session.work_result_error:
+                    receipt['work_result_error'] = session.work_result_error
+            raise
         finally:
             if log:
                 os.close(output)
@@ -1390,29 +1420,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
-        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
-        with suppress(Exception):
-            tail = decoder.decode(b"", final=True)
-            if tail:
-                append(tail)
-        try:
-            wait()
-        except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
-        self._finish_exited(session, exit_code())
-
     _log_delta_command = staticmethod(log_delta_command)
 
     def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
@@ -1528,24 +1535,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         self._finish_reader(
             session, decoder, ingest, "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
-
-    def _ingest_output(self, session: ProcessSession, text: str, *, unless_exited: bool = False) -> None:
-        """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
-        ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
-        if not unless_exited:
-            session.append_output(text)
-        elif not session.append_output_if_running(text):
-            return
-        self._check_watch_patterns(session, text)
-        self._emit_output(session, text)
-
-    def _finish_exited(self, session: ProcessSession, exit_code, reason: str = "exited", source: str = "") -> None:
-        """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish.
-        Under the session lock, like kill_process's commit: otherwise the kill can land between
-        mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
-        with session._lock:
-            session.mark_exited(exit_code, reason, source)
-        self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.
@@ -1986,7 +1975,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     @staticmethod
     def _status_head(session: ProcessSession) -> dict:
-        return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
+        result: dict[str, Any] = {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
+        if session.completion_work_home:
+            from tools.process_work_results import receipts
+            result['work_results'] = receipts(session)
+            if session.work_result_error:
+                result['work_result_error'] = session.work_result_error
+                result['work_result_log'] = session.output_log
+        return result
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""

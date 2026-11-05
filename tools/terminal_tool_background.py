@@ -93,10 +93,14 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, completion_work=None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
                   persist_on_release=persist_on_release)
+    if completion_work is not None:
+        if env_type != 'local' or effective_pty:
+            raise ValueError('completion_work supports only local non-PTY background processes')
+        common['completion_work'] = completion_work
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
@@ -156,6 +160,7 @@ def spawn_background_process(
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
     auto_backgrounded: bool = False,
+    completion_work: Optional[list[dict]] = None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -180,9 +185,13 @@ def spawn_background_process(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
+            **({'completion_work': completion_work} if completion_work is not None else {}),
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        if completion_work is not None:
+            from tools.process_work_results import receipts
+            result_data['work_results'] = receipts(proc_session)
         if persist_on_release:
             result_data["persist_on_release"] = True
         if approval_note:
@@ -191,7 +200,7 @@ def spawn_background_process(
             result_data["pty_note"] = pty_disabled_reason
         if auto_backgrounded:
             result_data["auto_backgrounded"] = _AUTO_BACKGROUND_NOTE
-        elif not notify_on_complete and not watch_patterns:
+        elif not notify_on_complete and not watch_patterns and completion_work is None:
             result_data["hint"] = _SILENT_BACKGROUND_HINT
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")
@@ -231,6 +240,7 @@ def spawn_background_process(
         return json.dumps({
             "output": "", "exit_code": -1,
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
+            **getattr(e, 'process_receipt', {}),
         }, ensure_ascii=False)
 
 

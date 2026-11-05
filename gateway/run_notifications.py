@@ -744,6 +744,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
+        from gateway.process_work_results import drain_work_results
+        await drain_work_results(self)
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             next_retry_at = evt.get("_watch_next_retry_at")

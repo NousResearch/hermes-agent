@@ -13,10 +13,13 @@ import logging
 import os
 from pathlib import Path
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
+
+if TYPE_CHECKING:
+    from tools.process_registry import ProcessSession
 
 logger = logging.getLogger("tools.process_registry")
 
@@ -29,10 +32,10 @@ def output_dir() -> Path:
     return get_hermes_home() / "logs" / "process-output"
 
 
-def worker_output_log(session_id: str) -> Optional[Path]:
-    """The log a worker-spawned process writes to; None outside a registered worker."""
+def worker_output_log(session_id: str, *, durable: bool = False) -> Optional[Path]:
+    """Worker output, or an explicitly enrolled work producer's durable transport."""
     from agent.runtime_session_store import is_worker_process
-    if not is_worker_process():
+    if not durable and not is_worker_process():
         return None
     directory = output_dir()
     make_user_dir(directory, mode=0o700, parents=True, exist_ok=True)
@@ -78,8 +81,54 @@ def recorded_exit_code(log) -> Optional[int]:
 
 
 class ProcessOutputLogMixin:
-    """The subclass supplies ``_ingest_output``, ``_clean_shell_noise``, ``_finish_reader``,
-    ``_finish_exited`` and ``_detached_host_fate``. See ProcessRegistry."""
+    """Shared ingestion/finalization and durable log transport for ProcessRegistry."""
+
+    def _ingest_output(self, session: "ProcessSession", text: str, *, unless_exited: bool = False) -> None:
+        """Buffer a freshly-read chunk, then scan watch patterns and stream it live.
+        ``unless_exited`` drops the chunk once the session has exited (atomically with a kill)."""
+        watch_text = text
+        if session.completion_work_home and not (unless_exited and session.exited):
+            from tools.process_work_results import ingest
+            watch_text = ingest(session, text)
+        if not unless_exited:
+            session.append_output(text)
+        elif not session.append_output_if_running(text):
+            return
+        self._check_watch_patterns(session, watch_text)
+        self._emit_output(session, text)
+
+    def _finish_exited(self, session: "ProcessSession", exit_code, reason: str = "exited", source: str = "") -> None:
+        """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish.
+        Under the session lock, like kill_process's commit: otherwise the kill can land between
+        mark_exited's ``killed`` check and its writes, and the reader overwrites the kill."""
+        with session._lock:
+            session.mark_exited(exit_code, reason, source)
+        if session.completion_work_home:
+            from tools.process_work_results import finish_without_result
+            finish_without_result(session)
+        self._move_to_finished(session)
+
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
+        """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        """
+        with suppress(Exception):
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                append(tail)
+        try:
+            wait()
+        except Exception as e:
+            logger.warning("%s wait failed: %s", label, e, exc_info=True)
+            # A PTY child reaped by isalive() already has its exitstatus; only an
+            # unknown status must stay tracked for later reconciliation.
+            if exit_code() is None:
+                return
+        self._finish_exited(session, exit_code())
 
     def _log_reader_loop(self, session) -> None:
         """Tail ``session.output_log`` until its process ends. The spawner decides the exit from
@@ -118,9 +167,15 @@ class ProcessOutputLogMixin:
                         if drained < _FINAL_DRAIN_MAX_BYTES:
                             continue
                     if not alive:
+                        if chunk and session.completion_work_home and stream.read(1):
+                            # The bounded final drain left bytes unread. Absence
+                            # of a frame in this prefix is not missing evidence.
+                            session.work_result_error = session.work_result_error or 'output_log_incomplete'
                         break
                     time.sleep(_TAIL_SECONDS)
         except OSError as exc:
+            if session.completion_work_home:
+                session.work_result_error = 'output_log_unreadable'
             logger.warning("Process output log %s unreadable: %s", session.output_log, exc)
         if proc is not None:
             self._finish_reader(session, decoder, ingest, "Log", proc.wait, lambda: proc.returncode)

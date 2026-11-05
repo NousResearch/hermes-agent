@@ -1082,9 +1082,15 @@ def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
     ``purpose``. After stopping it yourself, ``release_process_group_once_empty(proc.pid, proc=proc)``.
     Windows: a plain ``Popen`` with the caller's kwargs (the layer-3 job object covers ownership).
     """
-    if os.name != "posix":
-        return subprocess.Popen(argv, **popen_kwargs)
-    proc = subprocess.Popen(argv, start_new_session=True, **popen_kwargs)
+    try:
+        if os.name != "posix":
+            return subprocess.Popen(argv, **popen_kwargs)
+        proc = subprocess.Popen(argv, start_new_session=True, **popen_kwargs)
+    except OSError as exc:
+        # Preserve errno, subtype and identity for existing callers. Only Popen's
+        # own rejection establishes that no child was started.
+        exc._hermes_child_not_started = True  # type: ignore[attr-defined]
+        raise
     own_process_groups([proc.pid])
     register_child(proc.pid, purpose)
     return proc

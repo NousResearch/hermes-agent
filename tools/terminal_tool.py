@@ -1484,6 +1484,7 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    completion_work: Optional[list[dict]] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1581,6 +1582,7 @@ def terminal_tool(
                     heartbeat_seconds=heartbeat,
                     persist_on_release=persist_on_release,
                     auto_backgrounded=auto_bg is not None and plan.promoted_from_foreground_timeout is None,
+                    **({'completion_work': completion_work} if completion_work is not None else {}),
                 )
                 if plan.promoted_from_foreground_timeout is not None:
                     result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1660,6 +1662,14 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "default": False,
                 "description": "With background=true: survive session end, /new, compression and other cleanup (not host exit). Only for jobs the user explicitly wants to outlive the conversation."
+            },
+            "completion_work": {
+                "type": "array", "minItems": 1, "maxItems": 16,
+                "items": {"type": "object", "additionalProperties": False,
+                    "properties": {"work_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                                   "incarnation": {"type": "string", "minLength": 1, "maxLength": 128}},
+                    "required": ["work_id", "incarnation"]},
+                "description": "Opt-in finite work results; background=true, local non-PTY, native gateway parent only. Enroll at most 16 unique work_id/incarnation pairs. The exact child emits LF-terminated HERMES_WORK_RESULT_V1 followed by a space and JSON with exactly work_id, incarnation, status (completed|failed|cancelled), evidence (opaque text, max 4096 chars). Frame max 8192 chars. One durable result per enrolled incarnation, independent of readiness caps or process exit; no source routing fields. Admission is not evidence acceptance. Stop and /new cancel delivery. Omit for ordinary commands."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1695,6 +1705,8 @@ def _handle_terminal(args, **kw):
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
     persist_on_release = bool(args.get("persist_on_release", False))
+    if args.get('completion_work') is not None and (not args.get('background') or args.get('pty')):
+        return tool_error('completion_work requires background=true and pty=false on the local backend.')
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
     if not args.get("background", False):
@@ -1744,6 +1756,7 @@ def _handle_terminal(args, **kw):
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
         persist_on_release=persist_on_release,
+        **({'completion_work': args['completion_work']} if args.get('completion_work') is not None else {}),
     )
 
 

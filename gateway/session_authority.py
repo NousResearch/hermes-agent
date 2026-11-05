@@ -572,6 +572,8 @@ class SessionAuthority:
         """/stop and /new: the route's messaging input still capturing or waiting, and a slash command's
         turn read before it (``_stop_epoch``), never commit."""
         self._route_epochs[route] = self.route_epoch(route) + 1
+        from tools.process_work_results import drop
+        drop(self.db, route=route)
 
     async def _admit_native(self, event, fence=None):
         import json

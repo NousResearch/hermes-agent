@@ -183,6 +183,10 @@ let est = ctx.estimate_max_purchase_quantity(
 
 ## Complete Example
 
+> ⚠️ **State-changing — confirm before executing.** This example calls `submit_order`, which
+> places a real order. Same gate as Submit Order above: read back symbol, side, quantity, and
+> price and get an explicit "yes, place it" from the user immediately before running it.
+
 ```rust
 use std::sync::Arc;
 use longbridge::{Config, TradeContext, Decimal, trade::{SubmitOrderOptions, OrderType, OrderSide, TimeInForceType}};
@@ -196,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
     let balances = ctx.account_balance(None).await?;
     println!("Balance: {:?}", balances);
 
-    // Place a limit buy order
+    // Place a limit buy order — only after the user has explicitly confirmed it
     let resp = ctx.submit_order(
         SubmitOrderOptions::new(
             "700.HK",

@@ -181,6 +181,10 @@ est = ctx.estimate_max_purchase_quantity(
 
 ## Async Example (FastAPI / asyncio)
 
+> ⚠️ **State-changing — confirm before executing.** This example calls `submit_order`, which
+> places a real order. Same gate as Submit Order above: read back symbol, side, quantity, and
+> price and get an explicit "yes, place it" from the user immediately before running it.
+
 ```python
 import asyncio
 from decimal import Decimal
@@ -193,6 +197,7 @@ async def main():
     config = Config.from_oauth(oauth)
     ctx = AsyncTradeContext.create(config)
 
+    # Only reached after the user has explicitly confirmed this exact order.
     resp = await ctx.submit_order(
         symbol="700.HK",
         order_type=OrderType.LO,

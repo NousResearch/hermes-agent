@@ -97,7 +97,8 @@ async fn main() -> anyhow::Result<()> {
 
 ## Note: Python SDK
 
-The Python SDK **does** expose `ContentContext` / `AsyncContentContext` with the same
+The Python SDK (`longbridge` on PyPI, verified on 5.3.0) **does** expose
+`ContentContext` / `AsyncContentContext` with the same
 `news(symbol)` / `topics(symbol)` methods shown above — see
 [python-sdk/content-context.md](../python-sdk/content-context.md). Filings are on
 `QuoteContext.filings(symbol)` instead (there is no separate content-filings call), documented in

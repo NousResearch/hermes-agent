@@ -1,6 +1,7 @@
 # Python SDK — ContentContext
 
 `ContentContext` (sync) / `AsyncContentContext` (async) — news and discussion topics for securities.
+Exported from `longbridge.openapi` in the `longbridge` PyPI package (verified on 5.3.0).
 
 ## Creation
 

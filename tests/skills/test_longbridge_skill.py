@@ -186,27 +186,23 @@ def test_rust_content_doc_agrees_python_has_content_context() -> None:
 def test_state_changing_order_calls_have_confirmation_guard(doc_path: str) -> None:
     text = (SKILL_DIR / doc_path).read_text()
 
-    submit_idx = text.index("submit_order")
-    preceding = text[:submit_idx]
-    # The nearest confirmation warning before the first submit_order call must be
-    # closer than the nearest preceding section heading (i.e. it lives directly
-    # above this call, not just somewhere earlier in the doc).
-    last_heading = preceding.rfind("## Submit Order")
-    assert last_heading != -1, f"{doc_path} missing '## Submit Order' heading"
-    section = text[last_heading:submit_idx]
-    assert "confirm" in section.lower(), (
-        f"{doc_path}: no confirmation warning between '## Submit Order' and the "
-        f"first submit_order call"
-    )
-
-    replace_heading_idx = text.find("## Replace / Cancel Order")
-    assert replace_heading_idx != -1, f"{doc_path} missing '## Replace / Cancel Order' heading"
-    cancel_idx = text.index("cancel_order", replace_heading_idx)
-    section = text[replace_heading_idx:cancel_idx]
-    assert "confirm" in section.lower(), (
-        f"{doc_path}: no confirmation warning between '## Replace / Cancel Order' "
-        f"and the cancel_order call"
-    )
+    # Every call site (not prose mention) of a state-changing order method must
+    # have a confirmation warning between it and the nearest preceding section
+    # heading — i.e. directly above that example, not just somewhere in the doc.
+    calls = [
+        m.start()
+        for m in re.finditer(r"\.(submit_order|replace_order|cancel_order)\(", text)
+    ]
+    assert calls, f"{doc_path}: expected at least one order call example"
+    for idx in calls:
+        heading_idx = text.rfind("\n## ", 0, idx)
+        assert heading_idx != -1, f"{doc_path}: order call at {idx} has no heading"
+        section = text[heading_idx:idx]
+        heading = section.strip().splitlines()[0]
+        assert "confirm" in section.lower(), (
+            f"{doc_path}: no confirmation warning between '{heading}' and the "
+            f"order call at offset {idx}"
+        )
 
 
 def test_pitfalls_mentions_order_confirmation(skill_body) -> None:

@@ -17,9 +17,9 @@ async def probe(mode, peer):
     from gateway.platforms.base import BasePlatformAdapter, SendResult
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from gateway.session_envelope import snapshot_native
-    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from persistence.core.errors import AuthorityRefusal
 
     class Adapter(BasePlatformAdapter):
         def __init__(self):
@@ -67,7 +67,7 @@ async def probe(mode, peer):
             event = MessageEvent(text='FORGED', source=hostile, message_id=field)
             try:
                 snapshot_native(runner, event)
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 assert exc.reason == 'invalid_params', exc.reason
                 rejected.append(field)
             else:
@@ -86,17 +86,17 @@ async def probe(mode, peer):
         return
     event = MessageEvent(text='TRUST_CALLBACK_INPUT', source=source, message_id='trust-1')
     # Pre-provenance ordinary inputs were accepted via the normal unscoped callback.
-    from hermes_state_runtime import admit_session_input
     payload = snapshot_native(runner, event)
     ref = authority.register(source)
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,
                            source.thread_id, source.user_id], separators=(',', ':'))
-    accepted = admit_session_input(authority.db, epoch=authority.epoch, principal_id='messaging:' + identity,
-                                   session_id=ref.session_id, request_id='trust-1', payload=payload)
+    accepted = admission_row(authority.persistence.admissions.admit(
+        epoch=authority.epoch, principal_id='messaging:' + identity, session_id=ref.session_id,
+        request_id='trust-1', payload=payload)[0])
     await adapter.handle_message(event)
     await async_wait_until(lambda: not adapter._active_sessions, timeout=15, what='the trusted turn to finish')
     entry = runner.session_store.get_or_create_session(source)
-    rows = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
+    rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=entry.session_id, pending_only=False)]
     assert rows and rows[0]['status'] == 'terminal' and rows[0]['outcome'] == 'completed', (rows, adapter.deliveries)
     assert len(rows) == 1 and rows[0]['admission_id'] == accepted['admission_id'], rows
     assert rows[0]['payload'] == payload, rows
@@ -106,7 +106,7 @@ async def probe(mode, peer):
         chat_id='trust-chat', chat_type='dm', user_id='fixture-user'), message_id='trust-2')
     await adapter.handle_message(fresh)
     await async_wait_until(lambda: not adapter._active_sessions, timeout=10, what='the fresh turn to finish')
-    rows = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
+    rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=entry.session_id, pending_only=False)]
     assert len(rows) == 2 and 'provenance' in rows[1]['payload']['native_text_v1'], rows
     assert all(row['outcome'] == 'completed' for row in rows) and len(peer.requests) == 2
     print(json.dumps({'rows': rows, 'deliveries': adapter.deliveries, 'model_calls': len(peer.requests)}))

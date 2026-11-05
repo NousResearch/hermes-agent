@@ -11,6 +11,8 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+from hermes_constants import get_hermes_home
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.platforms.api_server_runs import _RunStream
@@ -202,7 +204,7 @@ class TestHostedRoomRuns:
             now=100,
         )
         hosted_rooms.reserve_peer_room(
-            hosted_rooms.default_db_path(),
+            storage_handle(get_hermes_home()), placement="shared",
             claims=old_claims,
             expires_at=1000,
             now=100,
@@ -250,7 +252,7 @@ class TestHostedRoomRuns:
             now=100,
         )
         hosted_rooms.reserve_peer_room(
-            hosted_rooms.default_db_path(),
+            storage_handle(get_hermes_home()), placement="shared",
             claims=status_claims,
             expires_at=1000,
             now=100,
@@ -325,7 +327,7 @@ class TestHostedRoomRuns:
             now=100,
         )
         hosted_rooms.reserve_peer_room(
-            hosted_rooms.default_db_path(),
+            storage_handle(get_hermes_home()), placement="shared",
             claims=drifted_claims,
             expires_at=1000,
             now=100,
@@ -415,7 +417,7 @@ class TestHostedRoomRuns:
                 permission="status",
             )
             hosted_rooms.reserve_peer_room(
-                hosted_rooms.default_db_path(),
+                storage_handle(get_hermes_home()), placement="shared",
                 claims=claims,
                 expires_at=float(claims["status_expires_at"]),
             )
@@ -502,7 +504,7 @@ class TestHostedRoomRuns:
                 now=201,
             )
             hosted_rooms.reserve_peer_room(
-                hosted_rooms.default_db_path(),
+                storage_handle(get_hermes_home()), placement="shared",
                 claims=future_claims,
                 expires_at=1000,
                 now=201,
@@ -691,10 +693,9 @@ class TestHostedRoomRuns:
             assert status.status == 200
             assert status_body["output"] == "Scoped room reply."
             session_id = status_body["session_id"]
-            db = await adapter._ensure_session_db_async()
-            row = db.get_session(session_id)
-            assert row["source"] == "bot_room"
-            assert row["title"] == "Group: room-1"
+            row = (await adapter._ensure_store_async()).sessions.get(session_id)
+            assert row.source == "bot_room"
+            assert row.title == "Group: room-1"
             assert catalog["installation_id"] == (
                 hosted_rooms.local_authority_gateway_id()
             )

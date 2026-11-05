@@ -790,11 +790,56 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
 
 
+def _resume_relocate_to_owner(ctx: _Resume) -> None:
+    """Default-scope resume of a chat stored in a SIBLING profile.
+
+    Remote clients (the phone client, Desktop remote mode) send only ``session_id``. The REST
+    routes can locate a sibling's chat because they take ``?profile=``, but a launch-scoped
+    ``session.resume`` answered 4007 forever. Find the owning store and re-scope this call
+    instead of copying the lineage.
+    """
+    if ctx.profile is not None or ctx.found:
+        return
+    try:
+        from hermes_cli.profiles import list_profile_names
+        names = list_profile_names()
+    except Exception:
+        logger.debug("resume relocation: profile list unavailable", exc_info=True)
+        return
+    for name in names:
+        try:
+            home = _profile_home(name)
+        except Exception:
+            continue
+        if home is None:
+            continue
+        db, owns = _profile_session_db(home)
+        if db is None:
+            continue
+        try:
+            row = db.get_session(ctx.target)
+        except Exception:
+            row = None
+        if not row:
+            if owns:
+                _release_db(db)
+            continue
+        logger.info("resume: %s belongs to profile %s; re-scoped this call", ctx.target, name)
+        ctx.profile, ctx.profile_home = name, home
+        ctx.db, ctx.owns_db = db, owns
+        ctx.found = row
+        return
+
+
 def _resume_locate(ctx: _Resume) -> dict | None:
     """Resolve ``ctx.target`` to a stored row (``ctx.found``); a dict is an early response."""
     ctx.found = ctx.db.get_session(ctx.target)
     if ctx.found:
         return None
+    if ctx.profile is None:
+        _resume_relocate_to_owner(ctx)
+        if ctx.found:
+            return None
     ctx.found = ctx.db.get_session_by_title(ctx.target)
     if ctx.found:
         ctx.target = ctx.found["id"]

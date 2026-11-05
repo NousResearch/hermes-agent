@@ -161,8 +161,8 @@ async def test_config_get_reports_the_reasoning_display_the_session_streams(tmp_
         await connection.close()
 
 
-@pytest.mark.parametrize(('source', 'projected'), [('acp', True), ('gui', False)])
-def test_only_acp_keeps_the_reasoning_block_in_its_reply_text(monkeypatch, source, projected):
+@pytest.mark.parametrize('source', ['acp', 'gui', 'tui', 'cli'])
+def test_local_viewers_never_repeat_reasoning_in_reply_text(monkeypatch, source):
     import gateway.run as gateway_run
     from gateway import session_setting_commands
     from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
@@ -170,5 +170,4 @@ def test_only_acp_keeps_the_reasoning_block_in_its_reply_text(monkeypatch, sourc
     monkeypatch.setattr(session_setting_commands, 'local_policy', lambda runner, src: SimpleNamespace(source=source))
     reply = GatewayTurnPersistenceMixin()._hmwa_prepend_reasoning(
         {'last_reasoning': 'weigh it'}, 'final answer', SimpleNamespace(platform=Platform.LOCAL), False)
-    assert ('weigh it' in reply) is projected
-    assert reply.endswith('final answer')
+    assert reply == 'final answer'

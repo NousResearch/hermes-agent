@@ -879,6 +879,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
             publish_gateway_runtime_ready(runner)
             runner._start_systemd_watchdog()
+            from acp_adapter.hosted import start_hosted_acp
+            runner._hosted_acp = await start_hosted_acp(runner)
             if idle_exit:
                 from gateway.run_idle_exit import arm_unmanaged_idle_exit
                 arm_unmanaged_idle_exit(runner)
@@ -891,6 +893,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             await wait_gateway_runtime(runner)
         finally:
             try:
+                if (hosted_acp := getattr(runner, "_hosted_acp", None)) is not None:
+                    await hosted_acp.stop()
                 await runner.stop()
             finally:
                 verdict = await _start_gateway_shutdown_tail(
@@ -902,6 +906,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         try:
             if runner is not None:
                 from gateway.run_runtime import drain_gateway_runtime
+                if (hosted_acp := getattr(runner, "_hosted_acp", None)) is not None:
+                    await hosted_acp.stop()
                 await drain_gateway_runtime(runner)
                 # Startup may have opened adapters before an exception or an early exit verdict. The
                 # same stop path owns their writers and DB handles on every exit, but when no stop ran

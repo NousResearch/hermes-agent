@@ -43,15 +43,16 @@ def _slash_command(text):
     return name if name in ROUTES else None
 
 
-def _bypass_route():
+def _bypass_route(environ=None):
     """--safe-mode / --ignore-user-config read no profile default route, so the session freezes the
     launch's explicit one (``hermes -m <model> --provider <name> --safe-mode acp``). Both, refused at
     session/new: a model alone is accepted by the owner, then its first turn cannot build the agent."""
-    model = (os.environ.get("HERMES_MODEL") or os.environ.get("HERMES_INFERENCE_MODEL") or "").strip()
+    environ = os.environ if environ is None else environ
+    model = (environ.get("HERMES_MODEL") or environ.get("HERMES_INFERENCE_MODEL") or "").strip()
     if not model:
         raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default model: launch "
                                  "with one, e.g. hermes -m <model> --provider <provider> --safe-mode acp")
-    provider = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+    provider = environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
     if not provider:
         raise GatewayClientError("--safe-mode / --ignore-user-config read no profile provider: launch with "
                                  "--provider too, e.g. hermes -m <model> --provider <provider> --safe-mode acp")
@@ -65,7 +66,9 @@ def _tools_changed_notice(payload):
 
 
 class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
-    def __init__(self):
+    def __init__(self, *, environ=None, connector=None):
+        self._environ = os.environ if environ is None else environ
+        self._connector = connector
         self._conn = None
         self._gateway = None
         self._connection = None
@@ -146,7 +149,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
                                                          resume=SessionResumeCapabilities())),
-            auth_methods=build_auth_methods())
+            auth_methods=await asyncio.to_thread(build_auth_methods))
 
     async def authenticate(self, method_id, **kwargs):
         from acp_adapter.server import HermesACPAgent
@@ -160,7 +163,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 # connection instead of the stale error forever.
                 await self._teardown()
             if self._gateway is None:
-                connection = connect_gateway()
+                connection = (self._connector or connect_gateway)()
                 gateway = await connection.__aenter__()
                 try:
                     descriptor = await gateway.rpc("runtime.describe")
@@ -277,9 +280,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from hermes_cli.gateway_chat import env_launch_flags
         # `hermes acp --yolo` / `--safe-mode` / ... reach this process as their env equivalents; the
         # owner does not inherit them, so they freeze into this session's policy or not at all.
-        flags = env_launch_flags()
+        flags = env_launch_flags(self._environ)
         if flags.get("safe_mode") or flags.get("ignore_user_config"):
-            flags.update(_bypass_route())
+            flags.update(_bypass_route(self._environ))
         snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,
             source="acp", cwd=_translate_acp_cwd(cwd),
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
@@ -345,7 +348,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         await client.rpc("session.detach", session_id=session_id, subscription_id=adopted["subscription_id"])
         return await client.rpc("session.info", session_id=session_id)
 
-    async def _resume(self, cwd, held_id, mcp_servers):
+    async def _resume(self, cwd, held_id, mcp_servers, *, replay=True):
         client = await self._client()
         from acp_adapter.catalog import logical_session_id
         from hermes_cli.gateway_client import GatewayRPCError
@@ -382,7 +385,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
-        if self._conn:
+        if self._conn and replay:
             # The editor replays the live transcript in stored order, as main's ACP did; archived rows
             # (summarized away by a compression) are display-only.
             live = sorted((m for m in snapshot["messages"] if not m.get("archived")), key=lambda m: m.get("row_id") or 0)
@@ -417,7 +420,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
     async def resume_session(self, cwd, session_id, mcp_servers=None, **kwargs):
-        return ResumeSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
+        from acp_adapter.relay import REATTACH_META
+        return ResumeSessionResponse(**await self._resume(
+            cwd, session_id, mcp_servers, replay=not kwargs.get(REATTACH_META, False)))
 
     async def _cancel_admission(self, session_id, admission_id):
         client = await self._client()

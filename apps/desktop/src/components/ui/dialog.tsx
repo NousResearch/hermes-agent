@@ -69,6 +69,33 @@ export function preventCloseButtonAutoFocus(event: Event) {
   event.preventDefault()
 }
 
+// Surfaces that float above every dialog (toasts) but portal to <body>, so they
+// sit OUTSIDE the dialog's DOM subtree. Radix's DismissableLayer reads a press
+// or focus move into them as an outside interaction and closes the dialog, so
+// dismissing a toast threw away a half-typed task or comment (#135698).
+// Mark such a surface with this attribute and dialogs ignore interactions in it.
+export const DIALOG_PASSTHROUGH_ATTR = 'data-dialog-passthrough'
+
+function isDialogPassthroughTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(`[${DIALOG_PASSTHROUGH_ATTR}]`) !== null
+}
+
+type OutsideEvent = Parameters<
+  NonNullable<React.ComponentProps<typeof DialogPrimitive.Content>['onInteractOutside']>
+>[0]
+
+function ignorePassthroughInteractions(callerHandler?: (event: OutsideEvent) => void) {
+  return (event: OutsideEvent) => {
+    if (isDialogPassthroughTarget(event.target)) {
+      event.preventDefault()
+
+      return
+    }
+
+    callerHandler?.(event)
+  }
+}
+
 // The dialog's top-right X. Radix Close routes through the modal's
 // onOpenChange, same path as Escape. Exported for bespoke Radix shells (the
 // boot-failure overlay) that can't use DialogContent but want the same X.
@@ -102,6 +129,7 @@ function DialogContent({
   chrome,
   overlayClassName,
   onOpenAutoFocus,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -136,6 +164,9 @@ function DialogContent({
   // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
   // the node mounts.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
+
+  // Toasts render above the dialog but outside its subtree; see DIALOG_PASSTHROUGH_ATTR.
+  const handleInteractOutside = ignorePassthroughInteractions(onInteractOutside)
 
   // Opened from inside another dialog (e.g. an image lightbox over a detail
   // modal): both layers step above the parent so its scrim dims the parent too.
@@ -177,6 +208,7 @@ function DialogContent({
             'gap-0'
           )}
           data-slot="dialog-content"
+          onInteractOutside={handleInteractOutside}
           onOpenAutoFocus={onOpenAutoFocus}
           ref={setContentNode}
           {...props}
@@ -230,6 +262,7 @@ function DialogContent({
           className
         )}
         data-slot="dialog-content"
+        onInteractOutside={handleInteractOutside}
         onOpenAutoFocus={onOpenAutoFocus}
         ref={setContentNode}
         {...props}

@@ -99,7 +99,7 @@ class HostedControls:
                 raise RuntimeStoreError('stale_generation')
             if not self._member_is_peer(room_id, member_id):
                 return self._retry_local(binding, task, room_id)
-        return self._retry_peer(task)
+        return self._retry_peer(binding, task)
 
     def _retry_local(self, binding, task, room_id):
         rpc = self._resolve_member_transport(binding, task)
@@ -112,14 +112,25 @@ class HostedControls:
         lease = self.runtime._ensure_lease(binding)
         return self.runtime._requeue(tasks.requeue_deferred_task, task, lease, room_id)
 
-    def _retry_peer(self, task):
+    def _retry_peer(self, binding, task):
         """A member on another gateway may still hold this generation: replay it under its own key
         first, never start another (``HostedRoomRuntime._retry_deferred``). Called outside the
         policy lock, since it waits on the member's gateway."""
         from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
         try:
-            return self.runtime.retry_indeterminate(
-                task['identity'], execution_generation=task['execution_generation'])
+            try:
+                return self.runtime.retry_indeterminate(
+                    task['identity'], execution_generation=task['execution_generation'])
+            except PeerRunsHTTPError as exc:
+                # A lost Discard reply leaves this attempt deferred. Only a confirmed closed
+                # key proves cancellation; a conflicting admitted run must keep the turn.
+                if exc.error_code != 'idempotency_key_conflict' or not self.close_peer_admission(binding, task):
+                    raise
+                result = tasks.cancel_task(self.db_path, task['identity'],
+                    cancel_id=f"discard:{task['execution_generation']}",
+                    expected_cancel_generation=task['cancel_generation'], clock=self.runtime.clock)
+                self.runtime.wakeup()
+                return result
         except PeerRunsHTTPError as exc:
             raise RuntimeStoreError(
                 exc.error_code if exc.error_code in _GRANT_ERRORS else 'peer_unreachable') from exc

@@ -147,9 +147,13 @@ function checkCatalogRoutes(appDir, fail, ctx) {
   }
   const known = new Set(ctx.routes);
   for (const locale of LOCALES) {
+    // The marketplace owns the catalogs; the edge 308s these routes there, so a
+    // revived hub page would be unreachable and stale.
     for (const hub of ['plugins', 'skills']) {
       const route = localizedHref(`/${hub}`, locale);
-      if (!known.has(route)) fail(`the ${locale} ${hub} hub page ${route} is missing from the export`);
+      if (known.has(route) || existsSync(htmlPath(path.join(appDir, 'out'), route))) {
+        fail(`the ${locale} ${hub} hub page ${route} is exported, but the marketplace owns it`);
+      }
     }
     for (const name of names) {
       const route = localizedHref(`/plugins/${encodeURIComponent(name)}`, locale);

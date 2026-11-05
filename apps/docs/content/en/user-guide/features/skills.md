@@ -19,7 +19,7 @@ See also:
 
 ## Install from the website
 
-Each installable card on the public [Skills Hub](/skills) has an **Install in Hermes**
+Each installable card on the public [Skills Hub](https://hermes-agent.nousresearch.com/marketplace?kind=skills) has an **Install in Hermes**
 button. It opens Hermes Desktop with a URL-encoded, source-qualified skill target:
 `official/...` for optional skills, `clawhub/...` for ClawHub, and an explicit
 repository path for bundled skills rather than an ambiguous bare name. The card's

@@ -3,11 +3,10 @@ import type { NavigationConfig } from './navigation-types';
 const navigation: NavigationConfig = {
   docs: [
     'user-stories',
-    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
-    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
-    // undiscoverable on a phone.
-    {type: 'link', label: 'Browse Skills', href: '/skills'},
-    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
+    // The Skills and Plugins catalogs live on the marketplace (MARKETPLACE_URL in urls.ts). The
+    // navbar links there too, but a phone opens the doc sidebar first, so the sidebar repeats them.
+    {type: 'link', label: 'Browse Skills', href: 'https://hermes-agent.nousresearch.com/marketplace?kind=skills'},
+    {type: 'link', label: 'Browse Plugins', href: 'https://hermes-agent.nousresearch.com/marketplace?kind=plugins'},
     {
       type: 'category',
       label: 'Getting Started',

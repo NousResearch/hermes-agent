@@ -1,7 +1,7 @@
 import React from "react";
 import Link from "next/link";
 import { type CatalogPlugin, CATEGORY_ORDER, categoryOf, formatDate, formatStars, repoUrl } from "./catalog";
-import { type Locale, localizedHref } from "@/lib/urls";
+import { type Locale, localizedHref, MARKETPLACE_URL } from "@/lib/urls";
 import type { AuthorPageData } from "@/lib/plugin-pages";
 import MiniCard from "./MiniCard";
 import styles from "./pages.module.css";
@@ -35,7 +35,7 @@ export default function AuthorPage({ data, locale }: { data: AuthorPageData; loc
   return (
     <div className={styles.page}>
       <nav className={styles.crumbs} aria-label="Breadcrumb">
-        <Link href={localizedHref("/plugins", locale)}>Plugin Catalog</Link>
+        <Link href={MARKETPLACE_URL.plugins}>Plugin Catalog</Link>
         <span aria-hidden="true">/</span>
         <span>Authors</span>
         <span aria-hidden="true">/</span>
@@ -70,7 +70,7 @@ export default function AuthorPage({ data, locale }: { data: AuthorPageData; loc
           {plugins.map((p) => <MiniCard key={p.name} plugin={p} locale={locale} />)}
         </div>
         <p className={styles.footerMeta}>
-          <Link href={localizedHref("/plugins", locale)}>← Back to the catalog</Link>
+          <Link href={MARKETPLACE_URL.plugins}>← Back to the catalog</Link>
         </p>
       </main>
     </div>

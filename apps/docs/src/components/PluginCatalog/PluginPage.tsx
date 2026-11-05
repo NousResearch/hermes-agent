@@ -12,7 +12,7 @@ import {
   splitDisclosure,
   tierOf,
 } from "./catalog";
-import { type Locale, localizedHref } from "@/lib/urls";
+import { type Locale, localizedHref, MARKETPLACE_URL } from "@/lib/urls";
 import type { PluginPageData } from "@/lib/plugin-pages";
 import CopyButton from "./CopyButton";
 import MiniCard from "./MiniCard";
@@ -74,7 +74,7 @@ export default function PluginPage({ data, locale }: { data: PluginPageData; loc
   return (
     <div className={styles.page}>
       <nav className={styles.crumbs} aria-label="Breadcrumb">
-        <Link href={localizedHref("/plugins", locale)}>Plugin Catalog</Link>
+        <Link href={MARKETPLACE_URL.plugins}>Plugin Catalog</Link>
           <span aria-hidden="true">/</span>
           <span>{category.label}</span>
           <span aria-hidden="true">/</span>
@@ -238,7 +238,7 @@ export default function PluginPage({ data, locale }: { data: PluginPageData; loc
                   {plugin.platforms?.length ? plugin.platforms.map(platformLabel).join(", ") : "Linux, macOS, Windows"}
                 </Fact>
                 <Fact label="Category">
-                  <Link href={localizedHref("/plugins", locale)}>{category.label}</Link>
+                  <Link href={MARKETPLACE_URL.plugins}>{category.label}</Link>
                 </Fact>
                 <Fact label="Tier">{tier.label}</Fact>
                 {plugin.maintainer && (
@@ -282,7 +282,7 @@ export default function PluginPage({ data, locale }: { data: PluginPageData; loc
           )}
 
           <p className={styles.footerMeta}>
-            <Link href={localizedHref("/plugins", locale)}>← Back to the catalog</Link>
+            <Link href={MARKETPLACE_URL.plugins}>← Back to the catalog</Link>
             {formatDate(data.generatedAt) && (
               // Absolute date, not "x hours ago": the page is server-rendered and a clock-relative
               // string would differ at hydration.

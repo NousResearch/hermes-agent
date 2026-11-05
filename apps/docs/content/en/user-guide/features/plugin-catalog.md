@@ -14,7 +14,7 @@ can install by name with a single command:
 hermes plugins install <name>
 ```
 
-Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
+Browse it visually on the **[Hermes Marketplace](https://hermes-agent.nousresearch.com/marketplace?kind=plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Verified / Community), capability chips, and
 copyable install commands for every entry.
@@ -269,5 +269,5 @@ code or Desktop UI at runtime.
   configuration
 - [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
 - [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
-- [Plugin Catalog page](/plugins) — the browsable catalog
+- [Plugin Catalog page](https://hermes-agent.nousresearch.com/marketplace?kind=plugins) — the browsable catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

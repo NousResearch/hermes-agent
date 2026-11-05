@@ -283,7 +283,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
-    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "acp",
 })
 
 
@@ -526,6 +526,9 @@ def check_alias_collision(name: str) -> Optional[str]:
         return f"'{canon}' is a reserved name"
     if canon in _HERMES_SUBCOMMANDS:
         return f"'{canon}' conflicts with a hermes subcommand"
+    from plugins.memory import list_memory_provider_names
+    if canon in list_memory_provider_names():  # a memory provider registers `hermes <name>`
+        return f"'{canon}' conflicts with the `hermes {canon}` memory provider command"
     try:
         result = subprocess.run(
             ["where" if sys.platform == "win32" else "which", canon],
@@ -2285,10 +2288,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     from hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
-    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
-    from hermes_cli.profiles_honcho import migrate_honcho_profile_host
-    migrate_honcho_profile_host(old_canon, new_canon, new_dir)
-    # 3b. Let the profile's memory provider re-key what it stores under the old name.
+    # 3. Let the profile's memory provider re-key what it stores under the old name.
     from hermes_cli.profile_memory_config import notify_memory_provider
     notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 

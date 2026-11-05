@@ -31,7 +31,8 @@ def test_allow_paused_before_dispatch_is_ordered_with_a_concurrent_stop(pending_
 
     class _RecordingRPC(_FakeRPC):
         def approve(self, **kwargs):
-            statuses_at_dispatch.append(driver.get_task(service.db_path, task["identity"])["status"])
+            statuses_at_dispatch.append(
+                driver.get_task(service.store, task["identity"], placement=service.placement)["status"])
             return super().approve(**kwargs)
 
     service.rpc = service.runtime.rpc = _RecordingRPC()
@@ -57,7 +58,7 @@ def test_allow_paused_before_dispatch_is_ordered_with_a_concurrent_stop(pending_
     assert not stopper.is_alive()
     assert service._approval_stop_locks.get("room") is planted
     assert statuses_at_dispatch == ["running"]
-    assert driver.get_task(service.db_path, task["identity"])["status"] == "stopping"
+    assert driver.get_task(service.store, task["identity"], placement=service.placement)["status"] == "stopping"
 
 
 def test_every_spelling_of_a_room_shares_its_stop_lock_and_cached_approvals(pending_approval):

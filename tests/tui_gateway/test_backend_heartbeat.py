@@ -19,8 +19,9 @@ import io
 
 import pytest
 
-from hermes_state import SessionDB
 from hermes_cli import model_switch_providers
+from tests.fixtures.storage_holder import raw_holder
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 IDLE_S = 6 * 3600
@@ -28,7 +29,14 @@ IDLE_S = 6 * 3600
 
 @pytest.fixture
 def db(tmp_path):
-    return SessionDB(tmp_path / "state.db")
+    return storage_handle(tmp_path)
+
+
+def _heartbeats(store):
+    with raw_holder(store)._read_ctx() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT backend_id, pid, started_at, last_heartbeat, profile, host FROM gateway_heartbeats"
+            " ORDER BY last_heartbeat DESC")]
 
 
 class TestBackendHeartbeatRefresher:
@@ -47,7 +55,7 @@ class TestBackendHeartbeatRefresher:
 
         server._start_backend_heartbeat_refresher()
 
-        rows = db.list_backend_heartbeats()
+        rows = _heartbeats(db)
         assert len(rows) == 1
         assert rows[0]["backend_id"] == "test-backend-A"
         assert rows[0]["last_heartbeat"] > 0
@@ -67,7 +75,7 @@ class TestBackendHeartbeatRefresher:
         server._start_backend_heartbeat_refresher()
         server._start_backend_heartbeat_refresher()
 
-        rows = db.list_backend_heartbeats()
+        rows = _heartbeats(db)
         assert len(rows) == 1
 
         # Should have written the initial row exactly once, no thread started.

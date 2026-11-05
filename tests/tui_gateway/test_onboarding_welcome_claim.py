@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from agent.onboarding_flow import Facts
+from session_rules.onboarding_flow import Facts
 from hermes_cli import anon_auth, install_state
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, install_portal
 from tui_gateway import server

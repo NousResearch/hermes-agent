@@ -367,7 +367,7 @@ def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home
     original behavior — the row is typed once the turn concludes."""
     stamped: list = []
 
-    class _LegacyDB:
+    class _Messages:
         def set_latest_matching_message_display_kind(self, session_id, **kwargs):
             stamped.append((session_id, kwargs["display_kind"]))
             return True
@@ -379,7 +379,7 @@ def test_older_agent_still_gets_the_post_turn_stamp(emits, turn_env, marker_home
         session_id="session-key",
         run_conversation=_run,
         clear_interrupt=lambda: None,
-        _session_db=_LegacyDB(),
+        persistence=types.SimpleNamespace(messages=_Messages()),
     )
     note = server._auto_continue_note("the original prompt")
 

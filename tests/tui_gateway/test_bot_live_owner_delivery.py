@@ -38,6 +38,7 @@ def test_refused_input_reports_a_failed_terminal_outcome():
         "_retire_turn_marker": lambda *args: retired.append(args),
         "_emit_settled_session_info": noop,
         "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),
+        "_persistence_for": lambda _db: contextlib.nullcontext(None),
         "_reopen_routed_session_row": noop,
         # Every dispatch binds the session's own row before the turn writes (#111999).
         "_ensure_session_db_row": noop,

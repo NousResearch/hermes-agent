@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from persistence.conversation.sessions import NewSession
+
 
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
@@ -66,7 +68,7 @@ def test_notification_poller_fires_due_heartbeat_when_idle(server, session):
     the base loop never fired (armed-but-dead)."""
     sid, key, s = session
     s["source"] = "desktop"
-    server._get_db().create_session(key, source="desktop")
+    server._get_db().sessions.create(NewSession(session_id=key, source="desktop"))
     _arm_due(key)
     dispatched: list[str] = []
 
@@ -103,7 +105,8 @@ def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, sessi
     sid, _, s = session
     s["source"] = "desktop"
     store = SessionStore(hermes_home / "sessions", GatewayConfig())
-    store._db = server._get_db()  # the routing index lives in the store the Desktop poller reads
+    # the routing index lives in the store the Desktop poller reads
+    assert store._routing_persistence.scope == server._get_db().scope
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="42")
     archived_key = store.get_or_create_session(src).session_id
     current_key = store.get_or_create_session(src, force_new=True).session_id

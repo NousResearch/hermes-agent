@@ -122,6 +122,8 @@ export const INSTALL_STAMP: Readonly<InstallStamp> | null =
  *    never run; drift means rebuild, updates mean the steward.
  *  - 'checkout': a git tree with venv machinery, provisioner-on-demand
  *    and `hermes update`.
+ *  - 'light': no runtime at all; remote connections only. Nothing may
+ *    install, spawn or adopt a local backend on this artifact.
  *
  * Derived from the stamp CONSTANT, never from filesystem probes: a
  * payload/venv/marker probe answers "is this artifact intact?", not
@@ -130,6 +132,12 @@ export const INSTALL_STAMP: Readonly<InstallStamp> | null =
  * (null stamp) and bootstrap artifacts are 'checkout': their runtime
  * is a local install the app bootstraps and maintains.
  */
-export function installShape(stamp: Readonly<InstallStamp> | null = INSTALL_STAMP): 'bundled' | 'checkout' {
+export function installShape(
+  stamp: Readonly<InstallStamp> | null = INSTALL_STAMP
+): 'bundled' | 'checkout' | 'light' {
+  if (stamp?.payload === 'light') {
+    return 'light'
+  }
+
   return stamp?.payload === 'bundled' ? 'bundled' : 'checkout'
 }

@@ -67,7 +67,8 @@
     "source-map-js": "1.2.2",
     "yaml": "2.9.1",
     "vitest": "4.1.12",
-    "@vitest/mocker": "4.1.12"
+    "@vitest/mocker": "4.1.12",
+    "zod": "4.6.7"
   },
   "engines": {
     "node": ">=26",

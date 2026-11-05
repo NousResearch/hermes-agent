@@ -12,6 +12,7 @@ import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg } from '../types.js'
 
+import { cancelPendingRewind, sendPendingRewind } from './backtrackStore.js'
 import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { stagePastes } from './pasteStore.js'
@@ -342,6 +343,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
+      // An armed backtrack edit: a plain message rewinds to before the picked prompt and sends;
+      // a slash or shell command disarms it (nothing cut) and runs as usual.
+      if (sendPendingRewind(full, getUiState().sid)) {
+        composerActions.pushHistory(full)
+        composerActions.clearIn()
+
+        return
+      }
+
       // History stores resolved content, not `[[…]]` labels: tokens are cleared
       // on submit, so recall must be self-contained. Image tokens resolve to
       // nothing — a detached image can't be re-attached by recalling the text.
@@ -534,6 +544,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (!value.trim() && !composerState.inputBuf.length) {
+        cancelPendingRewind(sys)
         const live = getUiState()
         const now = Date.now()
         const doubleTap = now - lastEmptyAt.current < DOUBLE_ENTER_MS

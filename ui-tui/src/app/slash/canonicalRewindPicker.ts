@@ -1,4 +1,5 @@
-// `/rewind` (and Esc Esc on an idle, empty composer): pick any earlier prompt, edit it, resend it.
+// `/rewind` (and Esc, Esc on an idle, empty composer): Codex-style transcript browsing. Pick any
+// earlier prompt, Enter puts it in the composer, and sending the edit rewinds to just before it.
 // The cut is the same revision-fenced `session.mutate rewind` that `/undo` and `/retry` use, aimed at
 // the picked row instead of the newest one — the owner's form of the legacy `prompt.submit
 // truncate_before_row_id` that Desktop's edit-and-resend sends. Nothing is cut until the edit is sent.
@@ -8,6 +9,7 @@ import type { SessionInfo } from '@hermes/shared/gateway-types'
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult, rpcErrorMessage } from '../../lib/rpc.js'
+import { armPendingRewind, cancelBacktrackPrime } from '../backtrackStore.js'
 import type { RewindTarget } from '../interfaces.js'
 import { patchOverlayState } from '../overlayStore.js'
 import { captureDestination, type SubmissionDestination } from '../submissionDestination.js'
@@ -48,6 +50,8 @@ export function rewindTargets(snapshot: Pick<MutationSnapshot, 'messages' | 'sto
 export function openRewindPicker(ctx: SlashRunCtx) {
   const sid = ctx.sid
 
+  cancelBacktrackPrime()
+
   if (!sid) {
     return ctx.transcript.sys(t('slashCmd.core.rewind.nothing'))
   }
@@ -67,19 +71,27 @@ export function openRewindPicker(ctx: SlashRunCtx) {
         return
       }
 
-      const targets = rewindTargets(asRpcResult<MutationSnapshot>(raw) ?? {})
+      const snapshot: Partial<MutationSnapshot> = asRpcResult<MutationSnapshot>(raw) ?? {}
+      const targets = rewindTargets(snapshot)
 
       if (!targets.length) {
-        return ctx.transcript.sys(t('slashCmd.core.rewind.nothing'))
+        return ctx.transcript.sys(t('slashCmd.core.rewind.noPrevious'))
       }
 
       const destination = captureDestination()
+      const send = (target: RewindTarget, text: string) => void rewindAndSend(ctx, sid, target, text, destination)
 
       patchOverlayState({
         rewind: {
+          messages: toTranscriptMessages(snapshot.messages ?? []),
           targets,
+          onEdit: target => {
+            ctx.composer.setInput(target.text)
+            armPendingRewind({ send: text => send(target, text), sid, target })
+          },
           onFork: target => void forkFrom(ctx, sid, target),
-          onSubmit: (target, text) => void rewindAndSend(ctx, sid, target, text, destination)
+          onSubmit: send,
+          onType: text => ctx.composer.setInput(prev => prev + text)
         }
       })
     })
@@ -89,7 +101,7 @@ export function openRewindPicker(ctx: SlashRunCtx) {
 /** Cut the session back to just before `target`, repaint the transcript from the owner's snapshot, then
  * send the edited text as an ordinary prompt. A refusal (busy, stale revision) cuts nothing.
  *
- * The picker is closed by now, so the edit is never dropped: once the cut has committed it is owed to
+ * Browsing is closed by now, so the edit is never dropped: once the cut has committed it is owed to
  * `sid` as its next prompt, and any later failure (repaint fetch, session switch) leaves it in that
  * session's pending queue; if nothing was cut it goes back into the composer. */
 export async function rewindAndSend(

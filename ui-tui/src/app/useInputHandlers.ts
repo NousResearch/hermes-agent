@@ -1,19 +1,21 @@
-import { forceRedraw, useInput } from '@hermes/ink'
+import { forceRedraw, type Key, useInput } from '@hermes/ink'
 import { sharedControlParams } from '@hermes/shared/gateway-canonical'
 import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '@hermes/shared/gateway-types'
 import { applyCompletion } from '@hermes/shared/slash-input'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, NATIVE_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
+import { asRpcResult } from '../lib/rpc.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
+import { $backtrackPrime, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack, setPrimeCount } from './backtrackStore.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type ComposerActions,
@@ -36,9 +38,11 @@ import {
 } from './overlayStore.js'
 import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
+import { rewindTargets } from './slash/canonicalRewindPicker.js'
+import type { MutationSnapshot } from './slash/canonicalSessionControls.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { $uiState, getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
@@ -122,8 +126,9 @@ export function resolveDoubleEscAction(opts: {
   return 'none'
 }
 
-/** Idle double-Esc on an empty composer opens the rewind picker (`/rewind`); never over an overlay,
- * mid-turn (that Esc Esc interrupts) or with a draft (that one discards it). */
+/** An Esc on an idle, empty composer with no overlay is a backtrack Esc: the first primes, the
+ * second opens transcript browsing (`/rewind`). Never mid-turn (that Esc Esc interrupts) or with a
+ * draft (that one discards it). */
 export function shouldOpenRewindOnDoubleEsc(opts: {
   blocked: boolean
   busy: boolean
@@ -134,8 +139,17 @@ export function shouldOpenRewindOnDoubleEsc(opts: {
   return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
 }
 
-/** The second Esc of a double-Esc: interrupt a busy turn, discard a draft, or open the rewind picker.
- * True when it acted. */
+/** The first backtrack Esc: prime, and count the earlier prompts so the hint only shows when
+ * there is one to go back to. */
+function primeAndPrefetch(gw: GatewayServices['gw'], sid: string) {
+  primeBacktrack(sid)
+  void gw
+    .request('session.resume', { session_id: sid })
+    .then(raw => setPrimeCount(sid, rewindTargets(asRpcResult<MutationSnapshot>(raw) ?? {}).length))
+    .catch(() => setPrimeCount(sid, 0))
+}
+
+/** The second Esc of a double-Esc: interrupt a busy turn or discard a draft. True when it acted. */
 function runDoubleEsc(o: {
   actions: InputHandlerContext['actions']
   cActions: ComposerActions
@@ -143,7 +157,6 @@ function runDoubleEsc(o: {
   gw: GatewayServices['gw']
   isBlocked: boolean
   live: UiState
-  startedBlocked: boolean
 }): boolean {
   const { actions, cActions, cState, gw, isBlocked, live } = o
   const hasDraft = Boolean(cState.input || cState.inputBuf.length)
@@ -164,23 +177,84 @@ function runDoubleEsc(o: {
     }
 
     cActions.clearIn()
+    // Esc Esc over the prefilled prompt also drops the armed edit.
+    cancelPendingRewind(actions.sys)
 
     return true
   }
 
-  const rewind = shouldOpenRewindOnDoubleEsc({
-    blocked: isBlocked || o.startedBlocked,
+  return false
+}
+
+/** Backtrack Esc: the second one while primed opens browsing (or says there is nothing to edit);
+ * otherwise an eligible Esc primes. True when it acted. */
+function runBacktrackEsc(o: {
+  actions: InputHandlerContext['actions']
+  cState: ComposerState
+  gw: GatewayServices['gw']
+  hasSelection: boolean
+  isBlocked: boolean
+  live: UiState
+}): boolean {
+  const { actions, cState, gw, live } = o
+
+  // A transcript selection keeps its Esc (clear the selection) below.
+  const eligible = shouldOpenRewindOnDoubleEsc({
+    blocked: o.isBlocked || o.hasSelection,
     busy: live.busy,
     canonical: gw.isCanonical,
-    hasDraft,
+    hasDraft: Boolean(cState.input || cState.inputBuf.length),
     hasSession: Boolean(live.sid)
   })
 
-  if (rewind) {
-    actions.dispatchSubmission('/rewind')
+  if (!eligible || !live.sid) {
+    cancelBacktrackPrime()
+
+    return false
   }
 
-  return rewind
+  const prime = $backtrackPrime.get()
+
+  if (prime?.sid !== live.sid) {
+    primeAndPrefetch(gw, live.sid)
+
+    return true
+  }
+
+  cancelBacktrackPrime()
+
+  if (prime.count === 0) {
+    actions.sys(t('slashCmd.core.rewind.noPrevious'))
+  } else {
+    actions.openBacktrack()
+  }
+
+  return true
+}
+
+/** Esc: voice binding, then the double-Esc interrupt/discard, then backtrack. Any other key ends a
+ * primed backtrack (and then acts normally). True when the key was consumed. */
+export function handleEscBacktrack(
+  o: Parameters<typeof runDoubleEsc>[0] & {
+    hasSelection: boolean
+    isDouble: boolean
+    isEsc: boolean
+    isVoiceKey: boolean
+  }
+): boolean {
+  if (!o.isEsc || o.isVoiceKey) {
+    cancelBacktrackPrime()
+
+    return false
+  }
+
+  if (o.isDouble && runDoubleEsc(o)) {
+    cancelBacktrackPrime()
+
+    return true
+  }
+
+  return runBacktrackEsc(o)
 }
 
 /**
@@ -195,6 +269,12 @@ function runDoubleEsc(o: {
  * Modifier-held wheel (precision mode) is included — a user who wants to
  * scroll a single line at a time during a prompt expects it to work.
  */
+/** ↑/k and ↓/j (no modifiers) while browsing: one transcript row. */
+export const browseScrollRow = (
+  ch: string,
+  key: { ctrl: boolean; downArrow: boolean; meta: boolean; shift: boolean; upArrow: boolean }
+) => (key.ctrl || key.meta || key.shift ? 0 : key.upArrow || ch === 'k' ? -1 : key.downArrow || ch === 'j' ? 1 : 0)
+
 export function shouldFallThroughForScroll(key: {
   downArrow: boolean
   pageDown: boolean
@@ -290,6 +370,65 @@ const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) =>
   p: ({ actions, state }) =>
     void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
   t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+}
+
+/** Keys while the text pager (`overlay.pager`) is open: scroll, page, jump, close. */
+function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
+  if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+    return patchOverlayState({ pager: null })
+  }
+
+  const move = (delta: number | 'top' | 'bottom') =>
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+      const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
+      const next = Math.max(0, Math.min(offset + step, max))
+
+      return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
+    })
+
+  if (key.upArrow || ch === 'k') {
+    return move(-1)
+  }
+
+  if (key.downArrow || ch === 'j') {
+    return move(1)
+  }
+
+  if (key.pageUp || ch === 'b') {
+    return move(-pagerPageSize)
+  }
+
+  if (ch === 'g') {
+    return move('top')
+  }
+
+  if (ch === 'G') {
+    return move('bottom')
+  }
+
+  if (key.return || ch === ' ' || key.pageDown) {
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+
+      // Auto-close only when already at the last page — otherwise clamp
+      // to `max` so the offset matches what the line/page-back handlers
+      // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
+      return offset >= max
+        ? { ...prev, pager: null }
+        : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
+    })
+  }
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -530,32 +669,53 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // sits above the isBlocked early-return so a prompt overlay cannot swallow
   // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
   // still the dedicated discard (pushes the draft to history so Up recalls it).
+  // On an idle, empty composer Esc primes backtrack and a second Esc browses.
   const lastEscRef = useRef(0)
-  const escBlockedRef = useRef(false)
+
+  // A primed backtrack ends when a turn starts; a session switch also drops an armed edit.
+  useEffect(
+    () =>
+      $uiState.listen((next, prev) => {
+        if (next.sid !== prev.sid) {
+          cancelPendingRewind()
+        }
+
+        if (next.busy || next.sid !== prev.sid) {
+          cancelBacktrackPrime()
+        }
+      }),
+    []
+  )
 
   useInput((ch, key, event) => {
     const live = getUiState()
+    const isVoiceKey = key.escape && isVoiceToggleKey(key, ch, voice.recordKey)
+    const now = Date.now()
+    // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
+    // over the double-Esc interrupt, exactly as they win over the generic
+    // Esc handlers below — two quick PTT presses are a stop/start pair,
+    // not an interrupt.
+    const isDouble = key.escape && !isVoiceKey && now - lastEscRef.current <= DOUBLE_ESC_MS
 
     if (key.escape) {
-      // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
-      // over the double-Esc interrupt, exactly as they win over the generic
-      // Esc handlers below — two quick PTT presses are a stop/start pair,
-      // not an interrupt.
-      if (isVoiceToggleKey(key, ch, voice.recordKey)) {
-        lastEscRef.current = 0
-      } else {
-        const now = Date.now()
-        const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+      lastEscRef.current = isDouble || isVoiceKey ? 0 : now
+    }
 
-        lastEscRef.current = isDouble ? 0 : now
-        // The Esc that closes an overlay must not be the first half of a rewind double-Esc.
-        const startedBlocked = escBlockedRef.current
-        escBlockedRef.current = isBlocked
+    const escHandled = handleEscBacktrack({
+      actions,
+      cActions,
+      cState,
+      gw: gateway.gw,
+      hasSelection: terminal.hasSelection,
+      isBlocked,
+      isDouble,
+      isEsc: key.escape,
+      isVoiceKey,
+      live
+    })
 
-        if (isDouble && runDoubleEsc({ actions, cActions, cState, gw: gateway.gw, isBlocked, live, startedBlocked })) {
-          return
-        }
-      }
+    if (escHandled) {
+      return
     }
 
     if (isBlocked) {
@@ -582,6 +742,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
+      // Default-mode backtrack browses the real transcript: ↑↓/jk scroll it a row.
+      const browseRow = overlay.rewind && !NATIVE_MODE ? browseScrollRow(ch, key) : 0
+
+      if (browseRow) {
+        return scrollTranscript(browseRow)
+      }
+
       if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
@@ -591,63 +758,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (overlay.pager) {
-        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
-          return patchOverlayState({ pager: null })
-        }
-
-        const move = (delta: number | 'top' | 'bottom') =>
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-            const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
-            const next = Math.max(0, Math.min(offset + step, max))
-
-            return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
-          })
-
-        if (key.upArrow || ch === 'k') {
-          return move(-1)
-        }
-
-        if (key.downArrow || ch === 'j') {
-          return move(1)
-        }
-
-        if (key.pageUp || ch === 'b') {
-          return move(-pagerPageSize)
-        }
-
-        if (ch === 'g') {
-          return move('top')
-        }
-
-        if (ch === 'G') {
-          return move('bottom')
-        }
-
-        if (key.return || ch === ' ' || key.pageDown) {
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-
-            // Auto-close only when already at the last page — otherwise clamp
-            // to `max` so the offset matches what the line/page-back handlers
-            // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
-            return offset >= max
-              ? { ...prev, pager: null }
-              : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
-          })
-        }
-
-        return
+        return handlePagerKey(ch, key, pagerPageSize)
       }
 
       // Widget apps (SDK): the active app owns every key while open. This
@@ -832,6 +943,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
 
       if (ctrlC === 'clear') {
+        cancelPendingRewind(actions.sys)
+
         return cActions.clearIn()
       }
 

@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-/** The prompt the open rewind picker has selected; the transcript scrolls to it and marks it.
+/** The prompt backtrack browsing has selected; the transcript scrolls to it and draws it in reverse video.
  *  `turn` is the prompt's ordinal among user turns, `text` disambiguates when rows differ. */
 export interface RewindFocus {
   text: string
@@ -8,6 +8,9 @@ export interface RewindFocus {
 }
 
 export const $rewindFocus = atom<null | RewindFocus>(null)
+
+/** Set by Esc ("back") just before browsing closes: the transcript returns to where it was before browsing. */
+export const $rewindScrollRestore = atom(false)
 
 /** The transcript row of the focused prompt: the `turn`-th user row when its text matches, else the
  *  last user row with that text (a display projection can fold or drop rows), else -1. */

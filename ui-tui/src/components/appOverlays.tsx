@@ -3,9 +3,10 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppOverlaysProps, RewindTarget } from '../app/interfaces.js'
+import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { NATIVE_MODE } from '../config/env.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -19,7 +20,7 @@ import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
-import { RewindPicker } from './rewindPicker.js'
+import { RewindBrowse } from './rewindBrowse.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
@@ -141,28 +142,29 @@ export function PromptZone({
 
   if (overlay.rewind) {
     const req = overlay.rewind
+    const close = () => patchOverlayState({ rewind: null })
 
-    const onSubmit = (target: RewindTarget, text: string) => {
-      patchOverlayState({ rewind: null })
-      req.onSubmit(target, text)
-    }
-
-    const onFork = (target: RewindTarget) => {
-      patchOverlayState({ rewind: null })
-      req.onFork(target)
-    }
+    const closeThen =
+      <A,>(fn: (arg: A) => void) =>
+      (arg: A) => {
+        close()
+        fn(arg)
+      }
 
     return (
-      <PromptCell cols={cols} id="rewind">
-        <RewindPicker
+      <Box flexDirection="column" flexShrink={0} paddingX={1}>
+        <RewindBrowse
           cols={cols}
-          onClose={() => patchOverlayState({ rewind: null })}
-          onFork={onFork}
-          onSubmit={onSubmit}
+          native={NATIVE_MODE}
+          onBack={close}
+          onClose={close}
+          onEdit={closeThen(req.onEdit)}
+          onFork={closeThen(req.onFork)}
+          onType={closeThen(req.onType)}
           req={req}
           t={theme}
         />
-      </PromptCell>
+      </Box>
     )
   }
 

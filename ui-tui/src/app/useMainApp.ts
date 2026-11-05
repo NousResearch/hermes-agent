@@ -1011,6 +1011,7 @@ export function useMainApp(gw: GatewayClient) {
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      openBacktrack: () => slashRef.current('/rewind', undefined, false),
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },

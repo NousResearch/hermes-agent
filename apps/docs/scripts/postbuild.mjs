@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, cpSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, cpSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,7 +128,7 @@ export function sitemapXml(routes) {
 function writeLocalizedArtifacts(outputDir) {
   // Docusaurus published the same machine-readable files under each locale.
   for (const locale of LOCALES.filter((locale) => locale !== 'en')) {
-    for (const relative of ['api', 'oauth', 'llms.txt', 'llms-full.txt']) {
+    for (const relative of ['api', 'oauth', 'llms.txt', 'llms-full.txt', 'sitemap.xml']) {
       const source = path.join(outputDir, relative);
       if (!existsSync(source)) continue; // The validator owns required-artifact checks.
       cpSync(source, path.join(outputDir, locale, relative), { recursive: true, force: true });
@@ -140,6 +140,8 @@ export function finishExport(appDir = appRoot) {
   const routes = exportedRoutes(appDir);
   const redirects = redirectEntries(routes);
   const outputDir = path.join(appDir, 'out');
+  // Next exports its internal not-found route as a page; 404.html already serves misses.
+  rmSync(path.join(outputDir, '_not-found'), { recursive: true, force: true });
   writeFileSync(path.join(outputDir, 'sitemap.xml'), sitemapXml(routes));
   writeRedirects(outputDir, redirects);
   writeOpenSearch(outputDir);

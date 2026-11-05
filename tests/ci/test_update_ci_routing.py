@@ -629,12 +629,18 @@ def test_sibling_pr_allowance_admits_only_named_pending_consumers(monkeypatch, t
 
 # -- ownership: the update entry points' real imports ---------------------------------------
 
-_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "website", "__pycache__"}
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "__pycache__"}
+# The docs app is a static site generator tree (scripts + content), not product Python.
+_SKIP_PATHS = ("apps/docs",)
 
 
 def _product_python() -> list[Path]:
     out = []
     for dirpath, dirnames, filenames in os.walk(_REPO):
+        rel = os.path.relpath(dirpath, _REPO)
+        if rel != "." and any(rel == p or rel.startswith(p + "/") for p in _SKIP_PATHS):
+            dirnames[:] = []
+            continue
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         out += [Path(dirpath) / f for f in filenames if f.endswith(".py")]
     return out

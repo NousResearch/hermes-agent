@@ -37,7 +37,7 @@ const REPO_ROOT = path.resolve(__dirname, '..')
 
 const MANIFESTS = [
   { name: 'root', dir: '.' },
-  { name: 'website', dir: 'website' }
+  { name: 'docs', dir: 'apps/docs' }
 ]
 
 function manifestLabel(dir: string): string {

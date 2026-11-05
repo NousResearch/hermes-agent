@@ -2,7 +2,7 @@
 
 Four systems run alongside the main conversation loop. Quick reference
 here; full developer notes live in `AGENTS.md`, user-facing docs under
-`website/docs/user-guide/features/`.
+`apps/docs/content/en/user-guide/features/`.
 
 ### Delegation (`delegate_task`)
 

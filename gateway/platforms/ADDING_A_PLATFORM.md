@@ -78,7 +78,7 @@ BasePlatformAdapter)` — so the mixin's `format_message` overrides
 
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
-`website/docs/developer-guide/adding-platform-adapters.md` for the full
+`apps/docs/content/en/developer-guide/adding-platform-adapters.md` for the full
 plugin guide with code examples and hook documentation.
 
 ---
@@ -404,9 +404,9 @@ identifiers are masked in ALL log output, not just your adapter's logs.
 |------|---------------|
 | `README.md` | Platform list in feature table + documentation table |
 | `AGENTS.md` | Gateway description + env var config section |
-| `website/docs/user-guide/messaging/<platform>.md` | **NEW** — Full setup guide (see existing platform docs for template) |
-| `website/docs/user-guide/messaging/index.md` | Architecture diagram, toolset table, security examples, Next Steps links |
-| `website/docs/reference/environment-variables.md` | All env vars for the platform |
+| `apps/docs/content/en/user-guide/messaging/<platform>.md` | **NEW** — Full setup guide (see existing platform docs for template) |
+| `apps/docs/content/en/user-guide/messaging/index.md` | Architecture diagram, toolset table, security examples, Next Steps links |
+| `apps/docs/content/en/reference/environment-variables.md` | All env vars for the platform |
 
 ---
 

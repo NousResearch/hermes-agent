@@ -78,15 +78,15 @@ Outputs (99 files):
   apps/bootstrap-installer/src-tauri/icons/icon.ico        16,32,64,128,256
   apps/bootstrap-installer/src-tauri/icons/icon.icns       16..1024
   apps/bootstrap-installer/public/nous-girl.png   256x256 squircle mark (light)
-  website/static/img/logo.png                     1772x1799 girl alone, transparent (light)
-  website/static/img/logo-dark.png                1772x1799 girl alone, transparent (dark)
-  website/static/img/nous-logo.png                150x150 on white (opaque)
-  website/static/img/nous-logo-dark.png           150x150 on #0d1117 (opaque)
-  website/static/img/favicon-16x16.png            16x16
-  website/static/img/favicon-32x32.png            32x32
-  website/static/img/apple-touch-icon.png         180x180
-  website/static/img/favicon.ico                  16,32,48
-  website/static/img/favicon.svg                  copy of the light master
+  apps/docs/public/img/logo.png                     1772x1799 girl alone, transparent (light)
+  apps/docs/public/img/logo-dark.png                1772x1799 girl alone, transparent (dark)
+  apps/docs/public/img/nous-logo.png                150x150 on white (opaque)
+  apps/docs/public/img/nous-logo-dark.png           150x150 on #0d1117 (opaque)
+  apps/docs/public/img/favicon-16x16.png            16x16
+  apps/docs/public/img/favicon-32x32.png            32x32
+  apps/docs/public/img/apple-touch-icon.png         180x180
+  apps/docs/public/img/favicon.ico                  16,32,48
+  apps/docs/public/img/favicon.svg                  copy of the light master
   web/public/favicon.ico                          16,32,48
 """
 
@@ -233,13 +233,13 @@ CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
     "apps/bootstrap-installer/src-tauri/icons/128x128.png": ("PNG", (128, 128)),
     "apps/bootstrap-installer/src-tauri/icons/128x128@2x.png": ("PNG", (256, 256)),
     "apps/bootstrap-installer/public/nous-girl.png": ("PNG", (256, 256)),
-    "website/static/img/logo.png": ("PNG", (1772, 1799)),
-    "website/static/img/logo-dark.png": ("PNG", (1772, 1799)),
-    "website/static/img/nous-logo.png": ("PNG", (150, 150)),
-    "website/static/img/nous-logo-dark.png": ("PNG", (150, 150)),
-    "website/static/img/favicon-16x16.png": ("PNG", (16, 16)),
-    "website/static/img/favicon-32x32.png": ("PNG", (32, 32)),
-    "website/static/img/apple-touch-icon.png": ("PNG", (180, 180)),
+    "apps/docs/public/img/logo.png": ("PNG", (1772, 1799)),
+    "apps/docs/public/img/logo-dark.png": ("PNG", (1772, 1799)),
+    "apps/docs/public/img/nous-logo.png": ("PNG", (150, 150)),
+    "apps/docs/public/img/nous-logo-dark.png": ("PNG", (150, 150)),
+    "apps/docs/public/img/favicon-16x16.png": ("PNG", (16, 16)),
+    "apps/docs/public/img/favicon-32x32.png": ("PNG", (32, 32)),
+    "apps/docs/public/img/apple-touch-icon.png": ("PNG", (180, 180)),
 }
 
 # (relpath, kind, arg)
@@ -279,15 +279,15 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/bootstrap-installer/src-tauri/icons/icon.icon/Assets/art-dark.png", "icon_art", "white"),
     ("apps/bootstrap-installer/src-tauri/icons/icon.icon/Assets/mono.png", "icon_mono", None),
     ("apps/bootstrap-installer/public/nous-girl.png", "girl_light", 256),
-    ("website/static/img/logo.png", "logo", None),
-    ("website/static/img/logo-dark.png", "logo_dark", None),
-    ("website/static/img/nous-logo.png", "png_white", 150),
-    ("website/static/img/nous-logo-dark.png", "png_dark_white", 150),
-    ("website/static/img/favicon-16x16.png", "png", 16),
-    ("website/static/img/favicon-32x32.png", "png", 32),
-    ("website/static/img/apple-touch-icon.png", "png", 180),
-    ("website/static/img/favicon.ico", "ico", [16, 32, 48]),
-    ("website/static/img/favicon.svg", "svg_copy", None),
+    ("apps/docs/public/img/logo.png", "logo", None),
+    ("apps/docs/public/img/logo-dark.png", "logo_dark", None),
+    ("apps/docs/public/img/nous-logo.png", "png_white", 150),
+    ("apps/docs/public/img/nous-logo-dark.png", "png_dark_white", 150),
+    ("apps/docs/public/img/favicon-16x16.png", "png", 16),
+    ("apps/docs/public/img/favicon-32x32.png", "png", 32),
+    ("apps/docs/public/img/apple-touch-icon.png", "png", 180),
+    ("apps/docs/public/img/favicon.ico", "ico", [16, 32, 48]),
+    ("apps/docs/public/img/favicon.svg", "svg_copy", None),
     ("web/public/favicon.ico", "ico", [16, 32, 48]),
 ]
 

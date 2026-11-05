@@ -4,7 +4,9 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "workspaces": [
-    "apps/*",
+    "apps/bootstrap-installer",
+    "apps/desktop",
+    "apps/shared",
     "ui-tui",
     "ui-tui/packages/*",
     "web",

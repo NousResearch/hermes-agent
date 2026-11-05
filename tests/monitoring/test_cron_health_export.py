@@ -91,7 +91,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     observable-gauge metric_names list, or the OTLP exporter never observes it.
 
     This asserts the vocabulary-registration invariant documented in
-    website/docs/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
+    apps/docs/content/en/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
     silently dropped. Regression guard for background_work / cron additions.
     """
     from agent.monitoring import gateway_health_export

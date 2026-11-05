@@ -2,7 +2,7 @@
 
 Response-only: the agent calls ``browser_dialog(action=...)`` for a dialog the
 supervisor holds; with several queued, the error names the candidate ids. Gated on ``_browser_cdp_check`` so it
-appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/browser-supervisor.md``.
+appears together with ``browser_cdp``. Design: ``apps/docs/content/en/developer-guide/browser-supervisor.md``.
 """
 
 from __future__ import annotations

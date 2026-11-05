@@ -88,8 +88,8 @@ def test_scan_skips_tests_lockfiles_ci_and_translations(tmp_path):
     files = {
         "tools/a.py": 'X = "/tmp/a"\n',
         "skills/x/SKILL.md": "save to /tmp/out\n",
-        "website/docs/guide.md": "cd /tmp\n",
-        "website/i18n/zh/guide.md": "cd /tmp\n",
+        "apps/docs/content/en/guide.md": "cd /tmp\n",
+        "apps/docs/content/zh-Hans/guide.md": "cd /tmp\n",
         "tests/test_a.py": 'X = "/tmp/a"\n',
         "tools/test_inline.py": 'X = "/tmp/a"\n',
         "tools/conftest.py": 'X = "/tmp/a"\n',
@@ -108,7 +108,7 @@ def test_scan_skips_tests_lockfiles_ci_and_translations(tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
     hits = mod.scan(root=tmp_path)
-    assert sorted(hits) == ["app/src/a.ts", "skills/x/SKILL.md", "tools/a.py", "website/docs/guide.md"]
+    assert sorted(hits) == ["app/src/a.ts", "apps/docs/content/en/guide.md", "skills/x/SKILL.md", "tools/a.py"]
     assert all(len(v) == 1 for v in hits.values())
 
 def test_baseline_entries_are_burned_down_not_grown(tmp_path, monkeypatch, capsys):

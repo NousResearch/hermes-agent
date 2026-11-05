@@ -44,7 +44,7 @@ jobs:
       scan-args: |-
         --lockfile=uv.lock
         --lockfile=package-lock.json
-        --lockfile=website/package-lock.json
+        --lockfile=apps/docs/package-lock.json
         --lockfile=plugins/platforms/photon/sidecar/package-lock.json
         --lockfile=scripts/whatsapp-bridge/package-lock.json
       results-file-name: osv-results.sarif

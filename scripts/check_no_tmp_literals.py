@@ -34,7 +34,7 @@ Scope: every first-party ``.py .sh .ts .tsx .js .mjs .cjs .md .mdx .txt .yaml .y
 file except tests (``tests/``, ``tests-js/``, ``__tests__/``, ``e2e/``, ``test_*.py``,
 ``*.test.ts`` ...), ``evals/``, CI workflows (``.github/`` runs on Linux runners), container
 build files (``Dockerfile*``, ``docker/``), generated lockfiles and the translated docs mirror
-(``website/i18n/``, regenerated from the English source).
+(``apps/docs/content/zh-Hans/``, regenerated from the English source).
 
 Run: python scripts/check_no_tmp_literals.py [--all] [--print-baseline] [paths...]
   --all              ignore ``_BASELINE`` and report every hit (burn-down view)
@@ -70,8 +70,14 @@ SKIP_DIRS = {
 }
 # Pruned only directly under the repo root.
 ROOT_SKIP_DIRS = {".github"}
-# Pruned as repo-relative paths.
-SKIP_REL_DIRS = {Path("website/i18n"), Path("website/build"), Path("website/node_modules")}
+# Pruned as repo-relative paths. The zh-Hans content is regenerated from the
+# English source; the docs app's Next export/cache dirs only exist after a
+# local build ("build"/"dist" names are pruned above already).
+SKIP_REL_DIRS = {
+    Path("apps/docs/content/zh-Hans"),
+    Path("apps/docs/out"),
+    Path("apps/docs/.next"),
+}
 
 SKIP_FILE_NAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "uv.lock", "poetry.lock"}
 SKIP_FILE_PATTERNS = (
@@ -221,7 +227,7 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
 # Burn-down list: fix or mark, then delete the entry. Regenerate with --print-baseline.
 _BASELINE: dict[str, int] = {
     # a tree listing inside a fenced code block; an inline marker would render on the page
-    "website/docs/getting-started/nix-setup.md": 1,
+    "apps/docs/content/en/getting-started/nix-setup.md": 1,
 }
 
 

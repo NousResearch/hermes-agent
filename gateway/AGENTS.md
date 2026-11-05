@@ -1,6 +1,6 @@
 # gateway/ — messaging gateway, adapters, delivery
 
-Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide/gateway-internals.md`.
+Applies on top of the root `AGENTS.md`. Long-form: `apps/docs/content/en/developer-guide/gateway-internals.md`.
 New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by step.
 
 ## Shape
@@ -62,7 +62,7 @@ MagicMock adapters in older tests auto-create truthy attributes.
 (`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
 `display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
 (a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
-without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
+without spending an attempt. Long form: `apps/docs/content/en/developer-guide/gateway-internals.md`
 § Background process notifications.
 
 Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable

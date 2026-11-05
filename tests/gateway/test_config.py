@@ -886,7 +886,7 @@ class TestLoadGatewayConfig:
     def test_bridges_nested_gateway_platforms_dingtalk_allowed_users_to_env(self, tmp_path, monkeypatch):
         """gateway.platforms.dingtalk.extra.allowed_users must reach
         DINGTALK_ALLOWED_USERS — it's the documented config.yaml alternative
-        to the env var (website/docs/user-guide/messaging/dingtalk.md), the
+        to the env var (apps/docs/content/en/user-guide/messaging/dingtalk.md), the
         adapter reads it from PlatformConfig.extra, but gateway auth
         (_is_user_authorized) only consults the env var.
         """

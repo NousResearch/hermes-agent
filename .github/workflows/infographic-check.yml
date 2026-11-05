@@ -51,7 +51,7 @@ jobs:
           # Instead: find tracked raster images whose path contains an
           # infographic-ish segment, in any spelling, at any depth.
           #
-          # `docs/assets` and `website/` legitimately hold product imagery
+          # `docs/assets` and `apps/docs/` legitimately hold product imagery
           # and are excluded; those are referenced from shipped docs pages.
           OFFENDERS=$(git ls-files -z \
             | tr '\0' '\n' \

@@ -587,7 +587,11 @@ def _self_provision() -> str:
         access_token = _resolve_relay_identity_token()
     except Exception as exc:  # health: allow BLE001 -- any resolver failure is a soft boot no-op; retried
         logger.warning("relay self-provision skipped: could not resolve identity token (%s)", exc)
-        _last_provision_problem = f"could not resolve identity token ({exc})"
+        from agent.redact import redact_sensitive_text
+
+        _last_provision_problem = redact_sensitive_text(
+            f"could not resolve identity token ({exc})", force=True
+        )
         return _FAILED
 
     identities = relay_platform_identities()
@@ -818,6 +822,10 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
     resolved_url = url if url is not None else relay_url()
     if not (force or resolved_url):
         return False
+    if resolved_url:
+        from gateway.relay.ws_transport import forget_credentials_refusal
+
+        forget_credentials_refusal(resolved_url)
 
     from gateway.platform_registry import PlatformEntry, platform_registry
     from gateway.relay.adapter import RelayAdapter

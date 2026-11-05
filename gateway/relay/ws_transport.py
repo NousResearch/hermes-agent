@@ -338,8 +338,15 @@ REDIAL_HOLD_MAX_S = 60.0
 # kept process-wide: until credentials exist, dialing that URL again only produces another
 # 4401, which is how a fleet of agents whose boot provision was refused dialed the
 # connector hundreds of times an hour. A connector that accepts uncredentialed upgrades
-# (dev, test harnesses) never lands here.
+# (dev, test harnesses) never lands here. Re-registering the relay adapter
+# (``register_relay_adapter``) forgets the URL, so a connector switched to accept
+# uncredentialed upgrades is tried again on the next registration or gateway restart.
 _CREDENTIALS_REQUIRED_URLS: set[str] = set()
+
+
+def forget_credentials_refusal(url: str) -> None:
+    """Allow uncredentialed dials to ``url`` again (the relay adapter was re-registered)."""
+    _CREDENTIALS_REQUIRED_URLS.discard(url)
 
 
 def _credentials_missing_message() -> str:
@@ -515,18 +522,37 @@ class WebSocketRelayTransport:
             try:
                 await self._send(hello)
             except Exception as exc:
-                # The connector may close the uncredentialed socket before the hello lands.
-                if self._mark_if_credentials_required(exc):
-                    raise RelayCredentialsMissing(_credentials_missing_message()) from exc
+                # The connector may close the uncredentialed socket before the hello lands:
+                # either this send sees the 4401, or the reader saw it first and already
+                # dropped the socket (the send then fails as "not connected").
+                if self._mark_if_credentials_required(exc) or self._refused_without_credentials():
+                    raise self._credentials_missing() from exc
                 raise
         # The reader that this dial installed may have died while the hellos were
         # in flight (the reader does not arm a dialer while one is live — that is
         # THIS dial's job). Report it as a failed dial so the caller re-dials;
         # returning "connected" here would leave no dialer and a dead transport.
         if self._reader.done():
-            if self._dialed_without_credentials and self._url in _CREDENTIALS_REQUIRED_URLS:
-                raise RelayCredentialsMissing(_credentials_missing_message())
+            if self._refused_without_credentials():
+                raise self._credentials_missing()
             raise ConnectionError("relay ws closed during hello")
+
+    def _refused_without_credentials(self) -> bool:
+        """This dial carried no credentials and the connector has refused that URL so."""
+        return self._dialed_without_credentials and self._url in _CREDENTIALS_REQUIRED_URLS
+
+    def _credentials_missing(self) -> RelayCredentialsMissing:
+        """The one error every missing-credential exit raises. A connect() that fails this
+        way never reaches handshake(), so the pending descriptor future is settled here
+        and its exception marked observed (no 'exception was never retrieved' noise)."""
+        exc = RelayCredentialsMissing(_credentials_missing_message())
+        fut = self._descriptor_ready
+        if fut is not None:
+            if not fut.done():
+                fut.set_exception(exc)
+            if not fut.cancelled():
+                fut.exception()
+        return exc
 
     def _mark_if_credentials_required(self, exc: BaseException) -> bool:
         """True (and remember the URL) when ``exc`` is the connector's 4401 for an
@@ -854,9 +880,9 @@ class WebSocketRelayTransport:
                 )
             elif self._reconnect and not self._auth_revoked:
                 self._supervisor = asyncio.create_task(self._reconnect_loop(), name="relay-ws-reconnect")
-            if credentials_required and self._descriptor_ready is not None and not self._descriptor_ready.done():
+            if credentials_required:
                 # Fail a handshake() still waiting on this dial now, not at its timeout.
-                self._descriptor_ready.set_exception(RelayCredentialsMissing(_credentials_missing_message()))
+                self._credentials_missing()
         finally:
             # Drop the dead handle (identity-guarded) so every `_ws is None`
             # liveness check reports "not connected" for the whole outage — on

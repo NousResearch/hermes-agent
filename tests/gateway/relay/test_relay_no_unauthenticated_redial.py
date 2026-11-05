@@ -129,6 +129,9 @@ async def test_credentials_from_the_provision_retry_reconnect_without_restart(co
     await asyncio.wait_for(asyncio.gather(*runner._background_tasks), timeout=10)
     assert relay.relay_connection_auth() == (connector.gateway_id, connector.secret)
     assert relay.relay_provision_problem() is None
+    # The reconnect watcher's queued relay retry is pulled forward, not left on its backoff.
+    assert runner._failed_platforms[Platform.RELAY]["next_retry"] == 0.0
+    assert runner._failed_platforms[Platform.RELAY]["retry_now"] is True
 
     adapter = _build_adapter()
     try:
@@ -136,6 +139,28 @@ async def test_credentials_from_the_provision_retry_reconnect_without_restart(co
         assert connector.ws_auth == ["rejected", "ok"]
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_re_registering_the_relay_adapter_tries_an_uncredentialed_dial_again(connector):
+    """The refusal is remembered per process, not forever: a re-registration (config
+    reload, restart) dials once more, so a connector switched to accept uncredentialed
+    upgrades is picked up."""
+    _boot_with_refused_provision(connector)
+    refused = _build_adapter()
+    try:
+        assert await refused.connect() is False
+    finally:
+        await refused.disconnect()
+    assert connector.ws_auth == ["rejected"]
+
+    assert relay.register_relay_adapter()
+    again = _build_adapter()
+    try:
+        assert await again.connect() is False
+    finally:
+        await again.disconnect()
+    assert connector.ws_auth == ["rejected", "rejected"]
 
 
 @pytest.mark.asyncio

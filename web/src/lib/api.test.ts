@@ -113,6 +113,26 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("cron API profile scope", () => {
+  it.each([
+    [undefined, "default"],
+    ["worker profile", "worker%20profile"],
+  ])("keeps delivery targets scoped to %s", async (profile, encodedProfile) => {
+    const fetchMock = jsonFetchMock({ targets: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.getCronDeliveryTargets(profile);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/cron/delivery-targets?profile=${encodedProfile}`);
+  });
+
+  it("preserves the requested analytics period, profile and history coverage flag", async () => {
+    const response = { period_days: 7, jobs: [{ job_id: "job", history_limited: true }] };
+    const fetchMock = jsonFetchMock(response);
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api.getCronAnalytics("worker profile", 7)).resolves.toEqual(response);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/cron/analytics?profile=worker%20profile&days=7");
+  });
+});
+
 describe("management profile scope", () => {
   it("sends explicit WhatsApp re-pair consent to the selected profile", async () => {
     const fetchMock = jsonFetchMock({ pairing_id: "fresh", status: "starting" });

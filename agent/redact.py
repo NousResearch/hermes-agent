@@ -772,6 +772,12 @@ _HASH_ALGO_NAMES = frozenset({
     "sha3-384", "sha3-512", "blake2b", "blake2s", "ripemd160", "crc32", "crc32c",
 })
 
+# ``NAME=user:pass`` is only a Basic pair when NAME says it holds one: ``IMAGE=redis:7-alpine``,
+# ``BRANCH=origin:feature2``, ``LS_COLORS=...:mh=00:...`` and ``Server=tcp:db,1433`` are colon
+# values under names that never carry credentials (#149435 review).
+_BASIC_PAIR_NAME_RE = re.compile(r"auth|basic|cred|login|proxy|userpass|userinfo", re.IGNORECASE)
+
+
 def _is_basic_pair_password(password: str) -> bool:
     """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
     if _VERSION_TAG_RE.search(password) or _WORD_TAG_RE.fullmatch(password):
@@ -1257,6 +1263,10 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
+_JSON_FLAG_VALUES = frozenset({"true", "false", "yes", "no", "null", "none"})
+_JSON_VALUE_SUFFIX_RE = re.compile(r"[_.\-]?(?:value|Value|VALUE)$")
+
+
 def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
     """``"API_TOKEN": "…"`` style fields whose key carries a YAML secret word with affixes."""
     key = m.group(2)
@@ -1267,9 +1277,12 @@ def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
     value = m.group(3)
     if _DSN_PW_PLACEHOLDER_RE.fullmatch(value) or not _should_redact_assignment(key, value, check_keyword=True):
         return m.group(0)
-    # A key that does not END in the credential word (``password_policy``, ``secret_ref``) is
-    # metadata about one, the dict policy (is_secret_field_name): only an opaque value is masked.
-    if not _is_python_repr_secret_key(key) and not _looks_like_opaque_credential(value):
+    # A key that does not END in the credential word is metadata about one: ``passwordChanged``,
+    # ``password_expires_at``, ``tokenUrl``, ``secret_id``, ``secret_arn``, ``PASSWORD_STORE_DIR``
+    # carry timestamps, URLs and ids that look opaque, so the value shape cannot decide (#149435
+    # review). A boolean answers ``has_password``, it does not hold one.
+    # ``api_key_value`` / ``passwordValue`` hold the credential itself: drop that one suffix first.
+    if not _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key)) or value.casefold() in _JSON_FLAG_VALUES:
         return m.group(0)
     return f'{m.group(1)}: "{mask(value)}"'
 
@@ -1328,7 +1341,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             inner = value[1:-1] if quote else value
             # An empty or docs-placeholder scalar (``""``, ``"<your key>"``, ``"${API_KEY}"``) is not
             # a credential; masking it hides what the config expects, as _redact_db already rules.
-            if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)):
+            if quote and (not inner or _DSN_PW_PLACEHOLDER_RE.fullmatch(inner)
+                          or (inner.startswith("{{") and inner.endswith("}}"))):  # Helm/Jinja template
                 return m.group(0)
             if not _should_redact_assignment(key, inner, check_keyword=True):
                 return m.group(0)
@@ -1343,19 +1357,29 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 _DSN_PW_PLACEHOLDER_RE = re.compile(r"<(?:[a-z][a-z_ -]*|[A-Z][A-Z_ -]*)>|\$\{?[A-Z_][A-Z0-9_]*\}?")
 
 
-def _redact_userinfo_passwords(text: str, code_file: bool) -> str:
+# ``https://user:password@host`` in docs names the field instead of filling it in.
+_USERINFO_PLACEHOLDER_WORDS = frozenset({"password", "passwd", "pass", "pw", "pwd", "secret", "token"})
+
+
+def _is_userinfo_placeholder(password: str) -> bool:
+    """A template (``{pw}``, ``{{ pw }}``), docs placeholder or field name, never a literal secret."""
+    return ((password.startswith("{") and password.endswith("}"))
+            or _DSN_PW_PLACEHOLDER_RE.fullmatch(password) is not None
+            or password.casefold() in _USERINFO_PLACEHOLDER_WORDS)
+
+
+def _redact_userinfo_passwords(text: str) -> str:
     """Mask the password half of ``scheme://user:pass@host`` userinfo (#125664).
 
     #34029's pass-through was about query-string round-trip tokens (magic links, OAuth callbacks,
     pre-signed URLs live in the query, never in userinfo); the userinfo password is a credential —
     the same reasoning #6396 used to mask the bare-token form. Keeps scheme, username and host
-    visible. ``code_file`` keeps a pure ``{...}`` password intact, as _DB_CONNSTR_RE does for
-    f-string templates (#33801)."""
+    visible. Templates and docs samples (``{pw}``, ``${TOKEN}``, ``password``) stay as written."""
     def _sub(m):
         user, sep, password = m.group(2).partition(":")
-        if not sep or (code_file and password.startswith("{") and password.endswith("}")):
-            return m.group(0)
-        if not password or _DSN_PW_PLACEHOLDER_RE.fullmatch(password):  # ``user:${TOKEN}@`` docs sample
+        # f-string / Jinja templates and docs samples (``user:{pw}@``, ``user:${TOKEN}@``,
+        # ``user:password@``) in prose and logs as much as in code files.
+        if not sep or not password or _is_userinfo_placeholder(password):
             return m.group(0)
         return f"{m.group(1)}{user}:***@"
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
@@ -1375,7 +1399,7 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
         return f"{m.group(1)}***{m.group(3)}"
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
-    return _redact_userinfo_passwords(text, code_file)
+    return _redact_userinfo_passwords(text)
 
 
 def _redact_phone(m):
@@ -1466,16 +1490,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # that must not return raw secrets; ordinary flows keep today's pass-through.
         def _basic_pair(m):
             password = m.group(4)
-            if password is None or not _is_basic_pair_password(password):
+            if password is None or not _BASIC_PAIR_NAME_RE.search(m.group(1)) \
+                    or not _is_basic_pair_password(password):
                 return m.group(0)
             # ``CHECKSUM=sha256:<hex>``: an algorithm:digest label, not a user:credential pair.
             if m.group(3).lower() in _HASH_ALGO_NAMES:
                 return m.group(0)
-            # A pure ``{...}`` password is an f-string template reference, not a literal
-            # credential — same #33801 rule _redact_userinfo_passwords applies below.
-            if code_file and password.startswith("{") and password.endswith("}"):
-                return m.group(0)
-            if _DSN_PW_PLACEHOLDER_RE.fullmatch(password):
+            # A template or docs placeholder, not a literal credential — the rule
+            # _redact_userinfo_passwords applies below.
+            if _is_userinfo_placeholder(password):
                 return m.group(0)
             return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)

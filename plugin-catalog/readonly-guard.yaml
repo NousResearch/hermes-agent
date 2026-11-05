@@ -1,6 +1,6 @@
 name: readonly-guard
 repo: https://github.com/mciocchi/hermes-readonly-guard
-sha: "a8c518b134c385e893344d9647c720c3e4518260"
+sha: "1f2d12e215fe95c7b2ecf743ef06e12f07a0ff68"
 subdir: ""
 description: >-
   Three-mode, per-session tool guard for Hermes: read-only (writes blocked; inspection tools plus
@@ -21,8 +21,8 @@ maintainer: mciocchi
 tier: community
 category: desktop
 docs_url: https://github.com/mciocchi/hermes-readonly-guard
-image: "https://raw.githubusercontent.com/mciocchi/hermes-readonly-guard/a8c518b134c385e893344d9647c720c3e4518260/docs/banner.png"
-version: "3.7"
+image: "https://raw.githubusercontent.com/mciocchi/hermes-readonly-guard/1f2d12e215fe95c7b2ecf743ef06e12f07a0ff68/docs/banner.png"
+version: "3.8"
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: []

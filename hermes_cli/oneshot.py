@@ -32,6 +32,9 @@ _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed", "partial", "interrupted", "turn_exit_reason",
+    # Context fill: prompt tokens of the last API call (the peak of a run without compression) and
+    # the context window it is measured against, so pipelines can report how full the window got.
+    "last_prompt_tokens", "context_length",
 )
 
 # Counters summed per auxiliary task (vision, compression, title_generation, ...) into the
@@ -608,6 +611,8 @@ def _run_agent(
         relay_session_id = getattr(agent, "session_id", None)
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
         if ledger:
+            result.setdefault("context_length", getattr(getattr(agent, "context_compressor", None),
+                                                        "context_length", None))
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)

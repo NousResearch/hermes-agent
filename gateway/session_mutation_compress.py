@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
@@ -66,20 +67,27 @@ async def prepare_compress(authority, live, payload, prepared):
     resident = cached_agent(live.route) if callable(cached_agent) else None
 
     def summarize():
-        with policy_scope(policy, authority=authority):
-            from agent.conversation_compression import _pre_compress_memory_context
-            memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
-            compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
-                api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
-                api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
-                protect_first_n=options.get('protect_first_n', 3), protect_last_n=options.get('protect_last_n', 20),
-                min_tail_user_messages=max(1, _parse_config_int(options.get('min_tail_user_messages', 1), 1)),
-                custom_providers=config.get('custom_providers'))
-            compressed = compressor.compress(json.loads(json.dumps(head)), force=True,
-                                               focus_topic=request.focus_topic, memory_context=memory_context)
-            if not any(m.get('_compressed_summary') for m in compressed):
-                return None, compressor
-            return rejoin_compressed_head_and_tail(compressed, tail), compressor
+        # #147087 review findings 1+2: this out-of-process summarization touches the resident agent's
+        # session engine, so it registers as an engine request — a cache eviction landing mid-compress
+        # defers its soft release (pending) instead of shutting the engine down underneath us. No
+        # resident agent: nothing to count, behaviour unchanged.
+        from agent.context_engine import engine_request
+        request_scope = engine_request(resident) if resident is not None else nullcontext()
+        with request_scope:
+            with policy_scope(policy, authority=authority):
+                from agent.conversation_compression import _pre_compress_memory_context
+                memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
+                compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
+                    api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
+                    api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
+                    protect_first_n=options.get('protect_first_n', 3), protect_last_n=options.get('protect_last_n', 20),
+                    min_tail_user_messages=max(1, _parse_config_int(options.get('min_tail_user_messages', 1), 1)),
+                    custom_providers=config.get('custom_providers'))
+                compressed = compressor.compress(json.loads(json.dumps(head)), force=True,
+                                                   focus_topic=request.focus_topic, memory_context=memory_context)
+                if not any(m.get('_compressed_summary') for m in compressed):
+                    return None, compressor
+                return rejoin_compressed_head_and_tail(compressed, tail), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression

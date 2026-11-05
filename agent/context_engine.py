@@ -16,6 +16,7 @@ import json
 import logging
 import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from agent.compression_marker import elide_middle
@@ -28,6 +29,67 @@ MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
 _CONTEXT_ENGINE_SHUTDOWN_FALLBACK_LOCK = threading.Lock()
+_ENGINE_REQUEST_FALLBACK_LOCK = threading.Lock()
+
+
+def _engine_state_lock(agent: Any) -> threading.Lock:
+    """The per-agent lock guarding the in-flight counter and the pending-release latch."""
+    lock = getattr(agent, "_engine_state_lock", None)
+    if lock is None:
+        with _ENGINE_REQUEST_FALLBACK_LOCK:
+            lock = getattr(agent, "_engine_state_lock", None)
+            if lock is None:
+                lock = threading.Lock()
+                agent._engine_state_lock = lock
+    return lock
+
+
+def begin_engine_request(agent: Any) -> None:
+    """Claim one in-flight request against this agent's context engine.
+
+    Users of the engine are a turn (``run_conversation``, gateway worker or CLI), a background-review
+    fork, and an out-of-process ``/compress`` summarizing against the session's resident agent.
+    Nested/reentrant pairing is safe: every begin has exactly one end. Soft release
+    (``release_clients()``) defers while any count is outstanding.
+    """
+    try:
+        with _engine_state_lock(agent):
+            agent._engine_inflight = int(getattr(agent, "_engine_inflight", 0) or 0) + 1
+    except Exception:  # a stand-in/None agent must not fail the caller's request
+        logger.debug("begin_engine_request failed", exc_info=True)
+
+
+def end_engine_request(agent: Any) -> None:
+    """Release one in-flight claim; the last holder honours a soft release deferred onto it.
+
+    ``release_clients()`` latches ``_engine_release_pending`` instead of shutting the engine down
+    while a request is in flight (#147087 review findings 1+2); when this claim drops the count to
+    zero the latch is cleared first and then played out, so the shutdown happens exactly once —
+    ``shutdown_context_engine(soft=True)``'s claim/once-flag covers a racing second caller.
+    """
+    release = False
+    try:
+        with _engine_state_lock(agent):
+            remaining = int(getattr(agent, "_engine_inflight", 0) or 0) - 1
+            agent._engine_inflight = max(0, remaining)
+            if remaining <= 0 and getattr(agent, "_engine_release_pending", False):
+                agent._engine_release_pending = False
+                release = True
+    except Exception:
+        logger.debug("end_engine_request failed", exc_info=True)
+        return
+    if release:
+        shutdown_context_engine(agent, soft=True)
+
+
+@contextmanager
+def engine_request(agent: Any):
+    """Paired begin/end for one engine user; the finally holds even when the body raises."""
+    begin_engine_request(agent)
+    try:
+        yield
+    finally:
+        end_engine_request(agent)
 
 
 def shutdown_memory_and_context(agent: Any, messages: list | None = None) -> None:

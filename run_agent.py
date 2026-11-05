@@ -936,7 +936,14 @@ class AIAgent(
         # _context_engine_owned = False and it stays open. Idempotency rides
         # agent.context_engine.shutdown_context_engine's once-flag — no second latch.
         if getattr(self, "_context_engine_owned", True):
-            from agent.context_engine import shutdown_context_engine
+            from agent.context_engine import shutdown_context_engine, _engine_state_lock
+            # Review findings 1+2 (#147087): eviction can land while a turn/fork/``/compress`` still
+            # holds the engine. With a claim outstanding, latch the release instead and let the last
+            # user (``end_engine_request``) shut down; count 0 keeps the original immediate soft shutdown.
+            with _engine_state_lock(self):
+                if int(getattr(self, "_engine_inflight", 0) or 0) > 0:
+                    self._engine_release_pending = True
+                    return
             # soft=True: a session-end claim (taken before the gateway queues its hard cleanup)
             # keeps on_session_end ahead of engine.shutdown(); without one, this release owns the
             # shutdown and stays idempotent through the module once-flag.

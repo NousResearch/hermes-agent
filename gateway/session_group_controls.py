@@ -276,10 +276,12 @@ def _disband(attached, service, db_path, gateway_id, params):
             if service is None and any(list_tasks(db_path, room_id=room_id, status=status)
                    for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
                 raise RuntimeStoreError('runtime_coordination_required')
+        if state.get('disbanded_at') is None and attached is not None:
+            _revoke_routes_first(attached, room_id)
+        with route_publication_lock(attached):
+            state = rooms.room_state(db_path, room_id=room_id, include_disbanded=True)
             if state.get('disbanded_at') is None:
-                if attached is not None:
-                    _revoke_routes_first(attached, room_id)
-                else:
+                if attached is None:
                     from gateway.hosted_room_peer import room_grant_hard_expiry
                     rooms.retire_room_link_records(db_path, room_id=room_id, expiry=room_grant_hard_expiry)
             return {'tombstone': rooms.disband_room(db_path, room_id=room_id,

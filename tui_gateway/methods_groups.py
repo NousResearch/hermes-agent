@@ -505,8 +505,9 @@ def _(rid, params: dict, service) -> dict:
         service.stop_room(
             room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
             require_acknowledged=True)
+        service.revoke_room_routes(room_id)
         with route_publication_lock(service):
-            service.revoke_room_routes(room_id)
+            existing = room_state(service.db_path, room_id=room_id, include_disbanded=True)
             return disband_with_state(existing)
 
 

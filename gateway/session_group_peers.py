@@ -115,6 +115,7 @@ def register(service, params):
         catalog = GatewayRoomCatalog.from_mapping(params.get('catalog'))
     except (HostedRoomPeerError, TypeError, KeyError) as exc:
         raise RuntimeStoreError('invalid_params') from exc
+    disbanding = None
     try:
         with service.peer_route_lock:
             gateway_id, epoch = service.route_authority(room_id)
@@ -123,6 +124,10 @@ def register(service, params):
         room, ended = service.ended_room(room_id), exc
         if room is None:
             raise
+    except RuntimeStoreError as exc:
+        if exc.reason != 'room_disbanding_retry':
+            raise
+        room, ended, disbanding = service.ended_room(room_id) or service._room(room_id), None, exc
     member = next((m for m in room['members'] if m['member_id'] == member_id), {})
     target = member.get('target') or {}
     if (target.get('kind') != 'peer' or target.get('installation_id') != catalog.installation_id
@@ -132,6 +137,8 @@ def register(service, params):
             # there and nowhere else, so another host can neither read it nor answer for that gateway.
             or target_url != catalog.endpoint_url):
         raise RuntimeStoreError('peer_target_mismatch')
+    if disbanding is not None:
+        raise disbanding
     if ended is not None:
         # The room ended first (an invitation still in flight when Disband returned): its gateway
         # minted this grant for it, so this home owes its revoke at the pinned endpoint, unprobed.

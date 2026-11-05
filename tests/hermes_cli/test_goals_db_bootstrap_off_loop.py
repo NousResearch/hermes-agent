@@ -48,11 +48,11 @@ def _clean_cache(monkeypatch):
 
 
 def _patch_sessiondb(monkeypatch, cls=_RecordingDB):
-    # goals.py acquires through hermes_state_registry (shared writer per home); patch its
-    # construction seam, and keep every acquired fake out of the registry so tests don't share.
-    import hermes_state_registry
+    # goals.py acquires through the store registry (shared writer per home); patch its
+    # construction seam. Every test runs on its own HERMES_HOME, so no two tests share a fake.
+    from persistence.sqlite import _registry
 
-    monkeypatch.setattr(hermes_state_registry, "_open_session_db", lambda path: cls(db_path=path))
+    monkeypatch.setattr(_registry, "_open_holder", lambda path: cls(db_path=path))
 
 
 def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
@@ -72,7 +72,7 @@ def test_loop_thread_cache_miss_constructs_off_loop(monkeypatch):
 
     # Fast init: the grace window returns the real instance (no silent
     # feature loss on the first call).
-    assert isinstance(inline_result, _RecordingDB)
+    assert isinstance(inline_result._holder, _RecordingDB)
     # Cache populated for subsequent calls.
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and not goals._DB_CACHE:
@@ -106,7 +106,7 @@ def test_worker_thread_constructs_inline(monkeypatch):
     _patch_sessiondb(monkeypatch)
     db = goals._get_session_db()
     assert db is not None
-    assert isinstance(db, _RecordingDB)
+    assert isinstance(db._holder, _RecordingDB)
     assert _RecordingDB.constructed_on == [threading.get_ident()]
 
 

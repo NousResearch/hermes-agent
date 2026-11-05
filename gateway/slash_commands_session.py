@@ -148,6 +148,13 @@ class GatewaySessionCommandsMixin:
         _old_agent = self._cached_agent_for(session_key)
         if _old_agent is None:
             return
+        # The session-end claim is taken BEFORE the hard cleanup is queued: if the bounded wait
+        # below expires, the reset proceeds and the old agent may be soft-evicted while the worker
+        # job is still queued or running — its release_clients() must then defer the engine
+        # shutdown to this path's on_session_end (#147087; mirrors claim_teardown).
+        with contextlib.suppress(Exception):
+            from agent.context_engine import claim_engine_session_end
+            claim_engine_session_end(_old_agent)
         try:
             await asyncio.wait_for(
                 self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),

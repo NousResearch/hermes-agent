@@ -19,7 +19,6 @@ backend) nothing is recorded and ``/undo`` treats the file as not Hermes'. The t
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import stat
 import time
@@ -173,7 +172,7 @@ def next_seq(store: Path) -> int:
     """The next per-store write sequence number. Caller holds the store lock."""
     path = store / "ledgers" / _SEQ_NAME
     try:
-        seq = int(path.read_text(encoding="utf-8")) + 1
+        seq = int(path.read_text(encoding="utf-8-sig")) + 1
     except (OSError, ValueError):
         seq = 1
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +200,3 @@ def append(ledger: dict, path: str, write: dict) -> None:
 
 def writes_of(entry) -> list[dict]:
     return [w for w in entry.get("writes", []) if isinstance(w, dict)] if isinstance(entry, dict) else []
-
-
-def dump(ledger: dict) -> str:
-    return json.dumps(ledger)

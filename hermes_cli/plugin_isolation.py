@@ -135,8 +135,9 @@ def in_process_import_refusal(what: str, *, source: str = "user",
 
 
 def import_user_code(path: Any, module_name: str) -> Optional[ModuleType]:
-    """Import the Python file *path* as *module_name* into this process: the one place a loader
-    executes a single file of plugin code in-process. ``None`` when *path* has no module spec.
+    """Import the Python file *path* as *module_name* into this process: shared import steps for
+    loaders that execute a single file of plugin code in-process. ``None`` when *path* has no module
+    spec.
 
     The module sits in ``sys.modules`` while its body runs (forward references under ``from
     __future__ import annotations`` resolve by module name) and is removed again if the body raises.

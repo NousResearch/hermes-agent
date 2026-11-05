@@ -259,17 +259,28 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
     """(meta, bundle, source) from ONE adapter — mixing skills.sh metadata with a ClawHub zip of
     a same-named skill once showed the wrong SKILL.md. Falls back to the first meta-only hit.
     """
+    from tools.skills_hub import (
+        reset_skills_hub_fetch_blocked_reason,
+        set_skills_hub_fetch_blocked_reason,
+        skills_hub_fetch_blocked_reason,
+    )
+
     first_meta = None
     first_meta_source = None
+    first_meta_blocked_reason = None
     for src in sources:
         meta = _try(src.inspect, identifier)
+        reset_skills_hub_fetch_blocked_reason()
         bundle = _try(src.fetch, identifier)
+        blocked_reason = skills_hub_fetch_blocked_reason()
         if bundle:
             if meta is None:
                 meta = _try(src.inspect, identifier)
             return meta, bundle, src
         if first_meta is None and meta:
             first_meta, first_meta_source = meta, src
+            first_meta_blocked_reason = blocked_reason
+    set_skills_hub_fetch_blocked_reason(first_meta_blocked_reason)
     return first_meta, None, first_meta_source
 
 
@@ -652,6 +663,18 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     """Explain a resolved identifier no adapter served; returns the extension-install failure class."""
     rate_limited = _hub_rate_limited(sources)
     rejected = _hub_rejected_credentials(sources)
+    from tools.skills_hub import skills_hub_fetch_blocked_reason
+
+    blocked_reason = skills_hub_fetch_blocked_reason()
+    if blocked_reason:
+        guard = "URL-safety guard" if blocked_reason == "url_safety" else "website access policy"
+        _print_error(c, f"Could not download '{identifier}': blocked by the {guard}.")
+        if blocked_reason == "url_safety":
+            c.print("[yellow]Hint:[/] If a TUN proxy uses fake-IP DNS, add all of its documented "
+                    "sentinel ranges to [bold]security.fake_ip_ranges[/], then retry.\n")
+        else:
+            c.print("[yellow]Hint:[/] Review the configured website access rules, then retry.\n")
+        return "fetch_failed"
     # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
     # re-trying spellings (#3259). Only when no adapter was rate limited or refused a credential:
     # those fetches also yield meta-without-bundle, and calling that "stale" would send users away

@@ -95,6 +95,24 @@ _DEFAULT_HTTP_TIMEOUT = 20
 _skills_hub_http_client: ContextVar[Optional[Any]] = ContextVar(
     "skills_hub_http_client", default=None
 )
+_skills_hub_fetch_blocked_reason: ContextVar[Optional[str]] = ContextVar(
+    "skills_hub_fetch_blocked_reason", default=None
+)
+
+
+def reset_skills_hub_fetch_blocked_reason() -> None:
+    """Clear the block recorded for the next source-adapter fetch."""
+    _skills_hub_fetch_blocked_reason.set(None)
+
+
+def set_skills_hub_fetch_blocked_reason(reason: Optional[str]) -> None:
+    """Restore the block belonging to the source whose metadata matched."""
+    _skills_hub_fetch_blocked_reason.set(reason)
+
+
+def skills_hub_fetch_blocked_reason() -> Optional[str]:
+    """The current source fetch's local policy block, if one occurred."""
+    return _skills_hub_fetch_blocked_reason.get()
 
 
 @contextmanager
@@ -137,11 +155,13 @@ def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
         if not is_safe_url(current_url):
+            _skills_hub_fetch_blocked_reason.set("url_safety")
             logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
             return None
 
         blocked = check_website_access(current_url)
         if blocked:
+            _skills_hub_fetch_blocked_reason.set("website_policy")
             logger.info(
                 "Blocked Skills Hub fetch for %s by rule %s",
                 blocked["host"],
@@ -151,7 +171,11 @@ def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
 
         try:
             resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
-        except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+        except SSRFConnectionBlocked as exc:
+            _skills_hub_fetch_blocked_reason.set("url_safety")
+            logger.debug("Skills Hub fetch blocked for %s: %s", current_url, exc)
+            return None
+        except httpx.HTTPError as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
 
@@ -186,12 +210,14 @@ def _guarded_http_stream(
     try:
         for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
             if not is_safe_url(current_url):
+                _skills_hub_fetch_blocked_reason.set("url_safety")
                 logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
                 response = None
                 break
 
             blocked = check_website_access(current_url)
             if blocked:
+                _skills_hub_fetch_blocked_reason.set("website_policy")
                 logger.info(
                     "Blocked Skills Hub fetch for %s by rule %s",
                     blocked["host"],
@@ -209,7 +235,12 @@ def _guarded_http_stream(
                 response = stack.enter_context(
                     client.stream("GET", current_url, params=current_params)
                 )
-            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+            except SSRFConnectionBlocked as exc:
+                _skills_hub_fetch_blocked_reason.set("url_safety")
+                logger.debug("Skills Hub stream blocked for %s: %s", current_url, exc)
+                response = None
+                break
+            except httpx.HTTPError as exc:
                 logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
                 response = None
                 break

@@ -6,6 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 from tests.gateway.test_session_mutation_model_busy import _owner
 
 
@@ -51,6 +56,17 @@ def _summary(body, compacted):
             + _build_recovery_footer('sid', compacted))
 
 
+def _append(db, session_id, role, content, **extra):
+    """One stored message row, as an append writes it."""
+    seed_messages(db, session_id, {'role': role, 'content': content, **extra})
+
+
+def _compact(db, target, messages, tail_count):
+    """An in-place compaction of *target* to *messages* (live dicts), the last *tail_count* of them carried."""
+    db.messages.compact(target, [NewMessage.from_live(message) for message in messages],
+                        watermark=db.messages.active_watermark(target), carried_tail_count=tail_count)
+
+
 @pytest.mark.asyncio
 async def test_transcript_pages_both_ways_across_a_compaction_and_never_attach(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
@@ -62,13 +78,12 @@ async def test_transcript_pages_both_ways_across_a_compaction_and_never_attach(t
     try:
         target = transcript_target(authority, ref)
         for i in (1, 2, 3):
-            db.append_message(target, 'user', f'question {i}')
-            db.append_message(target, 'assistant', f'answer {i}')
+            _append(db, target, 'user', f'question {i}')
+            _append(db, target, 'assistant', f'answer {i}')
 
         def compact():
             tail = [{'role': 'user', 'content': 'question 3'}, {'role': 'assistant', 'content': 'answer 3'}]
-            db.archive_and_compact(target, [{'role': 'user', 'content': _summary('## Goal\nship it', 4)}, *tail],
-                                   watermark=db.get_active_message_watermark(target), tail_count=len(tail))
+            _compact(db, target, [{'role': 'user', 'content': _summary('## Goal\nship it', 4)}, *tail], len(tail))
 
         everything = ['question 1', 'answer 1', 'question 2', 'answer 2', 'question 3', 'answer 3']
         # The first page is read before the compaction: the next read starts over, each message once, in order.
@@ -109,9 +124,8 @@ async def test_transcript_pages_both_ways_across_a_compaction_and_never_attach(t
 def _compact_carrying_tail(db, target, summary, tail_rows=2):
     """An in-place compaction as the compressor commits it: the held tail dicts (stored timestamp and
     ``message_uid``) carried after the summary, their originals superseded."""
-    tail = db.get_messages_as_conversation(target)[-tail_rows:]
-    db.archive_and_compact(target, [{'role': 'user', 'content': summary}, *tail],
-                           watermark=db.get_active_message_watermark(target), tail_count=len(tail))
+    tail = conversation(db, target)[-tail_rows:]
+    _compact(db, target, [{'role': 'user', 'content': summary}, *tail], len(tail))
 
 
 @pytest.mark.asyncio
@@ -125,8 +139,8 @@ async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_p
     try:
         target = transcript_target(authority, ref)
         for i in (1, 2, 3):
-            db.append_message(target, 'user', f'question {i}')
-            db.append_message(target, 'assistant', f'answer {i}')
+            _append(db, target, 'user', f'question {i}')
+            _append(db, target, 'assistant', f'answer {i}')
         resets = []
         pages = await _pages(owner, ref.session_id, 5, resets=resets, between=lambda: _compact_carrying_tail(
             db, target, f'{SUMMARY_PREFIX}\n## Goal\none'))
@@ -150,25 +164,23 @@ async def test_every_compaction_is_a_row_when_a_later_one_reuses_a_summary_carri
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
         target = transcript_target(authority, ref)
-        db.append_message(target, 'user', 'question 1')
-        db.append_message(target, 'assistant', 'answer 1')
-        db.append_message(target, 'user', 'question 2', message_uid='q2')
-        db.append_message(target, 'assistant', 'answer 2')
-        held = db.get_messages_as_conversation(target)
+        _append(db, target, 'user', 'question 1')
+        _append(db, target, 'assistant', 'answer 1')
+        _append(db, target, 'user', 'question 2', message_uid='q2')
+        _append(db, target, 'assistant', 'answer 2')
+        held = conversation(db, target)
         # The first compaction merges its summary into the carried prompt (the carrier keeps its uid) ...
         carrier = {**held[2], '_compressed_summary': True, 'content': (
             f"{_MERGED_PRIOR_CONTEXT_HEADER}\nquestion 2\n{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\n"
             f"## Goal\nfirst\n{_SUMMARY_END_MARKER}")}
-        db.archive_and_compact(target, [carrier, held[3]], watermark=db.get_active_message_watermark(target),
-                               tail_count=2)
-        db.append_message(target, 'user', 'question 3')
-        db.append_message(target, 'assistant', 'answer 3')
+        _compact(db, target, [carrier, held[3]], 2)
+        _append(db, target, 'user', 'question 3')
+        _append(db, target, 'assistant', 'answer 3')
         # ... and the second unwraps it again: the prompt's own identity, with a summary of its own before it.
-        held = db.get_messages_as_conversation(target)
+        held = conversation(db, target)
         prompt = {**held[0], 'content': 'question 2', '_compressed_summary': False}
-        db.archive_and_compact(target, [{'role': 'user', 'content': f'{SUMMARY_PREFIX}\n## Goal\nsecond'},
-                                        prompt, *held[1:]], watermark=db.get_active_message_watermark(target),
-                               tail_count=len(held))
+        _compact(db, target, [{'role': 'user', 'content': f'{SUMMARY_PREFIX}\n## Goal\nsecond'}, prompt, *held[1:]],
+                 len(held))
         pages = await _pages(owner, ref.session_id, 3, kinds=('compaction',))
         assert _flat(pages) == ['## Goal\nsecond', '## Goal\nfirst'], pages  # each at its position
     finally:
@@ -188,9 +200,9 @@ async def test_a_page_stays_under_its_byte_cap_and_shows_images_as_placeholders(
         target = transcript_target(authority, ref)
         image = 'data:image/png;base64,' + base64.b64encode(os.urandom(1_500_000)).decode()
         for i in range(5):
-            db.append_message(target, 'user', [{'type': 'text', 'text': f'look {i}'},
-                                               {'type': 'image_url', 'image_url': {'url': image}}])
-            db.append_message(target, 'assistant', f'reply {i} ' + 'w' * 700_000)
+            _append(db, target, 'user', [{'type': 'text', 'text': f'look {i}'},
+                                         {'type': 'image_url', 'image_url': {'url': image}}])
+            _append(db, target, 'assistant', f'reply {i} ' + 'w' * 700_000)
         cursor, texts = None, []
         while True:
             reply = await _call(owner, 'session.transcript', session_id=ref.session_id, limit=10,
@@ -216,8 +228,8 @@ async def test_a_preview_of_an_ended_conversation_leaves_the_live_list_alone(tmp
     store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
     try:
         target = transcript_target(authority, ref)
-        db.append_message(target, 'user', 'old question')
-        db.end_session(target, 'cli_close')
+        _append(db, target, 'user', 'old question')
+        db.sessions.end(target, 'cli_close')
         del authority.sessions[ref.session_id]  # as a restart leaves an ended conversation
         before = (await _call(owner, 'session.list'))['result']['sessions']
         assert _flat(await _pages(owner, ref.session_id, 10)) == ['old question']
@@ -236,18 +248,14 @@ def _legacy_owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    db = store._db
-    db.create_session('old-tui', source='tui', model='m', cwd=str(tmp_path))
-    db.append_message('old-tui', 'user', 'before compression')
-    db.append_message('old-tui', 'assistant', 'old answer')
-    assert db.try_acquire_compression_lock('old-tui', 'fixture')
-    try:
-        db.publish_compression_child(parent_session_id='old-tui', child_session_id='tui-tip', source='tui',
-            model='m', messages=[{'role': 'user', 'content': 'after compression'},
-                                 {'role': 'assistant', 'content': 'new answer'}],
-            compression_lock_holder='fixture')
-    finally:
-        db.release_compression_lock('old-tui', 'fixture')
+    db = store.persistence
+    seed_session(db, 'old-tui', 'tui', model='m', cwd=str(tmp_path))
+    _append(db, 'old-tui', 'user', 'before compression')
+    _append(db, 'old-tui', 'assistant', 'old answer')
+    db.lineage.publish_compression_child(
+        'old-tui', CompressionChild(session_id='tui-tip', source='tui', model='m'),
+        [NewMessage(role='user', content='after compression'), NewMessage(role='assistant', content='new answer')],
+        require_compression_lease=False)
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
@@ -264,7 +272,7 @@ def _native(authority, tmp_path, user):
 async def test_an_old_compressed_transcript_reads_across_its_lineage_without_adoption(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    import hermes_state
+    import storage_limits
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
@@ -274,13 +282,13 @@ async def test_an_old_compressed_transcript_reads_across_its_lineage_without_ado
     try:
         listed = await _call(native, 'session.list', scope='stored')
         [row] = listed['result']['sessions']
-        before = db._conn.total_changes
+        before = raw_holder(db)._conn.total_changes
         assert _flat(await _pages(native, row['session_id'], 3)) == [
             'before compression', 'old answer', 'after compression', 'new answer']
-        assert db._conn.total_changes == before  # nothing adopted, nothing written
+        assert raw_holder(db)._conn.total_changes == before  # nothing adopted, nothing written
         assert authority.sessions == {}
         # Past the resume's guard a rotated lineage pages its current segment only.
-        monkeypatch.setattr(hermes_state, 'resolved_max_resume_messages', lambda: 2)
+        monkeypatch.setattr(storage_limits, 'resolved_max_resume_messages', lambda: 2)
         assert _flat(await _pages(native, row['session_id'], 3)) == ['after compression', 'new answer']
         refused = await _call(remote, 'session.transcript', session_id=row['session_id'])
         assert refused['error']['data']['reason'] == 'not_found', refused
@@ -297,7 +305,7 @@ async def test_an_old_row_is_judged_at_its_tip_whichever_lineage_id_is_asked(tmp
     from gateway.session_authority import initialize_session_authority
 
     store, db, runner = _legacy_owner(tmp_path, monkeypatch)
-    db._write_sql("UPDATE sessions SET user_id='alice' WHERE id='tui-tip'", ())
+    raw_holder(db)._execute_write(lambda conn: conn.execute("UPDATE sessions SET user_id='alice' WHERE id='tui-tip'"))
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
     bob = _native(authority, tmp_path, 'bob')
     try:

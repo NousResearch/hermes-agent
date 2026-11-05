@@ -215,6 +215,28 @@ def test_an_undeclared_key_survives_only_an_untouched_round_trip(client, homes):
     assert "legacy" not in _delegation(work)["backends"]["model_map"]["options"][0]
 
 
+def test_a_null_extra_key_is_a_value_and_leaving_it_out_removes_it(client, homes):
+    _root, work = homes
+    route = {"name": "deep", "description": "Careful", "provider": "anthropic", "model": "m-deep"}
+
+    def save(**extra):
+        resp = client.put("/api/delegation/backends/model_map?profile=work", json={"options": [{**route, **extra}]})
+        assert resp.status_code == 200, resp.text
+        return _delegation(work)["backends"]["model_map"]["options"][0]
+
+    # A declared key sent as null is kept as sent; leaving it out removes it.
+    assert save(daybreak=None) == {**route, "daybreak": None}
+    assert "daybreak" not in save()
+
+    # A stored null in an undeclared key survives a save that sends it back, and goes when the save leaves it out.
+    block = _delegation(work)
+    block["backends"]["model_map"]["options"][0]["legacy"] = None  # hand-written in config.yaml
+    (work / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["routes"]}, "delegation": block}),
+                                      encoding="utf-8")
+    assert save(legacy=None) == {**route, "legacy": None}
+    assert "legacy" not in save()
+
+
 def test_profile_routes_only_name_existing_profiles(client, homes):
     _root, work = homes
     before = (work / "config.yaml").read_text(encoding="utf-8")

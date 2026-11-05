@@ -190,9 +190,9 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
         if entry.get(field) not in (None, "", [], {}):
             row[field] = entry[field]
     # The backend's own keys (DelegationProvider.route_keys, e.g. a ``daybreak`` opt-in) are kept as sent; the
-    # backend validates them. Absent = the editor turned it off.
+    # backend validates them. Presence decides, not the value: null is a value, absent = the editor turned it off.
     for field in declared:
-        if field not in row and field not in ROUTE_KEYS and entry.get(field) is not None:
+        if field not in row and field not in ROUTE_KEYS and field in entry:
             row[field] = entry[field]
     # A route the renderer came from (a rename names it in original_name; once that save landed, it is stored
     # under its new name).
@@ -200,7 +200,8 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
     # Any other key the stored route carries (hand-written, or declared by a backend that is not loaded now)
     # survives an untouched round-trip, so a save never silently drops a setting; a key nobody stored is dropped.
     for field, value in source.items():
-        if field not in row and field not in ROUTE_KEYS and field != "api_key" and entry.get(field) == value:
+        if (field not in row and field not in ROUTE_KEYS and field != "api_key"
+                and field in entry and entry[field] == value):
             row[field] = value
     key = entry.get("api_key")
     if is_redacted_credential_preview(key):

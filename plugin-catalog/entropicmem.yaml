@@ -1,6 +1,6 @@
 name: entropicmem
 repo: https://github.com/Ufonik88/EntropicMem
-sha: 1e8e7c48b67fb7f3890ca92c98f887a712793178
+sha: 947b0ba616426c03b86f87e3fce171d4826e02cb
 subdir: "plugins/entropicmem"
 description: >-
   Durable local memory for Hermes agents: SQLite FTS5 facts with cited, explainable recall; a
@@ -15,22 +15,23 @@ description: >-
   embeddings_enabled: true (provider) or ENTROPICMEM_EMBEDDINGS=1 / query --semantic (CLI) and the optional
   sentence-transformers extra installed does first use download all-MiniLM-L6-v2 weights from huggingface.co;
   otherwise the provider has no network egress. The CLI ingest command fetches a user-supplied URL; CLI
-  graph export writes to ./export in the cwd by default and its HTML loads D3/marked from d3js.org and cdn.jsdelivr.net
-  when opened; CLI graph serve starts a loopback HTTP server. entropicmem_profile (action=patch) edits the plugin's own Core-memory
+  graph export writes to ./export in the cwd by default and its HTML is self-contained: D3 and marked are vendored and
+  inlined at export, so it renders over file:// with no network (only Google Fonts load from fonts.googleapis.com, with a
+  system-font fallback offline); CLI graph serve starts a loopback HTTP server. entropicmem_profile (action=patch) edits the plugin's own Core-memory
   markdown (Persona/User_Profile), not Hermes core, and is off by default.
 maintainer: Ufonik88
 tier: community
 category: memory
 requires_hermes: ">=0.21.3"
-docs_url: https://github.com/Ufonik88/EntropicMem/blob/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/SELF_INSTALL.md
-version: "3.0.0"
-image: https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/banner.png
+docs_url: https://github.com/Ufonik88/EntropicMem/blob/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/SELF_INSTALL.md
+version: "3.0.1"
+image: https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/graph-galaxy.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/note-modal.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/cli-recall.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/timeline.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/1e8e7c48b67fb7f3890ca92c98f887a712793178/docs/assets/prefetch-context.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/graph-galaxy.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/note-modal.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/cli-recall.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/timeline.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/947b0ba616426c03b86f87e3fce171d4826e02cb/docs/assets/prefetch-context.png
 readme: true
 platforms: []
 capabilities:

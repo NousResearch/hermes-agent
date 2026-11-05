@@ -719,6 +719,7 @@ def handle_content_policy_refusal(
     messages: list[dict[str, Any]], api_messages: Any, api_kwargs: Any, active_system_prompt: Any,
     conversation_history: Any, api_call_count: int, effective_task_id: Any, turn_id: Any,
     api_request_id: Any, api_start_time: float, retry_count: int, max_retries: int,
+    current_turn_user_idx: Any = None,
 ) -> RefusalVerdict:
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
@@ -785,8 +786,16 @@ def handle_content_policy_refusal(
     if _db is not None:
         with suppress(Exception):
             _db.flush_token_counts()
-    clean_history = conversation_history if isinstance(conversation_history, list) else []
+    # Hand back the CLEAN pre-refusal history, not the loop's ``conversation_history``: an in-place
+    # compaction this turn rewrote that baseline into ``list(messages)`` — the whole poisoned working
+    # set including the refused request + tool rounds — so returning it would re-poison CLI/ACP memory
+    # even after the owner cleans the durable transcript (#149708 review). Build it from the real
+    # turn boundary, and carry the refused run's durable boundary row so the owner drops the exact turn.
+    from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+    clean_history = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
+    _boundary_row_id = refused_turn_boundary_row_id(messages, current_turn_user_idx)
     return RefusalVerdict("return", _content_policy_blocked_result(
         clean_history, api_call_count, final_response=_refusal_response,
         error_detail=_refusal_text or "model declined (content_filter)",
+        boundary_row_id=_boundary_row_id,
     ), active_system_prompt)

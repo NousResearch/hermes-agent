@@ -1031,7 +1031,7 @@ def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: list[dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
-    delivered: str = "",
+    delivered: str = "", current_turn_user_idx: Any = None,
 ) -> dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
@@ -1117,11 +1117,13 @@ def nonretryable_client_error_result(
         # deterministic for the unchanged conversation, so a persisted refused turn re-trips the
         # filter on every later message and locks the chat (the "stuck session" report); the owner
         # erases the durable turn-start row after the lease releases. Mirrors #1630.
-        _clean = conversation_history if isinstance(conversation_history, list) else []
+        from agent.turn_context import history_before_current_turn, refused_turn_boundary_row_id
+        _clean = history_before_current_turn(messages, current_turn_user_idx, conversation_history)
         return _content_policy_blocked_result(
             _clean, api_call_count,
             final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
             error_detail=_nonretryable_summary,
+            boundary_row_id=refused_turn_boundary_row_id(messages, current_turn_user_idx),
         )
     # Skip persistence on likely context-overflow (400 + large session): persisting the
     # failed message grows the session and repeats the failure.

@@ -101,6 +101,56 @@ def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     assert dict(os.environ) == before
 
 
+def test_staged_uv_bootstrap_uses_realized_python(tmp_path, monkeypatch):
+    from pm import _uv, environments, lock, paths, registry, store
+    from pm import runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    store_root = tmp_path / "store"
+    state_root = tmp_path / "state"
+    staged_uv = tmp_path / "staged-uv"
+    staged_uv.write_bytes(b"uv")
+    managed_uv = tmp_path / "managed-uv"
+    managed_python = tmp_path / "managed-python"
+    calls = []
+
+    class Package:
+        def store_entry(self, version, target):
+            assert (version, target) == ("uv-version", "target")
+            return "uv-entry"
+
+        def binary(self, entry, target):
+            assert entry == store_root / "uv-entry"
+            assert target == "target"
+            return staged_uv
+
+    class Lockfile:
+        def __init__(self, path):
+            assert path == project / "uv.lock"
+
+        def version(self, name):
+            assert name == "uv"
+            return "uv-version"
+
+    def toolchain(**kwargs):
+        calls.append(kwargs)
+        return None if kwargs.get("realize") is False else (managed_uv, managed_python)
+
+    monkeypatch.setattr(paths, "repo_root", lambda: project)
+    monkeypatch.setattr(paths, "store_root", lambda: store_root)
+    monkeypatch.setattr(paths, "lockfile_path", lambda: project / "uv.lock")
+    monkeypatch.setattr(environments, "install_state_dir", lambda _: state_root)
+    monkeypatch.setattr(registry, "get_package", lambda name: Package())
+    monkeypatch.setattr(lock, "Lockfile", Lockfile)
+    monkeypatch.setattr(store, "current_target", lambda: "target")
+    monkeypatch.setattr(_uv, "_toolchain", toolchain)
+    monkeypatch.setattr(runtime, "prepare_runtime", lambda uv, python, *args, **kwargs: (uv, python))
+
+    assert runtime.runtime_python() == (staged_uv, managed_python)
+    assert calls == [{"realize": False}, {"explicit": True}]
+
+
 @pytest.mark.platforms("macos", "windows")
 def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch):
     from pm import paths

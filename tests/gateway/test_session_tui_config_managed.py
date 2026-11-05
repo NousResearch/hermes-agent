@@ -100,3 +100,23 @@ def test_owner_global_reasoning_level_is_refused_before_anything_changes(home, m
     else:
         assert run() == {"key": "reasoning", "value": "high", "scope": scope}
         assert calls == [("commit", scope == "global"), ("apply", scope == "global")]
+
+
+@pytest.mark.parametrize("pins_mode", [True, False], ids=["managed", "unmanaged"])
+def test_owner_approval_mode_refusal_names_a_pinned_key(home, monkeypatch, pins_mode):
+    """A refused ``approvals.mode`` write reports ``permission_denied`` naming the key when the managed
+    scope pins it; any other refusal keeps ``storage_unavailable``. Nothing is written either way."""
+    from gateway import session_tui_config
+    from hermes_cli import approval_mode, managed_scope
+    if pins_mode:
+        (home.parent / "managed" / "config.yaml").write_text("approvals:\n  mode: manual\n")
+        managed_scope.invalidate_managed_cache()
+    else:
+        monkeypatch.setattr(approval_mode, "run_approval_mode_command",
+                            lambda mode: SimpleNamespace(ok=False, mode="manual"))
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(home)))
+    with pytest.raises(RuntimeStoreError) as refused:
+        session_tui_config._set_approval_mode(connection, "off")
+    expected = ("permission_denied", "approvals.mode") if pins_mode else ("storage_unavailable", None)
+    assert (refused.value.reason, refused.value.field) == expected
+    assert yaml.safe_load((home / "config.yaml").read_text()) == {"display": {"tui_theme": "dark"}}

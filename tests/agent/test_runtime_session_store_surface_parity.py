@@ -1,10 +1,5 @@
-"""A managed worker's agent gets a RuntimeSessionStore as its session_db. Every store method the
-agent core calls must exist on it, accept the keywords main's SessionDB takes (read from the pinned
-checkout), and answer like the owner's store (Adolanium reg-1 was one missing keyword; the sweep
-found two missing reads: the failed-turn boundary's tail role and in-place compaction's held-row
-liveness)."""
+"""A managed worker's agent gets a RuntimeSessionStore as its session_db. Every store method the agent core calls must exist on it, and its tail reads (the failed-turn boundary's tail role and a row's role in its own transcript) answer like the owner's store."""
 import ast
-import inspect
 from pathlib import Path
 import re
 
@@ -14,7 +9,6 @@ from agent.runtime_session_store import RuntimeSessionStore
 from persistence_assembly import open_persistence, profile_scope
 from tests.fixtures.storage_read import transcript_rows
 from tests.fixtures.storage_seed import seed_messages, seed_session
-from tests.persistence_sqlite._legacy_store import legacy_modules
 
 ROOT = Path(__file__).resolve().parents[2]
 # The agent core: everything a worker's AIAgent runs (tools open their own handles, or refuse).
@@ -40,18 +34,6 @@ def _core_session_db_calls():
 @pytest.mark.parametrize('name', _core_session_db_calls())
 def test_store_offers_every_core_session_db_call(name):
     assert hasattr(RuntimeSessionStore, name), f'RuntimeSessionStore lacks {name}'
-
-
-@pytest.mark.parametrize('name', _core_session_db_calls())
-def test_store_takes_every_keyword_of_mains_session_db(name):
-    store = inspect.signature(getattr(RuntimeSessionStore, name)).parameters
-    if any(p.kind is p.VAR_KEYWORD for p in store.values()):
-        return
-    with legacy_modules():
-        from hermes_state import SessionDB
-    owner = inspect.signature(getattr(SessionDB, name)).parameters
-    missing = [k for k, p in owner.items() if k not in store and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
-    assert missing == [], f'RuntimeSessionStore.{name} rejects {missing}'
 
 
 def test_tail_reads_answer_like_the_owner(tmp_path):

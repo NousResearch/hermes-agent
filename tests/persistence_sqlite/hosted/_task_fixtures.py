@@ -1,18 +1,11 @@
-"""Seeding and comparison helpers for the hosted-room driver, policy, attachment and work-record backend tests.
+"""Seeding and comparison helpers for the hosted-room attachment backend tests.
 
-``make_hosted`` builds a SQLite backend over a real profile home under the test's HERMES_HOME (the contract scopes
-live under a fake root, so their ``'shared'`` file is not writable here), with that profile's ``state.db`` as the
-``'profile'`` file and the install root's ``shared-state.db`` as the ``'shared'`` file. A parity case seeds the
-placement's file through the room verbs (``seed_room``, ``seed_event``), copies it (with its attachment directory) to a
-twin path in another folder, runs main's function on the twin and the backend verb on the original, and compares the
-outcomes and what each side left in its tables and blob files. ``m1_room`` and ``m1_event`` run main's own functions,
-read from the pinned main checkout.
+``make_hosted`` builds a SQLite backend over a real profile home under the test's HERMES_HOME (the contract scopes live under a fake root, so their ``'shared'`` file is not writable here), with that profile's ``state.db`` as the ``'profile'`` file and the install root's ``shared-state.db`` as the ``'shared'`` file. A parity case seeds the placement's file through the room verbs (``seed_room``), copies it (with its attachment directory) to a twin path in another folder, runs main's function on the twin and the backend verb on the original, and compares the outcomes and what each side left in its tables.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -25,20 +18,12 @@ from persistence.sqlite import SQLiteBackend
 from persistence.sqlite._backend import SQLiteStore
 from persistence.sqlite.gateway._hosted_rooms_schema import ROOMS_STEP
 from persistence.sqlite.gateway._hosted_store import HostedFiles
-from tests.persistence_sqlite._legacy_store import legacy_import, legacy_scope
 
 MEMBERS = [{"member_id": "m1", "profile": "p1"}, {"member_id": "m2", "profile": "p2"}]
 ROOM = "room"
 GATEWAY = "gw"
 ATTACHMENT_DIR = "hosted-room-attachments"
-DRIVER_TABLES = ("hosted_room_driver_leases", "hosted_room_driver_tasks")
-WORK_TABLES = ("hosted_room_work_records_source", "hosted_room_work_records_pending", "hosted_room_work_records_invalid")
-POLICY_TABLES = (
-    "hosted_room_policy_cursors", "hosted_room_policy_threads", "hosted_room_policy_events",
-    "hosted_room_policy_watermarks", "hosted_room_policy_publications", "hosted_room_policy_transcript",
-    "hosted_room_policy_transcript_state")
 ATTACHMENT_TABLES = ("hosted_room_attachments", "hosted_room_attachment_blobs")
-ROOM_TABLES = ("hosted_rooms", "hosted_room_events", "hosted_room_retired_ids")
 
 
 @dataclass
@@ -71,51 +56,12 @@ def make_hosted(profile: str | None = "profile-a") -> Hosted:
     return Hosted(backend=backend, scope=scope, store=store, files=HostedFiles(store))
 
 
-def _actor(kind: str) -> dict:
-    """The actor of a seeded event of ``kind``: the desktop user, member ``m1`` or the gateway."""
-    return ({"kind": "user", "id": "desktop"} if kind == "message.user"
-            else {"kind": "member", "id": "m1"} if kind == "message.member" else {"kind": "gateway", "id": GATEWAY})
-
-
-def m1_room(path: Path, *, room_id: str = ROOM, members: list | None = None, now: float = 100.0) -> dict:
-    """Create a room in ``path`` with main's own ``create_room``, from the pinned checkout, inside its scope."""
-    with legacy_scope():
-        return legacy_import("gateway.hosted_rooms").create_room(
-            path, room_id=room_id, name="Room", members=MEMBERS if members is None else members,
-            authority_gateway_id=GATEWAY, now=now)
-
-
-def m1_event(path: Path, *, event_id: str, kind: str, payload: dict, actor: dict | None = None,
-             room_id: str = ROOM, now: float) -> dict:
-    """Append one room event in ``path`` with main's own ``append_event`` (epoch 1, gateway ``gw``), from the pinned
-    checkout, inside its scope."""
-    with legacy_scope():
-        return legacy_import("gateway.hosted_rooms").append_event(
-            path, room_id=room_id, event_id=event_id, kind=kind, actor=_actor(kind) if actor is None else actor,
-            payload=payload, authority_gateway_id=GATEWAY, authority_epoch=1, now=now)
-
-
 def seed_room(hosted: Hosted, placement: str, *, room_id: str = ROOM, members: list | None = None,
               now: float = 100.0) -> dict:
-    """Create the room ``m1_room`` creates, through the room verb on the placement's file."""
+    """Create a room through the room verb on the placement's file."""
     return hosted.store.hosted_rooms.create_room(
         placement=placement, room_id=room_id, name="Room", members=MEMBERS if members is None else members,
         authority_gateway_id=GATEWAY, now=now)
-
-
-def seed_event(hosted: Hosted, placement: str, *, event_id: str, kind: str, payload: dict, actor: dict | None = None,
-               room_id: str = ROOM, now: float) -> dict:
-    """Append the event ``m1_event`` appends, through the room verb on the placement's file."""
-    return hosted.store.hosted_rooms.append_event(
-        placement=placement, room_id=room_id, event_id=event_id, kind=kind,
-        actor=_actor(kind) if actor is None else actor, payload=payload, authority_gateway_id=GATEWAY,
-        authority_epoch=1, now=now)
-
-
-def raw(path: Path, sql: str, params: tuple = ()) -> None:
-    """One raw statement on ``path``: for states no public verb produces (a tampered room or task row)."""
-    with sqlite3.connect(path) as conn:
-        conn.execute(sql, params)
 
 
 def twin(path: Path, folder: Path) -> Path:
@@ -144,23 +90,6 @@ def schema(path: Path, pattern: str) -> list[tuple]:
         return sorted(conn.execute(
             "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name GLOB ? AND name NOT GLOB 'sqlite_*'",
             (pattern,)).fetchall())
-
-
-def work_records(path: Path) -> list[dict]:
-    """The captured source records of ``path``, decoded, each with its row's ``disposition``."""
-    with sqlite3.connect(path) as conn:
-        return [{"disposition": disposition, **json.loads(record)} for record, disposition in conn.execute(
-            "SELECT record_json, disposition FROM hosted_room_work_records_source ORDER BY producer_epoch")]
-
-
-def blob_dir(path: Path) -> Path:
-    return path.parent / ATTACHMENT_DIR / "blobs"
-
-
-def blobs(path: Path) -> dict[str, bytes]:
-    """The blob directory beside ``path``: file name to bytes."""
-    folder = blob_dir(path)
-    return {item.name: item.read_bytes() for item in folder.iterdir()} if folder.is_dir() else {}
 
 
 def plain(value: Any) -> Any:

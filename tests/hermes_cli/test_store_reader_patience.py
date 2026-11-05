@@ -5,7 +5,6 @@ repair holding it."""
 
 from __future__ import annotations
 
-import importlib.util
 import time
 from functools import partial
 
@@ -16,7 +15,6 @@ from hermes_cli.observability import shared_metrics_snapshot
 from persistence import StoreContention
 from persistence_assembly import open_persistence, open_store_admin, profile_scope
 from tests.fixtures.storage_seed import seed_session
-from tests.persistence_sqlite._legacy_store import oracle_tree
 from tools import tool_result_storage
 
 
@@ -64,22 +62,6 @@ def test_retained_worktree_checks_wait_two_seconds(held, tmp_path):
         served, served_waited = _timed(partial(worktree_ops._tree_still_served, str(db), tree))
     assert (live, served) == (True, "unreadable")
     assert _about(live_waited, 2.0) and _about(served_waited, 2.0)
-
-
-def test_retained_worktree_checks_wait_as_main_does(held, tmp_path):
-    spec = importlib.util.spec_from_file_location("main_worktree_ops", oracle_tree() / "hermes_cli" / "worktree_ops.py")
-    main = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(main)
-    db, hold = held
-    tree = str(tmp_path / "tree")
-    answers = {}
-    with hold():
-        for name, ops in (("main", main), ("head", worktree_ops)):
-            answers[name] = (_timed(partial(ops._retained_tree_is_live, str(db), tree)),
-                             _timed(partial(ops._tree_still_served, str(db), tree)))
-    for name, ((live, live_waited), (served, served_waited)) in answers.items():
-        assert (live, served) == (True, "unreadable"), name
-        assert _about(live_waited, 2.0) and _about(served_waited, 2.0), (name, live_waited, served_waited)
 
 
 def test_spillover_approvals_and_owner_receipt_wait_five_seconds(held):

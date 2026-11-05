@@ -33,7 +33,7 @@ _LEVELS = {"debug", "info", "warning", "warn", "error", "exception", "critical",
 
 
 def _backend_modules() -> list[Path]:
-    return sorted(path for path in _BACKEND.rglob("*.py") if "_sqlmap" not in path.relative_to(_BACKEND).parts)
+    return sorted(_BACKEND.rglob("*.py"))
 
 
 def _logger_names(path: Path):

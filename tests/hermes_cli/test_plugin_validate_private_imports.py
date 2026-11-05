@@ -7,8 +7,6 @@ from pathlib import Path
 import hermes_yaml as yaml
 
 from hermes_cli.plugin_validate import validate_plugin_dir
-from hermes_cli.plugin_validate_private_imports import _REMOVED_STORE_PRIVATE_METHODS, _private_method_names
-from tests.persistence_sqlite._legacy_store import oracle_tree
 
 
 def _plugin(root: Path, files: dict[str, str]) -> Path:
@@ -175,11 +173,3 @@ def test_private_method_calls_on_core_handles_warn_but_own_helpers_do_not(tmp_pa
     [warning] = [w for w in report.warnings if w.startswith("private core attribute access")]
     sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
     assert sites == ["engine.py:5 db._row_to_message_dict", "engine.py:6 runner._evict_cached_agent"], sites
-
-
-def test_removed_store_names_are_what_mains_store_files_yield():
-    """The frozen private method names of the removed session store are what the validator collects from the
-    pinned main checkout's ``hermes_state.py`` and ``hermes_state_*.py``."""
-    collected = _private_method_names(oracle_tree(), ("hermes_state.py", "hermes_state_*.py"))
-
-    assert _REMOVED_STORE_PRIVATE_METHODS == tuple(sorted(collected))

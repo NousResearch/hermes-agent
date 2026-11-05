@@ -1,14 +1,9 @@
-"""Seeds and probes the admission backend tests share: the seed calls, run on the legacy store for a test that compares
-with it and through the backend for any other (:class:`BackendSeed`), deterministic admission ids, record projections,
-and a failure injected inside a verb's write after its first mutating statement."""
+"""Seeds and probes the admission backend tests share: the seed calls, run through the backend (:class:`BackendSeed`), record projections, and a failure injected inside a verb's write after its first mutating statement."""
 
 from __future__ import annotations
 
 import dataclasses
-import itertools
-import uuid
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any, Callable, Iterator
 
 import pytest
@@ -25,7 +20,7 @@ class InjectedFailure(Exception):
 
 
 def record_dict(record: Any) -> Any:
-    """A contract record as the legacy ``_row`` dict (``ClaimedAdmission`` without the field legacy lacks)."""
+    """A contract record as a dict of its fields without ``queued_owner_epoch``; ``None`` and ``False`` as they are."""
     if record is None or record is False:
         return record
     values = dataclasses.asdict(record)
@@ -34,8 +29,7 @@ def record_dict(record: Any) -> Any:
 
 
 class BackendSeed:
-    """The ``SessionDB`` calls the shared seeds make, run through the backend's verbs on ``store`` (raw SQL on its
-    holder), for a test that does not compare with the legacy store."""
+    """The ``SessionDB``-shaped calls the shared seeds make, run through the backend's verbs on ``store`` (raw SQL on its holder)."""
 
     def __init__(self, store) -> None:
         self.store = store
@@ -55,77 +49,47 @@ class BackendSeed:
 
 
 def begin_epoch(db, instance_id):
-    if isinstance(db, BackendSeed):
-        return db.store.runtime.begin_epoch(instance_id=instance_id)
-    from hermes_state_runtime import begin_runtime_epoch
-    return begin_runtime_epoch(db, instance_id=instance_id)
+    return db.store.runtime.begin_epoch(instance_id=instance_id)
 
 
 def recover(db, epoch):
-    if isinstance(db, BackendSeed):
-        return db.store.admissions.recover(epoch=epoch)
-    from hermes_state_runtime import recover_session_inputs
-    return recover_session_inputs(db, epoch=epoch)
+    return db.store.admissions.recover(epoch=epoch)
 
 
 def admit(db, session_id, request_id, payload=None, principal_id="p", epoch=EPOCH, **kwargs):
     payload = payload or {"text": request_id}
-    if isinstance(db, BackendSeed):
-        record, _created = db.store.admissions.admit(epoch=epoch, principal_id=principal_id, session_id=session_id,
-                                                     request_id=request_id, payload=payload, **kwargs)
-        return record_dict(record)
-    from hermes_state_runtime import admit_session_input
-    return admit_session_input(db, epoch=epoch, principal_id=principal_id, session_id=session_id,
-                               request_id=request_id, payload=payload, **kwargs)
+    record, _created = db.store.admissions.admit(epoch=epoch, principal_id=principal_id, session_id=session_id,
+                                                 request_id=request_id, payload=payload, **kwargs)
+    return record_dict(record)
 
 
 def claim(db, session_id, epoch=EPOCH):
-    if isinstance(db, BackendSeed):
-        return record_dict(db.store.admissions.claim(epoch=epoch, session_id=session_id))
-    from hermes_state_runtime import claim_session_input
-    return claim_session_input(db, epoch=epoch, session_id=session_id)
+    return record_dict(db.store.admissions.claim(epoch=epoch, session_id=session_id))
 
 
 def get(db, admission_id):
-    if isinstance(db, BackendSeed):
-        return record_dict(db.store.admissions.get(admission_id=admission_id))
-    from hermes_state_runtime import get_session_admission
-    return get_session_admission(db, admission_id=admission_id)
+    return record_dict(db.store.admissions.get(admission_id=admission_id))
 
 
 def settle(db, row, outcome="completed", result=None, epoch=EPOCH):
     """Settle the claimed ``row`` under ``epoch``."""
     call = dict(epoch=epoch, admission_id=row["admission_id"], generation=row["generation"], outcome=outcome,
                 result=result)
-    if isinstance(db, BackendSeed):
-        return record_dict(db.store.admissions.settle(**call))
-    from hermes_state_runtime import settle_session_input
-    return settle_session_input(db, **call)
+    return record_dict(db.store.admissions.settle(**call))
 
 
 def steer(db, row, claimed, epoch=EPOCH):
     """Hand the queued ``row`` to the running ``claimed`` row."""
     call = dict(epoch=epoch, admission_id=row["admission_id"], generation=claimed["generation"])
-    if isinstance(db, BackendSeed):
-        record, transferred = db.store.admissions.steer(**call)
-        return record_dict(record), transferred
-    from hermes_state_runtime import steer_session_input
-    return steer_session_input(db, **call)
+    record, transferred = db.store.admissions.steer(**call)
+    return record_dict(record), transferred
 
 
 def register(db, session_id, generation, execution_id="exec-1", epoch=EPOCH):
     """Register a compute worker on ``session_id`` at ``generation``."""
     call = dict(epoch=epoch, execution_id=execution_id, session_id=session_id, generation=generation, kind="compute",
                 adoption_secret="secret-1")
-    if isinstance(db, BackendSeed):
-        return db.store.worker_executions.register(**call)
-    from hermes_state_runtime import register_worker_execution
-    return register_worker_execution(db, **call)
-
-
-def authority(db, epoch=EPOCH):
-    """The parts of a legacy gateway authority the copied gateway functions read."""
-    return SimpleNamespace(db=db, epoch=epoch, sessions={})
+    return db.store.worker_executions.register(**call)
 
 
 class _FailingConnection:

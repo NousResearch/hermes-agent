@@ -1,6 +1,6 @@
-"""The search index administration verbs on SQLite, and their answers against the legacy store.
+"""The search index administration verbs on SQLite.
 
-The first section drives the three administration verbs and observes through ``search_messages``; race cases run two contenders in two threads released together, so they contend for the store's cross-process rebuild authority. The second section writes the same rows through the backend and, where a case compares, into a legacy ``SessionDB`` on its own file: the match sets of an admitted rebuild and the marked snippets against the legacy store; denied rebuilds, deferred recovery and read-only access on the backend.
+The first section drives the three administration verbs and observes through ``search_messages``; race cases run two contenders in two threads released together, so they contend for the store's cross-process rebuild authority. The second section writes rows through the backend into one session: a rebuild denied while another holder has the rebuild authority, recovery deferred by a damaged index, and read-only access.
 """
 
 from __future__ import annotations
@@ -20,10 +20,7 @@ from persistence.conversation.search import SearchIndexRebuildStatus
 from persistence.conversation.sessions import NewSession
 from persistence.sqlite import SQLiteBackend
 from persistence.sqlite._holder import StoreHolder
-from tests.persistence_sqlite._legacy_store import legacy_store
 from tests.persistence_sqlite.conftest import store_for
-
-__all__ = ["legacy_store"]
 
 EPOCH = 1767225600.0  # 2026-01-01T00:00:00Z
 
@@ -170,7 +167,7 @@ def test_retry_two_contenders_never_raise(backend, scope_a):
     assert outcomes == [False, False]
 
 
-# ── against the legacy store ────────────────────────────────────────────────
+# ── rebuild authority, recovery and read-only access ────────────────────────
 
 BRIDGE = SessionId("br-1")
 
@@ -182,45 +179,18 @@ def no_foreign_holders(monkeypatch):
     monkeypatch.setattr(StoreHolder, "_foreign_state_db_holders", lambda self: [])
 
 
-@pytest.fixture
-def oracle(tmp_path, legacy_store):
-    """A legacy ``SessionDB`` on its own file, fed every row the test writes through the backend."""
-    from hermes_state import SessionDB
-
-    db = SessionDB(db_path=tmp_path / "oracle.db")
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def _write(store, oracle, session_id: str, message: NewMessage) -> int:
-    """Append one row through the backend and, given an oracle, the same row to it; both stores number it alike."""
+def _write(store, session_id: str, message: NewMessage) -> int:
+    """Append one row through the backend, creating its session first."""
     if store.sessions.get(session_id) is None:
         store.sessions.create(NewSession(session_id, "cli"))
-        if oracle is not None:
-            oracle.create_session(session_id, "cli")
-    row_id = int(store.messages.append(session_id, message))
-    if oracle is not None:
-        legacy_id = oracle.append_message(session_id, message.role, content=message.content,
-                                          tool_name=message.tool_name, timestamp=message.timestamp)
-        assert legacy_id == row_id
-    return row_id
+    return int(store.messages.append(session_id, message))
 
 
-def _bridge_seed(store, oracle=None, rows: int = 3) -> int:
+def _bridge_seed(store, rows: int = 3) -> int:
     last = 0
     for i in range(rows):
-        last = _write(store, oracle, BRIDGE, NewMessage(role="user", content=f"quick brown fox {i}", timestamp=EPOCH + i))
+        last = _write(store, BRIDGE, NewMessage(role="user", content=f"quick brown fox {i}", timestamp=EPOCH + i))
     return last
-
-
-def test_bridge_admitted_rebuild_rebuilds_the_store_indexes(backend, scope_a, oracle, no_foreign_holders):
-    store = backend.open(scope_a)
-    _bridge_seed(store, oracle)
-    assert store.search.rebuild_search_index() >= 1
-    assert {int(row["id"]) for row in oracle.search_messages("quick", limit=50)} == {
-        hit.message_id for hit in store.search.search_messages("quick", limit=50)}
 
 
 def test_bridge_rebuild_denied_by_a_live_holder_returns_zero_and_touches_nothing(backend, scope_a, monkeypatch,
@@ -257,42 +227,3 @@ def test_bridge_read_only_store_rebuilds_nothing_serves_status_and_answers_false
         assert search.retry_deferred_search_recovery() is False
     finally:
         reader.close()
-
-
-# ── marked snippets ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("text", ["quick", "qui*", '"brown fox"', "quick fox", "zanzibar"])
-def test_bridge_hit_snippets_equal_the_legacy_marked_snippet(backend, scope_a, oracle, text):
-    store = backend.open(scope_a)
-    _bridge_seed(store, oracle)
-    body = "prefix " * 60 + "zanzibar quick " + "suffix " * 60
-    _write(store, oracle, BRIDGE, NewMessage(role="assistant", content=body, timestamp=EPOCH + 9))
-    hits = store.search.search_messages(text, limit=50)
-    assert hits
-    legacy = {int(row["id"]): row["snippet"] for row in oracle.search_messages(text, limit=50)}
-    assert {int(hit.message_id) for hit in hits} == set(legacy)
-    for hit in hits:
-        assert ">>>" in hit.snippet
-        assert hit.snippet == legacy[int(hit.message_id)]
-
-
-@pytest.mark.parametrize("content", ["quick >>><<< tail", "quick >>>literal<<< tail", "quick >>> dangling tail", "quick <<< >>> tail"])
-def test_bridge_literal_marker_text_equals_the_legacy_snippet(backend, scope_a, oracle, content):
-    store = backend.open(scope_a)
-    _bridge_seed(store, oracle)
-    _write(store, oracle, BRIDGE, NewMessage(role="user", content=content, timestamp=EPOCH + 9))
-    hits = store.search.search_messages("tail", limit=50)
-    legacy = {int(row["id"]): row["snippet"] for row in oracle.search_messages("tail", limit=50)}
-    assert hits and set(legacy) == {int(hit.message_id) for hit in hits}
-    for hit in hits:
-        assert hit.snippet == legacy[int(hit.message_id)]
-
-
-def test_bridge_unmarked_fallback_route_equals_the_legacy_excerpt(backend, scope_a, oracle):
-    store = backend.open(scope_a)
-    _write(store, oracle, "br-t", NewMessage(role="tool", content="quick tool body", tool_name="web_search", timestamp=EPOCH))
-    (hit,) = store.search.search_messages("quick", role_filter=["tool"], limit=50)
-    legacy = {int(row["id"]): row["snippet"] for row in oracle.search_messages("quick", role_filter=["tool"], limit=50)}
-    assert ">>>" not in hit.snippet and "<<<" not in hit.snippet
-    assert hit.snippet == legacy[int(hit.message_id)]

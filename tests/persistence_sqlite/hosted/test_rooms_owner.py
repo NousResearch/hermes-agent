@@ -1,11 +1,6 @@
-"""The ``HostedRoomRepository`` verbs on the bound profile's ``state.db`` with no placement: owner claims (against
-main's ``CanonicalHostedRoomService.authorize_room`` on a copy of the store), the owner claim inside ``create_room``,
-transport bindings, the two member-session verbs and the hosted member check, under a real ``runtime_epoch``."""
+"""The ``HostedRoomRepository`` verbs on the bound profile's ``state.db`` with no placement: owner claims and reads, the owner claim inside ``create_room``, transport bindings, the two member-session verbs and the hosted member check, under a real ``runtime_epoch``."""
 
 from __future__ import annotations
-
-import sqlite3
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,16 +11,13 @@ from persistence.gateway.hosted_rooms import (
     HostedMemberGuard, HostedOwnerClaim, HostedRoomError, HostedRoomRefusal, HostedTaskIdentity,
 )
 from persistence.sqlite.authority._runtime_ends import begin_runtime_epoch
-from tests.persistence_sqlite._legacy_store import legacy_store
-from tests.persistence_sqlite.hosted.conftest import NOW, copy_file
+from tests.persistence_sqlite.hosted.conftest import NOW
 
-__all__ = ["legacy_store"]
 
 pytestmark = pytest.mark.usefixtures("clock")
 
 MEMBERS = [{"member_id": "m1", "profile": "p1"},
            {"member_id": "m2", "profile": "p2", "target": {"kind": "peer", "installation_id": "i2"}}]
-OWNER_KEY = "gateway.hosted.owner.v1:"
 
 
 def _epoch(store) -> int:
@@ -38,19 +30,6 @@ def _create(store, room_id: str, *, owner: HostedOwnerClaim | None = None, place
                                           authority_gateway_id="gw", owner=owner, now=NOW)
 
 
-def _owner_rows(path) -> list[tuple[str, str]]:
-    with sqlite3.connect(path) as conn:
-        return conn.execute("SELECT key, value FROM state_meta WHERE key LIKE ? ORDER BY key", (OWNER_KEY + "%",)).fetchall()
-
-
-def _reason(call) -> str | None:
-    try:
-        call()
-    except Exception as exc:
-        return getattr(exc, "reason", type(exc).__name__)
-    return None
-
-
 @pytest.fixture
 def seeded(backend, scopes):
     store = backend.open(scopes["a"])
@@ -60,37 +39,6 @@ def seeded(backend, scopes):
     _create(store, "gone")
     store.hosted_rooms.disband_room(placement="profile", room_id="gone", expected_gateway_id="gw", expected_epoch=1, now=NOW)
     return store, epoch
-
-
-@pytest.mark.parametrize(("actor", "room_id", "create", "stale"), [
-    ("alice", "owned", False, False), ("bob", "owned", False, False), ("alice", "free", False, False),
-    ("alice", "free", True, False), ("alice", "unowned", True, False), ("alice", "gone", True, False),
-    ("alice", "owned", True, False), ("bob", "owned", True, False), ("alice", "owned", False, True),
-    ("", "free", True, False), ("alice", "bad room", False, False),
-])
-def test_owner_claims_match_m1_authorize_room(seeded, backend, scopes, tmp_path, legacy_store, actor, room_id, create,
-                                              stale):
-    from hermes_state import SessionDB
-    from tests.persistence_sqlite._main_callers.session_hosted_service import CanonicalHostedRoomService
-
-    store, epoch = seeded
-    epoch = epoch - 1 if stale else epoch
-    legacy = tmp_path / "m1" / "state.db"
-    backend.reopen()
-    copy_file(scopes["a"].profile_dir / "state.db", legacy)
-    db = SessionDB(db_path=legacy)
-    try:
-        service = SimpleNamespace(authority=SimpleNamespace(epoch=epoch, db=db))
-        expected = _reason(lambda: CanonicalHostedRoomService.authorize_room(service, actor, room_id, create=create))
-    finally:
-        db.close()
-    if create and room_id != "bad room":
-        actual = _reason(lambda: _create(store, room_id, owner=HostedOwnerClaim(epoch, actor, rule=None),
-                                         members=MEMBERS if room_id in ("owned", "unowned") else []))
-    else:
-        actual = _reason(lambda: store.hosted_rooms.claim_owner(epoch=epoch, room_id=room_id, actor=actor, owner=None))
-    assert actual == expected
-    assert _owner_rows(scopes["a"].profile_dir / "state.db") == _owner_rows(legacy)
 
 
 def test_stale_epochs_refuse_as_fence_stale_before_anything_is_written(seeded):

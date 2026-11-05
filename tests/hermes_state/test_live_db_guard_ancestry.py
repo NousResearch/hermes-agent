@@ -39,14 +39,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHILD_PROBE = """
 import sys
 sys.path.insert(0, {repo!r})
-import hermes_state
+import hermes_state_guard
+from persistence.sqlite import _holder
 
-root = hermes_state._real_platform_state_root()
+root = hermes_state_guard._real_platform_state_root()
 if root is None:
     print("NO-ROOT")
 else:
     try:
-        hermes_state._ensure_test_isolation(root / "state.db")
+        _holder._ensure_test_isolation(root / "state.db")
     except RuntimeError:
         print("REFUSED")
     else:
@@ -115,7 +116,7 @@ class TestScrubbedChildEnvironment:
         process boundary, so ancestry-armed children need an env-carried
         escape hatch or they would have no way to opt out at all.
         """
-        env = _scrubbed_env(**{hermes_state._STATE_DB_GUARD_BYPASS_ENV: "1"})
+        env = _scrubbed_env(**{hermes_state_guard._STATE_DB_GUARD_BYPASS_ENV: "1"})
         assert _run_probe(env) == "ALLOWED"
 
 

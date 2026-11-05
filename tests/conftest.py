@@ -531,7 +531,9 @@ def _close_leaked_session_dbs():
     Instances opened through ``hermes_state_registry.acquire()`` are skipped:
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
-    still holds. The registry owns that lifecycle (``close_all()``).
+    still holds. The registry owns that lifecycle (``close_all()``). A
+    ``SessionDB(path)`` that took its own reference is swept: its ``close()``
+    returns that one reference, once, and never another holder's.
 
     Before the sweep, the auto-title upgrade threads a turn spawned are joined
     (bounded): they hold the turn's SessionDB and write to it (and print to
@@ -554,7 +556,7 @@ def _close_leaked_session_dbs():
     if not registry:
         return
     for db in list(registry):
-        if getattr(db, "_shared_registry_owned", False):
+        if getattr(db, "_shared_registry_owned", False) and getattr(db, "_reference", None) is None:
             continue
         try:
             db.close()

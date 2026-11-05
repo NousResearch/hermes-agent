@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "Großes Modell: {name} erreicht ({resets})."
   large_notice_limit_stops: "Großes Modell: {name} erreicht ({resets}), es läuft bis dahin nicht."
   large_notice_percent: "Großes Modell: verbraucht pro Nachricht mehr von deinem Plan. Monatslimit für große Modelle: {percent} genutzt."
+checkpoints:
+  undo:
+    reverted: "↶ {count} Datei(en) zurückgesetzt, die der rückgängig gemachte Zug geschrieben hat: {files}"
+    kept_edits: "↷ Deine manuellen Änderungen behalten: {files} (/rollback kann sie wiederherstellen)"
+    not_captured: "Nicht zurückgesetzt (kein Checkpoint von vor dem Zug): {files}"
+    failed: "⚠ Zurücksetzen der Dateien fehlgeschlagen: {error}"

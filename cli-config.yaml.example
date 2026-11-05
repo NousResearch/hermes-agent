@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 52
+_config_version: 53
 
 # =============================================================================
 # Database Configuration
@@ -640,6 +640,25 @@ browser:
   # security.allow_private_urls (like the plain local Chromium, it reaches what
   # the terminal reaches); set false to refuse private URLs instead.
   # auto_local_for_private_urls: true
+
+# =============================================================================
+# Filesystem Checkpoints (/undo file revert, /rollback)
+# =============================================================================
+# On by default: before a turn's first file write Hermes snapshots the project
+# into one shared shadow git store (<HERMES_HOME>/checkpoints/store; your own
+# .git is never touched). /undo then also reverts the files the undone turn(s)
+# wrote (hand edits are kept), and /rollback restores any snapshot.
+# Never snapshotted: /, your home directory and its parents, trees over 50k
+# entries, excluded dirs (node_modules, .venv, .git, build output, browser
+# profiles), files over max_file_size_mb, and the checkpoint store itself.
+# Measured: first snapshot of a 23.5k-file repo ~5 s and ~165 MB of store,
+# unchanged later turns <1 s; HERMES_HOME/HOME as cwd: skipped, 0 bytes.
+# Turn it off: hermes config set checkpoints.enabled false
+checkpoints:
+  enabled: true
+  # max_snapshots: 20          # per project
+  # max_total_size_mb: 500     # whole store; oldest snapshots are dropped first
+  # max_file_size_mb: 10       # larger files are never staged
 
 # =============================================================================
 # Tool Loop Guardrails

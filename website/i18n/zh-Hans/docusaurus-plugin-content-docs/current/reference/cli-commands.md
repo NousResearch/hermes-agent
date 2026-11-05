@@ -105,7 +105,7 @@ hermes chat [options]
 | `--image <path>` | 为单次查询附加本地图片。 |
 | `--resume <session>` / `--continue [name]` | 直接从 `chat` 恢复会话。 |
 | `--worktree` | 为本次运行创建隔离的 git worktree。 |
-| `--checkpoints` | 在破坏性文件变更前启用文件系统 checkpoint。 |
+| `--checkpoints` | 为本次会话强制开启文件系统 checkpoint（默认已开启；`checkpoints.enabled: false` 可关闭）。 |
 | `--yolo` | 跳过审批提示。 |
 | `--pass-session-id` | 将会话 ID 传入 system prompt。 |
 | `--ignore-user-config` | 忽略 `~/.hermes/config.yaml`，使用内置默认值。`.env` 中的凭据仍会加载。适用于隔离的 CI 运行、可复现的 bug 报告和第三方集成。 |

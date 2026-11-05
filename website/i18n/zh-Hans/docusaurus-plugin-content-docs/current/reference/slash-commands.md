@@ -41,7 +41,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/history` | 显示对话历史 |
 | `/save <json\|md\|html> [文件名] [redact]` | 将当前会话导出为 JSON 快照、Markdown 记录或独立的 HTML 页面（也接受别名 `markdown` 和 `snapshot`）。`redact` 会在写入前清除 API 密钥、令牌和凭据，且始终放在可选文件名之后的最后一位：`/save md notes.md redact`。即使会话运行在远程网关上，文件也写在你自己的机器上（不支持 `session.export` 的旧版网关只能在其自身主机上保存默认命名的 JSON）。CLI 和 TUI：指定的文件名相对于当前目录解析，否则自动命名并保存在 `~/.hermes/sessions/saved/` 下。Desktop 会打开保存对话框（如提供文件名则预先填入）。直接输入 `/save` 在经典 CLI 中显示用法，在 TUI 和 Desktop 中保存为 JSON。 |
 | `/retry` | 重试最后一条消息（重新发送给 agent） |
-| `/undo` | 移除最后一轮用户/助手对话 |
+| `/undo` | 移除最后一轮用户/助手对话；开启检查点时（默认）同时还原该轮写入的文件 |
 | `/title` | 为当前会话设置标题（用法：/title My Session Name） |
 | `/compress [focus topic]` | 手动压缩对话上下文（刷新记忆 + 摘要）。可选的焦点主题可缩小摘要保留的范围。 |
 | `/rollback` | 列出或恢复文件系统检查点（用法：/rollback [number]） |
@@ -210,7 +210,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/personality [name]` | 为会话设置 personality 覆盖层。 |
 | `/fast [normal\|fast\|status]` | 切换快速模式——OpenAI Priority Processing / Anthropic Fast Mode。 |
 | `/retry` | 重试最后一条消息。 |
-| `/undo` | 移除最后一轮对话。 |
+| `/undo` | 移除最后一轮对话并还原其写入的文件（开启检查点时）。 |
 | `/sethome`（别名：`/set-home`） | 将当前聊天标记为该平台的 home 频道，用于消息投递。 |
 | `/compress [focus topic]` | 手动压缩对话上下文。可选的焦点主题可缩小摘要保留的范围。 |
 | `/topic [off\|help\|session-id]` | **仅限 Telegram DM。** 管理用户自主的多会话话题模式。`/topic` 启用或显示状态；`/topic off` 禁用并清除绑定；`/topic help` 显示用法；在话题中执行 `/topic <session-id>` 可恢复之前的会话。见 [多会话 DM 模式](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic)。 |

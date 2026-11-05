@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "Велика модель: досягнуто {name} ({resets})."
   large_notice_limit_stops: "Велика модель: досягнуто {name} ({resets}), до скидання вона не запуститься."
   large_notice_percent: "Велика модель: витрачає більше ліміту плану на повідомлення. Місячний ліміт великих моделей: використано {percent}."
+checkpoints:
+  undo:
+    reverted: "↶ Повернуто файлів, записаних скасованим ходом: {count}: {files}"
+    kept_edits: "↷ Ваші ручні правки збережено: {files} (/rollback може їх відновити)"
+    not_captured: "Не повернуто (немає контрольної точки до ходу): {files}"
+    failed: "⚠ Не вдалося повернути файли: {error}"

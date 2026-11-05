@@ -13,13 +13,14 @@ import os
 
 import pytest
 
+from hermes_cli.config import DEFAULT_CONFIG
 from tui_gateway import server
 
 
 class TestLoadCheckpointsEnabled:
     def test_defaults_to_false_when_no_config_section(self):
-        """No ``checkpoints`` section → DEFAULT_CONFIG default (disabled)."""
-        assert server._load_checkpoints_enabled({}) is False
+        """No ``checkpoints`` section → DEFAULT_CONFIG default."""
+        assert server._load_checkpoints_enabled({}) is DEFAULT_CONFIG["checkpoints"]["enabled"]
 
     def test_honors_config_enabled_true(self):
         """``checkpoints: {enabled: true}`` in config.yaml enables checkpoints."""
@@ -34,10 +35,10 @@ class TestLoadCheckpointsEnabled:
         assert server._load_checkpoints_enabled({"checkpoints": False}) is False
 
     def test_malformed_section_falls_back_to_default(self):
-        assert server._load_checkpoints_enabled({"checkpoints": "enabled"}) is False
+        assert server._load_checkpoints_enabled({"checkpoints": "enabled"}) is DEFAULT_CONFIG["checkpoints"]["enabled"]
 
     def test_none_cfg_falls_back(self):
-        assert server._load_checkpoints_enabled(None) is False
+        assert server._load_checkpoints_enabled(None) is DEFAULT_CONFIG["checkpoints"]["enabled"]
 
 
 class TestResolveCheckpointsEnabled:

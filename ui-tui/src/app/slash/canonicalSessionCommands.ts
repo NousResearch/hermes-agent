@@ -166,9 +166,11 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
       ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
 
       if (intent === 'undo') {
-        return ctx.transcript.sys(
+        ctx.transcript.sys(
           t(removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(removed))
         )
+
+        return revertUndoneFiles(ctx, sid, (result.target_message as undefined | { id?: unknown })?.id)
       }
 
       // Main's /retry: the rewound user turn's own text, not whatever this view typed last.
@@ -187,6 +189,23 @@ export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
         ctx.transcript.sys(busy)
       }
     })
+}
+
+/** `/undo`'s file half: the owner puts back the files the undone turns wrote (hand edits kept) and
+ * names them; nothing is shown when checkpoints are off or the turns wrote nothing. */
+function revertUndoneFiles(ctx: SlashRunCtx, sid: string, targetId: unknown) {
+  if (!Number.isSafeInteger(targetId)) {
+    return
+  }
+
+  void ctx.gateway.gw
+    .request<{ lines?: string[] }>('rollback.undo_files', { session_id: sid, target_message_id: targetId })
+    .then(result => {
+      if (!ctx.stale()) {
+        ;(result?.lines ?? []).forEach(line => ctx.transcript.sys(line))
+      }
+    })
+    .catch(ctx.guardedErr)
 }
 
 /** Main's busy text for a refused rewind: wait for a running /compress, else stop the reply; null otherwise. */

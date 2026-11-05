@@ -4306,3 +4306,9 @@ plan_usage:
   large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
   large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
   large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
+checkpoints:
+  undo:
+    reverted: "↶ {count} fichier(s) écrit(s) par le tour annulé restauré(s) : {files}"
+    kept_edits: "↷ Vos modifications manuelles sont conservées : {files} (/rollback peut les restaurer)"
+    not_captured: "Non restauré (aucun point de contrôle d'avant le tour) : {files}"
+    failed: "⚠ Échec de la restauration des fichiers : {error}"

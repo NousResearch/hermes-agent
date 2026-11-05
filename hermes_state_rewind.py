@@ -38,6 +38,8 @@ class RewindOutcome:
     live_text: str  # lossless retry text when ``require_retryable``, else the display flattening (prefill)
     rewound_count: int
     turns_undone: int
+    # The rewound user row's durable id: a shared-gateway /undo names it to revert that turn's files.
+    target_row_id: Optional[int] = None
 
 
 def _user_indices(messages: list[dict[str, Any]]) -> list[int]:
@@ -108,7 +110,8 @@ class SessionRewindMixin:
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
-            rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal)
+            rewound_count=int(result.get("rewound_count", 0)), turns_undone=len(durable_user) - user_ordinal,
+            target_row_id=plan.target_row_id)
 
     def plan_user_turn_rewind(
         self, session_id: str, user_ordinal: int, *, warm_history: Optional[list[dict[str, Any]]] = None,

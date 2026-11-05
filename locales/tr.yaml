@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "Büyük model: {name} limitine ulaşıldı ({resets})."
   large_notice_limit_stops: "Büyük model: {name} limitine ulaşıldı ({resets}), o zamana kadar çalışmaz."
   large_notice_percent: "Büyük model: mesaj başına planından daha fazla kullanım harcar. Aylık büyük model limiti: {percent} kullanıldı."
+checkpoints:
+  undo:
+    reverted: "↶ Geri alınan turun yazdığı {count} dosya geri döndürüldü: {files}"
+    kept_edits: "↷ Elle yaptığın düzenlemeler korundu: {files} (/rollback bunları geri yükleyebilir)"
+    not_captured: "Geri döndürülmedi (turdan önceki kontrol noktası yok): {files}"
+    failed: "⚠ Dosya geri döndürme başarısız: {error}"

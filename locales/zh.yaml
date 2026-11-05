@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "大型模型：已达{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已达{name}上限（{resets}），在此之前无法运行。"
   large_notice_percent: "大型模型：每条消息消耗更多套餐用量。每月大型模型上限：已用 {percent}。"
+checkpoints:
+  undo:
+    reverted: "↶ 已还原被撤销轮次写入的 {count} 个文件：{files}"
+    kept_edits: "↷ 已保留你的手动修改：{files}（可用 /rollback 恢复）"
+    not_captured: "未还原（没有该轮之前的检查点）：{files}"
+    failed: "⚠ 文件还原失败：{error}"

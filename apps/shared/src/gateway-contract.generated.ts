@@ -3525,6 +3525,7 @@ export interface SessionUndoParams {
 export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
+  files?: string[]
 }
 export interface SessionSaveParams {
   session_id: string
@@ -4876,6 +4877,20 @@ export interface RollbackSessionDiffResult {
   diff_lines?: number
   empty?: boolean
   error?: string | null
+}
+export interface RollbackUndoFilesParams {
+  session_id: string
+  target_message_id: number
+  profile?: string | null
+}
+/** ``gateway/session_tui_ops.py::undo_files``: ``tools/checkpoint_turns.revert_turns`` for the turns from the rewound user row onward (absolute paths), plus ``lines``: the same outcome as the owner's localized notice lines (paths relative to the session cwd). ``enabled: false`` when the session's frozen checkpoint policy does not checkpoint (nothing was touched). */
+export interface RollbackUndoFilesResult {
+  enabled: boolean
+  lines?: string[]
+  reverted?: string[]
+  skipped_user_edits?: string[]
+  not_captured?: string[]
+  errors?: string[]
 }
 /** ``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``). */
 export interface SessionExportParams {
@@ -6985,6 +7000,8 @@ export interface CanonicalRpcMethods {
   'prompt.submit': { params: CanonicalSubmitParams; result: CanonicalSubmitResult }
   /** The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer. */
   'rollback.session_diff': { params: RollbackSessionDiffParams; result: RollbackSessionDiffResult }
+  /** /undo's file half: after the rewind, restore the files the undone turns wrote (hand edits kept). */
+  'rollback.undo_files': { params: RollbackUndoFilesParams; result: RollbackUndoFilesResult }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
@@ -7049,6 +7066,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.steer_queued',
   'prompt.submit',
   'rollback.session_diff',
+  'rollback.undo_files',
   'runtime.describe',
   'session.automation',
   'session.create',

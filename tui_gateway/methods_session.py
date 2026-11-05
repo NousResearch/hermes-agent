@@ -2003,7 +2003,7 @@ def _(rid, params: dict, session: dict) -> dict:
     busy = _err(rid, 4009, busy_message("undo", bool(session.get("_manual_compress_active"))))
     if session.get("running"):
         return busy
-    removed = 0
+    removed, files = 0, []
     with session["history_lock"]:
         if session.get("running"):
             return busy
@@ -2012,12 +2012,15 @@ def _(rid, params: dict, session: dict) -> dict:
         from agent.context_compressor import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
             try:
-                removed = _rewind_active_session_history(session, user_turns - 1)[2]
+                _installed, live_view, removed = _rewind_active_session_history(session, user_turns - 1)
             except Exception as exc:
                 return _err(rid, 5008, f"undo: {exc}")
+        if removed and params.get("intent") != "retry":  # /retry resends the same ask: files stay
+            from tui_gateway.checkpoints import revert_undone_files
+            files = revert_undone_files(session, live_view)
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
-    return _ok(rid, {"removed": removed})
+    return _ok(rid, {"removed": removed, "files": files})
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:

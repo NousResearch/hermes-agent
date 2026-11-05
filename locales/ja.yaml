@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "大型モデル：{name}の上限に達しました（{resets}）。"
   large_notice_limit_stops: "大型モデル：{name}の上限に達しました（{resets}）。それまで実行できません。"
   large_notice_percent: "大型モデル：1メッセージあたりプランの利用量を多く消費します。大型モデルの月間上限：{percent} 使用。"
+checkpoints:
+  undo:
+    reverted: "↶ 取り消したターンが書き込んだ {count} 件のファイルを元に戻しました: {files}"
+    kept_edits: "↷ 手動の編集は保持しました: {files}（/rollback で復元できます）"
+    not_captured: "元に戻していません（ターン前のチェックポイントがありません）: {files}"
+    failed: "⚠ ファイルの復元に失敗しました: {error}"

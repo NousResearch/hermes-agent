@@ -137,7 +137,7 @@ Common options:
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
-| `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
+| `--checkpoints` | Force filesystem checkpoints on for this session (on by default; `checkpoints.enabled: false` turns them off). |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |

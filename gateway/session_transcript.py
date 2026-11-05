@@ -655,7 +655,7 @@ class SessionTranscriptMixin:
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
     ) -> Optional[dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete (``active=0``), mirroring CLI ``/undo [N]``.
-        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no rewindable
+        Returns ``{"rewound_count", "turns_undone", "target_text", "target_row_id"}`` or ``None`` (no DB / no rewindable
         turn / persistence failure); ``n`` clamps to the oldest user turn. ``require_retryable_composite``
         is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
         is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
@@ -679,4 +679,4 @@ class SessionTranscriptMixin:
                 return None
             self._clear_dirty_transcript(session_id)
             return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
-                    "target_text": outcome.live_text}
+                    "target_text": outcome.live_text, "target_row_id": outcome.target_row_id}

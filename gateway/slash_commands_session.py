@@ -645,8 +645,27 @@ class GatewaySessionCommandsMixin:
             logger.debug("undo: cached-agent eviction skipped: %s", e)
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t("gateway.undo.removed", turns=result["turns_undone"],
-                 count=result["rewound_count"], preview=preview)
+        reply = t("gateway.undo.removed", turns=result["turns_undone"],
+                  count=result["rewound_count"], preview=preview)
+        files = await asyncio.to_thread(self._undo_turn_files, source, session_entry.session_id,
+                                        result.get("target_row_id"))
+        return "\n".join([reply, *files])
+
+    def _undo_turn_files(self, source, session_id, target_row_id) -> list[str]:
+        """/undo's file half: put back the files the undone turns wrote (hand edits kept), under the
+        session's checkpoint policy. Lines naming them; empty with checkpoints off or no writes."""
+        if not isinstance(target_row_id, int):
+            return []
+        mgr = self._checkpoint_manager(source)
+        if mgr is None or mgr.unsupported_backend_reason():
+            return []
+        from tools.checkpoint_turns import summarize, undo_row_files
+        db = self.session_store._db_for_session_id(session_id)
+        try:
+            result = undo_row_files(mgr, db, target_row_id, {session_id})
+        except Exception as exc:  # health: allow BLE001 -- the transcript undo already committed; report it
+            result = {"errors": [str(exc)]}
+        return summarize(result, self._terminal_cwd())
 
     # --------------------------------------------------------------------- /compress
 

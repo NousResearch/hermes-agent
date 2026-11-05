@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "대형 모델: {name} 한도에 도달했습니다({resets})."
   large_notice_limit_stops: "대형 모델: {name} 한도에 도달했습니다({resets}). 그때까지 실행되지 않습니다."
   large_notice_percent: "대형 모델: 메시지당 플랜 사용량을 더 많이 씁니다. 대형 모델 월간 한도: {percent} 사용."
+checkpoints:
+  undo:
+    reverted: "↶ 취소된 턴이 작성한 파일 {count}개를 되돌렸습니다: {files}"
+    kept_edits: "↷ 직접 수정한 내용은 유지했습니다: {files} (/rollback으로 복원 가능)"
+    not_captured: "되돌리지 않음 (턴 이전 체크포인트 없음): {files}"
+    failed: "⚠ 파일 되돌리기 실패: {error}"

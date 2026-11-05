@@ -3998,3 +3998,9 @@ plan_usage:
   large_notice_limit: "Nagy modell: elérted a(z) {name} korlátot ({resets})."
   large_notice_limit_stops: "Nagy modell: elérted a(z) {name} korlátot ({resets}), így addig nem fut."
   large_notice_percent: "Nagy modell: üzenetenként többet használ a csomagodból. Nagy modellekre vonatkozó havi korlát: {percent} felhasználva."
+checkpoints:
+  undo:
+    reverted: "↶ {count} fájl visszaállítva, amelyet a visszavont kör írt: {files}"
+    kept_edits: "↷ A kézi szerkesztéseid megmaradtak: {files} (a /rollback visszaállíthatja őket)"
+    not_captured: "Nincs visszaállítva (nincs a kör előtti ellenőrzőpont): {files}"
+    failed: "⚠ A fájlok visszaállítása sikertelen: {error}"

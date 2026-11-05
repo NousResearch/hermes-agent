@@ -820,15 +820,16 @@ class CLISessionMixin:
         print(t("cli.session.retrying", preview=f"{last_message[:60]}{'...' if len(last_message) > 60 else ''}"))
         return last_message
 
-    def undo_last(self, n: int = 1, prefill: bool = True):
+    def undo_last(self, n: int = 1, prefill: bool = True, revert_files: bool = True):
         """Back up N user turns: truncate history, soft-delete on disk, prefill the composer.
 
         Discards everything from the Nth-from-last user message onward (clamped to the oldest
         turn). Rows are soft-deleted in SessionDB (``active=0``, kept for audit), memory
         providers get ``on_session_switch(rewound=True)``, and the agent is patched like
         /branch does. ``prefill=False`` is for programmatic callers (checkpoint rollback)
-        that must not touch the input buffer. Returns the number of user turns undone (None when
-        nothing changed).
+        that must not touch the input buffer. ``revert_files``: with checkpoints on, also put back
+        the files the undone turns wrote (``/rollback`` already restored the tree and passes False).
+        Returns the number of user turns undone (None when nothing changed).
         """
         if not self.conversation_history:
             print(t("cli.session.undo_no_messages"))
@@ -840,6 +841,7 @@ class CLISessionMixin:
             return
 
         turns_undone = min(n, len(user_indices))
+        target_ts = self.conversation_history[user_indices[len(user_indices) - turns_undone]].get("timestamp")
         rewound = self._rewind_to_user_ordinal(len(user_indices) - turns_undone)
         if rewound is None:
             return
@@ -848,6 +850,9 @@ class CLISessionMixin:
         print(t(key, count=turns_undone, messages=removed_count,
                 backup=f"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}"))
         print(f"  {t('cli.session.undo_remaining', count=len(self.conversation_history))}")
+        if revert_files:
+            for line in self._undo_turn_files(getattr(self, "_last_rewound_row_id", None), target_ts):
+                print(f"  {line}")
         # Editable, not auto-sent (Claude-Code-style).
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
@@ -870,6 +875,8 @@ class CLISessionMixin:
         truncated, live_view = history_before_user_originated_turn(warm_history, cut_idx)
         removed_text = self._undo_content_to_text(live_view.get("content"))
 
+        # The rewound user row's durable id (None without a store): /undo's file half addresses the turn by it.
+        self._last_rewound_row_id = None
         if self._session_db is not None and self.session_id:
             try:
                 outcome = self._session_db.rewind_user_turn(
@@ -882,6 +889,7 @@ class CLISessionMixin:
             # Canonical editable prefill: the raw carrier holds the reference-summary wrapper.
             removed_text = outcome.live_text or removed_text
             removed_count = outcome.rewound_count or removed_count
+            self._last_rewound_row_id = outcome.target_row_id
 
         # Publish only after the durable rewind succeeds (or no store exists).
         self._publish_truncated_history(truncated, invalidate_prompt=True)
@@ -891,6 +899,27 @@ class CLISessionMixin:
             with contextlib.suppress(Exception):
                 _mm.on_session_switch(self.session_id, parent_session_id="", reset=False, rewound=True)
         return removed_text, removed_count
+
+    def _undo_turn_files(self, target_row_id, target_ts) -> list[str]:
+        """/undo's file half: the shared gateway's ``rollback.undo_files`` when rewired (its tools
+        wrote the files), else this agent's checkpoint manager. Lines naming what was reverted."""
+        from hermes_cli.gateway_side import connection_for
+        from tools.checkpoint_turns import summarize, undo_row_files, undo_turn_files
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        try:
+            if (connection := connection_for(self)) is not None:
+                if not isinstance(target_row_id, int):
+                    return []
+                return list((connection.call("rollback.undo_files", session_id=self.session_id,
+                                             target_message_id=target_row_id) or {}).get("lines") or ())
+            else:
+                mgr = getattr(getattr(self, "agent", None), "_checkpoint_mgr", None)
+                db = self._session_db
+                result = (undo_row_files(mgr, db, target_row_id, {self.session_id}) if isinstance(target_row_id, int)
+                          else undo_turn_files(mgr, target_ts, db, self.session_id))
+        except Exception as exc:  # health: allow BLE001 -- the conversation undo already committed; report, never unwind it
+            result = {"errors": [str(exc)]}
+        return summarize(result, cwd)
 
     @staticmethod
     def _undo_content_to_text(content) -> str:

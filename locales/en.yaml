@@ -4096,3 +4096,9 @@ plan_usage:
   large_notice_limit: "Large model: your {name} limit is reached ({resets})."
   large_notice_limit_stops: "Large model: your {name} limit is reached ({resets}), so it won't run until then."
   large_notice_percent: "Large model: uses more of your plan's usage per message. Monthly large-model limit: {percent} used."
+checkpoints:
+  undo:
+    reverted: "↶ Reverted {count} file(s) the undone turn wrote: {files}"
+    kept_edits: "↷ Kept your hand edits: {files} (/rollback can restore them)"
+    not_captured: "Not reverted (no checkpoint from before the turn): {files}"
+    failed: "⚠ File revert failed: {error}"

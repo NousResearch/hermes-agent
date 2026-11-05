@@ -3155,7 +3155,7 @@ Automatic filesystem snapshots before destructive file operations. See the [Chec
 
 ```yaml
 checkpoints:
-  enabled: false                 # Enable automatic checkpoints (also: hermes chat --checkpoints). Default: false (opt-in).
+  enabled: true                  # Automatic checkpoints; /undo also reverts the undone turn's files. Default: true. Off: hermes config set checkpoints.enabled false
   max_snapshots: 20              # Max checkpoints to keep per directory (default: 20)
 ```
 

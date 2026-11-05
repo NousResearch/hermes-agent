@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "نموذج كبير: تم بلوغ حدك {name} ({resets})."
   large_notice_limit_stops: "نموذج كبير: تم بلوغ حدك {name} ({resets})، لذا لن يعمل حتى ذلك الحين."
   large_notice_percent: "نموذج كبير: يستهلك المزيد من استخدام خطتك لكل رسالة. الحد الشهري للنماذج الكبيرة: {percent} مستخدم."
+checkpoints:
+  undo:
+    reverted: "↶ تمت إعادة {count} ملف(ات) كتبها الدور الملغى: {files}"
+    kept_edits: "↷ تم الإبقاء على تعديلاتك اليدوية: {files} (يمكن لـ /rollback استعادتها)"
+    not_captured: "لم تتم الإعادة (لا توجد نقطة حفظ قبل الدور): {files}"
+    failed: "⚠ فشلت إعادة الملفات: {error}"

@@ -7,20 +7,43 @@ description: "Filesystem safety nets for destructive operations using shadow git
 
 # Checkpoints and `/rollback`
 
-Hermes Agent can automatically snapshot your project before **destructive operations** and restore it with a single command. Checkpoints are **opt-in** as of v2 — most users never use `/rollback`, and the shadow-store storage is non-trivial over time, so the default is off.
+Hermes Agent automatically snapshots your project before **destructive operations** and restores it with a single command. Checkpoints are **on by default** (config v53, after the v2 store gained real pruning and size caps), so `/undo` can put back the files a turn wrote, not only the conversation.
 
-Enable checkpoints per-session with `--checkpoints`:
+### `/undo` reverts the turn's files too
 
-```bash
-hermes chat --checkpoints
+`/undo [N]` rewinds the last N user turns **and** restores every file Hermes wrote during those turns to its state before the first of them, in the TUI, the classic CLI, Desktop's backend and messaging platforms alike. It reports what it did:
+
+```
+↶ Undid 1 turn (2 message(s)). Edit and resubmit, or send a new message.
+↶ Reverted 2 file(s) the undone turn wrote: app.py, notes.md
 ```
 
-Or enable globally in `~/.hermes/config.yaml`:
+- Files Hermes **created** in the undone turns are deleted; files it **edited** get their earlier content back.
+- A file you edited by hand after Hermes wrote it is **kept** (`↷ Kept your hand edits: …`); `/rollback` can still restore it.
+- Another conversation's writes are never touched, and a turn that wrote nothing changes no file.
+- A pre-undo snapshot is taken first, so `/rollback` can undo the undo.
+- `/retry` never touches files. With checkpoints off, `/undo` rewinds the conversation only, as before.
+
+### Turning checkpoints off
+
+```bash
+hermes config set checkpoints.enabled false
+```
+
+or in `~/.hermes/config.yaml`:
 
 ```yaml
 checkpoints:
-  enabled: true
+  enabled: false
 ```
+
+`hermes chat --checkpoints` still forces them on for one session.
+
+### What is never snapshotted
+
+Default-on must not copy huge trees, so the manager skips, with no git work at all: `/`, your home directory and every parent of it; trees with more than 50,000 entries (counted without the excluded directories below); excluded directories (`node_modules/`, `.venv/`, `.git/`, `dist/`, `build/`, caches, Hermes browser profiles); files over `max_file_size_mb`; and the checkpoint store itself when it sits inside the project (a profile home as cwd).
+
+Measured on a workstation: a 23.5k-file repository costs ~5 s and ~165 MB of store for its first snapshot, and under 1 s for later turns with no changes; `$HOME` as the working directory is skipped (0 bytes). The store is pruned to `max_total_size_mb` (500 MB) and `retention_days` (7) automatically.
 
 This safety net is powered by an internal **Checkpoint Manager** that keeps a single shared shadow git repository under `~/.hermes/checkpoints/store/` — your real project `.git` is never touched. Every project the agent works in shares the same store, so git's content-addressable object DB deduplicates across projects and across turns.
 
@@ -89,7 +112,7 @@ Configure in `~/.hermes/config.yaml`:
 
 ```yaml
 checkpoints:
-  enabled: false              # master switch (default: false — opt-in)
+  enabled: true               # master switch (default: true since config v53; false turns it off)
   max_snapshots: 20           # max checkpoints per project (enforced via ref rewrite + gc)
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this

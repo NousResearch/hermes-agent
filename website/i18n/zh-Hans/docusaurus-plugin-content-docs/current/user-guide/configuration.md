@@ -1668,7 +1668,7 @@ approvals:
 
 ```yaml
 checkpoints:
-  enabled: false                 # 启用自动检查点（也可：hermes chat --checkpoints）。默认：false（选择加入）。
+  enabled: true                  # 自动检查点；/undo 同时还原被撤销轮次的文件。默认：true。关闭：hermes config set checkpoints.enabled false
   max_snapshots: 20              # 每个目录保留的最大检查点数（默认：20）
 ```
 

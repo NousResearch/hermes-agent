@@ -34452,6 +34452,92 @@
         "title": "RollbackSessionDiffResult",
         "type": "object"
       },
+      "RollbackUndoFilesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "target_message_id": {
+            "title": "Target Message Id",
+            "type": "integer"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id",
+          "target_message_id"
+        ],
+        "title": "RollbackUndoFilesParams",
+        "type": "object"
+      },
+      "RollbackUndoFilesResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::undo_files``: ``tools/checkpoint_turns.revert_turns`` for the\nturns from the rewound user row onward (absolute paths), plus ``lines``: the same outcome as\nthe owner's localized notice lines (paths relative to the session cwd). ``enabled: false`` when\nthe session's frozen checkpoint policy does not checkpoint (nothing was touched).",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "lines": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "reverted": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reverted",
+            "type": "array"
+          },
+          "skipped_user_edits": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skipped User Edits",
+            "type": "array"
+          },
+          "not_captured": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Captured",
+            "type": "array"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackUndoFilesResult",
+        "type": "object"
+      },
       "Room": {
         "additionalProperties": false,
         "description": "``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy\nadoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add.",
@@ -39862,6 +39948,14 @@
           "removed": {
             "title": "Removed",
             "type": "integer"
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
           }
         },
         "required": [
@@ -49179,6 +49273,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RollbackSessionDiffResult"
+        }
+      }
+    },
+    {
+      "name": "rollback.undo_files",
+      "summary": "/undo's file half: after the rewind, restore the files the undone turns wrote (hand edits kept).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackUndoFilesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackUndoFilesResult"
         }
       }
     },

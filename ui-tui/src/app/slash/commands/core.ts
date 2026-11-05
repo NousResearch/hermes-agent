@@ -925,6 +925,7 @@ export const coreCommands: SlashCommand[] = [
             ctx.transcript.sys(
               t(r.removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(r.removed))
             )
+            r.files?.forEach(line => ctx.transcript.sys(line))
           } else {
             ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
           }

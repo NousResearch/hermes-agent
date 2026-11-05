@@ -485,7 +485,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         print(f"  {_t('rollback.snapshot_saved')}")
         # Also undo the last conversation turn so the agent's context matches the restored files.
         if self.conversation_history:
-            self.undo_last(prefill=False)
+            self.undo_last(prefill=False, revert_files=False)
             print(f"  {_t('rollback.chat_turn_undone')}")
 
     # ---- /diff ----------------------------------------------------------------------------

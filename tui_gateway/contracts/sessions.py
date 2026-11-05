@@ -454,6 +454,8 @@ class SessionUndoParams(SessionParams):
 
 class SessionUndoResult(Result):
     removed: int
+    # /undo with checkpoints on: lines naming the files the undone turn's writes were reverted on.
+    files: list[str] = []
 
 
 method("session.undo", params=SessionUndoParams, result=SessionUndoResult,

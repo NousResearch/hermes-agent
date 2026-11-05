@@ -155,6 +155,10 @@ DEFAULT_EXCLUDES = [
     "Thumbs.db",
     # Logs
     "*.log",
+    # Browser profiles (Hermes' CDP/agent-browser user-data dirs): locked SQLite files and
+    # hundreds of MB of cache that are never project state.
+    "chrome_cdp_profile/",
+    "agent-browser-chrome-*/",
 ]
 
 _EMPTY_TREE_PREFIX = "4b825dc642cb"
@@ -578,6 +582,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
         _migrate_legacy_store(base)
 
     if (store / "HEAD").exists():
+        _write_default_excludes(store)  # a store made by an older build gets new excludes too
         return None
 
     store.mkdir(parents=True, exist_ok=True)
@@ -624,14 +629,23 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     _run_git(["config", "tag.gpgSign", "false"], store, cfg_wd)
     _run_git(["config", "gc.auto", "0"], store, cfg_wd)
 
-    info_dir = store / "info"
-    info_dir.mkdir(exist_ok=True)
-    (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
-    )
+    _write_default_excludes(store)
 
     logger.debug("Initialised checkpoint store at %s", store)
     return None
+
+
+def _write_default_excludes(store: Path) -> None:
+    """(Re)write the store's ``info/exclude`` when it differs from :data:`DEFAULT_EXCLUDES`."""
+    exclude = store / "info" / "exclude"
+    text = "\n".join(DEFAULT_EXCLUDES) + "\n"
+    try:
+        if exclude.is_file() and exclude.read_text(encoding="utf-8") == text:
+            return
+        exclude.parent.mkdir(exist_ok=True)
+        exclude.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Could not write checkpoint excludes: %s", exc)
 
 
 def _volume_evidence(workdir: Path) -> dict:
@@ -785,17 +799,30 @@ def _pre_v2_shadow_repos(base: Path) -> list[dict]:
     return out
 
 
+_EXCLUDED_DIR_GLOBS = tuple(p[:-1] for p in DEFAULT_EXCLUDES if p.endswith("/"))
+
+
 def _dir_file_count(path: str) -> int:
-    """Quick file count estimate (stops early if over _MAX_FILES)."""
+    """Quick count of the entries a snapshot would stage (stops early past _MAX_FILES).
+
+    Excluded directories (``node_modules/``, ``.venv/``, ``.git/``, browser profiles...) are
+    pruned from the walk: git never stages them, so a small project with a large
+    ``node_modules`` is still checkpointed, and the walk stays cheap.
+    """
+    import fnmatch
     count = 0
-    try:
-        for _ in Path(path).rglob("*"):
-            count += 1
-            if count > _MAX_FILES:
-                return count
-    except (PermissionError, OSError):
-        pass
+    for _root, dirs, files in os.walk(path, onerror=lambda _e: None):
+        dirs[:] = [d for d in dirs if not any(fnmatch.fnmatch(d, g) for g in _EXCLUDED_DIR_GLOBS)]
+        count += len(dirs) + len(files)
+        if count > _MAX_FILES:
+            return count
     return count
+
+
+def _too_broad(abs_dir: str) -> bool:
+    """``/``, the user's home and every ancestor of it: never a project, always huge."""
+    home = Path.home().resolve()
+    return Path(abs_dir) in {Path("/"), home, *home.parents}
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -1002,7 +1029,7 @@ class CheckpointManager:
         abs_dir = str(_normalize_path(working_dir))
 
         # Skip root, home, and other overly broad directories
-        if abs_dir in {"/", str(Path.home())}:
+        if _too_broad(abs_dir):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 

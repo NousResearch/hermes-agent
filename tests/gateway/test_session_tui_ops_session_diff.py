@@ -17,7 +17,8 @@ CLIENT_MAX_FRAME = 8 * 1024 * 1024
 
 @pytest.mark.platforms("linux")
 def test_session_diff_follows_the_sessions_checkpoint_policy_and_keeps_the_whole_body(tmp_path):
-    with owner(tmp_path) as (home, _peer, desc):
+    # Checkpoints default on: the profile turns them off so only the --checkpoints launch has them.
+    with owner(tmp_path, {'checkpoints': {'enabled': False}}) as (home, _peer, desc):
         work = tmp_path / 'work'
         work.mkdir()
         (work / 'big.txt').write_text(''.join(f'line {i}\n' for i in range(450)))

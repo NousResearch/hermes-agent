@@ -263,7 +263,8 @@ class GatewaySessionStore:
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
-            rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal)
+            rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal,
+            target_row_id=target["row_id"])
 
     def set_session_yolo(self, session_id, enabled):
         """Main's ``/yolo`` persist hook: the gateway session's own bypass (``config.set yolo``, persisted

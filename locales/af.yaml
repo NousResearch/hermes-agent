@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "Groot model: {name} bereik ({resets})."
   large_notice_limit_stops: "Groot model: {name} bereik ({resets}), dit sal nie tot dan loop nie."
   large_notice_percent: "Groot model: gebruik meer van jou plan per boodskap. Maandelikse limiet vir groot modelle: {percent} gebruik."
+checkpoints:
+  undo:
+    reverted: "↶ {count} lêer(s) wat die ontdane beurt geskryf het, teruggestel: {files}"
+    kept_edits: "↷ Jou handwysigings behou: {files} (/rollback kan hulle herstel)"
+    not_captured: "Nie teruggestel nie (geen kontrolepunt van voor die beurt nie): {files}"
+    failed: "⚠ Lêerterugstelling het misluk: {error}"

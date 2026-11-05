@@ -30,6 +30,7 @@ def handlers(connection):
             'rollback.diff': partial(rollback, connection, kind='diff'),
             'rollback.restore': partial(rollback, connection, kind='restore'),
             'rollback.session_diff': partial(rollback, connection, kind='session_diff'),
+            'rollback.undo_files': partial(undo_files, connection),
             'session.context_breakdown': partial(context_breakdown, connection),
             'session.history': partial(session_history, connection)}
 
@@ -280,6 +281,47 @@ async def rollback(connection, ref, params, *, kind):
     if kind == 'restore' and result.get('success') and not file_path:
         result['history_removed'] = await _rewind_last_turn(connection, ref)
     return result
+
+
+async def undo_files(connection, ref, params):
+    """``/undo``'s file half after its ``rewind``: put back the files the undone turns wrote (from
+    the rewound user row ``target_message_id`` onward), keeping hand edits, under the session's
+    frozen checkpoint policy. ``enabled: false`` (nothing touched) when that policy does not
+    checkpoint; a row outside this conversation reverts nothing."""
+    target = params.get('target_message_id')
+    if type(target) is not int or target <= 0:
+        raise RuntimeStoreError('invalid_params')
+    live = _live_ref(connection, ref, params, {'session_id', 'profile', 'target_message_id'}, 'session:control')
+    authority = connection.authority
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, live.source)
+    if policy is None:
+        raise RuntimeStoreError('permission_denied')
+    if authority._handle(ref).execution_state != 'idle':
+        raise RuntimeStoreError('session_busy')
+    from gateway.session_ancillary import physical_target
+    sessions = {ref.session_id, physical_target(authority, ref)}
+    from gateway.run import _checkpoint_agent_kwargs
+    kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
+    terminal = json.loads(policy.terminal_json)
+
+    def run() -> dict:
+        from tools.checkpoint_manager import CheckpointManager
+        from tools.checkpoint_turns import summarize, undo_row_files
+        mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
+            key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
+        if not mgr.enabled:
+            return {'enabled': False}
+        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+        token = set_terminal_scope(terminal)
+        try:
+            if mgr.unsupported_backend_reason(physical_target(authority, ref)):
+                return {'enabled': False}  # a container session's files are not on this host
+        finally:
+            reset_terminal_scope(token)
+        result = undo_row_files(mgr, authority.db, target, sessions)
+        return {'enabled': True, **result, 'lines': summarize(result, policy.cwd)}
+    return await asyncio.to_thread(run)
 
 
 def _session_diff(mgr, cwd, refusal):

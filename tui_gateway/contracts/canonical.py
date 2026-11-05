@@ -269,6 +269,31 @@ canonical_method("rollback.session_diff", params=RollbackSessionDiffParams, resu
                      "retained checkpoint, as data for its terminal renderer.")
 
 
+class RollbackUndoFilesParams(Params):
+    session_id: str
+    target_message_id: int
+    profile: str | None = None
+
+
+class RollbackUndoFilesResult(Result):
+    """``gateway/session_tui_ops.py::undo_files``: ``tools/checkpoint_turns.revert_turns`` for the
+    turns from the rewound user row onward (absolute paths), plus ``lines``: the same outcome as
+    the owner's localized notice lines (paths relative to the session cwd). ``enabled: false`` when
+    the session's frozen checkpoint policy does not checkpoint (nothing was touched)."""
+
+    enabled: bool
+    lines: list[str] = []
+    reverted: list[str] = []
+    skipped_user_edits: list[str] = []
+    not_captured: list[str] = []
+    errors: list[str] = []
+
+
+canonical_method("rollback.undo_files", params=RollbackUndoFilesParams, result=RollbackUndoFilesResult,
+                 doc="/undo's file half: after the rewind, restore the files the undone turns wrote "
+                     "(hand edits kept).")
+
+
 class SessionExportParams(Params):
     """``format``: json (default) / md / markdown / html / snapshot (``normalize_save_format``)."""
 

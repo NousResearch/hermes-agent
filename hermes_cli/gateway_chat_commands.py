@@ -73,14 +73,21 @@ async def _mutate(view, operation, payload):
     return result
 
 
-async def _rewind(view, turns_back, *, retry=False):
+async def _rewind(view, turns_back, *, retry=False, revert_files=False):
     """The rewound user turn's text (``/retry``: its lossless resend text), or None when there was
-    nothing to rewind."""
+    nothing to rewind. ``revert_files`` (/undo): also put back the files the undone turns wrote; the
+    lines naming them are set on ``view.undo_file_lines`` for /undo to print after its own line."""
     payload = _rewind_to(turns_back, retry=retry)
     result = await view.mutations.apply(view.client, view.session_id, "rewind", payload)
     if result.get("status") == "nothing" or not result.get("rewound_count"):
         view.mutations.acknowledge(view.session_id, "rewind", payload)
         return None
+    view.undo_file_lines = []
+    target_id = (result.get("target_message") or {}).get("id")
+    if revert_files and type(target_id) is int:
+        files = await view.client.rpc("rollback.undo_files", session_id=view.session_id,
+                                      target_message_id=target_id)
+        view.undo_file_lines = list((files or {}).get("lines") or ())
     # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
     # deriving a new target from the already-shortened transcript (which would drop the turn before).
     snapshot = await view.client.rpc("session.resume", session_id=view.session_id)
@@ -106,12 +113,14 @@ async def _undo(view, rest):
     if rest and not (rest.isdigit() and int(rest) > 0):
         raise GatewayClientError("Usage: /undo [N]")
     turns = int(rest or 1)
-    rewound = await _rewind(view, turns)
+    rewound = await _rewind(view, turns, revert_files=True)
     if rewound is None:
         print(t("cli.session.undo_no_user_message"))
         return
     text, count = rewound
     print(f"Undid {turns} turn{'s' if turns != 1 else ''} ({count} message(s)); the removed message is in the composer.")
+    for line in view.undo_file_lines:
+        print(f"  {line}")
     view.prefill = text
 
 

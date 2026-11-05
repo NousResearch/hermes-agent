@@ -294,6 +294,7 @@ export interface SessionSaveResponse {
 }
 
 export interface SessionUndoResponse {
+  files?: string[]
   removed?: number
 }
 

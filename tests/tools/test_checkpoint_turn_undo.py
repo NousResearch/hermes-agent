@@ -73,3 +73,40 @@ def test_undo_keeps_hand_edits_other_conversations_and_turns_without_edits(proje
     assert result["skipped_user_edits"] == [str(hand)]
     assert (project / "theirs.txt").read_text() == "other session\n"
     assert revert_turns(cm.CheckpointManager(enabled=False), 100.0, {"other-conversation"})["reverted"] == []
+
+
+def test_undo_by_row_reverts_its_conversation_only(project, tmp_path):
+    """The shared-gateway path names the rewound user row: its stored timestamp keys the turn, and a
+    row from another conversation reverts nothing."""
+    from hermes_state import SessionDB
+    from tools.checkpoint_turns import undo_row_files
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli")
+    db.create_session("s2", source="cli")
+    row = db.append_message("s1", "user", "edit keep.txt")
+    other = db.append_message("s2", "user", "unrelated")
+    ts = db._read_one("SELECT timestamp FROM messages WHERE id = ?", (row,))["timestamp"]
+    mgr = cm.CheckpointManager(enabled=True)
+    _turn(mgr, ts, "s1")
+    _agent_write(mgr, project, "keep.txt", "agent\n")
+
+    assert undo_row_files(mgr, db, row, {"s2"})["reverted"] == []  # not the caller's conversation
+    assert undo_row_files(mgr, db, other, {"s2"})["reverted"] == []  # its turn wrote nothing
+    assert (project / "keep.txt").read_text() == "agent\n"
+    assert [Path(p).name for p in undo_row_files(mgr, db, row, {"s1"})["reverted"]] == ["keep.txt"]
+    assert (project / "keep.txt").read_text() == "original\n"
+
+
+def test_default_on_never_snapshots_home_or_its_parents_and_ignores_excluded_dirs(project, monkeypatch):
+    home = project.parent / "fakehome"
+    (home / "proj" / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    mgr = cm.CheckpointManager(enabled=True)
+    assert not mgr.ensure_checkpoint(str(home), "before write_file")
+    assert not mgr.ensure_checkpoint(str(home.parent), "before write_file")
+    # A small project with a dependency tree over the file cap is still checkpointed.
+    monkeypatch.setattr(cm, "_MAX_FILES", 50)
+    for i in range(60):
+        (home / "proj" / "node_modules" / f"dep{i}.js").write_text("x")
+    (home / "proj" / "app.py").write_text("print(1)\n")
+    assert mgr.ensure_checkpoint(str(home / "proj"), "before write_file")

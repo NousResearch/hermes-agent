@@ -3981,3 +3981,9 @@ plan_usage:
   large_notice_limit: "Modelo grande: alcanzaste tu límite {name} ({resets})."
   large_notice_limit_stops: "Modelo grande: alcanzaste tu límite {name} ({resets}), así que no se ejecutará hasta entonces."
   large_notice_percent: "Modelo grande: usa más del uso de tu plan por mensaje. Límite mensual de modelos grandes: {percent} usado."
+checkpoints:
+  undo:
+    reverted: "↶ Se revirtieron {count} archivo(s) que escribió el turno deshecho: {files}"
+    kept_edits: "↷ Se conservaron tus ediciones manuales: {files} (/rollback puede restaurarlas)"
+    not_captured: "Sin revertir (no hay checkpoint de antes del turno): {files}"
+    failed: "⚠ Falló la reversión de archivos: {error}"

@@ -74,7 +74,7 @@ def revert_turns(mgr, since: float, sessions: Iterable[str]) -> dict:
     """
     from tools.checkpoint_manager import _resolve_checkpoint_base
     from tools.checkpoint_pruning import PruneError, store_lock
-    out: dict[str, list[str]] = {"reverted": [], "skipped_user_edits": [], "not_captured": [], "errors": []}
+    out: dict[str, list[str]] = _empty()
     sessions = {s for s in sessions if s}
     if mgr is None or not getattr(mgr, "enabled", False) or not sessions:
         return out  # no conversation named: never revert another conversation's writes
@@ -197,6 +197,31 @@ def undo_session_ids(db, *session_ids: Optional[str]) -> set[str]:
         except Exception:  # health: allow BLE001 -- a lineage read failure narrows the revert, never widens it
             logger.debug("undo: lineage lookup failed for %s", sid, exc_info=True)
     return ids
+
+
+def _empty() -> dict:
+    return {"reverted": [], "skipped_user_edits": [], "not_captured": [], "errors": []}
+
+
+def undo_turn_files(mgr, since, db, *session_ids: Optional[str]) -> dict:
+    """``/undo``'s file half for an in-process surface: revert what the conversation's turns from
+    the rewound user row's stored timestamp ``since`` onward wrote (``begin_turn`` keyed them by
+    it). Empty when checkpoints are off, ``since`` is unknown, or the turns wrote nothing."""
+    if mgr is None or not getattr(mgr, "enabled", False) or not isinstance(since, (int, float)):
+        return _empty()
+    return revert_turns(mgr, float(since), undo_session_ids(db, *session_ids))
+
+
+def undo_row_files(mgr, db, row_id: Optional[int], sessions: Iterable[str]) -> dict:
+    """Same, addressed by the rewound user row's durable id (a remote client names it). The row
+    must belong to ``sessions`` (the caller's conversation), so a client cannot name another
+    conversation's turn."""
+    if mgr is None or not getattr(mgr, "enabled", False) or db is None or not isinstance(row_id, int):
+        return _empty()
+    row = db._read_one("SELECT timestamp, session_id FROM messages WHERE id = ? AND role = 'user'", (row_id,))
+    if row is None or row["session_id"] not in undo_session_ids(db, *sessions):
+        return _empty()
+    return undo_turn_files(mgr, row["timestamp"], db, row["session_id"])
 
 
 def summarize(result: dict, cwd: Optional[str] = None, limit: int = 5) -> list[str]:

@@ -24,3 +24,10 @@ def test_setup_requires_approval(command):
 ])
 def test_other_gateway_commands_are_unchanged(command):
     assert detect_dangerous_command(command)[0] is False
+
+
+def test_an_older_rule_keeps_its_key_in_a_compound_command():
+    # Approval keys on the first matching rule only, so this row sits last and never masks an older one.
+    dangerous, key, _ = detect_dangerous_command("hermes gateway setup telegram --quick; git reset --hard")
+    assert dangerous is True
+    assert key == "git reset --hard (destroys uncommitted changes)"

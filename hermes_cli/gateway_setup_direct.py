@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import sys
 
-from hermes_cli.config import get_env_value, save_env_value, write_platform_config_field
+from hermes_cli.config import get_env_value, require_env_writable, save_env_value, write_platform_config_field
 from hermes_cli.gateway_setup_wizard import _gw
 from hermes_cli.telegram_managed_bot import (
-    _api_url, create_pairing, is_valid_telegram_bot_token, poll_for_setup_result, print_qr_code,
+    DEFAULT_POLL_TIMEOUT, _api_url, create_pairing, is_valid_telegram_bot_token, poll_for_setup_result,
+    print_qr_code,
 )
 
 
@@ -44,7 +45,13 @@ def _quick_telegram(args) -> int:
     if any(not uid.isascii() or not uid.isdecimal() for uid in allowed):
         print("--allow must contain comma-separated numeric Telegram user IDs.")
         return 2
-    return _pair_telegram(args.timeout, allowed)
+    try:  # a managed scope can pin these keys; save_env_value would refuse silently after the bot exists
+        for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"):
+            require_env_writable(key, "set")
+    except ValueError as exc:
+        print(exc)
+        return 1
+    return _pair_telegram(DEFAULT_POLL_TIMEOUT if args.timeout is None else args.timeout, allowed)
 
 
 def _pair_telegram(timeout: float, allowed: list[str]) -> int:
@@ -77,8 +84,10 @@ def _save_telegram(result, allowed: list[str]) -> None:
     if ids:
         save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(ids))
     else:
-        print("No owner detected; the gateway denies everyone until an allowlist is configured. "
-              "Re-run with --replace --allow IDS to add allowed Telegram user IDs.")
+        kept = "the existing allowlist stays in force" if get_env_value("TELEGRAM_ALLOWED_USERS") else (
+            "with no other access rule the gateway denies everyone")
+        print(f"No owner was detected, so no user was added; {kept}. "
+              "Set allowed user IDs with: hermes config set TELEGRAM_ALLOWED_USERS ID1,ID2")
     write_platform_config_field("telegram", "enabled", True)
     if owner and not get_env_value("TELEGRAM_HOME_CHANNEL"):
         save_env_value("TELEGRAM_HOME_CHANNEL", owner)

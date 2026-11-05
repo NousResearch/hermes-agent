@@ -8,15 +8,15 @@ bot token in chat.
 
 1. Run with `terminal`:
    ```json
-   {"command":"hermes gateway setup telegram --quick","background":true,"watch_patterns":["Link:"]}
+   {"command":"hermes gateway setup telegram --quick","background":true,"notify":["Link:"]}
    ```
-   Leave `notify_on_complete` unset: combining it with `watch_patterns` drops
-   the watch patterns.
+   `notify: ["Link:"]` wakes you when the link is printed.
 2. When `Link:` appears, send that link only to the user who requested setup.
    Whoever opens it becomes the bot's owner. Never post it in a group.
    Ask the user to open it in Telegram and tap **Create Bot**.
-3. Use `process` to check the background process and wait for it to finish.
-   Do not claim success before the command reports that the bot is connected.
+3. After sending the link, call `process_manage` with `action: "wait"` and the
+   process's `session_id`; if it returns on timeout, wait again. Do not claim
+   success before the command reports that the bot is connected.
 4. Run the next step it printed: `hermes gateway ensure` or
    `hermes gateway restart` (restart asks for approval).
 

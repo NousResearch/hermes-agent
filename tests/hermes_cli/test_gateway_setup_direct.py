@@ -95,8 +95,29 @@ def test_allowlist_owner_first(setup_env, capsys, owner, extra, expected):
     output = capsys.readouterr().out
     assert "Telegram bot connected." in output
     if expected is None:
-        assert "denies everyone" in output and "--allow IDS" in output
+        assert "denies everyone" in output and "hermes config set TELEGRAM_ALLOWED_USERS" in output
         assert "TELEGRAM_HOME_CHANNEL" not in values
+
+
+def test_no_owner_keeps_an_existing_allowlist(setup_env, capsys):
+    (setup_env / ".env").write_text("TELEGRAM_BOT_TOKEN=old-synthetic-token\nTELEGRAM_ALLOWED_USERS=555\n")
+    direct.poll_for_setup_result.return_value = TelegramBotSetupResult(TOKEN)
+    assert _run("telegram", "--quick", "--replace") == 0
+    assert dotenv_values(setup_env / ".env")["TELEGRAM_ALLOWED_USERS"] == "555"
+    output = capsys.readouterr().out
+    assert "existing allowlist stays in force" in output and "denies everyone" not in output
+
+
+@pytest.mark.parametrize("pinned", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"])
+def test_pinned_key_refuses_before_pairing(setup_env, monkeypatch, capsys, pinned):
+    from hermes_cli import config
+
+    monkeypatch.setattr(config.managed_scope, "is_env_managed", lambda key: key == pinned)
+    assert _run("telegram", "--quick") == 1
+    direct.create_pairing.assert_not_called()
+    assert f"Cannot set {pinned}" in capsys.readouterr().out
+    assert not (setup_env / ".env").exists()
+    assert not (setup_env / "config.yaml").exists()
 
 
 @pytest.mark.parametrize("ids", ["abc", "111,abc", "111,", "١١١"])

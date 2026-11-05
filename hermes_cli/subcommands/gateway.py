@@ -195,9 +195,8 @@ def build_gateway_parser(
     _flag(gateway_setup, "--quick", help="Create a managed Telegram bot without pasting a token")
     gateway_setup.add_argument("--allow", default="", metavar="IDS", help="Comma-separated numeric Telegram user IDs")
     _flag(gateway_setup, "--replace", help="Replace an existing Telegram bot token")
-    from hermes_cli.telegram_managed_bot import DEFAULT_POLL_TIMEOUT
-    gateway_setup.add_argument("--timeout", type=float, default=DEFAULT_POLL_TIMEOUT, metavar="SECONDS",
-        help="Time to wait for Telegram bot creation")
+    gateway_setup.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+        help="Time to wait for Telegram bot creation (default 180)")
 
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy", help="Remove legacy hermes.service units from pre-rename installs",

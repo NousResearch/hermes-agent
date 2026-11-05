@@ -1,0 +1,17 @@
+name: receipts
+repo: https://github.com/cirwel/hermes-receipts
+sha: 0dd1a374cc70ce388040f99adc908c7054ed8fa9
+title: "Receipts: tested-tree push gate"
+description: Verification receipts tied to Git content; gates terminal pushes and PR creation on a passing check.
+maintainer: cirwel
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/cirwel/hermes-receipts
+version: "0.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call]
+  provides_middleware: []
+  requires_env: []

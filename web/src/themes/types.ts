@@ -127,6 +127,16 @@ export interface ThemeSeriesColors {
   inputTokenAccent?: string;
   /** Output-tokens series accent. */
   outputTokenAccent?: string;
+  /** Neutral accent for the Analytics input/output ratio panel. */
+  ioRatioAccent?: string;
+  /** Per-model daily stack slots 1-5, in fixed order (light themes need the light-surface steps). */
+  modelAccent1?: string;
+  modelAccent2?: string;
+  modelAccent3?: string;
+  modelAccent4?: string;
+  modelAccent5?: string;
+  /** Folded "other models" segment of the per-model stack. */
+  modelOtherAccent?: string;
 }
 
 /** Optional hex overrides keyed by shadcn-compat token name (without the

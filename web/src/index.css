@@ -86,6 +86,16 @@
      these as `--series-input-token` / `--series-output-token`. */
   --series-input-token: #ffe6cb;
   --series-output-token: #34d399;
+  /* Analytics: input/output ratio panel (neutral) and the per-model daily stack. Model slots are
+     the dataviz reference categorical order, dark steps, validated as an adjacent set against the
+     teal card surface; "other" folds every model past slot 5. */
+  --series-io-ratio: #c3c2b7;
+  --series-model-1: #3987e5;
+  --series-model-2: #d95926;
+  --series-model-3: #199e70;
+  --series-model-4: #c98500;
+  --series-model-5: #d55181;
+  --series-model-other: #a9b4b1;
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits

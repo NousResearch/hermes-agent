@@ -35,6 +35,61 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 查看完整的[可插拔接口表](../../user-guide/features/plugins.md#可插拔接口--各场景对应文档)，获取每种扩展接口的汇总视图，包括配置驱动（TTS、STT、MCP、shell 钩子）和放入目录（网关钩子）两种方式。
 :::
 
+## `hermes_state` 已弃用：改用存储接口
+
+会话存储位于存储接口之后：`persistence/` 中的类型化契约，以及唯一入口 `persistence_assembly`。`SessionDB` 类和 `hermes_state_*` 模块已移除。为外部插件保留的 `hermes_state` 是一个临时兼容模块，遵循英文版插件指南中的弃用政策（Deprecation policy）。它把下表中的名称转发到存储接口，自身不含 SQL，也不持有数据库连接。
+
+- 每个进程第一次使用 `hermes_state` 中的名称时发出一次警告，说明替代方案和移除版本。
+- 该模块在 v0.24 和 v0.25 中继续受支持，最早在 v0.26.0 移除。
+- 表中未列出的名称不再提供；它们是旧存储的内部辅助函数。
+
+| `hermes_state` 名称 | 替代方案 |
+|---|---|
+| `SessionDB()`、`SessionDB(db_path=path)` | `persistence_assembly.open_persistence(profile_scope())`、`open_persistence(profile_scope(home=path.parent))`；用 `close()` 或 `with` 块释放句柄 |
+| `SessionDB(read_only=True)` | `with open_persistence_reader(profile_scope().profile_dir) as store:`（不会创建、迁移或修复存储） |
+| `AsyncSessionDB(db)` | `store.aio`：同样的仓库，可等待，每次调用都在事件循环之外执行 |
+| `DEFAULT_DB_PATH` | `persistence_assembly.store_location(profile_scope())` |
+| `create_session`、`end_session`、`reopen_session` | `store.sessions.create(NewSession(...))`、`store.sessions.end`、`store.sessions.reopen` |
+| `append_message` | `store.messages.append(session_id, NewMessage(...))` |
+| `get_messages` | `store.messages.read_transcript(session_id)`；`as_wire_row()` 返回旧的字典 |
+| `get_messages_as_conversation` | `store.messages.read_conversation(session_id)`；`as_openai_message()` 返回每条旧字典 |
+| `get_session` | `store.sessions.get(session_id)`；`as_session_row()` 返回旧的字典 |
+| `list_sessions_rich`、`session_count` | `store.sessions.list_sessions(SessionQuery(...), SessionWindow(...))`、`store.sessions.count_sessions()` |
+| `set_session_title`、`resolve_session_by_title`、`get_next_title_in_lineage` | `store.sessions.set_title`、`store.sessions.resolve_by_title`、`store.sessions.next_title_in_lineage` |
+| `search_messages` | `store.search.search_messages`，返回 `SearchHit` 记录 |
+| `export_session`、`export_all`、`prune_sessions` | `store.maintenance.export_session`、`store.maintenance.export_all`、`store.maintenance.prune_sessions` |
+| `delete_session`、`clear_messages` | `store.sessions.delete`、`store.messages.replace_transcript(session_id, [], ReplaceMode.DESTRUCTIVE)` |
+| `get_meta`、`set_meta`、`list_meta_prefix` | `store.state_meta.get`、`store.state_meta.set`、`store.state_meta.list_prefix` |
+| `StateDbCorruptError`、`StateDbReplacedError` | `persistence.StoreQuarantined`、`persistence.StoreReplaced` |
+| `SessionCompressionInProgressError`、`DeletedWalGenerationError` | `persistence.CompressionInProgress`、`persistence.DeletedWalGeneration` |
+| `SessionResumeTooLargeError`、`SessionExportTooLargeError` | `persistence.conversation.messages.ResumeTooLarge`、`persistence.ExportTooLarge` |
+| `classify_persistence_error`、`is_sqlite_lock_error`、`is_malformed_db_error` | `storage_errors` 中的同名函数 |
+| `apply_wal_with_fallback`、`apply_database_pragmas` | `sqlite_support` 中的同名函数，用于插件自己的 SQLite 文件 |
+| `storage_state`、`storage_corrupt_reason` | `persistence_assembly.storage_health(profile_scope()).storage_state()` |
+| `get_hermes_home`、`mkdir_under_hermes_home` | `hermes_constants` 中的同名函数 |
+
+`NewSession`、`SessionQuery`、`SessionWindow` 来自 `persistence.conversation.sessions`；`NewMessage` 和 `ReplaceMode` 来自 `persistence.conversation.messages`。列出会话的仪表盘路由可以这样迁移：
+
+```python
+# 迁移前
+from hermes_state import SessionDB
+
+db = SessionDB(read_only=True)
+try:
+    rows = db.list_sessions_rich(limit=50)
+finally:
+    db.close()
+
+# 迁移后
+from persistence.conversation.sessions import SessionQuery, SessionWindow
+from persistence_assembly import open_persistence_reader, profile_scope
+
+with open_persistence_reader(profile_scope().profile_dir) as store:
+    rows = [entry.as_list_row() for entry in store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50))]
+```
+
+[会话存储](../session-storage.md#常用操作)展示了各仓库的用法。
+
 ## 你将构建什么
 
 一个**计算器**插件，包含两个工具：

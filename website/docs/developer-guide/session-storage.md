@@ -11,7 +11,7 @@ clients that admit input to its session authority over `/api/ws` (see
 workers write through that owner (`RuntimeSessionStore` RPC), never by opening
 `state.db` for transcript writes themselves.
 
-Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
+Source files: the storage contracts in `persistence/`, the entry point `persistence_assembly.py` (`open_persistence`, `open_persistence_reader`), and the SQLite backend in `persistence/sqlite/` (schema, FTS, search, compression, portability, gateway, ...)
 
 ## Hermes home and profile isolation
 
@@ -168,7 +168,7 @@ Key design decisions:
 
 ### Sessions Table
 
-Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_state_schema.py`) for the full current column list
+Abridged — see `SCHEMA_SQL` in `persistence/sqlite/_schema_ddl.py` (applied by `persistence/sqlite/_schema.py`) for the full current column list
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
@@ -286,7 +286,7 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `persistence/sqlite/_schema_ddl.py` for the exact SQL.
 
 
 ## Dashboard browsing and owner maintenance
@@ -345,7 +345,8 @@ Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to ha
 
 Several processes still open one `state.db`: the gateway (the canonical session
 writer), read-only browsers (dashboard, `hermes sessions list`), maintenance commands,
-and writers of non-session tables. The `SessionDB` class handles write contention with:
+and writers of non-session tables. The SQLite backend's store holder (`StoreHolder` in
+`persistence/sqlite/_holder.py`) handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
 - **Time-budgeted application-level retry** with random jitter (20-150ms for the
@@ -365,7 +366,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 ```
 
 When a writer exhausts its budget the turn ends with
-`session_persistence_failed:locked` and, on Linux, `hermes_state_lockowners`
+`session_persistence_failed:locked` and, on Linux, `persistence/sqlite/_state/lockowners.py`
 logs a WARNING naming the process that held the lock at that moment
 (`PID 594094 (hermes --worktree --yolo) holds WAL write lock on state.db-shm`),
 read from `/proc/locks` — SQLite's byte-range `fcntl` locks encode the lock kind
@@ -376,94 +377,109 @@ because every Hermes process has the DB open. Look for that line in
 `~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
 Lock contention is recognised by SQLite result code (`SQLITE_BUSY` /
-`SQLITE_LOCKED`, `hermes_state_errors.is_sqlite_lock_error`), not by message
+`SQLITE_LOCKED`, `storage_errors.is_sqlite_lock_error`), not by message
 text. In rollback-journal (`delete`) mode a lock lost inside FTS5's table
 constructor arrives as `SQLITE_BUSY` with the text `vtable constructor failed:
 messages_fts`; it is treated like `database is locked`. Opening a writable
-`SessionDB` waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
+store waits up to `_WRITE_PATIENCE_S`; a read-only open waits its
 `_READ_BUSY_TIMEOUT_S` (5 s) read budget once. If the lock outlasts that, the dashboard
 answers 503 (busy), not 500.
 
 
 ## Common Operations
 
+Application code reaches the store through one entry point, `persistence_assembly`. `open_persistence(scope)` returns a handle bound to one profile's store. The handle carries one repository per capability (`sessions`, `messages`, `lineage`, `search`, `maintenance`, `state_meta`, ...), and no operation takes a profile argument. The contracts and their typed records live in `persistence/`; the SQLite backend in `persistence/sqlite/` implements them. Code on an asyncio event loop uses the awaitable view `store.aio` (`await store.aio.messages.read_transcript(...)`), which runs each call off the loop.
+
 ### Initialize
 
 ```python
-from hermes_state import SessionDB
+from pathlib import Path
+from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
 
-db = SessionDB()                           # Default: ~/.hermes/state.db
-db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path
+store = open_persistence(profile_scope())          # Default: get_hermes_home() / "state.db"
+store = open_persistence(profile_scope("coder"))   # A named profile's store
+store = open_persistence(profile_scope(home=Path("~/.hermes/cache/scratch/test-home").expanduser()))  # <home>/state.db
+store.close()                                      # Each handle releases its reference once
+
+# Read-only access never creates, migrates or repairs a store
+with open_persistence_reader("coder") as reader:
+    count = reader.sessions.count_sessions()
 ```
+
+Handles on one profile share one backend per process. Opening a handle touches no file: the store opens on the handle's first use, or at once with `open_persistence(scope, eager=True)`, so an unopenable store raises its typed error there.
 
 ### Create and Manage Sessions
 
 ```python
+from persistence.conversation.sessions import NewSession
+
 # Create a new session
-db.create_session(
+store.sessions.create(NewSession(
     session_id="sess_abc123",
     source="cli",
     model="anthropic/claude-sonnet-4.6",
     user_id="user_1",
     parent_session_id=None,  # or previous session ID for lineage
-)
+))
 
 # End a session
-db.end_session("sess_abc123", end_reason="user_exit")
+store.sessions.end("sess_abc123", "user_exit")
 
 # Reopen a session (clear ended_at/end_reason)
-db.reopen_session("sess_abc123")
+store.sessions.reopen("sess_abc123")
 ```
 
 ### Store Messages
 
 ```python
-msg_id = db.append_message(
-    session_id="sess_abc123",
+from persistence.conversation.messages import NewMessage
+
+msg_id = store.messages.append("sess_abc123", NewMessage(
     role="assistant",
     content="Here's the answer...",
-    tool_calls=[{"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}],
+    tool_calls=({"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},),
     token_count=150,
     finish_reason="stop",
     reasoning="Let me think about this...",
-)
+))
 ```
 
 ### Retrieve Messages
 
 ```python
-# Raw messages with all metadata
-messages = db.get_messages("sess_abc123")
+# Stored rows with all metadata (TranscriptRow records; as_wire_row() gives the dict)
+rows = store.messages.read_transcript("sess_abc123")
 
 # OpenAI conversation format (for API replay)
-conversation = db.get_messages_as_conversation("sess_abc123")
+conversation = [m.as_openai_message() for m in store.messages.read_conversation("sess_abc123")]
 # Returns: [{"role": "user", "content": "..."}, {"role": "assistant", ...}]
 ```
+
+`TranscriptRead` and `ConversationRequest` (same module) choose the view (active, display or all rows), the page, and whether to read the compression lineage root to tip.
 
 ### Session Titles
 
 ```python
-# Set a title (must be unique among non-NULL titles)
-db.set_session_title("sess_abc123", "Fix Docker Build")
+# Set a title (must be unique among non-NULL titles; TitleConflict otherwise)
+store.sessions.set_title("sess_abc123", "Fix Docker Build")
 
 # Resolve by title (returns most recent in lineage)
-session_id = db.resolve_session_by_title("Fix Docker Build")
+session_id = store.sessions.resolve_by_title("Fix Docker Build")
 
 # Auto-generate next title in lineage
-next_title = db.get_next_title_in_lineage("Fix Docker Build")
+next_title = store.sessions.next_title_in_lineage("Fix Docker Build")
 # Returns: "Fix Docker Build #2"
 ```
 
 
 ## Full-Text Search
 
-The `search_messages()` method supports FTS5 query syntax with automatic
-sanitization of user input.
+The `search` repository's `search_messages()` supports FTS5 query syntax with automatic sanitization of user input.
 
 ### Basic Search
 
 ```python
-results = db.search_messages("docker deployment")
+hits = store.search.search_messages("docker deployment")
 ```
 
 ### FTS5 Query Syntax
@@ -480,24 +496,24 @@ results = db.search_messages("docker deployment")
 
 ```python
 # Search only CLI sessions
-results = db.search_messages("error", source_filter=["cli"])
+hits = store.search.search_messages("error", source_filter=["cli"])
 
 # Exclude gateway sessions
-results = db.search_messages("bug", exclude_sources=["telegram", "discord"])
+hits = store.search.search_messages("bug", exclude_sources=["telegram", "discord"])
 
 # Search only user messages
-results = db.search_messages("help", role_filter=["user"])
+hits = store.search.search_messages("help", role_filter=["user"])
 ```
 
 ### Search Results Format
 
-Each result includes:
-- `id`, `session_id`, `role`, `timestamp`
-- `snippet` — FTS5-generated snippet with `>>>match<<<` markers
-- `context` — 1 message before and after the match (content truncated to 200 chars)
-- `source`, `model`, `session_started` — from the parent session
+Each hit is a `SearchHit` record (`persistence/conversation/search.py`) with:
+- `message_id`, `session_id`, `role`, `timestamp`, `tool_name`
+- `snippet`: FTS5-generated snippet with `>>>match<<<` markers
+- `context`: the message before the match, the match itself and the message after, as `SearchContext` records (content truncated to 200 chars)
+- `source`, `model`, `session_started`: from the parent session
 
-The `_sanitize_fts5_query()` method handles edge cases:
+The SQLite backend's `_sanitize_fts5_query()` (`persistence/sqlite/conversation/_store/search.py`) handles edge cases:
 - Strips unmatched quotes and special characters
 - Wraps hyphenated terms in quotes (`chat-send` → `"chat-send"`)
 - Removes dangling boolean operators (`hello AND` → `hello`)
@@ -576,21 +592,26 @@ LIMIT 10;
 ## Export and Cleanup
 
 ```python
-# Export a single session with messages
-data = db.export_session("sess_abc123")
+from gateway.session_ingress_media import native_inputs_root
+from persistence.conversation.messages import ReplaceMode
 
-# Export all sessions (with messages) as list of dicts
-all_data = db.export_all(source="cli")
+media_root = str(native_inputs_root())  # the profile's retained media, removed with its sessions
 
-# Delete old sessions (only ended sessions)
-deleted_count = db.prune_sessions(older_than_days=90)
-deleted_count = db.prune_sessions(older_than_days=30, source="telegram")
+# Export a single session with messages (SessionExport: .session row, .messages)
+export = store.maintenance.export_session("sess_abc123")
+
+# Export all sessions (with messages)
+all_exports = store.maintenance.export_all(source="cli")
+
+# Delete old sessions (only ended sessions); returns PruneResult(count, deleted_ids)
+result = store.maintenance.prune_sessions(older_than_days=90, media_root=media_root)
+result = store.maintenance.prune_sessions(older_than_days=30, source="telegram", media_root=media_root)
 
 # Clear messages but keep the session record
-db.clear_messages("sess_abc123")
+store.messages.replace_transcript("sess_abc123", [], ReplaceMode.DESTRUCTIVE)
 
-# Delete session and all messages
-db.delete_session("sess_abc123")
+# Delete session and all messages; returns the removed ids
+store.sessions.delete("sess_abc123", media_root=media_root)
 ```
 
 

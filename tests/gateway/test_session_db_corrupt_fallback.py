@@ -1,6 +1,6 @@
 """Gateway SessionStore must divert, not retry forever, after structural corruption.
 
-Mirrors ``test_session_db_replaced_fallback.py``: once the SessionDB handle
+Mirrors ``test_session_db_replaced_fallback.py``: once the store's handle
 is quarantined (``StateDbCorruptError``) the pending transcript goes to the
 JSONL/spool fallback and no FTS surgery runs on the damaged file.
 """
@@ -10,6 +10,7 @@ import sqlite3
 
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
+from tests.fixtures.storage_seed import seed_session
 
 
 class _MalformedConn:
@@ -40,31 +41,28 @@ def _assert_diverted(tmp_path, sid, needle):
 
 
 def test_corrupt_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeypatch):
-    import hermes_state
-
-    live = tmp_path / "state.db"
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", live)
 
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     sid = "gw-corrupt"
-    store._db.create_session(session_id=sid, source="cli")
+    seed_session(store.persistence, sid, "cli")
     store.append_to_transcript(
         sid, {"role": "user", "content": "before", "timestamp": 1.0}
     )
-    real_conn = store._db._conn
-    store._db._conn = _MalformedConn(real_conn)
+    holder = store.persistence.holder()  # the handle the transcript writes go through
+    real_conn = holder._conn
+    holder._conn = _MalformedConn(real_conn)
     try:
         store.append_to_transcript(
             sid, {"role": "user", "content": "after-corrupt", "timestamp": 2.0}
         )
-        assert store._db._db_corrupt is True
+        assert holder._db_corrupt is True
         # No FTS surgery ran on either layer.
-        assert store._db._fts_enabled is True
-        assert store._db._fts_stale is False
+        assert holder._fts_enabled is True
+        assert holder._fts_stale is False
         assert store._fts_rebuild_last_attempt_at is None
         assert sid not in store._dirty_transcripts
         _assert_diverted(tmp_path, sid, "after-corrupt")
     finally:
-        store._db._conn = real_conn
+        holder._conn = real_conn
         store.close_all_db_handles()

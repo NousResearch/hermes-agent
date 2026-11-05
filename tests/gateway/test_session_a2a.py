@@ -5,6 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_controls import AuthorityConnection
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_session
 
 
 @pytest.mark.asyncio
@@ -14,7 +17,7 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     from gateway.session_authority import initialize_session_authority
     from gateway import run
     from gateway.session_policy import build_policy
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
@@ -23,10 +26,10 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters = {}
     runner.session_store = store
-    runner._session_db = store._db
+    runner._session_db = store.persistence
     runner._draining = False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
-    db = authority.db
+    db = authority.persistence
     authority._schedule = lambda ref: None
     transport = SimpleNamespace(write=lambda frame: None)
     conn = AuthorityConnection(authority, transport, {'user_id': 'producer'})
@@ -37,7 +40,7 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     sid = first['session_id']
     live = authority.sessions[sid]
     store._record_gateway_session_peer(sid, live.route, live.source)
-    assert db.get_session(sid)['source'] == 'a2a'
+    assert session_row(db, sid)['source'] == 'a2a'
     policy = runner.adapters[next(iter(runner.adapters))].policies[sid]
     assert policy.source == policy.platform == 'a2a'
     assert json.loads(policy.request_json)['a2a_identity'] == ['dev', 'team', 'alice', 'ctx/a']
@@ -55,11 +58,11 @@ async def test_forwarded_identity_survives_reconnect_without_policy_override(tmp
     assert info['result']['model'] == 'fixture'
     assert info['result']['lazy'] is True
     # Source spelling alone must never grant producer policy.
-    with pytest.raises(RuntimeStoreError):
+    with pytest.raises(AuthorityRefusal):
         build_policy({'source': 'a2a'}, {})
     await conn.close()
     await again.close()
-    db.close()
+    close_stores_under(db.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -76,10 +79,10 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters = {}
     runner.session_store = store
-    runner._session_db = store._db
+    runner._session_db = store.persistence
     runner._draining = False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
-    db = authority.db
+    db = authority.persistence
     authority._schedule = lambda ref: None
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
     ids = []
@@ -92,16 +95,16 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     conflict = await conn.dispatch({'id': 2, 'method': 'a2a.forward', 'params': dict(
         agent='dev', tenant='team', peer='alice', context_id='ctx/a', input_id='first', text='changed')})
     assert conflict['error']['message'] == 'admission_conflict'
-    db.create_session('legacy', source='a2a')
-    db.set_session_title('legacy', 'a2a-dev-old-context')
+    seed_session(db, 'legacy', 'a2a')
+    db.sessions.set_title('legacy', 'a2a-dev-old-context')
     legacy = await conn.dispatch({'id': 3, 'method': 'a2a.forward', 'params': dict(
         agent='dev', tenant='team', peer='alice', context_id='old/context', input_id='first', text='hello')})
     # A colliding pre-authority title is neither adopted nor a permanent refusal: the exact
     # identity gets its own session and the old row keeps its title and history.
     assert 'result' in legacy, legacy
     assert legacy['result']['session_id'] not in {'legacy', *ids}
-    assert db.get_session('legacy')['title'] == 'a2a-dev-old-context'
-    assert db.get_messages('legacy') == []
+    assert session_row(db, 'legacy')['title'] == 'a2a-dev-old-context'
+    assert transcript_rows(db, 'legacy') == []
     denied = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None),
         {'user_id': 'reader', 'capabilities': ['session:read']})
     result = await denied.dispatch({'id': 1, 'method': 'a2a.forward', 'params': dict(
@@ -109,7 +112,7 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     assert result['error']['message'] == 'permission_denied'
     await conn.close()
     await denied.close()
-    db.close()
+    close_stores_under(db.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -122,7 +125,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     from gateway.session_a2a import forward_author
     from gateway.session_ingress import row_turn_author
     from agent.turn_author import a2a_key
-    from hermes_state_runtime import list_session_admissions
+    from gateway.session_authority import admission_row
     from gateway import run
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -132,7 +135,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     runner = run.GatewayRunner.__new__(run.GatewayRunner)
     runner.adapters = {}
     runner.session_store = store
-    runner._session_db = store._db
+    runner._session_db = store.persistence
     runner._draining = False
     authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
     authority._schedule = lambda ref: None
@@ -145,7 +148,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     author = forward_author(policy)
     assert author == {'id': 'alice', 'name': 'alice', 'is_bot': True}
     assert a2a_key(author) == 'a2a:alice'
-    row = list_session_admissions(authority.db, session_id=sid)[0]
+    row = admission_row(authority.persistence.admissions.list(session_id=sid)[0])
     assert row_turn_author(policy, row) == author
     # A producer's own stamp wins; an ordinary local policy names nobody.
     stamped = {**row, 'payload': {**row['payload'], 'local_automation_v1': {'turn_author': {'id': 'bot-7', 'is_bot': True}}}}
@@ -156,7 +159,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     # An ordinary API session has no policy at all; it names nobody rather than failing admission.
     assert row_turn_author(None, row) is None
     await conn.close()
-    authority.db.close()
+    close_stores_under(authority.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio

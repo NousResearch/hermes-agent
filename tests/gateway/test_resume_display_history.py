@@ -12,6 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 from agent.context_compressor import SUMMARY_PREFIX
+from persistence.conversation.lineage import CompressionChild
+from persistence.conversation.messages import NewMessage
+from tests.fixtures.storage_read import session_row, transcript_rows
+from tests.fixtures.storage_seed import seed_messages
 
 SUMMARY = SUMMARY_PREFIX + '\nearlier turns summarized'
 
@@ -22,18 +26,17 @@ async def _local_session(tmp_path, monkeypatch):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_contract import SessionActor
-    from hermes_state_local import local_receipt
     monkeypatch.setattr(run, '_load_gateway_config', dict)
     monkeypatch.setattr(session_local, 'local_session_info', lambda *a: {})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
-    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+    runner = SimpleNamespace(session_store=store, _session_db=store.persistence, adapters={}, _draining=False,
                              _cached_agent_for=lambda *a, **k: None, _evict_cached_agent=lambda *a, **k: None)
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
     actor = SessionActor('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'sock')
     ref = session_local.create_local_session(authority, actor, dict(
         request_id='resume', source='gui', cwd=str(tmp_path), model='frozen', toolsets=[]))
-    return authority, actor, ref, local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    return authority, actor, ref, authority.persistence.bindings.receipt(ref.session_id).entry['session_id']
 
 
 async def _resume(authority, actor, ref, **params):
@@ -46,21 +49,22 @@ async def _resume(authority, actor, ref, **params):
 
 def _append(db, sid, *texts):
     for role, text in zip(('user', 'assistant') * len(texts), texts):
-        db.append_message(sid, role, text)
+        seed_messages(db, sid, {'role': role, 'content': text})
 
 
 def _compact(db, physical, mode):
     compacted = [{'role': 'user', 'content': SUMMARY}, {'role': 'user', 'content': 'TAIL_Q'},
                  {'role': 'assistant', 'content': 'TAIL_A'}]
     if mode == 'in_place':
-        db.archive_and_compact(physical, compacted, tail_count=2)
+        db.messages.compact(physical, [NewMessage.from_live(m) for m in compacted], carried_tail_count=2)
         return physical
-    assert db.try_acquire_compression_lock(physical, 'fixture')
+    assert db.coordination.try_acquire_compression_lock(session_id=physical, holder='fixture')
     try:
-        db.publish_compression_child(parent_session_id=physical, child_session_id='child', source='gui',
-                                     messages=compacted, compression_lock_holder='fixture')
+        db.lineage.publish_compression_child(physical, CompressionChild(session_id='child', source='gui'),
+                                             [NewMessage.from_live(m) for m in compacted],
+                                             compression_lock_holder='fixture')
     finally:
-        db.release_compression_lock(physical, 'fixture')
+        db.coordination.release_compression_lock(session_id=physical, holder='fixture')
     return 'child'
 
 
@@ -68,9 +72,12 @@ def _compact(db, physical, mode):
 @pytest.mark.parametrize('mode', ['in_place', 'rotated'])
 async def test_resume_shows_the_turns_a_compression_archived(tmp_path, monkeypatch, mode):
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'OLD_Q', 'OLD_A', 'REWOUND_Q', 'REWOUND_A')
-    db.rewind_to_message(physical, next(m['id'] for m in db.get_messages(physical) if m['content'] == 'REWOUND_Q'))
+    target = next(m['id'] for m in transcript_rows(db, physical) if m['content'] == 'REWOUND_Q')
+    for m in transcript_rows(db, physical):
+        if m['id'] >= target:
+            db.messages.deactivate_message(physical, m['id'])
     _append(db, physical, 'TAIL_Q', 'TAIL_A')
     tip = _compact(db, physical, mode)
     rows = (await _resume(authority, actor, ref))['messages']
@@ -79,22 +86,21 @@ async def test_resume_shows_the_turns_a_compression_archived(tmp_path, monkeypat
     assert [(r['content'], bool(r.get('archived'))) for r in rows] == [
         ('OLD_Q', True), ('OLD_A', True), (SUMMARY, False), ('TAIL_Q', False), ('TAIL_A', False)]
     # The rows not archived are exactly the live transcript, each with its durable row id.
-    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in db.get_messages(tip)]
+    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in transcript_rows(db, tip)]
 
 
 @pytest.mark.asyncio
 async def test_cli_undo_prefix_keeps_the_summary_after_a_rotated_compression(tmp_path, monkeypatch):
     """``GatewaySessionStore.rewind_user_turn`` and ``/compress`` take the live rows as the CLI's history:
     the prefix before the newest user turn holds the summary the store keeps active (review of #140971)."""
-    from session_rules.turns import history_before_user_originated_turn
-    from hermes_state_rewind import _user_indices
+    from session_rules.turns import history_before_user_originated_turn, user_indices
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
     _compact(db, physical, 'rotated')
     _append(db, 'child', 'NEW_Q', 'NEW_A')
     live = [r for r in (await _resume(authority, actor, ref))['messages'] if not r.get('archived')]
-    prefix, turn = history_before_user_originated_turn(live, _user_indices(live)[-1])
+    prefix, turn = history_before_user_originated_turn(live, user_indices(live)[-1])
     assert turn['content'] == 'NEW_Q'
     assert [m['content'] for m in prefix] == [SUMMARY, 'TAIL_Q', 'TAIL_A']
 
@@ -103,7 +109,7 @@ async def test_cli_undo_prefix_keeps_the_summary_after_a_rotated_compression(tmp
 async def test_undo_and_retry_choose_only_among_live_turns(tmp_path, monkeypatch):
     from hermes_cli.gateway_chat_commands import _rewind_to
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
     _compact(db, physical, 'in_place')
     _append(db, physical, 'NEW_Q', 'NEW_A')
@@ -119,14 +125,14 @@ async def test_an_undone_turn_stays_gone_after_a_rotated_compression(tmp_path, m
     """The rewind removes the child's copies; the parent's copies of the same turn must not come back."""
     from gateway.session_mutations import mutate_session
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
     tip = _compact(db, physical, 'rotated')
     handle = authority._handle(ref)
     await mutate_session(authority, actor, ref, {
         'session_id': ref.session_id, 'request_id': 'undo', 'operation': 'rewind',
         'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
-        'payload': {'target_message_id': next(m['id'] for m in db.get_messages(tip) if m['content'] == 'TAIL_Q')}})
+        'payload': {'target_message_id': next(m['id'] for m in transcript_rows(db, tip) if m['content'] == 'TAIL_Q')}})
     rows = (await _resume(authority, actor, ref))['messages']
     assert [(r['content'], bool(r.get('archived'))) for r in rows] == [
         ('OLD_Q', True), ('OLD_A', True), (SUMMARY, False)]
@@ -137,12 +143,12 @@ async def test_a_micro_compaction_merge_shows_its_prompts_once(tmp_path, monkeyp
     """A merged prompt row (``model_only``) stays a live undo target but is not painted next to its originals."""
     from hermes_cli.gateway_chat_commands import _rewind_to
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'Q1', 'A1', 'Q2', 'A2', 'Q3', 'A3')
-    db.archive_and_compact(physical, [
+    db.messages.compact(physical, [NewMessage.from_live(m) for m in [
         {'role': 'user', 'content': 'Q1\n\nQ2', 'display_metadata': {'model_only': True}},
         {'role': 'assistant', 'content': SUMMARY}, {'role': 'user', 'content': 'Q3'},
-        {'role': 'assistant', 'content': 'A3'}], tail_count=2)
+        {'role': 'assistant', 'content': 'A3'}]], carried_tail_count=2)
     snapshot = await _resume(authority, actor, ref, display_projection=True)
     assert [m['text'] for m in snapshot['display_messages'] if m['role'] == 'user'] == ['Q1', 'Q2', 'Q3']
     merged = next(r for r in snapshot['messages'] if r['content'] == 'Q1\n\nQ2')
@@ -156,7 +162,7 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
     live-only reply does, large live rows included; live rows all stay."""
     import json
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     for n in range(40):
         _append(db, physical, f'Q{n} ' + 'x' * 120_000, f'A{n}')
     _append(db, physical, 'TAIL_Q', 'TAIL_A')
@@ -167,7 +173,7 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
     assert len(json.dumps(reply)) < 8 * 1024 * 1024
     rows = reply['messages']
     assert rows[0]['archived_truncated'] and rows[-1]['content'] == 'R23'
-    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in db.get_messages(tip)]
+    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in transcript_rows(db, tip)]
     archived = [r['content'][:4] for r in rows if r.get('archived') and r['role'] == 'user']
     assert archived and archived[-1] == 'Q39 ' and 'Q0 x' not in archived  # the newest are kept
 
@@ -179,16 +185,16 @@ async def test_a_row_appended_during_prepare_counts_against_the_archive_budget(t
     import json
     from gateway import session_local_recovery as recovery
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     for n in range(28):  # ~2.8 MiB of history, then summarized away in place (all archived)
-        db.append_message(physical, 'user' if n % 2 == 0 else 'assistant', f'{n}:' + 'h' * 100 * 1024)
-    db.archive_and_compact(physical, [{'role': 'user', 'content': SUMMARY}])
+        seed_messages(db, physical, {'role': 'user' if n % 2 == 0 else 'assistant', 'content': f'{n}:' + 'h' * 100 * 1024})
+    db.messages.compact(physical, [NewMessage.from_live({'role': 'user', 'content': SUMMARY})])
     real, raced = recovery.prepare_history, []
 
     async def prepare_then_append(authority_, ref_):
         prepared = await real(authority_, ref_)
         if not raced:
-            raced.append(db.append_message(physical, 'assistant', 'n' * 2 * 1024 * 1024))
+            raced.extend(seed_messages(db, physical, {'role': 'assistant', 'content': 'n' * 2 * 1024 * 1024}))
         return prepared
     monkeypatch.setattr(recovery, 'prepare_history', prepare_then_append)
     reply = await _resume(authority, actor, ref, display_projection=True)
@@ -207,7 +213,7 @@ async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, mo
     from gateway.session_controls import AuthorityConnection
     authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     authority.runner.session_authority = authority  # one process owns both writes of a delete
-    authority.db.append_message(physical, 'user', 'hello')
+    seed_messages(authority.persistence, physical, {'role': 'user', 'content': 'hello'})
 
     def connection():
         return AuthorityConnection(authority, object(), {
@@ -218,7 +224,7 @@ async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, mo
     async def prepare_then_delete(authority_, ref_):
         prepared = await real(authority_, ref_)
         if not deleted:
-            row = authority.db.get_session(ref.session_id)
+            row = session_row(authority.persistence, ref.session_id)
             deleted.append(await connection().dispatch({'id': 9, 'method': 'session.mutate', 'params': {
                 'session_id': ref.session_id, 'request_id': 'delete-1', 'expected_revision': row['runtime_revision'],
                 'expected_generation': row['runtime_generation'], 'operation': 'delete', 'payload': {}}}))
@@ -237,33 +243,36 @@ async def test_a_committed_but_unretired_delete_during_the_prepare_answers_not_f
     from gateway.session_controls import AuthorityConnection
     authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     authority.runner.session_authority = authority  # one process owns both writes of a delete
-    authority.db.append_message(physical, 'user', 'hello')
+    seed_messages(authority.persistence, physical, {'role': 'user', 'content': 'hello'})
 
     def connection():
         return AuthorityConnection(authority, object(), {
             'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
             'capabilities': ['session:create', 'session:read', 'session:control']})
-    prepare, write, deletes = session_local_recovery.prepare_history, session_mutations.mutate_runtime_session, []
+    from gateway.session_persistence import authority_persistence
+    from persistence.authority.runtime import Delete
+    runtime = authority_persistence(authority).runtime
+    prepare, write, deletes = session_local_recovery.prepare_history, runtime.mutate, []
     committed, release = threading.Event(), threading.Event()
 
     def write_then_hold(*args, **kwargs):
         result = write(*args, **kwargs)
-        if kwargs.get('operation') == 'delete':
+        if isinstance(kwargs.get('command'), Delete):
             committed.set()
             assert release.wait(10), 'the delete was never released'
         return result
 
     async def prepare_then_delete(authority_, ref_):
         prepared = await prepare(authority_, ref_)
-        row = authority.db.get_session(ref.session_id)
+        row = session_row(authority.persistence, ref.session_id)
         deletes.append(asyncio.ensure_future(connection().dispatch({'id': 9, 'method': 'session.mutate', 'params': {
             'session_id': ref.session_id, 'request_id': 'delete-1', 'operation': 'delete', 'payload': {},
             'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation']}})))
         assert await asyncio.to_thread(committed.wait, 10)
-        assert authority.db.get_session(ref.session_id) is None and ref.session_id in authority.sessions
+        assert session_row(authority.persistence, ref.session_id) is None and ref.session_id in authority.sessions
         release.set()  # the commit has landed; the retirement runs once the loop gets to it
         return prepared
-    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', write_then_hold)
+    monkeypatch.setattr(runtime, 'mutate', write_then_hold)
     monkeypatch.setattr(session_local_recovery, 'prepare_history', prepare_then_delete)
     try:
         reply = await connection().dispatch({'id': 1, 'method': 'session.resume',
@@ -283,14 +292,14 @@ async def test_rollback_turn_rewind_never_targets_an_archived_turn(tmp_path, mon
     from gateway.session_mutations import mutate_session
     from gateway.session_tui_ops import _rewind_last_turn
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
-    db = authority.db
+    db = authority.persistence
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
     tip = _compact(db, physical, mode)
     handle = authority._handle(ref)
     await mutate_session(authority, actor, ref, {
         'session_id': ref.session_id, 'request_id': 'undo', 'operation': 'rewind',
         'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
-        'payload': {'target_message_id': next(m['id'] for m in db.get_messages(tip) if m['content'] == 'TAIL_Q')}})
-    live = [m['content'] for m in db.get_messages(tip)]
+        'payload': {'target_message_id': next(m['id'] for m in transcript_rows(db, tip) if m['content'] == 'TAIL_Q')}})
+    live = [m['content'] for m in transcript_rows(db, tip)]
     assert await _rewind_last_turn(SimpleNamespace(authority=authority, actor=actor), ref) == 0
-    assert [m['content'] for m in db.get_messages(tip)] == live == [SUMMARY]
+    assert [m['content'] for m in transcript_rows(db, tip)] == live == [SUMMARY]

@@ -8,7 +8,7 @@ import pytest
 def test_bypass_policy_is_typed_frozen_and_safe_implies_ignore(tmp_path):
     from dataclasses import asdict
     from gateway.session_policy import build_policy, restore_policy, CREATE_FIELDS
-    from hermes_state_runtime import RuntimeStoreError
+    from persistence.core.errors import AuthorityRefusal
 
     assert {'safe_mode', 'ignore_user_config'} <= CREATE_FIELDS
     cfg = {'platform_toolsets': {'cli': ['terminal']}}
@@ -23,11 +23,11 @@ def test_bypass_policy_is_typed_frozen_and_safe_implies_ignore(tmp_path):
     restored = restore_policy(asdict(safe))
     assert restored == safe and restored.safe_mode is True
     for bad in ({'safe_mode': 1}, {'safe_mode': 'true'}, {'ignore_user_config': None}):
-        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        with pytest.raises(AuthorityRefusal, match='invalid_params'):
             build_policy({'cwd': str(tmp_path), **bad}, cfg)
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         restore_policy({**asdict(safe), 'safe_mode': 'yes'})
-    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+    with pytest.raises(AuthorityRefusal, match='storage_unavailable'):
         restore_policy({**asdict(safe), 'ignore_user_config': False})  # implication must hold in cold receipts too
 
 

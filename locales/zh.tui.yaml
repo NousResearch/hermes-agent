@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "托管仪表盘聊天中已禁用退出 �
 slashCmd.core.redraw.done: "界面已重绘"
 slashCmd.core.retry.nothing: "没有可重试的内容"
 slashCmd.core.save.failed: "保存失败"
-slashCmd.core.save.legacyRefused: "未保存：此网关早于 /save 导出功能，无法写入脱敏、命名或 md/html 副本。请更新网关，或运行不带选项的 /save，在网关主机上写入原始 JSON。"
+slashCmd.core.save.legacyRefused: "未保存：此网关不提供 /save 导出（较旧的网关，或没有会话授权的 sidecar），无法写入脱敏、命名或 md/html 副本。请连接到拥有该会话的网关或更新它，或运行不带选项的 /save，在网关主机上写入原始 JSON。"
 slashCmd.core.save.noActiveSession: "没有活动会话 — 没有可保存的内容"
 slashCmd.core.save.noConversation: "还没有对话"
 slashCmd.core.save.saved: "对话已保存到：{0}"

@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "выход отключён в чате �
 slashCmd.core.redraw.done: "интерфейс перерисован"
 slashCmd.core.retry.nothing: "нечего повторять"
 slashCmd.core.save.failed: "не удалось сохранить"
-slashCmd.core.save.legacyRefused: "не сохранено: этот шлюз старше экспорта /save и не может записать скрытую, именованную или md/html-копию. Обновите шлюз или выполните /save без параметров, чтобы записать сырой JSON на хосте шлюза."
+slashCmd.core.save.legacyRefused: "не сохранено: этот шлюз не поддерживает экспорт /save (более старый шлюз или sidecar без полномочий сеанса), поэтому не может записать скрытую, именованную или md/html-копию. Подключитесь к шлюзу, которому принадлежит сеанс, или обновите его, либо выполните /save без параметров, чтобы записать сырой JSON на хосте шлюза."
 slashCmd.core.save.noActiveSession: "нет активного сеанса — нечего сохранять"
 slashCmd.core.save.noConversation: "беседы пока нет"
 slashCmd.core.save.saved: "беседа сохранена в: {0}"

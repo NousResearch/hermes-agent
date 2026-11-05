@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "çıkış, barındırılan pano sohbetind
 slashCmd.core.redraw.done: "arayüz yeniden çizildi"
 slashCmd.core.retry.nothing: "yeniden denenecek bir şey yok"
 slashCmd.core.save.failed: "kaydetme başarısız"
-slashCmd.core.save.legacyRefused: "kaydedilmedi: bu ağ geçidi /save dışa aktarımından eski, bu yüzden maskelenmiş, adlandırılmış veya md/html bir kopya yazamaz. Ağ geçidini güncelleyin ya da ağ geçidi ana makinesine ham JSON yazmak için seçeneksiz /save çalıştırın."
+slashCmd.core.save.legacyRefused: "kaydedilmedi: bu ağ geçidi /save dışa aktarımını sunmuyor (eski bir ağ geçidi ya da oturum yetkisi olmayan bir sidecar), bu yüzden maskelenmiş, adlandırılmış veya md/html bir kopya yazamaz. Oturumun sahibi olan ağ geçidine bağlanın ya da onu güncelleyin veya ağ geçidi ana makinesine ham JSON yazmak için seçeneksiz /save çalıştırın."
 slashCmd.core.save.noActiveSession: "aktif oturum yok — kaydedilecek bir şey yok"
 slashCmd.core.save.noConversation: "henüz konuşma yok"
 slashCmd.core.save.saved: "konuşma şuraya kaydedildi: {0}"

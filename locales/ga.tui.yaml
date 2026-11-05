@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "tá scor díchumasaithe i gcomhrá deais 
 slashCmd.core.redraw.done: "comhéadan ataraingthe"
 slashCmd.core.retry.nothing: "níl aon rud le triail arís"
 slashCmd.core.save.failed: "theip ar shábháil"
-slashCmd.core.save.legacyRefused: "níor sábháladh: tá an geata seo níos sine ná easpórtáil /save, mar sin ní féidir leis cóip chuimilte, ainmnithe nó md/html a scríobh. Nuashonraigh an geata, nó rith /save gan roghanna chun JSON amh a scríobh ar óstach an gheata."
+slashCmd.core.save.legacyRefused: "níor sábháladh: ní sholáthraíonn an geata seo easpórtáil /save (geata níos sine, nó sidecar gan údarás an tseisiúin), mar sin ní féidir leis cóip chuimilte, ainmnithe nó md/html a scríobh. Ceangail leis an ngeata ar leis an seisiún nó nuashonraigh é, nó rith /save gan roghanna chun JSON amh a scríobh ar óstach an gheata."
 slashCmd.core.save.noActiveSession: "níl aon seisiún gníomhach — níl aon rud le sábháil"
 slashCmd.core.save.noConversation: "níl aon chomhrá fós"
 slashCmd.core.save.saved: "comhrá sábháilte in: {0}"

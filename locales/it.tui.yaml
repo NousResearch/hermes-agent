@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "l'uscita è disattivata nella chat della 
 slashCmd.core.redraw.done: "interfaccia ridisegnata"
 slashCmd.core.retry.nothing: "niente da riprovare"
 slashCmd.core.save.failed: "salvataggio non riuscito"
-slashCmd.core.save.legacyRefused: "non salvato: questo gateway è precedente all'esportazione di /save e non può scrivere una copia oscurata, con nome o in md/html. Aggiorna il gateway, oppure usa /save senza opzioni per scrivere JSON grezzo sull'host del gateway."
+slashCmd.core.save.legacyRefused: "non salvato: questo gateway non offre l'esportazione di /save (un gateway più vecchio, o un sidecar senza l'autorità di sessione), quindi non può scrivere una copia oscurata, con nome o in md/html. Collegati al gateway che possiede la sessione o aggiornalo, oppure usa /save senza opzioni per scrivere JSON grezzo sull'host del gateway."
 slashCmd.core.save.noActiveSession: "nessuna sessione attiva — niente da salvare"
 slashCmd.core.save.noConversation: "nessuna conversazione ancora"
 slashCmd.core.save.saved: "conversazione salvata in: {0}"

@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "quitter est désactivé dans le chat du t
 slashCmd.core.redraw.done: "interface redessinée"
 slashCmd.core.retry.nothing: "rien à réessayer"
 slashCmd.core.save.failed: "échec de l'enregistrement"
-slashCmd.core.save.legacyRefused: "non enregistré : cette passerelle est antérieure à l'export /save et ne peut pas écrire de copie expurgée, nommée ou en md/html. Mettez la passerelle à jour, ou lancez /save sans option pour écrire du JSON brut sur l'hôte de la passerelle."
+slashCmd.core.save.legacyRefused: "non enregistré : cette passerelle ne fournit pas l'export /save (passerelle plus ancienne, ou sidecar sans l'autorité de session) et ne peut donc pas écrire de copie expurgée, nommée ou en md/html. Connectez-vous à la passerelle qui possède la session ou mettez-la à jour, ou lancez /save sans option pour écrire du JSON brut sur l'hôte de la passerelle."
 slashCmd.core.save.noActiveSession: "aucune session active — rien à enregistrer"
 slashCmd.core.save.noConversation: "aucune conversation pour l'instant"
 slashCmd.core.save.saved: "conversation enregistrée dans : {0}"

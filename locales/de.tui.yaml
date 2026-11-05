@@ -927,7 +927,7 @@ slashCmd.core.quit.dashboardDisabled: "Beenden ist im gehosteten Dashboard-Chat 
 slashCmd.core.redraw.done: "UI neu gezeichnet"
 slashCmd.core.retry.nothing: "nichts zu wiederholen"
 slashCmd.core.save.failed: "Speichern fehlgeschlagen"
-slashCmd.core.save.legacyRefused: "nicht gespeichert: dieses Gateway ist älter als der /save-Export und kann keine geschwärzte, benannte oder md/html-Kopie schreiben. Aktualisiere das Gateway oder nutze einfaches /save, um rohes JSON auf dem Gateway-Host zu schreiben."
+slashCmd.core.save.legacyRefused: "nicht gespeichert: dieses Gateway bietet keinen /save-Export an (ein älteres Gateway oder ein Sidecar ohne Sitzungsautorität) und kann daher keine geschwärzte, benannte oder md/html-Kopie schreiben. Verbinde dich mit dem Gateway, dem die Sitzung gehört, oder aktualisiere es, oder nutze einfaches /save, um rohes JSON auf dem Gateway-Host zu schreiben."
 slashCmd.core.save.noActiveSession: "keine aktive Sitzung — nichts zu speichern"
 slashCmd.core.save.noConversation: "noch keine Konversation"
 slashCmd.core.save.saved: "Konversation gespeichert unter: {0}"

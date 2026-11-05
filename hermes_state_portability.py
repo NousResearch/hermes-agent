@@ -7,6 +7,7 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 import logging
 import json
 import math
+import sqlite3
 import time
 from collections import Counter
 from datetime import datetime, timezone, UTC
@@ -23,7 +24,8 @@ from hermes_state_keys import (
 )
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
-from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+from hermes_state_messages import _parse_tool_calls
+from hermes_state_messages_text import _tool_calls_count
 from hermes_state_lineage import session_lineage_guard
 import itertools
 
@@ -401,75 +403,137 @@ class SessionPortabilityMixin:
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
-        """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
-        heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
-        desktop routed session RPCs by target session). Pure composition
-        ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``: runtime
-        fields reset, already-present ids skipped (idempotent). Every message row is carried
-        with its archived state, so turns in-place compaction archived stay visible here and
-        stay out of model context. With ``retire_donor`` and a complete adoption, donor rows
-        are ARCHIVED (never deleted) with
-        ``end_reason='adopted_by_profile'`` — deliberately NOT in the recoverable set, so
-        resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus
-        ``adopted`` and ``donor_retired`` (True only when EVERY segment retired).
+        """Copy a complete lineage, durably retaining membership for retirement retries.
 
-        Once routing was fixed, the profile backend correctly received the RPCs but had no such session, so
-        the same chat 4001'd for the opposite reason. This method moves the conversation to where routing
-        now looks for it. See #93091, #93296.
+        Copies and immutable membership commit together. Same-home member locks remain
+        held through donor retirement; standalone pairs retain their existing contract.
+        Existing rows are skipped and donor-ahead copies are never retired.
         """
-        # Every row, not just live ones: the retired donor is unrecoverable, so any turn left behind
-        # (compaction-archived history included) would be visible nowhere.
-        payload = donor_db.export_session_lineage(session_id, include_inactive=True)
-        if not payload:
+        from hermes_state_adoption_records import AdoptionConflict
+        pair_error = self._validate_adoption_store_pair(donor_db.db_path)
+        if pair_error:
+            return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
+        try:
+            for _attempt in range(3):
+                outcome = self._attempt_lineage_adoption(donor_db, session_id, retire_donor=retire_donor)
+                if outcome is not None:
+                    return outcome
+        except AdoptionConflict as exc:
+            return {"ok": False, "adopted": False, "donor_retired": False,
+                    "conflict": True, "error": str(exc)}
+        return {"ok": False, "adopted": False, "donor_retired": False,
+                "error": "donor membership kept changing; retry after its lineage stabilizes"}
+
+    def _adoption_segments(self, donor_db: Any, session_id: str, record) -> list[dict[str, Any]]:
+        from hermes_state_adoption_records import AdoptionConflict
+        if record is None:
+            payload = donor_db.export_session_lineage(session_id, include_inactive=True)
+            return (payload.get("segments") or [payload]) if payload else []
+        segments = [donor_db.export_session(mid, include_inactive=True) for mid in record["member_ids"]]
+        if any(segment is None for segment in segments):
+            raise AdoptionConflict("Saved adoption donor member is missing; recover the complete transfer")
+        return segments
+
+    def _attempt_lineage_adoption(self, donor_db: Any, session_id: str, *, retire_donor: bool):
+        from hermes_state_adoption_records import find, ownership, validate_fresh, validate_members, validate_handles
+        validate_handles(self, donor_db)
+        record = find(self, session_id, donor_db)
+        segments = self._adoption_segments(donor_db, session_id, record)
+        if not segments:
             return {"ok": False, "adopted": False, "donor_retired": False,
                     "error": f"session {session_id!r} not found in donor store"}
-        segments = payload.get("segments") or [payload]
-        segment_ids = [segment["id"] for segment in segments if segment.get("id")]
-        # Keep the source owner check, target import, and donor retirement under one home-wide
-        # lock. The nested import guard is re-entrant; without the outer lock a donor can append
-        # after export, or a second profile can claim the id between copy and retirement.
-        with session_lineage_guard(donor_db.db_path, segment_ids):
-            refreshed = donor_db.export_session_lineage(session_id, include_inactive=True)
-            if not refreshed:
-                return {"ok": False, "adopted": False, "donor_retired": False,
-                        "error": f"session {session_id!r} not found in donor store"}
-            refreshed_segments = refreshed.get("segments") or [refreshed]
-            refreshed_ids = [segment["id"] for segment in refreshed_segments if segment.get("id")]
-            with session_lineage_guard(donor_db.db_path, refreshed_ids):
-                return self._adopt_lineage_segments_locked(
-                    donor_db, session_id, refreshed_segments, retire_donor=retire_donor)
+        ids = tuple(segment["id"] for segment in segments)
+        authority = None
+        if record is not None:
+            validate_members(self, donor_db, record)
+            authority = ownership(record, donor_db.db_path, self.db_path)
+        with session_lineage_guard(self.db_path, ids, transfer_from=donor_db.db_path,
+                                   adoption=authority) as snapshot:
+            # Reload authority under the complete lock set. Returning releases it before
+            # the bounded outer loop discovers/reacquires any expanded membership.
+            validate_handles(self, donor_db)
+            current = find(self, session_id, donor_db)
+            if (current is None) != (record is None):
+                return None
+            if current is not None and current["manifest"] != record["manifest"]:
+                return None
+            refreshed = self._adoption_segments(donor_db, session_id, current)
+            if tuple(segment["id"] for segment in refreshed) != ids:
+                return None
+            pair_error = self._validate_adoption_store_pair(donor_db.db_path)
+            if pair_error:
+                return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
+            self._validate_adoption_inventory(snapshot, donor_db.db_path, ids)
+            if current is None:
+                validate_fresh(self, refreshed)
+            else:
+                validate_members(self, donor_db, current)
+            return self._adopt_lineage_segments_locked(
+                donor_db, session_id, refreshed, retire_donor=retire_donor, record=current)
+
+    def _validate_adoption_inventory(self, snapshot, donor_path, ids) -> None:
+        if snapshot is None:
+            return  # both resolutions positively classified the standalone compatibility path
+        from hermes_state_lineage import SessionLineageAmbiguousError, SessionLineageInventoryError, _same_file
+        for session_id in ids:
+            rows = snapshot.rows_by_id.get(session_id, ())
+            if not any(_same_file(row.store_path, Path(donor_path)) for row in rows):
+                raise SessionLineageInventoryError("Cannot inventory the adoption donor; use a managed profile store")
+            if any(not _same_file(row.store_path, Path(donor_path))
+                   and not _same_file(row.store_path, self.db_path) for row in rows):
+                raise SessionLineageAmbiguousError("Adoption has a third store copy; adjudicate its ownership first")
+
+    def _adoption_import_and_record(self, donor_db, segments, record):
+        from hermes_state_adoption_records import AdoptionConflict, build_manifest, find_in, insert, validate_handles
+        normalized, errors = self._validate_import_payload(segments)
+        if errors:
+            return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}, record
+        first_id = segments[0]["id"]
+
+        def write(conn):
+            validate_handles(self, donor_db)
+            current = find_in(conn, first_id, donor_db, self)
+            if (current is None) != (record is None):
+                raise AdoptionConflict("Adoption record appeared or disappeared; retry with its complete membership")
+            if current is not None and current["manifest"] != record["manifest"]:
+                raise AdoptionConflict("Adoption membership changed; inspect the saved transfer")
+            result = self._import_sessions_locked(conn, normalized)
+            if result.get("ok") and current is None:
+                insert(conn, build_manifest(self, donor_db, segments, conn))
+                current = find_in(conn, first_id, donor_db, self)
+            return result, current
+
+        return self._execute_write(write)
 
     def _adopt_lineage_segments_locked(self, donor_db: Any, session_id: str, segments: list[dict[str, Any]],
-                                       *, retire_donor: bool) -> dict[str, Any]:
-        """Copy/retire the already-snapshotted segments while the source ownership lock is held."""
-
-        # Divergence guard: a segment we will SKIP (already here) may have kept growing in
-        # the donor after a partial adoption; retiring it would strand those messages
-        # behind a non-recoverable archive. Still import, but refuse to retire.
-        donor_ahead = False
-        for seg in segments:
-            seg_id = seg.get("id")
-            if not seg_id or self.get_session(seg_id) is None:
-                continue
-            donor_count = len(seg.get("messages") or [])
-            local_count = len(self.get_messages(seg_id, include_inactive=True))
-            if donor_count > local_count:
-                donor_ahead = True
-                logger.warning("adoption divergence: donor segment %s has %d messages, "
-                               "local copy has %d — donor will NOT be retired", seg_id, donor_count, local_count)
-
-        result = self.import_sessions([dict(seg) for seg in segments], transfer_from=donor_db.db_path)
-        imported = int(result.get("imported") or 0)
-        skipped = int(result.get("skipped") or 0)
-        adopted = result.get("ok", False) and (imported + skipped) == len(segments)
-        if not adopted:
-            logger.warning("adoption of %s did not complete: imported=%s skipped=%s of %s segment(s); errors=%s",
-                           session_id, imported, skipped, len(segments), result.get("errors"))
-
+                                       *, retire_donor: bool, record=None) -> dict[str, Any]:
+        from hermes_state_adoption_records import mark_complete
+        members = [segment["id"] for segment in segments]
+        donor_ahead = any(
+            self.get_session(segment["id"]) is not None
+            and len(segment.get("messages") or []) > len(self.get_messages(segment["id"], include_inactive=True))
+            for segment in segments)
+        if donor_ahead:
+            logger.warning("adoption divergence: donor %s has newer messages; leaving it unretired", session_id)
+        result, saved = self._adoption_import_and_record(donor_db, segments, record)
+        adopted = result.get("ok", False) and (result.get("imported", 0) + result.get("skipped", 0)) == len(members)
         donor_retired = False
+        pending = list(members)
         if adopted and retire_donor and not donor_ahead:
-            donor_retired = all(self._retire_donor_segment(donor_db, seg["id"]) for seg in segments if seg.get("id"))
-        return {**result, "adopted": adopted, "donor_retired": donor_retired}
+            pending = []
+            for order, member in enumerate(members):
+                if not self._retire_donor_segment(donor_db, member):
+                    pending = members[order:]
+                    break
+            for member in members:
+                row = donor_db.get_session(member)
+                if (row is None or row.get("end_reason") != "adopted_by_profile" or not row.get("archived")) and member not in pending:
+                    pending.append(member)
+            donor_retired = not pending
+            if donor_retired:
+                mark_complete(self, saved, donor_db)
+        return {**result, "adopted": adopted, "donor_retired": donor_retired,
+                "member_ids": members, "pending_ids": pending}
 
     def _retire_donor_segment(self, donor_db: Any, seg_id: str) -> bool:
         """Archive one adopted donor segment; False when skipped or failed. TOCTOU close-out:
@@ -497,6 +561,20 @@ class SessionPortabilityMixin:
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)
             return False
+
+    def _validate_adoption_store_pair(self, donor_path: Path) -> str | None:
+        from hermes_state_lineage import _managed_root_and_current, _same_file
+        # Resolution errors are unverifiable stores, never standalone permission.
+        donor = _managed_root_and_current(donor_path)
+        target = _managed_root_and_current(self.db_path)
+        if _same_file(Path(donor_path), self.db_path):
+            return "Donor and target are the same database; choose distinct stores"
+        if (donor is None) != (target is None):
+            standalone = "donor" if donor is None else "target"
+            return f"Adoption refuses a mixed managed/standalone pair (standalone {standalone}); use one managed home"
+        if donor is not None and donor[0] != target[0]:
+            return "Adoption requires both stores in the same managed home"
+        return None
 
     # ── Import ─────────────────────────────────────────────────────────────
 
@@ -680,6 +758,10 @@ class SessionPortabilityMixin:
     def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
+        if not isinstance(sessions, list):
+            raise ValueError("sessions must be a list")
+        if len(sessions) > self._IMPORT_MAX_SESSIONS:
+            raise ValueError(f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries")
         normalized: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
@@ -823,10 +905,6 @@ class SessionPortabilityMixin:
         regression
         (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
-        if not isinstance(sessions, list):
-            raise ValueError("sessions must be a list")
-        if len(sessions) > self._IMPORT_MAX_SESSIONS:
-            raise ValueError(f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries")
         normalized, errors = self._validate_import_payload(sessions)
         if errors:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
@@ -835,43 +913,45 @@ class SessionPortabilityMixin:
             str(item["session"].get("id") or "").strip() for item in normalized
             if str(item["session"].get("id") or "").strip()
         ))
-        with self._read_ctx() as conn:
-            present_ids: set[str] = set()
-            for start in range(0, len(session_ids), 500):
-                chunk = session_ids[start:start + 500]
-                placeholders = ",".join("?" for _ in chunk)
-                present_ids.update(row[0] for row in conn.execute(
-                    f"SELECT id FROM sessions WHERE id IN ({placeholders})", chunk
-                ).fetchall())
-        new_ids = tuple(session_id for session_id in session_ids if session_id not in present_ids)
 
         def _do(conn):
-            from hermes_state_mutation_retirement import retired_in
-            # A user-deleted id stays fenced for good: its row restored beside the fence would list
-            # fine and refuse every turn, so the import is refused by name and writes nothing.
-            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
-            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
-                return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
-                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
-            imported_ids: list[str] = []
-            skipped_ids: list[str] = []
-            parent_updates: list[tuple[str, str]] = []
-            for item in normalized:
-                raw = item["session"]
-                session_id = str(raw.get("id") or "").strip()
-                if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
-                    skipped_ids.append(session_id)
-                    continue
-                self._import_session_row(conn, raw, item["messages"], session_id)
-                parent_id = str(raw.get("parent_session_id") or "").strip()
-                if parent_id:
-                    parent_updates.append((session_id, parent_id))
-                imported_ids.append(session_id)
-            return {
-                "ok": True, "imported": len(imported_ids), "skipped": len(skipped_ids),
-                "detached": self._attach_import_parents(conn, parent_updates),
-                "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
-            }
+            return self._import_sessions_locked(conn, normalized)
 
-        with session_lineage_guard(self.db_path, new_ids, transfer_from=transfer_from):
+        with session_lineage_guard(self.db_path, session_ids, transfer_from=transfer_from):
+            # Every payload id is guarded, not only the absent ones: an id that was present
+            # when ``present_ids`` was computed can be moved to a sibling store before this
+            # transaction opens, and re-importing it here would recreate it behind the fence
+            # (review finding 2). The guard itself rejects ids owned elsewhere; inside the
+            # write, the per-id presence recheck skips them instead of inserting.
             return self._execute_write(_do)
+
+    def _import_sessions_locked(self, conn: sqlite3.Connection, normalized: list[dict[str, Any]]) -> dict[str, Any]:
+        """Insert normalized payloads on the CALLER's open transaction (per-id presence
+        recheck inside). Shared by ``import_sessions`` and adoption, which commits the
+        durable transfer record in the SAME transaction as these inserts."""
+        from hermes_state_mutation_retirement import retired_in
+        # A user-deleted id stays fenced for good: its row restored beside the fence would list
+        # fine and refuse every turn, so the import is refused by name and writes nothing.
+        ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+        if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+            return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
+                f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
+        imported_ids: list[str] = []
+        skipped_ids: list[str] = []
+        parent_updates: list[tuple[str, str]] = []
+        for item in normalized:
+            raw = item["session"]
+            session_id = str(raw.get("id") or "").strip()
+            if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
+                skipped_ids.append(session_id)
+                continue
+            self._import_session_row(conn, raw, item["messages"], session_id)
+            parent_id = str(raw.get("parent_session_id") or "").strip()
+            if parent_id:
+                parent_updates.append((session_id, parent_id))
+            imported_ids.append(session_id)
+        return {
+            "ok": True, "imported": len(imported_ids), "skipped": len(skipped_ids),
+            "detached": self._attach_import_parents(conn, parent_updates),
+            "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
+        }

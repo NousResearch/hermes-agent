@@ -250,6 +250,10 @@ class SessionProfileRepairMixin:
         session_id = session["id"]
 
         def _do(conn) -> str:
+            from hermes_state_mutation_retirement import retired_in
+            from hermes_state_runtime import RuntimeStoreError
+            if retired_in(conn, session_id):
+                raise RuntimeStoreError("session_deleted")
             if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
                 return "present"
             session["profile_name"] = profile_name

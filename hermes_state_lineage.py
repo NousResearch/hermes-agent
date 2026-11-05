@@ -64,23 +64,51 @@ class SessionStoreRow:
 
 
 @dataclass(frozen=True)
+class AdoptionOwnership:
+    """Store-bound lifecycle evidence loaded from a validated durable transfer."""
+
+    donor_path: Path
+    target_path: Path
+    states: dict[str, tuple[bool, str | None, bool, str | None]]
+
+    def permits(self, session_id, source_path, target_path, source, local) -> bool:
+        expected = self.states.get(session_id)
+        if expected is None or not _same_file(self.donor_path, source_path) or not _same_file(self.target_path, target_path):
+            return False
+        source_state = (source.is_live, source.end_reason)
+        return (source_state in {expected[:2], (False, "adopted_by_profile")}
+                and (local.is_live, local.end_reason) == expected[2:])
+
+
+def _explicit_transfer_allowed(rows, source_path, current_path, session_id, adoption):
+    if _same_file(source_path, current_path):
+        return False
+    source = [row for row in rows if _same_file(row.store_path, source_path)]
+    local = [row for row in rows if _same_file(row.store_path, current_path)]
+    if len(rows) == 1 and len(source) == 1:
+        return True
+    if len(rows) != 2 or len(source) != 1 or len(local) != 1:
+        return False
+    if source[0].is_live and (local[0].is_live or local[0].end_reason == "adopted_by_profile"):
+        return True
+    return isinstance(adoption, AdoptionOwnership) and adoption.permits(
+        session_id, source_path, current_path, source[0], local[0])
+
+
+@dataclass(frozen=True)
 class SessionLineageSnapshot:
     current_path: Path
     rows_by_id: dict[str, tuple[SessionStoreRow, ...]]
 
-    def require_current_owner(self, session_id: str, transfer_from: str | Path | None = None) -> None:
+    def require_current_owner(self, session_id: str, transfer_from: str | Path | None = None,
+                              adoption: AdoptionOwnership | None = None) -> None:
         rows = self.rows_by_id.get(session_id, ())
+        if transfer_from is not None and _explicit_transfer_allowed(
+                rows, Path(transfer_from), self.current_path, session_id, adoption):
+            return
         owner = _select_owner(session_id, rows)
         if owner is None or _same_file(owner.store_path, self.current_path):
             return
-        if transfer_from is not None and _same_file(owner.store_path, Path(transfer_from)):
-            source_rows = [row for row in rows if _same_file(row.store_path, Path(transfer_from))]
-            local_rows = [row for row in rows if _same_file(row.store_path, self.current_path)]
-            if len(rows) == 1 or (
-                len(source_rows) == 1 and source_rows[0].is_live and len(local_rows) == 1
-                and local_rows[0].end_reason == "adopted_by_profile"
-            ):
-                return
         raise SessionIdOwnedElsewhereError(
             f"Session {session_id!r} is owned by profile store {owner.profile!r}; "
             f"refusing to create or resume it in {self.current_path}"
@@ -297,19 +325,47 @@ def _managed_root_and_current(db_path: str | Path) -> tuple[Path, Path] | None:
         raise SessionLineageInventoryError(f"Cannot resolve Hermes state-store root: {exc}") from exc
 
 
-def _store_candidates(root: Path, current_path: Path) -> list[tuple[Path, str]]:
+def physical_store_candidates(root: Path | None = None, current_path: Path | None = None) -> list[tuple[Path, str]]:
+    """Every physical state.db the ownership fence inventories (incl. tombstoned profile dirs).
+
+    Shared inventory for the fence and the repair planner (review finding 3): repair must
+    see exactly the stores that can block a write, or its plan omits the blocking store.
+    ``current_path`` mode resolves the managed root from a writer's database and keeps the
+    mandatory-current-file checks. ``root``-only mode is inventory-only: no current/writer
+    database is required, so read-only repair can scan an empty or profile-only home without
+    one being created or demanded.
+    """
+    from hermes_constants import get_default_hermes_root
+    if current_path is not None:
+        managed = _managed_root_and_current(current_path)
+        if managed is None:
+            return []
+        managed_root, current = managed
+        if root is not None and root.expanduser().resolve(strict=False) != managed_root:
+            raise SessionLineageInventoryError(
+                f"Conflicting physical-store root {root} and current database {current_path}")
+        return _store_candidates(managed_root, current)
+    managed_root = (root if root is not None else get_default_hermes_root()).expanduser().resolve(strict=False)
+    return _store_candidates(managed_root, None)
+
+
+def _regular_file_or_none(path: Path, label: str) -> os.stat_result | None:
+    """lstat a path that must be a plain regular file; None when absent, raise on unsafe."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SessionLineageInventoryError(f"Cannot inspect {label} {path}: {exc}") from exc
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise SessionLineageInventoryError(f"Unsafe {label}: {path}")
+    return st
+
+
+def _store_candidates(root: Path, current_path: Path | None) -> list[tuple[Path, str]]:
     candidates: list[tuple[Path, str]] = []
-    root_db = root / "state.db"
-    for path, profile in ((root_db, "default"),):
-        try:
-            st = path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise SessionLineageInventoryError(f"Cannot inspect session store {path}: {exc}") from exc
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            raise SessionLineageInventoryError(f"Unsafe session store path: {path}")
-        candidates.append((path, profile))
+    if _regular_file_or_none(root / "state.db", "session store") is not None:
+        candidates.append((root / "state.db", "default"))
 
     profiles_root = root / "profiles"
     try:
@@ -335,25 +391,12 @@ def _store_candidates(root: Path, current_path: Path) -> list[tuple[Path, str]]:
             if not stat.S_ISDIR(entry_stat.st_mode):
                 continue
             db_path = profile_dir / "state.db"
-            try:
-                db_stat = db_path.lstat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise SessionLineageInventoryError(f"Cannot inspect session store {db_path}: {exc}") from exc
-            if stat.S_ISLNK(db_stat.st_mode) or not stat.S_ISREG(db_stat.st_mode):
-                raise SessionLineageInventoryError(f"Unsafe session store path: {db_path}")
-            candidates.append((db_path, profile_dir.name))
+            if _regular_file_or_none(db_path, "session store") is not None:
+                candidates.append((db_path, profile_dir.name))
 
-    if not any(_same_file(path, current_path) for path, _ in candidates):
-        try:
-            current_stat = current_path.lstat()
-        except FileNotFoundError:
+    if current_path is not None and not any(_same_file(path, current_path) for path, _ in candidates):
+        if _regular_file_or_none(current_path, "current session database") is None:
             raise SessionLineageInventoryError(f"Current session database is missing: {current_path}")
-        except OSError as exc:
-            raise SessionLineageInventoryError(f"Cannot inspect current session database {current_path}: {exc}") from exc
-        if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
-            raise SessionLineageInventoryError(f"Unsafe current session database: {current_path}")
         rel = current_path.relative_to(root)
         candidates.append((current_path, f"custom:{rel.as_posix()}"))
     return candidates
@@ -415,12 +458,15 @@ def session_lineage_guard(
     session_ids: str | Iterable[str],
     *,
     transfer_from: str | Path | None = None,
+    adoption: AdoptionOwnership | None = None,
     timeout_s: float = 10.0,
 ) -> Iterator[SessionLineageSnapshot | None]:
     """Serialize ownership validation with a caller's DB write transaction.
 
     Callers must keep this context open until their SQLite write commits or rolls back. The
     context yields ``None`` for standalone DBs outside the active Hermes home.
+    ``adoption`` carries store-bound lifecycle evidence for a saved transfer.
+    Its additional ended-pair allowance is never granted to a plain ID set.
     """
     ids = (session_ids,) if isinstance(session_ids, str) else tuple(dict.fromkeys(str(s) for s in session_ids if s))
     if not ids:
@@ -448,7 +494,8 @@ def session_lineage_guard(
         frozen = {session_id: tuple(rows) for session_id, rows in rows_by_id.items()}
         snapshot = SessionLineageSnapshot(current_path=current_path, rows_by_id=frozen)
         for session_id in ids:
-            snapshot.require_current_owner(session_id, transfer_from=transfer_from)
+            snapshot.require_current_owner(
+                session_id, transfer_from=transfer_from, adoption=adoption)
         yield snapshot
 
 

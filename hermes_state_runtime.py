@@ -923,6 +923,13 @@ def _worker_finish(db, conn, session_id, payload):
     return {'status': 'terminal'}
 
 
+def _worker_receipt_lineage_ids(operation, payload) -> tuple[str, ...]:
+    if operation != "compression.publish" or not isinstance(payload, dict):
+        return ()
+    child = payload.get("child_session_id")
+    return (child,) if isinstance(child, str) and 0 < len(child) <= 1024 else ()
+
+
 def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
@@ -948,7 +955,8 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
     }
     return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
                                 generation=generation, sequence=sequence, operation=operation,
-                                payload=payload, handlers=handlers)
+                                payload=payload, handlers=handlers,
+                                lineage_ids=_worker_receipt_lineage_ids(operation, payload))
 
 
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,

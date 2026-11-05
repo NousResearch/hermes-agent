@@ -160,7 +160,7 @@ def live_gateway_homes(stores: Iterable[Store]) -> list[tuple[str, int]]:
 # ── scan ──────────────────────────────────────────────────────────────────────
 
 class RepairPlan:
-    def __init__(self, stores: list[Store], *, legacy_main: str = "report") -> None:
+    def __init__(self, stores: list[Store], *, legacy_main: str = "report", root: Path | None = None) -> None:
         if legacy_main not in _LEGACY_MAIN_CHOICES:
             raise ValueError(f"legacy_main must be one of {_LEGACY_MAIN_CHOICES}")
         self.stores = stores
@@ -172,6 +172,20 @@ class RepairPlan:
         self.findings: list[Finding] = []
         self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
         self._dual_home_ids: set[str] = set()
+        # The dual-home scan must see every physical store the ownership fence can be
+        # blocked by — including tombstoned profile dirs that enumerate_stores() skips
+        # (review finding 3): one shared physical inventory, fence and repair. Root-only
+        # mode: repair never demands a writer/current database, so an empty or profile-only
+        # home inventories fine (an absent db is "empty", not "unsafe"). Real inventory
+        # errors — unreadable or unsafe EXISTING stores — still propagate: silently
+        # degrading to live-only enumeration would recreate finding 3's blind spot.
+        from hermes_state_lineage import physical_store_candidates
+        physical = physical_store_candidates(root)
+        seen = {s.db_path.resolve(strict=False) for s in stores if s.db_path.exists()}
+        self.physical_stores = list(stores) + [
+            Store(profile, db_path.parent) for db_path, profile in physical
+            if db_path.exists() and db_path.resolve(strict=False) not in seen
+        ]
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
@@ -195,9 +209,14 @@ class RepairPlan:
         return self
 
     def _scan_dual_home(self, session: _Session) -> None:
-        """Report cross-store copies before ordinary repair planning; never auto-move them."""
+        """Report cross-store copies before ordinary repair planning; never auto-move them.
+
+        Scans the full physical inventory (``self.physical_stores``): a tombstoned profile
+        dir with a state.db still blocks fenced writes, so its copies must be named here
+        even though ordinary per-store scans stay on live profiles.
+        """
         by_id: dict[str, list[tuple[Store, dict[str, Any]]]] = {}
-        for store in self.stores:
+        for store in self.physical_stores:
             for row in session.db(store).list_session_lineage_rows():
                 by_id.setdefault(str(row["id"]), []).append((store, row))
         for session_id, copies in sorted(by_id.items()):
@@ -467,6 +486,8 @@ class _MoveBatch:
                 outcome = dst_db.import_moved_session(
                     payload, profile_name=self.dst.profile, transfer_from=self.src.db_path)
             except Exception as exc:
+                logger.warning("repair-profiles: moving %s into %s failed; source row kept",
+                               sid, self.dst.profile, exc_info=True)
                 self._errors[sid] = exc
                 continue
             if dst_db.count_messages_all(sid) < len(payload["messages"]):
@@ -486,6 +507,8 @@ class _MoveBatch:
                 if src_db.delete_moved_session(sid):
                     result[sid]["moved"] = 1
             except Exception as exc:
+                logger.warning("repair-profiles: deleting moved %s from %s failed; copied row stays",
+                               sid, self.src.profile, exc_info=True)
                 self._errors[sid] = exc
         self._result = result
         return result

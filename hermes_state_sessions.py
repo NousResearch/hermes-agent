@@ -16,6 +16,9 @@ from agent.session_activity import (
 )
 from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_lineage import session_lineage_guard
+from hermes_state_sessions_clauses import (
+    _cwd_prefix_clause, _inherit_col_sql, _where_sql, _workspace_key_clause,
+)
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
@@ -83,33 +86,6 @@ def _parse_model_config(raw: Any) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             return {}
     return dict(raw) if isinstance(raw, dict) else {}
-
-
-def _cwd_prefix_clause(cwd_prefix: str) -> tuple[str, list[str]]:
-    prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_``/``%`` are LIKE wildcards but ordinary path characters: unescaped, a
-    # prefix also matches sibling directories. The ``=`` arm keeps the raw prefix.
-    esc = _escape_like(prefix)
-    return (
-        "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
-        [prefix, f"{esc}/%", f"{esc}\\\\%"],
-    )
-
-
-def _workspace_key_clause(key: str) -> tuple[str, list[str]]:
-    """WHERE for ``workspace_key(row) == key``: git_repo_root equals ``key``, or (rows predating
-    per-session git metadata) cwd is at/under ``key``."""
-    prefix = key.rstrip("/\\") or key
-    cwd_clause, cwd_params = _cwd_prefix_clause(prefix)
-    return (
-        f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
-        [prefix, *cwd_params],
-    )
-
-
-def _where_sql(clauses: list[str], lead: str = "") -> str:
-    """``WHERE a AND b`` (with *lead* prefix) or "" when there are no clauses."""
-    return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
 
 
 def _session_filter_where(
@@ -290,15 +266,6 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
     + " THEN COALESCE(NULLIF(excluded.created_source, 'local'), sessions.created_source)"
     " ELSE sessions.created_source END"
 )
-
-
-def _inherit_col_sql(col: str, extra: str = "") -> str:
-    """``col = COALESCE(sessions.col, (SELECT p.col FROM parent))`` (whitespace is part of the SQL text)."""
-    pad = " " * (30 + len(col))
-    return (
-        f"{col} = COALESCE(sessions.{col},\n{pad}(SELECT p.{col} FROM sessions p\n"
-        f"{pad}  WHERE p.id = sessions.parent_session_id{extra}))"
-    )
 
 
 _INHERIT_SEP = ",\n" + " " * 27

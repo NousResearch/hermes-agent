@@ -175,6 +175,9 @@ API_SERVER_HEARTBEAT_SECONDS = 30.0
 API_SERVER_LATENCY_SAMPLE_LIMIT = 512
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+from gateway.platforms.api_server_request import (
+    _cap_list, _cap_text, _clean_request_string, _invalid_request,
+)
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 
 
@@ -226,11 +229,6 @@ _REQUEST_OPTION_MISSING = object()
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
-
-
-def _clean_request_string(value: Any) -> Optional[str]:
-    """Return a stripped request string, or None for absent/non-string values."""
-    return (value.strip() or None) if isinstance(value, str) else None
 
 
 # model_options decoding lives in the topical sibling (line-cap offset);
@@ -352,14 +350,6 @@ def _auto_truncate_response_history(
             if remaining <= 0:
                 break
     return [conversation_history[index] for index in sorted(kept_indices)]
-
-
-def _cap_text(text: str) -> str:
-    return text[:MAX_NORMALIZED_TEXT_LENGTH] if len(text) > MAX_NORMALIZED_TEXT_LENGTH else text
-
-
-def _cap_list(items: list) -> list:
-    return items[:MAX_CONTENT_LIST_SIZE] if len(items) > MAX_CONTENT_LIST_SIZE else items
 
 
 def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int = 0) -> str:
@@ -749,11 +739,6 @@ def _error_response(
 ) -> web.Response:
     """``web.json_response(_openai_error(...), status=...)`` in one call."""
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
-
-
-def _invalid_request(message: str) -> web.Response:
-    """400 with the bare ``{message, type}`` envelope the OpenAI-compatible validators use."""
-    return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
 
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(

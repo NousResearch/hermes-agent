@@ -44,6 +44,29 @@ Use `display_hermes_home()` only for user-facing text. It formats the resolved
 home relative to the user's home directory when possible (for example,
 `~/.hermes/profiles/coder`); it does not provide a separate resolution rule.
 
+### Cross-store ownership and interrupted adoption
+
+Session IDs have one owner within a managed home. Every guarded mutation holds its
+per-session locks through the SQLite commit; compression receipts include their valid
+child ID. Import checks all payload IDs under those locks and preserves permanent
+deletion fences, including profile-repair moves. Repair inventories physical stores,
+including tombstoned profiles, and reports duplicate ownership for operator review.
+
+Lineage adoption copies the complete ordered membership and an immutable
+`adoption_transfers` record in one target transaction. The record binds donor and
+target file identities, original parent/lifecycle states, and the imported history.
+Retries through either root or tip reload the complete record under the member locks;
+partial donor retirement cannot shorten the completion denominator. Record lookup or
+validation failures stop adoption. A different store, missing member, unsupported
+record, or unverified ended copy requires explicit recovery rather than automatic
+ownership adjudication. Both managed stores must share one home; mixed managed and
+standalone pairs are refused. Standalone-only calls retain their existing unfenced
+compatibility behavior.
+
+Separate-output database recovery retains adoption records as evidence, including their
+original store bindings. File replacement still requires explicit identity revalidation;
+copying a journal does not authorize donor retirement in a different database.
+
 ### Test isolation guard
 
 Tests must use a temporary `HERMES_HOME` or an explicit temporary database
@@ -134,6 +157,7 @@ ownership for a redelivered event.
 ├── compression_locks     — Cross-process compression locking
 ├── async_delegations     — Async delegation bookkeeping
 ├── delivery_obligations  — Gateway outbox (owed replies); created lazily by gateway/delivery_ledger.py
+├── adoption_transfers    — Immutable adoption membership and progress; created lazily on adoption
 ├── runtime_epoch         — Session authority's owner epoch + instance id (one row)
 ├── session_admissions    — Durable per-session input FIFO (queued → started → terminal; unknown on owner loss)
 ├── worker_executions     — Managed worker/child/cron/kanban executions bound to a session and epoch

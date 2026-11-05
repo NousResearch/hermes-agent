@@ -18,6 +18,7 @@ from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, lift_data_use, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
     index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
 from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
+from hermes_state_messages_text import _scrub_surrogates, _tool_calls_count, _tool_calls_len
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
@@ -98,21 +99,6 @@ def _parse_tool_calls(tool_calls: Any) -> Any:
         return json.loads(tool_calls)
     except (json.JSONDecodeError, TypeError):
         return []
-
-
-def _tool_calls_count(tool_calls: Any) -> int:
-    return 0 if tool_calls is None else (len(tool_calls) if isinstance(tool_calls, list) else 1)
-
-
-def _tool_calls_len(raw: Any, scalar: int = 0) -> int:
-    """Count of a stored ``tool_calls`` column: list length, *scalar* for a truthy non-list, else 0."""
-    parsed = _parse_tool_calls(raw)
-    return len(parsed) if isinstance(parsed, list) else (scalar if parsed else 0)
-
-
-def _scrub_surrogates(value: Any) -> Any:
-    """Lone surrogates make sqlite3 raise UnicodeEncodeError and abort the whole write."""
-    return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
 def _stale_holder(row, now: float) -> bool:

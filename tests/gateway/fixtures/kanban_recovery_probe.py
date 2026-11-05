@@ -45,7 +45,7 @@ def main():
     workspace.mkdir()
     cfg = {'gateway': {'multiplex_profiles': False},
            'model': {'provider': 'custom', 'default': 'frozen-model', 'base_url': url},
-           'auxiliary': {'title_generation': {'enabled': False}},
+           'auxiliary': {'title_generation': {'enabled': False}}, 'updates': {'check': False},
            'platform_toolsets': {'cli': []}, 'kanban': {'dispatch_in_gateway': False}}
     (owner / 'config.yaml').write_text(json.dumps(cfg))
     env = dict(os.environ, HERMES_HOME=str(owner), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)

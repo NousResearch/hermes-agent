@@ -8,6 +8,7 @@ re-rendered the cached prefix and the next message rendered it back.
 
 import asyncio
 import json
+import sys
 import threading
 from unittest.mock import AsyncMock
 
@@ -89,9 +90,9 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
 
     def watch(store):
         # Note which thread touches the label record; hold the first write in ``cancelled``.
-        db = store._routing_db
-        for name in ("set_meta", "get_meta"):
-            real = getattr(db, name)
+        meta = store._routing_persistence.state_meta
+        for verb, name in (("set", "set_meta"), ("get", "get_meta")):
+            real = getattr(meta, verb)
 
             def spy(key, *args, _real=real, _name=name, **kwargs):
                 if key.startswith("gateway_chat_labels:"):
@@ -101,23 +102,23 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
                         held.wait(5)
                 return _real(key, *args, **kwargs)
 
-            setattr(db, name, spy)
+            setattr(meta, verb, spy)
 
     def unavailable_once(store, name):
-        # What _routing_db_method returns while the database handle cannot be opened.
-        real, faults = store._routing_db_method, [name]
+        # No storage handle, once, for the label record's write or read (the open failed or is in backoff).
+        real, faults = store._open_persistence_for_active_scope, [name]
 
-        def method(wanted):
-            if wanted in faults:
-                faults.remove(wanted)
+        def scoped(*args, **kwargs):
+            if sys._getframe(2).f_code.co_name in faults:  # the caller of the ``_routing_persistence`` property
+                faults.remove(sys._getframe(2).f_code.co_name)
                 return None
-            return real(wanted)
+            return real(*args, **kwargs)
 
-        store._routing_db_method = method
+        store._open_persistence_for_active_scope = scoped
 
     watch(store)
     if case == "write-unavailable":
-        unavailable_once(store, "set_meta")
+        unavailable_once(store, "record_chat_labels")
 
     async def relay(event):
         await adapter._on_inbound(event)
@@ -161,16 +162,17 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
     if case == "thread":
         interaction.update(channel_id="th1", channel={"id": "th1", "type": 11, "parent_id": "ch1"})
     if case == "read-retry":
-        get_meta, faults = store._routing_db.get_meta, [OSError("database is locked")]
+        meta = store._routing_persistence.state_meta
+        get_meta, faults = meta.get, [OSError("database is locked")]
 
         def flaky(key):
             if faults:
                 raise faults.pop()
             return get_meta(key)
 
-        store._routing_db.get_meta = flaky
+        meta.get = flaky
     if case == "read-unavailable":
-        unavailable_once(store, "get_meta")
+        unavailable_once(store, "chat_labels")
     if case in ("read-retry", "read-unavailable"):
         assert (await _slash(adapter, **interaction)).source.chat_name is None
     slash = await _slash(adapter, **interaction)

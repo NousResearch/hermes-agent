@@ -5,6 +5,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.session_ingress_media import native_inputs_root
+from session_retention import after_sessions_removed
+
 
 @pytest.mark.asyncio
 async def test_streaming_retry_after_delete_replays_terminal_receipt(api, owner):
@@ -25,7 +28,10 @@ async def test_streaming_retry_after_delete_replays_terminal_receipt(api, owner)
         assert first.status == 200, await first.text()
         assert 'answer' in await first.text()
         sid = first.headers['X-Hermes-Session-Id']
-        assert owner.db.delete_session(sid)
+        removed = owner.persistence.sessions.delete(sid, media_root=str(native_inputs_root()))
+        after_sessions_removed(owner.persistence, owner.persistence.scope.profile_dir, removed, reason='delete',
+                               primary=sid)
+        assert removed
         owner.sessions.pop(sid, None)  # the owner's prune drops the live session with the row
         retry = await client.post('/v1/chat/completions', json=body, headers=headers)
         text = await retry.text()

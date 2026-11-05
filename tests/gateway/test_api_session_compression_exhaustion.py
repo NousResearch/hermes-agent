@@ -6,6 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_api_turn import admit_api_turn
+from persistence_assembly import close_stores_under
+from tests.fixtures.storage_read import conversation
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 DM = "disk status?"
 
@@ -25,7 +28,7 @@ async def test_api_session_keeps_its_id_after_compression_exhaustion(monkeypatch
     adapter.gateway_runner = runner
     runner.adapters = {Platform.API_SERVER: adapter}
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="fixture")
-    adapter._session_db = authority.db
+    adapter._session_db = authority.persistence
     try:
         admit_api_turn(adapter, session_id="dm1", user_message=DM, conversation_history=[])
         source = authority.sessions["dm1"].source
@@ -39,7 +42,7 @@ async def test_api_session_keeps_its_id_after_compression_exhaustion(monkeypatch
     finally:
         adapter._response_store.close()
         adapter._run_idempotency_store.close()
-        authority.db.close()
+        close_stores_under(authority.persistence.scope.profile_dir)
 
 
 def test_session_chat_rerun_continues_the_failed_attempts_row(api, owner):
@@ -79,18 +82,18 @@ def test_admitted_retry_preserves_completed_tool_evidence(api, owner):
 
     sid = "retry-completed-tool"
     message = "Create exactly one draft and return its ID."
-    owner.db.create_session(sid, "api_server")
-    owner.db.append_message(sid, "user", content=message)
-    owner.db.append_message(sid, "assistant", content=None, tool_calls=[
-        {"id": "call_1", "type": "function", "function": {"name": "create_draft", "arguments": "{}"}}])
-    owner.db.append_message(sid, "tool", content="Created draft 73.", tool_call_id="call_1")
+    seed_session(owner.persistence, sid, "api_server")
+    seed_messages(owner.persistence, sid, {"role": "user", "content": message},
+                  {"role": "assistant", "content": None, "tool_calls": [
+                      {"id": "call_1", "type": "function", "function": {"name": "create_draft", "arguments": "{}"}}]},
+                  {"role": "tool", "content": "Created draft 73.", "tool_call_id": "call_1"})
     # Realistic state after the next provider request exhausts its retries.
-    assert owner.db.latest_conversation_role(sid) == "tool"
+    assert owner.persistence.messages.latest_conversation_role(sid) == "tool"
     assert result_retry_action({"failed": True, "failure_reason": "rate_limit",
                                 "error": "429 Too Many Requests"}) == RETRY_RESUME
 
     _, ref, row = admit_api_turn(api, session_id=sid, user_message=message,
-                                 conversation_history=owner.db.get_messages_as_conversation(sid),
+                                 conversation_history=conversation(owner.persistence, sid),
                                  resume_unanswered_turn=True)
     turn = TurnRunner(SimpleNamespace(session_authority=None),
                       TurnContext(message=message, session_id=sid, session_key="api"))

@@ -34,7 +34,7 @@ async def test_chat_completions_stream_forwards_agent_status_callback(adapter, m
             return {"final_response": "answer", "completed": True}
 
     _stub_create_agent_runtime(monkeypatch, FakeAgent)
-    monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+    monkeypatch.setattr(adapter, "_ensure_store", lambda: None)
     request, written, fake_response = _fake_writer_env()
     stream_q = ThreadSafeAsyncQueue()
     agent_task, agent_ref = adapter._spawn_stream_agent(

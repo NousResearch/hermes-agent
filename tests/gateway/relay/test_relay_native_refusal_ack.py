@@ -8,6 +8,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
 from gateway.session_results import execution_result
+from persistence_assembly import close_stores_under
 from tests.waiting import async_wait_until
 
 
@@ -69,4 +70,4 @@ async def test_refused_relay_frame_is_acked_and_the_reader_keeps_serving(tmp_pat
             assert len(sockets) == 1, 'the refusal tore the relay socket down and re-dialed'
         finally:
             await adapter.disconnect()
-            authority.db.close()
+            close_stores_under(authority.persistence.scope.profile_dir)

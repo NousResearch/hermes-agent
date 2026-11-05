@@ -7,7 +7,8 @@ import pytest
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_context import clear_session_vars
 from gateway.wake import persist_delegation_delivery
-from hermes_state import SessionDB
+from tests.fixtures.storage_read import transcript_rows
+from tests.fixtures.storage_seed import seed_session
 from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
 
@@ -54,37 +55,39 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    peer = SessionDB(db_path=tmp_path / "state.db")
+    from persistence_assembly import open_persistence, profile_scope
+    stores = [open_persistence(profile_scope(home=tmp_path)) for _ in range(2)]
+    db, peer = stores
     try:
-        db.create_session("parent", source="api_server")
-        db.create_session("other", source="api_server")
-        adapters = [SimpleNamespace(_ensure_session_db=lambda: db), SimpleNamespace(_ensure_session_db=lambda: peer)]
+        seed_session(db, "parent", "api_server")
+        seed_session(db, "other", "api_server")
+        adapters = [SimpleNamespace(_ensure_store=lambda: db, _store_beside=lambda _db: stores[0]),
+                    SimpleNamespace(_ensure_store=lambda: peer, _store_beside=lambda _db: stores[1])]
         evt = {"type": "async_delegation", "delegation_id": "unique-unit"}
         async def send(adapter, event=evt):
             await persist_delegation_delivery(adapter, text="RESULT", session_id="parent", evt=event)
         await asyncio.gather(*(send(a) for a in adapters))
-        assert len(db.get_messages("parent")) == 1
-        db.end_session("parent", "compression")
-        db.create_session("child", source="api_server", parent_session_id="parent")
+        assert len(transcript_rows(db, "parent")) == 1
+        db.sessions.end("parent", "compression")
+        seed_session(db, "child", "api_server", parent_session_id="parent")
         await send(adapters[0])
-        assert db.get_messages("child") == []  # old event was already recorded in the lineage
-        from hermes_state_errors import SessionTurnLeaseLostError
-        assert db.acquire_session_turn_lease("child", "client-turn", wait_seconds=0)
+        assert transcript_rows(db, "child") == []  # old event was already recorded in the lineage
+        from persistence import TurnLeaseLost
+        assert db.coordination.try_acquire_turn_lease(session_id="child", holder="client-turn")
         later = {**evt, "delegation_id": "later-unit"}
         try:
-            with pytest.raises(SessionTurnLeaseLostError):
+            with pytest.raises(TurnLeaseLost):
                 await send(adapters[0], later)
-            assert db.get_messages("child") == []
+            assert transcript_rows(db, "child") == []
         finally:
-            db.release_session_turn_lease("child", "client-turn")
+            db.coordination.release_turn_lease(session_id="child", holder="client-turn")
         await send(adapters[0], later)
-        assert len(db.get_messages("child")) == 1
+        assert len(transcript_rows(db, "child")) == 1
         notice = {**later, "task_failure_notice": True, "results": [{"task_index": 0, "status": "failed"}]}
         await send(adapters[0], notice)
         await send(adapters[1], notice)
-        assert len(db.get_messages("child")) == 2  # interim notice cannot consume the final's identity
-        assert db.get_messages("other") == []
+        assert len(transcript_rows(db, "child")) == 2  # interim notice cannot consume the final's identity
+        assert transcript_rows(db, "other") == []
     finally:
-        peer.close()
-        db.close()
+        for store in stores:
+            store.close()

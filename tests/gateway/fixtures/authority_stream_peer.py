@@ -107,9 +107,8 @@ async def probe(peer, target):
     from gateway.run import GatewayRunner
     from gateway.run_api import start_gateway_api, stop_gateway_api
     from gateway.session import SessionSource
-    from gateway.session_authority import initialize_session_authority
+    from gateway.session_authority import admission_row, initialize_session_authority
     from hermes_cli import web_server
-    from hermes_state_runtime import list_session_admissions
     from run_agent import AIAgent
 
     class NativeAdapter(BasePlatformAdapter):
@@ -196,7 +195,7 @@ async def probe(peer, target):
         assert target.read_text() == 'owned-effect'
         agent = authority.agent(ref)
         assert isinstance(agent, AIAgent)
-        rows = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+        rows = [admission_row(record) for record in authority.persistence.admissions.list(session_id=ref.session_id, pending_only=False)]
         assert len(rows) == 1 and rows[0]['outcome'] == 'completed', rows
         if peer.blocked:
             await witness

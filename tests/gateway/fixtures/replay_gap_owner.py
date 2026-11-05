@@ -25,16 +25,16 @@ class Owner:
         from gateway.session_authority import LiveSession, SessionAuthority
         from gateway.session_contract import SessionRef
         from gateway.session_controls import AuthorityConnection
-        from hermes_state import SessionDB
-        from hermes_state_runtime import begin_runtime_epoch
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_seed import seed_session
         self.loop, self.events, self.running = asyncio.get_running_loop(), asyncio.Queue(), threading.Event()
         self.pause, self.gaps, self.turns, self.ref = pause, [], [], SessionRef("owned", "s")
         self.running.set()
-        self.db = SessionDB(db_path=db_path)
-        self.db.create_session("s", source="test")
-        self.epoch = begin_runtime_epoch(self.db, instance_id="owner")
+        self.store = open_persistence(profile_scope(home=db_path.parent))
+        seed_session(self.store, "s", "test")
+        self.epoch = self.store.runtime.begin_epoch(instance_id="owner")
         self.authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="owned",
-                                          instance_id="owner", db=self.db, epoch=self.epoch)
+                                          instance_id="owner", epoch=self.epoch, persistence=self.store)
         self.live = self.authority.sessions["s"] = LiveSession(None, "route")
         retire = self.authority._retire_overflowed
         self.authority._retire_overflowed = lambda sid, peer: (self.gaps.append(sid), retire(sid, peer))
@@ -49,12 +49,12 @@ class Owner:
         return None
 
     async def rpc(self, method, _timeout=None, **params):
-        from hermes_state_runtime import admit_session_input, claim_session_input
+        from gateway.session_authority import admission_row
         if method == "prompt.submit":
-            admit_session_input(self.db, epoch=self.epoch, principal_id=self.conn.actor.subject, session_id="s",
-                                request_id=params.get("input_id") or params.get("submission_id"),
-                                payload={"text": params["text"]})
-            row = claim_session_input(self.db, epoch=self.epoch, session_id="s")
+            self.store.admissions.admit(epoch=self.epoch, principal_id=self.conn.actor.subject, session_id="s",
+                                        request_id=params.get("input_id") or params.get("submission_id"),
+                                        payload={"text": params["text"]})
+            row = admission_row(self.store.admissions.claim(epoch=self.epoch, session_id="s"))
             self.turns.append(threading.Thread(target=self._turn, args=(row, self.pause), daemon=True))
             self.pause = None
             self.turns[-1].start()
@@ -83,4 +83,4 @@ class Owner:
         self.running.set()
         for turn in self.turns:
             turn.join(10)
-        self.db.close()
+        self.store.close()

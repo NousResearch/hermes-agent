@@ -8,13 +8,14 @@ from types import SimpleNamespace
 
 async def fences(runner, authority, adapter, guild, event, peer, mode):
     from gateway.config import Platform
+    from gateway.session_authority import admission_row
     from gateway.session_ingress_context import native_callback
-    from hermes_state_runtime import RuntimeStoreError, cancel_session_input, list_session_admissions
+    from persistence.core.errors import AuthorityRefusal
 
     state = Path(os.environ['HERMES_HOME'])
 
     def rows(sid):
-        return list_session_admissions(authority.db, session_id=sid, pending_only=False)
+        return [admission_row(record) for record in authority.persistence.admissions.list(session_id=sid, pending_only=False)]
 
     async def accept(ev):
         with native_callback(runner, ev, state):
@@ -37,7 +38,7 @@ async def fences(runner, authority, adapter, guild, event, peer, mode):
         # must receive its own current membership check, not inherit the old verdict.
         def cancel_first():
             guild.hook = None
-            cancel_session_input(authority.db, epoch=authority.epoch, admission_id=receipt.admission_id)
+            authority.persistence.admissions.cancel(epoch=authority.epoch, admission_id=receipt.admission_id)
             guild.roles = []
         guild.hook = cancel_first
         await authority._drain(receipt.ref)
@@ -53,7 +54,7 @@ async def fences(runner, authority, adapter, guild, event, peer, mode):
         guild.hook = lambda: runner.adapters.__setitem__(Platform.DISCORD, other)
         try:
             await accept(event('wrong-connector'))
-        except RuntimeStoreError as exc:
+        except AuthorityRefusal as exc:
             assert exc.reason == 'not_found', exc.reason
         else:
             raise AssertionError('connector replaced during fetch was accepted')
@@ -65,7 +66,7 @@ async def fences(runner, authority, adapter, guild, event, peer, mode):
         try:
             try:
                 await accept(event('shutdown-during-auth'))
-            except RuntimeStoreError as exc:
+            except AuthorityRefusal as exc:
                 assert exc.reason == 'runtime_draining', exc.reason
             else:
                 failures.append('new input accepted after shutdown began during lookup')

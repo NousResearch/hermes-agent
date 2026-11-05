@@ -43,20 +43,13 @@ def _make_store(tmp_path) -> SessionStore:
 
 
 def _make_db_store(tmp_path) -> SessionStore:
-    from hermes_state import SessionDB
-
     sessions_dir = tmp_path / "sessions"
-    store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
-    if store._db is not None:
-        store._db.close()
-    store._db = SessionDB(db_path=tmp_path / "state.db")
-    return store
+    return SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
 
 
-def _close_store_db(store: SessionStore) -> None:
-    db = store._db
-    assert db is not None
-    db.close()
+def _close_store_handles(store: SessionStore) -> None:
+    assert store.persistence is not None
+    store.close_all_db_handles()
 
 
 def _entry_for(store: SessionStore, source: SessionSource) -> SessionEntry:
@@ -202,37 +195,37 @@ def test_state_db_failure_atomic_marker_round_trip(tmp_path):
 
     store._save_entry = real_save_entry
     assert store.clear_turn_active(entry.session_key, token) is True
-    _close_store_db(store)
+    _close_store_handles(store)
 
     reloaded = _make_db_store(tmp_path)
     assert reloaded.recover_interrupted_turns() == 0
     persisted = _entry_for(reloaded, source)
     assert persisted.active_turn_token is None
     assert persisted.active_turn_started_at is None
-    _close_store_db(reloaded)
+    _close_store_handles(reloaded)
 
 
-def test_state_db_commit_survives_legacy_mirror_failure(tmp_path):
+def test_state_db_commit_survives_legacy_mirror_failure(tmp_path, monkeypatch):
     store = _make_db_store(tmp_path)
     source = _make_source("state-db-mirror-failure")
     entry = store.get_or_create_session(source)
-    db = store._db
-    assert db is not None
-    db.save_gateway_routing_entry = MagicMock(
+    routing_store = store._routing_persistence
+    assert routing_store is not None
+    monkeypatch.setattr(routing_store.routing, "upsert_routing_entry", MagicMock(
         side_effect=OSError("fast upsert unavailable")
-    )
+    ))
     store._save_sessions_json = MagicMock(
         side_effect=OSError("legacy mirror unavailable")
     )
 
     token = store.mark_turn_active(entry.session_key)
     assert token is not None
-    _close_store_db(store)
+    _close_store_handles(store)
 
     reloaded = _make_db_store(tmp_path)
     recovered = _entry_for(reloaded, source)
     assert recovered.active_turn_token == token
-    _close_store_db(reloaded)
+    _close_store_handles(reloaded)
 
 
 def test_exact_old_active_turn_recovers_even_when_updated_at_is_stale(tmp_path):
@@ -469,7 +462,7 @@ async def test_unclean_restart_resumes_only_the_turn_left_in_flight(tmp_path):
     assert not _entry_for(store, finished).resume_pending
     resumed = _entry_for(store, in_flight)
     assert (resumed.resume_pending, resumed.resume_reason) == (True, "restart_interrupted")
-    _close_store_db(store)
+    _close_store_handles(store)
 
 
 @pytest.mark.asyncio
@@ -488,7 +481,7 @@ async def test_unclean_restart_delivers_a_persisted_unledgered_reply_instead_of_
     rows = sweep_recoverable(deliverable_platforms={"discord"})
     assert [(r["content"], r["needs_marker"], r["chat_id"], r["thread_id"]) for r in rows] == [
         ("the stored answer", True, "replied", "thread-1")]
-    _close_store_db(store)
+    _close_store_handles(store)
 
 
 _WAKE = {"display_kind": "internal_notification"}
@@ -519,7 +512,7 @@ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed
     entry = _entry_for(store, source)
     assert (entry.resume_pending, entry.active_turn_token) == (False, None)
     assert [r["content"] for r in sweep_recoverable(deliverable_platforms={"discord"})] == owed
-    _close_store_db(store)
+    _close_store_handles(store)
 
 
 @pytest.mark.asyncio
@@ -553,4 +546,4 @@ async def test_turn_marker_start_survives_a_timezone_change_across_the_crash(tmp
 
     assert _entry_for(store, source).resume_pending is True
     assert sweep_recoverable(deliverable_platforms={"discord"}) == []
-    _close_store_db(store)
+    _close_store_handles(store)

@@ -5,6 +5,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from tests.fixtures.storage_holder import raw_holder
 
 
 @pytest.mark.asyncio
@@ -55,7 +56,6 @@ async def test_pending_retry_pins_named_conversation_target(api, owner):
 @pytest.mark.asyncio
 async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, owner):
     from gateway.session_contract import SessionRef
-    from hermes_state_runtime import begin_runtime_epoch, recover_session_inputs
     from gateway.platforms.api_server_response_store import ResponseStore
     started, release = asyncio.Event(), asyncio.Event()
     calls = []
@@ -74,12 +74,13 @@ async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, o
         first = asyncio.create_task(client.post('/v1/responses', json=body, headers=headers))
         try:
             await asyncio.wait_for(started.wait(), 10)
-            row = owner.db._read_one('SELECT * FROM session_admissions')
+            with raw_holder(owner.persistence)._read_ctx() as conn:
+                row = conn.execute('SELECT * FROM session_admissions').fetchone()
             task = owner.sessions[row['target_session_id']].task
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            owner.epoch = begin_runtime_epoch(owner.db, instance_id='restarted')
-            recover_session_inputs(owner.db, epoch=owner.epoch)
+            owner.epoch = owner.persistence.runtime.begin_epoch(instance_id='restarted')
+            owner.persistence.admissions.recover(epoch=owner.epoch)
             owner._pause(SessionRef(owner.profile_id, row['target_session_id']), 'unknown_execution')
             assert (await first).status == 409
             # Crash after the ledger commit but before its response-store pointer was saved.
@@ -95,7 +96,8 @@ async def test_unknown_retry_recovers_admission_after_pointer_commit_loss(api, o
             assert retry.status == 409
             assert (await retry.json())['error']['code'] == 'unknown_execution'
             assert calls == ['uncertain']
-            assert owner.db._read_one('SELECT COUNT(*) FROM session_admissions')[0] == 1
+            with raw_holder(owner.persistence)._read_ctx() as conn:
+                assert conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 1
             assert api._response_store._conn.execute('SELECT admission_id FROM response_admissions').fetchone()[0] == row['admission_id']
         finally:
             release.set()
@@ -160,7 +162,8 @@ async def test_concurrent_exact_responses_share_terminal_envelope(api, owner):
             assert values[0] == values[1]
             retry = await client.post('/v1/responses', json={**body, 'stream': False}, headers=headers)
             assert await retry.json() == values[0]
-            assert owner.db._read_one('SELECT COUNT(*) FROM session_admissions')[0] == 1
+            with raw_holder(owner.persistence)._read_ctx() as conn:
+                assert conn.execute('SELECT COUNT(*) FROM session_admissions').fetchone()[0] == 1
         finally:
             release.set()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -169,7 +172,9 @@ async def test_concurrent_exact_responses_share_terminal_envelope(api, owner):
 @pytest.mark.asyncio
 async def test_pointer_commit_loss_then_retirement_cannot_reexecute_moved_conversation(api, owner, monkeypatch):
     from gateway.session_contract import SessionRef
+    from gateway.session_ingress_media import native_inputs_root
     from gateway.session_results import execution_result
+    from session_retention import after_sessions_removed
 
     calls = []
 
@@ -192,14 +197,18 @@ async def test_pointer_commit_loss_then_retirement_cannot_reexecute_moved_conver
         failed = await client.post('/v1/responses', json=body, headers=headers)
         assert failed.status == 500
         monkeypatch.setattr(store, 'bind_request_admission', bind)
-        admitted = owner.db._read_one('SELECT * FROM session_admissions')
+        with raw_holder(owner.persistence)._read_ctx() as conn:
+            admitted = conn.execute('SELECT * FROM session_admissions').fetchone()
         assert admitted['status'] == 'queued'
         # Owner recovery executes the committed request even though no HTTP response was saved.
         ref = SessionRef(owner.profile_id, admitted['target_session_id'])
         owner._schedule(ref)
         await asyncio.wait_for(owner.sessions[ref.session_id].task, 10)
         assert calls == ['original-once']
-        assert owner.db.delete_session(ref.session_id)
+        removed = owner.persistence.sessions.delete(ref.session_id, media_root=str(native_inputs_root()))
+        after_sessions_removed(owner.persistence, owner.persistence.scope.profile_dir, removed, reason='delete',
+                               primary=ref.session_id)
+        assert removed
         # A later request advances the name to an independent live target.
         advanced = await client.post('/v1/responses', json={'input': 'new-target', 'conversation': 'moving'},
                                      headers={'Idempotency-Key': 'successor'})

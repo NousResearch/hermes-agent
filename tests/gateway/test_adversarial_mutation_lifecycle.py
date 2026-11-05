@@ -7,19 +7,20 @@ import threading
 import pytest
 
 from gateway.session_contract import Submission
+from persistence_assembly import close_stores_under
 from tests.gateway.test_local_authority_transitions import local_session
 
 
 async def pending_model(tmp_path, monkeypatch):
     from gateway import session_mutations
+    from gateway.session_persistence import authority_persistence
     from gateway.session_policy import restore_policy
     owner, connection, ref = await local_session(tmp_path, monkeypatch)
     entered, release, completed = threading.Event(), threading.Event(), threading.Event()
-    original = session_mutations.mutate_runtime_session
+    runtime = authority_persistence(owner).runtime
+    original = runtime.mutate
 
     def blocked(*args, **kwargs):
-        if kwargs.get('_prepare_only'):
-            return original(*args, **kwargs)
         entered.set()
         assert release.wait(10)
         try:
@@ -33,7 +34,7 @@ async def pending_model(tmp_path, monkeypatch):
         config['model'] = {'default': 'new', 'provider': 'fixture'}
         return {**prepared, 'policy': asdict(replace(old, model='new', config_json=json.dumps(config)))}
 
-    monkeypatch.setattr(session_mutations, 'mutate_runtime_session', blocked)
+    monkeypatch.setattr(runtime, 'mutate', blocked)
     monkeypatch.setattr('gateway.session_mutation_model.prepare_model', prepare)
     handle = owner._handle(ref)
     task = asyncio.create_task(session_mutations.mutate_session(owner, connection.actor, ref,
@@ -65,7 +66,7 @@ async def test_cancelling_model_request_cannot_strand_next_admission(tmp_path, m
         await asyncio.gather(task, return_exceptions=True)
         await asyncio.to_thread(completed.wait, 5)
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)
 
 
 @pytest.mark.asyncio
@@ -84,4 +85,4 @@ async def test_profile_retirement_waits_for_mutation_thread(tmp_path, monkeypatc
         await asyncio.gather(task, retirement, return_exceptions=True)
         await asyncio.to_thread(completed.wait, 5)
         await connection.close()
-        owner.db.close()
+        close_stores_under(owner.persistence.scope.profile_dir)

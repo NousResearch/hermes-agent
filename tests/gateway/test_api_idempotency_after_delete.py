@@ -6,6 +6,7 @@ key aimed at another session ran the work a second time.
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from tests.fixtures.storage_holder import raw_holder, terminal_admission_key, terminal_api_admissions
 
 
 _API_KEY = 'idempotency-after-delete-key'
@@ -68,7 +69,7 @@ async def test_deleted_session_idempotency_key_does_not_run_again(api, owner):
 
         status, same = await _post(client, 'session-a')
         assert status == 200 and _content(same) == original, same
-        assert owner.db.get_session('session-a') is None
+        assert owner.persistence.sessions.get('session-a') is None
 
         status, fresh = await _post(client, 'session-b', key='fresh-key', content='new body')
         assert status == 200 and _content(fresh) == 'answer new body', fresh
@@ -79,7 +80,6 @@ async def test_deleted_session_idempotency_key_does_not_run_again(api, owner):
 async def test_a_live_session_that_already_ran_the_key_still_replays_it(api, owner):
     """A session that ran the key while the deleted one's tombstone was unread (code from before
     this check) still replays its own completion; only a session that never ran it conflicts."""
-    from hermes_state_terminal import ADMISSION_PREFIX
     calls = []
     api._api_key = _API_KEY
     _execute(owner, calls)
@@ -87,14 +87,15 @@ async def test_a_live_session_that_already_ran_the_key_still_replays_it(api, own
         status, first = await _post(client, 'session-a')
         assert status == 200, first
         await _delete(client, 'session-a')
-        with owner.db._read_ctx() as conn:
-            saved = list(conn.execute('SELECT key, value FROM state_meta WHERE key GLOB ?', (ADMISSION_PREFIX + '*',)))
+        with raw_holder(owner.persistence)._read_ctx() as conn:
+            saved = list(conn.execute('SELECT key, value FROM state_meta WHERE key GLOB ?',
+                                      (terminal_admission_key() + '*',)))
         assert saved
-        owner.db._execute_write(lambda conn: conn.execute('DELETE FROM state_meta WHERE key GLOB ?',
-                                                          (ADMISSION_PREFIX + '*',)))
+        raw_holder(owner.persistence)._execute_write(lambda conn: conn.execute('DELETE FROM state_meta WHERE key GLOB ?',
+                                                                               (terminal_admission_key() + '*',)))
         status, live = await _post(client, 'session-b')
         assert status == 200, live
-        owner.db._execute_write(lambda conn: conn.executemany(
+        raw_holder(owner.persistence)._execute_write(lambda conn: conn.executemany(
             'INSERT OR REPLACE INTO state_meta(key, value) VALUES(?, ?)', saved))
 
         status, again = await _post(client, 'session-b')
@@ -110,12 +111,10 @@ def test_only_a_client_key_pays_for_the_tombstone_scan(api, owner, monkeypatch):
     """Only a client Idempotency-Key can name a deleted session's admission. A key-less turn's
     fresh id (or a server-minted run id) never matches one, so the admission's write transaction
     skips the tombstone scan for it."""
-    import hermes_state_terminal
     from gateway.session_api_turn import admit_api_turn
-    real = hermes_state_terminal.terminal_api_admissions
     scanned = []
-    monkeypatch.setattr(hermes_state_terminal, 'terminal_api_admissions',
-                        lambda conn, request_id: scanned.append(request_id) or real(conn, request_id))
+    monkeypatch.setattr('persistence.sqlite.authority._admission_owner.terminal_api_admissions',
+                        lambda conn, request_id: scanned.append(request_id) or terminal_api_admissions(conn, request_id))
     admit_api_turn(api, session_id='keyless', user_message='hi', conversation_history=[])
     admit_api_turn(api, session_id='run', active_run_id='run_minted', user_message='hi', conversation_history=[])
     assert scanned == []

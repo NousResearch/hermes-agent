@@ -8,7 +8,8 @@ import pytest
 
 from gateway import hosted_room_driver as tasks, hosted_rooms, session_hosted_transport as transport
 from gateway.session_group_controls import _disband
-from hermes_state_runtime import list_session_admissions
+from gateway.session_persistence import authority_persistence
+from persistence.gateway.hosted_rooms import RoomStopPendingError
 from tests.gateway.test_session_hosted_transport import _SourceTask, _server
 
 
@@ -21,7 +22,7 @@ def test_a_moved_profile_settles_once_the_home_that_admitted_the_turn_is_gone(ho
     home_b.mkdir(parents=True, mode=0o700)
     authority.profile_id = str(home_a)
     source = _SourceTask(tmp_path, monkeypatch, b'attachment')
-    service, runtime, db = source.service, source.service.runtime, source.db.db_path
+    service, runtime, db = source.service, source.service.runtime, source.db
     runtime.prepare_room = runtime.publish_terminal = None
     servers = [_server(tmp_path), _server(home_a)]
     transport.install_hosted_transport(servers[0], source.authority, loop, attest=service.attest)
@@ -35,7 +36,7 @@ def test_a_moved_profile_settles_once_the_home_that_admitted_the_turn_is_gone(ho
         sid = rpc.create(profile='other', source='bot_room', title='Group: room')['session_id']
         rpc.submit(profile='other', source='bot_room', session_id=sid, prompt='frozen',
                    task=source.identity, execution_generation=1, attachments=source.bound, on_terminal=None)
-        tasks.begin_task_cancel(db, source.identity, cancel_id='stop', expected_cancel_generation=0, clock=time.time)
+        tasks.begin_task_cancel(db, source.identity, placement='profile', cancel_id='stop', expected_cancel_generation=0, clock=time.time)
         with monkeypatch.context() as unanswered:
             def no_answer(*_, **__):
                 raise TimeoutError('that gateway did not answer')
@@ -43,7 +44,7 @@ def test_a_moved_profile_settles_once_the_home_that_admitted_the_turn_is_gone(ho
             now = time.time() + runtime.indeterminate_defer_seconds + 1
             runtime.clock = lambda: now
             runtime._retry_stopping_tasks(binding, runtime._ensure_lease(binding))
-        assert tasks.get_task(db, source.identity)['status'] == 'deferred'
+        assert tasks.get_task(db, source.identity, placement='profile')['status'] == 'deferred'
         source.homes['other'] = str(home_b)  # moved; home_b's daemon would answer "no such session"
         asked = []
         real = transport.owner_request
@@ -56,8 +57,8 @@ def test_a_moved_profile_settles_once_the_home_that_admitted_the_turn_is_gone(ho
             result = _disband(service, service, db, source.gateway, {'room_id': 'room'})
             assert 'tombstone' in result, result
             assert asked and set(asked) == {str(home_a)}, asked  # its Stop went where it was admitted
-            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-            assert row['status'] == 'terminal'
+            row, = authority_persistence(authority).admissions.list(session_id=sid, pending_only=False)
+            assert row.status == 'terminal'
             return
         def silent(home, verb, params, **kw):
             if verb == 'hosted-producer' and str(home) == str(home_a):
@@ -66,15 +67,15 @@ def test_a_moved_profile_settles_once_the_home_that_admitted_the_turn_is_gone(ho
             return request(home, verb, params, **kw)
         monkeypatch.setattr(transport, 'owner_request', silent)
         for _ in range(2):
-            with pytest.raises(hosted_rooms.RoomStopPendingError):
+            with pytest.raises(RoomStopPendingError):
                 _disband(service, service, db, source.gateway, {'room_id': 'room'})
         assert asked and set(asked) == {str(home_a)}, asked
-        assert tasks.get_task(db, source.identity)['status'] == 'deferred'
+        assert tasks.get_task(db, source.identity, placement='profile')['status'] == 'deferred'
         asyncio.run_coroutine_threadsafe(servers[1].stop(), loop).result(10)
         stopped.append(servers[1])
         result = _disband(service, service, db, source.gateway, {'room_id': 'room'})
         assert 'tombstone' in result, result
-        assert hosted_rooms.room_state(db, room_id='room', include_disbanded=True)['disbanded_at'] is not None
+        assert hosted_rooms.room_state(db, placement='profile', room_id='room', include_disbanded=True)['disbanded_at'] is not None
     finally:
         for server in servers:
             if server not in stopped:

@@ -9,8 +9,10 @@ name under ``$HERMES_HOME/plugins/model-providers/`` overrides this
 bundled copy; removing both restores stock resolution.
 """
 
+import json
 import logging
 import re
+import urllib.request
 from typing import Any
 
 from providers import register_provider
@@ -167,6 +169,19 @@ def _config_reasoning_budget(
     return raw
 
 
+def _config_prompt_warmer(base_url: str | None, model: str | None) -> bool:
+    """Opt-in prompt warmer flag, default off.
+
+    The per-model metadata value wins over the session-wide
+    ``agent.prompt_warmer``; anything but boolean True stays off (a
+    warm request loads the model server-side, so the gate is strict).
+    """
+    raw = _model_entry_meta(base_url, model).get("prompt_warmer")
+    if raw is None:
+        raw = _agent_config().get("prompt_warmer")
+    return raw is True
+
+
 class LlamaCppProfile(ProviderProfile):
     """llama.cpp servers, bare or behind llama-swap."""
 
@@ -310,6 +325,81 @@ class LlamaCppProfile(ProviderProfile):
                     _REASONING_BUDGET_MIN_BUILD,
                 )
         return extra_body, top_level
+
+    def prompt_warmer_enabled(self, *, base_url=None, model=None) -> bool:
+        """True when the opt-in prompt warmer flag is set."""
+        return _config_prompt_warmer(base_url or self.base_url, model)
+
+    def warm_prompt_cache(
+        self,
+        *,
+        base_url=None,
+        model=None,
+        system_prompt="",
+        tools=None,
+        reasoning_config=None,
+        timeout=900.0,
+    ):
+        """Prime the server's prompt cache with the session preamble.
+
+        One minimal completion with the system prompt plus the same
+        profile extras a real request carries, so the rendered prefix
+        matches the first user turn. On llama-swap this may START
+        *model*, exactly like a first turn - hence the strict opt-in.
+        Returns the server-reported prompt_n, or None. Never raises.
+        """
+        base = str(base_url or self.base_url or "").strip().rstrip("/")
+        if not base or not model or not system_prompt:
+            return None
+        from .probe import TRANSPORT_ERRORS
+
+        try:
+            extra_body, top_level = self.build_api_kwargs_extras(
+                reasoning_config=reasoning_config,
+                model=model,
+                base_url=base,
+            )
+            body: dict[str, Any] = {
+                "model": model,
+                "messages": [{"role": "system", "content": system_prompt}],
+                "max_tokens": 1,
+                "stream": False,
+            }
+            if isinstance(tools, list) and tools:
+                # The chat template renders tool definitions into the early
+                # prompt region; without them the warmed prefix diverges
+                # from the first real turn within its first tokens and the
+                # server reuses nothing.
+                body["tools"] = tools
+            body.update(top_level)
+            body.update(extra_body)
+            url = base + (
+                "/chat/completions"
+                if base.endswith("/v1")
+                else "/v1/chat/completions"
+            )
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read())
+            prompt_n = None
+            if isinstance(payload, dict):
+                timings = payload.get("timings")
+                if isinstance(timings, dict):
+                    prompt_n = timings.get("prompt_n")
+            logger.info(
+                "llamacpp: prompt warmer primed %s (prompt_n=%s)",
+                model,
+                prompt_n,
+            )
+            return prompt_n
+        except TRANSPORT_ERRORS as exc:
+            logger.info("llamacpp: prompt warmer failed for %s: %s", model, exc)
+            return None
 
 
 llamacpp = LlamaCppProfile(

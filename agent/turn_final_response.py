@@ -20,6 +20,9 @@ from agent.turn_empty_response import (
     housekeeping_reply_line, recover_empty_response, take_housekeeping_reply_line,
 )
 from agent.turn_stop_gates import apply_stop_gates
+from agent.turn_continuation import (
+    CONTINUATION_RECONCILIATION_NUDGE, choose_final_continuation, states_continuation_blocker,
+)
 from agent.turn_truncation import partial_result, repetition_copy
 
 _REPETITION_STOPPED = repetition_copy(
@@ -230,6 +233,7 @@ def finish_text_response(
         bool(getattr(agent, "_stall_guards", True))
         and agent.valid_tool_names
         and codex_ack_continuations < 2
+        and not states_continuation_blocker(_stall_text)
         and (
             trailing_continue_intent(_stall_text)
             or (bool(_promoted) and promoted_reasoning_announces_action(_stall_text))
@@ -246,23 +250,11 @@ def finish_text_response(
         and _tool_rows > 0
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
-    if _stall_continue_intent:
-        _continuation_kind = "stall"
-    elif _degenerate_final:
-        _continuation_kind = "degenerate"
-    elif (
-        _ack_mode != "off"
-        and agent.valid_tool_names
-        and codex_ack_continuations < 2
-        and agent._looks_like_codex_intermediate_ack(
-            user_message=user_message, assistant_content=final_response, messages=messages,
-            require_workspace=(_ack_mode == "codex_only"),
-        )
-    ):
-        _continuation_kind = "ack"
-    else:
-        _continuation_kind = None
+    _continuation_kind = choose_final_continuation(
+        agent, text=_stall_text, messages=messages, user_message=user_message,
+        api_call_count=api_call_count, retries=codex_ack_continuations,
+        ack_mode=_ack_mode, stall=_stall_continue_intent, degenerate=_degenerate_final,
+    )
     if _continuation_kind:
         if _continuation_kind == "stall":
             logger.info(
@@ -287,7 +279,8 @@ def finish_text_response(
         append_message(messages, {
             "role": "user",
             "content": (
-                _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
+                CONTINUATION_RECONCILIATION_NUDGE if _continuation_kind == "continuation_suggestion"
+                else _DEGENERATE_FINAL_NUDGE if _continuation_kind == "degenerate"
                 else _CODEX_ACK_CONTINUATION_NUDGE
             ),
         })

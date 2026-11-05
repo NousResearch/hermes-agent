@@ -9,7 +9,7 @@ tail must not leave its originals summarized beside the live copy either.
 
 import pytest
 
-from agent.agent_runtime_helpers import repair_message_sequence
+from session_rules.turns import repair_message_sequence
 from agent.conversation_compression_archive import coverage_for_commit
 from hermes_state import SessionDB
 

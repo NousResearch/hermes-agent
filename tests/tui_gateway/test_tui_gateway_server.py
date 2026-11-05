@@ -7114,7 +7114,7 @@ def test_prompt_submit_resolves_row_id_absorbed_into_marker_merge(monkeypatch):
     """
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 12131, "role": "user", "content": "first"},
@@ -7236,7 +7236,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_marker_merge(monkeypatch):
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 201, "role": "user", "content": "first"},
@@ -7321,7 +7321,7 @@ def test_prompt_submit_resolves_row_id_swallowed_by_plain_user_merge(monkeypatch
     import contextlib
     import copy
 
-    from agent.agent_runtime_helpers import repair_message_sequence
+    from session_rules.turns import repair_message_sequence
 
     verbatim = [
         {"_row_id": 301, "role": "user", "content": "first"},

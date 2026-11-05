@@ -39,6 +39,7 @@ from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.agent_init_memory_provider import _memory_provider_init_kwargs, resolve_memory_provider
+from agent.agent_init_session import _publish_session_id
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -47,7 +48,7 @@ from hermes_cli.config import DEFAULT_CONFIG, cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from hermes_state_ids import new_session_id
+from session_rules.session_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -510,6 +511,8 @@ _SESSION_STATE: dict[str, Any] = {
     # Whether close() also closes _session_db. False: a caller-supplied handle is usually the
     # SHARED launch handle; callers handing over a DEDICATED handle set True.
     "_owns_session_db": False,
+    # The deprecated hermes_state.SessionDB a plugin context engine binds; opened on first need, closed with the agent.
+    "_context_engine_session_db": None,
     # Close flush and turn-start flush can overlap; the durable marker lives on each message
     # dict, so its test-and-append is serialized per agent.
     "_session_persist_lock": threading.RLock,
@@ -1057,27 +1060,8 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
 
 
-def _publish_session_id(session_id: str) -> None:
-    """Expose the session ID to tools via ContextVar (+ legacy os.environ fallback).
-
-    If the ContextVar bridge fails to import, keep the root-agent env fallback but never let
-    delegated construction publish a child ID process-wide.
-    """
-    try:
-        from gateway.session_context import set_current_session_id
-        set_current_session_id(session_id)
-    except Exception:
-        try:
-            from agent.delegation_context import is_delegated_child_context
-            delegated_child = is_delegated_child_context()
-        except Exception:
-            delegated_child = False
-        if not delegated_child:
-            os.environ["HERMES_SESSION_ID"] = session_id
-
-
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
+    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb, persistence=None):
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
@@ -1095,7 +1079,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         max_file_size_mb=checkpoint_max_file_size_mb,
     )
 
-    agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
+    agent._session_db, agent.persistence = session_db, persistence  # optional store and its storage interface
     agent._parent_session_id = parent_session_id
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
@@ -1819,7 +1803,8 @@ def _compressor_max_tokens(agent):
     return None
 
 
-def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
+def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
+                          persistence=None):
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
@@ -1863,8 +1848,12 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
+        # The built-in compressor also takes the store's interface handle; a plugin engine's bind takes its SessionDB.
+        _handle = {"persistence": persistence} if isinstance(agent.context_compressor, ContextCompressor) else {}
+        from agent.conversation_compression import context_engine_session_db
         with suppress(Exception):
-            _bind_session_state(session_db=session_db, session_id=agent.session_id)
+            _bind_session_state(session_db=context_engine_session_db(agent, session_db), session_id=agent.session_id,
+                                **_handle)
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
     _cc = agent.context_compressor
@@ -2084,7 +2073,7 @@ def init_agent(
     chat_id: str | None = None, chat_name: str | None = None, chat_type: str | None = None, thread_id: str | None = None,
     gateway_session_key: str | None = None, skip_context_files: bool = False,
     load_soul_identity: bool = False, skip_memory: bool = False,
-    skip_background_review: bool = False, session_db=None, parent_session_id: str | None = None,
+    skip_background_review: bool = False, session_db=None, persistence=None, parent_session_id: str | None = None,
     iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
     fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
@@ -2172,7 +2161,7 @@ def init_agent(
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
-    )
+        persistence=persistence)
 
     # Load config once for memory, skills, and compression sections
     try:
@@ -2197,7 +2186,8 @@ def init_agent(
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )
-    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
+    _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db,
+                          persistence=persistence)
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)
     _warn_nonagentic_hermes_model(agent)

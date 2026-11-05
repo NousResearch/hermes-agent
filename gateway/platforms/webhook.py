@@ -683,6 +683,10 @@ class WebhookAdapter(BasePlatformAdapter):
             return error_response
         # Rate limiting (after auth)
         if not self._record_rate_limit_hit(route_name, time.time()):
+            # Senders such as GitHub do not retry a 429, so this line is the only trace of the delivery.
+            logger.warning("[webhook] Rate limit exceeded on route %s (%d per %ds): rejected delivery %s (event %s)",
+                           route_name, self._rate_limit, int(_RATE_WINDOW_SECONDS), delivery_id,
+                           headers.get("X-GitHub-Event") or headers.get("X-GitLab-Event") or "unknown")
             return _json_error("Rate limit exceeded", 429)
         payload = self._parse_body(raw_body)
         if payload is _UNPARSEABLE:

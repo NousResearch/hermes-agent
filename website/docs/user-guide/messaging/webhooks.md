@@ -622,7 +622,7 @@ platforms:
       rate_limit: 60  # requests per minute
 ```
 
-Requests exceeding the limit receive a `429 Too Many Requests` response.
+Requests exceeding the limit receive a `429 Too Many Requests` response, and each rejection is logged as a warning with the route, delivery ID and event type. GitHub does not retry a rejected delivery; redeliver it from the webhook's **Recent Deliveries** page.
 
 ### Idempotency
 

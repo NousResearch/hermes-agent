@@ -547,7 +547,12 @@ _JSON_FIELD_ESCAPED_RE = re.compile(rf'((\\+)"{_JSON_KEY_NAMES}\2")\s*:\s*\2"([^
 # Any other identifier-shaped key (``"API_TOKEN"``, ``"DB_PASSWORD"``, ``"client_secret"``): the closed
 # list above misses affixed names that the ENV and YAML passes already accept (#147240). The callback
 # applies the YAML pass's word set at a word boundary, then the shared assignment gate.
-_JSON_ANY_KEY_FIELD_RE = re.compile(r'("([A-Za-z0-9_.\-]{1,128}+)")\s*+:\s*+"([^"\\\n]++)"')
+# The value may carry JSON escapes (``"s3cret\\value"``): ``\\.`` consumes each escape pair whole.
+_JSON_ANY_KEY_FIELD_RE = re.compile(r'("([A-Za-z0-9_.\-]{1,128}+)")\s*+:\s*+"((?:[^"\\\n]|\\.)++)"')
+# The same field inside a JSON-encoded string (``{"output": "{\\"DB_PASSWORD\\": \\"…\\"}"}``),
+# like _JSON_FIELD_ESCAPED_RE does for the closed key list: group 2 is the escape run.
+_JSON_ANY_KEY_FIELD_ESCAPED_RE = re.compile(
+    r'((\\++)"([A-Za-z0-9_.\-]{1,128}+)\2")\s*+:\s*+\2"([^"\\\n]++)\2"')
 _JSON_KEY_NAMES_FULL_RE = re.compile(_JSON_KEY_NAMES, re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
@@ -754,7 +759,7 @@ _URL_USERINFO_PAIR_RE = re.compile(r"(//)([^/\s?#@]+)@")
 # pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
 _BASIC_PAIR_ASSIGN_RE = re.compile(
     r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
-    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2"
+    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2(?![^\s;,&|)])"
 )
 
 # ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
@@ -1267,24 +1272,32 @@ _JSON_FLAG_VALUES = frozenset({"true", "false", "yes", "no", "null", "none"})
 _JSON_VALUE_SUFFIX_RE = re.compile(r"[_.\-]?(?:value|Value|VALUE)$")
 
 
-def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
-    """``"API_TOKEN": "…"`` style fields whose key carries a YAML secret word with affixes."""
-    key = m.group(2)
+def _json_affixed_key_secret(key: str, value: str) -> bool:
+    """Whether ``"key": "value"`` holds a credential under an affixed secret-word key (#147240)."""
     if _JSON_KEY_NAMES_FULL_RE.fullmatch(key):  # the closed-list pass already decided this field
-        return m.group(0)
+        return False
     if not (_has_word_bounded_keyword(key, _YAML_CFG_WORD_RE) or _has_password_keyword(key)):
-        return m.group(0)
-    value = m.group(3)
+        return False
     if _DSN_PW_PLACEHOLDER_RE.fullmatch(value) or not _should_redact_assignment(key, value, check_keyword=True):
-        return m.group(0)
+        return False
     # A key that does not END in the credential word is metadata about one: ``passwordChanged``,
     # ``password_expires_at``, ``tokenUrl``, ``secret_id``, ``secret_arn``, ``PASSWORD_STORE_DIR``
     # carry timestamps, URLs and ids that look opaque, so the value shape cannot decide (#149435
     # review). A boolean answers ``has_password``, it does not hold one.
     # ``api_key_value`` / ``passwordValue`` hold the credential itself: drop that one suffix first.
-    if not _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key)) or value.casefold() in _JSON_FLAG_VALUES:
+    return _is_python_repr_secret_key(_JSON_VALUE_SUFFIX_RE.sub("", key)) and value.casefold() not in _JSON_FLAG_VALUES
+
+
+def _redact_json_affixed_key(m: "re.Match[str]", mask) -> str:
+    if not _json_affixed_key_secret(m.group(2), m.group(3)):
         return m.group(0)
-    return f'{m.group(1)}: "{mask(value)}"'
+    return f'{m.group(1)}: "{mask(m.group(3))}"'
+
+
+def _redact_json_affixed_key_escaped(m: "re.Match[str]", mask) -> str:
+    if not _json_affixed_key_secret(m.group(3), m.group(4)):
+        return m.group(0)
+    return f'{m.group(1)}: {m.group(2)}"{mask(m.group(4))}{m.group(2)}"'
 
 
 def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
@@ -1326,6 +1339,8 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             text = _JSON_FIELD_ESCAPED_RE.sub(
                 _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
         text = _JSON_ANY_KEY_FIELD_RE.sub(lambda m: _redact_json_affixed_key(m, mask), text)
+        if '\\"' in text:
+            text = _JSON_ANY_KEY_FIELD_ESCAPED_RE.sub(lambda m: _redact_json_affixed_key_escaped(m, mask), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.

@@ -29,13 +29,16 @@ def test_committed_ledger_lists_every_live_handler():
 
 
 def test_rpc_rows_follow_the_ws_dispatch_tables():
-    """Served verbs are authority-owned; a legacy-only verb is a fallback or refused, never decided."""
+    """Served verbs are authority-owned; a legacy-only verb is a fallback or refused, never decided;
+    a verb served only for session-owned calls keeps its account-owned fallback undecided."""
     gen = _generator()
-    facts = {"routes": [], "legacy": ["pet.get", "session.title", "session.list"], "served": ["session.list"],
-             "process_global": [], "session_namespaces": ["session."], "session_fallback_allowed": []}
+    facts = {"routes": [], "legacy": ["pet.get", "session.title", "session.list", "connectors.connect"],
+             "served": ["session.list", "connectors.connect"], "refused": ["session.title"],
+             "account_owned_fallback": ["connectors.connect"]}
     by_name = {row["handler"]: row for row in gen.rows(facts)}
     assert by_name["session.list"]["decision"] == "authority"
     assert by_name["pet.get"]["current_path"].startswith("legacy fallback")
     assert by_name["session.title"]["current_path"].startswith("authority refuses (-32601)")
-    assert {by_name[m]["decision"] for m in ("pet.get", "session.title")} == {"undecided"}
+    assert "account-owned: legacy fallback" in by_name["connectors.connect"]["current_path"]
+    assert {by_name[m]["decision"] for m in ("pet.get", "session.title", "connectors.connect")} == {"undecided"}
     assert {row["decision"] for row in by_name.values()} <= set(gen.DECISION_VALUES)

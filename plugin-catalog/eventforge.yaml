@@ -1,6 +1,6 @@
 name: eventforge
 repo: https://github.com/sinequix/eventforge
-sha: 952e521b13ab97daebe24028290663a13a492fae
+sha: d4e53eb2dba6b5013d6f0e26b9ec153f269fa031
 subdir: plugins/hermes-eventforge
 description: Proxy the local EventForge control plane into Hermes with approval-gated tools and verified-event context.
 maintainer: sinequix

@@ -10,6 +10,8 @@ import pytest
 import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
     AuthenticateResponse,
     InitializeResponse,
     PromptResponse,
@@ -28,6 +30,7 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
 from acp_adapter.server import (
     HermesACPAgent,
 )
+from hermes_state import SessionDB
 from acp_adapter.session import SessionManager
 
 
@@ -237,24 +240,25 @@ class TestSessionOps:
 
 
     @pytest.mark.asyncio
-    async def test_load_session_not_found_returns_none(self, agent):
-        resp = await agent.load_session(cwd="/tmp", session_id="bogus")
-        assert resp is None
-
-
-
-
-
+    @pytest.mark.parametrize("method", ["session/load", "session/resume"])
+    async def test_recovery_rejects_missing_session_without_creating(self, agent, method):
+        with pytest.raises(acp.RequestError) as error:
+            await build_agent_router(agent, use_unstable_protocol=True)(
+                method, {"cwd": "/tmp", "sessionId": "bogus", "mcpServers": []}, False
+            )
+        assert error.value.code == -32002
+        assert agent.session_manager.list_sessions() == []
 
     @pytest.mark.asyncio
-    async def test_resume_session_replays_persisted_history_to_client(self, agent):
+    async def test_resume_preserves_history_without_replaying_it(self, agent):
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
 
         new_resp = await agent.new_session(cwd="/tmp")
         state = agent.session_manager.get_session(new_resp.session_id)
-        state.history = [{"role": "user", "content": "So tell me the current state"}]
+        history = [{"role": "user", "content": "So tell me the current state"}]
+        state.history = history
 
         mock_conn.session_update.reset_mock()
         resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
@@ -262,21 +266,49 @@ class TestSessionOps:
         await asyncio.sleep(0)
 
         assert isinstance(resp, ResumeSessionResponse)
+        assert agent.session_manager.get_session(new_resp.session_id) is state
+        assert state.history == history
         updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
-        assert any(
-            isinstance(update, UserMessageChunk)
-            and update.content.text == "So tell me the current state"
-            for update in updates
+        assert not any(isinstance(update, (UserMessageChunk, AgentMessageChunk, AgentThoughtChunk,
+                                          ToolCallStart, ToolCallProgress)) for update in updates)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,replays", [("session/load", True), ("session/resume", False)])
+async def test_recovery_reopens_persisted_identity_and_history(tmp_path, method, replays):
+    db_path = tmp_path / "state.db"
+    factory = lambda: SimpleNamespace(model="recovery-test")
+    seed_db = SessionDB(db_path)
+    seed = SessionManager(agent_factory=factory, db=seed_db)
+    state = seed.create_session(cwd=str(tmp_path))
+    history = [
+        {"role": "user", "content": "Remember recovery-canary"},
+        {"role": "assistant", "content": "recovery-canary"},
+    ]
+    state.history = history
+    seed.save_session(state.session_id)
+    seed_db.close()
+
+    restored_db = SessionDB(db_path)
+    try:
+        manager = SessionManager(agent_factory=factory, db=restored_db)
+        agent = HermesACPAgent(session_manager=manager)
+        conn = MagicMock(spec=acp.Client)
+        conn.session_update = AsyncMock()
+        agent._conn = conn
+        await build_agent_router(agent, use_unstable_protocol=True)(
+            method, {"cwd": str(tmp_path), "sessionId": state.session_id, "mcpServers": []}, False
         )
-
-
-
-
-
-
-
-
-
+        restored = manager.get_session(state.session_id)
+        assert restored.session_id == state.session_id
+        assert [(row["role"], row["content"]) for row in restored.history] == [
+            (row["role"], row["content"]) for row in history
+        ]
+        updates = [call.kwargs["update"] for call in conn.session_update.await_args_list]
+        transcript = [update for update in updates if isinstance(update, (UserMessageChunk, AgentMessageChunk))]
+        assert [update.content.text for update in transcript] == ([row["content"] for row in history] if replays else [])
+    finally:
+        restored_db.close()
 
 
 # ---------------------------------------------------------------------------

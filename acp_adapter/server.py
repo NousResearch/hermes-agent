@@ -579,8 +579,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """``models``/``modes``/``field_meta`` for session responses, after an optional history replay;
         schedules command advertisement + usage refresh.
 
-        Per ACP spec, load/resume must stream history via ``session/update`` BEFORE responding
+        Per ACP spec, load must stream history via ``session/update`` BEFORE responding
         (Codex/Claude Code/OpenCode/Zed rely on this; deferring via ``call_soon`` broke them).
+        Resume restores server-side context without rebuilding the client's transcript.
         Best-effort: a corrupt message must not turn the load into an error."""
         if replay_verb:
             try:
@@ -621,11 +622,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
-    ) -> LoadSessionResponse | None:
+    ) -> LoadSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
-            return None
+            raise acp.RequestError.resource_not_found(session_id)
         await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
         return LoadSessionResponse(**await self._session_response_fields(state, "load"))
 
@@ -634,10 +635,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> ResumeSessionResponse:
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
+            logger.warning("resume_session: session %s not found", session_id)
+            raise acp.RequestError.resource_not_found(session_id)
         await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
-        return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
+        return ResumeSessionResponse(**await self._session_response_fields(state))
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         # get_session restores a not-in-memory id from the DB (full AIAgent build) and waits

@@ -79,8 +79,34 @@ export function terminalCwdFromResult(name: unknown, result: unknown): null | st
   return typeof cwd === 'string' && cwd ? cwd : null
 }
 
+/** Where the terminal tool runs, from session.info `terminal_backend`. Only a local shell's cwd is this
+ *  host's: a container / ssh path that happens to exist here too (`/`, `/home`) is not it. Unreported
+ *  (older gateways) counts as local. */
+export const isLocalTerminalBackend = (backend: unknown): boolean => !backend || backend === 'local'
+
+/** A one-off `workdir` command does not move the session's shell (the terminal tool keeps its recorded cwd,
+ *  tools/terminal_tool_result.py), so its cwd echo must not move the terminal or the memory either. */
+const isTransientWorkdirCall = (args: unknown): boolean =>
+  !!args && typeof args === 'object' && Boolean((args as { workdir?: unknown }).workdir)
+
+export type TerminalCwdContext = {
+  /** The call's args (`tool.complete.args`). */
+  args?: unknown
+  /** session.info `terminal_backend` of the session the event belongs to. */
+  backend?: unknown
+}
+
 /** `tool.complete`: remember where this session's shell is and tell the terminal. */
-export function noteTerminalToolComplete(sessionId: null | string | undefined, name: unknown, result: unknown): void {
+export function noteTerminalToolComplete(
+  sessionId: null | string | undefined,
+  name: unknown,
+  result: unknown,
+  context: TerminalCwdContext = {}
+): void {
+  if (!isLocalTerminalBackend(context.backend) || isTransientWorkdirCall(context.args)) {
+    return
+  }
+
   const cwd = terminalCwdFromResult(name, result)
 
   if (!cwd) {
@@ -95,7 +121,15 @@ export function noteTerminalToolComplete(sessionId: null | string | undefined, n
 }
 
 /** A session became the active one (create / activate / resume): report where its shell last was, else its cwd. */
-export function reportSessionCwd(sessionId: null | string | undefined, fallbackCwd: null | string | undefined): void {
+export function reportSessionCwd(
+  sessionId: null | string | undefined,
+  fallbackCwd: null | string | undefined,
+  backend?: unknown
+): void {
+  if (!isLocalTerminalBackend(backend)) {
+    return
+  }
+
   const remembered = sessionId ? lastTerminalCwd.get(sessionId) : undefined
 
   reportCwd(remembered ?? fallbackCwd)

@@ -83,7 +83,7 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
 
 /** The session is now the one on screen: point the terminal's Files pane / cwd chip at its shell (OSC 7). */
 const announceSessionCwd = (storedSid: null | string, info: null | SessionInfo) =>
-  reportSessionCwd(storedSid, info?.cwd || STARTUP_WORKSPACE_CWD || process.env.HERMES_CWD)
+  reportSessionCwd(storedSid, info?.cwd || STARTUP_WORKSPACE_CWD || process.env.HERMES_CWD, info?.terminal_backend)
 
 export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()

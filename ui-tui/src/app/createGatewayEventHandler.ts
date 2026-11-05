@@ -1579,7 +1579,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         // The terminal tool's `cd` happened in a subshell the host terminal never saw;
         // its result carries `cwd` only when the command moved. Tell the terminal (OSC 7).
-        noteTerminalToolComplete(getUiState().storedSid, ev.payload.name, ev.payload.result)
+        noteTerminalToolComplete(getUiState().storedSid, ev.payload.name, ev.payload.result, {
+          args: ev.payload.args,
+          backend: getUiState().info?.terminal_backend
+        })
 
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''

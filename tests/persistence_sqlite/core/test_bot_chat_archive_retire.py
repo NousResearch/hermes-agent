@@ -10,7 +10,7 @@ from persistence.housekeeping.maintenance import PruneCriteria
 from persistence_assembly import open_persistence, profile_scope
 from session_retention import archive_sessions
 from tests.fixtures.storage_read import session_row
-from tests.fixtures.storage_seed import seed_session
+from tests.fixtures.storage_seed import seed_messages, seed_session
 
 
 def _sidebar(db, epoch, session_id, *, expected_revision=0, **fields):
@@ -37,6 +37,44 @@ def test_sidebar_archive_mutation_retires_canonical_bot_chat(tmp_path, reaped):
         assert db.sessions.set_title('fresh', CANONICAL_BOT_CHAT_TITLE)
         assert db.sessions.get_by_title(CANONICAL_BOT_CHAT_TITLE).session_id == 'fresh'
     finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('hidden', [False, True])
+async def test_delivery_after_archive_of_delivery_minted_bot_chat_mints_fresh(hidden, monkeypatch):
+    """The delivery door mints the canonical chat VISIBLE (cron, teammate, ``chat -c "Bot Chat"
+    --create-if-missing``) and generation 0 reuses an untitled row as an interrupted mint. After a
+    sidebar Archive the next delivery must land in a fresh "Bot Chat", never wedge on
+    ``admission_conflict`` (visible) nor re-title the archived row (hidden) (#139779)."""
+    from gateway import run
+    from gateway.session_bot import _target
+    from gateway.session_persistence import authority_persistence
+    from hermes_constants import get_hermes_home
+    from tests.gateway.test_follow_profile_followups import _profile
+    from tests.gateway.test_session_follow_profile_config import _owner
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(run, '_hermes_home', home)
+    _profile(home, 'm', 1, 'k')
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    db = authority_persistence(authority)
+    try:
+        await _target(authority, owner.actor)
+        old = db.sessions.get_by_title('Bot Chat').session_id
+        seed_messages(db, old, {'role': 'user', 'content': 'old history'})
+        if hidden:
+            db.sessions.set_hidden(old, True)
+        _sidebar(db, authority.epoch, old, expected_revision=db.sessions.get(old).runtime_revision or 0, archived=True)
+        _ref, _live, entry = await _target(authority, owner.actor)
+        assert entry.session_id != old
+        assert db.sessions.get_by_title('Bot Chat').session_id == entry.session_id
+        assert {k: session_row(db, old)[k] for k in ('title', 'archived', 'hidden')} == {
+            'title': None, 'archived': 1, 'hidden': 0}
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
         db.close()
 
 

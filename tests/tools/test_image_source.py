@@ -156,6 +156,21 @@ class TestBoundedHostRead:
         assert res.data == PNG
         assert reads and all(0 <= n <= isrc._MAX_HOST_READ_BYTES + 1 for n in reads)
 
+    @pytest.mark.asyncio
+    async def test_video_host_read_keeps_the_50_mib_budget(self, tmp_path, monkeypatch):
+        # Videos are never downscaled and video_analyze refuses >50 MB of base64, so the 250 MiB
+        # image budget must not let a cached video be read and copied before that refusal.
+        home = tmp_path / "hermes"
+        isrc = _reload(monkeypatch, home)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        clip = home / "cache" / "video" / "inbound.mp4"
+        clip.parent.mkdir(parents=True)
+        with clip.open("wb") as fh:  # sparse: stat says 50 MiB + 1
+            fh.write(b"\0\0\0\x18ftypmp42")
+            fh.truncate(isrc._MAX_INGEST_BYTES + 1)
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(str(clip), isrc.ResolveContext(), permitted=("video",))
+
 
 class TestNonLocalBackendConfinement:
     """The security model: under a sandbox backend, host reads are confined to

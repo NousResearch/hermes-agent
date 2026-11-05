@@ -80,7 +80,10 @@ async def resolve_image_source(
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)
-        data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s)
+        # Videos are never downscaled and video_analyze refuses over 50 MB of base64, so the
+        # larger host budget only helps images; videos keep the ingest cap and fail at the stat.
+        cap = _MAX_HOST_READ_BYTES if "image" in permitted else _MAX_INGEST_BYTES
+        data = await asyncio.to_thread(_read_host_bytes_bounded, host_target, s, cap)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Any path was host-readable, so a miss means the file doesn't exist.
@@ -88,15 +91,15 @@ async def resolve_image_source(
     return await _resolve_container_fallback(p, ctx, s, permitted)
 
 
-def _read_host_bytes_bounded(path: Path, src: str) -> bytes:
-    """Read a host file with the ingest cap enforced DURING the read. ``read_bytes()`` buffered the
+def _read_host_bytes_bounded(path: Path, src: str, cap: int) -> bytes:
+    """Read a host file with ``cap`` enforced DURING the read. ``read_bytes()`` buffered the
     whole file before ``_finalize`` checked its size; ``read(cap+1)`` bounds the allocation even when
     ``st_size`` under-reports (procfs-style files), and the honest-size check reads nothing at all."""
-    if path.stat().st_size > _MAX_HOST_READ_BYTES:
+    if path.stat().st_size > cap:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
     with path.open("rb") as fh:
-        data = fh.read(_MAX_HOST_READ_BYTES + 1)
-    if len(data) > _MAX_HOST_READ_BYTES:
+        data = fh.read(cap + 1)
+    if len(data) > cap:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="file")
     return data
 

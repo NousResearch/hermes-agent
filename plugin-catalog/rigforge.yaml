@@ -1,6 +1,6 @@
 name: rigforge
 repo: https://github.com/DECRUX9812/rigforge-plugin
-sha: 2e1b7228cd1c8dcabeb809ff9eaa670241415fc1
+sha: 1e7b6ff9387c48f71c48db65b68cc8d352a44896
 title: Rigforge
 description: >-
   A build studio for robots, printed machines and controller boards, inside Hermes
@@ -23,7 +23,7 @@ description: >-
 maintainer: DECRUX9812
 tier: community
 category: desktop
-version: "1.1.0"
+version: "1.2.0"
 docs_url: https://github.com/DECRUX9812/rigforge-plugin#readme
 image: https://raw.githubusercontent.com/DECRUX9812/rigforge-plugin/2e1b7228cd1c8dcabeb809ff9eaa670241415fc1/docs/screenshots/hero.png
 screenshots:

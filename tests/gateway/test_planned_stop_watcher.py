@@ -233,3 +233,35 @@ def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, m
     bare, bare_flag = _handler()
     bare(signal.SIGTERM)
     assert bare_flag[0] is True
+
+
+def test_watcher_driven_stop_logs_planned_stop_not_unknown(tmp_path, monkeypatch, caplog):
+    """Regression for #61596: the watcher's ``handler(None)`` after consuming a planned-stop marker
+    must log PLANNED_STOP, not the ``signal=UNKNOWN`` that reads as an external kill. A ``None``
+    invocation with no marker is still UNKNOWN."""
+    import logging
+    from types import SimpleNamespace
+
+    import gateway.run as run_mod
+    import gateway.shutdown_forensics as forensics
+
+    marker = tmp_path / ".gateway-planned-stop.json"
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "consume_takeover_marker_for_self", lambda: False)
+    monkeypatch.setattr(forensics, "spawn_async_diagnostic", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: coro.close())
+
+    def _run_handler():
+        runner = SimpleNamespace(_signal_initiated_shutdown=False, stop=lambda: asyncio.sleep(0))
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            run_mod._start_gateway_make_shutdown_signal_handler(runner, [False])(None)
+        return caplog.text
+
+    _write_self_marker(marker)
+    planned = _run_handler()
+    assert "Received PLANNED_STOP as a planned gateway stop" in planned
+    assert "signal=PLANNED_STOP" in planned
+    assert "UNKNOWN" not in planned
+
+    assert "signal=UNKNOWN" in _run_handler()
